@@ -111,22 +111,12 @@ export class JsonRpcGatewayClient {
   private lastSeenSeq = new Map<string, number>()
   /** Set while a post-reconnect replay fetch is in flight (dedup guard). */
   private replayInFlight = false
-  /**
-   * While a replay fetch is in flight, live seq'd frames for the sessions
-   * being replayed are parked here instead of dispatching immediately.
-   * Without this hold, a live frame racing the replay response is dispatched
-   * twice (once live, once when the replay returns the same seq) or, worse,
-   * advances the watermark so the gap events the replay carries get skipped.
-   */
-  private replayHold: Map<string, GatewayEvent[]> | null = null
-  /**
-   * Server process identity for the replay contract (from gateway.ready /
-   * session.events.since). Seq counters are in-process on the backend, so a
-   * restart resets them while we still hold high watermarks — without this
-   * check events_since(sid, 97) returns [] + truncated=false forever and we
-   * silently believe nothing was missed.
-   */
-  private replayEpoch: string | null = null
+  /** Server boot epoch from gateway.ready — seq watermarks are only valid
+   * within one epoch; a change (gateway restart) resets them. */
+  private serverEpoch: string | null = null
+  /** Seqs dispatched LIVE while a replay RPC is in flight, per session —
+   * the replay response overlaps with these and must not re-dispatch them. */
+  private liveSeqsDuringReplay: Map<string, Set<number>> | null = null
   private readonly eventHandlers = new Map<string, Set<(event: GatewayEvent) => void>>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
@@ -471,25 +461,45 @@ export class JsonRpcGatewayClient {
           }
         }
 
-        const epoch = (frame.params.payload as { replay_epoch?: unknown } | undefined)?.replay_epoch
+        // Seq-namespace epoch: a new epoch means the gateway restarted and
+        // its per-session seq counters reset. Our stored watermarks are from
+        // the previous namespace — a stale HIGH watermark would make every
+        // replay return empty ("client ahead") and can suppress gap
+        // detection forever. Drop all watermarks so this connection starts
+        // fresh; the app layer re-hydrates state via session.resume anyway.
+        const payload = frame.params.payload as { epoch?: unknown } | undefined
+        const epoch = typeof payload?.epoch === 'string' ? payload.epoch : null
 
-        if (typeof epoch === 'string' && epoch) {
-          this.adoptReplayEpoch(epoch)
+        if (epoch) {
+          if (this.serverEpoch && this.serverEpoch !== epoch) {
+            this.lastSeenSeq.clear()
+          }
+
+          this.serverEpoch = epoch
         }
       }
 
-      const sid = frame.params.session_id
-      const seqValue = (frame.params as { seq?: unknown }).seq
+      this.recordSeq(frame.params)
 
-      if (this.replayHold && sid && typeof seqValue === 'number' && this.replayHold.has(sid)) {
-        // Replay in flight for this session: park the frame; flushReplayHold
-        // dispatches it after the replayed gap, gated on seq.
-        this.replayHold.get(sid)?.push(frame.params)
+      // While a replay RPC is in flight, remember which seqs arrived live —
+      // the replay response overlaps with them (server returns everything
+      // > our pre-replay watermark) and must not re-dispatch those.
+      if (this.liveSeqsDuringReplay) {
+        const sid = frame.params.session_id
+        const seq = (frame.params as { seq?: unknown }).seq
 
-        return
+        if (sid && typeof seq === 'number') {
+          let set = this.liveSeqsDuringReplay.get(sid)
+
+          if (!set) {
+            set = new Set()
+            this.liveSeqsDuringReplay.set(sid, set)
+          }
+
+          set.add(seq)
+        }
       }
 
-      this.recordSeq(frame.params)
       this.dispatchEvent(frame.params)
     }
   }
@@ -521,8 +531,11 @@ export class JsonRpcGatewayClient {
   /**
    * After a reconnect, ask the gateway to replay every event newer than our
    * per-session watermarks. Replayed frames go through the SAME dispatchEvent
-   * path as live frames — dedupe happens naturally because recordSeq ignores
-   * non-increasing seqs and downstream stores key on event identity.
+   * path as live frames. Frames that arrived LIVE while the replay RPC was in
+   * flight are tracked and skipped here — the server returns everything past
+   * the pre-replay watermark, so those overlap, and re-dispatching them would
+   * double-append streamed text (message.delta has no identity; it's
+   * append-only downstream).
    * Best-effort: failures are swallowed (the next reconnect retries).
    */
   private async fetchReplay(): Promise<void> {
@@ -531,118 +544,61 @@ export class JsonRpcGatewayClient {
     }
 
     this.replayInFlight = true
-    // Park live frames for the sessions we're about to replay so a frame
-    // racing the replay response can't dispatch ahead of (or duplicate) the
-    // gap events. Sessions without watermarks are unaffected.
-    const hold = new Map<string, GatewayEvent[]>()
-
-    for (const sid of this.lastSeenSeq.keys()) {
-      hold.set(sid, [])
-    }
-
-    this.replayHold = hold
+    this.liveSeqsDuringReplay = new Map()
 
     try {
       const entries = Object.entries(this.getSeqWatermarks())
-
       // One RPC per known session keeps params flat; sessions are few (<20).
-      const results = await Promise.allSettled(
-        entries.map(([sid, lastSeen]) =>
-          this.request<{ events?: Array<{ type: string; session_id?: string; seq?: number; payload?: unknown }> }>(
-            'session.events.since',
-            { session_id: sid, last_seen: lastSeen },
-            REPLAY_REQUEST_TIMEOUT_MS
-          )
-        )
-      )
+      await Promise.allSettled(
+        entries.map(async ([sid, lastSeen]) => {
+          const result = await this.request<{
+            events?: Array<{ type: string; session_id?: string; seq?: number; payload?: unknown }>
+            latest_seq?: number
+            truncated?: boolean
+          }>('session.events.since', { session_id: sid, last_seen: lastSeen }, REPLAY_REQUEST_TIMEOUT_MS)
 
-      for (const result of results) {
-        if (result.status !== 'fulfilled' || !Array.isArray(result.value?.events)) {
-          continue
-        }
+          // Seq epoch reset (gateway restart / server-side eviction): the
+          // server's counter is now BEHIND our watermark, so replay could
+          // never deliver again. Re-adopt the server's epoch so future
+          // reconnects work; the gap itself is unrecoverable (truncated).
+          const latest = typeof result?.latest_seq === 'number' ? result.latest_seq : 0
 
-        const epoch = (result.value as { epoch?: unknown }).epoch
+          if (result?.truncated && latest < lastSeen) {
+            if (latest > 0) {
+              this.lastSeenSeq.set(sid, latest)
+            } else {
+              this.lastSeenSeq.delete(sid)
+            }
 
-        if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
-          // Backend restarted: its seq numbering reset, so our watermarks —
-          // and this replay window — are meaningless. Drop them and start
-          // fresh under the new epoch.
-          this.adoptReplayEpoch(epoch)
-
-          continue
-        }
-
-        if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
-          this.replayEpoch = epoch
-        }
-
-        for (const event of result.value.events) {
-          if (!event?.type) {
-            continue
+            return
           }
 
-          this.dispatchIfNewer(event as GatewayEvent)
-        }
-      }
+          if (!Array.isArray(result?.events)) {
+            return
+          }
+
+          const liveSeqs = this.liveSeqsDuringReplay?.get(sid)
+
+          for (const event of result.events) {
+            if (!event?.type) {
+              continue
+            }
+
+            // Skip events already dispatched live during the replay window.
+            if (typeof event.seq === 'number' && liveSeqs?.has(event.seq)) {
+              continue
+            }
+
+            this.recordSeq(event as GatewayEvent)
+            this.dispatchEvent(event as GatewayEvent)
+          }
+        })
+      )
     } catch {
       // Replay is an optimization over lossy-reconnect; never surface errors.
     } finally {
-      this.flushReplayHold()
       this.replayInFlight = false
-    }
-  }
-
-  /**
-   * Dispatch an event only when its seq advances the session watermark.
-   * Seq-less events always dispatch (no ordering contract to violate).
-   */
-  private dispatchIfNewer(event: GatewayEvent): void {
-    const sid = event.session_id
-    const seq = (event as { seq?: unknown }).seq
-
-    if (sid && typeof seq === 'number' && Number.isFinite(seq)) {
-      const prev = this.lastSeenSeq.get(sid) ?? 0
-
-      if (seq <= prev) {
-        return
-      }
-
-      this.lastSeenSeq.set(sid, seq)
-    }
-
-    this.dispatchEvent(event)
-  }
-
-  /**
-   * Record the server's replay epoch; on change (backend restart) the old
-   * seq watermarks describe a numbering that no longer exists — clear them
-   * so the next reconnect doesn't silently believe it missed nothing.
-   */
-  private adoptReplayEpoch(epoch: string): void {
-    if (this.replayEpoch === epoch) {
-      return
-    }
-
-    if (this.replayEpoch !== null) {
-      this.lastSeenSeq.clear()
-    }
-
-    this.replayEpoch = epoch
-  }
-
-  /** Release frames parked during a replay fetch, seq-gated against dupes. */
-  private flushReplayHold(): void {
-    const hold = this.replayHold
-    this.replayHold = null
-
-    if (!hold) {
-      return
-    }
-
-    for (const parked of hold.values()) {
-      for (const event of parked) {
-        this.dispatchIfNewer(event)
-      }
+      this.liveSeqsDuringReplay = null
     }
   }
 

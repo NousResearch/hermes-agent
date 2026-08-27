@@ -11970,6 +11970,29 @@ def cmd_dashboard(args):
     if _token_file and not _headless_backend:
         raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
 
+    # ── Slim WS-only path ────────────────────────────────────────────
+    # `--ws-only` skips the entire dashboard boot (FastAPI app, uvicorn,
+    # SPA build, auth gate, profile routing) and runs the bare WebSocket
+    # server directly. The desktop app opts into this to cut the
+    # FastAPI/uvicorn layer from the boot path — same dispatch surface,
+    # same RPCs, same events, zero HTTP framework.
+    if getattr(args, "ws_only", False):
+        from hermes_cli.resource_limits import apply_nofile_soft_limit
+
+        apply_nofile_soft_limit()
+        # Resolve SSH session token (serve-only, same as the dashboard path).
+        if _token_file:
+            try:
+                _ssh_session_token = Path(_token_file).read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+        if _ssh_session_token:
+            os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] = _ssh_session_token
+        from tui_gateway.entry_ws import run as run_ws_only
+
+        run_ws_only(host=args.host or "127.0.0.1", port=args.port or 0)
+        return  # run() blocks; returns only on shutdown
+
     # ── Sanitize Desktop-inherited env that hijacks a standalone launch ─
     # Desktop Electron spawns its backend with HERMES_DESKTOP=1 plus
     # HERMES_WEB_DIST=<packaged app.asar[/unpacked]/dist> (and often

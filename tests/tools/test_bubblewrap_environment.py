@@ -712,6 +712,52 @@ class TestSandboxDirGuard:
         finally:
             env.cleanup()
 
+    @pytest.mark.parametrize("mode", ["profile", "isolated"])
+    def test_sandbox_dir_under_the_profile_home_is_refused_under_home_mode_profile(self, tmp_path, work_dir, monkeypatch, mode):
+        # home_mode=profile binds HERMES_HOME/home read-write on top of the
+        # HERMES_HOME overlay, which would show the empty file.
+        hermes_home = tmp_path / "hermes"
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        root = profile_home / "sandboxes"
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(root))
+        with _no_session(), pytest.raises(ValueError, match="terminal.sandbox_dir"):
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode=mode))
+        # get_sandbox_dir() creates the empty root; no state dir or empty file follows.
+        assert not root.exists() or not any(root.iterdir())
+
+    @pytest.mark.parametrize("mode", ["profile", "auto", "real"])
+    def test_default_sandbox_dir_constructs_under_every_home_mode(self, tmp_path, work_dir, monkeypatch, mode):
+        hermes_home = tmp_path / "hermes"
+        (hermes_home / "home").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode=mode))
+        try:
+            assert Path(env.get_temp_dir()).parent == hermes_home / "sandboxes"
+        finally:
+            env.cleanup()
+
+    def test_rw_bind_of_home_elsewhere_with_the_default_sandbox_dir_constructs_with_the_bind_dropped(self, tmp_path, monkeypatch):
+        # A rw mirror of HOME at /mnt gave a second writable view of
+        # HERMES_HOME/sandboxes and the empty file. filter_binds drops the
+        # mirror, so the exemption for a sandbox dir under a hidden path holds.
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
+        monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
+        config = BubblewrapConfig(binds=(BindMount(src=str(home), dest="/mnt", readonly=False),))
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(home), timeout=10, config=config)
+        try:
+            assert Path(env.get_temp_dir()).parent == home / ".hermes" / "sandboxes"
+            assert "/mnt" not in env._wrap_popen_args(["bash"])
+        finally:
+            env.cleanup()
+
 
 @needs_bwrap
 class TestDeletedCwdRecovery:

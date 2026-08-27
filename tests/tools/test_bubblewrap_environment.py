@@ -11,6 +11,9 @@ import inspect
 import os
 import shutil
 import subprocess
+import threading
+import time
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -360,3 +363,94 @@ class TestConstructionTimeMountsIntegration:
         # reserved but never written; the snapshot must be there.
         assert listing <= allowed, listing
         assert Path(env._snapshot_path).name in listing
+
+
+def _host_pids_with_argv0(marker: str) -> list[int]:
+    """PIDs on the host whose argv[0] is *marker* (set with bash's exec -a)."""
+    found = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/cmdline", "rb") as fh:
+                argv0 = fh.read().split(b"\0", 1)[0]
+        except OSError:
+            continue
+        if argv0 == marker.encode():
+            found.append(int(name))
+    return found
+
+
+def _bwrap_children_of_this_process() -> list[int]:
+    me = os.getpid()
+    found = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                fields = fh.read().rsplit(b")", 1)[1].split()
+            with open(f"/proc/{name}/cmdline", "rb") as fh:
+                argv0 = fh.read().split(b"\0", 1)[0]
+        except (OSError, IndexError):
+            continue
+        if int(fields[1]) == me and argv0.endswith(b"bwrap"):
+            found.append(int(name))
+    return found
+
+
+def _wait_until(predicate, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return predicate()
+
+
+class TestKillArgv:
+    def test_die_with_parent_present_in_argv(self, sandbox_root, work_dir):
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        argv = env._wrap_popen_args(["bash"])
+        assert "--die-with-parent" in argv
+        assert argv.index("--die-with-parent") < argv.index("--")
+
+
+@needs_bwrap
+class TestKillAndCleanupIntegration:
+    """Timeout and cleanup leave no sandboxed process behind."""
+
+    def test_timeout_kills_background_children_too(self, sandbox_root, work_dir):
+        marker = f"hermes-timeout-{uuid.uuid4().hex[:8]}"
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            # sleep 300 & sleep 300, each carrying the marker as argv[0].
+            result = env.execute(f"(exec -a {marker} sleep 300) & (exec -a {marker} sleep 300)", timeout=2)
+            assert "timed out" in result["output"], result
+            assert _wait_until(lambda: not _host_pids_with_argv0(marker), 3.0), _host_pids_with_argv0(marker)
+        finally:
+            env.cleanup()
+
+    def test_cleanup_kills_an_in_flight_sandbox(self, sandbox_root, work_dir):
+        marker = f"hermes-cleanup-{uuid.uuid4().hex[:8]}"
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=60)
+        results = []
+        worker = threading.Thread(
+            target=lambda: results.append(env.execute(f"(exec -a {marker} sleep 300)", timeout=60)),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            assert _wait_until(lambda: bool(_host_pids_with_argv0(marker)), 10.0), "sandbox never started"
+            assert env._live_sandbox_pids()
+            env.cleanup()
+            worker.join(timeout=10)
+            assert not worker.is_alive(), "execute did not return after cleanup"
+            assert _wait_until(lambda: not _host_pids_with_argv0(marker), 3.0), _host_pids_with_argv0(marker)
+            assert _bwrap_children_of_this_process() == []
+            assert env._live_sandbox_pids() == []
+            assert not os.path.exists(env.get_temp_dir())
+        finally:
+            if worker.is_alive():
+                env._kill_live_sandboxes()

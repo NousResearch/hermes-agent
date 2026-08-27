@@ -100,6 +100,77 @@ class TestTelegramModelPicker:
         assert len(set(labels)) == len(labels)
         assert [b.callback_data for b in flat[:3]] == ["mm:0", "mm:1", "mm:2"]
 
+    def test_group_models_by_vendor_folds_bedrock_ids(self):
+        adapter = _make_adapter()
+        models = [
+            "global.anthropic.claude-opus-5",
+            "us.anthropic.claude-opus-5",
+            "global.amazon.nova-2-lite-v1:0",
+            "us.xai.grok-4.6",
+        ]
+
+        vendors = adapter._group_models_by_vendor(models)
+
+        assert [v["vendor"] for v in vendors] == ["amazon", "anthropic", "xai"]
+        assert [v["label"] for v in vendors] == ["Amazon", "Anthropic", "xAI"]
+        assert [len(v["indices"]) for v in vendors] == [1, 2, 1]
+        # Indices must point back into the original list, unmodified.
+        anthropic = next(v for v in vendors if v["vendor"] == "anthropic")
+        assert [models[i] for i in anthropic["indices"]] == [
+            "global.anthropic.claude-opus-5",
+            "us.anthropic.claude-opus-5",
+        ]
+
+    def test_group_models_by_vendor_returns_empty_for_non_bedrock(self):
+        """Plain provider model lists must not gain a vendor step."""
+        adapter = _make_adapter()
+        assert adapter._group_models_by_vendor(["gpt-4o-mini", "o3"]) == []
+
+    def test_vendor_keyboard_lists_vendors_with_counts(self, monkeypatch):
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
+        adapter = _make_adapter()
+        models = [
+            "global.anthropic.claude-opus-5",
+            "us.anthropic.claude-opus-5",
+            "global.amazon.nova-2-lite-v1:0",
+        ]
+
+        keyboard = adapter._build_vendor_keyboard(models)
+        flat = [b for row in keyboard.inline_keyboard for b in row]
+        labels = [b.text for b in flat]
+
+        assert "Amazon (1)" in labels
+        assert "Anthropic (2)" in labels
+        assert any(b.callback_data == "mvd:anthropic" for b in flat)
+        # Back/Cancel must stay reachable.
+        assert any(b.callback_data == "mb" for b in flat)
+        assert any(b.callback_data == "mx" for b in flat)
+
+    def test_vendor_scoped_models_show_short_name_and_geo_only(self, monkeypatch):
+        """Inside a vendor the vendor segment is redundant: show the short
+        model name, plus the geo when the same model exists in several
+        routing namespaces."""
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
+        adapter = _make_adapter()
+        models = [
+            "global.anthropic.claude-opus-5",
+            "us.anthropic.claude-opus-5",
+            "global.anthropic.claude-fable-5",
+        ]
+
+        keyboard, _ = adapter._build_model_keyboard(models, page=0)
+        flat = [b for row in keyboard.inline_keyboard for b in row]
+        labels = [b.text for b in flat[:3]]
+
+        assert labels == [
+            "global: claude-opus-5",
+            "us: claude-opus-5",
+            "claude-fable-5",
+        ]
+        assert [b.callback_data for b in flat[:3]] == ["mm:0", "mm:1", "mm:2"]
+
     @pytest.mark.asyncio
     async def test_send_model_picker_escapes_dynamic_provider_label(self):
         adapter = _make_adapter()

@@ -1610,7 +1610,7 @@ class SessionDB(
     # ``transcript_row_snapshot(row)`` from these rows (token_count is hashed there, not decoded).
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
-        "finish_reason, reasoning, reasoning_content, reasoning_details, "
+        "finish_reason, reasoning, reasoning_content, reasoning_details, _reasoning_route, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
         "_compressed_summary, timestamp, token_count, active, api_content, display_kind, display_metadata, message_uid, "
         "absorbed_message_uids, tool_call_uids, tool_call_uid"

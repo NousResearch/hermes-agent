@@ -639,6 +639,51 @@ class TestInitialCwdGuard:
         env.cleanup()
         assert not any("covers the home directory" in r.getMessage() for r in caplog.records)
 
+    @pytest.mark.parametrize("rel", ["hermes-agent", "logs/deep"])
+    def test_cwd_under_hermes_home_is_refused_before_touching_disk(self, sandbox_root, fake_home, monkeypatch, rel):
+        # ~/.hermes/hermes-agent is the documented clone location; the
+        # HERMES_HOME overlay would mask it in every spawn.
+        hermes_home = fake_home / ".hermes"
+        cwd = hermes_home / rel
+        cwd.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with _no_session(), pytest.raises(ValueError, match="terminal.cwd") as exc:
+            BubblewrapEnvironment(cwd=str(cwd), timeout=10)
+        assert str(hermes_home) in str(exc.value)
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+    @pytest.mark.parametrize("rel", [".ssh", ".config/gcloud/sub"])
+    def test_cwd_at_or_under_a_sensitive_entry_is_refused(self, sandbox_root, fake_home, rel):
+        cwd = fake_home / rel
+        cwd.mkdir(parents=True)
+        with _no_session(), pytest.raises(ValueError, match="terminal.cwd"):
+            BubblewrapEnvironment(cwd=str(cwd), timeout=10)
+
+    @pytest.mark.parametrize("mode, constructs", [("profile", True), ("auto", False)])
+    def test_cwd_under_the_profile_home_follows_home_mode(self, sandbox_root, fake_home, monkeypatch, mode, constructs):
+        hermes_home = fake_home / ".hermes"
+        cwd = hermes_home / "home" / "proj"
+        cwd.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        config = BubblewrapConfig(home_mode=mode)
+        if constructs:
+            with _no_session():
+                env = BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=config)
+            env.cleanup()
+        else:
+            with _no_session(), pytest.raises(ValueError, match="terminal.cwd"):
+                BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=config)
+
+    def test_cwd_under_tmp_constructs(self, sandbox_root, fake_home):
+        # /tmp is a fresh tmpfs inside, but the cwd is bound at its own path on top of it.
+        cwd = Path(tempfile.mkdtemp(prefix="hermes-", dir="/tmp"))
+        try:
+            with _no_session():
+                env = BubblewrapEnvironment(cwd=str(cwd), timeout=10)
+            env.cleanup()
+        finally:
+            cwd.rmdir()
+
     def test_failed_bootstrap_leaves_no_state_behind(self, sandbox_root, work_dir):
         with patch.object(LocalEnvironment, "init_session", autospec=True, side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError, match="boom"):

@@ -741,7 +741,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             raise
 
     def _check_initial_cwd(self) -> None:
-        """Refuse a cwd of / and warn about HOME: the cwd is the writable set."""
+        """Refuse a cwd of / or under a hidden path, warn about HOME: the cwd is the writable set."""
         cwd = self._initial_cwd.rstrip(os.sep) or os.sep
         if cwd == os.sep:
             raise ValueError(
@@ -749,6 +749,22 @@ class BubblewrapEnvironment(LocalEnvironment):
                 "root would be writable inside the sandbox. Set terminal.cwd to a "
                 "project or scratch directory."
             )
+        # The overlays land after the cwd bind, so a cwd under a hidden path
+        # is masked in every spawn and no command could run there. The profile
+        # home is bound back on top of the HERMES_HOME overlay under
+        # home_mode=profile, so a cwd under it is fine.
+        profile_home = os.path.realpath(os.path.join(self._hermes_home, "home"))
+        in_profile_home = self._config.home_mode in PROFILE_HOME_MODES and _is_within(cwd, profile_home)
+        if not in_profile_home:
+            for hidden in self._hidden_paths:
+                if _is_within(cwd, hidden):
+                    raise ValueError(
+                        f"terminal.cwd {self._initial_cwd} lies under {hidden}, which the "
+                        "bubblewrap backend hides inside every sandbox: no command could run "
+                        "there. Set terminal.cwd to a project or scratch directory outside "
+                        "HERMES_HOME and the hidden dotfiles (a checkout under ~/.hermes "
+                        "needs to be launched from elsewhere or moved)."
+                    )
         home = os.path.abspath(self._home).rstrip(os.sep) or os.sep
         if cwd == home or _is_within(home, cwd):
             logger.warning(

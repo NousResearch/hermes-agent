@@ -1389,6 +1389,54 @@ def _canonical_api_mode(api_mode: str) -> str:
     return _API_MODE_ALIASES.get(cleaned.lower(), cleaned)
 
 
+def coerce_provider_id(value: Any) -> str:
+    """Provider identity fields are strings.
+
+    PyYAML loads unquoted scalars like ``provider: 2070`` / ``2070:`` as int,
+    and later ``.strip()`` / ``.lower()`` on that value 500s the Model tab.
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def stringify_provider_map(providers: Any) -> dict:
+    """Copy a ``providers:`` mapping so keys are strings.
+
+    Desktop Custom Endpoints store the name as the dict key. An unquoted
+    YAML key ``2070:`` loads as int; picker code then calls ``ep_name.lower()``
+    and CRUD looks up ``"2070"`` and misses.
+    """
+    if not isinstance(providers, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for stored, value in providers.items():
+        key = coerce_provider_id(stored)
+        if key:
+            out[key] = value
+    return out
+
+
+def find_provider_entry(providers: Any, key: Any) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """Return ``(stored_key, entry)`` matching *key* by string identity.
+
+    Needed because PyYAML may have stored the key as ``2070`` (int) while
+    Desktop looks up ``"2070"``. Prefer an exact string hit, then scan.
+    """
+    if not isinstance(providers, dict):
+        return None, None
+    want = coerce_provider_id(key)
+    if not want:
+        return None, None
+    exact = providers.get(want)
+    if isinstance(exact, dict):
+        return want, exact
+    for stored, entry in providers.items():
+        if coerce_provider_id(stored) == want and isinstance(entry, dict):
+            return stored, entry
+    return None, None
+
+
 def _normalize_custom_provider_entry(
     entry: Any,
     *,
@@ -1406,6 +1454,7 @@ def _normalize_custom_provider_entry(
     # alias keys back into config.yaml through any later
     # save_config(load_config()) round-trip.
     entry = dict(entry)
+    provider_key = coerce_provider_id(provider_key)
 
     # Accept camelCase aliases commonly used in hand-written configs.
     _CAMEL_ALIASES: Dict[str, str] = {
@@ -1483,12 +1532,7 @@ def _normalize_custom_provider_entry(
     if not base_url:
         return None
 
-    name = ""
-    raw_name = entry.get("name")
-    if isinstance(raw_name, str) and raw_name.strip():
-        name = raw_name.strip()
-    elif provider_key.strip():
-        name = provider_key.strip()
+    name = coerce_provider_id(entry.get("name")) or provider_key
     if not name:
         return None
 
@@ -1650,7 +1694,9 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
     for key, entry in providers_dict.items():
         if isinstance(entry, dict) and not is_provider_enabled(entry):
             continue
-        normalized = _normalize_custom_provider_entry(entry, provider_key=str(key))
+        normalized = _normalize_custom_provider_entry(
+            entry, provider_key=coerce_provider_id(key)
+        )
         if normalized is not None:
             custom_providers.append(normalized)
 

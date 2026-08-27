@@ -76,6 +76,8 @@ from hermes_cli.config import (
     save_env_value,
     remove_env_value,
     custom_endpoint_key_env,
+    coerce_provider_id,
+    find_provider_entry,
     check_config_version,
     detect_install_method,
     format_docker_update_message,
@@ -8392,7 +8394,7 @@ def _parse_model_ids(resp: "Any") -> List[str]:
 
 
 def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
-    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", (raw or "").strip()).strip("-_").lower()
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", coerce_provider_id(raw)).strip("-_").lower()
     return slug or fallback
 
 
@@ -8438,8 +8440,7 @@ def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
     config.yaml, so migrating it would only copy that secret into a second
     env var the user didn't ask for.
     """
-    providers = read_raw_config().get("providers")
-    entry = providers.get(endpoint_id) if isinstance(providers, dict) else None
+    _stored, entry = find_provider_entry(read_raw_config().get("providers"), endpoint_id)
     raw_key = entry.get("api_key") if isinstance(entry, dict) else None
     return bool(isinstance(raw_key, str) and re.search(r"\$\{[^}]+\}", raw_key))
 
@@ -8545,8 +8546,8 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     providers = cfg.get("providers")
     if not isinstance(providers, dict):
         providers = {}
-    existing = providers.get(endpoint_id)
-    if not isinstance(existing, dict):
+    stored_key, existing = find_provider_entry(providers, endpoint_id)
+    if existing is None:
         existing = {}
 
     # Merge onto the existing entry rather than replacing it. A providers.<name>
@@ -8605,6 +8606,8 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         entry["key_env"] = env_var
         entry.pop("api_key", None)
 
+    if stored_key is not None and stored_key != endpoint_id:
+        providers.pop(stored_key, None)
     providers[endpoint_id] = entry
     cfg["providers"] = providers
 
@@ -8664,9 +8667,8 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         with _config_profile_scope(profile):
             cfg = load_config()
             provider_key = _custom_endpoint_id(endpoint_id)
-            providers = cfg.get("providers")
-            entry = providers.get(provider_key) if isinstance(providers, dict) else None
-            if not isinstance(entry, dict):
+            _stored, entry = find_provider_entry(cfg.get("providers"), provider_key)
+            if entry is None:
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
 
             models = _models_from_custom_endpoint_entry(entry)
@@ -8699,9 +8701,10 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
             cfg = load_config()
             provider_key = _custom_endpoint_id(endpoint_id)
             providers = cfg.get("providers")
-            if not isinstance(providers, dict) or provider_key not in providers:
+            stored_key, entry = find_provider_entry(providers, provider_key)
+            if entry is None or not isinstance(providers, dict):
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
-            providers.pop(provider_key, None)
+            providers.pop(stored_key, None)
             cfg["providers"] = providers
             _detach_main_model_from_provider(cfg, provider_key)
             remove_env_value(custom_endpoint_key_env(provider_key))

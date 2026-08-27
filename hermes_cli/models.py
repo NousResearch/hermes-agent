@@ -115,6 +115,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("moonshotai/kimi-k3",                     "recommended"),
     # MiniMax
     ("minimax/minimax-m3",                     ""),
+    ("minimax/minimax-m3:free",                "free"),
     # Z-AI
     ("z-ai/glm-5.3",                           ""),
     ("z-ai/glm-5.3-flash",                     ""),

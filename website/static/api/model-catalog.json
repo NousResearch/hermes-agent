@@ -117,6 +117,10 @@
           "description": ""
         },
         {
+          "id": "minimax/minimax-m3:free",
+          "description": "free"
+        },
+        {
           "id": "z-ai/glm-5.3",
           "description": ""
         },

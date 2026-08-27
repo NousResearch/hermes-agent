@@ -976,6 +976,56 @@ class TestMaskedCwdRecovery:
             env.cleanup()
 
 
+class TestBindsFrozenAtConstruction:
+    """Operator binds are filtered and their dests resolved once, at
+    construction."""
+
+    def test_a_dropped_bind_warns_once_per_environment(self, sandbox_root, work_dir, tmp_path, monkeypatch, caplog):
+        home = tmp_path / "homes" / "home"
+        (home / ".ssh").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        config = BubblewrapConfig(binds=(
+            BindMount(src=str(home / ".ssh"), dest="/keys"),
+            BindMount(src=str(home), dest="/mnt"),
+            BindMount(src=str(work_dir), dest="/proj"),
+        ))
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        try:
+            dropped = [r.getMessage() for r in caplog.records if "Ignoring terminal.bubblewrap_binds" in r.getMessage()]
+            assert len(dropped) == 2
+            assert any("/keys" in m or str(home / ".ssh") in m for m in dropped)
+            assert any("/mnt" in m for m in dropped)
+            caplog.clear()
+            for _ in range(5):
+                argv = env._wrap_popen_args(["bash"])
+            assert [r for r in caplog.records if "bubblewrap_binds" in r.getMessage()] == []
+            assert (str(work_dir), "/proj") in [m[1:] for m in _mounts(argv) if m[0] == "--ro-bind"]
+            assert [b.dest for b in env._config.binds] == ["/proj"]
+        finally:
+            env.cleanup()
+
+    def test_a_symlink_planted_under_a_dest_after_construction_does_not_move_the_mount(self, sandbox_root, work_dir, tmp_path):
+        src = tmp_path / "scratch"
+        src.mkdir()
+        (work_dir / "proj").mkdir()
+        dest = work_dir / "proj" / "data"
+        config = BubblewrapConfig(binds=(BindMount(src=str(src), dest=str(dest), readonly=False),))
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        try:
+            before = [m for m in _mounts(env._wrap_popen_args(["bash"])) if m[0] == "--bind" and m[1] == str(src)]
+            assert before == [("--bind", str(src), str(dest))]
+            # What a sandbox with the cwd writable could do between spawns.
+            (work_dir / "proj").rename(work_dir / "proj-moved")
+            (work_dir / "elsewhere").mkdir()
+            (work_dir / "proj").symlink_to(work_dir / "elsewhere")
+            after = [m for m in _mounts(env._wrap_popen_args(["bash"])) if m[0] == "--bind" and m[1] == str(src)]
+            assert after == before
+        finally:
+            env.cleanup()
+
+
 @needs_bwrap
 class TestDeletedCwdRecovery:
     def test_deleted_cwd_recovers_to_the_parent_and_rebinds_when_recreated(self, sandbox_root, host_dir):

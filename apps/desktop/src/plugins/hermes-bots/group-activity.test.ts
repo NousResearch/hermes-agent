@@ -28,6 +28,13 @@ const MEMBERS: GroupMember[] = [
   { name: 'ops', title: 'The Ops' }
 ]
 
+function sameNamedMembers(localLabel = 'This device', remoteLabel = 'Work'): GroupMember[] {
+  return [
+    { connectionId: 'local', connectionLabel: localLabel, name: 'default', sourceScoped: true, title: '' },
+    { connectionId: 'work', connectionLabel: remoteLabel, name: 'default', remoteSource: true, sourceScoped: true, title: '' }
+  ]
+}
+
 /** A failed turn's activity row carries the typed reason the gateway sent.
  *  `recordGroupActivity` spreads it through, so it isn't on the entry type. */
 type ActivityRow = GroupActivityEntry & { reason?: string }
@@ -223,6 +230,83 @@ describe('epoch scoping', () => {
 })
 
 describe('feed shape', () => {
+  it('disambiguates same-named members by connection while keeping stored member keys stable', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const members = sameNamedMembers()
+
+    room.rounds.sendToGroupChat('Collision', members, 'status?')
+    await drain(() => Boolean(room.chat.$groupChats.get().Collision?.running))
+
+    const events = feed(room, 'Collision').filter(event => event.member === 'default')
+    const labels = events.map(event => room.activity.groupActivityLabel(event))
+
+    expect(events).toHaveLength(4)
+    expect(new Set(labels)).toEqual(
+      new Set([
+        'Hermes · This device/default is working…',
+        'Hermes · This device/default passed',
+        'Hermes · Work/default is working…',
+        'Hermes · Work/default passed'
+      ])
+    )
+    expect(events.every(event => typeof event.member === 'string' && Boolean(event.memberKey))).toBe(true)
+  })
+
+  it('uses connection ids when same-named members share a connection label', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+
+    room.rounds.sendToGroupChat('Same source', sameNamedMembers('Office', 'Office'), 'status?')
+    await drain(() => Boolean(room.chat.$groupChats.get()['Same source']?.running))
+
+    expect(
+      new Set(
+        feed(room, 'Same source')
+          .filter(event => event.member === 'default')
+          .map(event => room.activity.groupActivityLabel(event))
+      )
+    ).toEqual(
+      new Set([
+        'Hermes · Office (local)/default is working…',
+        'Hermes · Office (local)/default passed',
+        'Hermes · Office (work)/default is working…',
+        'Hermes · Office (work)/default passed'
+      ])
+    )
+  })
+
+  it('keeps member-scoped cancellation identifiable while room cancellation stays concise', async () => {
+    const room = await loadRoom()
+    const [, remote] = sameNamedMembers()
+
+    room.chat.updateGroupChat('Kinds', current => {
+      current.log = []
+      current.members = sameNamedMembers()
+
+      return current
+    })
+
+    const memberEvent = room.activity.recordGroupActivity('Kinds', { kind: 'cancelled', member: remote })
+    const roomEvent = room.activity.recordGroupActivity('Kinds', { kind: 'cancelled', member: null })
+
+    expect(memberEvent && room.activity.groupActivityLabel(memberEvent)).toBe('Hermes · Work/default turn interrupted by a newer message')
+    expect(roomEvent && room.activity.groupActivityLabel(roomEvent)).toBe('turn interrupted by a newer message')
+  })
+
+  it('keeps unique member labels concise', async () => {
+    const room = await loadRoom()
+
+    room.chat.updateGroupChat('Unique', current => {
+      current.log = []
+      current.members = MEMBERS
+
+      return current
+    })
+
+    const event = room.activity.recordGroupActivity('Unique', { kind: 'working', member: MEMBERS[0] })
+
+    expect(event && room.activity.groupActivityLabel(event)).toBe('research is working…')
+  })
+
   it('the feed is bounded: it stops growing and keeps the newest events', async () => {
     const room = await loadRoom()
     room.chat.updateGroupChat('Cap', current => {

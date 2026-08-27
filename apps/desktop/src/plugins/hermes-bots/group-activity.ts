@@ -10,7 +10,8 @@
 import { atom } from '@hermes/plugin-sdk'
 
 import { $groupChats, groupSpeakerLabel } from './group-chat'
-import type { GroupActivityEvent, GroupActivityKind } from './types'
+import { groupMemberKey } from './group-membership'
+import type { GroupActivityEvent, GroupActivityKind, GroupMember } from './types'
 
 // ── group activity feed ─────────────────────────────────────────────────────
 // Runtime-only, bounded per-room record of turn events that feeds the
@@ -28,11 +29,58 @@ const GROUP_ACTIVITY_LIMIT = 50
 export interface GroupActivityEntry extends Omit<GroupActivityEvent, 'group' | 'member'> {
   epoch: number
   member?: null | string
+  memberKey?: string
+  memberLabel?: string
   thread?: null | string
 }
 export const $groupActivity = atom<Record<string, { events: GroupActivityEntry[] }>>({})
 
-export function recordGroupActivity(group: string, event: Omit<GroupActivityEntry, 'at' | 'epoch'>) {
+type GroupActivityInput = Omit<GroupActivityEntry, 'at' | 'epoch' | 'member'> & {
+  member?: GroupMember | null | string
+}
+
+function groupActivityMemberSource(member: GroupMember) {
+  const connectionId = String(member.connectionId || '').trim()
+
+  return String(member.connectionLabel || '').trim() || connectionId || String(member.handle || groupMemberKey(member) || '').trim()
+}
+
+function groupActivityMemberEvent(room: { members?: GroupMember[] } | undefined, member: GroupMember) {
+  const name = String(member.name || '').trim()
+  const memberKey = String(groupMemberKey(member) || name)
+  const connectionId = String(member.connectionId || '').trim()
+  const speaker = groupSpeakerLabel(name || 'A bot')
+  const speakerKey = speaker.trim().toLowerCase()
+
+  const collisions = (room?.members || []).filter(
+    candidate => groupSpeakerLabel(candidate.name || '').trim().toLowerCase() === speakerKey
+  )
+
+  let memberLabel = ''
+
+  if (collisions.length > 1) {
+    let source = groupActivityMemberSource(member)
+
+    const sameSource = collisions.filter(
+      candidate => groupActivityMemberSource(candidate).toLowerCase() === source.toLowerCase()
+    )
+
+    if (sameSource.length > 1 && connectionId && connectionId.toLowerCase() !== source.toLowerCase()) {
+      source = `${source} (${connectionId})`
+    }
+
+    const qualifier = source && name ? `${source}/${name}` : source || name
+    memberLabel = qualifier ? `${speaker} · ${qualifier}` : speaker
+  }
+
+  return {
+    member: name || null,
+    ...(memberKey ? { memberKey } : {}),
+    ...(memberLabel ? { memberLabel } : {})
+  }
+}
+
+export function recordGroupActivity(group: string, event: GroupActivityInput) {
   const room = $groupChats.get()[group]
 
   if (!room) {
@@ -43,10 +91,15 @@ export function recordGroupActivity(group: string, event: Omit<GroupActivityEntr
     events: []
   }
 
-  const entry = {
+  const normalizedEvent =
+    event.member && typeof event.member === 'object'
+      ? { ...event, ...groupActivityMemberEvent(room, event.member) }
+      : (event as Omit<GroupActivityEntry, 'at' | 'epoch'>)
+
+  const entry: GroupActivityEntry = {
     at: Date.now(),
     epoch: room.epoch || 0,
-    ...event
+    ...normalizedEvent
   }
 
   const events = [...current.events, entry].slice(-GROUP_ACTIVITY_LIMIT)
@@ -75,11 +128,11 @@ export function groupActivityLabel(event: GroupActivityEntry) {
   const kind = event?.kind
   const base = GROUP_ACTIVITY_LABELS[kind] || kind || 'did something'
 
-  if (kind === 'cancelled' || kind === 'settled' || kind === 'capped') {
+  if ((kind === 'cancelled' && !event.member) || kind === 'settled' || kind === 'capped') {
     return base
   }
 
-  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot')
+  const who = event?.member === 'You' ? 'You' : event.memberLabel || groupSpeakerLabel(event?.member || 'A bot')
 
   return `${who} ${base}`
 }

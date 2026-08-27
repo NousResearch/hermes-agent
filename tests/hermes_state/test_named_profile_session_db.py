@@ -164,3 +164,48 @@ def test_deferred_build_fails_closed_when_profile_store_unopenable(homes, monkey
         with server._sessions_lock:
             server._sessions.pop(sid, None)
         launch.close()
+
+
+def test_init_session_skips_launch_db_when_profile_store_unopenable(homes, monkeypatch):
+    """Sibling site: _init_session's cwd hydration must not fall back either.
+
+    Before the fix, ``except Exception: db = _get_db()`` hydrated/persisted a
+    named-profile session's cwd row against the launch state.db. _get_db is
+    patched to a tripwire: any call proves the launch store was touched.
+    """
+    root, profile = homes
+    from tui_gateway import server
+
+    _make_store_unopenable(profile)
+    sid = "sid-worker-init"
+
+    def tripwire():
+        raise AssertionError("launch _get_db() must not be touched for a named-profile session")
+
+    monkeypatch.setattr(server, "_get_db", tripwire)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_start_notification_poller", lambda _sid, _s: threading.Event())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _s=None: {})
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda _sid, _agent: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _s: None)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
+    monkeypatch.setattr(server, "_load_memory_notifications", lambda: "off")
+
+    try:
+        server._init_session(
+            sid,
+            "key-worker-init",
+            SimpleNamespace(),
+            [],
+            cwd=str(root),
+            profile_home=str(profile),
+        )
+        with server._sessions_lock:
+            assert sid in server._sessions
+        assert _ids(root / "state.db") == set()
+    finally:
+        with server._sessions_lock:
+            server._sessions.pop(sid, None)

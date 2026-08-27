@@ -7920,12 +7920,21 @@ def _init_session(
         db = session_db
     elif profile_home:
         try:
-            from hermes_state import SessionDB
-
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            db = _open_profile_session_db(profile_home)
             _init_owns_db = True
         except Exception:
-            db = _get_db()
+            # FAIL CLOSED — same class as the deferred-build bind: a
+            # named-profile session must never read/write the launch
+            # ``state.db``. Skip the cwd hydration/persist (the row lands on
+            # the agent's own lazy-create once the store recovers) rather
+            # than writing this session's row into the wrong profile's store.
+            logger.warning(
+                "profile session store unavailable for %s — skipping cwd "
+                "hydration instead of touching the launch state.db",
+                profile_home,
+                exc_info=True,
+            )
+            db = None
     else:
         db = _get_db()
     try:

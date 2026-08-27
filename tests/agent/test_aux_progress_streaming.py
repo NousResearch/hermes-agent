@@ -2,9 +2,9 @@
 
 Slow summary models must not be punished like hung ones (#see PR): when a
 forward-progress hook is installed (context compression), the primary
-auxiliary call streams and ticks the hook per chunk, so outer watchdogs
-(gateway session hygiene) can extend their deadline on liveness. Without a
-hook, behavior is byte-for-byte the old non-streaming call.
+auxiliary call streams and ticks the hook only for substantive payloads, so
+outer watchdogs (gateway session hygiene) can extend their deadline on
+liveness. Without a hook, behavior is byte-for-byte the old non-streaming call.
 """
 
 import threading
@@ -15,10 +15,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.auxiliary_client import (
+    _AnthropicCompletionsAdapter,
+    _ChatStreamAccumulator,
+    _CodexCompletionsAdapter,
     _acreate_with_stream,
     _aggregate_chat_stream,
     _aggregate_chat_stream_async,
+    _anthropic_event_has_content,
     _aux_stream_total_ceiling,
+    _codex_event_has_content,
     _create_with_progress,
     _notify_aux_progress,
     _provider_requires_stream,
@@ -112,8 +117,15 @@ class TestAuxProgressHook:
 
 class TestCreateWithProgress:
 
-    def test_hook_upgrades_to_streaming_and_ticks_per_chunk(self):
+    def test_hook_upgrades_to_streaming_and_ticks_only_for_payload(self):
+        empty_tool_call = SimpleNamespace(
+            index=0,
+            id=None,
+            function=SimpleNamespace(name=None, arguments=""),
+        )
         chunks = [
+            SimpleNamespace(id=None, model=None, choices=[], usage=None),
+            _chunk(content="", reasoning="", tool_calls=[empty_tool_call]),
             _chunk(reasoning="thinking..."),
             _chunk(content="Hello "),
             _chunk(content="world", finish_reason="stop",
@@ -131,8 +143,26 @@ class TestCreateWithProgress:
         assert result.choices[0].message.reasoning == "thinking..."
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.total_tokens == 7
-        # 1 dispatch tick + 1 per chunk
-        assert len(ticks) >= len(chunks) + 1
+        assert ticks == [1, 1, 1]
+
+    def test_completed_response_without_stream_payload_does_not_tick(self):
+        calls = []
+
+        def _create(**kwargs):
+            calls.append(kwargs)
+            return _COMPLETE
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=_create))
+        )
+        ticks = []
+
+        with aux_progress_hook(lambda: ticks.append(1)):
+            result = _create_with_progress(client, {"model": "m1", "messages": []})
+
+        assert calls[0]["stream"] is True
+        assert result is _COMPLETE
+        assert ticks == []
 
     def test_streaming_rejected_falls_back_to_plain_call(self):
         client = _FakeClient(
@@ -193,6 +223,205 @@ class TestAggregateChatStream:
         assert result.choices[0].message.content == "ok"
         assert closed == [True]
 
+
+
+# ---------------------------------------------------------------------------
+# Content-bearing progress classification
+# ---------------------------------------------------------------------------
+
+
+class TestContentBearingProgress:
+    @pytest.mark.parametrize(
+        "event",
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.added", item={"type": "message"}),
+            SimpleNamespace(type="response.content_part.added", part={"type": "output_text"}),
+            SimpleNamespace(type="response.output_text.delta", delta=""),
+            SimpleNamespace(type="response.reasoning_summary_text.delta", delta=""),
+            SimpleNamespace(type="response.function_call_arguments.delta", delta=""),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="function_call"),
+            ),
+            {"type": "response.output_text.delta", "delta": ""},
+        ],
+    )
+    def test_codex_empty_and_structural_events_are_not_progress(self, event):
+        assert _codex_event_has_content(event) is False
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="token"),
+            SimpleNamespace(type="response.reasoning_summary_text.delta", delta="thought"),
+            SimpleNamespace(type="response.function_call_arguments.delta", delta='{"x"'),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(
+                    type="function_call",
+                    id="item_1",
+                    call_id="call_1",
+                    name="lookup",
+                ),
+            ),
+            {"type": "response.output_text.delta", "delta": "token"},
+        ],
+    )
+    def test_codex_nonempty_deltas_are_progress(self, event):
+        assert _codex_event_has_content(event) is True
+
+    @pytest.mark.parametrize(
+        ("delta", "expected"),
+        [
+            (SimpleNamespace(type="text_delta", text="", thinking=None), False),
+            (SimpleNamespace(type="text_delta", text="token", thinking=None), True),
+            (SimpleNamespace(type="thinking_delta", text=None, thinking="thought"), True),
+            (SimpleNamespace(type="input_json_delta", partial_json=""), False),
+            (SimpleNamespace(type="input_json_delta", partial_json='{"x"'), True),
+        ],
+    )
+    def test_anthropic_requires_nonempty_delta_payload(self, delta, expected):
+        event = SimpleNamespace(type="content_block_delta", delta=delta)
+        assert _anthropic_event_has_content(event) is expected
+
+    @pytest.mark.parametrize(
+        ("block", "expected"),
+        [
+            (SimpleNamespace(type="text"), False),
+            (SimpleNamespace(type="tool_use", id=None, name=None), False),
+            (SimpleNamespace(type="tool_use", id="toolu_1", name="lookup"), True),
+        ],
+    )
+    def test_anthropic_tool_start_requires_identity(self, block, expected):
+        event = SimpleNamespace(type="content_block_start", content_block=block)
+        assert _anthropic_event_has_content(event) is expected
+
+    def test_chat_stream_empty_tool_scaffolding_is_not_progress(self):
+        ticks = []
+        empty_tool_call = SimpleNamespace(
+            index=0,
+            id=None,
+            function=SimpleNamespace(name=None, arguments=""),
+        )
+        accumulator = _ChatStreamAccumulator()
+
+        with aux_progress_hook(lambda: ticks.append(1)):
+            accumulator.feed(_chunk(tool_calls=[empty_tool_call]))
+
+        assert ticks == []
+
+    @pytest.mark.parametrize(
+        "tool_call",
+        [
+            SimpleNamespace(index=0, id="call_1", function=None),
+            SimpleNamespace(
+                index=0,
+                id=None,
+                function=SimpleNamespace(name="lookup", arguments=""),
+            ),
+            SimpleNamespace(
+                index=0,
+                id=None,
+                function=SimpleNamespace(name=None, arguments='{"q"'),
+            ),
+        ],
+    )
+    def test_chat_stream_substantive_tool_fragments_are_progress(self, tool_call):
+        ticks = []
+        accumulator = _ChatStreamAccumulator()
+
+        with aux_progress_hook(lambda: ticks.append(1)):
+            accumulator.feed(_chunk(tool_calls=[tool_call]))
+
+        assert ticks == [1]
+
+    def test_codex_adapter_updates_fence_only_for_substantive_events(self):
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta=""),
+            SimpleNamespace(type="response.output_text.delta", delta="token"),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(
+                    type="function_call", id="item_1", call_id="call_1", name="lookup"
+                ),
+            ),
+        ]
+        real_client = SimpleNamespace(
+            base_url="https://chatgpt.com/backend-api/codex",
+            responses=SimpleNamespace(create=lambda **_kwargs: iter(events)),
+        )
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.6-sol")
+        fence = CompressionCommitFence()
+        touches = []
+
+        def _touch():
+            touches.append(1)
+            fence.touch_progress()
+
+        def _consume(stream, *, model, on_event):
+            del model
+            for event in stream:
+                on_event(event)
+            return SimpleNamespace(output=[], usage=None)
+
+        with (
+            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            aux_progress_hook(_touch),
+        ):
+            adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert touches == [1, 1]
+
+    def test_anthropic_adapter_updates_fence_only_for_substantive_events(self):
+        events = [
+            SimpleNamespace(type="ping"),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text=""),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="input_json_delta", partial_json='{"q"'),
+            ),
+            SimpleNamespace(
+                type="content_block_start",
+                content_block=SimpleNamespace(
+                    type="tool_use", id="toolu_1", name="lookup"
+                ),
+            ),
+        ]
+        adapter = _AnthropicCompletionsAdapter(
+            MagicMock(), "claude-sonnet-4-6", is_oauth=False
+        )
+        fence = CompressionCommitFence()
+        touches = []
+
+        def _touch():
+            touches.append(1)
+            fence.touch_progress()
+
+        def _create_message(*_args, **kwargs):
+            for event in events:
+                kwargs["on_stream_event"](event)
+            raise RuntimeError("stop after callback verification")
+
+        with (
+            patch(
+                "agent.anthropic_adapter.build_anthropic_kwargs",
+                return_value={"model": "claude-sonnet-4-6", "messages": []},
+            ),
+            patch(
+                "agent.anthropic_adapter.create_anthropic_message",
+                side_effect=_create_message,
+            ),
+            aux_progress_hook(_touch),
+            pytest.raises(RuntimeError, match="stop after callback verification"),
+        ):
+            adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert touches == [1, 1]
 
 
 # ---------------------------------------------------------------------------

@@ -772,6 +772,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             self._config,
             binds=tuple(resolve_bind_dests(filter_binds(self._config.binds, self._hidden_paths))),
         )
+        self._check_profile_home()
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
         self._check_initial_cwd()
@@ -791,6 +792,40 @@ class BubblewrapEnvironment(LocalEnvironment):
         except BaseException:
             self._remove_state()
             raise
+
+    def _check_profile_home(self) -> None:
+        """Refuse a profile home that holds a hidden path or lies under one.
+
+        Under a profile home_mode the builder binds HERMES_HOME/home
+        read-write on top of every overlay, and bwrap resolves the bind
+        source on the host. When that path is a symlink to a tree holding
+        a hidden path (HOME, HOME/.config, HERMES_HOME itself or a parent
+        of it), or to a directory at or under one (HOME/.ssh), the bind is
+        a second view of the same host tree and shows the secrets at
+        HERMES_HOME/home, the shape filter_binds drops for operator binds.
+        The plain directory under
+        HERMES_HOME, a link to another directory under HERMES_HOME and a
+        link to a clean directory outside every hidden path stay allowed.
+        """
+        if self._config.home_mode not in PROFILE_HOME_MODES:
+            return
+        link = os.path.join(self._hermes_home, "home")
+        profile_home = os.path.realpath(link)
+        for hidden in self._hidden_paths:
+            if _is_within(hidden, profile_home):
+                relation = f"contains {hidden}"
+            elif hidden != self._hermes_home and _is_within(profile_home, hidden):
+                relation = f"lies under {hidden}"
+            else:
+                continue
+            raise ValueError(
+                f"terminal.home_mode={self._config.home_mode} binds the profile home "
+                f"{link} read-write inside the sandbox with the bubblewrap backend, but "
+                f"it resolves to {profile_home}, which {relation}, a path the backend "
+                "hides: the bind would show it again. Make HERMES_HOME/home a plain "
+                "directory, or a link to a directory outside HOME's hidden dotfiles "
+                "and the rest of HERMES_HOME, or set terminal.home_mode to auto or real."
+            )
 
     def _check_initial_cwd(self) -> None:
         """Refuse a cwd of / or under a hidden path, warn about HOME: the cwd is the writable set."""

@@ -552,3 +552,27 @@ class TestHomeModeIntegration:
             assert not (profile_home / "probe").exists()
         finally:
             env.cleanup()
+
+    def test_home_mode_profile_with_the_profile_home_linked_outside_keeps_the_hidden_set_hidden(self, work_dir, hermes_home, fake_home, host_dir, monkeypatch):
+        # The same layout with the link pointing at a clean directory: the
+        # bind follows the link, and the hidden set stays hidden.
+        target = host_dir / "elsewhere" / "home"
+        target.mkdir(parents=True)
+        (hermes_home / "home").symlink_to(target)
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            result = env.execute("touch $HOME/probe")
+            assert result["returncode"] == 0, result["output"]
+            assert (target / "probe").is_file()
+            leaks = {}
+            for rel in SENSITIVE_HOME_PATHS:
+                path = fake_home / rel
+                out = env.execute(f"cat {path} 2>/dev/null; ls -A {path} 2>/dev/null")["output"]
+                if MARKER in out or "secret" in out.split():
+                    leaks[rel] = out
+            assert leaks == {}
+            out = env.execute(f"cat {hermes_home}/config.yaml {hermes_home}/.env 2>/dev/null")["output"]
+            assert MARKER not in out
+        finally:
+            env.cleanup()

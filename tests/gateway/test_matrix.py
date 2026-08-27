@@ -476,6 +476,26 @@ class TestMatrixBangCommandAlias:
         )
         assert _normalize_matrix_bang_command("!tasks") == "/tasks"
 
+    def test_every_gateway_registry_name_and_alias_has_bang_alias(self):
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
+
+        for name in sorted(GATEWAY_KNOWN_COMMANDS):
+            assert _normalize_matrix_bang_command(f"!{name} probe") == f"/{name} probe"
+
+    def test_plugin_bang_command_normalizes(self):
+        import hermes_cli.plugins as plugins_mod
+        from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
+
+        with patch.object(
+            plugins_mod,
+            "get_plugin_commands",
+            return_value={"plugin-check": {"description": "Test plugin command"}},
+        ):
+            assert (
+                _normalize_matrix_bang_command("!plugin-check value")
+                == "/plugin-check value"
+            )
 
     @pytest.mark.asyncio
     async def test_unknown_bang_text_stays_normal_text(self):

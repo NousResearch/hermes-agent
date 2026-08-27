@@ -140,7 +140,7 @@ jobs:
           # across a 6x range. The suite has sufficient concurrency at this
           # size. The remaining time is the slowest files plus the setup.
           # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && '96' || '' }}
+          HERMES_TEST_WORKERS: 96
           # On a standard fork runner the state-suite's isolated subprocess
           # can legitimately exceed the default five-minute cap under load.
           # Retrying that killed process costs the same ten-minute budget but

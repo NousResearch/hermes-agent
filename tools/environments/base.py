@@ -1389,6 +1389,10 @@ class BaseEnvironment(ABC):
         if cwd_path:
             self.cwd = cwd_path
             result["cwd_observed"] = True
+            # Keep the observation on this command's result as well as on the
+            # shared environment. Concurrent callers must not read self.cwd
+            # after another command has already updated it.
+            result["cwd"] = cwd_path
 
         # Strip the marker line AND the \n we injected before it.
         # The wrapper emits: printf '\n__MARKER__%s__MARKER__\n'

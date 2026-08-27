@@ -2322,6 +2322,7 @@ class LocalEnvironment(BaseEnvironment):
             normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
             if normalized and os.path.isdir(normalized):
                 self.cwd = normalized
+                result["cwd"] = normalized
             else:
                 # Stale / non-existent path — keep previous cwd; _run_bash
                 # will resolve a safe fallback on the next call if needed.
@@ -2329,6 +2330,7 @@ class LocalEnvironment(BaseEnvironment):
                 # so it is not attributable to this command's session either.
                 self.cwd = prev_cwd
                 result.pop("cwd_observed", None)
+                result.pop("cwd", None)
 
     def cleanup(self):
         """Clean up temp files."""

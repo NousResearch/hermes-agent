@@ -8983,7 +8983,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         entry = self.session_store._entries.get(target_session)
         if entry is None or entry.origin is None:
             return False
-        if self.session_store._is_session_ended_in_db(entry.session_id):
+        if await self.async_session_store._is_session_ended_in_db(entry.session_id):
             return False
 
         adapter = self._resolve_route_adapter(entry)

@@ -59,6 +59,29 @@ def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     return runner
 
 
+@pytest.mark.asyncio
+async def test_direct_injection_awaits_async_stale_session_check():
+    """Gateway injection must not perform the SQLite stale check on-loop."""
+    entry = _entry()
+    runner = _runner(entry)
+    runner.session_store._entries = {entry.session_key: entry}
+    raw_stale_check = MagicMock(return_value=True)
+    runner.session_store._is_session_ended_in_db = raw_stale_check
+    async_stale_check = AsyncMock(return_value=True)
+    setattr(runner._async_session_store, "_is_session_ended_in_db", async_stale_check)
+    runner._plugin_gateway_injection_allowed = MagicMock(return_value=True)
+
+    accepted = await runner.inject_plugin_message(
+        "queued update",
+        target_session=entry.session_key,
+        plugin_id="notify-plugin",
+    )
+
+    assert accepted is False
+    async_stale_check.assert_awaited_once_with(entry.session_id)
+    raw_stale_check.assert_not_called()
+
+
 class _RoutingAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)

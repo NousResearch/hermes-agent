@@ -40,6 +40,42 @@ class TestTelegramModelPicker:
         assert button.text == "claude-sonnet-4-6"
         assert button.callback_data == "mm:0"
 
+    @pytest.mark.parametrize("model_id,expected", [
+        # Regional Bedrock routing namespaces carry the same redundancy as
+        # ``global.`` (review feedback on PR #94990).
+        ("us.anthropic.claude-opus-4-1-20250805-v1:0", "claude-opus-4-1-20250805-v1:0"),
+        ("eu.anthropic.claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("apac.amazon.nova-2-lite-v1:0", "nova-2-lite-v1:0"),
+        ("us-gov.anthropic.claude-haiku-4-5", "claude-haiku-4-5"),
+        # Non-Bedrock IDs must pass through untouched.
+        ("gpt-4o-mini", "gpt-4o-mini"),
+        ("mistral-large-latest", "mistral-large-latest"),
+    ])
+    def test_regional_bedrock_prefixes_are_stripped_from_labels(self, monkeypatch, model_id, expected):
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
+        adapter = _make_adapter()
+
+        keyboard, _ = adapter._build_model_keyboard([model_id], page=0)
+        button = keyboard.inline_keyboard[0][0]
+
+        assert button.text == expected
+        assert button.callback_data == "mm:0"
+
+    def test_degenerate_two_segment_id_never_yields_blank_button(self, monkeypatch):
+        """``global.anthropic`` must not produce an empty label — Telegram
+        rejects blank button text (BUTTON_TEXT_INVALID) and the whole picker
+        reply would fail (review feedback on PR #94990)."""
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _FakeInlineKeyboardButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _FakeInlineKeyboardMarkup)
+        adapter = _make_adapter()
+
+        keyboard, _ = adapter._build_model_keyboard(["global.anthropic"], page=0)
+        button = keyboard.inline_keyboard[0][0]
+
+        assert button.text == "global.anthropic"
+        assert button.callback_data == "mm:0"
+
     @pytest.mark.asyncio
     async def test_send_model_picker_escapes_dynamic_provider_label(self):
         adapter = _make_adapter()

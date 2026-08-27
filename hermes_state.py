@@ -13173,16 +13173,51 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    #: Selector shared by :meth:`count_empty_sessions` and
+    #: :meth:`delete_empty_sessions` so the button's count and the sweep it
+    #: triggers can never disagree about what "empty" means.
+    #:
+    #: ``message_count`` alone is NOT a safe emptiness test. It is a
+    #: denormalized counter that tracks the LIVE (``active = 1``) row set, and
+    #: two production transcript-rewrite paths deliberately reset it while
+    #: keeping the dropped turns on disk as ``active = 0``:
+    #: :meth:`replace_messages` with ``archive_dropped=True`` (the rewind /
+    #: edit / regenerate mode from #82756) and :meth:`archive_and_compact`
+    #: (in-place compaction). A chat rewound to its first turn, or compacted
+    #: with an empty live set, therefore reports ``message_count = 0`` while
+    #: still holding its entire recoverable transcript — and those
+    #: soft-archived rows are the ONLY copy, which is the whole point of
+    #: archiving instead of deleting. Deleting such a row destroys it silently.
+    #:
+    #: So the counter stays as a cheap prefilter and a real ``EXISTS`` probe is
+    #: the authority, exactly as every other emptiness test in this module
+    #: already does it (:meth:`delete_session_if_empty`,
+    #: :meth:`prune_empty_ghost_sessions`,
+    #: :meth:`list_never_active_keyed_sessions`). (#95868)
+    _EMPTY_SESSION_WHERE = (
+        "message_count = 0 "
+        "AND ended_at IS NOT NULL "
+        "AND archived = 0 "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM messages WHERE messages.session_id = sessions.id"
+        ")"
+    )
+
     def count_empty_sessions(self) -> int:
         """Return the count of empty, non-active, non-archived sessions.
 
-        "Empty" = ``message_count = 0`` AND the session has ended
+        "Empty" = the session holds no message rows at all AND has ended
         (``ended_at IS NOT NULL``) AND is not archived. The ``ended_at``
         guard matches the safety contract used by :meth:`prune_sessions`:
         only ended sessions are candidates for bulk deletion, so a freshly
         spawned session whose first message hasn't landed yet — or one
         held open by the live agent — is never sniped out from under
         the runtime.
+
+        Emptiness is decided by :data:`_EMPTY_SESSION_WHERE`, which probes the
+        ``messages`` table instead of trusting the ``message_count`` counter —
+        see that constant for why the counter reads zero for rewound and
+        compacted sessions that still hold a full transcript.
 
         Backs the ``GET /api/sessions/empty/count`` endpoint that lets the
         web dashboard hide its "Delete empty" button when there's nothing
@@ -13191,10 +13226,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM sessions "
-                "WHERE message_count = 0 "
-                "AND ended_at IS NOT NULL "
-                "AND archived = 0"
+                f"SELECT COUNT(*) FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
             )
             return cursor.fetchone()[0]
 
@@ -13206,9 +13238,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Mirrors :meth:`prune_sessions`' transactional shape:
 
-        * Selects candidate IDs first (``message_count = 0`` AND
-          ``ended_at IS NOT NULL`` AND ``archived = 0``) so we never
-          touch a live session or one the user deliberately archived.
+        * Selects candidate IDs first (:data:`_EMPTY_SESSION_WHERE`: no
+          message rows AND ``ended_at IS NOT NULL`` AND ``archived = 0``)
+          so we never touch a live session, one the user deliberately
+          archived, or one whose transcript survives only as soft-archived
+          (``active = 0``) rows after a rewind or an in-place compaction.
         * Orphans any child whose parent is in the kill list — children
           of an empty parent are kept and re-parented to ``NULL`` rather
           than cascade-deleted, matching ``delete_session`` /
@@ -13231,10 +13265,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         def _do(conn):
             cursor = conn.execute(
-                "SELECT id FROM sessions "
-                "WHERE message_count = 0 "
-                "AND ended_at IS NOT NULL "
-                "AND archived = 0"
+                f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
             )
             session_ids = {row["id"] for row in cursor.fetchall()}
 
@@ -13249,10 +13280,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
 
             for sid in session_ids:
-                # DELETE FROM messages is paranoia — by construction
-                # these rows have ``message_count = 0`` — but if a
-                # bookkeeping bug ever lets the counter drift below the
-                # real row count, we still leave a clean FK state.
+                # DELETE FROM messages is paranoia — the selector's
+                # ``NOT EXISTS`` probe already proved these sessions own no
+                # message rows — but a row inserted between the SELECT and
+                # this statement would otherwise be left dangling, so we
+                # still leave a clean FK state.
                 conn.execute(
                     "DELETE FROM messages WHERE session_id = ?", (sid,)
                 )

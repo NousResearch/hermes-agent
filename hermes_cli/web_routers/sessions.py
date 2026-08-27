@@ -492,11 +492,16 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
 
 @manage_router.delete("/api/sessions/empty")
 async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
-    """Delete every empty (``message_count == 0``), ended,
-    non-archived session in a single transaction.
+    """Delete every empty, ended, non-archived session in a single
+    transaction.
 
     Safety contract mirrors :meth:`SessionDB.delete_empty_sessions`:
 
+    * "Empty" means the session owns no rows in ``messages`` at all — not
+      merely ``message_count == 0``. A rewound or in-place-compacted chat
+      keeps its dropped turns as soft-archived (``active = 0``) rows while
+      the counter reads zero, and those rows are the only recoverable copy
+      of the transcript (#95868).
     * Active sessions are skipped (``ended_at IS NULL``) so a live
       agent isn't yanked mid-handshake.
     * Archived sessions are skipped — the user explicitly chose to

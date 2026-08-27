@@ -179,3 +179,29 @@ export function groupEntriesByStatus(
 export function toSessionRows(entries: readonly SidebarSessionEntry[]): SidebarListRow[] {
   return entries.map(entry => ({ entry, kind: 'session' }))
 }
+
+/** Drop session rows that sit under a closed divider. The divider itself stays
+ *  so the group can be opened again. Sessions above the first divider (the
+ *  unlabelled head) are never gated. Returns the input array when nothing is
+ *  hidden so callers keep a stable reference. */
+export function hideCollapsedGroupRows(
+  rows: readonly SidebarListRow[],
+  isOpen: (key: string) => boolean
+): SidebarListRow[] {
+  const out: SidebarListRow[] = []
+  let hiding = false
+
+  for (const row of rows) {
+    if (row.kind === 'divider') {
+      hiding = !isOpen(row.key)
+      out.push(row)
+      continue
+    }
+
+    if (!hiding) {
+      out.push(row)
+    }
+  }
+
+  return out.length === rows.length ? (rows as SidebarListRow[]) : out
+}

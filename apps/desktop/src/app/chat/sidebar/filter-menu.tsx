@@ -25,6 +25,7 @@ import {
   $sidebarCardRows,
   $sidebarFiltersActive,
   $sidebarGrouping,
+  $sidebarListGroupIds,
   $sidebarOrdering,
   $sidebarPrFilter,
   $sidebarProfileFilter,
@@ -165,6 +166,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const filtersActive = useStore($sidebarFiltersActive)
   const viewCustomized = useStore($sidebarViewCustomized)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
+  const listGroupIds = useStore($sidebarListGroupIds)
   const projects = useStore($projectTree)
   const hasCost = useStore($sessionsHaveCost)
   const unreadIds = useStore($unreadFinishedSessionIds)
@@ -172,9 +174,16 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   // locally, the gateway's REST mirror remotely. Resolved per render, not once
   // at module load: switching to a remote profile swaps the bridge underneath.
   const prAvailable = Boolean(desktopGit()?.review?.prList)
-  // Project rows default open, so "all collapsed" means every one of them has
-  // been explicitly shut.
-  const projectsCollapsed = projects.length > 0 && projects.every(project => nodeOpen[project.id] === false)
+  // Fold the level in view: project rows, or the date/status buckets. Project
+  // rows default open, so "all collapsed" means every one of them has been
+  // explicitly shut. Never sweeps Pinned or Cron.
+  const foldIds =
+    grouping === 'project'
+      ? projects.map(project => project.id)
+      : grouping === 'date' || grouping === 'status'
+        ? listGroupIds
+        : []
+  const foldCollapsed = foldIds.length > 0 && foldIds.every(id => nodeOpen[id] === false)
 
   const groupingLabel = GROUPINGS.find(option => option.id === grouping)?.label
 
@@ -392,20 +401,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
         <DropdownMenuSeparator />
 
-        {/* Only the project rows fold, and only when they're what you're
-            looking at — sweeping Pinned and Cron shut alongside them is not
-            what "collapse all" means here. Their lanes underneath keep their
-            own state, so re-opening a project shows it as you left it. */}
-        {grouping === 'project' && projects.length > 0 && (
-          <DropdownMenuItem
-            onSelect={() =>
-              setWorkspaceNodesOpen(
-                projects.map(project => project.id),
-                projectsCollapsed
-              )
-            }
-          >
-            {projectsCollapsed ? 'Expand all' : 'Collapse all'}
+        {foldIds.length > 0 && (
+          <DropdownMenuItem onSelect={() => setWorkspaceNodesOpen(foldIds, foldCollapsed)}>
+            {foldCollapsed ? 'Expand all' : 'Collapse all'}
           </DropdownMenuItem>
         )}
         <DropdownMenuItem disabled={unreadIds.length === 0} onSelect={markAllSessionsRead}>

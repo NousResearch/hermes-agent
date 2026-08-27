@@ -5,7 +5,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { makeSessionInfo } from '../test/session-info'
 
 import type { SidebarSessionEntry } from './session-branch-tree'
-import { groupEntriesByRecency, toSessionRows } from './session-date-groups'
+import { groupEntriesByRecency, hideCollapsedGroupRows, toSessionRows } from './session-date-groups'
 
 const session = (id: string, overrides: Partial<SessionInfo> = {}): SessionInfo =>
   makeSessionInfo({ id, message_count: 1, source: 'cli', title: id, ...overrides })
@@ -188,6 +188,55 @@ describe('groupEntriesByRecency', () => {
     ])
 
     expect(dividerKeys(rows)).toEqual(['last-week'])
+  })
+})
+
+describe('hideCollapsedGroupRows', () => {
+  it('returns the same array when every group is open', () => {
+    const rows = [
+      { entry: entry(session('a')), kind: 'session' as const },
+      { key: 'yesterday', kind: 'divider' as const, label: 'Yesterday' },
+      { entry: entry(session('b')), kind: 'session' as const }
+    ]
+
+    expect(hideCollapsedGroupRows(rows, () => true)).toBe(rows)
+  })
+
+  it('keeps the divider and drops sessions under a closed group', () => {
+    const rows = [
+      { entry: entry(session('head')), kind: 'session' as const },
+      { key: 'yesterday', kind: 'divider' as const, label: 'Yesterday' },
+      { entry: entry(session('y1')), kind: 'session' as const },
+      { entry: entry(session('y2'), '└─ '), kind: 'session' as const },
+      { key: 'last-week', kind: 'divider' as const, label: 'Last week' },
+      { entry: entry(session('lw')), kind: 'session' as const }
+    ]
+
+    const visible = hideCollapsedGroupRows(rows, key => key !== 'yesterday')
+
+    expect(visible).toEqual([
+      rows[0],
+      rows[1],
+      rows[4],
+      rows[5]
+    ])
+  })
+
+  it('never hides the unlabelled head above the first divider', () => {
+    const rows = [
+      { entry: entry(session('a')), kind: 'session' as const },
+      { entry: entry(session('b')), kind: 'session' as const },
+      { key: 'yesterday', kind: 'divider' as const, label: 'Yesterday' },
+      { entry: entry(session('c')), kind: 'session' as const }
+    ]
+
+    const visible = hideCollapsedGroupRows(rows, () => false)
+
+    expect(visible.map(row => (row.kind === 'session' ? row.entry.session.id : row.key))).toEqual([
+      'a',
+      'b',
+      'yesterday'
+    ])
   })
 })
 

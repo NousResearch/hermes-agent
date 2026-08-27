@@ -116,12 +116,12 @@ def test_managed_vendor_endpoints_pin_the_deployed_gateway_url():
         clear=False,
     ):
         os.environ.pop("TOOL_GATEWAY_URL", None)
-        endpoints = managed_tool_gateway.managed_vendor_endpoints("bfl")
+        endpoints = managed_tool_gateway.managed_vendor_endpoints("vendorx")
 
     assert endpoints == {
         "origin": "https://tool-gateway.nousresearch.com",
-        "base_url": "https://tool-gateway.nousresearch.com/api/bfl",
-        "upload_path": "/api/uploads/bfl",
+        "base_url": "https://tool-gateway.nousresearch.com/api/vendorx",
+        "upload_path": "/api/uploads/vendorx",
     }
 
 
@@ -139,10 +139,10 @@ def test_managed_vendor_endpoints_do_not_consult_entitlement():
              side_effect=AssertionError("entitlement must not gate address resolution"),
          ):
         os.environ.pop("TOOL_GATEWAY_URL", None)
-        endpoints = managed_tool_gateway.managed_vendor_endpoints("bfl")
+        endpoints = managed_tool_gateway.managed_vendor_endpoints("vendorx")
 
     assert endpoints is not None
-    assert endpoints["base_url"] == "https://tool-gateway.nousresearch.com/api/bfl"
+    assert endpoints["base_url"] == "https://tool-gateway.nousresearch.com/api/vendorx"
 
 
 def test_managed_vendor_endpoints_are_none_when_no_origin_resolves():
@@ -150,13 +150,13 @@ def test_managed_vendor_endpoints_are_none_when_no_origin_resolves():
     # that rather than building a URL out of a broken setting.
     with patch.dict(os.environ, {"TOOL_GATEWAY_SCHEME": "ftp"}, clear=False):
         os.environ.pop("TOOL_GATEWAY_URL", None)
-        assert managed_tool_gateway.managed_vendor_endpoints("bfl") is None
+        assert managed_tool_gateway.managed_vendor_endpoints("vendorx") is None
 
 
 def test_managed_gateway_auth_headers_carry_the_bearer():
     with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         headers = managed_tool_gateway.managed_gateway_auth_headers(
-            "https://tool-gateway.example.com/api/bfl/generations",
+            "https://tool-gateway.example.com/api/vendorx/generations",
             gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
             token_reader=lambda: "nous-token",
         )
@@ -169,7 +169,7 @@ def test_managed_gateway_auth_headers_reflect_a_rotated_token():
     # and a long session must not keep presenting a dead bearer.
     tokens = iter(["first-token", "second-token"])
     builder = lambda vendor: f"https://{vendor}-gateway.example.com"
-    url = "https://tool-gateway.example.com/api/bfl/generations"
+    url = "https://tool-gateway.example.com/api/vendorx/generations"
 
     with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         first = managed_tool_gateway.managed_gateway_auth_headers(url, builder, lambda: next(tokens))
@@ -184,7 +184,7 @@ def test_managed_gateway_auth_headers_refuse_a_url_off_the_gateway_origin():
     # host that merely looks managed.
     with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         assert managed_tool_gateway.managed_gateway_auth_headers(
-            "https://attacker.example/api/bfl/generations",
+            "https://attacker.example/api/vendorx/generations",
             gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
             token_reader=lambda: "nous-token",
         ) == {}
@@ -195,7 +195,7 @@ def test_managed_gateway_auth_headers_empty_without_a_token():
     # sending an unauthenticated request.
     with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         assert managed_tool_gateway.managed_gateway_auth_headers(
-            "https://tool-gateway.example.com/api/bfl/generations",
+            "https://tool-gateway.example.com/api/vendorx/generations",
             gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
             token_reader=lambda: None,
         ) == {}
@@ -211,8 +211,8 @@ class TestManagedMediaUploader:
     """
 
     GATEWAY = "https://tool-gateway.example.com"
-    BASE_URL = f"{GATEWAY}/api/bfl"
-    UPLOAD_PATH = "/api/uploads/bfl"
+    BASE_URL = f"{GATEWAY}/api/vendorx"
+    UPLOAD_PATH = "/api/uploads/vendorx"
 
     def _uploader(self, **kwargs):
         return managed_tool_gateway.build_managed_media_uploader(
@@ -314,9 +314,9 @@ class TestManagedMediaUploader:
         # Refusing to build is what makes the caller say "pass a URL instead"
         # rather than forwarding a raw local path to a third party.
         with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            assert self._uploader(server_url="https://attacker.example/api/bfl") is None
+            assert self._uploader(server_url="https://attacker.example/api/vendorx") is None
 
-    @pytest.mark.parametrize("upload_path", [None, "", "api/uploads/bfl", 42])
+    @pytest.mark.parametrize("upload_path", [None, "", "api/uploads/vendorx", 42])
     def test_no_uploader_without_a_rooted_upload_path(self, upload_path):
         with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
             assert self._uploader(upload_path=upload_path) is None

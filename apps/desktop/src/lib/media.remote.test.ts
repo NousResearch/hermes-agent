@@ -91,6 +91,19 @@ describe('mediaGatewayStreamUrl', () => {
     $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'voice reviewer', token: null } as never)
     expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer')
   })
+
+  it('pins remote streams to their registered connection and profile', () => {
+    $connection.set({
+      connectionId: 'studio-ssh',
+      mode: 'remote',
+      profile: 'voice reviewer',
+      remoteKind: 'ssh'
+    } as never)
+
+    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe(
+      'hermes-media://remote/%2Ftmp%2Fa.mp4?connectionId=studio-ssh&profile=voice%20reviewer'
+    )
+  })
 })
 
 describe('resolveMediaDisplaySrc', () => {
@@ -225,7 +238,7 @@ describe('downloadGatewayMediaFile', () => {
   beforeEach(() => {
     saveGatewayFile.mockClear()
     vi.stubGlobal('window', { hermesDesktop: { saveGatewayFile } })
-    $connection.set({ mode: 'remote', profile: 'docker-gw' } as never)
+    $connection.set({ connectionId: 'work-ssh', mode: 'remote', profile: 'docker-gw' } as never)
   })
 
   afterEach(() => {
@@ -240,6 +253,7 @@ describe('downloadGatewayMediaFile', () => {
     })
 
     expect(saveGatewayFile).toHaveBeenCalledWith({
+      connectionId: 'work-ssh',
       path: '/Users/me/project/a b.md',
       profile: 'docker-gw',
       suggestedName: 'a b.md'

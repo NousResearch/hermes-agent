@@ -138,6 +138,27 @@ class TestIsSessionYoloActiveHelper:
         with patch.object(approval_module, "_YOLO_MODE_FROZEN", True):
             assert HermesCLI._is_session_yolo_active(stand_in) is True
 
+    def test_toggle_under_frozen_yolo_reports_locked_and_stays_on(self):
+        """With process-level YOLO frozen ON, /yolo must NOT claim approvals
+        are back. Pre-fix, the second toggle printed "YOLO mode OFF —
+        dangerous commands will require approval" while the frozen flag kept
+        auto-approving everything — a false safety claim."""
+        stand_in = _make_stand_in()
+
+        printed = []
+        with patch.object(approval_module, "_YOLO_MODE_FROZEN", True):
+            with patch("cli._cprint", side_effect=lambda msg: printed.append(msg)):
+                HermesCLI._toggle_yolo(stand_in)
+                HermesCLI._toggle_yolo(stand_in)
+
+            # Still effectively ON, and no session-level state was flipped.
+            assert HermesCLI._is_session_yolo_active(stand_in) is True
+            assert not approval_module.is_session_yolo_enabled(SESSION_KEY)
+
+        joined = "\n".join(printed)
+        assert "locked ON" in joined
+        assert "will require approval" not in joined
+
 
 class TestToggleYoloEndToEnd:
     """End-to-end: a dangerous command must auto-approve through the same

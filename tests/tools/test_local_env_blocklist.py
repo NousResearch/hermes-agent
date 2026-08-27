@@ -240,6 +240,41 @@ class TestProviderEnvBlocklist:
         assert "USER" in result_env
         assert "PATH" in result_env
 
+    def test_bare_hermes_resolves_from_sanitized_subprocess_path(self):
+        """Cron children can resolve Hermes even when the gateway PATH cannot."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        with patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value="/home/user/.local/bin",
+        ):
+            result = _sanitize_subprocess_env(
+                {
+                    "PATH": os.pathsep.join(["/usr/bin", "/bin"]),
+                    "HOME": "/home/user",
+                }
+            )
+
+        assert result["PATH"] == os.pathsep.join(
+            ["/home/user/.local/bin", "/usr/bin", "/bin"]
+        )
+
+    def test_bare_hermes_path_does_not_duplicate_existing_install_dir(self):
+        """The PATH repair is idempotent for already-correct environments."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        with patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value="/home/user/.local/bin",
+        ):
+            result = _sanitize_subprocess_env(
+                {"PATH": os.pathsep.join(["/home/user/.local/bin", "/usr/bin"])}
+            )
+
+        assert result["PATH"] == os.pathsep.join(
+            ["/home/user/.local/bin", "/usr/bin"]
+        )
+
     def test_self_env_blocked_vars_also_stripped(self):
         """Blocked vars in self.env are stripped; non-blocked vars pass through."""
         result_env = _run_with_env(self_env={

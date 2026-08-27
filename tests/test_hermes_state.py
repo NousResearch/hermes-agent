@@ -1877,6 +1877,316 @@ class TestReconcileColumnsErrorHandling:
         assert "last_read_at" in cols
 
 
+class TestFtsRebuildLoopWithoutTrigram:
+    """A trigram-less SQLite build must not re-index the store on every open.
+
+    The three ``messages_fts_trigram_*`` triggers are declared only by the
+    trigram DDL, whose ``CREATE VIRTUAL TABLE ... tokenize='trigram'`` needs a
+    tokenizer SQLite only gained in 3.34 — Ubuntu 20.04 (3.31), RHEL/CentOS 8
+    (3.26) and Amazon Linux 2 all ship older. ``_ensure_fts_schema``
+    soft-fails that DDL there by design, so those three triggers can never
+    exist, and startup's "are all six canonical triggers present?" check was
+    therefore permanently unsatisfiable: the full FTS repair ran on every
+    single ``SessionDB`` open, holding the write lock, and never converged.
+
+    The v23 repair also clears the deferred-rebuild resume markers, so an
+    interrupted ``hermes sessions optimize-storage`` silently lost its place
+    every time the store was reopened.
+    """
+
+    @staticmethod
+    def _trace(monkeypatch, statements, *, trigram):
+        """Record every statement SessionDB executes during an open.
+
+        ``trigram=False`` additionally routes connections through the
+        module's existing ``_NoTrigramConnection``, which raises
+        ``no such tokenizer: trigram`` for the trigram DDL exactly as an
+        older SQLite does.
+        """
+        real_connect = sqlite3.connect
+
+        def connect(*args, **kwargs):
+            if not trigram:
+                kwargs["factory"] = _NoTrigramConnection
+            conn = real_connect(*args, **kwargs)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect)
+
+    @staticmethod
+    def _rebuilds(statements):
+        """External-content 'rebuild' commands seen in *statements*."""
+        return [sql for sql in statements if "VALUES('rebuild')" in "".join(sql.split())]
+
+    @staticmethod
+    def _legacy_wipes(statements):
+        """Legacy inline repair wipes the index before reinserting every row."""
+        return [
+            sql for sql in statements
+            if "".join(sql.split()).upper().startswith("DELETEFROMMESSAGES_FTS")
+        ]
+
+    @staticmethod
+    def _seed(db_path):
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session(session_id="s1", source="cli")
+            for i in range(5):
+                db.append_message("s1", role="user", content=f"payload {i} zebra")
+        finally:
+            db.close()
+
+    @staticmethod
+    def _build_legacy_inline_db(db_path):
+        """A v22 store as it exists on a host that never had the tokenizer.
+
+        Only the three base inline triggers were ever creatable there, so —
+        unlike the migration fixtures elsewhere in this file — this build
+        deliberately has no trigram table and no trigram triggers.
+        """
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(SCHEMA_SQL)
+            conn.executescript("""
+                DROP TABLE IF EXISTS messages_fts;
+                DROP TABLE IF EXISTS messages_fts_trigram;
+                DROP VIEW IF EXISTS messages_fts_trigram_src;
+
+                CREATE VIRTUAL TABLE messages_fts USING fts5(content);
+
+                CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+                    INSERT INTO messages_fts(rowid, content) VALUES (
+                        new.id,
+                        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '')
+                        || ' ' || COALESCE(new.tool_calls, '')
+                    );
+                END;
+
+                CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+                    DELETE FROM messages_fts WHERE rowid = old.id;
+                END;
+
+                CREATE TRIGGER messages_fts_update
+                AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
+                    DELETE FROM messages_fts WHERE rowid = old.id;
+                    INSERT INTO messages_fts(rowid, content) VALUES (
+                        new.id,
+                        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '')
+                        || ' ' || COALESCE(new.tool_calls, '')
+                    );
+                END;
+            """)
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version (version) VALUES (22)")
+            conn.execute(
+                "INSERT INTO sessions (id, source, started_at) VALUES ('s1', 'cli', ?)",
+                (time.time(),),
+            )
+            for i in range(5):
+                conn.execute(
+                    "INSERT INTO messages (session_id, timestamp, role, content) "
+                    "VALUES ('s1', ?, 'user', ?)",
+                    (time.time(), f"legacy payload {i} zebra"),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_fts_trigger_subsets_match_the_ddl(self):
+        """The split must track the DDL each trigger actually comes from.
+
+        The gate is only correct while every trigger classified as "trigram"
+        is one the trigram DDL creates, and every other one is created by DDL
+        that always works. Renaming a trigger without updating its DDL would
+        otherwise silently reintroduce an unsatisfiable check.
+        """
+        from hermes_state_common import (
+            FTS_SQL,
+            FTS_TRIGRAM_SQL,
+            LEGACY_FTS_SQL,
+            LEGACY_FTS_TRIGRAM_SQL,
+            _FTS_TRIGGERS,
+        )
+        from hermes_state_schema import _FTS_BASE_TRIGGERS, _FTS_TRIGRAM_TRIGGERS
+
+        # Exhaustive and disjoint: nothing may fall out of the classification.
+        assert set(_FTS_BASE_TRIGGERS) | set(_FTS_TRIGRAM_TRIGGERS) == set(_FTS_TRIGGERS)
+        assert not set(_FTS_BASE_TRIGGERS) & set(_FTS_TRIGRAM_TRIGGERS)
+
+        for name in _FTS_TRIGRAM_TRIGGERS:
+            assert name in FTS_TRIGRAM_SQL and name in LEGACY_FTS_TRIGRAM_SQL, (
+                f"{name} is classified as trigram-only but the trigram DDL "
+                f"does not create it"
+            )
+        for name in _FTS_BASE_TRIGGERS:
+            assert name in FTS_SQL and name in LEGACY_FTS_SQL, (
+                f"{name} is classified as always-creatable but the base DDL "
+                f"does not create it"
+            )
+            assert name not in FTS_TRIGRAM_SQL
+
+    def test_missing_trigram_tokenizer_does_not_rebuild_fts_on_every_open(
+        self, tmp_path, monkeypatch
+    ):
+        """v23 branch: the repair must converge instead of firing forever."""
+        db_path = tmp_path / "state.db"
+        statements = []
+        self._trace(monkeypatch, statements, trigram=False)
+
+        self._seed(db_path)
+
+        # Second and third opens of an already-initialised store. The trigram
+        # triggers are still absent and always will be, but nothing is
+        # actually broken, so there is nothing to repair.
+        for _ in range(2):
+            statements.clear()
+            db = SessionDB(db_path=db_path)
+            try:
+                assert db._trigram_available is False
+                assert self._rebuilds(statements) == []
+                # The narrowed gate must not have cost us a working index.
+                assert len(db.search_messages("zebra")) == 5
+            finally:
+                db.close()
+
+    def test_legacy_inline_fts_without_trigram_does_not_rebuild_on_every_open(
+        self, tmp_path, monkeypatch
+    ):
+        """Legacy (pre-v23) branch: same gate, same permanent repair loop.
+
+        This path is the more expensive of the two — inline tables have no
+        external-content 'rebuild' source, so the repair deletes the index and
+        reinserts a concatenation of every row in ``messages``.
+        """
+        db_path = tmp_path / "legacy.db"
+        self._build_legacy_inline_db(db_path)
+
+        statements = []
+        self._trace(monkeypatch, statements, trigram=False)
+
+        for _ in range(2):
+            statements.clear()
+            db = SessionDB(db_path=db_path)
+            try:
+                assert db._db_has_legacy_inline_fts(db._conn.cursor()) is True
+                assert db._trigram_available is False
+                assert self._legacy_wipes(statements) == []
+                assert len(db.search_messages("zebra")) == 5
+            finally:
+                db.close()
+
+    def test_pending_fts_rebuild_markers_survive_a_trigramless_open(
+        self, tmp_path, monkeypatch
+    ):
+        """An interrupted optimize-storage must keep its resume point.
+
+        ``_rebuild_fts_indexes`` clears both markers because a full rebuild
+        genuinely does cover every row. Running it unconditionally on a
+        trigram-less host therefore threw away the progress of a chunked,
+        throttled backfill on the very next open.
+        """
+        db_path = tmp_path / "state.db"
+        statements = []
+        self._trace(monkeypatch, statements, trigram=False)
+
+        self._seed(db_path)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            for key, value in (
+                ("fts_rebuild_high_water", "30"),
+                ("fts_rebuild_progress", "10"),
+            ):
+                db._conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, value),
+                )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.get_meta("fts_rebuild_high_water") == "30"
+            assert db.get_meta("fts_rebuild_progress") == "10"
+        finally:
+            db.close()
+
+    def test_missing_base_trigger_still_repairs_once(self, tmp_path, monkeypatch):
+        """Control: narrowing the gate must not disable genuine repair.
+
+        A base trigger really can go missing (an earlier no-FTS5 runtime drops
+        them to keep writes alive), and rows written meanwhile are absent from
+        the index. That still has to be repaired — once, and then converge.
+        """
+        db_path = tmp_path / "state.db"
+        statements = []
+        self._trace(monkeypatch, statements, trigram=False)
+
+        self._seed(db_path)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            db._conn.execute("DROP TRIGGER messages_fts_insert")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        statements.clear()
+        db = SessionDB(db_path=db_path)
+        try:
+            assert len(self._rebuilds(statements)) == 1
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type = 'trigger' AND name = 'messages_fts_insert'"
+            ).fetchone()[0] == 1
+        finally:
+            db.close()
+
+        # …and having repaired it, the next open is quiet again.
+        statements.clear()
+        db = SessionDB(db_path=db_path)
+        try:
+            assert self._rebuilds(statements) == []
+        finally:
+            db.close()
+
+    def test_missing_trigram_trigger_still_repairs_where_the_tokenizer_exists(
+        self, tmp_path, monkeypatch
+    ):
+        """Control: on a capable host a missing trigram trigger is real damage.
+
+        Only the permanently-unsatisfiable case changes. Where the trigram DDL
+        can run, a gap in those triggers means the index missed rows and must
+        still be rebuilt.
+        """
+        db_path = tmp_path / "state.db"
+        statements = []
+        self._trace(monkeypatch, statements, trigram=True)
+
+        self._seed(db_path)
+
+        db = SessionDB(db_path=db_path)
+        trigram_available = db._trigram_available
+        try:
+            if not trigram_available:
+                pytest.skip("this SQLite build has no trigram tokenizer")
+            db._conn.execute("DROP TRIGGER messages_fts_trigram_insert")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        statements.clear()
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._trigram_available is True
+            assert len(self._rebuilds(statements)) > 0
+        finally:
+            db.close()
+
+
 class TestTitleUniqueness:
     """Tests for unique title enforcement and title-based lookups."""
 

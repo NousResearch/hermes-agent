@@ -24,6 +24,11 @@ def _make_agent(**overrides):
         platform="",
         pass_session_id=False,
         session_id="",
+        # build_system_prompt drains pending truncation warnings and
+        # forwards each to this; a warning left in the ContextVar by an
+        # earlier test file (they share one thread's context under plain
+        # pytest) must not make this stub AttributeError.
+        _emit_status=lambda *_args, **_kwargs: None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -42,7 +47,6 @@ def _captured_context_cwd(agent):
 
     with (
         patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
     ):
@@ -65,7 +69,6 @@ class TestContextFileCwd:
 def _stable_prompt(agent):
     with (
         patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=""),
     ):
@@ -75,7 +78,6 @@ def _stable_prompt(agent):
 def _prompt_parts(agent):
     with (
         patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=""),
     ):
@@ -114,6 +116,87 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestExecutionGuidanceInjection:
+    """Injection gate for OPENAI_MODEL_EXECUTION_GUIDANCE via
+    ``agent.execution_guidance`` (auto/true/false/list).
+
+    Background — Composio agentic-eval traces (2026-08): the block was
+    historically fenced to gpt/codex/grok AND nested inside the
+    tool-use-enforcement branch, so DeepSeek/Kimi/Qwen-class models
+    received no execution discipline at all. The gate is now independent
+    of tool_use_enforcement and defaults to a broader family list.
+    """
+
+    def _prompt(self, model, execution_guidance="auto", *,
+                tool_use_enforcement=False,
+                valid_tool_names=("terminal", "read_file")):
+        agent = _make_agent(
+            valid_tool_names=list(valid_tool_names),
+            model=model,
+            _tool_use_enforcement=tool_use_enforcement,
+            _execution_guidance=execution_guidance,
+        )
+        return _stable_prompt(agent)
+
+    def test_deepseek_gets_guidance_by_default(self):
+        stable = self._prompt("deepseek/deepseek-v4-pro")
+        assert "Execution discipline" in stable
+        assert "<external_state_verification>" in stable
+
+    def test_kimi_gets_guidance_by_default(self):
+        assert "Execution discipline" in self._prompt("moonshotai/kimi-k3")
+
+    def test_qwen_glm_minimax_mimo_mistral_get_guidance_by_default(self):
+        for model in ("qwen/qwen-3-max", "z-ai/glm-5.2",
+                      "minimax/minimax-m2", "xiaomi/mimo-v2",
+                      "mistralai/mistral-large-3"):
+            assert "Execution discipline" in self._prompt(model), model
+
+    def test_gpt_still_gets_guidance(self):
+        assert "Execution discipline" in self._prompt("openai/gpt-5.5")
+
+    def test_grok_still_gets_guidance(self):
+        assert "Execution discipline" in self._prompt("xai/grok-4")
+
+    def test_independent_of_tool_use_enforcement(self):
+        # The gate must not require tool-use enforcement to be on.
+        stable = self._prompt("deepseek/deepseek-v4-flash",
+                              tool_use_enforcement=False)
+        assert "Execution discipline" in stable
+        assert "Tool-use enforcement" not in stable
+
+    def test_claude_does_not_get_guidance_by_default(self):
+        assert "Execution discipline" not in self._prompt(
+            "anthropic/claude-opus-4.8")
+
+    def test_gemini_does_not_get_guidance_by_default(self):
+        assert "Execution discipline" not in self._prompt(
+            "google/gemini-2.5-pro")
+
+    def test_config_false_suppresses(self):
+        assert "Execution discipline" not in self._prompt(
+            "openai/gpt-5.5", execution_guidance=False)
+        assert "Execution discipline" not in self._prompt(
+            "deepseek/deepseek-v4-pro", execution_guidance="off")
+
+    def test_config_true_forces_for_any_model(self):
+        assert "Execution discipline" in self._prompt(
+            "anthropic/claude-opus-4.8", execution_guidance=True)
+
+    def test_config_list_matches_substring(self):
+        stable = self._prompt("mycorp/custom-llm-7b",
+                              execution_guidance=["custom-llm", "gpt"])
+        assert "Execution discipline" in stable
+
+    def test_config_list_non_match_suppresses(self):
+        assert "Execution discipline" not in self._prompt(
+            "openai/gpt-5.5", execution_guidance=["deepseek"])
+
+    def test_no_tools_no_guidance(self):
+        assert "Execution discipline" not in self._prompt(
+            "deepseek/deepseek-v4-pro", valid_tool_names=())
 
 
 class TestNamedProfileHintIntegration:
@@ -184,7 +267,6 @@ def test_build_system_prompt_records_stable_prefix():
     agent = _make_agent()
     with (
         patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value="context"),
     ):
@@ -204,6 +286,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     )
     monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
@@ -229,7 +312,6 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
 
     with (
         patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
         patch(
@@ -374,7 +456,6 @@ def _build(builder, **overrides):
     agent = _make_agent(valid_tool_names=["skills_list"], **overrides)
     with (
         patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=_CONTEXT),
         patch("run_agent.get_toolset_for_tool", return_value=None),
@@ -403,3 +484,61 @@ class TestSkillsInVolatileBand:
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
+
+
+class TestMemoryProviderSystemPromptGating:
+    """Issue #81014: the provider's ``system_prompt_block()`` must be gated
+    on the same ``memory_provider_tools_enabled`` check as tool injection.
+    Otherwise the agent receives instructions for tools that don't exist in
+    its tool surface.
+    """
+
+    @staticmethod
+    def _make_fake_manager(prompt_block: str):
+        """Build a MemoryManager-like object exposing only what
+        ``build_system_prompt_parts`` touches."""
+        from unittest.mock import MagicMock
+        mgr = MagicMock()
+        mgr.build_system_prompt.return_value = prompt_block
+        return mgr
+
+    def _agent(self, *, enabled_toolsets, disabled_toolsets, prompt_block):
+        return _make_agent(
+            valid_tool_names=["skills_list"],
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            _memory_manager=self._make_fake_manager(prompt_block),
+        )
+
+    def test_block_injected_when_memory_toolset_enabled(self):
+        block = "PROVIDER_BLOCK_SENTINEL"
+        agent = self._agent(
+            enabled_toolsets=["memory"],
+            disabled_toolsets=None,
+            prompt_block=block,
+        )
+        full = _build(build_system_prompt, _memory_manager=agent._memory_manager,
+                      enabled_toolsets=["memory"], disabled_toolsets=None)
+        assert block in full
+
+    def test_block_dropped_when_memory_toolset_disabled(self):
+        block = "PROVIDER_BLOCK_SENTINEL"
+        agent = self._agent(
+            enabled_toolsets=None,
+            disabled_toolsets=["memory"],
+            prompt_block=block,
+        )
+        full = _build(build_system_prompt, _memory_manager=agent._memory_manager,
+                      enabled_toolsets=None, disabled_toolsets=["memory"])
+        assert block not in full
+
+    def test_block_dropped_when_memory_not_in_enabled_toolsets(self):
+        block = "PROVIDER_BLOCK_SENTINEL"
+        agent = self._agent(
+            enabled_toolsets=["web_search"],
+            disabled_toolsets=None,
+            prompt_block=block,
+        )
+        full = _build(build_system_prompt, _memory_manager=agent._memory_manager,
+                      enabled_toolsets=["web_search"], disabled_toolsets=None)
+        assert block not in full

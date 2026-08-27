@@ -186,6 +186,101 @@ def test_check_for_skill_updates_does_not_fall_back_across_registries():
     assert "bundle" not in results[0], "must not carry a foreign registry's bundle"
 
 
+def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
+    """Inspect metadata from one registry must not ship with another registry's files.
+
+    skills.sh can inspect ``owner/repo/skills/skillopt`` while ClawHub used to
+    fetch by last path segment ``skillopt`` and return a different author's
+    SKILL.md. The header then showed the requested identifier and the preview
+    showed the wrong skill.
+    """
+    from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+    from tools.skills_hub import SkillBundle, SkillMeta
+
+    class CatalogSource:
+        def inspect(self, identifier):
+            return SkillMeta(
+                name="skillopt",
+                description="kanban-based pipelines",
+                source="skills.sh",
+                identifier="skills-sh/latipun7/agent-skill-collections/skills/skillopt",
+                trust_level="community",
+            )
+
+        def fetch(self, identifier):
+            return None
+
+    class ForeignSlugSource:
+        def inspect(self, identifier):
+            return SkillMeta(
+                name="skillopt",
+                description="Train, evaluate, and improve Agent skill files",
+                source="clawhub",
+                identifier="skillopt",
+                trust_level="community",
+            )
+
+        def fetch(self, identifier):
+            return SkillBundle(
+                name="skillopt",
+                files={"SKILL.md": "# Train, evaluate, and improve Agent skill files\n"},
+                source="clawhub",
+                identifier="skillopt",
+                trust_level="community",
+            )
+
+    meta, bundle, matched = _resolve_source_meta_and_bundle(
+        "latipun7/agent-skill-collections/skills/skillopt",
+        [CatalogSource(), ForeignSlugSource()],
+    )
+
+    assert bundle is not None
+    assert bundle.source == "clawhub"
+    assert meta is not None
+    assert meta.source == "clawhub"
+    assert meta.identifier == "skillopt"
+    assert "kanban-based" not in (meta.description or "")
+    assert matched is not None
+    assert matched.__class__ is ForeignSlugSource
+
+
+def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
+    from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+    from tools.skills_hub import SkillMeta
+
+    class CatalogSource:
+        def inspect(self, identifier):
+            return SkillMeta(
+                name="skillopt",
+                description="kanban-based pipelines",
+                source="skills.sh",
+                identifier="skills-sh/latipun7/agent-skill-collections/skills/skillopt",
+                trust_level="community",
+            )
+
+        def fetch(self, identifier):
+            return None
+
+    class QuietSource:
+        def inspect(self, identifier):
+            return None
+
+        def fetch(self, identifier):
+            return None
+
+    meta, bundle, matched = _resolve_source_meta_and_bundle(
+        "latipun7/agent-skill-collections/skills/skillopt",
+        [CatalogSource(), QuietSource()],
+    )
+
+    assert bundle is None
+    assert meta is not None
+    assert meta.source == "skills.sh"
+    assert meta.identifier.endswith("latipun7/agent-skill-collections/skills/skillopt")
+    assert matched is not None
+    assert matched.__class__ is CatalogSource
+
+
 
 
 # ---------------------------------------------------------------------------

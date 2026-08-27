@@ -131,6 +131,116 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
     assert roles == ["user", "model"], roles
 
 
+def test_schema_bearing_tool_result_is_wrapped_as_opaque_text():
+    """A tool result whose content is itself a JSON Schema must not be
+    forwarded as a structured functionResponse.response.
+
+    Gemini 3 resolves ``$ref``/``$defs`` pointers inside a function response
+    payload and rejects unknown references with HTTP 400 INVALID_ARGUMENT
+    ("referenced name '#/$defs/...' does not match a display_name"; see
+    vercel/ai#14369). ``tool_describe`` output for an MCP tool is exactly such
+    a schema, so it must be wrapped as opaque text instead.
+    """
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    schema = {
+        "$defs": {"SetCookieParam": {"type": "object"}},
+        "properties": {"cookies": {"$ref": "#/$defs/SetCookieParam"}},
+    }
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "tool_describe",
+        "content": json.dumps(schema),
+    }
+
+    out = _translate_tool_result_to_gemini(msg, include_ids=True)
+
+    response = out["functionResponse"]["response"]
+    assert "$defs" not in response
+    assert "output" in response
+    # The raw schema text is preserved verbatim in the wrapped output.
+    assert "#/$defs/SetCookieParam" in response["output"]
+
+
+def test_plain_json_tool_result_remains_structured():
+    """Ordinary JSON tool results without a ``$ref`` pointer keep the
+    structured form (no regression to the existing structured-response path)."""
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "name": "some_tool",
+        "content": json.dumps({"status": "ok", "count": 3}),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    assert out["functionResponse"]["response"] == {"status": "ok", "count": 3}
+
+
+def test_deeply_nested_ref_is_detected():
+    """A ``$ref`` pointer buried several levels deep through mixed lists and
+    dicts still demotes the result to opaque text (recursion coverage)."""
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    deep = {"a": [{"b": {"c": [{"$ref": "#/$defs/Deep"}]}}]}
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_3",
+        "name": "some_tool",
+        "content": json.dumps(deep),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    response = out["functionResponse"]["response"]
+    assert "output" in response
+    assert "#/$defs/Deep" in response["output"]
+
+
+def test_top_level_json_array_is_wrapped_as_opaque_text():
+    """A top-level JSON array is never forwarded as a structured response.
+
+    ``response = parsed if isinstance(parsed, dict) else {"output": content}``
+    already wraps lists, so a list of schemas cannot reach the Gemini 400 path.
+    """
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    arr = [{"$ref": "#/$defs/SetCookieParam", "type": "object"}]
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_4",
+        "name": "some_tool",
+        "content": json.dumps(arr),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    response = out["functionResponse"]["response"]
+    assert "output" in response
+    assert "$ref" not in response
+
+
+def test_ref_value_without_pointer_prefix_remains_structured():
+    """Only values shaped like a JSON pointer (``#/...``) demote a result; a
+    ``$ref`` value that is not a pointer leaves the structured path intact."""
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    payload = {"$ref": "not-a-pointer", "status": "ok"}
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_5",
+        "name": "some_tool",
+        "content": json.dumps(payload),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    assert out["functionResponse"]["response"] == payload
+
+
 
 
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():

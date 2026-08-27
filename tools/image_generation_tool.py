@@ -66,10 +66,12 @@ from tools.fal_common import (
 )
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
+    NOUS_MANAGED_PROVIDER,
     fal_key_is_configured,
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
-    prefers_gateway,
+    read_selection,
+    selection_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -662,6 +664,43 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    "xai/grok-imagine-image/v2.0/text-to-image": {
+        "display": "Grok Imagine Image 2.0",
+        "speed": "~5s",
+        "strengths": "xAI. Design-grade typography/layout, instruction following",
+        "price": "$0.06/image (1K medium)",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+            # 1k + medium is the cheapest sensible tier ($0.06/image);
+            # 2k roughly +33% per image.
+            "resolution": "1k",
+            "quality": "medium",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "num_images", "output_format",
+            "resolution", "quality", "sync_mode",
+        },
+        # Opt-in only (policy: default-on upscaling was disabled everywhere
+        # Aug 2026; the upscaler is a creative enhancer that can alter fine
+        # detail). 1k native is sub-2MP — pass upscale=true when needed.
+        "upscale": False,
+        # Edit endpoint takes `image_urls` (max 3) + the same knobs;
+        # aspect_ratio defaults to "auto" (follows the first input image),
+        # so we don't send it on edits.
+        "edit_endpoint": "xai/grok-imagine-image/v2.0/edit",
+        "edit_supports": {
+            "prompt", "image_urls", "num_images", "output_format",
+            "resolution", "quality", "sync_mode",
+        },
+        "max_reference_images": 3,
+    },
 }
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.
@@ -695,9 +734,43 @@ _managed_fal_client_lock = threading.Lock()
 # Managed FAL gateway (Nous Subscription)
 # ---------------------------------------------------------------------------
 def _resolve_managed_fal_gateway():
-    """Return managed fal-queue gateway config when the user prefers the gateway
-    or direct FAL credentials are absent."""
-    if fal_key_is_configured() and not prefers_gateway("image_gen"):
+    """Resolve the FAL route from the stored `hermes tools` selection.
+
+    Dispatch is a plain switch on the stored ``image_gen`` provider string:
+    - ``"nous"`` (or legacy ``use_gateway: true``) → managed fal-queue
+      gateway ONLY; unentitled/unreachable is a selection-naming error
+      (never a silent fall back to FAL_KEY).
+    - any other stored provider (``"fal"``, ...) → direct FAL ONLY; a
+      missing FAL_KEY is an error naming FAL_KEY and the selection (never a
+      silent managed reroute).
+    - no selection ever written → legacy credential autodetect: direct when
+      FAL_KEY is set, else the managed gateway when resolvable, else None.
+
+    Returns the managed gateway config, or ``None`` for the direct route.
+    Raises ``ValueError`` with the honest error contract when the stored
+    selection cannot run.
+    """
+    selected = read_selection("image_gen")
+    if selected == NOUS_MANAGED_PROVIDER:
+        gateway = resolve_managed_tool_gateway("fal-queue")
+        if gateway is None:
+            raise ValueError(selection_error(
+                "image_gen",
+                NOUS_MANAGED_PROVIDER,
+                "the Nous Tool Gateway is not available (not entitled or "
+                "unreachable)",
+            ))
+        return gateway
+    if selected is not None:
+        if not fal_key_is_configured():
+            raise ValueError(selection_error(
+                "image_gen",
+                selected,
+                "FAL_KEY is not set",
+            ))
+        return None
+    # Never-configured category: legacy credential autodetect (do NOT persist).
+    if fal_key_is_configured():
         return None
     return resolve_managed_tool_gateway("fal-queue")
 
@@ -1191,6 +1264,9 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
+        # Strict selection check: a stored-but-broken selection raises the
+        # honest selection-naming error from _resolve_managed_fal_gateway();
+        # only the never-configured path can report "no backend at all".
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             raise ValueError(_build_no_backend_setup_message())
 
@@ -1335,8 +1411,19 @@ def image_generate_tool(
 
 
 def check_fal_api_key() -> bool:
-    """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
+    """True if the FAL backend selected via `hermes tools` (or, on a
+    never-configured install, any FAL backend) is available.
+
+    A stored-but-broken selection reports False here (registry gating);
+    the honest selection-naming error surfaces at call time from
+    ``_resolve_managed_fal_gateway``.
+    """
+    selected = read_selection("image_gen")
+    if selected == NOUS_MANAGED_PROVIDER:
+        return bool(resolve_managed_tool_gateway("fal-queue"))
+    if selected is not None:
+        return fal_key_is_configured()
+    return bool(fal_key_is_configured() or resolve_managed_tool_gateway("fal-queue"))
 
 
 def _build_no_backend_setup_message() -> str:
@@ -1394,7 +1481,7 @@ def check_image_generation_requirements() -> bool:
         pass
 
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
+    if not configured or configured in ("fal", NOUS_MANAGED_PROVIDER):
         return False
 
     # Probe only the explicitly selected plugin. Merely possessing a cloud
@@ -1592,8 +1679,11 @@ def _dispatch_to_plugin_provider(
     ignore it via their ``**kwargs`` (the ABC contract).
     """
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
-        return None  # unset/explicit FAL keeps the legacy FAL path
+    if not configured or configured in ("fal", NOUS_MANAGED_PROVIDER):
+        # Unset/explicit FAL keeps the legacy FAL path; "nous" (managed
+        # Nous Subscription selection) also runs the legacy pipeline, which
+        # routes through the managed fal-queue gateway.
+        return None
 
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()
@@ -1748,8 +1838,13 @@ def _maybe_route_managed_krea(
 
     Direct/BYO users (no managed gateway) fall through untouched.
     """
-    # ``provider == "krea"`` is already handled by the standard plugin dispatch.
-    if _read_configured_image_provider() == "krea":
+    # Strict selection rule: an explicitly stored ``image_gen.provider``
+    # (other than the managed "nous" selection, which IS a managed-mode
+    # opt-in) disables the model-driven managed interception — the user's
+    # picker choice dispatches normally. Interception is permitted only on
+    # never-configured installs or under the managed selection.
+    configured_provider = _read_configured_image_provider()
+    if configured_provider is not None and configured_provider != NOUS_MANAGED_PROVIDER:
         return None
 
     normalized = _normalize_krea_model(_read_configured_image_model())

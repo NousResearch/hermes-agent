@@ -264,6 +264,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_VOICE",
     "HERMES_VOICE_TTS",
     "HERMES_YOLO_MODE",
+    # Injected into subprocess envs by the terminal tool (_make_run_env), so
+    # any test run launched FROM a Hermes agent session inherits them and
+    # hermes_constants home-resolution helpers prefer them over monkeypatched
+    # HOME (test_subprocess_home_isolation red locally, green on CI).
+    "HERMES_REAL_HOME",
+    "TERMINAL_HOME_MODE",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
@@ -341,6 +347,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
     "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "QQ_ALLOWED_USERS",
+    "QQ_GROUP_ALLOWED_USERS",
     "DISCORD_ALLOWED_USERS",
     "WHATSAPP_ALLOWED_USERS",
     "SLACK_ALLOWED_USERS",

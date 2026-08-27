@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { useMemo } from 'react'
+import { useNavigate } from 'react-router'
 
+import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
@@ -12,7 +14,7 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
 import { Activity, AlertCircle, Clock, Command, FolderOpen, Globe, Hash, Loader2, Terminal } from '@/lib/icons'
-import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -92,6 +94,8 @@ export function useStatusbarItems({
   // the takeover store alone stays true behind a stacked sibling tab or a
   // minimized zone, which lit the button for a pane the user couldn't see.
   const terminalShowing = useStore($paneVisible('terminal'))
+  const sessionsShowing = useStore($paneVisible('sessions'))
+  const botsShowing = useStore($paneVisible('hermes-bots:pane'))
   const primaryBusy = useStore($busy)
   // Draft / primary composer atom — used only while the focused surface is the
   // primary (or a draft with no runtime slice yet). A focused TILE keeps its
@@ -282,13 +286,15 @@ export function useStatusbarItems({
   const gatewayConnecting = gatewayState === 'connecting'
   const inferenceReady = gatewayOpen && inferenceStatus?.ready === true
   const gatewayDegraded = gatewayOpen || gatewayConnecting
+  const readinessDisplay = runtimeReadinessDisplay(inferenceStatus)
 
   const gatewayDetail = gatewayOpen
-    ? inferenceStatus?.ready
-      ? copy.gatewayReady
-      : inferenceStatus
-        ? copy.gatewayNeedsSetup
-        : copy.gatewayChecking
+    ? {
+        checking: copy.gatewayChecking,
+        needs_setup: copy.gatewayNeedsSetup,
+        ready: copy.gatewayReady,
+        unavailable: copy.gatewayUnavailable
+      }[readinessDisplay]
     : gatewayConnecting
       ? copy.gatewayConnecting
       : copy.gatewayOffline
@@ -386,34 +392,8 @@ export function useStatusbarItems({
     copy
   ])
 
-  const connectionItem = useMemo<StatusbarItem | null>(() => {
-    if (connection?.mode !== 'remote' || !connection.remoteHost) {
-      return null
-    }
-
-    const ssh = connection.remoteKind === 'ssh'
-    const cloud = connection.remoteKind === 'cloud'
-
-    return {
-      className: cn(
-        'px-2 -ml-1 font-medium',
-        ssh ? 'bg-primary text-primary-foreground' : 'bg-accent text-accent-foreground'
-      ),
-      icon: <Terminal className="size-3" />,
-      id: 'connection',
-      label: ssh
-        ? copy.connectionSsh(connection.remoteHost)
-        : cloud
-          ? copy.connectionCloud(connection.remoteHost)
-          : copy.connectionRemote(connection.remoteHost),
-      // Label already names the host — no "click to manage" tip lecture.
-      to: `${SETTINGS_ROUTE}?tab=gateway`
-    }
-  }, [connection?.mode, connection?.remoteHost, connection?.remoteKind, copy])
-
   const coreLeftStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
-      ...(connectionItem ? [connectionItem] : []),
       {
         className: `w-7 justify-center px-0${commandCenterOpen ? ' bg-accent/55 text-foreground' : ''}`,
         icon: <Command className="size-3.5" />,
@@ -427,8 +407,15 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
+        hidden: !sessionsShowing,
+        id: 'gateway-switcher',
+        lockedVisible: true,
+        render: () => <StatusbarGatewaySwitcher />
+      },
+      {
         className: gatewayRestarting ? undefined : gatewayClassName,
         detail: gatewayRestarting ? copy.gatewayRestarting : gatewayDetail,
+        hidden: botsShowing,
         icon: gatewayRestarting ? (
           <GlyphSpinner ariaLabel={copy.gatewayRestarting} className="size-3" />
         ) : inferenceReady ? (
@@ -524,8 +511,8 @@ export function useStatusbarItems({
     ],
     [
       agentsOpen,
+      botsShowing,
       commandCenterOpen,
-      connectionItem,
       copy,
       currentCwd,
       fileMenu.copyPath,
@@ -539,6 +526,7 @@ export function useStatusbarItems({
       inferenceStatus?.reason,
       openAgents,
       projectName,
+      sessionsShowing,
       subagentsFailed,
       subagentsRunning,
       toggleCommandCenter
@@ -626,4 +614,10 @@ export function useStatusbarItems({
   )
 
   return { leftStatusbarItems, statusbarItems }
+}
+
+function StatusbarGatewaySwitcher() {
+  const navigate = useNavigate()
+
+  return <ConnectionSwitcher compact onConnect={() => navigate(`${SETTINGS_ROUTE}?tab=connections`)} />
 }

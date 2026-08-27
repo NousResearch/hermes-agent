@@ -1,5 +1,6 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
@@ -272,6 +273,47 @@ class TestCopilotNormalization:
         # GPT models on Go are Responses-only (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "gpt-5.6-luna") == "codex_responses"
         assert opencode_model_api_mode("opencode-go", "opencode-go/gpt-5.6-luna") == "codex_responses"
+        # Muse Spark on Go is Responses-only. chat/completions returns HTTP 503.
+        assert opencode_model_api_mode("opencode-go", "muse-spark-1.2-contributor") == "codex_responses"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/muse-spark-1.2-contributor") == "codex_responses"
+        assert opencode_model_api_mode("opencode-go", "muse-spark-1.2") == "codex_responses"
+        # Zen serves the standard Muse Spark variant on /v1/responses too.
+        assert opencode_model_api_mode("opencode-zen", "muse-spark-1.2") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/muse-spark-1.2") == "codex_responses"
+        # Grok models route via /v1/responses on both Zen and Go
+        # (Zen/Go endpoint tables).
+        assert opencode_model_api_mode("opencode-go", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "grok-4.6") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen", "grok-build-0.1") == "codex_responses"
+        # Ox Alpha (x-preview-f-free) on Zen is OpenAI-compatible
+        # chat/completions per the Zen endpoint table.
+        assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
+        # Other free-tier Zen models are chat/completions too.
+        assert opencode_model_api_mode("opencode-zen", "hy3-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
+        # Hy3 on Go is chat/completions (Go endpoint table).
+        assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"
+        # New Go models keep their family routing: GLM chat/completions,
+        # Qwen anthropic_messages.
+        assert opencode_model_api_mode("opencode-go", "glm-5.3") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "qwen3.8-max") == "anthropic_messages"
+        # Custom opencode-go-* providers route according to opencode-go rules
+        # (family-prefix providers, issue #85589).
+        assert opencode_model_api_mode("opencode-go-bridge", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-go-bridge", "opencode-go-bridge/grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-go-bridge", "minimax-m2.5") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go-bridge", "deepseek-v4-flash") == "chat_completions"
+        # Case-insensitive provider ID handling (e.g. OpenCode-Go-Bridge).
+        assert opencode_model_api_mode("OpenCode-Go-Bridge", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("OpenCode-Go-Bridge", "minimax-m2.5") == "anthropic_messages"
+        # Custom opencode-zen-* providers route according to opencode-zen rules.
+        assert opencode_model_api_mode("opencode-zen-custom", "claude-3-5-sonnet") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen-custom", "gpt-5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen-custom", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("OpenCode-Zen-Custom", "claude-3-7-sonnet") == "anthropic_messages"
 
 
 class TestNormalizeOpencodeBaseUrl:
@@ -463,6 +505,35 @@ class TestValidateCodexAutoCorrection:
         assert result["message"] is None
 
 
+class TestValidateCodex900kVariants:
+    """`-900k` is a Hermes picker convention: valid variants come from the
+    catalog; ineligible aliases are hard-rejected BEFORE the hidden-slug
+    soft-accept (#92797 review)."""
+
+    _CATALOG = ["gpt-5.6-sol", "gpt-5.6-sol-900k", "gpt-5.5", "gpt-5.4-mini"]
+
+    def test_catalog_listed_variant_accepted(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model("gpt-5.6-sol-900k", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    @pytest.mark.parametrize("alias", ["gpt-5.5-900k", "gpt-5.4-mini-900k", "gpt-5.6-sol-pro-900k"])
+    def test_ineligible_900k_alias_rejected_not_soft_accepted(self, alias):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model(alias, "openai-codex")
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "272K" in result["message"]
+
+    def test_valid_variant_missing_from_catalog_still_accepted(self):
+        """A verified variant not yet in the (possibly stale) catalog is
+        accepted via the eligibility predicate, not the soft-accept."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5.6-sol"]):
+            result = validate_requested_model("gpt-5.6-sol-900k", "openai-codex")
+        assert result["accepted"] is True
+
+
 # -- probe_api_models — Cloudflare UA mitigation --------------------------------
 
 class TestProbeApiModelsUserAgent:
@@ -523,3 +594,84 @@ class TestProbeApiModelsUserAgent:
         assert req.get_header("Authorization") is None
 
 
+
+
+# -- validate — OpenRouter routing-variant suffixes (:nitro / :floor / ...) ----
+
+class TestValidateOpenRouterVariantSuffixes:
+    """OpenRouter's `:nitro`, `:floor`, `:exacto`, `:online` are request-time
+    routing modifiers, not catalog models — /models lists only the base id.
+    Validation must accept `base:variant` when `base` is listed, preserve the
+    suffixed id (no auto-correct stripping the routing opt-in), and still
+    reject variants on unknown bases and unknown suffixes."""
+
+    _LISTING = [
+        "~x-ai/grok-latest",
+        "x-ai/grok-4.6",
+        "deepseek/deepseek-v4-flash",
+        "thinkingmachines/inkling:free",
+    ]
+
+    def _validate(self, model):
+        return _validate(model, "openrouter", api_models=self._LISTING)
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    def test_variant_on_listed_base_accepted_unmodified(self, suffix):
+        result = self._validate(f"~x-ai/grok-latest:{suffix}")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_variant_not_fuzzy_corrected_to_base(self):
+        """The old failure mode: get_close_matches would 'fix' model:nitro
+        to the bare base id and silently drop the routing behavior."""
+        result = self._validate("x-ai/grok-4.6:nitro")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_variant_on_unknown_base_rejected(self):
+        result = self._validate("x-ai/notreal-model:nitro")
+        assert result["accepted"] is False
+
+    def test_unknown_suffix_keeps_old_behavior(self):
+        result = self._validate("x-ai/grok-4.6:bogus")
+        assert result["accepted"] is False
+
+    def test_free_sku_still_direct_matched(self):
+        """`:free` SKUs ARE catalog entries; direct membership handles them."""
+        result = self._validate("thinkingmachines/inkling:free")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_variant_uppercase_suffix_accepted(self):
+        result = self._validate("x-ai/grok-4.6:NITRO")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_non_openrouter_provider_unaffected(self):
+        """The variant carve-out is OpenRouter-only; other providers keep
+        their existing behavior for colon-suffixed names."""
+        result = _validate(
+            "x-ai/grok-4.6:nitro",
+            "groq",
+            api_models=["x-ai/grok-4.6"],
+        )
+        assert result.get("corrected_model") != "x-ai/grok-4.6:nitro"
+
+    def test_static_catalog_fallback_accepts_variant(self):
+        """Gateway path: /models unreachable → static catalog validates the
+        base id and preserves the suffix."""
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch(
+                 "hermes_cli.models.provider_model_ids",
+                 return_value=["x-ai/grok-4.6", "anthropic/claude-opus-4.6"],
+             ):
+            result = validate_requested_model(
+                "x-ai/grok-4.6:floor",
+                "openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None

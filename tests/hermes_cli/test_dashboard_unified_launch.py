@@ -85,5 +85,30 @@ class TestUnifiedDashboardRouting:
         assert execs == []
 
 
+class TestInteractiveDashboardAuthSetup:
+
+    def test_loopback_proxy_public_url_offers_auth_setup(
+        self, main_mod, monkeypatch, capsys
+    ):
+        """A TTY operator is prompted when public_url gates a loopback bind."""
+        from hermes_cli.dashboard_auth import clear_providers
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL",
+            "https://dashboard.example.test:9443",
+        )
+        clear_providers()
+        monkeypatch.setattr(main_mod.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(main_mod.sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _prompt: "3")
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod._maybe_setup_dashboard_auth_interactively(_args())
+
+        assert exc.value.code == 1
+        output = capsys.readouterr().out
+        assert "configured external dashboard.public_url" in output
+
+
 
 

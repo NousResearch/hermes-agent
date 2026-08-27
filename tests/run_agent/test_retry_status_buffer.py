@@ -152,6 +152,35 @@ def test_pending_fallback_notice_emitted_once_on_success():
     assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
 
 
+def test_pending_fallback_notice_emits_all_switches_in_order():
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = emitted.append
+    agent._pending_fallback_notice = ["primary → fallback-1", "fallback-1 → fallback-2"]
+
+    agent._emit_pending_fallback_notice()
+
+    assert emitted == ["primary → fallback-1", "fallback-1 → fallback-2"]
+    assert agent._pending_fallback_notice is None
+
+
+def test_pending_fallback_notice_continues_after_callback_error():
+    agent = _make_bare_agent()
+    attempted = []
+    agent._pending_fallback_notice = ["first", "second"]
+
+    def emit(message):
+        attempted.append(message)
+        if message == "first":
+            raise RuntimeError("surface unavailable")
+
+    agent._emit_status = emit
+    agent._emit_pending_fallback_notice()
+
+    assert attempted == ["first", "second"]
+    assert agent._pending_fallback_notice is None
+
+
 def test_pending_fallback_notice_noop_when_unset():
     """No fallback this turn → no notice emitted on the success path."""
     agent = _make_bare_agent()

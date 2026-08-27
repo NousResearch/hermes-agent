@@ -23,6 +23,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
+from tools.browser_extension_router import routed_browser_handler
 
 logger = logging.getLogger(__name__)
 
@@ -671,13 +672,19 @@ registry.register(
     name="browser_cdp",
     toolset="browser-cdp",
     schema=BROWSER_CDP_SCHEMA,
-    handler=lambda args, **kw: browser_cdp(
-        method=args.get("method", ""),
-        params=args.get("params"),
-        target_id=args.get("target_id"),
-        frame_id=args.get("frame_id"),
-        timeout=args.get("timeout", 30.0),
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_cdp",
+        args,
+        fallback=lambda: browser_cdp(
+            method=args.get("method", ""),
+            params=args.get("params"),
+            target_id=args.get("target_id"),
+            frame_id=args.get("frame_id"),
+            timeout=args.get("timeout", 30.0),
+            task_id=kw.get("task_id"),
+        ),
         task_id=kw.get("task_id"),
+        session_id=kw.get("session_id"),
     ),
     check_fn=_browser_cdp_check,
     emoji="🧪",

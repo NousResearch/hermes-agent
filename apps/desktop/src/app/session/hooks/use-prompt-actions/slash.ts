@@ -23,7 +23,13 @@ import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  captureNewChatSource,
+  ensureGatewayProfile,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   $connection,
   $sessions,
@@ -265,6 +271,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
         ): Promise<void> => {
           if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
+            // `/goal clear|pause|resume|status` can come back as a TYPED exec
+            // dispatch (command.dispatch routing) instead of the plain-output
+            // shape handled below. This branch used to render and return
+            // without touching the goal store, so "✓ Goal cleared." printed
+            // while the stale "Goal paused" card kept showing until the chat
+            // was reopened (#80348). Mirror the output into the store exactly
+            // like the plain-output path does.
+            if (name === 'goal' && dispatch.output) {
+              applyGoalStatusText(sessionId, dispatch.output)
+            }
+
             renderSlashOutput(dispatch.output ?? '(no output)')
 
             return
@@ -791,6 +808,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
             $newChatProfile.set(key)
             await ensureGatewayProfile(key)
+            // Capture the source the swap landed on (null on the v1 profile path)
+            // so the draft's owner matches the socket that will mint it.
+            captureNewChatSource()
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
             notifyError(err, copy.setProfileFailed)

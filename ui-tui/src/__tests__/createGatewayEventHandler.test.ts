@@ -1597,6 +1597,96 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().sudo).toBeNull()
   })
 
+  // ── Batch (multi-question) clarify ─────────────────────────────────
+
+  it('parses a batch clarify.request into a questions overlay', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        questions: [
+          { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
+          { choices: null, qid: 'q1', question: 'Two?' }
+        ],
+        request_id: 'req-batch'
+      },
+      type: 'clarify.request'
+    } as any)
+
+    const clarify = getOverlayState().clarify
+    expect(clarify?.requestId).toBe('req-batch')
+    expect(clarify?.questions).toHaveLength(2)
+    expect(clarify?.questions?.[0]?.qid).toBe('q0')
+    expect(clarify?.questions?.[1]?.choices).toBeNull()
+    expect(clarify?.answers).toEqual({})
+  })
+
+  it('seeds locked answers from a reconnect-replay batch clarify.request', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        answers: { q0: 'a' },
+        questions: [
+          { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
+          { choices: null, qid: 'q1', question: 'Two?' }
+        ],
+        request_id: 'req-replay'
+      },
+      type: 'clarify.request'
+    } as any)
+
+    expect(getOverlayState().clarify?.answers).toEqual({ q0: 'a' })
+  })
+
+  it('drops malformed batch entries and falls back to single-question shape when none survive', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        choices: ['x', 'y'],
+        question: 'Fallback?',
+        questions: [
+          { qid: '', question: 'no qid' },
+          { qid: 'q1', question: '   ' }
+        ],
+        request_id: 'req-bad'
+      },
+      type: 'clarify.request'
+    } as any)
+
+    const clarify = getOverlayState().clarify
+    expect(clarify?.questions).toBeUndefined()
+    expect(clarify?.question).toBe('Fallback?')
+    expect(clarify?.choices).toEqual(['x', 'y'])
+  })
+
+  it('persists an abandoned batch clarify with its locked partials on tool.complete', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchOverlayState({
+      clarify: {
+        answers: { q0: 'alpha' },
+        choices: null,
+        question: '',
+        questions: [
+          { choices: ['alpha', 'beta'], qid: 'q0', question: 'One?' },
+          { choices: null, qid: 'q1', question: 'Two?' }
+        ],
+        requestId: 'req-batch-timeout'
+      }
+    })
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-b' }, type: 'tool.complete' } as any)
+
+    const record = appended.find(msg => msg.role === 'system' && msg.text.startsWith('ask (2 questions)'))
+    expect(record).toBeDefined()
+    expect(record?.text).toContain('✓ One? → alpha')
+    expect(record?.text).toContain('· Two? (no answer)')
+    expect(getOverlayState().clarify).toBeNull()
+  })
+
   // ── Credits notice (Strategy B) ──────────────────────────────────────
   describe('credits notice', () => {
     it('shows a notice immediately when idle (no turn in flight)', () => {

@@ -75,21 +75,24 @@ class UpstageProfile(ProviderProfile):
         if reasoning_config.get("enabled") is False:
             return {}, top_level
 
-        # Map Hermes' effort vocabulary onto Solar's accepted set. xhigh/max/
-        # ultra collapse to high (Solar's strongest). minimal → off (omit).
-        # Unknown-but-enabled efforts (future vocabulary additions above
-        # "high", per the max/ultra precedent in #62650) also collapse to
-        # high rather than silently downgrading to the medium default.
+        # Map Hermes' effort vocabulary onto Solar's accepted set via the
+        # shared clamp (agent.reasoning_effort). minimal → omit (Solar's
+        # minimal means off); unknown-but-enabled bespoke levels collapse to
+        # high rather than silently downgrading (#62650 precedent).
         effort = (reasoning_config.get("effort") or "").strip().lower()
         if not effort:
             top_level["reasoning_effort"] = _DEFAULT_REASONING_EFFORT
             return {}, top_level
-        mapped = {
-            "minimal": None,
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-        }.get(effort, "high")
+        if effort == "minimal":
+            return {}, top_level
+
+        from agent.reasoning_effort import EFFORT_LADDER, SOLAR_EFFORTS, clamp_effort
+
+        mapped = clamp_effort(effort, SOLAR_EFFORTS)
+        if mapped not in SOLAR_EFFORTS:
+            # Bespoke level outside the ladder — Solar precedent is to run
+            # at full strength rather than quietly fall to the default.
+            mapped = "high" if effort not in EFFORT_LADDER else None
 
         if mapped:
             top_level["reasoning_effort"] = mapped

@@ -13,7 +13,6 @@ import { Streamdown } from 'streamdown'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
-import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
@@ -31,7 +30,10 @@ import {
   writeDesktopFileText
 } from '@/lib/desktop-fs'
 import { Check, Pencil, X } from '@/lib/icons'
+import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { isComposerChord } from '@/lib/keybinds/chords'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
@@ -43,6 +45,11 @@ const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 const SOURCE_CHUNK_LINES = 200
 const SOURCE_LINE_PX = 20
 const SOURCE_OVERSCAN_LINES = 400
+
+// Math plugin for the static file preview, configured once at module scope.
+// Mirrors the chat transcript's plugin (`markdown-text.tsx`) — same memoized
+// KaTeX wrapper, with `singleDollarTextMath: true` so `$x$` renders inline.
+const previewMathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 type EmptyStateTone = 'neutral' | 'warning'
 
@@ -300,7 +307,11 @@ const MD_TAG_CLASSES = {
   ol: 'mb-4 list-decimal pl-6 marker:text-muted-foreground/70 last:mb-0',
   li: 'mt-1 leading-relaxed',
   blockquote: 'mb-4 border-l-2 border-border pl-3 text-muted-foreground italic last:mb-0',
-  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono'
+  pre: 'mb-4 overflow-hidden rounded-lg border border-border bg-card font-mono text-xs leading-relaxed last:mb-0 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:bg-transparent! [&_pre]:p-3 [&_pre]:font-mono',
+  hr: 'my-6 border-border',
+  th: 'px-3 py-2 text-left text-sm font-semibold text-foreground',
+  td: 'px-3 py-2 align-top text-sm leading-relaxed',
+  thead: 'bg-muted/35 text-muted-foreground'
 } as const
 
 function tagged<T extends keyof typeof MD_TAG_CLASSES>(Tag: T) {
@@ -355,6 +366,47 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
   return <RichCodeBlock code={code} fallback={highlighted} language={language} />
 }
 
+function MarkdownTable({ className, ...rest }: ComponentProps<'table'>) {
+  return (
+    <div className="mb-4 w-full overflow-x-auto rounded-lg border border-border last:mb-0">
+      <table
+        className={cn(
+          'm-0 w-full min-w-[18rem] border-collapse [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
+          className
+        )}
+        {...rest}
+      />
+    </div>
+  )
+}
+
+function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
+  return (
+    <img
+      alt={alt ?? ''}
+      className="my-3 max-h-96 w-auto max-w-full rounded-lg border border-border object-contain shadow-sm"
+      src={src}
+      {...rest}
+    />
+  )
+}
+
+function MarkdownLink({ children, className, href, ...rest }: ComponentProps<'a'>) {
+  const isExternal = /^https?:\/\//i.test(href || '')
+
+  return (
+    <a
+      className={cn('text-foreground underline underline-offset-2 hover:text-primary', className)}
+      href={href}
+      rel={isExternal ? 'noopener noreferrer' : undefined}
+      target={isExternal ? '_blank' : undefined}
+      {...rest}
+    >
+      {children}
+    </a>
+  )
+}
+
 const MARKDOWN_COMPONENTS = {
   h1: tagged('h1'),
   h2: tagged('h2'),
@@ -366,14 +418,29 @@ const MARKDOWN_COMPONENTS = {
   li: tagged('li'),
   blockquote: tagged('blockquote'),
   pre: tagged('pre'),
-  code: MarkdownCode
+  code: MarkdownCode,
+  hr: tagged('hr'),
+  table: MarkdownTable,
+  th: tagged('th'),
+  td: tagged('td'),
+  thead: tagged('thead'),
+  img: MarkdownImage,
+  a: MarkdownLink
 }
 
-function MarkdownPreview({ text }: { text: string }) {
+export function MarkdownPreview({ text }: { text: string }) {
+  const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
+
   return (
     <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
-      <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
-        {text}
+      <Streamdown
+        components={MARKDOWN_COMPONENTS}
+        controls={false}
+        mode="static"
+        parseIncompleteMarkdown={false}
+        plugins={{ math: previewMathPlugin }}
+      >
+        {mathText}
       </Streamdown>
     </div>
   )
@@ -538,7 +605,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event)) {
+      if (!isComposerChord(event)) {
         return
       }
 

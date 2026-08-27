@@ -350,6 +350,11 @@ _HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22")
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
+# Install tree root (this file lives at <install_root>/hermes_constants.py).
+# Used by secure_parent_dir() to skip chmod on the install dir — chmodding it
+# 0700 breaks hermes-user traversal in Docker (UID 10000). See #25821, #93050.
+_INSTALL_ROOT = Path(__file__).resolve().parent
+
 
 def node_tool_runnable(path: str | None) -> bool:
     """Return True only when *path* is a Node/npm/npx binary that actually runs.
@@ -1017,11 +1022,35 @@ def secure_parent_dir(path: Path) -> None:
     prevent catastrophic host bricking when ``HERMES_HOME`` or other path
     env vars resolve to an unexpected location.
 
-    See https://github.com/NousResearch/hermes-agent/issues/25821.
+    Also refuses to chmod the hermes-agent install tree (the directory this
+    module lives in, and anything below it): restricting the install dir to
+    0700 locks the runtime user out of traversing it when it does not own
+    the dir, as in the Docker image. A warning is logged when this happens.
+
+    See https://github.com/NousResearch/hermes-agent/issues/25821 and
+    https://github.com/NousResearch/hermes-agent/pull/93050.
     """
     parent = path.parent.resolve()
     # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
     if parent == Path("/") or len(parent.parts) < 3:
+        return
+    # Refuse the install tree root. chmodding it 0700 breaks hermes-user
+    # traversal in Docker (UID 10000) and any other install where the
+    # runtime user doesn't own the install dir. See #25821, #93050.
+    if parent == _INSTALL_ROOT or _INSTALL_ROOT in parent.parents:
+        # A credential file inside the install tree usually means HERMES_HOME
+        # resolved somewhere unexpected — surface it instead of skipping
+        # silently, since this same misconfiguration previously caused
+        # production lockouts.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Not restricting permissions on %s: it is inside the "
+            "hermes-agent install directory (%s). Credential files are "
+            "normally stored under the hermes home directory instead.",
+            parent,
+            _INSTALL_ROOT,
+        )
         return
     try:
         os.chmod(parent, 0o700)
@@ -1608,6 +1637,22 @@ def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
     if windows is None:
         windows = sys.platform == "win32"
     return Path(venv_dir) / ("Scripts" if windows else "bin")
+
+
+def project_venv_dir(project_root) -> Path | None:
+    """The project's venv directory, ``venv`` or ``.venv``, when one exists.
+
+    ``uv venv`` defaults to ``.venv`` while our installers create ``venv``, so
+    both layouts are in the wild. Call sites that only knew about ``venv``
+    silently no-oped on a ``.venv`` install — that is how the Windows
+    shim-lock preflight skipped itself entirely (#79542). ``venv`` wins when
+    both exist, matching what the installers write.
+    """
+    for name in ("venv", ".venv"):
+        candidate = Path(project_root) / name
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:

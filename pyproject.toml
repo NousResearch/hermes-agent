@@ -2,7 +2,7 @@
 
 [project]
 name = "hermes-agent"
-version = "0.20.4"
+version = "0.20.5"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -57,6 +57,11 @@ dependencies = [
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
+  # Snowball stemming for tool_search's BM25 (tools/tool_search.py) —
+  # official Snowball project package, pure Python, zero transitive deps.
+  # Applied at index AND query time so morphological variants match
+  # ("issues" finds create_issue).
+  "snowballstemmer==3.1.1",
   # ``packaging`` is imported directly on three production paths but was never
   # declared, so it only reached users transitively (pip/uv pull it for other
   # tools). The slim official Docker image ships without it, where the

@@ -1,7 +1,67 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    _FORWARD_COMPAT_TEMPLATE_MODELS,
+    get_codex_model_ids,
+)
+
+
+CHATGPT_REJECTED_CODEX_PRO_SLUGS = {
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra-pro",
+    "gpt-5.6-luna-pro",
+}
+
+
+def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch):
+    """OAuth fallback retains real models but never synthesizes rejected ones."""
+    retained_models = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+    template_models = {model for model, _fallbacks in _FORWARD_COMPAT_TEMPLATE_MODELS}
+
+    assert retained_models.issubset(DEFAULT_CODEX_MODELS)
+    assert retained_models.issubset(template_models)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(DEFAULT_CODEX_MODELS)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(template_models)
+
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-5.5"],
+    )
+    model_ids = get_codex_model_ids(access_token="codex-access-token")
+
+    assert retained_models.issubset(model_ids)
+    assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
+
+
+def test_picker_synthesizes_900k_variants_for_verified_slugs():
+    """Every live-verified large-context slug gets an explicit ``-900k``
+    picker variant directly after its base entry; slugs that genuinely
+    enforce 272K (gpt-5.5, gpt-5.4-mini) never get one. Base slugs stay
+    in the list as the cheaper 272K default."""
+    model_ids = get_codex_model_ids()  # offline curated path
+
+    for base in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"):
+        assert base in model_ids
+        assert f"{base}-900k" in model_ids
+        assert model_ids.index(f"{base}-900k") == model_ids.index(base) + 1
+
+    assert "gpt-5.5-900k" not in model_ids
+    assert "gpt-5.4-mini-900k" not in model_ids
+    assert "gpt-5.3-codex-900k" not in model_ids
+
+
+def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
+    """Eligibility is an exact predicate, not a family-prefix match:
+    ``-pro`` slugs are not routable on Codex OAuth (backend 400s them) and
+    unknown future descendants were never probed — neither may gain a
+    synthetic ``-900k`` entry (#92797 review)."""
+    from hermes_cli.codex_models import _finalize_codex_models
+
+    out = _finalize_codex_models(["gpt-5.6-sol-pro", "gpt-5.6-nova"])
+    assert "gpt-5.6-sol-pro-900k" not in out
+    assert "gpt-5.6-nova-900k" not in out
 
 
 

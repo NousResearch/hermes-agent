@@ -71,6 +71,7 @@ from agent.context_engine import (
     automatic_compaction_status_message,
     sanitize_memory_context,
 )
+from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -102,6 +103,27 @@ COMPACTION_STATUS = (
 )
 
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
+
+
+def _strip_marker_for_comparison(msgs: Any) -> Any:
+    """Copy ``msgs`` with the ``_db_persisted`` persistence marker removed.
+
+    Used by the no-op progress check: live and loaded dicts carry the marker
+    (loaded rows are stamped at materialization time, #92231) while
+    ``compress()`` output is marker-swept, so a raw ``==`` would misclassify a
+    semantically-identical no-op copy as progress. Non-list inputs and
+    non-dict entries pass through unchanged.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    if not isinstance(msgs, list):
+        return msgs
+    return [
+        {k: v for k, v in m.items() if k != _DB_PERSISTED_MARKER}
+        if isinstance(m, dict)
+        else m
+        for m in msgs
+    ]
 
 
 def _emit_compaction_done(agent: Any) -> None:
@@ -171,6 +193,7 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
 # same constants the emission sites use) through the gateway noise filter.
 ROUTINE_COMPRESSION_STATUS_SAMPLES = (
     COMPACTION_STATUS,
+    COMPACTION_DONE_STATUS,
     PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000),
     IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),
@@ -267,6 +290,7 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_last_compress_aborted",
     "_last_summary_auth_failure",
     "_last_summary_network_failure",
+    "_last_summary_empty_content_failure",
     "_last_aux_model_failure_error",
     "_last_aux_model_failure_model",
     "_summary_model_fallen_back",
@@ -1090,6 +1114,16 @@ def run_compress_context_with_progress_timeout(
             # the host unwinds, so the detached worker can never publish.
             fence.revoke_commit_admission()
 
+class CompressionCheckpointUnavailable(RuntimeError):
+    """Raised when required durable pre-compress checkpointing is unavailable."""
+
+
+def _checkpoint_blocked(reason: str) -> CompressionCheckpointUnavailable:
+    return CompressionCheckpointUnavailable(
+        "BLOCKED_MISSING_PREREQUISITE: required pre-compress checkpoint "
+        f"unavailable: {reason}"
+    )
+
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
     """Whether the live in-memory SessionDB class structurally predates locks.
@@ -1518,6 +1552,41 @@ class _CompressionActivityHeartbeat:
             if self._should_suppress():
                 return
             self._touch("context compression in progress")
+
+def _direct_messages_for_pre_compress_memory(messages: Any) -> list[dict[str, Any]]:
+    """Return direct user/assistant evidence safe for memory checkpointing.
+
+    Compression summaries are derivative context, not new source evidence.
+    Tool rows and system messages are likewise omitted so memory providers
+    receive one normalized host contract instead of having to infer Hermes
+    transcript internals independently. Assistant messages that carry both
+    prose and ``tool_calls`` keep their prose (the ``tool_calls`` payload is
+    stripped); pure tool-call wrappers without prose are dropped.
+    """
+    # Deferred import: context_compressor imports turn_context, which imports
+    # this module — a module-level import here would close that cycle
+    # (upstream introduced the turn_context edge with the api_content work).
+    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+
+    direct_messages: list[dict[str, Any]] = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        if message.get(COMPRESSED_SUMMARY_METADATA_KEY):
+            continue
+        if role == "assistant" and message.get("tool_calls"):
+            content = message.get("content")
+            has_prose = bool(
+                content.strip() if isinstance(content, str) else content
+            )
+            if not has_prose:
+                continue
+            message = {k: v for k, v in message.items() if k != "tool_calls"}
+        direct_messages.append(message)
+    return direct_messages
 
 
 class _CompressionLockLeaseRefresher:
@@ -2319,7 +2388,18 @@ def compress_context(
     # The memory-provider context handoff below is intentionally Hermes-only:
     # the app server does not expose its native summary prompt, so there is no
     # truthful injection point for ``on_pre_compress()`` return text here.
+    # `is True` (not bool()): unit tests drive this path with bare MagicMock
+    # agents whose auto-created attributes are truthy; the gate must only arm
+    # on the explicit boolean set by agent_init from config.
+    checkpoint_required = (
+        getattr(agent, "compression_checkpoint_required", False) is True
+    )
     if getattr(agent, "api_mode", None) == "codex_app_server":
+        if checkpoint_required:
+            raise _checkpoint_blocked(
+                "codex_app_server owns the authoritative thread and does not "
+                "expose a truthful pre-compaction transcript boundary"
+            )
         _codex_fence_entered = False
         if commit_fence is not None:
             _codex_fence_entered = commit_fence.begin_commit(
@@ -2414,8 +2494,13 @@ def compress_context(
     if _compaction_status:
         agent._emit_status(_compaction_status)
     _compaction_done_emitted = False
+    # Commit outcome of this attempt; rebound to "committed" on the success
+    # path just before returning the compressed history. The lifecycle
+    # closure reads it at call time, so any abort/exception path that skips
+    # that rebind keeps the terminal edge suppressed.
+    _commit_status = "aborted"
 
-    def _complete_compaction_lifecycle() -> None:
+    def _complete_compaction_lifecycle(*, force_terminal: bool = False) -> None:
         nonlocal _compaction_done_emitted
         if _compaction_done_emitted:
             return
@@ -2423,7 +2508,13 @@ def compress_context(
         # A suppressed start (quiet context engine) opened no visible
         # compaction phase — emit no terminal edge either. Failure warnings
         # go through agent._emit_warning and are never suppressed here.
-        if _compaction_status_emitted:
+        # Aborts that never compacted (lock contender, cancelled commit
+        # fence) opt in via force_terminal: they still need the structured
+        # terminal edge so clients can retire their compaction phase. Chat
+        # surfaces filter this routine notice independently.
+        if _compaction_status_emitted and (
+            _commit_status == "committed" or force_terminal
+        ):
             _emit_compaction_done(agent)
 
     # ── Compression lock ────────────────────────────────────────────────
@@ -2552,7 +2643,7 @@ def compress_context(
                         split_status="aborted",
                         failure_class="commit_fence_cancelled",
                     )
-                    _complete_compaction_lifecycle()
+                    _complete_compaction_lifecycle(force_terminal=True)
                     return messages, _existing_sp
             try:
                 _lock_acquired = _try_acquire_lock(
@@ -2644,7 +2735,7 @@ def compress_context(
                 split_status="aborted",
                 failure_class="lock_contended",
             )
-            _complete_compaction_lifecycle()
+            _complete_compaction_lifecycle(force_terminal=True)
             return messages, _existing_sp
     _lock_released = False
     _lock_release_guard = threading.Lock()
@@ -2935,9 +3026,53 @@ def compress_context(
         # wants surfaced inside the compression summary; capture and forward it
         # instead of silently discarding the provider's return value.
         memory_context = ""
-        if agent._memory_manager:
+        memory_manager = getattr(agent, "_memory_manager", None)
+        # Raw messages remain the historical (API v1) provider contract; the
+        # normalized evidence list is handed only to API v2+ checkpoint
+        # providers inside MemoryManager.on_pre_compress().
+        evidence_messages = _direct_messages_for_pre_compress_memory(messages)
+        if checkpoint_required:
+            supports_checkpoint = getattr(
+                memory_manager, "supports_pre_compress_checkpoint", None
+            )
+            if memory_manager is None or not callable(supports_checkpoint):
+                raise _checkpoint_blocked(
+                    f"no active provider implements checkpoint API "
+                    f"v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
+                )
             try:
-                _maybe_ctx = agent._memory_manager.on_pre_compress(messages)
+                compatible = bool(
+                    supports_checkpoint(PRE_COMPRESS_CHECKPOINT_API_VERSION)
+                )
+            except Exception as exc:
+                raise _checkpoint_blocked("provider capability probe failed") from exc
+            if not compatible:
+                raise _checkpoint_blocked(
+                    f"active provider does not implement checkpoint API "
+                    f"v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
+                )
+            try:
+                _maybe_ctx = memory_manager.on_pre_compress(
+                    messages,
+                    evidence_messages=evidence_messages,
+                    require_checkpoint=True,
+                    checkpoint_api_version=PRE_COMPRESS_CHECKPOINT_API_VERSION,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Required pre-compress checkpoint failed (%s)",
+                    type(exc).__name__,
+                )
+                raise _checkpoint_blocked(
+                    f"provider checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION} failed"
+                ) from exc
+            if isinstance(_maybe_ctx, str):
+                memory_context = sanitize_memory_context(_maybe_ctx)
+        elif memory_manager:
+            try:
+                _maybe_ctx = memory_manager.on_pre_compress(
+                    messages, evidence_messages=evidence_messages
+                )
                 if isinstance(_maybe_ctx, str):
                     memory_context = sanitize_memory_context(_maybe_ctx)
             except Exception:
@@ -3163,8 +3298,15 @@ def compress_context(
         # Compare against the pre-dispatch semantic state, not object identity:
         # legacy/plugin engines may return an equal copy for a no-op, or mutate
         # the live list while returning an unchanged snapshot. Neither case may
-        # rotate or rewrite the session.
-        if compressed == messages_before_compression:
+        # rotate or rewrite the session. The raw ``==`` leg runs FIRST so a
+        # list subclass returned by an engine keeps its ``__eq__`` semantics
+        # (tests seam on this); the marker-insensitive leg (#92231) then covers
+        # the cold-resume shape where the stamped snapshot differs from the
+        # marker-swept compress() output only by ``_db_persisted``.
+        if compressed == messages_before_compression or (
+            _strip_marker_for_comparison(compressed)
+            == _strip_marker_for_comparison(messages_before_compression)
+        ):
             if messages != messages_before_compression:
                 messages[:] = copy.deepcopy(messages_before_compression)
             logger.info(
@@ -3387,6 +3529,27 @@ def compress_context(
                 _rough_in = estimate_messages_tokens_rough(messages)
                 _rough_out = estimate_messages_tokens_rough(compressed)
                 if _rough_out > _rough_in:
+                    # Todo refresh and user-turn anchoring happen after the
+                    # compressor's own size check, so they can tip a break-even
+                    # candidate over. Give it one mechanical salvage pass.
+                    from agent.context_compressor import salvage_grown_transcript
+
+                    _salvaged = salvage_grown_transcript(
+                        messages, compressed, budget=_rough_in
+                    )
+                    if _salvaged is not None:
+                        _salv_est = estimate_messages_tokens_rough(_salvaged)
+                        if _salv_est < _rough_in:
+                            logger.info(
+                                "Compression salvage recovered a shrinking "
+                                "transcript (session=%s, ~%s -> ~%s tokens)",
+                                agent.session_id or "none",
+                                f"{_rough_in:,}",
+                                f"{_salv_est:,}",
+                            )
+                            compressed = _salvaged
+                            _rough_out = _salv_est
+                if _rough_out > _rough_in:
                     logger.warning(
                         "Compression refused: compressed transcript would be "
                         "larger than the original (session=%s, ~%s -> ~%s "
@@ -3395,6 +3558,17 @@ def compress_context(
                         f"{_rough_in:,}",
                         f"{_rough_out:,}",
                     )
+                    # Flag the refusal on the compressor state so manual
+                    # /compress feedback can report it honestly. Without this,
+                    # the CLI compared the returned list against its pre-call
+                    # snapshot, saw a difference (durable-snapshot adoption can
+                    # legitimately change the count), and printed
+                    # "✅ Compressed: 8 → 14 messages" directly under the
+                    # refusal warning (Aug 2026 full-surface CLI QA sweep).
+                    try:
+                        agent.context_compressor._last_compress_refused_would_grow = True
+                    except Exception:
+                        pass
                     try:
                         agent._emit_warning(
                             "⚠️ Compression refused: the generated summary "
@@ -3414,6 +3588,38 @@ def compress_context(
                         split_status="aborted",
                         failure_class="would_grow",
                     )
+                    # Record the rejected attempt as an ineffective
+                    # compaction strike so the anti-thrash breaker latches
+                    # after the normal threshold. Without this, the unchanged
+                    # transcript stays over the compression threshold and
+                    # automatic compression retries the identical summary
+                    # request on every turn (#88568). Manual /compress keeps
+                    # bypassing the latch (force=True skips the guards).
+                    try:
+                        agent.context_compressor.record_rejected_compaction()
+                    except Exception:
+                        logger.debug(
+                            "could not record rejected-compaction strike",
+                            exc_info=True,
+                        )
+                    # Restore ONLY the prune runway (same rationale as the
+                    # rotation-failure rollback below): compress()'s successful
+                    # tail already zeroed _proactive_prune_rearm_tokens in
+                    # memory, but this refusal keeps the ORIGINAL transcript —
+                    # whose cached prefix is intact. Leaving the runway at 0
+                    # disarms the #79640 throttle, so the very next iteration's
+                    # proactive prune rewrites history and breaks the prompt
+                    # cache without the required regrowth interval (#91830).
+                    # The durable copy was never cleared (that clear only rides
+                    # the archive_and_compact / child-row commit that never
+                    # ran), so restoring the snapshot re-aligns memory with
+                    # disk.
+                    if "_proactive_prune_rearm_tokens" in _compressor_attempt_snapshot:
+                        agent.context_compressor._proactive_prune_rearm_tokens = (
+                            _compressor_attempt_snapshot[
+                                "_proactive_prune_rearm_tokens"
+                            ]
+                        )
                     _release_lock()
                     return messages, _existing_sp
 
@@ -3990,15 +4196,6 @@ def _compress_context_via_codex_app_server(
     except Exception:
         pass
 
-    _compaction_done_emitted = False
-
-    def _complete_compaction_lifecycle() -> None:
-        nonlocal _compaction_done_emitted
-        if _compaction_done_emitted:
-            return
-        _compaction_done_emitted = True
-        _emit_compaction_done(agent)
-
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     try:
         _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
@@ -4006,7 +4203,6 @@ def _compress_context_via_codex_app_server(
     except BaseException:
         if _activity_heartbeat is not None:
             _activity_heartbeat.stop("context compression failed")
-        _complete_compaction_lifecycle()
         raise
 
     if getattr(result, "interrupted", False) or getattr(result, "error", None):
@@ -4031,7 +4227,6 @@ def _compress_context_via_codex_app_server(
         existing_prompt = getattr(agent, "_cached_system_prompt", None)
         if not existing_prompt:
             existing_prompt = agent._build_system_prompt(system_message)
-        _complete_compaction_lifecycle()
         return messages, existing_prompt
 
     try:
@@ -4071,7 +4266,9 @@ def _compress_context_via_codex_app_server(
     existing_prompt = getattr(agent, "_cached_system_prompt", None)
     if not existing_prompt:
         existing_prompt = agent._build_system_prompt(system_message)
-    _complete_compaction_lifecycle()
+    # Terminal edge only on success — failure/interrupt paths above return
+    # without it, matching the main compress_context() gating.
+    _emit_compaction_done(agent)
     return messages, existing_prompt
 
 

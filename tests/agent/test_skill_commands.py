@@ -348,6 +348,140 @@ class TestScanSkillCommands:
                 scan_skill_commands()
         assert any("already claimed" in r.message for r in caplog.records)
 
+    # -- concurrent scans (#74574) ------------------------------------------
+
+    def test_concurrent_scans_do_not_report_skills_as_claiming_themselves(
+        self, tmp_path, caplog
+    ):
+        """Two overlapping scans must not see each other's partial results.
+
+        ``scan_skill_commands`` published into a module-global dict while it
+        built, but deduped against a *local* ``seen_names``. A second scan
+        starting mid-flight therefore found every slug already present and
+        logged one "already claimed" warning per skill — each naming the very
+        same skill as the incumbent. A gateway serving several platforms hits
+        this on startup, flooding errors.log with one line per installed skill.
+        """
+        import logging as _logging
+        import threading
+
+        import tools.skills_tool as _skills_tool
+
+        skill_count = 5
+        for index in range(skill_count):
+            _make_skill(tmp_path, f"skill-{index}")
+
+        real_parse = _skills_tool._parse_frontmatter
+        parked = threading.Event()
+        other_scan_finished = threading.Event()
+        already_parked = threading.local()
+
+        def parking_parse(content):
+            # Park the background scan once, before it has published anything,
+            # so the foreground scan runs to completion underneath it.
+            if (
+                threading.current_thread().name == "parked-scan"
+                and not getattr(already_parked, "done", False)
+            ):
+                already_parked.done = True
+                parked.set()
+                other_scan_finished.wait(timeout=10)
+            return real_parse(content)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch(
+            "tools.skills_tool._parse_frontmatter", parking_parse
+        ):
+            with caplog.at_level(_logging.WARNING, logger="agent.skill_commands"):
+                background = threading.Thread(
+                    target=scan_skill_commands, name="parked-scan", daemon=True
+                )
+                background.start()
+                assert parked.wait(timeout=10), "background scan never parked"
+
+                foreground = scan_skill_commands()
+
+                other_scan_finished.set()
+                background.join(timeout=10)
+                assert not background.is_alive()
+
+        collisions = [r for r in caplog.records if "already claimed" in r.message]
+        assert collisions == [], (
+            "overlapping scans reported self-collisions: "
+            f"{[r.getMessage() for r in collisions]}"
+        )
+        # Both scans still produce the full, correct map.
+        assert len(foreground) == skill_count
+        assert foreground["/skill-0"]["name"] == "skill-0"
+
+    def test_publication_and_lookup_share_one_lock(self, tmp_path):
+        """A reader must not land between the map and platform-tag writes.
+
+        They are two separate global assignments. A reader in between sees the
+        NEW map still carrying the OLD platform tag; if that stale tag matches
+        its own platform it accepts the map without rescanning and serves
+        another platform's disabled-skill view — the leak #14536 closed.
+        Holding the publish lock must therefore block a reader outright.
+        """
+        import threading
+
+        import agent.skill_commands as skill_commands_module
+        from agent.skill_commands import get_skill_commands
+
+        _make_skill(tmp_path, "shared")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+
+            done = threading.Event()
+
+            def _read():
+                with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+                    get_skill_commands()
+                done.set()
+
+            with skill_commands_module._publish_lock:
+                reader = threading.Thread(target=_read, daemon=True)
+                reader.start()
+                # The reader must be unable to complete its freshness lookup
+                # while publication is in progress.
+                assert not done.wait(timeout=0.5), (
+                    "get_skill_commands read the (map, platform) pair without "
+                    "the publish lock"
+                )
+
+            assert done.wait(timeout=10), "reader did not finish after release"
+            reader.join(timeout=10)
+
+    def test_scan_never_publishes_a_partially_built_map(self, tmp_path):
+        """A reader during a scan sees the previous map, never a half-built one."""
+        import threading
+
+        import agent.skill_commands as skill_commands_module
+        import tools.skills_tool as _skills_tool
+
+        skill_count = 5
+        for index in range(skill_count):
+            _make_skill(tmp_path, f"skill-{index}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+
+        real_parse = _skills_tool._parse_frontmatter
+        observed_sizes = []
+
+        def observing_parse(content):
+            observed_sizes.append(len(skill_commands_module._skill_commands))
+            return real_parse(content)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch(
+            "tools.skills_tool._parse_frontmatter", observing_parse
+        ):
+            scan_skill_commands()
+
+        # Every mid-scan observation shows the complete previous map, never a
+        # partial one growing from 0.
+        assert observed_sizes == [skill_count] * skill_count
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

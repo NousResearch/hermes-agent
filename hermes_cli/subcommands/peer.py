@@ -108,8 +108,18 @@ def _base_url(peer: dict, profile: str | None) -> str:
 
 
 def _find_bot_chat(base: str, key: str) -> str | None:
-    """The remote canonical Bot Chat's session id, or None."""
-    listing = _request(f"{base}/api/sessions?limit=200", key)
+    """The remote canonical Bot Chat's session id, or None.
+
+    Bot Mode always HIDES canonical chats, so the plain listing (which
+    excludes hidden sessions) misses an existing Bot Chat and the caller
+    would try to create a duplicate that the peer's UNIQUE(title) guard
+    rejects (issue #91583). Newer peers support an exact-title lookup with
+    ``include_hidden=1``; older peers ignore the unknown query params and
+    return the ordinary visible listing, so this single request degrades
+    to exactly the previous behavior against them.
+    """
+    query = urllib.parse.urlencode({"limit": 200, "title": BOT_CHAT_TITLE, "include_hidden": 1})
+    listing = _request(f"{base}/api/sessions?{query}", key)
     for session in listing.get("data") or []:
         if isinstance(session, dict) and (session.get("title") or "").strip() == BOT_CHAT_TITLE:
             return str(session.get("id") or "") or None
@@ -120,12 +130,26 @@ def _ensure_bot_chat(base: str, key: str) -> str:
     existing = _find_bot_chat(base, key)
     if existing:
         return existing
-    created = _request(
-        f"{base}/api/sessions",
-        key,
-        method="POST",
-        body={"title": BOT_CHAT_TITLE, "source": "bot_peer_dm"},
-    )
+    try:
+        created = _request(
+            f"{base}/api/sessions",
+            key,
+            method="POST",
+            body={"title": BOT_CHAT_TITLE, "source": "bot_peer_dm"},
+        )
+    except urllib.error.HTTPError as exc:
+        detail = _http_error_detail(exc)
+        if exc.code == 400 and "title" in detail.lower():
+            # Older peer (no title/include_hidden lookup support): its
+            # canonical Bot Chat exists but is hidden, so we couldn't see it
+            # and the create collided with the UNIQUE(title) guard.
+            raise RuntimeError(
+                f"Peer already has a '{BOT_CHAT_TITLE}' session but it is hidden and the "
+                f"peer's gateway is too old to expose hidden sessions to this lookup "
+                f"(HTTP 400: {detail}). Update the peer's hermes-agent, or unhide the "
+                f"session there: PATCH /api/sessions/<id> {{\"hidden\": false}}."
+            ) from exc
+        raise
     # Real api_server wraps the row: {"object": "hermes.session", "session": {...}}.
     session = created.get("session") if isinstance(created.get("session"), dict) else created
     session_id = str(session.get("id") or session.get("session_id") or "")
@@ -248,7 +272,10 @@ def cmd_peer(args) -> int:
         except urllib.error.HTTPError as exc:
             print(f"Peer '{peer_name}' rejected the request (HTTP {exc.code}): {_http_error_detail(exc)}", file=sys.stderr)
             return 1
-        except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
+        except RuntimeError as exc:
+            print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
+            return 1
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             print(f"Could not reach peer '{peer_name}': {exc}", file=sys.stderr)
             return 1
 

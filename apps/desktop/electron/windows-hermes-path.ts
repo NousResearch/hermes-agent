@@ -11,12 +11,11 @@
  *      hermes.cmd/hermes.exe; the shim then failed the --version probe and
  *      the desktop fell through to a spurious bootstrap/repair. The fix:
  *      PATHEXT extensions first, empty extension LAST.
- *   2. chooseUpdaterArgs() — handOffWindowsBootstrapRecovery() chose
- *      --update vs the destructive --repair by checking ONLY
- *      venv\Scripts\hermes.exe (the console-script shim, written at the END
- *      of venv setup and absent in interrupted states), so it escalated to a
- *      full venv recreate even on healthy installs. The fix: gate on ANY
- *      real-install signal, not just the shim.
+ *   2. chooseUpdaterArgs() — handOffWindowsBootstrapRecovery() must separate
+ *      install provenance from updater viability. A bootstrap-complete marker
+ *      can outlive a deleted venv, while the updater needs BOTH the venv Python
+ *      and Hermes launcher. Marker-only or partial runtimes must use --repair;
+ *      only a runnable pair can use --update.
  *   3. resolveVenvHermesCommand() — unwrapWindowsVenvHermesCommand() returned
  *      the venv python with NO runtime probe (bypassing the caller's
  *      --version check too), so a venv broken mid-update (e.g. missing
@@ -61,23 +60,26 @@ export function buildPathExtCandidates(pathext: string | undefined, isWindows: b
 }
 
 /**
- * Choose the Windows bootstrap-recovery updater invocation: the gentle
- * in-place --update when ANY real-install signal is present, the
- * destructive --repair (full venv recreate) otherwise.
+ * Choose the Windows bootstrap-recovery invocation. The gentle in-place
+ * updater can only start when both pieces of its runtime contract exist: the
+ * venv Python interpreter and the Hermes launcher that drives `hermes update`.
+ * A bootstrap-complete marker proves install provenance, not current runtime
+ * usability, and may remain after the venv is removed or quarantined.
  *
- * haveRealInstall must be computed by the caller from ALL real-install
- * signals (venv python interpreter, venv hermes shim, bootstrap-complete
- * marker) — gating on just the hermes.exe console-script shim alone is the
- * regression this function's callers must avoid: that shim is written at
- * the END of venv setup and is absent in exactly the interrupted/quarantined
- * states this recovery exists to heal.
- *
- * @param {boolean} haveRealInstall
+ * @param {BootstrapRecoverySignals} signals
  * @param {string} branch
  * @returns {string[]} updater argv, e.g. ['--update', '--branch', 'main'].
  */
-export function chooseUpdaterArgs(haveRealInstall: boolean, branch: string): string[] {
-  return haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+export interface BootstrapRecoverySignals {
+  hasBootstrapMarker: boolean
+  hasVenvHermes: boolean
+  hasVenvPython: boolean
+}
+
+export function chooseUpdaterArgs(signals: BootstrapRecoverySignals, branch: string): string[] {
+  const canRunUpdater = signals.hasVenvHermes && signals.hasVenvPython
+
+  return canRunUpdater ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 }
 
 /**

@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 
+import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
+
 import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
@@ -45,42 +47,12 @@ class TestResizeObserver {
   }
 }
 
+stubThreadEnvironment()
+
+// This suite drives the virtualizer, so it needs an observer that reports.
 vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-vi.stubGlobal('CSS', { escape: (str: string) => str })
 
-Element.prototype.scrollTo = function scrollTo() {}
-
-Element.prototype.animate = function animate() {
-  return {
-    cancel: () => {},
-    finished: Promise.resolve()
-  } as unknown as Animation
-}
-
-// jsdom returns 0 for offset*; some layout code reads those to size the
-// viewport. Fall through to client* (which tests can override) or a sane
-// default so message rows render with non-zero dimensions.
-function stubOffsetDimension(
-  prop: 'offsetHeight' | 'offsetWidth',
-  clientProp: 'clientHeight' | 'clientWidth',
-  fallback: number
-) {
-  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop)
-
-  Object.defineProperty(HTMLElement.prototype, prop, {
-    configurable: true,
-    get() {
-      return previous?.get?.call(this) || (this as HTMLElement)[clientProp] || fallback
-    }
-  })
-}
-
-stubOffsetDimension('offsetWidth', 'clientWidth', 800)
-stubOffsetDimension('offsetHeight', 'clientHeight', 600)
+stubThreadViewportSize()
 
 async function wait(ms: number) {
   await act(async () => {
@@ -331,19 +303,11 @@ function StreamingHarness({ onControls }: { onControls?: (controls: StreamingCon
   )
 }
 
-function TodoHarness({ message }: { message: ThreadMessage }) {
-  const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [message],
-    isRunning: message.status?.type === 'running',
-    onNew: async () => {}
-  })
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
-  )
-}
+const TodoHarness = ({ message }: { message: ThreadMessage }) => (
+  <ThreadRuntime messages={[message]}>
+    <Thread />
+  </ThreadRuntime>
+)
 
 function MessageHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
@@ -430,6 +394,34 @@ function RunningReasoningHarness() {
       <Thread />
     </AssistantRuntimeProvider>
   )
+}
+
+// A turn that streams reasoning and then settles — the transition the
+// preview latch exists for. `settle()` flips the thread to not-running.
+function renderSettlingReasoning() {
+  let setRunning: ((running: boolean) => void) | undefined
+
+  function SettlingReasoningHarness() {
+    const [running, setRunningState] = useState(true)
+
+    setRunning = setRunningState
+
+    const runtime = useExternalStoreRuntime<ThreadMessage>({
+      messages: [assistantReasoningMessage('The user asked a question.', running)],
+      isRunning: running,
+      onNew: async () => {}
+    })
+
+    return (
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    )
+  }
+
+  const { container } = render(<SettlingReasoningHarness />)
+
+  return { container, settle: () => act(() => setRunning?.(false)) }
 }
 
 function GroupedReasoningHarness() {
@@ -546,6 +538,30 @@ describe('assistant-ui streaming renderer', () => {
     expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
   })
 
+  it('puts the turn duration on the action bar row instead of a line of its own', () => {
+    const settled = {
+      ...assistantMessage('All done.', false),
+      metadata: {
+        unstable_state: null,
+        unstable_annotations: [],
+        unstable_data: [],
+        steps: [],
+        custom: { durationS: 12 }
+      }
+    } as ThreadMessage
+
+    const { container } = render(<TranscriptHarness messages={[userMessage(), settled]} />)
+
+    const duration = container.querySelector('[data-slot="aui_turn-duration"]')
+    const actions = container.querySelector('[data-slot="aui_msg-actions"]')
+
+    // Same row as the (always-mounted) action bar: the footer's height is
+    // already reserved while the turn streams, so landing the duration there
+    // adds no height when the turn settles.
+    expect(duration).toBeTruthy()
+    expect(duration?.parentElement).toBe(actions?.parentElement)
+  })
+
   it('renders assistant provider errors inline', () => {
     render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />)
 
@@ -603,6 +619,70 @@ describe('assistant-ui streaming renderer', () => {
       expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
     })
     expect(container.textContent).not.toContain('```ts')
+  })
+
+  it('keeps the height-capped thinking preview scrollable after the turn settles', async () => {
+    const { container, settle } = renderSettlingReasoning()
+
+    const live = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(live).toContain('max-h-40')
+    expect(live).toMatch(/\boverflow-auto\b/)
+    expect(live).not.toMatch(/\boverflow-hidden\b/)
+
+    settle()
+
+    await waitFor(() => {
+      expect(within(container).getByRole('button', { name: /thought/i })).toBeTruthy()
+    })
+
+    const settled = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(settled).toContain('max-h-40')
+    expect(settled).toMatch(/\boverflow-auto\b/)
+    expect(settled).not.toMatch(/\boverflow-hidden\b/)
+  })
+
+  it('does not collapse a live thinking preview when the turn settles', async () => {
+    const { container, settle } = renderSettlingReasoning()
+    const toggle = within(container).getByRole('button', { name: /thinking/i })
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('true')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+  })
+
+  it('leaves a settling turn collapsed when the collapsed-by-default preference is enabled', async () => {
+    $reasoningCollapsedByDefault.set(true)
+
+    const { container, settle } = renderSettlingReasoning()
+
+    expect(
+      within(container)
+        .getByRole('button', { name: /thinking/i })
+        .getAttribute('aria-expanded')
+    ).toBe('false')
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
   })
 
   it('keeps streaming reasoning collapsed by default when the preference is enabled', () => {

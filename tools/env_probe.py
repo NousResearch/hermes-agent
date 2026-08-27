@@ -78,6 +78,18 @@ _REMOTE_BACKENDS = frozenset({
 })
 
 
+def _plugin_backend_is_remote(backend: str) -> bool:
+    """Whether a plugin-registered terminal backend is remote (fail-soft)."""
+    if not backend or backend in _REMOTE_BACKENDS or backend == "local":
+        return False
+    try:
+        from agent.terminal_env_registry import provider_flag
+
+        return bool(provider_flag(backend, "is_remote", False))
+    except Exception:
+        return False
+
+
 def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
     """Run a short subprocess.  Returns (returncode, stdout, stderr).
 
@@ -195,7 +207,7 @@ def _build_probe_line() -> str:
     # Bail out if a remote terminal backend is configured; the host's
     # Python state isn't where the agent's tools run.
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
-    if backend in _REMOTE_BACKENDS:
+    if backend in _REMOTE_BACKENDS or _plugin_backend_is_remote(backend):
         return ""
 
     py3_ver = _python_version_of("python3")

@@ -99,7 +99,7 @@ def probe_gemini_tier(
     api_key: str,
     base_url: str = DEFAULT_GEMINI_BASE_URL,
     *,
-    model: str = "gemini-3.6-flash",
+    model: str = "gemini-3.7-flash",
     timeout: float = 10.0,
 ) -> str:
     """Probe a Google AI Studio API key and return its tier.
@@ -360,6 +360,33 @@ def _translate_tool_call_to_gemini(
     return part
 
 
+def _looks_like_json_schema(node: Any) -> bool:
+    """True if a parsed value contains a JSON-Schema-style ``$ref`` pointer.
+
+    Gemini 3 resolves ``$ref``/``$defs`` references inside a
+    functionResponse.response payload and rejects unknown pointers with
+    HTTP 400 INVALID_ARGUMENT. A tool result that is itself a JSON Schema
+    (e.g. the output of ``tool_describe`` for an MCP tool) must therefore be
+    forwarded as opaque text rather than as a structured response.
+
+    Detection is deliberately structural, not semantic: any ``$ref`` value
+    shaped like a JSON pointer (``#/...``) demotes the whole result. Non-schema
+    data that happens to carry such a pointer is a false positive, but the raw
+    content is preserved verbatim either way, so the cost is fidelity-free.
+    The recursive walk is O(n) over the parsed value; tool-result payloads are
+    small, so this is negligible per turn.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str) and value.startswith("#/"):
+                return True
+            if _looks_like_json_schema(value):
+                return True
+    elif isinstance(node, list):
+        return any(_looks_like_json_schema(item) for item in node)
+    return False
+
+
 def _translate_tool_result_to_gemini(
     message: Dict[str, Any],
     tool_name_by_call_id: Optional[Dict[str, str]] = None,
@@ -381,6 +408,14 @@ def _translate_tool_result_to_gemini(
     try:
         parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
+        parsed = None
+    # Gemini 3 resolves JSON-Schema ``$ref`` pointers inside a
+    # functionResponse.response payload and rejects unknown references with
+    # HTTP 400 INVALID_ARGUMENT ("referenced name '#/$defs/...' does not match
+    # a display_name"; see vercel/ai#14369). A tool result that is itself a
+    # JSON Schema (e.g. tool_describe output for an MCP tool) must therefore
+    # be forwarded as opaque text, not as a structured response.
+    if isinstance(parsed, dict) and _looks_like_json_schema(parsed):
         parsed = None
     response = parsed if isinstance(parsed, dict) else {"output": content}
     function_response: Dict[str, Any] = {
@@ -1111,7 +1146,7 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self,
         *,
-        model: str = "gemini-3.6-flash",
+        model: str = "gemini-3.7-flash",
         messages: Optional[List[Dict[str, Any]]] = None,
         stream: bool = False,
         tools: Any = None,

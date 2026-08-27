@@ -11,9 +11,11 @@ import re
 import stat
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -454,6 +456,50 @@ class TestToolHandlers:
         assert "bank_id" not in item
         assert "retain_async" not in item
 
+    def test_retain_defaults_item_timestamp_when_no_occurred_at(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "user likes dark mode"}
+        ))
+        assert result["result"] == "Memory stored successfully."
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        # Non-temporal retains still carry a defaulted event timestamp so the
+        # server can resolve any relative time phrases (#93568).
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_retain_threads_explicit_occurred_at_into_item_timestamp(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain",
+            {"content": "user visited Paris", "occurred_at": "2026-03-03"},
+        ))
+        assert result["result"] == "Memory stored successfully."
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["timestamp"] == "2026-03-03"
+
+    def test_retain_ignores_blank_occurred_at(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 24, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+        json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "hello", "occurred_at": "   "}
+        ))
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_build_retain_kwargs_accepts_explicit_occurred_at(self, provider):
+        item = provider._build_retain_kwargs("dinner with Sam", occurred_at="2026-08-20T19:00:00+02:00")
+        assert item["timestamp"] == "2026-08-20T19:00:00+02:00"
+
+    def test_retain_schema_exposes_occurred_at(self):
+        from plugins.memory.hindsight import RETAIN_SCHEMA
+
+        props = RETAIN_SCHEMA["parameters"]["properties"]
+        assert "occurred_at" in props
+        assert props["occurred_at"]["type"] == "string"
+        # The description must steer the model to pass event times.
+        assert "event" in props["occurred_at"]["description"].lower()
+        assert "occurred_at" not in RETAIN_SCHEMA["parameters"]["required"]
+
 
     def test_recall_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -844,7 +890,9 @@ class TestRecallStatus:
 
 
 class TestSyncTurn:
-    def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config):
+    def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config, monkeypatch):
+        event_time = datetime(2026, 8, 10, 11, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
         p = provider_with_config(
             retain_tags=["conv", "session1"],
             retain_source="hermes",
@@ -894,8 +942,42 @@ class TestSyncTurn:
         assert item["metadata"]["agent_identity"] == "fakeassistantname"
         assert item["metadata"]["turn_index"] == "1"
         assert item["metadata"]["message_count"] == "2"
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
+        assert content[0][0]["timestamp"] == event_time.isoformat(timespec="seconds")
+        assert content[0][1]["timestamp"] == event_time.isoformat(timespec="seconds")
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    def test_retain_timestamp_normalizes_a_naive_clock(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 10, 11, 9)
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+
+        timestamp = provider._build_retain_kwargs("hello")["timestamp"]
+        parsed = datetime.fromisoformat(timestamp)
+
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() is not None
+
+    @pytest.mark.asyncio
+    async def test_retain_timestamp_is_serialized_by_pinned_client(self, provider):
+        hindsight_client = pytest.importorskip(
+            "hindsight_client", reason="pinned hindsight-client SDK not installed"
+        )
+        Hindsight = hindsight_client.Hindsight
+
+        item = provider._build_retain_kwargs("hello")
+        item.pop("bank_id", None)
+        item.pop("retain_async", None)
+
+        client = Hindsight(base_url="http://localhost:9999", api_key="test-key")
+        client._memory_api.retain_memories = AsyncMock(return_value=SimpleNamespace(ok=True))
+        try:
+            await client.aretain_batch(bank_id="test-bank", items=[item])
+            call = client._memory_api.retain_memories.await_args
+            assert call is not None
+            request = call.args[1]
+            assert request.to_dict()["items"][0]["timestamp"] == item["timestamp"]
+        finally:
+            await client.aclose()
 
 
     def test_resume_creates_new_document(self, tmp_path, monkeypatch):

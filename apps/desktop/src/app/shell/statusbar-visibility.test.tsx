@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { StatusbarControls, type StatusbarItem } from '@/app/shell/statusbar-controls'
 import {
@@ -9,19 +9,11 @@ import {
   STATUSBAR_HIDDEN_BY_DEFAULT,
   toggleStatusbarVisible
 } from '@/store/statusbar-prefs'
-
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 beforeAll(() => {
-  vi.stubGlobal('ResizeObserver', TestResizeObserver)
-  Element.prototype.hasPointerCapture ??= () => false
-  Element.prototype.setPointerCapture ??= () => undefined
-  Element.prototype.releasePointerCapture ??= () => undefined
-  HTMLElement.prototype.scrollIntoView ??= () => undefined
+  stubResizeObserver()
+  stubMenuDomApis()
 })
 
 afterEach(() => {

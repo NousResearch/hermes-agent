@@ -552,7 +552,18 @@ def to_agent_visible_cache_path(
     elif backend in ("ssh", "daytona", "vercel_sandbox"):
         container_base = "~/.hermes"
     else:
-        return host_path  # local, singularity, unknown: host path is correct
+        # Plugin-registered backends declare where synced cache files land
+        # via ``cache_path_base``; None means host paths remain correct.
+        plugin_base = None
+        try:
+            from agent.terminal_env_registry import provider_flag
+
+            plugin_base = provider_flag(backend, "cache_path_base", None)
+        except Exception:
+            plugin_base = None
+        if not plugin_base:
+            return host_path  # local, singularity, unknown: host path is correct
+        container_base = str(plugin_base)
 
     mapped = map_cache_path_to_container(host_path, container_base=container_base)
     return mapped if mapped is not None else host_path

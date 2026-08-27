@@ -18,6 +18,7 @@ import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -105,6 +106,7 @@ import { type SettingsSearchEntry, settingsSearchTargetQuery } from '../settings
 import { useSettingsSearchCatalog } from '../settings/use-settings-search'
 
 import { usePaletteContributions } from './contrib'
+import { HighlightWatcher } from './highlight-watcher'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 
@@ -127,6 +129,11 @@ interface PaletteItem {
   label: string
   /** Label shown while ⌘/⌃ is held — previews the modifier-variant action. */
   modLabel?: string
+  /**
+   * Runs when the row becomes the cmdk highlight (arrow keys or hover). When
+   * a row has no onHighlight, a highlight on it clears the live preview.
+   */
+  onHighlight?: () => void
   /**
    * When set, ⌘/⌃-select (or ⌘-Enter) opens a new tab and ⇧⌘-select pops a
    * window — matching sidebar session rows. Plain select stays in-place.
@@ -242,8 +249,8 @@ const rankGroups = (groups: PaletteGroup[], search: string): PaletteGroup[] => {
     .map(entry => entry.group)
 }
 
-// cmdk selection values must be unique; labels alone can repeat (the same
-// theme lists under both Light and Dark). The id suffix disambiguates.
+// cmdk selection values must be unique; labels alone can repeat (a settings
+// field and a session can share a title). The id suffix disambiguates.
 const paletteValue = (item: PaletteItem): string => `${item.label}\u0001${item.id}`
 
 const EMPTY_GROUPS: PaletteGroup[] = []
@@ -549,7 +556,20 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const projectTree = useStore($projectTree)
   const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
   const navigate = useNavigate()
-  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
+
+  const { availableThemes, clearThemePreview, mode, previewTheme, resolvedMode, setMode, setTheme, themeName } =
+    useTheme()
+
+  // Mode rows preview like theme rows do: paint the committed skin at the
+  // highlighted brightness. `system` has to be resolved here — previewTheme
+  // paints a concrete light/dark.
+  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
+
+  const resolveThemeMode = useCallback(
+    (target: ThemeMode): 'light' | 'dark' => (target === 'system' ? (systemDark ? 'dark' : 'light') : target),
+    [systemDark]
+  )
+
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1100,21 +1120,32 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // can't render the current light/dark mode, flip to the one it supports.
     result.push({
       heading: t.settings.appearance.themeTitle,
-      items: availableThemes.map(theme => ({
-        active: themeName === theme.name,
-        icon: Palette,
-        id: `search-theme-${theme.name}`,
-        keepOpen: true,
-        keywords: ['theme', 'appearance', 'color', 'skin', theme.name, theme.description],
-        label: theme.label,
-        run: () => {
-          setTheme(theme.name)
+      items: availableThemes.map(theme => {
+        // Same mode fixup as run(): if a theme cannot render the current
+        // light/dark, preview (and commit) in the one mode it supports.
+        const previewMode = themeSupportsMode(theme.name, resolvedMode)
+          ? resolvedMode
+          : resolvedMode === 'dark'
+            ? 'light'
+            : 'dark'
 
-          if (!themeSupportsMode(theme.name, resolvedMode)) {
-            setMode(resolvedMode === 'dark' ? 'light' : 'dark')
+        return {
+          active: themeName === theme.name,
+          icon: Palette,
+          id: `search-theme-${theme.name}`,
+          keepOpen: true,
+          keywords: ['theme', 'appearance', 'color', 'skin', theme.name, theme.description],
+          label: theme.label,
+          onHighlight: () => previewTheme(theme.name, previewMode),
+          run: () => {
+            setTheme(theme.name)
+
+            if (!themeSupportsMode(theme.name, resolvedMode)) {
+              setMode(previewMode)
+            }
           }
         }
-      }))
+      })
     })
 
     // Switch light/dark/system directly (typing "dark" shouldn't require the
@@ -1128,6 +1159,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         keepOpen: true,
         keywords: ['appearance', 'color mode', 'brightness', entry.mode, t.settings.modeOptions[entry.mode].label],
         label: t.settings.modeOptions[entry.mode].label,
+        onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
         run: () => setMode(entry.mode)
       }))
     })
@@ -1210,7 +1242,9 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     goSession,
     mcpServers,
     mode,
+    previewTheme,
     resolvedMode,
+    resolveThemeMode,
     search,
     sessions,
     setMode,
@@ -1304,26 +1338,51 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
               }
             ]
           },
-          // Built-ins and imported families list under the mode(s) they support;
-          // picking sets skin + mode at once. A multi-variant import (GitHub,
-          // Solarized) appears in both groups and switches variants with the mode.
-          ...(['light', 'dark'] as const).map(groupMode => ({
-            heading: groupMode === 'light' ? t.settings.modeOptions.light.label : t.settings.modeOptions.dark.label,
-            items: availableThemes
-              .filter(theme => themeSupportsMode(theme.name, groupMode))
-              .map(theme => ({
-                active: themeName === theme.name && resolvedMode === groupMode,
-                icon: groupMode === 'light' ? Sun : Moon,
-                id: `theme-${theme.name}-${groupMode}`,
+          // Brightness lives with the palettes: one mode toggle for the whole
+          // list instead of splitting every theme across a Light and a Dark group.
+          {
+            heading: t.settings.appearance.colorMode,
+            items: THEME_MODES.map(entry => ({
+              active: mode === entry.mode,
+              icon: entry.icon,
+              id: `theme-mode-${entry.mode}`,
+              keepOpen: true,
+              keywords: ['appearance', 'brightness', 'color mode', t.settings.modeOptions[entry.mode].label],
+              label: t.settings.modeOptions[entry.mode].label,
+              onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
+              run: () => setMode(entry.mode)
+            }))
+          },
+          // Every palette once, applied on top of the selected mode. An import
+          // that only ships one variant (Dracula) flips the mode to the side it
+          // can actually render.
+          {
+            heading: t.settings.appearance.themeTitle,
+            items: availableThemes.map(theme => {
+              const previewMode = themeSupportsMode(theme.name, resolvedMode)
+                ? resolvedMode
+                : resolvedMode === 'dark'
+                  ? 'light'
+                  : 'dark'
+
+              return {
+                active: themeName === theme.name,
+                icon: Palette,
+                id: `theme-${theme.name}`,
                 keepOpen: true,
-                keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
+                keywords: ['theme', 'appearance', 'palette', theme.label, theme.description ?? ''],
                 label: theme.label,
+                onHighlight: () => previewTheme(theme.name, previewMode),
                 run: () => {
                   setTheme(theme.name)
-                  setMode(groupMode)
+
+                  if (previewMode !== resolvedMode) {
+                    setMode(previewMode)
+                  }
                 }
-              }))
-          }))
+              }
+            })
+          }
         ]
       },
       'color-mode': {
@@ -1339,6 +1398,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
               keepOpen: true,
               keywords: ['appearance', 'brightness', t.settings.modeOptions[entry.mode].label],
               label: t.settings.modeOptions[entry.mode].label,
+              onHighlight: () => previewTheme(themeName, resolveThemeMode(entry.mode)),
               run: () => setMode(entry.mode)
             }))
           }
@@ -1365,13 +1425,73 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         groups: settingsPageGroups
       }
     }),
-    [availableThemes, mode, resolvedMode, setMode, setTheme, settingsPageGroups, t, themeName]
+    [
+      availableThemes,
+      mode,
+      previewTheme,
+      resolvedMode,
+      resolveThemeMode,
+      setMode,
+      setTheme,
+      settingsPageGroups,
+      t,
+      themeName
+    ]
   )
 
   const activePage = page ? subPages[page] : null
   const unrankedGroups = activePage ? activePage.groups : groups
   const visibleGroups = useMemo(() => rankGroups(unrankedGroups, search), [unrankedGroups, search])
   const placeholder = activePage ? activePage.placeholder : t.commandCenter.searchPlaceholder
+
+  // The HighlightWatcher inside <Command> reports the highlighted row (arrows
+  // or hover) from the cmdk store. Resolve it back to its PaletteItem so
+  // preview-capable rows (the theme pickers) can paint live. Any other
+  // highlight clears the preview.
+  const itemByValue = useMemo(() => {
+    const map = new Map<string, PaletteItem>()
+
+    for (const group of visibleGroups) {
+      for (const item of group.items) {
+        map.set(paletteValue(item), item)
+      }
+    }
+
+    return map
+  }, [visibleGroups])
+
+  const handleHighlight = useCallback(
+    (value: string) => {
+      const item = itemByValue.get(value)
+
+      if (item?.onHighlight) {
+        item.onHighlight()
+      } else {
+        clearThemePreview()
+      }
+    },
+    [clearThemePreview, itemByValue]
+  )
+
+  // A preview lives only while its rows show. If the page changes, give the
+  // paint back to the committed appearance.
+  useEffect(() => {
+    clearThemePreview()
+  }, [page, clearThemePreview])
+
+  // Clear at close START, not at unmount. The body stays mounted through the
+  // whole exit animation (see CommandPalette), so an unmount clear would
+  // revert the theme only after the fade. The unmount return is the backstop
+  // for a body that dies without a close (a remount on reopen).
+  const paletteOpen = useStore($commandPaletteOpen)
+
+  useEffect(() => {
+    if (!paletteOpen) {
+      clearThemePreview()
+    }
+  }, [paletteOpen, clearThemePreview])
+
+  useEffect(() => clearThemePreview, [clearThemePreview])
 
   const handleSelect = (item: PaletteItem) => {
     if (item.to) {
@@ -1424,6 +1544,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       >
         <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
         <Command className="bg-transparent" loop shouldFilter={false}>
+          <HighlightWatcher onValue={handleHighlight} />
           {activePage && (
             <button
               className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"

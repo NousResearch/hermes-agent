@@ -412,6 +412,36 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
     handler and break that contract. The ``taskkill`` spawn itself cannot
     re-enter the deadlock class it fixes: it captures no pipes (DEVNULL), so its
     own timeout cleanup has no reader threads to join.
+
+    Delegates the tree-kill to :func:`agent.deadline.kill_process_tree`
+    (#85125 4d) — same taskkill /T /F on Windows and killpg-when-leader on
+    POSIX, plus a psutil descendant sweep that also reaches descendants that
+    ``setsid``'d into their own sessions. On any import/delegation failure it
+    falls back to the original local implementation
+    (:func:`_legacy_kill_process_tree`), so the fail-open contract holds even
+    in stripped environments.
+    """
+    try:
+        from agent.deadline import kill_process_tree as _deadline_kill_tree
+
+        _deadline_kill_tree(proc.pid)
+    except Exception:
+        _legacy_kill_process_tree(proc)
+        return
+    # Ensure Popen's own bookkeeping sees the exit (matches the legacy body:
+    # a direct kill() so communicate()/wait() cannot hang on a stale handle).
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Pre-#85125 local tree-kill — fallback when agent.deadline is unavailable.
+
+    Kept verbatim so ``kill_process_tree`` can honor its swallow-everything
+    contract even when the delegation path itself fails (partial install,
+    import cycle during teardown).
     """
     if not IS_WINDOWS:
         # Group-kill first: verify the child actually leads its own process

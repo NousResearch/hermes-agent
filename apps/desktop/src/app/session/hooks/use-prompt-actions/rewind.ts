@@ -35,24 +35,41 @@ import {
 type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 /**
- * Post-rewrite durable ids of the surviving visible user turns, in visible-user
- * ordinal order — the gateway's `survivor_user_row_ids` on a truncating
- * `prompt.submit`. A rewind's `replace_messages` re-inserts the kept prefix as
- * NEW SQLite rows, so every pre-rewind `ChatMessage.rowId` on a surviving
- * bubble is stale the moment the rewind lands; targeting one on the next
- * rewind/edit/regenerate gets a fail-closed 4018 from the gateway. `null`
- * means that turn has no durable id (drop the cached one, don't keep a stale
- * one). Absent entirely = the submit didn't truncate a durable session (or an
- * older gateway) — leave state untouched.
+ * Post-rewrite durable identity information from a truncating `prompt.submit`.
+ * New gateways return an old-to-new map for every surviving physical row;
+ * older gateways return visible-user ids in ordinal order. A rewind's
+ * `replace_messages` re-inserts the kept prefix as NEW SQLite rows, so every
+ * cached rowId is stale the moment the rewind lands.
  */
-export type SurvivorUserRowIds = readonly (null | number)[]
+export type SurvivorUserRowIds = readonly (null | number)[] | Map<number, null | number>
 
 interface PromptSubmitResult {
   status?: string
   survivor_user_row_ids?: unknown
+  survivor_row_id_map?: unknown
 }
 
 export function survivorRowIdsFrom(result: PromptSubmitResult | undefined): SurvivorUserRowIds | undefined {
+  const rawMap = result?.survivor_row_id_map
+
+  if (rawMap && typeof rawMap === 'object' && !Array.isArray(rawMap)) {
+    const parsed = new Map<number, null | number>()
+
+    for (const [oldId, newId] of Object.entries(rawMap)) {
+      const previous = Number(oldId)
+
+      if (Number.isInteger(previous)) {
+        if (newId === null) {
+          parsed.set(previous, null)
+        } else if (typeof newId === 'number' && Number.isInteger(newId)) {
+          parsed.set(previous, newId)
+        }
+      }
+    }
+
+    return parsed
+  }
+
   const raw = result?.survivor_user_row_ids
 
   if (!Array.isArray(raw)) {
@@ -71,6 +88,28 @@ export function survivorRowIdsFrom(result: PromptSubmitResult | undefined): Surv
  * stale id now addresses an archived row and would be refused with 4018.
  */
 export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: SurvivorUserRowIds): ChatMessage[] {
+  if (survivorRowIds instanceof Map) {
+    return messages.map(message => {
+      if (message.rowId === undefined) {
+        return message
+      }
+
+      if (!survivorRowIds.has(message.rowId)) {
+        // Requested rows outside the active tip (compacted/ancestor history)
+        // were not rewritten and keep their durable identity.
+        return message
+      }
+
+      const next = survivorRowIds.get(message.rowId)
+
+      return next === null || next === undefined
+        ? { ...message, rowId: undefined }
+        : message.rowId === next
+          ? message
+          : { ...message, rowId: next }
+    })
+  }
+
   // Same ordinal space as the truncate math: visible AND persisted (failed
   // turns never reached the gateway, so they hold no survivor slot).
   const indices = new Set(visibleUserMessageIndices(messages))
@@ -92,9 +131,19 @@ export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: Su
   })
 }
 
+export function durableRowIdsForRebind(messages: readonly ChatMessage[]): number[] {
+  return [
+    ...new Set(
+      messages.flatMap(message =>
+        typeof message.rowId === 'number' && Number.isInteger(message.rowId) ? [message.rowId] : []
+      )
+    )
+  ]
+}
+
 /**
  * Renderer-synthetic message ids (`${timestamp}-${index}-${role}` from
- * chat-messages.ts, plus older `user-…` / `assistant-…` shapes). Gateway
+ * chat-messages/hydration.ts, plus older `user-…` / `assistant-…` shapes). Gateway
  * history never carries them — only durable `row_id` / platform message_id.
  */
 export function isSyntheticRendererId(messageId: string | undefined): boolean {
@@ -223,7 +272,8 @@ export async function runRewindSubmit(
   interruptFirst: boolean,
   recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void },
   truncateRowId?: number,
-  sourceText?: string
+  sourceText?: string,
+  rebindRowIds?: readonly number[]
 ): Promise<SurvivorUserRowIds | undefined> {
   // Recovery may rebind the live id mid-flight; interrupt/submit must both
   // follow it rather than pinning the dead one.
@@ -247,6 +297,18 @@ export async function runRewindSubmit(
   const hasDurableAddress =
     typeof truncateRowId === 'number' ||
     (typeof truncateMessageId === 'string' && truncateMessageId.length > 0 && !isSyntheticRendererId(truncateMessageId))
+
+  if (wantsTruncation && hasDurableAddress) {
+    // A durable row or platform-message id is globally stable, while the
+    // rendered ordinal can be relative to a paged transcript tail. Do not
+    // cross-check those different spaces; the gateway still validates the
+    // durable address against its full transcript.
+    resolvedOrdinal = undefined
+
+    if (typeof resolvedRowId === 'number' && Number.isInteger(resolvedRowId)) {
+      resolvedMessageId = undefined
+    }
+  }
 
   if (wantsTruncation && !hasDurableAddress) {
     resolvedRowId =
@@ -279,11 +341,15 @@ export async function runRewindSubmit(
         ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId),
         // A first-turn rewind resolves to an empty transcript, which the
         // gateway additionally gates behind confirm_empty_truncate. In
-        // resolved-row-id mode the ordinal was dropped (see above), so carry
-        // the flag from the caller's ordinal-0 belief: required when right,
-        // ignored by the gateway when the cut isn't actually empty.
-        ...(resolvedRowId !== undefined && resolvedOrdinal === undefined && truncateOrdinal === 0
+        // resolved-row-id mode the tail-local ordinal was dropped (see
+        // above). The durable target is authoritative, so explicitly allow a
+        // first-active-tip cut; the gateway ignores this when the prefix is
+        // non-empty.
+        ...(resolvedOrdinal === undefined && (resolvedRowId !== undefined || truncateOrdinal === 0)
           ? { confirm_empty_truncate: true }
+          : {}),
+        ...(rebindRowIds?.length
+          ? { rebind_survivor_row_ids: [...new Set(rebindRowIds.filter(Number.isInteger))] }
           : {})
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS

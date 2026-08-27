@@ -3,10 +3,18 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
+import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
-import { respondToApprovalAction } from '@/store/native-notifications'
+import {
+  clearPluginNotifyHandlers,
+  invokePluginNotifyAction,
+  invokePluginNotifyActivate,
+  respondToApprovalAction
+} from '@/store/native-notifications'
+import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
 import {
   getRememberedRoute,
@@ -17,7 +25,7 @@ import {
 } from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isHudWindow, isSecondaryWindow } from '@/store/windows'
+import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
@@ -89,7 +97,7 @@ export function useDesktopIntegrations({
   // This ref is a one-time lifecycle latch, not a mirror of reactive atom state.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
-    if (!profileReady || isHudWindow()) {
+    if (!profileReady || isHudWindow() || isBrowserWindow()) {
       return
     }
 
@@ -194,12 +202,48 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [])
 
-  // hermes:// deep links -> a reviewable /blueprint command in the composer,
-  // or (hermes://mcp/install) a pending MCP install awaiting explicit
-  // confirmation in McpInstallDeepLinkDialog. Never auto-installs.
+  // Plugin OS notification body/action → optional callback + navigate. Activation
+  // is user-driven (click), so this is offer-not-hijack. Paths share the
+  // hermes://index-network/intent/1 vocabulary with deep links.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onNotificationActivate?.(payload => {
+      if (!payload) {
+        return
+      }
+
+      if (payload.actionId) {
+        invokePluginNotifyAction(payload.notifyId, payload.actionId)
+      } else {
+        invokePluginNotifyActivate(payload.notifyId)
+      }
+
+      if (payload.activate) {
+        // Defense-in-depth: re-resolve at the IPC boundary rather than trusting
+        // the pre-IPC validation — any future hermesDesktop.notify caller gets
+        // funneled through the same resolver.
+        const path = resolveHermesOpenPath(payload.activate)
+
+        if (path) {
+          navigate(path)
+        }
+      }
+
+      clearPluginNotifyHandlers(payload.notifyId)
+    })
+
+    return () => unsubscribe?.()
+  }, [navigate])
+
+  // hermes:// deep links:
+  //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
+  //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
+  //    modal awaiting explicit confirmation. Never auto-installs.
+  //  - blueprint/<name>?… → reviewable /blueprint command in the composer
+  //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
+  //  - open/<path>?… → in-app navigate (generic)
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload) {
+      if (!payload?.kind) {
         return
       }
 
@@ -209,27 +253,49 @@ export function useDesktopIntegrations({
         return
       }
 
-      if (payload.kind !== 'blueprint' || !payload.name) {
+      const action = resolveDeepLinkAction(payload)
+
+      if (action.type === 'composer-blueprint') {
+        const slots = Object.entries(action.params || {})
+          .map(([k, v]) => {
+            const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+
+            return `${k}=${sval}`
+          })
+          .join(' ')
+
+        const command = `/blueprint ${action.name}${slots ? ' ' + slots : ''}`
+        requestComposerInsert(command, { mode: 'block', target: 'main' })
+        requestComposerFocus('main')
+
         return
       }
 
-      const slots = Object.entries(payload.params || {})
-        .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
-
-          return `${k}=${sval}`
+      if (action.type === 'plugin-install') {
+        openPluginInstallRequest({
+          repo: action.repo,
+          enable: action.enable,
+          force: action.force,
+          legacyHint: action.legacyHint
         })
-        .join(' ')
 
-      const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
-      requestComposerInsert(command, { mode: 'block', target: 'main' })
-      requestComposerFocus('main')
+        return
+      }
+
+      // Not a core action — treat as a plugin-scoped or open/ navigation deep
+      // link (hermes://index-network/intent/1, hermes://open/…). The resolver
+      // rejects reserved kinds and unsafe paths.
+      const path = pathFromHermesDeepLink(payload.kind, payload.name || '', payload.params || {})
+
+      if (path) {
+        navigate(path)
+      }
     })
 
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
-  }, [])
+  }, [navigate])
 
   // ⌘W via the macOS menu accelerator → close the focused tab; if nothing is
   // closeable, fall back to closing the window (so ⌘W still works as the
@@ -266,7 +332,7 @@ export function useDesktopIntegrations({
 
   // Another window mutated the shared session list -> re-pull the sidebar.
   useEffect(() => {
-    if (isSecondaryWindow()) {
+    if (isSecondaryWindow() || isBrowserWindow()) {
       return
     }
 

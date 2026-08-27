@@ -604,6 +604,30 @@ class TestWebServerEndpoints:
             db.close()
         assert len(writable_opens) == 1
 
+    def test_generic_corruption_does_not_trigger_writable_heal(
+        self, tmp_path, monkeypatch
+    ):
+        """Unscoped SQLITE_CORRUPT must not escalate a dashboard read to writes."""
+        import sqlite3
+
+        import hermes_state
+        from hermes_cli import web_server
+
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"not-empty")
+        opens = []
+
+        def corrupt_open(*_args, **kwargs):
+            opens.append(kwargs.get("read_only", False))
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", corrupt_open)
+
+        with pytest.raises(sqlite3.DatabaseError, match="disk image is malformed"):
+            web_server._open_session_db_at_path(db_path, read_only=True)
+
+        assert opens == [True]
+
     def test_get_sessions_zero_byte_store_returns_empty_list(self):
         from hermes_constants import get_hermes_home
 
@@ -1149,6 +1173,11 @@ class TestWebServerEndpoints:
 
         # Bypass the managed-externally gate so we reach the docker install check.
         monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        # The shared admission gate (#91277 Phase 3) resolves the install
+        # method through hermes_cli.config directly.
+        monkeypatch.setattr(
+            "hermes_cli.config.detect_install_method", lambda *_a, **_k: "docker"
+        )
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)
@@ -1184,6 +1213,12 @@ class TestWebServerEndpoints:
             raise AssertionError("APT-managed update guard should not spawn hermes update")
 
         monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        # The shared admission gate (#91277 Phase 3) resolves the install
+        # method through hermes_cli.config directly, so patch it there (the
+        # web_server module alias only feeds the /update/check endpoint).
+        monkeypatch.setattr(
+            "hermes_cli.config.detect_install_method", lambda *_a, **_k: "apt"
+        )
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "apt")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)
@@ -1206,6 +1241,36 @@ class TestWebServerEndpoints:
         assert check_data["can_apply"] is False
         assert check_data["update_command"] == "pkg upgrade hermes-agent"
         assert "Termux APT" in check_data["message"]
+
+    def test_update_status_recovers_completed_result_after_dashboard_restart(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        action_id = "c" * 32
+        (tmp_path / "hermes-update.log").write_text(
+            "=== hermes-update started 2026-08-17 11:19:34 ===\n"
+            "pulling updates...\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "update.log").write_text(
+            "=== hermes update started 2026-08-17T11:19:35 ===\n"
+            "✓ Update complete!\n"
+            f"=== hermes-update completed {action_id} ===\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        monkeypatch.setattr(web_server, "_ACTION_PROCS", {})
+        monkeypatch.setattr(web_server, "_ACTION_RESULTS", {})
+        monkeypatch.setattr(web_server, "_ACTION_COMMANDS", {})
+        monkeypatch.setattr(web_server, "_ACTION_IDS", {})
+
+        status = self.client.get("/api/actions/hermes-update/status?lines=2000")
+
+        assert status.status_code == 200
+        data = status.json()
+        assert data["running"] is False
+        assert data["exit_code"] == 0
+        assert data["action_id"] == action_id
+        assert f"=== hermes-update completed {action_id} ===" in data["lines"]
 
     def test_update_hermes_spawns_with_action_id(self, monkeypatch):
         import hermes_cli.web_server as web_server
@@ -2044,6 +2109,71 @@ class TestWebServerEndpoints:
         contents = [m["content"] for m in resp.json()["messages"]]
         assert contents == ["old q", "old a", "summary", "live q", "live a"]
 
+    def test_get_session_messages_projects_and_dedupes_composite_carrier(self):
+        from agent.context_compressor import (
+            HISTORICAL_TASK_HEADING,
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _SUMMARY_END_MARKER,
+        )
+        from hermes_state import SessionDB
+
+        handoff = (
+            f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        carrier = f"{handoff}\n\nREAL ASK"
+        assistant_carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "real completed answer\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n{handoff}"
+        )
+        db = SessionDB()
+        try:
+            db.create_session(session_id="compacted-carrier-display", source="desktop")
+            db.append_message(
+                "compacted-carrier-display",
+                "user",
+                "REAL ASK",
+                timestamp=123.0,
+            )
+            db.archive_and_compact(
+                "compacted-carrier-display",
+                [{"role": "user", "content": carrier, "timestamp": 123.0}],
+            )
+            db.append_message(
+                "compacted-carrier-display",
+                "user",
+                handoff,
+                timestamp=124.0,
+            )
+            db.append_message(
+                "compacted-carrier-display",
+                "assistant",
+                assistant_carrier,
+                timestamp=125.0,
+            )
+            active_id = db.get_messages("compacted-carrier-display")[0]["id"]
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/sessions/compacted-carrier-display/messages"
+            "?include_compacted=true"
+        )
+        assert resp.status_code == 200
+        messages = resp.json()["messages"]
+        assert len(messages) == 3
+        assert messages[0]["id"] == active_id
+        assert messages[0]["content"] == carrier
+        assert messages[0]["display_content"] == "REAL ASK"
+        assert not messages[0].get("display_kind")
+        assert messages[1]["content"] == handoff
+        assert messages[1]["display_kind"] == "hidden"
+        assert messages[2]["content"] == assistant_carrier
+        assert messages[2]["display_content"] == "real completed answer"
+
     def test_get_session_messages_latest_page_with_compacted_rows(self):
         """The desktop's real read path (getLatestSessionMessages: limit +
         order=latest + include_compacted=true) pages back from the newest
@@ -2671,9 +2801,12 @@ class TestNewEndpoints:
         assert data["needs_nous_auth"] is True
         assert data["feature"] == "browser"
         # The selection is still persisted — activation is what's gated.
+        # Managed rows store the single 'nous' provider string (the runtime
+        # maps it to the Browser Use cloud through the Nous Tool Gateway).
         from hermes_cli.config import load_config
         cfg = load_config()
-        assert cfg["browser"]["cloud_provider"] == "browser-use"
+        assert cfg["browser"]["cloud_provider"] == "nous"
+        assert "use_gateway" not in cfg["browser"]
 
 
     # -- Web capability split (search vs extract backends) ------------------
@@ -4726,6 +4859,66 @@ class TestServeIndexMissingIndex:
         assert "SPA-rebuilt" in resp.text
 
 
+class TestHeadlessServeTokenPage:
+    """Headless `hermes serve` must serve the Desktop token handshake page
+    at `/` when the dashboard auth gate is off (#94227).
+
+    The Electron renderer boots by fetching `/` and extracting
+    ``window.__HERMES_SESSION_TOKEN__`` for WebSocket auth. Headless serve
+    used to 404 every path, so after an update replaced the backend (and
+    the spawn-token env pin no longer matched the token the new backend
+    generated) the renderer was stuck with a stale token, /api/ws rejected
+    it, and the window white-screened (#95575).
+    """
+
+    @staticmethod
+    def _headless_client(monkeypatch, *, gated: bool):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        spa_app = FastAPI()
+        spa_app.state.auth_required = gated
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app), ws
+
+    def test_root_serves_token_page_when_not_gated(self, monkeypatch):
+        import re
+
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/html")
+        assert "no-store" in resp.headers.get("cache-control", "")
+        # Must match the desktop's extraction regex exactly
+        # (apps/desktop/electron/dashboard-token.ts).
+        match = re.search(
+            r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+            resp.text,
+        )
+        assert match, resp.text
+        import json as _json
+
+        assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
+        assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
+
+    def test_root_stays_404_json_when_auth_gated(self, monkeypatch):
+        client, ws = self._headless_client(monkeypatch, gated=True)
+        resp = client.get("/")
+        assert resp.status_code == 404
+        assert "web UI disabled" in resp.json()["error"]
+        assert ws._SESSION_TOKEN not in resp.text
+
+    def test_non_root_paths_stay_404_json(self, monkeypatch):
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        for route in ("/chat", "/api/status-page", "/assets/index-abc.js"):
+            resp = client.get(route)
+            assert resp.status_code == 404
+            assert "web UI disabled" in resp.json()["error"]
+            assert ws._SESSION_TOKEN not in resp.text
+
+
 class TestHashedAssetCacheHeaders:
     """Hashed /assets/* responses must be immutable-cacheable; index.html
     must stay no-store so it always references the current hashes
@@ -4931,3 +5124,47 @@ class TestSessionPatchUnread:
         # a string outside the accepted set to prove validation rejects it.
         resp = self.auth_client.patch("/api/sessions/s1", json={"unread": "maybe"})
         assert resp.status_code == 422  # pydantic validation
+
+    def test_patch_hidden_updates_persisted_session_without_live_runtime(self):
+        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        assert resp.status_code == 200
+        assert resp.json()["hidden"] is True
+
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert all(s["id"] != "s1" for s in rows)
+
+        restored = self.auth_client.patch(
+            "/api/sessions/s1", json={"hidden": False}
+        )
+        assert restored.status_code == 200
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert bool(next(s for s in rows if s["id"] == "s1")["hidden"]) is False
+
+    def test_patch_hidden_alone_is_accepted(self):
+        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        assert resp.status_code == 200
+
+
+def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from hermes_cli import web_server
+
+    app = FastAPI()
+    dist = tmp_path / "web_dist"
+    monkeypatch.setattr(web_server, "WEB_DIST", dist)
+
+    web_server.mount_spa(app)
+    client = TestClient(app)
+
+    # 1. missing build -> 404
+    res1 = client.get("/")
+    assert res1.status_code == 404
+    assert res1.json()["error"] == "Frontend not built. Run: cd web && npm run build"
+
+    # 2. build created dynamically -> 200
+    dist.mkdir(parents=True, exist_ok=True)
+    (dist / "index.html").write_text("<html><body>Test</body></html>")
+    res2 = client.get("/")
+    assert res2.status_code == 200
+    assert "Test" in res2.text

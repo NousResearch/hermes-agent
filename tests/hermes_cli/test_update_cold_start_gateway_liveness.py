@@ -10,6 +10,8 @@ same as every other ``_spawn_detached`` caller.
 
 from __future__ import annotations
 
+import pytest
+
 from hermes_cli import gateway as hermes_gateway
 from hermes_cli import gateway_windows
 from hermes_cli import main as cli_main
@@ -37,11 +39,11 @@ def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
     return capsys.readouterr().out
 
 
-def test_cold_start_reports_failure_when_process_does_not_survive(monkeypatch, capsys):
-    out = _run_cold_start(monkeypatch, capsys, surviving_pids=[])
+def test_cold_start_raises_when_process_does_not_survive(monkeypatch, capsys):
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        _run_cold_start(monkeypatch, capsys, surviving_pids=[])
 
-    assert "✓ Starting Windows gateway after update" not in out
-    assert "no process detected" in out
+    assert "✓ Starting Windows gateway after update" not in capsys.readouterr().out
 
 
 def test_cold_start_reports_success_when_process_survives(monkeypatch, capsys):

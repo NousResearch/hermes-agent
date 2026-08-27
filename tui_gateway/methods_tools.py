@@ -706,41 +706,55 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /retry"
             )
-        history = session.get("history", [])
-        if not history:
-            return _err(rid, 4018, "no previous user message to retry")
-        # Walk backwards to the last *real* user turn. Timeline bookkeeping
-        # rows (display_kind set) and compaction handoffs are durable
-        # role=user but must not count as user-originated asks — same
-        # predicate as CLI resume/count and the prompt.submit ordinal fix.
-        # Without this, /retry re-sends opaque markers (model_switch /
-        # async_delegation_complete / auto_continue / CONTEXT COMPACTION
-        # handoffs) and truncates only the marker instead of the failed
-        # exchange (#80622).
-        from agent.context_compressor import is_user_originated_turn
+        from agent.context_compressor import (
+            history_before_user_originated_turn,
+            retryable_user_text,
+            user_originated_turn_view,
+        )
 
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            msg = history[i]
-            if is_user_originated_turn(msg):
-                last_user_idx = i
-                break
-        if last_user_idx is None:
-            return _err(rid, 4018, "no previous user message to retry")
-        content = history[last_user_idx].get("content", "")
-        if isinstance(content, list):
-            content = " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
-            )
-        if not content:
-            return _err(rid, 4018, "last user message is empty")
-        # Truncate history: remove everything from the last user message onward
-        # (mirrors CLI retry_last() which strips the failed exchange)
         with session["history_lock"]:
-            session["history"] = history[:last_user_idx]
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            if session.get("running"):
+                return _err(
+                    rid,
+                    4009,
+                    "session busy — /interrupt the current turn before /retry",
+                )
+            if session.get("attached_images"):
+                return _err(
+                    rid,
+                    4018,
+                    "retry cannot safely reconstruct or combine attached media",
+                )
+            history = _history_without_ephemeral_scaffolding(
+                session.get("history", [])
+            )
+            user_indices = [
+                index
+                for index, message in enumerate(history)
+                if user_originated_turn_view(message) is not None
+            ]
+            if not user_indices:
+                return _err(rid, 4018, "no previous user message to retry")
+            _prefix, live_view = history_before_user_originated_turn(
+                history, user_indices[-1]
+            )
+            try:
+                content = retryable_user_text(live_view.get("content"))
+            except ValueError as exc:
+                return _err(rid, 4018, str(exc))
+            try:
+                _active, durable_live_view, _rewound_count = (
+                    _rewind_active_session_history(
+                        session,
+                        len(user_indices) - 1,
+                        require_retryable=True,
+                    )
+                )
+            except ValueError as exc:
+                return _err(rid, 4018, str(exc))
+            except Exception as exc:
+                return _err(rid, 5008, f"retry: failed to persist history: {exc}")
+            content = retryable_user_text(durable_live_view.get("content"))
         return _ok(rid, {"type": "send", "message": content})
 
     if name == "steer":
@@ -793,14 +807,24 @@ def _(rid, params: dict) -> dict:
             state = mgr.resume()
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            # Resume must restart work, not just flip persisted state
+            # (#75362). An `exec` result is display-only — nothing would
+            # re-enter the conversation loop until the user typed another
+            # message. Return a `send` dispatch carrying the canonical
+            # continuation prompt so the client fires the next turn
+            # immediately; `display` keeps the transcript showing the
+            # concise invocation instead of the model-facing scaffolding.
+            prompt = mgr.next_continuation_prompt()
+            notice = f"▶ Goal resumed: {state.goal}\nContinuing now — taking the next step."
+            if not prompt:
+                return _ok(rid, {"type": "exec", "output": f"▶ Goal resumed: {state.goal}"})
             return _ok(
                 rid,
                 {
-                    "type": "exec",
-                    "output": (
-                        f"▶ Goal resumed: {state.goal}\n"
-                        "Send any message to continue, or wait — I'll take the next step on the next turn."
-                    ),
+                    "type": "send",
+                    "notice": notice,
+                    "message": prompt,
+                    "display": "/goal resume",
                 },
             )
         if lower in {"clear", "stop", "done"}:
@@ -877,9 +901,6 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /undo"
             )
-        db = _get_db()
-        if db is None:
-            return _db_unavailable_error(rid, code=5008)
         session_key = session.get("session_key", "")
         if not session_key:
             return _err(rid, 4001, "no session key for undo")
@@ -893,37 +914,39 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
         if n < 1:
             n = 1
-        try:
-            recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
-        except Exception as e:
-            return _err(rid, 5008, f"undo: failed to load history: {e}")
-        if not recents:
-            return _err(rid, 4018, "no user messages to undo")
-        # recents[0] is the most-recent user turn; pick the Nth-from-last.
-        # If N exceeds the number of user turns, back up to the oldest.
-        target_idx = min(n - 1, len(recents) - 1)
-        target_id = recents[target_idx]["id"]
-        try:
-            result = db.rewind_to_message(session_key, target_id)
-        except ValueError as e:
-            return _err(rid, 4004, f"undo: {e}")
-        except Exception as e:
-            return _err(rid, 5008, f"undo: {e}")
-        # Reload the active-only transcript into the in-memory session
-        # history so subsequent turns see the truncated view.
-        # repair_alternation: this reload feeds LIVE REPLAY — session["history"]
-        # is the working conversation for subsequent turns, and a rewind that
-        # lands on a durable user;user pair would otherwise re-fire the
-        # pre-request repair on every request from here on.
-        try:
-            active = db.get_messages_as_conversation(
-                session_key, repair_alternation=True, include_row_ids=True
-            )
-        except Exception:
-            active = []
+        from agent.context_compressor import (
+            user_originated_turn_view,
+        )
+        from agent.message_content import flatten_message_text
+
         with session["history_lock"]:
-            session["history"] = list(active)
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            if session.get("running"):
+                return _err(
+                    rid,
+                    4009,
+                    "session busy — /interrupt the current turn before /undo",
+                )
+            history = _history_without_ephemeral_scaffolding(
+                session.get("history", [])
+            )
+            user_indices = [
+                index
+                for index, message in enumerate(history)
+                if user_originated_turn_view(message) is not None
+            ]
+            if not user_indices:
+                return _err(rid, 4018, "no user messages to undo")
+            turns_undone = min(n, len(user_indices))
+            target_position = len(user_indices) - turns_undone
+            try:
+                active, live_view, rewound_count = _rewind_active_session_history(
+                    session, target_position
+                )
+            except ValueError as exc:
+                return _err(rid, 4004, f"undo: {exc}")
+            except Exception as exc:
+                return _err(rid, 5008, f"undo: {exc}")
+            target_text = flatten_message_text(live_view.get("content"))
         # Notify memory providers — same hook /branch fires, plus the
         # rewound flag so providers caching per-turn document state
         # know to invalidate. See #6672 + #21910.
@@ -950,18 +973,6 @@ def _(rid, params: dict) -> dict:
                     agent._last_flushed_db_idx = len(active)
                 except Exception:
                     pass
-        target_msg = result.get("target_message") or {}
-        target_text = target_msg.get("content") or ""
-        if isinstance(target_text, list):
-            parts = [
-                p.get("text", "") for p in target_text
-                if isinstance(p, dict) and p.get("type") == "text"
-            ]
-            target_text = "\n".join(t for t in parts if t)
-        if not isinstance(target_text, str):
-            target_text = ""
-        rewound_count = result.get("rewound_count", 0)
-        turns_undone = target_idx + 1
         turn_word = "turn" if turns_undone == 1 else "turns"
         notice = (
             f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). "
@@ -1344,27 +1355,28 @@ def _(rid, params: dict) -> dict:
             if result.get("success") and not file_path:
                 removed = 0
                 with session["history_lock"]:
-                    history = session.get("history", [])
-                    # Truncate from the last *real* user turn. Same predicate
-                    # as list_recent_user_messages / /undo / /retry —
-                    # is_user_originated_turn also excludes compaction
-                    # handoffs (durable role=user, sometimes without
-                    # display_kind on legacy sessions; #80622).
-                    from agent.context_compressor import is_user_originated_turn
+                    history = _history_without_ephemeral_scaffolding(
+                        session.get("history", [])
+                    )
+                    from agent.context_compressor import user_originated_turn_view
 
-                    last_user_idx = None
-                    for i in range(len(history) - 1, -1, -1):
-                        msg = history[i]
-                        if is_user_originated_turn(msg):
-                            last_user_idx = i
-                            break
-                    if last_user_idx is not None:
-                        removed = len(history) - last_user_idx
-                        del history[last_user_idx:]
-                    if removed:
-                        session["history_version"] = (
-                            int(session.get("history_version", 0)) + 1
-                        )
+                    user_indices = [
+                        index
+                        for index, message in enumerate(history)
+                        if user_originated_turn_view(message) is not None
+                    ]
+                    if user_indices:
+                        try:
+                            _active, _live_view, removed = (
+                                _rewind_active_session_history(
+                                    session, len(user_indices) - 1
+                                )
+                            )
+                        except Exception as exc:
+                            raise RuntimeError(
+                                "checkpoint restored, but session history rewind "
+                                f"failed: {exc}"
+                            ) from exc
                 result["history_removed"] = removed
             return result
 
@@ -1737,6 +1749,11 @@ def _(rid, params: dict) -> dict:
                             if params.get("continuity") is not None
                             else None
                         ),
+                        # Optional delivery target — notably 'bot-chat[:name]'
+                        # (canonical Bot Chat injection) from the Desktop Bot
+                        # Mode cronjob dialog. Omitted/empty keeps the
+                        # cronjob() default.
+                        deliver=(str(params.get("deliver") or "").strip() or None),
                     )
                 ),
             )
@@ -2388,6 +2405,9 @@ def _(rid, params: dict) -> dict:
                        status, portable}], "user_count": N, "bundled_count": M}
       - ``toggle`` → flip ``key`` (or ``name``) based on ``enable`` (bool).
                        Returns the refreshed row plus {"ok", "unchanged"}.
+      - ``install`` → git-clone into ``~/.hermes/plugins/`` (non-interactive).
+                       Params: ``identifier`` or ``repo``, optional ``force``,
+                       ``enable`` (default True). Returns dashboard install dict.
 
     Accepts an optional ``profile`` param (same contract as mcp.servers.*):
     plugins live under each profile's HERMES_HOME, so a client can list or
@@ -2479,6 +2499,25 @@ def _(rid, params: dict) -> dict:
                     "plugin": row,
                 },
             )
+
+        if action == "install":
+            from hermes_cli.plugins_cmd import dashboard_install_plugin
+
+            ident = (
+                params.get("identifier") or params.get("repo") or ""
+            ).strip()
+            if not ident:
+                return _err(
+                    rid, 4019, "plugins.install requires 'identifier' or 'repo'"
+                )
+            result = dashboard_install_plugin(
+                ident,
+                force=bool(params.get("force")),
+                enable=params.get("enable", True),
+            )
+            if not result.get("ok"):
+                return _err(rid, 5026, result.get("error") or "install failed")
+            return _ok(rid, result)
 
         return _err(rid, 4017, f"unknown plugins action: {action}")
     except Exception as e:

@@ -19,10 +19,12 @@
 #     [--sandbox-fallback]     linux: the caller vouches for a sandbox opt-out
 #                              (ELECTRON_DISABLE_SANDBOX / --no-sandbox launch)
 #     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
+#     [--self-test-marker]
 #     [-- <args...>]           linux: filtered launch args to replay
 #
 # The shim (ui.html in a chromeless browser app window) is decoration: it
-# polls /progress for `done` or `error` and reacts. It owns nothing --
+# polls /progress for the current stage or a terminal event and reacts. The
+# stages come from the gates below, never from child output. It owns nothing --
 # relaunch, result file, marker hygiene all happen here, identically, when
 # no renderer exists. No chromium-family browser found = no UI, fine.
 #
@@ -36,7 +38,8 @@ set -u
 ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
-NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 HANDOFF_DAEMONIZED=0
+NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
+HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
@@ -50,6 +53,7 @@ while [ $# -gt 0 ]; do
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
+    --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
@@ -64,6 +68,7 @@ LOG_DIR="$HERMES_HOME/logs"; mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG="$LOG_DIR/desktop-update-handoff.log"
 RESULT="$HERMES_HOME/.hermes-update-result.json"
 STATUS="${TMPDIR:-/tmp}/hermes-update-status.$$"
+STARTED_AT="$(date +%s)"  # the shim's elapsed clock; see serve-ui.py
 
 UI_SERVER_PID="" UI_BROWSER_PID="" FINAL_CODE=1
 FINAL_MSG="update did not complete"
@@ -147,27 +152,83 @@ notify_fallback() { # status message — renderer-free recovery surface.
   log "NOTICE: no notification surface accepted; outcome reaches the user via the result dialog on next launch: $2"
 }
 
-publish() { # status message -- atomic replace; the server reads per poll
+write_status() { # status message -- atomic replace; the server reads per poll
   printf '{"status":"%s","message":"%s"}' "$(json_escape "$1")" "$(json_escape "$2")" > "$STATUS.tmp" \
     && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null || true
+}
+
+publish_stage() { # a long wait the orchestrator is already gating on. No poll
+  # beat (that would add a second per stage to every update) and no
+  # notification fallback (there is nothing here for the user to act on).
+  write_status "running" "$1"
+}
+
+publish() { # terminal event -- the page must render it before teardown
+  write_status "$1" "$2"
   [ -n "$UI_SERVER_PID" ] && sleep 1  # one poll beat to render the state
   [ -z "$UI_SERVER_PID" ] && notify_fallback "$1" "$2"
 }
 
 find_browser() {
   local c
+  # No Microsoft Edge and no Brave, on purpose. Edge's OS-level
+  # Microsoft-account integration signs a fresh throwaway profile into the
+  # user's MSA and renders its own "syncing your data" notification — MSA
+  # email included — inside this window that is titled "Hermes" (#88410).
+  # Brave paints its own P3A privacy-notice bar over the progress page in
+  # the same window — cramped to unreadability at the shim's small size
+  # (#88682). The throwaway --user-data-dir below cannot block either; the
+  # remaining Chromium-family browsers carry no first-run chrome of their
+  # own into a fresh profile.
   if [ "$(uname)" = "Darwin" ]; then
     for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
-             "/Applications/Chromium.app/Contents/MacOS/Chromium" \
-             "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"; do
+             "/Applications/Chromium.app/Contents/MacOS/Chromium"; do
       [ -x "$c" ] && { echo "$c"; return; }
     done
   else
-    for c in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge brave-browser; do
+    for c in google-chrome google-chrome-stable chromium chromium-browser; do
       command -v "$c" 2>/dev/null && return
     done
   fi
+}
+
+# The shim is decoration; launching a browser the user does NOT use is not.
+# A Safari/Firefox/Helium user who merely has Chrome installed watched Chrome
+# open on every update — a "why is Chrome opening?" surprise (community
+# report, Aug 2026). Only render the shim when the system DEFAULT browser is
+# itself Chromium-family; otherwise skip the window and let notify_fallback +
+# the durable result file carry the outcome. Best-effort on purpose: any
+# detection failure keeps today's behavior (0 = allowed).
+default_browser_is_chromium() {
+  local py="$1" handler=""
+  if [ "$(uname)" = "Darwin" ]; then
+    local plist="$HOME/Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist"
+    # No explicit https handler registered = the OS default (Safari).
+    [ -f "$plist" ] || return 1
+    handler="$("$py" -c '
+import plistlib, sys
+with open(sys.argv[1], "rb") as f:
+    data = plistlib.load(f)
+for entry in data.get("LSHandlers", []):
+    if entry.get("LSHandlerURLScheme") == "https":
+        print(entry.get("LSHandlerRoleAll", ""))
+        break
+' "$plist" 2>/dev/null)" || return 0
+    # Parsed but empty = no https override = Safari default.
+    [ -n "$handler" ] || return 1
+    case "$handler" in
+      com.google.[Cc]hrome*|org.chromium.[Cc]hromium*) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  # Linux: xdg-settings is the authority; missing tool = permissive.
+  command -v xdg-settings >/dev/null 2>&1 || return 0
+  handler="$(xdg-settings get default-web-browser 2>/dev/null)" || return 0
+  [ -n "$handler" ] || return 0
+  case "$handler" in
+    *chrome*|*chromium*|*Chrome*|*Chromium*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 start_ui() {
@@ -176,9 +237,13 @@ start_ui() {
   py="${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}"
   [ -x "${py:-/nonexistent}" ] || py="$(command -v python3 2>/dev/null)"
   browser="$(find_browser)"
+  if [ -n "$browser" ] && [ -n "$py" ] && ! default_browser_is_chromium "$py"; then
+    log "shim: default browser is not Chromium-family; skipping UI window"
+    browser=""
+  fi
   { [ -f "$html" ] && [ -n "$py" ] && [ -n "$browser" ]; } || { log "shim: no renderer; skipping UI"; return; }
 
-  publish "running" ""
+  publish_stage ""
   # The Desktop's final teardown targets the updater process group.  Put both
   # UI processes in their own sessions so neither the HTTP server nor a Chrome
   # renderer becomes collateral damage (Chrome surfaces that renderer death as
@@ -190,7 +255,7 @@ start_ui() {
   # window showed ERR_CONNECTION_REFUSED for the whole run; upstream #66753).
   # stop_ui ends the server with SIGKILL instead — it is stateless HTTP.
   "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); os.execv(sys.argv[1], sys.argv[1:])' \
-    "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" > "$LOG_DIR/desktop-update-ui-port" 2>>"$LOG" &
+    "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" "$STARTED_AT" > "$LOG_DIR/desktop-update-ui-port" 2>>"$LOG" &
   UI_SERVER_PID=$!
   for i in $(seq 1 10); do
     port="$(tr -cd '0-9' < "$LOG_DIR/desktop-update-ui-port" 2>/dev/null)"
@@ -207,12 +272,20 @@ start_ui() {
   log "shim: app window on 127.0.0.1:$port"
 }
 
-stop_ui() { # error state leaves the window up for the user to read
+stop_ui() { # error/manual outcomes keep the window up briefly so a watching
+  # user can read the message, then close it. The outcome is also durably
+  # written to the result file and surfaced in a dialog on the next Desktop
+  # boot (handoff-result.ts), so the shim window never lingers indefinitely —
+  # before this, each aborted update left another orphan browser window on
+  # screen until the user closed it by hand.
+  if [ "${1:-}" = "leave-window" ]; then
+    sleep "${HERMES_UPDATE_SHIM_GRACE_SECONDS:-15}"
+  fi
   if [ -n "$UI_SERVER_PID" ]; then
     # The server ignores TERM/HUP (see start_ui) — KILL is its off switch.
     { kill -9 "$UI_SERVER_PID" && wait "$UI_SERVER_PID"; } 2>/dev/null
   fi
-  if [ "${1:-}" != "leave-window" ] && [ -n "$UI_BROWSER_PID" ]; then
+  if [ -n "$UI_BROWSER_PID" ]; then
     { kill "$UI_BROWSER_PID" && wait "$UI_BROWSER_PID"; } 2>/dev/null
   fi
   UI_SERVER_PID="" UI_BROWSER_PID=""
@@ -264,6 +337,7 @@ mac_swap() {
   # the copy in. Every step checked; a failed final move ROLLS BACK so the
   # user always has a launchable app, and the result file tells the truth.
   if [ "$FINAL_CODE" -eq 0 ] && [ -n "$rebuilt" ] && [ -d "$RELAUNCH_TARGET" ] && [ "$rebuilt" != "$RELAUNCH_TARGET" ]; then
+    publish_stage "Installing the new app"
     rm -rf "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET.old" 2>/dev/null || true
     if ! /usr/bin/ditto "$rebuilt" "$RELAUNCH_TARGET.new"; then
       rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
@@ -453,7 +527,23 @@ rm -f "$RESULT" 2>/dev/null || true
 
 # Marker claim: same cross-process lock contract as windows.ps1 /
 # update_lock.py (the `hermes update` child adopts it via process ancestry).
-printf '%s\n%s\n' "$$" "$(date +%s)" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+# The Desktop supplies one acquisition time for the whole ownership chain.
+NOW="$(date +%s)"
+STARTED_AT="${HERMES_UPDATE_STARTED_AT:-$NOW}"
+case "$STARTED_AT" in ''|*[!0-9]*) STARTED_AT="$NOW" ;; esac
+MIN_STARTED_AT=$((NOW - 1200))
+# Compare the validated decimal strings before doing arithmetic. Shell integer
+# expansion can wrap on an attacker-controlled value wider than signed 64-bit.
+if [ "${#STARTED_AT}" -ne "${#NOW}" ] \
+    || [[ "$STARTED_AT" > "$NOW" || "$STARTED_AT" < "$MIN_STARTED_AT" ]]; then
+  STARTED_AT="$NOW"
+fi
+printf '%s\n%s\n' "$$" "$STARTED_AT" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+
+if [ "$SELF_TEST_MARKER" -eq 1 ]; then
+  trap - EXIT
+  exit 0
+fi
 
 # Wait out the Desktop (FAIL CLOSED: updating under live backends bricks).
 if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null; then
@@ -485,16 +575,41 @@ cd "$INSTALL_ROOT" || {
   log "$FINAL_MSG"; exit 3
 }
 export PYTHONUNBUFFERED=1
-log "running: hermes update --yes --gateway --branch $BRANCH"
-OUT="$("$HERMES_BIN" update --yes --gateway --branch "$BRANCH" 2>&1)"; CODE=$?
+# --keep-stash: never re-apply local source edits after the update (they stay
+# parked in git stash). Probe --help first: older installed backends don't
+# know the flag and argparse would abort with exit 2, which collides with the
+# "close all Hermes windows" sentinel.
+KEEP_STASH=""
+if "$HERMES_BIN" update --help 2>/dev/null | grep -q -- '--keep-stash'; then
+  KEEP_STASH="--keep-stash"
+else
+  log "installed hermes predates --keep-stash; running without it"
+fi
+log "running: hermes update --yes --gateway $KEEP_STASH --branch $BRANCH"
+publish_stage "Updating code and dependencies"
+OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
 if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   # Retry once: update-boundary class (fresh code on disk, stale in memory).
   # Exit 2 ("close all Hermes windows") is not retryable.
+  #
+  # A parked-branch SKIP (checkout on a feature branch with unmerged
+  # commits) is also deterministic — the retry would hit the exact same
+  # branch state and skip again, so it only wastes time. Detect the skip
+  # by its banner, skip the retry, and surface an honest message with a
+  # dedicated exit code (8) so callers can distinguish "skipped" from a
+  # real failure.
+  if printf '%s' "$OUT" | grep -q "CODE UPDATE SKIPPED"; then
+    log "hermes update skipped (checkout parked on a non-target branch); not retrying"
+    FINAL_CODE=8
+    FINAL_MSG="Update skipped: the git checkout is on a branch that isn't fully merged into $BRANCH. Switch to the target branch and update again (see the terminal output for the exact commands)."
+    exit 8
+  fi
   log "retrying once (freshly pulled fix loads on the second run)"
-  OUT="$("$HERMES_BIN" update --yes --gateway --branch "$BRANCH" 2>&1)"; CODE=$?
+  publish_stage "Retrying update"
+  OUT="$("$HERMES_BIN" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi
@@ -505,6 +620,7 @@ trap 'on_signal TERM' TERM
 # and call it success -- retry the build once, propagate honestly.
 if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
   log "desktop build failed inside hermes update; retrying build"
+  publish_stage "Rebuilding Desktop"
   "$HERMES_BIN" desktop --force-build --build-only >> "$LOG" 2>&1 || {
     FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build. Run hermes desktop --force-build from a terminal to retry."
     exit 6

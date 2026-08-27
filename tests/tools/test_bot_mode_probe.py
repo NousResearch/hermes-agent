@@ -51,8 +51,8 @@ def test_emits_for_default_when_any_profile_is_managed(tmp_path):
     # default's callable alias is @hermes, never @default
     assert "@hermes" in section
     assert "@default" not in section
-    assert "`researcher`" in section
-    assert "hermes profile list" in section
+    assert "@researcher" in section
+    assert "message_agent" in section
 
 
 def test_emits_for_named_profile_with_own_handle(tmp_path):
@@ -62,9 +62,36 @@ def test_emits_for_named_profile_with_own_handle(tmp_path):
 
     section = bot_mode_probe.get_bot_mode_protocol_section(profile_dir)
     assert "@coder" in section
-    # teammate list excludes self, includes default
-    assert "`default`" in section
-    assert "`coder`" not in section.split("Teammates at session start:")[1]
+    # teammate roster excludes self, includes default (as @hermes)
+    roster_block = section.split("Your teammates")[1]
+    assert "`@hermes`" in roster_block
+    assert "`@coder`" not in roster_block
+
+
+def test_roster_lines_carry_roles(tmp_path):
+    """Bots must know WHO to message: the roster carries title/description."""
+    import textwrap as _tw
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    d = home / "profiles" / "researcher"
+    d.mkdir(parents=True)
+    (d / "profile.yaml").write_text(
+        _tw.dedent(
+            """\
+            description: Deep research and literature review
+            ui_meta:
+              hermes-bots:
+                title: Research Buddy
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@researcher`" in section
+    assert "Research Buddy" in section
+    assert "Deep research and literature review" in section
 
 
 def test_silent_when_soul_already_carries_protocol(tmp_path):
@@ -233,7 +260,8 @@ def test_peer_paragraph_lists_registered_peers(tmp_path):
     )
 
     section = bot_mode_probe.get_bot_mode_protocol_section(home)
-    assert "hermes peer dm" in section
+    assert "message_agent" in section
+    assert '"<peer>/<agent-name>"' in section
     assert "`homelab`" in section and "`spark`" in section
     assert "hermes peer list" in section
 

@@ -21,7 +21,8 @@ import { registry } from './registry'
 import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
-export type { PluginNativeNotificationInput } from '@/store/native-notifications'
+export type { HermesOpenTarget } from '@/lib/hermes-open-target'
+export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */
@@ -44,7 +45,9 @@ export interface PluginOs {
   /** Native OS notification (Electron), attributed to this plugin. Gated by
    *  Settings ▸ Notifications ▸ "Plugin notifications" and fires only while
    *  the user is away from Hermes — use `host.notify` for the in-app toast.
-   *  Throttled per plugin; reserve it for genuinely notable events. */
+   *  Throttled per plugin; reserve it for genuinely notable events.
+   *  Supports `icon`, `activate` (e.g. `hermes://index-network/intent/1`),
+   *  action buttons, and renderer `onActivate` / `onAction` callbacks. */
   notify: (input: PluginNativeNotificationInput) => void
   /** Open a URL with the OS default handler (browser, mail client, custom
    *  schemes like `spotify:`). Resolves false when the shell can't. */

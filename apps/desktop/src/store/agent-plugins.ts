@@ -168,3 +168,44 @@ export async function toggleAgentPlugin(
     $agentPluginBusy.set(null)
   }
 }
+
+export interface AgentPluginInstallResult {
+  ok: boolean
+  pluginName?: string
+  warnings?: string[]
+  missingEnv?: string[]
+  error?: string
+}
+
+export async function installAgentPlugin(
+  request: GatewayRequest,
+  opts: { identifier: string; force?: boolean; enable?: boolean }
+): Promise<AgentPluginInstallResult> {
+  try {
+    const result = await request<{
+      ok?: boolean
+      plugin_name?: string
+      warnings?: string[]
+      missing_env?: string[]
+      error?: string
+    }>('plugins.manage', {
+      action: 'install',
+      identifier: opts.identifier,
+      force: Boolean(opts.force),
+      enable: opts.enable ?? true
+    })
+
+    if (!result?.ok) {
+      return { ok: false, error: result?.error || 'Install failed' }
+    }
+
+    return {
+      ok: true,
+      pluginName: result.plugin_name,
+      warnings: result.warnings,
+      missingEnv: result.missing_env
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}

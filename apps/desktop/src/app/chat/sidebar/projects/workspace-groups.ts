@@ -451,21 +451,34 @@ export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
   [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => sessionRecency(b) - sessionRecency(a))
 
+/** A live row's placement path, with an exact repo-root fallback when cwd is absent. */
+function livePathForRepo(repoRoot: string, session: SessionInfo): string {
+  const cwd = (session.cwd || '').trim()
+
+  if (cwd) {
+    return cwd
+  }
+
+  const persistedRoot = (session.git_repo_root || '').trim()
+
+  return persistedRoot && pathKey(persistedRoot) === pathKey(repoRoot) ? persistedRoot : ''
+}
+
 /**
- * The lane a live session belongs to WITHIN a known repo root, by path — the
- * entered project already knows its repo roots, so we don't need the session's
- * (often-unset, on a fresh row) git_repo_root. Mirrors the backend's lane ids:
+ * The lane a live session belongs to WITHIN a known repo root, by path. A fresh
+ * row normally uses cwd; older/imported rows can carry only git_repo_root, which
+ * still identifies the main checkout exactly. Mirrors the backend's lane ids:
  * main checkout -> branch lane, `.worktrees/t_<hex>` -> kanban, any other
  * `.worktrees/<slug>` -> that worktree's own lane.
  */
 function liveLaneForRepo(repoRoot: string, session: SessionInfo): null | SidebarSessionGroup {
-  const cwd = (session.cwd || '').trim()
+  const sessionPath = livePathForRepo(repoRoot, session)
 
-  if (!cwd || !isPathUnder(repoRoot, cwd)) {
+  if (!sessionPath || !isPathUnder(repoRoot, sessionPath)) {
     return null
   }
 
-  const wt = cwd.match(/^(.*[/\\]\.worktrees)[/\\]([^/\\]+)/)
+  const wt = sessionPath.match(/^(.*[/\\]\.worktrees)[/\\]([^/\\]+)/)
 
   if (wt) {
     const [worktreeRoot, worktreesDir, slug] = [wt[0], wt[1], wt[2]]
@@ -516,9 +529,9 @@ export function overlayRepoLanes(
   })
 
   for (const session of live) {
-    const cwd = (session.cwd || '').trim()
+    const sessionPath = livePathForRepo(repo.path ?? '', session)
 
-    if (removed.has(session.id) || !cwd) {
+    if (removed.has(session.id) || !sessionPath) {
       continue
     }
 
@@ -533,7 +546,7 @@ export function overlayRepoLanes(
     for (const g of lanes) {
       const lanePath = normalizePath(g.path)
 
-      if (!lanePath || pathKey(lanePath) === repoRootKey || !isPathUnder(lanePath, cwd)) {
+      if (!lanePath || pathKey(lanePath) === repoRootKey || !isPathUnder(lanePath, sessionPath)) {
         continue
       }
 

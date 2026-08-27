@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { keyedTimeouts } from '@/lib/keyed-timeouts'
+
 import { $gateway } from './gateway'
 
 export type GoalStatus = 'active' | 'done' | 'paused' | 'waiting'
@@ -14,38 +16,23 @@ export interface SessionGoal {
 export const $goalsBySession = atom<Record<string, SessionGoal>>({})
 
 const DONE_LINGER_MS = 8_000
-const clearTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-function cancelScheduledClear(sid: string) {
-  const timer = clearTimers.get(sid)
-
-  if (timer !== undefined) {
-    clearTimeout(timer)
-    clearTimers.delete(sid)
-  }
-}
+const clearTimers = keyedTimeouts()
 
 export function setSessionGoal(sid: string, goal: SessionGoal) {
   if (!sid) {
     return
   }
 
-  cancelScheduledClear(sid)
+  clearTimers.cancel(sid)
   $goalsBySession.set({ ...$goalsBySession.get(), [sid]: goal })
 
   if (goal.status === 'done') {
-    clearTimers.set(
-      sid,
-      setTimeout(() => {
-        clearTimers.delete(sid)
-        clearSessionGoal(sid)
-      }, DONE_LINGER_MS)
-    )
+    clearTimers.schedule(sid, DONE_LINGER_MS, () => clearSessionGoal(sid))
   }
 }
 
 export function clearSessionGoal(sid: string) {
-  cancelScheduledClear(sid)
+  clearTimers.cancel(sid)
 
   const map = $goalsBySession.get()
 
@@ -147,7 +134,7 @@ function nextGoalFromText(text: string, previous?: SessionGoal): SessionGoal | n
   return undefined
 }
 
-export function applyGoalStatusText(sid: string, text: string) {
+export function applyGoalStatusText(sid: string, text: string, opts?: { hydrate?: boolean }) {
   if (!sid) {
     return
   }
@@ -157,6 +144,18 @@ export function applyGoalStatusText(sid: string, text: string) {
   if (next === null) {
     clearSessionGoal(sid)
   } else if (next) {
+    // A done goal is terminal state in the backend DB — it stays "done"
+    // forever (only /goal clear or a new goal replaces it). The 8s linger is
+    // for the LIVE completion moment; re-hydrating "✓ Goal done" on every
+    // mount would resurrect the chip indefinitely. Bot Mode is the worst
+    // case: one endless session means the completed layover would never go
+    // away. On hydration, a terminal goal is the same as no goal.
+    if (opts?.hydrate && next.status === 'done') {
+      clearSessionGoal(sid)
+
+      return
+    }
+
     setSessionGoal(sid, next)
   }
 }
@@ -170,7 +169,8 @@ export async function refreshSessionGoal(sid: string): Promise<void> {
 
   try {
     const result = await gateway.request<{ output?: string }>('slash.exec', { command: 'goal status', session_id: sid })
-    applyGoalStatusText(sid, result?.output ?? '')
+
+    applyGoalStatusText(sid, result?.output ?? '', { hydrate: true })
   } catch {
     // Best-effort: older gateways or detached sessions simply won't hydrate it.
   }

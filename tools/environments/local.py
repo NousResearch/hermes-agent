@@ -408,6 +408,22 @@ def _is_hermes_internal_secret(key: str) -> bool:
     return False
 
 
+def _plugin_terminal_env_strip_keys() -> frozenset:
+    """Credential env keys owned by plugin-registered terminal backends.
+
+    Computed at call time (not import time) because plugins register after
+    this module is imported. Treated as Tier-1: stripped from every spawned
+    subprocess unconditionally, exactly like MODAL_*/DAYTONA_API_KEY in
+    ``_ALWAYS_STRIP_KEYS``. Fail-soft to an empty set.
+    """
+    try:
+        from agent.terminal_env_registry import plugin_strip_env_keys
+
+        return plugin_strip_env_keys()
+    except Exception:
+        return frozenset()
+
+
 def _inject_context_hermes_home(env: dict) -> None:
     """Bridge the context-local Hermes home override into subprocess env."""
     try:
@@ -479,11 +495,14 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     sanitized: dict[str, str] = {}
+    _plugin_strip = _plugin_terminal_env_strip_keys()
 
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
         if _is_hermes_internal_secret(key):
+            continue
+        if key in _plugin_strip:
             continue
         passthrough = _is_passthrough(key)
         if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
@@ -499,6 +518,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
                 continue
             sanitized[real_key] = value
         elif _is_hermes_internal_secret(key):
+            continue
+        elif key in _plugin_strip:
             continue
         else:
             passthrough = _is_passthrough(key)
@@ -522,6 +543,14 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # the separate Hermes runtime venv.  The filter validates that relationship
     # against the repo layout before trusting it.
     _strip_hermes_owned_pythonpath_and_runtime_markers(sanitized)
+
+    # Keep bare ``hermes`` invocations available to child jobs even when the
+    # gateway was launched by a service manager or cron without the console
+    # script's directory on PATH.  The terminal environment already applies
+    # this invariant; Cron scripts use this sanitizer directly (#92998).
+    path_key = _path_env_key(sanitized)
+    if path_key is not None:
+        sanitized[path_key] = _prepend_hermes_bin_dir(sanitized.get(path_key, ""))
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
@@ -624,6 +653,8 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
 
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:
+        env.pop(key, None)
+    for key in _plugin_terminal_env_strip_keys():
         env.pop(key, None)
     # Internal routing hints and Hermes-internal dynamic secrets
     # (``AUXILIARY_<TASK>_API_KEY`` / ``_BASE_URL`` side-LLM credentials,
@@ -1715,6 +1746,10 @@ class LocalEnvironment(BaseEnvironment):
 
     _profile_scoped_passthrough = True
 
+    # Commands run on the Hermes host itself — controller-side platform
+    # behavior (macOS TCC pruning, etc.) legitimately applies here.
+    is_local = True
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
@@ -1899,27 +1934,72 @@ class LocalEnvironment(BaseEnvironment):
                     if pgid is None:
                         raise
 
+                # Snapshot the descendant set BEFORE the first signal: once
+                # the wrapper dies its children reparent to init and a parent
+                # walk finds nothing (same rationale as agent/deadline.py
+                # kill_process_tree).  A descendant that called ``setsid``
+                # escapes the process group entirely and would survive the
+                # group-kill below — the #71148 class, terminal flavor
+                # (issue #84967's local sibling).  The snapshot must never
+                # break the kill path, so any failure just yields an empty
+                # sweep set.
+                descendants: list = []
+                try:
+                    import psutil
+
+                    descendants = psutil.Process(proc.pid).children(recursive=True)
+                except Exception:
+                    descendants = []
+
+                def _sweep_escaped_descendants() -> None:
+                    """SIGKILL snapshotted survivors outside the (dead) group.
+
+                    Runs after the TERM→KILL group escalation so in-group
+                    members keep their SIGTERM grace window; only escapees
+                    (own setsid sessions) are force-killed.  psutil's
+                    identity-aware Process means recycled PIDs are skipped.
+
+                    POSIX-only: reached solely from the non-_IS_WINDOWS
+                    branch above (the win32 path returns earlier).
+                    """
+                    for child in descendants:
+                        try:
+                            if not child.is_running():
+                                continue
+                            try:
+                                if os.getpgid(child.pid) == pgid:
+                                    continue  # group-kill already covers it
+                            except (ProcessLookupError, PermissionError, OSError):
+                                pass
+                            child.kill()
+                        except Exception:
+                            continue
+
                 try:
                     os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
                 except ProcessLookupError:
+                    _sweep_escaped_descendants()
                     return
 
                 # Wait on the process group, not just the shell wrapper. Under
                 # load the wrapper can exit before grandchildren do; returning
                 # at that point leaves orphaned process-group members behind.
                 if _wait_for_group_exit(pgid, 1.0):
+                    _sweep_escaped_descendants()
                     return
 
                 try:
                     # POSIX-only: _IS_WINDOWS is handled by the outer branch.
                     os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX process-group SIGKILL
                 except ProcessLookupError:
+                    _sweep_escaped_descendants()
                     return
                 _wait_for_group_exit(pgid, 2.0)
                 try:
                     proc.wait(timeout=0.2)
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+                _sweep_escaped_descendants()
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()

@@ -46,6 +46,7 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _format_interrupted_output,
 )
 from tools.registry import registry
 
@@ -79,6 +80,33 @@ class TestSandboxRequirements(unittest.TestCase):
         self.assertEqual(EXECUTE_CODE_SCHEMA["name"], "execute_code")
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["properties"])
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["required"])
+
+
+class TestInterruptedOutput(unittest.TestCase):
+    def tearDown(self):
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(False)
+
+    def test_uses_recorded_interrupt_source(self):
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(True, reason="superseded by a new live turn")
+
+        self.assertEqual(
+            _format_interrupted_output("partial output"),
+            "partial output\n[execution interrupted — superseded by a new live turn]",
+        )
+
+    def test_unknown_interrupt_source_is_neutral(self):
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(True)
+
+        self.assertEqual(
+            _format_interrupted_output(""),
+            "[execution interrupted]",
+        )
 
 
 class TestHermesToolsGeneration(unittest.TestCase):
@@ -383,7 +411,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the

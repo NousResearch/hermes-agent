@@ -43,7 +43,8 @@ class TestGetProvider:
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools._has_local_command", return_value=False):
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.tool_backend_helpers.read_selection", return_value="local"):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "none"
 

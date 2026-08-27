@@ -175,6 +175,24 @@ When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it g
 
 The same pipeline runs in the classic CLI, the TUI, and the desktop app. In a desktop voice conversation the reply text is fed **live** into a per-reply speech WebSocket as the model generates it, so speech overlaps generation — one socket and one audio clock per reply, no per-sentence connection gaps.
 
+### Desktop remote: client-direct voice (lowest-hop path)
+
+When Hermes Desktop is connected to a **remote gateway**, audio does not need to be relayed through the gateway at all. At voice-session start the desktop fetches the active profile's resolved STT/TTS settings (provider, model, language/voice, and credential) from the gateway over the authenticated REST channel (`GET /api/audio/voice-config`) and then calls the providers **directly**:
+
+- **Dictation / voice input:** the mic recording goes straight from your desktop to the profile's STT provider; only the resulting *text* is sent to the gateway as the prompt.
+- **Spoken replies:** the reply text is already streaming to the desktop over the chat socket, so the desktop synthesizes it locally with the profile's TTS provider and plays it — the gateway link never carries audio.
+
+There is nothing to configure on the client: the profile you're talking to is the single source of truth for providers and keys, exactly as if the gateway had done the work itself. Keys are held in the desktop's memory for the session only — never written to disk on the client.
+
+Providers that can only run on the gateway host (local whisper, `edge` TTS, command providers, plugins) automatically fall back to the relay path (`/api/audio/transcribe` and the speech WebSocket), as does any older backend without the endpoint. To force the relay for every provider, set:
+
+```yaml
+voice:
+  client_direct: false
+```
+
+Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, and DeepInfra via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
+
 ### Barge-in
 
 You can interrupt the agent at ANY point in its turn — the microphone stays live from the moment you finish speaking until the reply has fully played (full duplex):

@@ -33,11 +33,14 @@ from hermes_cli.main import _cmd_update_check, cmd_update
 def test_cmd_update_in_docker_prints_guidance_and_exits(
     mock_run, _mock_method, _mock_managed, capsys
 ):
-    """``hermes update`` inside Docker → friendly message + exit 1, no git calls."""
+    """``hermes update`` inside Docker → friendly message + exit 2, no git calls.
+
+    Exit 2 = refused-by-contract (#91277 Phase 3), distinct from exit-1 errors.
+    """
     with pytest.raises(SystemExit) as excinfo:
         cmd_update(SimpleNamespace(check=False))
 
-    assert excinfo.value.code == 1
+    assert excinfo.value.code == 2
     out = capsys.readouterr().out
     # Spot-check the key guidance — exhaustive wording is locked in by the
     # config-module test below to keep these CLI tests resilient to copy edits.

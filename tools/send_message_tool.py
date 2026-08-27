@@ -968,6 +968,18 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
     }
 
+    # Signal's standalone path (_send_signal) speaks raw JSON-RPC and does not
+    # go through SignalAdapter.send(), so it never benefits from the adapter's
+    # native chunking. Register the platform limit here so the shared
+    # truncate_message() pass below splits long sends instead of signal-cli
+    # rejecting them. Sourced from the adapter module so the two paths can't
+    # drift (credit: @5L-hermes01 in #67279, @lkz-de in #57929).
+    try:
+        from gateway.platforms.signal import MAX_MESSAGE_LENGTH as _SIGNAL_MAX
+        _MAX_LENGTHS[Platform.SIGNAL] = _SIGNAL_MAX
+    except ImportError:
+        _MAX_LENGTHS[Platform.SIGNAL] = 8000
+
     # Check plugin registry for max_message_length
     if platform not in _MAX_LENGTHS:
         try:

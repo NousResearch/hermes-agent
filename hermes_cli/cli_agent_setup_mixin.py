@@ -500,6 +500,7 @@ class CLIAgentSetupMixin:
                 credential_pool=runtime.get("credential_pool"),
                 max_tokens=self.max_tokens,
                 max_iterations=self.max_turns,
+                run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose,
@@ -900,20 +901,20 @@ class CLIAgentSetupMixin:
             elif role == "user":
                 lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
                 # Show first line inline, indent rest
-                msg_lines = text.splitlines()
+                msg_lines = text.splitlines() or [""]
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"         {ml}\n", style="dim")
             elif role == "assistant_last":
                 # Last assistant response shown in full, non-dim
                 lines.append("  ◆ Hermes: ", style=f"bold {_assistant_label_c}")
-                msg_lines = text.splitlines()
+                msg_lines = text.splitlines() or [""]
                 lines.append(msg_lines[0] + "\n", style="")
                 for ml in msg_lines[1:]:
                     lines.append(f"            {ml}\n", style="")
             else:
                 lines.append("  ◆ Hermes: ", style=f"dim bold {_assistant_label_c}")
-                msg_lines = text.splitlines()
+                msg_lines = text.splitlines() or [""]
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"            {ml}\n", style="dim")

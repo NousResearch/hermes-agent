@@ -453,6 +453,11 @@ export const UserMessage: FC<{
             >
               <div
                 className="relative w-full"
+                // The app context menu skips PLAIN right-clicks here (the
+                // attr below) so this handler keeps the picker gesture; a
+                // link/image/selection inside the bubble still gets the app
+                // menu, and this handler's selection guard keeps ⌘C flows.
+                data-context-menu-skip=""
                 onContextMenu={
                   // Right-click is the desktop stand-in for iOS touch-and-hold —
                   // but only when there's nothing selected. A live highlight

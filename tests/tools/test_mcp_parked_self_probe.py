@@ -88,6 +88,7 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
                     # First connect succeeds (sets _ready), then dies.
                     self.session = object()
                     self._ready.set()
+                    self._ever_connected = True
                     self.session = None
                     raise RuntimeError("backend outage begins")
                 if not state["backend_up"]:

@@ -330,6 +330,9 @@ class SessionImport(BaseModel):
 class SessionRename(BaseModel):
     title: Optional[str] = None
     archived: Optional[bool] = None
+    # Generic visibility flag. This is also used by process-light cross-profile
+    # reconciliation, where the primary backend opens the owner's state.db.
+    hidden: Optional[bool] = None
     # Durable "keep" flag mirrored from the Desktop sidebar's pins; pinned
     # sessions are exempt from the sessions.auto_archive stale sweep.
     pinned: Optional[bool] = None

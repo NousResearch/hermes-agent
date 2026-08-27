@@ -1,22 +1,15 @@
-/**
- * Pure route planner for Desktop's legacy v1 connection config. It preserves
- * v2 registry provenance before URL normalization, OAuth, or SSH tunnelling
- * discard dial details. Environment routes deliberately remain unregistered.
- */
-
 import {
   connectionScopeKey,
   modeIsRemoteLike,
-  normalizeRemoteBaseUrl,
-  normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
   profileRemoteOverride,
   profileSshOverride
 } from './connection-config'
-import type { ConnectionRegistry, RegistryConnection } from './connection-registry'
+import type { ConnectionRegistry } from './connection-registry'
+import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
 
-type RouteSource = 'env' | 'profile' | 'settings'
+type RouteSource = 'env' | 'profile' | 'registry' | 'settings'
 
 interface SshRouteConfig {
   host: string
@@ -52,110 +45,6 @@ export interface DesktopRemoteRouteInput {
   env?: { token?: null | string; url?: null | string }
   profile?: null | string
   registry: ConnectionRegistry
-}
-
-type StoredRoute =
-  | {
-      authMode?: unknown
-      headers?: Record<string, unknown>
-      kind: 'cloud' | 'remote'
-      org?: unknown
-      token?: unknown
-      url?: unknown
-    }
-  | ({ kind: 'ssh' } & Partial<SshRouteConfig>)
-
-function stableValue(value: unknown): string {
-  if (!value || typeof value !== 'object') {
-    return JSON.stringify(value ?? null)
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map(stableValue).join(',')}]`
-  }
-
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`)
-    .join(',')}}`
-}
-
-function canonicalHeaders(headers: unknown): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(normalizeRemoteHeaders(headers))
-      .map(([name, value]): [string, unknown] => [name.toLowerCase(), value])
-      .sort(([left], [right]) => left.localeCompare(right))
-  )
-}
-
-function routeIdentity(route: StoredRoute): null | string {
-  if (route.kind === 'ssh') {
-    const ssh = normalizeSshConfig({ ...route, mode: 'ssh' })
-
-    if (!ssh) {
-      return null
-    }
-
-    return stableValue({
-      host: ssh.host,
-      keyPath: ssh.keyPath || '',
-      kind: 'ssh',
-      port: ssh.port || 22,
-      remoteHermesPath: ssh.remoteHermesPath || '',
-      remoteProfile: ssh.remoteProfile || '',
-      user: ssh.user || ''
-    })
-  }
-
-  try {
-    const authMode = normAuthMode(route.authMode)
-
-    return stableValue({
-      authMode,
-      headers: canonicalHeaders(route.headers),
-      kind: route.kind,
-      org: route.kind === 'cloud' ? String(route.org || '').trim() : '',
-      token: authMode === 'token' ? (route.token ?? null) : null,
-      url: normalizeRemoteBaseUrl(route.url)
-    })
-  } catch {
-    return null
-  }
-}
-
-function registryRoute(connection: RegistryConnection): null | StoredRoute {
-  if (connection.kind === 'local') {
-    return null
-  }
-
-  return connection as StoredRoute
-}
-
-function matchingConnectionId(
-  registry: ConnectionRegistry,
-  route: StoredRoute,
-  strategy: 'primary' | 'unique'
-): undefined | string {
-  const identity = routeIdentity(route)
-
-  if (!identity) {
-    return undefined
-  }
-
-  if (strategy === 'primary') {
-    const primary = registry.connections.find(connection => connection.id === registry.primary)
-    const candidate = primary && registryRoute(primary)
-
-    return candidate && routeIdentity(candidate) === identity ? primary.id : undefined
-  }
-
-  const matches = registry.connections.filter(connection => {
-    const candidate = registryRoute(connection)
-
-    return candidate ? routeIdentity(candidate) === identity : false
-  })
-
-  return matches.length === 1 ? matches[0].id : undefined
 }
 
 function withConnectionId<T extends object>(route: T, connectionId?: string): T & { connectionId?: string } {
@@ -244,7 +133,14 @@ export function resolveDesktopRemoteRoute({
   }
 
   if (!modeIsRemoteLike(config.mode)) {
-    return null
+    // Registry-primary fallback (#91564/#90316): "Make primary" on a
+    // registered remote/cloud/ssh gateway only rewrites connections.json —
+    // the v1 config.mode stays 'local'. Without this rung the primary boot
+    // resolves local and spawns a loopback `hermes serve` the desktop never
+    // uses (it dials the registry primary separately): duplicated MCP sets,
+    // port squat, and a respawn on every poll. A 'local' registry primary
+    // still resolves null, so genuinely-local desktops are untouched.
+    return resolveRegistryPrimaryRoute(registry)
   }
 
   const kind = config.mode === 'cloud' ? 'cloud' : 'remote'
@@ -263,4 +159,54 @@ export function resolveDesktopRemoteRoute({
     },
     matchingConnectionId(registry, route, 'primary')
   )
+}
+
+/**
+ * Lowest-precedence rung: the v2 registry PRIMARY's own transport. Returns
+ * null unless the primary names a remote/cloud/ssh entry — i.e. only when the
+ * user explicitly made a non-local registered gateway their primary.
+ */
+function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemoteRoute | null {
+  const primaryId = String(registry?.primary || '').trim()
+
+  if (!primaryId) {
+    return null
+  }
+
+  const entry = (registry.connections || []).find(connection => connection.id === primaryId)
+
+  if (!entry) {
+    return null
+  }
+
+  if (entry.kind === 'ssh') {
+    const ssh = normalizeSshConfig({ ...entry, mode: 'ssh' })
+
+    if (!ssh) {
+      return null
+    }
+
+    return { connectionId: entry.id, kind: 'ssh', source: 'registry', ssh, token: entry.token }
+  }
+
+  if (entry.kind !== 'remote' && entry.kind !== 'cloud') {
+    return null
+  }
+
+  const url = String(entry.url || '').trim()
+
+  if (!url) {
+    return null
+  }
+
+  return {
+    authMode: normAuthMode(entry.authMode),
+    connectionId: entry.id,
+    headers: entry.headers,
+    kind: entry.kind,
+    org: entry.kind === 'cloud' ? String(entry.org || '').trim() || undefined : undefined,
+    source: 'registry',
+    token: entry.token,
+    url
+  }
 }

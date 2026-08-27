@@ -11,6 +11,7 @@ because its dispatch is tightly coupled to module-level ``cmd_*`` functions.
 """
 
 import argparse
+from functools import lru_cache
 
 
 # `--profile` / `-p` is consumed by ``main._apply_profile_override`` before
@@ -21,6 +22,54 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [
     ("--profile", True),
     ("-p", True),
 ]
+
+
+# Static snapshot fallback for ``top_level_value_flag_sets`` — used only if
+# introspecting the live parser fails (e.g. argparse surface broken mid-edit).
+# The derived path is authoritative; a parity test in
+# tests/hermes_cli/test_top_level_value_flags_parity.py fails CI if the parser
+# grows a value-taking flag this snapshot lacks AND derivation regresses.
+_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset(
+    {
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider", "--reasoning",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+        "--usage-file",
+        "--in",
+    }
+)
+_OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
+
+
+@lru_cache(maxsize=1)
+def top_level_value_flag_sets() -> tuple[frozenset[str], frozenset[str]]:
+    """(required-value, optional-value) top-level flags, derived from the
+    REAL parser.
+
+    Introspects ``build_top_level_parser()`` (every option with nargs != 0)
+    so the argv scanners in ``main.py`` (``_first_positional_argv``,
+    ``_apply_profile_override``) can never drift from the argparse surface —
+    the exact drift that made ``hermes --reasoning high chat …`` misread
+    ``high`` as the subcommand and forced eager plugin discovery (#93530).
+    Mirrors the ``update_cmd._holder_value_flags`` precedent, including the
+    handwritten-snapshot fallback for a broken parser import. Cached per
+    process.
+    """
+    try:
+        parser = build_top_level_parser()[0]
+        required: set[str] = set()
+        optional: set[str] = set()
+        for action in parser._actions:
+            if not action.option_strings or action.nargs == 0:
+                continue
+            target = optional if action.nargs == "?" else required
+            target.update(action.option_strings)
+        return frozenset(required), frozenset(optional)
+    except Exception:
+        return _VALUE_FLAGS_FALLBACK, _OPTIONAL_VALUE_FLAGS_FALLBACK
 
 
 def _inherited_flag(parser, *args, **kwargs):
@@ -300,8 +349,19 @@ def build_top_level_parser():
         help="Interactive chat with the agent",
         description="Start an interactive chat session with Hermes Agent",
     )
-    chat_parser.add_argument(
+    _query_group = chat_parser.add_mutually_exclusive_group()
+    _query_group.add_argument(
         "-q", "--query", help="Single query (non-interactive mode)"
+    )
+    _query_group.add_argument(
+        "--query-file",
+        metavar="PATH",
+        help=(
+            "Read the single query from a file instead of the command line "
+            "('-' reads stdin). Safe for arbitrary text: nothing is shell-"
+            "interpreted, so quotes, $(...), and backticks are preserved "
+            "verbatim. Mutually exclusive with -q."
+        ),
     )
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
@@ -447,6 +507,21 @@ def build_top_level_parser():
         default=None,
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
+    )
+    chat_parser.add_argument(
+        "--run-budget",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        dest="run_budget",
+        help=(
+            "Optional wall-clock budget in seconds for each conversation run. "
+            "At 80%% elapsed the agent gets a one-time wrap-up notice, and "
+            "implicit provider stale timeouts are capped to the remaining "
+            "budget so one hung call can't consume the run. Unset = off. "
+            "Also configurable as agent.run_budget_seconds in config.yaml. "
+            "Intended for one-shot/eval invocations with a hard ceiling."
+        ),
     )
     _inherited_flag(
         chat_parser,

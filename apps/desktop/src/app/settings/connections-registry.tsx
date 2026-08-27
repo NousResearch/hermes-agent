@@ -1,20 +1,43 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import type {
   DesktopConnectionKind,
+  DesktopConnectionProbeResult,
   DesktopConnectionsRegistry,
   DesktopRegistryConnection,
   DesktopRegistryConnectionInput
 } from '@/global'
 import { useI18n } from '@/i18n'
+import {
+  CONNECTION_SEARCH_THRESHOLD,
+  connectionMatchesQuery,
+  sortConnectionsForDisplay
+} from '@/lib/connection-display'
+import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { triggerHaptic } from '@/lib/haptics'
-import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, Terminal, Trash2 } from '@/lib/icons'
+import {
+  Check,
+  Cloud,
+  Globe,
+  Loader2,
+  LogIn,
+  Monitor,
+  Pencil,
+  Plus,
+  RefreshCw,
+  SearchIcon,
+  Terminal,
+  Trash2
+} from '@/lib/icons'
+import { coerceRemoteUrlScheme } from '@/lib/remote-url'
+import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 
-import { EmptyState, ListRow, Pill, SectionHeading } from './primitives'
+import { EmptyState, ListRow, Pill, SectionHeading, ToggleRow } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   cloud: Cloud,
@@ -191,6 +214,20 @@ export function sameBackendPeerLabel(
   return null
 }
 
+function scrollableAncestor(element: HTMLElement): HTMLElement | null {
+  let parent = element.parentElement
+
+  while (parent) {
+    if (/(auto|scroll)/.test(window.getComputedStyle(parent).overflowY)) {
+      return parent
+    }
+
+    parent = parent.parentElement
+  }
+
+  return null
+}
+
 /**
  * The connections registry section of Settings → Gateways: manage the named
  * agent sources (local runtime + any number of remote gateways / Hermes Cloud
@@ -200,6 +237,7 @@ export function sameBackendPeerLabel(
 export function ConnectionsRegistrySection() {
   const { t } = useI18n()
   const s = t.settings.connections
+  const activeConnectionId = useStore($activeConnectionId)
   const [registry, setRegistry] = useState<DesktopConnectionsRegistry | null>(null)
   const [loading, setLoading] = useState(true)
   const [editor, setEditor] = useState<EditorState | null>(null)
@@ -208,14 +246,117 @@ export function ConnectionsRegistrySection() {
   const [testingId, setTestingId] = useState<null | string>(null)
   const [removeTarget, setRemoveTarget] = useState<DesktopRegistryConnection | null>(null)
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
+  const [launchModeBusy, setLaunchModeBusy] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const pendingSearchTopRef = useRef<null | number>(null)
   // Inline duplicate rejection from the save path (dedupe is also enforced in
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
+  // A gated remote gateway (OAuth, or username/password) never accepts a
+  // session token: it authenticates with a browser sign-in and keeps the
+  // session itself. Probe the edited URL so this row can name the provider,
+  // and remember whether the login round-trip actually completed.
+  const [authProbe, setAuthProbe] = useState<DesktopConnectionProbeResult | null>(null)
+  const [signingIn, setSigningIn] = useState(false)
+  const [oauthConnected, setOauthConnected] = useState(false)
+  const probeSeq = useRef(0)
 
   const bridge = window.hermesDesktop?.connections
 
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
+
+  const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
+    setRegistry(next)
+    setConnectionsRegistry(next)
+  }, [])
+
+  const editorUrl = editor?.kind === 'remote' ? coerceRemoteUrlScheme(editor.url) : ''
+  const editorWantsOauth = editor?.kind === 'remote' && editor.authMode === 'oauth'
+  const authProviderShape = deriveRemoteAuthProviderShape(authProbe?.providers, t.boot.failure.identityProvider)
+
+  // Probe only while the sign-in row is on screen, and debounce it so typing a
+  // URL doesn't fire a request per keystroke. Best-effort: a failed probe just
+  // leaves the generic provider label, it never blocks signing in.
+  useEffect(() => {
+    if (!editorWantsOauth || !editorUrl || !window.hermesDesktop?.probeConnectionConfig) {
+      setAuthProbe(null)
+
+      return
+    }
+
+    const seq = ++probeSeq.current
+    // Staleness is covered by probeSeq, but not unmount: a probe resolving
+    // after the editor closes would still call setAuthProbe on an unmounted
+    // component. Harmless in React 18, still worth not doing.
+    let cancelled = false
+
+    const timer = setTimeout(() => {
+      window.hermesDesktop
+        .probeConnectionConfig(editorUrl)
+        .then(result => {
+          if (!cancelled && seq === probeSeq.current) {
+            setAuthProbe(result)
+          }
+        })
+        .catch(() => {
+          if (!cancelled && seq === probeSeq.current) {
+            setAuthProbe(null)
+          }
+        })
+    }, 400)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [editorUrl, editorWantsOauth])
+
+  // The session is scoped to an origin, so pointing the editor at a different
+  // URL invalidates the "signed in" state this row is reporting. Flipping the
+  // auth mode invalidates it too: a saved row edited token -> oauth must not
+  // present a stale "Signed in" pill from an earlier oauth stint.
+  useEffect(() => {
+    setOauthConnected(false)
+  }, [editorUrl, editorWantsOauth])
+
+  // Open the gateway's own login window and let the main process keep whatever
+  // it mints (native PKCE bearer tokens, or the legacy session cookies). This
+  // is the same IPC the first-run form and the gateway panel use — the
+  // registry editor simply had no affordance to reach it.
+  const signInOauth = useCallback(async () => {
+    if (!editorUrl) {
+      notify({ kind: 'warning', title: t.settings.gateway.authTitle, message: t.settings.gateway.enterUrlFirst })
+
+      return
+    }
+
+    setSigningIn(true)
+
+    try {
+      const result = await window.hermesDesktop.oauthLoginConnectionConfig(editorUrl)
+
+      setOauthConnected(Boolean(result.connected))
+
+      if (result.connected) {
+        notify({
+          title: t.settings.gateway.signedIn,
+          message: t.settings.gateway.connectedTo(authProviderShape.providerLabel)
+        })
+      } else {
+        notify({
+          kind: 'warning',
+          title: t.boot.failure.signInIncompleteTitle,
+          message: t.boot.failure.signInIncompleteMessage
+        })
+      }
+    } catch (err) {
+      notifyError(err, t.settings.gateway.signInFailed)
+    } finally {
+      setSigningIn(false)
+    }
+  }, [authProviderShape.providerLabel, editorUrl, t])
 
   const load = useCallback(async () => {
     if (!bridge) {
@@ -227,13 +368,13 @@ export function ConnectionsRegistrySection() {
     setLoading(true)
 
     try {
-      setRegistry(await bridge.list())
+      publishRegistry(await bridge.list())
     } catch (err) {
       notifyError(err, s.loadFailed)
     } finally {
       setLoading(false)
     }
-  }, [bridge, s.loadFailed])
+  }, [bridge, publishRegistry, s.loadFailed])
 
   useEffect(() => {
     void load()
@@ -312,7 +453,7 @@ export function ConnectionsRegistrySection() {
         }
 
         const result = await bridge.save(payload)
-        setRegistry(result.registry)
+        publishRegistry(result.registry)
         setEditor(null)
         setPlainTextConfirm(false)
       } catch (err) {
@@ -336,7 +477,7 @@ export function ConnectionsRegistrySection() {
         setSaving(false)
       }
     },
-    [bridge, editor, registry?.connections, registry?.secureTokenStorage, s]
+    [bridge, editor, publishRegistry, registry?.connections, registry?.secureTokenStorage, s]
   )
 
   const remove = useCallback(async () => {
@@ -348,14 +489,14 @@ export function ConnectionsRegistrySection() {
 
     try {
       const result = await bridge.remove(removeTarget.id)
-      setRegistry(result.registry)
+      publishRegistry(result.registry)
     } catch (err) {
       notifyError(err, s.removeFailed)
     } finally {
       setBusyId(null)
       setRemoveTarget(null)
     }
-  }, [bridge, removeTarget, s.removeFailed])
+  }, [bridge, publishRegistry, removeTarget, s.removeFailed])
 
   const makePrimary = useCallback(
     async (id: string) => {
@@ -367,14 +508,34 @@ export function ConnectionsRegistrySection() {
 
       try {
         const result = await bridge.setPrimary(id)
-        setRegistry(result.registry)
+        publishRegistry(result.registry)
       } catch (err) {
         notifyError(err, s.saveFailed)
       } finally {
         setBusyId(null)
       }
     },
-    [bridge, s.saveFailed]
+    [bridge, publishRegistry, s.saveFailed]
+  )
+
+  const setLaunchMode = useCallback(
+    async (mode: 'last-used' | 'primary') => {
+      if (!bridge?.setLaunchMode) {
+        return
+      }
+
+      setLaunchModeBusy(true)
+
+      try {
+        const result = await bridge.setLaunchMode(mode)
+        publishRegistry(result.registry)
+      } catch (err) {
+        notifyError(err, s.saveFailed)
+      } finally {
+        setLaunchModeBusy(false)
+      }
+    },
+    [bridge, publishRegistry, s.saveFailed]
   )
 
   const test = useCallback(
@@ -438,6 +599,46 @@ export function ConnectionsRegistrySection() {
     ssh: { desc: s.kindSshDesc, label: s.kindSsh }
   }
 
+  const sortedConnections = useMemo(
+    () => sortConnectionsForDisplay(registry?.connections ?? []),
+    [registry?.connections]
+  )
+
+  const showSearch = sortedConnections.length >= CONNECTION_SEARCH_THRESHOLD
+  const effectiveSearchQuery = showSearch ? searchQuery : ''
+
+  const displayedConnections = sortedConnections.filter(connection =>
+    connectionMatchesQuery(connection, effectiveSearchQuery, [kindMeta[connection.kind].label])
+  )
+
+  useLayoutEffect(() => {
+    const previousTop = pendingSearchTopRef.current
+    const input = searchInputRef.current
+
+    pendingSearchTopRef.current = null
+
+    if (previousTop == null || !input) {
+      return
+    }
+
+    const scroller = scrollableAncestor(input)
+
+    if (!scroller) {
+      return
+    }
+
+    const delta = input.getBoundingClientRect().top - previousTop
+
+    if (Math.abs(delta) > 0.5) {
+      scroller.scrollTop += delta
+    }
+  }, [displayedConnections.length, effectiveSearchQuery])
+
+  const updateSearchQuery = (nextQuery: string) => {
+    pendingSearchTopRef.current = searchInputRef.current?.getBoundingClientRect().top ?? null
+    setSearchQuery(nextQuery)
+  }
+
   if (!bridge) {
     return null
   }
@@ -446,11 +647,25 @@ export function ConnectionsRegistrySection() {
     <div className="mt-8 border-t border-border/60 pt-6">
       <SectionHeading icon={Globe} title={s.title} />
       <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
-      {/* Storage-only slice: be explicit that routing consumption is staged so
-          "Make primary" isn't read as an immediate connection switch. */}
+      {/* Source selection lives in Sessions. Primary is the registry fallback,
+          not an immediate workspace switch. */}
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.stagedNote}
       </p>
+
+      {!loading && showSearch && (
+        <Input
+          aria-label={s.searchPlaceholder}
+          containerClassName="mt-3 mb-0 w-full max-w-sm"
+          onChange={event => updateSearchQuery(event.target.value)}
+          placeholder={s.searchPlaceholder}
+          prefix={<SearchIcon className="size-3.5" />}
+          ref={searchInputRef}
+          size="sm"
+          type="search"
+          value={searchQuery}
+        />
+      )}
 
       {loading ? (
         <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
@@ -458,14 +673,17 @@ export function ConnectionsRegistrySection() {
         </div>
       ) : !registry || registry.connections.length === 0 ? (
         <EmptyState title={s.empty} />
+      ) : displayedConnections.length === 0 ? (
+        <EmptyState title={s.noSearchResults} />
       ) : (
-        registry.connections.map(conn => {
+        displayedConnections.map(conn => {
           const Icon = KIND_ICONS[conn.kind]
+          const isCurrent = activeConnectionId === conn.id
           const isPrimary = registry.primary === conn.id
           const busy = busyId === conn.id
           // Display-only: this connection is a second address for a backend
           // already registered under another entry (same install_id).
-          const sameBackendPeer = sameBackendPeerLabel(conn, registry.connections)
+          const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
 
           const baseDescription =
             conn.kind === 'ssh'
@@ -525,7 +743,8 @@ export function ConnectionsRegistrySection() {
                 <span className="flex items-center gap-2">
                   <Icon className="size-4 shrink-0 text-muted-foreground" />
                   <span className="truncate">{conn.label}</span>
-                  {isPrimary && <Pill tone="primary">{s.primaryPill}</Pill>}
+                  {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
+                  {isPrimary && <Pill>{s.primaryPill}</Pill>}
                   {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
                 </span>
               }
@@ -620,6 +839,34 @@ export function ConnectionsRegistrySection() {
                   }
                   description={t.settings.gateway.tokenDesc}
                   title={t.settings.gateway.tokenTitle}
+                />
+              )}
+              {editor.authMode === 'oauth' && (
+                <ListRow
+                  action={
+                    oauthConnected ? (
+                      <Pill tone="primary">
+                        <Check className="size-3" /> {t.settings.gateway.signedIn}
+                      </Pill>
+                    ) : (
+                      <Button disabled={signingIn || !editorUrl} onClick={() => void signInOauth()} size="sm">
+                        {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                        {authProviderShape.isPassword
+                          ? t.settings.gateway.signIn
+                          : t.settings.gateway.signInWith(authProviderShape.providerLabel)}
+                      </Button>
+                    )
+                  }
+                  description={
+                    oauthConnected
+                      ? authProviderShape.isPassword
+                        ? t.settings.gateway.authSignedInPassword
+                        : t.settings.gateway.authSignedInOauth
+                      : authProviderShape.isPassword
+                        ? t.settings.gateway.authNeedsPassword
+                        : t.settings.gateway.authNeedsOauth(authProviderShape.providerLabel)
+                  }
+                  title={t.settings.gateway.authTitle}
                 />
               )}
             </>
@@ -739,6 +986,22 @@ export function ConnectionsRegistrySection() {
               )}
             </Button>
           )}
+        </div>
+      )}
+
+      {/* Not gated on connections.length > 1: a registry that drifted down to
+          local-only is exactly the state where a user needs to see and change
+          the launch behavior, and hiding the control there left hand-editing
+          connections.json as the only recourse (#90174). */}
+      {!loading && registry && (
+        <div className="mt-6 border-t border-border/60 pt-4">
+          <ToggleRow
+            checked={registry.launchMode === 'last-used'}
+            description={s.launchModeDesc}
+            disabled={launchModeBusy || !bridge?.setLaunchMode}
+            label={s.launchModeTitle}
+            onChange={enabled => void setLaunchMode(enabled ? 'last-used' : 'primary')}
+          />
         </div>
       )}
 

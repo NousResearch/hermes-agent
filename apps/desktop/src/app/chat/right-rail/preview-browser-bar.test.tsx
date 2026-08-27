@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { normalizePreviewAddress, PreviewBrowserBar } from './preview-browser-bar'
@@ -12,6 +12,7 @@ const baseProps = {
   onBack: vi.fn(),
   onForward: vi.fn(),
   onNavigate: vi.fn(),
+  onPopOut: vi.fn(),
   onReload: vi.fn(),
   onToggleConsole: vi.fn(),
   onToggleDevTools: vi.fn(),
@@ -22,9 +23,16 @@ function address(rendered: ReturnType<typeof render>) {
   return rendered.getByRole('textbox', { name: 'Address' }) as HTMLInputElement
 }
 
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+
+function installBridge(writeClipboard: ReturnType<typeof vi.fn>) {
+  desktopWindow.hermesDesktop = { writeClipboard } as unknown as Window['hermesDesktop']
+}
+
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  delete desktopWindow.hermesDesktop
 })
 
 describe('normalizePreviewAddress', () => {
@@ -77,6 +85,8 @@ describe('PreviewBrowserBar', () => {
     expect(rendered.getByRole('button', { name: 'Back' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Forward' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Reload page' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'Copy URL' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'Pop out' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Show preview console' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Open preview DevTools' })).toBeTruthy()
     expect(address(rendered)).toBeTruthy()
@@ -99,7 +109,8 @@ describe('PreviewBrowserBar', () => {
   it.each([
     ['Back', 'onBack'],
     ['Forward', 'onForward'],
-    ['Reload page', 'onReload']
+    ['Reload page', 'onReload'],
+    ['Pop out', 'onPopOut']
   ] as const)('fires %s', (label, handler) => {
     const spy = vi.fn()
     const rendered = render(<PreviewBrowserBar {...baseProps} canGoBack canGoForward {...{ [handler]: spy }} />)
@@ -152,7 +163,10 @@ describe('PreviewBrowserBar', () => {
     expect(address(rendered).value).toBe('example.org/docs')
   })
 
-  it('normalizes and navigates on Enter, then releases the field back to the page', () => {
+  // Committing used to drop the field back to `url` — the page you were
+  // LEAVING — so the address you typed flashed away and came back once the
+  // load landed. What you asked for stays put until the page actually moves.
+  it('normalizes and navigates on Enter, and holds the address it asked for', () => {
     const onNavigate = vi.fn()
     const rendered = render(<PreviewBrowserBar {...baseProps} onNavigate={onNavigate} />)
     const input = address(rendered)
@@ -162,7 +176,35 @@ describe('PreviewBrowserBar', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(onNavigate).toHaveBeenCalledWith('http://localhost:5173')
-    expect(address(rendered).value).toBe('https://example.com')
+    expect(address(rendered).value).toBe('http://localhost:5173')
+  })
+
+  // A redirect means the address you asked for is no longer the truth.
+  it('releases the asked-for address once the page lands somewhere', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+    const input = address(rendered)
+
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'example.org' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    rendered.rerender(<PreviewBrowserBar {...baseProps} url="https://www.example.org/home" />)
+
+    expect(address(rendered).value).toBe('https://www.example.org/home')
+  })
+
+  // Re-focusing mid-flight must offer what is on screen to edit, not resurrect
+  // the address of the page being left behind.
+  it('hands the in-flight address to the field on re-focus', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+    const input = address(rendered)
+
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'example.org' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.blur(input)
+    fireEvent.focus(input)
+
+    expect(address(rendered).value).toBe('https://example.org')
   })
 
   it('refuses to navigate to a script-bearing scheme and marks the field invalid', () => {
@@ -218,6 +260,19 @@ describe('PreviewBrowserBar', () => {
     expect(address(rendered).value).toBe('https://example.com')
   })
 
+  // Progress belongs beside the address it describes; the reload glyph sits in
+  // a row of four and reads as chrome rather than as this page's state.
+  it('shows progress inside the address field only while loading', () => {
+    const { container, rerender } = render(<PreviewBrowserBar {...baseProps} loading />)
+    const field = screen.getByRole('textbox', { name: 'Address' }).parentElement
+
+    expect(field?.querySelector('.codicon-loading')).toBeTruthy()
+
+    rerender(<PreviewBrowserBar {...baseProps} />)
+
+    expect(container.querySelector('.codicon-loading')).toBeNull()
+  })
+
   it('spins the reload glyph only while loading', () => {
     const { container, rerender } = render(<PreviewBrowserBar {...baseProps} loading />)
 
@@ -226,5 +281,73 @@ describe('PreviewBrowserBar', () => {
     rerender(<PreviewBrowserBar {...baseProps} />)
 
     expect(container.querySelector('.codicon-refresh')?.className).not.toContain('codicon-modifier-spin')
+  })
+
+  it('copies the live address from the copy-URL button', async () => {
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+
+    installBridge(writeClipboard)
+    render(<PreviewBrowserBar {...baseProps} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy URL' }))
+
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('https://example.com'))
+  })
+
+  it('copies the new address after the page navigates', async () => {
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+
+    installBridge(writeClipboard)
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+
+    rendered.rerender(<PreviewBrowserBar {...baseProps} url="https://example.com/next" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy URL' }))
+
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('https://example.com/next'))
+  })
+
+  it('renders the copy control inside the address field wrapper, not as a bar glyph', () => {
+    render(<PreviewBrowserBar {...baseProps} />)
+
+    const copyButton = screen.getByRole('button', { name: 'Copy URL' })
+    const address = screen.getByRole('textbox', { name: 'Address' })
+
+    // Same positioned wrapper as the field = visually inside it, like the
+    // code-block copy icon (inline appearance, overlay on the field's edge).
+    expect(copyButton.parentElement?.contains(address)).toBe(true)
+    expect(copyButton.className).toContain('absolute')
+  })
+
+  it('shows Open in browser when only the external handler is provided', () => {
+    const onOpenExternal = vi.fn()
+
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={onOpenExternal} onPopOut={undefined} />)
+
+    expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Open in browser' }))
+
+    expect(onOpenExternal).toHaveBeenCalledOnce()
+  })
+
+  it('prefers pop-out over open-in-browser when both handlers are provided', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={vi.fn()} />)
+
+    expect(rendered.getByRole('button', { name: 'Pop out' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+  })
+
+  it('shows Pop in when the window is already popped out', () => {
+    const onPopIn = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onPopIn={onPopIn} onPopOut={undefined} />)
+
+    expect(rendered.getByRole('button', { name: 'Pop in' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+    expect(rendered.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Pop in' }))
+
+    expect(onPopIn).toHaveBeenCalledOnce()
   })
 })

@@ -493,6 +493,8 @@ __all__ = [
     # call_id policy owners (F4 consolidation)
     "deterministic_call_id",
     "coalesce_tool_call_id",
+    "tool_call_id_variants",
+    "tool_result_id_variants",
     "uniquify_tool_call_ids",
     # reasoning_content policy owners (F4 consolidation)
     "reasoning_echo_family",
@@ -536,16 +538,72 @@ def deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     return f"call_{digest}"
 
 
+def _expand_tool_id_variants(values: tuple[Any, ...]) -> frozenset[str]:
+    """Return every wire spelling of one or more tool-call identifiers.
+
+    Responses bridges may expose the pairing id and response-item id
+    separately, or encode both as ``call_id|response_item_id``.  The values
+    are aliases for one call, not distinct calls.  Keeping the expansion in
+    the shared policy module prevents the repair and pre-send paths from
+    drifting apart again.
+    """
+    variants: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if not value:
+            continue
+        variants.add(value)
+        if "|" in value:
+            for part in value.split("|"):
+                part = part.strip()
+                if part:
+                    variants.add(part)
+    return frozenset(variants)
+
+
+def tool_call_id_variants(tc: Any) -> frozenset[str]:
+    """Return all pairing-id variants carried by a tool-call entry."""
+    if isinstance(tc, dict):
+        values = (
+            tc.get("call_id"),
+            tc.get("id"),
+            tc.get("response_item_id"),
+        )
+    else:
+        values = (
+            getattr(tc, "call_id", None),
+            getattr(tc, "id", None),
+            getattr(tc, "response_item_id", None),
+        )
+    return _expand_tool_id_variants(values)
+
+
+def tool_result_id_variants(tool_call_id: Any) -> frozenset[str]:
+    """Return all matching variants for a role=tool ``tool_call_id``."""
+    return _expand_tool_id_variants((tool_call_id,))
+
+
 def coalesce_tool_call_id(tc: Any) -> str:
     """Extract the effective call ID from a tool_call entry (dict or object).
 
-    Single owner for the ``call_id or id`` coalescing rule: Codex Responses
-    tool calls carry ``call_id`` (authoritative pairing key), Chat
-    Completions ones carry ``id`` only. Returns ``""`` when neither is set.
+    Single owner for the canonical pairing rule: Codex Responses tool calls
+    carry ``call_id`` (authoritative pairing key), Chat Completions ones carry
+    ``id`` only, and bridge ids may encode ``call_id|response_item_id``.
+    Returns ``""`` when neither pairing field is set.
     """
     if isinstance(tc, dict):
-        return (tc.get("call_id", "") or tc.get("id", "") or "").strip()
-    return (getattr(tc, "call_id", "") or getattr(tc, "id", "") or "").strip()
+        values = (tc.get("call_id"), tc.get("id"))
+    else:
+        values = (getattr(tc, "call_id", None), getattr(tc, "id", None))
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if value:
+            return value.split("|", 1)[0].strip() or value
+    return ""
 
 
 def uniquify_tool_call_ids(tool_calls: list) -> list:

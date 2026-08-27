@@ -107,10 +107,22 @@ export interface ConfirmReq {
   title: string
 }
 
+export interface ClarifyBatchQuestion {
+  choices: string[] | null
+  multiSelect?: boolean
+  qid: string
+  question: string
+}
+
 export interface ClarifyReq {
   choices: string[] | null
   question: string
   requestId: string
+  /** Batch (multi-question) clarify: present instead of question/choices. */
+  questions?: ClarifyBatchQuestion[]
+  /** Answers already locked server-side (qid → answer): seeded from the
+   *  reconnect replay, updated as the user locks each question. */
+  answers?: Record<string, string>
 }
 
 export interface Msg {

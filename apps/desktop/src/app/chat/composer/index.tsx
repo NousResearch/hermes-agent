@@ -50,7 +50,7 @@ import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerSubmit } from './hooks/use-composer-submit'
-import { useComposerTrigger } from './hooks/use-composer-trigger'
+import { triggerKeyUpHandler, useComposerTrigger } from './hooks/use-composer-trigger'
 import { useComposerUndo } from './hooks/use-composer-undo'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
@@ -107,7 +107,13 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
-  const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode)
+  const hudWindowing = window.hermesDesktop?.hud?.windowing
+  const hudNativeDrag = hudMode && hudWindowing?.nativeDrag === true
+
+  const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode && !hudNativeDrag, {
+    controlDrag: hudWindowing?.controlDrag === true,
+    workspaceTransfer: hudWindowing?.workspaceTransfer === true
+  })
 
   // Typed stop phrase during an active voice conversation ends it — same
   // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
@@ -321,7 +327,7 @@ export function ChatBar({
     return onCancel()
   }, [activeQueueSessionKeyRef, onCancel])
 
-  const { compactPill, stacked } = useComposerMetrics({
+  const { compactPill, foldVoice, minimal, stacked } = useComposerMetrics({
     composerDockRef,
     composerRef,
     composerSurfaceRef,
@@ -904,21 +910,7 @@ export function ChatBar({
     }
   }
 
-  const handleEditorKeyUp = () => {
-    // If this keyup belongs to a key the open trigger popover already consumed
-    // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
-    // edit text, and for Escape the keydown already closed the menu — a refresh
-    // here would re-detect the still-present `/` and instantly reopen it. We
-    // read a ref set during keydown rather than `trigger`, because by keyup
-    // time React has re-rendered and `trigger` may already be null.
-    if (triggerKeyConsumedRef.current) {
-      triggerKeyConsumedRef.current = false
-
-      return
-    }
-
-    window.setTimeout(refreshTrigger, 0)
-  }
+  const handleEditorKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
 
   const {
     dragActive,
@@ -998,7 +990,9 @@ export function ChatBar({
         status: conversation.status
       }}
       disabled={disabled}
+      foldVoice={foldVoice}
       hasComposerPayload={hasComposerPayload}
+      minimal={minimal}
       onDictate={dictate}
       onQueue={queueDraft}
       onToggleAutoSpeak={handleToggleAutoSpeak}
@@ -1018,7 +1012,11 @@ export function ChatBar({
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           '**:data-ref-text:cursor-default',
           stacked && 'pl-3',
-          stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1'
+          stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1',
+          // Inside the native Wayland HUD drag region: a drag region swallows
+          // the page's mouse input whole, so the input must opt back out or it
+          // becomes unclickable. Buttons use the global no-drag rule.
+          hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
@@ -1196,7 +1194,12 @@ export function ChatBar({
             className={cn(
               'group/composer relative w-full overflow-visible rounded-2xl',
               poppedOut && 'bg-transparent',
-              dragging && 'cursor-grabbing select-none touch-none'
+              dragging && 'cursor-grabbing select-none touch-none',
+              // Native Wayland HUD: setBounds cannot position a top-level
+              // surface, so the bar must ask the compositor to move it. X11
+              // stays out of app-region mode so the renderer receives its
+              // Ctrl+primary-button drag. pt-4 is the carved-out grab band.
+              hudNativeDrag && 'hud-native-drag pt-4 [-webkit-app-region:drag]'
             )}
             data-drag-active={dragActive ? '' : undefined}
             data-hud-grabbing={hudGrabbing ? '' : undefined}
@@ -1208,7 +1211,8 @@ export function ChatBar({
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
-            onPointerDown={hudMode ? onHudDragPointerDown : popoutAllowed ? onComposerGesturePointerDown : undefined}
+            onPointerDown={!hudMode && popoutAllowed ? onComposerGesturePointerDown : undefined}
+            onPointerDownCapture={hudMode ? onHudDragPointerDown : undefined}
             onSubmit={e => {
               e.preventDefault()
 
@@ -1256,7 +1260,13 @@ export function ChatBar({
               {hudMode && busy && <span aria-hidden className="arc-border arc-composer" />}
               <div
                 className={cn(
-                  'group/composer-surface relative z-4 isolate grid grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
+                  // grid-cols-[minmax(0,1fr)]: the implicit `auto` column sized
+                  // itself to its items' min-content, so a status row whose
+                  // content out-measured a narrow pane silently widened the
+                  // track past the surface — and every `w-full` child (the fade,
+                  // the input/controls row) laid out against that phantom width
+                  // and got clipped by overflow-hidden, send button first.
+                  'group/composer-surface relative z-4 isolate grid grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
                   COMPOSER_DROP_FADE_CLASS,
                   dragActive && COMPOSER_DROP_ACTIVE_CLASS
                 )}
@@ -1278,7 +1288,7 @@ export function ChatBar({
                   // A tile's rail reviews ITS worktree: pin the pane's scope to
                   // this surface's cwd. Main keeps the classic follow-the-
                   // active-session scope (null).
-                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null))}
+                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null), scope.target)}
                   onOpenWorktree={openInWorktree}
                   onSwitchBranch={handleSwitchBranch}
                   repoPath={cwd}
@@ -1336,7 +1346,7 @@ export function ChatBar({
                       <ContribSlot area={COMPOSER_AREAS.leading} />
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
-                    <div className="flex items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
+                    <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
                       <ContribSlot area={COMPOSER_AREAS.actions} />
                       {controls}
                     </div>

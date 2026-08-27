@@ -157,7 +157,7 @@ ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
 ### 6. Verify the install
 
 ```bash
-hermes version
+hermes --version
 hermes doctor
 ```
 

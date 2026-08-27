@@ -16,14 +16,22 @@ import { useLocation, useNavigate } from 'react-router'
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
+import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { FindBar } from '@/components/find-bar'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
+import {
+  $workspaceMode,
+  $workspaceNewSessionTarget,
+  $workspaceOwnerKey,
+  setWorkspaceScope
+} from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
+import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getLatestSessionMessages } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
@@ -34,8 +42,10 @@ import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
+import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
+import { notify, notifyError } from '@/store/notifications'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
@@ -59,7 +69,9 @@ import {
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessionResumeRequest,
   $sessions,
+  requestSessionResume,
   sessionMatchesStoredId,
   sessionPinId,
   setAwaitingResponse,
@@ -68,7 +80,7 @@ import {
 } from '@/store/session'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
-import { isAuxiliaryWindow, isHudWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
@@ -112,6 +124,7 @@ import { useSessionActions } from '../session/hooks/use-session-actions'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { startWorkspaceSession } from '../session/workspace-session-target'
+import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
@@ -135,6 +148,7 @@ import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
+import { createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 
@@ -206,9 +220,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
+  const sessionResumeRequest = useStore($sessionResumeRequest)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
   const sessions = useStore($sessions)
+  const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
   const boot = useStore($desktopBoot)
@@ -274,7 +290,23 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     setMessages
   })
 
-  const { connectionRef, gateway, gatewayRef, requestGateway } = useGatewayRequest()
+  const { connectionRef, gateway, gatewayRef, requestGateway: ambientRequestGateway } = useGatewayRequest()
+
+  // When chrome stays on the launch backend (Bot Mode / all-profiles
+  // navigation), session-owned RPCs still have to hit the session's backend.
+  // The routing itself lives in createSessionRpcDispatcher (routed by the
+  // session the RPC targets, owner ladder in resolveSessionRpcOwner) so the
+  // exact production dispatcher is what the integration tests drive.
+  const requestGateway = useMemo(
+    () =>
+      createSessionRpcDispatcher({
+        ambientRequest: ambientRequestGateway,
+        runtimeIdByStoredSessionIdRef,
+        selectedStoredSessionIdRef,
+        sessionStateByRuntimeIdRef
+      }),
+    [ambientRequestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef]
+  )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
     useSessionListActions({ profileScope })
@@ -488,25 +520,28 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     startFreshSessionDraft()
   }, [freshSessionRequest, startFreshSessionDraft])
 
-  // Swapping the live gateway to another profile must re-pull that profile's
-  // global model + active-profile pill (both are nanostores — the blanket
-  // invalidateQueries on swap doesn't touch them).
-  const lastGatewayProfileRef = useRef(activeGatewayProfile)
+  // Swapping the live gateway to another source or profile must re-pull that
+  // source's model/config/profile state. Two sources commonly both expose a
+  // `default` profile, so profile alone is not a sufficient identity.
+  const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
+  const lastGatewayScopeRef = useRef(gatewayScope)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (activeGatewayProfile === lastGatewayProfileRef.current) {
+    if (gatewayScope === lastGatewayScopeRef.current) {
       return
     }
 
-    lastGatewayProfileRef.current = activeGatewayProfile
-    // Force: the new profile has its own defaults, so reseed the selector even
-    // if the composer already shows values from the previous profile. Both
-    // refreshes carry an intent token so a picker click made in flight wins.
+    lastGatewayScopeRef.current = gatewayScope
+    // Force: the new source/profile pair has its own defaults, so reseed the
+    // selector even if the composer already shows values from the previous
+    // backend. These refreshes carry intent tokens so an in-flight picker
+    // click still wins.
     void refreshCurrentModel(true)
     void refreshHermesConfig(true)
     void refreshActiveProfile()
-  }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig])
+    resetProjectTreeState()
+  }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that
@@ -518,6 +553,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // prefills the MAIN composer right after, so it has to own that surface.
   const startSessionInWorkspace = useCallback(
     (path: null | string, options?: { openTab?: boolean }) => {
+      setWorkspaceScope('sessions')
+
       if (options?.openTab && mainChatOccupied(activeSessionIdRef.current, $selectedStoredSessionId.get())) {
         void openNewSessionTile('center', { cwd: path, listed: false })
 
@@ -685,6 +722,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
+    sessionResumeRequest,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
@@ -721,7 +759,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           if (payload?.start_new_session !== false) {
             newSessionInProfile(targetProfile)
           } else {
-            void ensureGatewayProfile(normalizeProfileKey(targetProfile))
+            void ensureGatewayProfile(normalizeProfileKey(targetProfile)).catch((error: unknown) => {
+              // #81094: the voice-path switch must surface its failure too.
+              notifyError(error, `Failed to switch to profile "${normalizeProfileKey(targetProfile)}"`)
+            })
           }
         } else if (payload?.start_new_session !== false) {
           startFreshSessionDraft()
@@ -772,6 +813,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Keep app data live while the gateway is open (on-connect reseed + the
   // cron / messaging / transcript visibility polls + fresh-draft reseed).
   useBackgroundSync({
+    activeConnectionId,
     activeGatewayProfile,
     activeIsMessaging,
     activeSessionId,
@@ -784,7 +826,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshHermesConfig,
     refreshMessagingSessions,
     refreshSessions,
-    requestGateway
+    requestGateway,
+    updateSessionState
   })
 
   // Electron-main / OS / cross-window integrations: update polling, ⌘W close,
@@ -832,6 +875,36 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // it — Cursor-style. Every click opens a fresh "New session" tab (multiple
   // empty tabs are fine since none touch the session list).
   const openNewSessionTab = useCallback(() => {
+    const workspaceMode = $workspaceMode.get()
+    const workspaceOwnerKey = $workspaceOwnerKey.get()
+    const workspaceNewSessionTarget = $workspaceNewSessionTarget.get()
+
+    if (workspaceMode === 'bots') {
+      if (workspaceNewSessionTarget?.kind !== 'route' || !workspaceOwnerKey) {
+        notify({
+          kind: 'info',
+          message:
+            workspaceNewSessionTarget?.kind === 'blocked'
+              ? workspaceNewSessionTarget.message
+              : 'Select a Bot or group first.'
+        })
+
+        return
+      }
+
+      void openNewSessionTile('center', {
+        listed: false,
+        route: workspaceNewSessionTarget.route,
+        workspaceScope: {
+          ownerRoute: workspaceNewSessionTarget.route,
+          workspaceMode: 'bots',
+          workspaceOwnerKey
+        }
+      })
+
+      return
+    }
+
     void openNewSessionTile('center', { listed: false })
   }, [openNewSessionTile])
 
@@ -918,7 +991,26 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
     // otherwise load it into main. Same door every other session link uses.
-    onResumeSession: sessionId => openSession(sessionId, navigate),
+    // The clicked ROW is the identity, not its bare id: two profiles can hold
+    // twins with the same stored id (#92454), and an id-only resume resolves
+    // against whichever cached row is found first — the user clicks a row
+    // previewing profile A and the resume dials profile B. Pin the row's own
+    // (connection, profile) as the resume owner before navigating; untagged
+    // rows (single-profile installs, legacy pages) keep the id-only path.
+    onResumeSession: (sessionId, session) => {
+      const rowProfile = session?.profile?.trim()
+
+      if (rowProfile) {
+        requestSessionResume(sessionId, {
+          connectionId: session?.connection_id?.trim() || 'local',
+          ...(session?.connection_id?.trim() ? {} : { mode: 'local' as const }),
+          profile: rowProfile,
+          targetProfile: rowProfile
+        })
+      }
+
+      openSession(sessionId, navigate)
+    },
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSubmit: submitText,
@@ -1036,10 +1128,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           } as CSSProperties
         }
       >
-        {/* HUD mode has no titlebar to hang these off — the clusters are
-            `fixed`, so without this they'd float over the chat as orphaned
-            buttons. Exits are the ⌘⇧H toggle and ⌘W. */}
-        {!isHudWindow() && (
+        {/* HUD and the popped-out Browser have no titlebar to hang these off —
+            the clusters are `fixed`, so without this they'd float over the
+            surface as orphaned buttons. */}
+        {!isHudWindow() && !isBrowserWindow() && (
           <TitlebarControls
             leftTools={leftTitlebarTools}
             onOpenSettings={() => navigate(SETTINGS_ROUTE)}
@@ -1075,6 +1167,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
       <CommandPalette />
+      <PluginInstallModal />
       <PetGenerateOverlay />
       <SessionSwitcher />
       <FileActionDialogs />
@@ -1149,13 +1242,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* Toasts above everything. */}
       <NotificationStack />
 
+      {/* Backs confirm() from @/store/confirm — renders only while one is open. */}
+      <ConfirmHost />
+
+      {/* Send Diagnostics consent/upload dialog — driven by $sendDiagnostics
+          (error card action); renders nothing until requested. */}
+      <SendDiagnosticsHost />
+
       {/* Petdex floating mascot — renders nothing unless installed + enabled.
           Never in the HUD: that window is the chat bar and nothing else. */}
-      {!isHudWindow() && <FloatingPet />}
+      {!isHudWindow() && !isBrowserWindow() && <FloatingPet />}
 
       {/* Single persistent xterm host chasing the terminal pane's slot rect.
           The HUD has no terminal pane, so it has nothing to chase. */}
-      {!isHudWindow() && <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />}
+      {!isHudWindow() && !isBrowserWindow() && (
+        <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+      )}
     </ContribWiringContext.Provider>
   )
 }

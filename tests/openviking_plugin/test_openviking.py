@@ -9,6 +9,7 @@ from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 import plugins.memory.openviking as openviking_plugin
+from hermes_cli import __version__ as _HERMES_VERSION
 from plugins.memory.openviking import OpenVikingMemoryProvider
 
 
@@ -654,10 +655,13 @@ class TestOpenVikingAutoRecallPrefetch:
                 if parsed.path == "/health":
                     self._send_json({"status": "ok", "healthy": True, "version": "test"})
                     return
+                if parsed.path == "/api/v1/system/status":
+                    self._send_json({"status": "ok", "result": {"user": "user"}})
+                    return
                 if parsed.path == "/api/v1/content/read":
                     query = parse_qs(parsed.query)
                     uri = query.get("uri", [""])[0]
-                    if uri == "viking://user/memories/profile.md":
+                    if uri == "viking://user/user/memories/profile.md":
                         self._send_json({"result": "E2E user profile."})
                         return
                     records["reads"].append(uri)
@@ -667,7 +671,7 @@ class TestOpenVikingAutoRecallPrefetch:
                     query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
                     records["listings"].append(query)
                     uri = query.get("uri")
-                    if uri == "viking://user/memories/preferences":
+                    if uri == "viking://user/user/memories/preferences":
                         self._send_json({
                             "result": [
                                 {"isDir": True, "rel_path": "owner", "abstract": "ignored"},
@@ -679,7 +683,7 @@ class TestOpenVikingAutoRecallPrefetch:
                             ]
                         })
                         return
-                    if uri == "viking://user/memories/entities":
+                    if uri == "viking://user/user/memories/entities":
                         self._send_json({
                             "result": [
                                 {
@@ -758,8 +762,8 @@ class TestOpenVikingAutoRecallPrefetch:
         assert "E2E abstract should not be injected." not in block
         assert records["reads"] == ["viking://user/peers/hermes/memories/e2e-full.md"]
         assert [listing["uri"] for listing in records["listings"]] == [
-            "viking://user/memories/preferences",
-            "viking://user/memories/entities",
+            "viking://user/user/memories/preferences",
+            "viking://user/user/memories/entities",
         ]
         assert all(listing["output"] == "agent" for listing in records["listings"])
         assert all(listing["recursive"].lower() == "true" for listing in records["listings"])
@@ -778,6 +782,10 @@ class TestOpenVikingAutoRecallPrefetch:
             for headers in records["headers"]
         ]
         assert all(headers.get("x-openviking-actor-peer") == "hermes" for headers in normalized_headers)
+        assert all(
+            headers.get("user-agent") == f"openviking-memory-hermes/{_HERMES_VERSION}"
+            for headers in normalized_headers
+        )
         assert all(headers.get("x-openviking-account") == "acct" for headers in normalized_headers)
         assert all(headers.get("x-openviking-user") == "user" for headers in normalized_headers)
 
@@ -818,7 +826,7 @@ class TestOpenVikingMemoryUriBuilder:
     """Regression tests for _build_memory_uri — fixes #36969.
 
     OpenViking's current memory layout stores peer-scoped memories under
-    viking://user/peers/{peer_id}/...
+    viking://user/{user}/peers/{peer_id}/...
     """
 
     def _make_provider(self, user="alice", agent="coder"):
@@ -831,7 +839,7 @@ class TestOpenVikingMemoryUriBuilder:
         """URI must contain /peers/{peer_id}/ between user and memories."""
         p = self._make_provider(user="alice", agent="coder")
         uri = p._build_memory_uri("preferences")
-        assert uri.startswith("viking://user/peers/coder/memories/preferences/mem_")
+        assert uri.startswith("viking://user/alice/peers/coder/memories/preferences/mem_")
         assert uri.endswith(".md")
 
 
@@ -879,6 +887,40 @@ class TestEnsureClientReloadsEnv:
         assert rebuilt.api_key == "sk-fresh"
         assert len(constructions) == 2
 
+    def test_rebuilt_client_resolves_its_own_user_space(self, monkeypatch):
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent="hermes"):
+                self.endpoint = endpoint
+                self.api_key = api_key
+                self.account = account
+                self.user = user
+                self.agent = agent
+
+            def health(self):
+                return True
+
+            def get(self, path):
+                assert path == "/api/v1/system/status"
+                return {"status": "ok", "result": {"user": self.user}}
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://srv:31933")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "")
+        monkeypatch.setenv("OPENVIKING_USER", "alice")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        alice_client = provider._ensure_client()
+        alice_uri = provider._build_memory_uri("preferences")
+
+        monkeypatch.setenv("OPENVIKING_USER", "bob")
+        bob_client = provider._ensure_client()
+        bob_uri = provider._build_memory_uri("preferences")
+
+        assert bob_client is not alice_client
+        assert alice_uri.startswith("viking://user/alice/peers/hermes/")
+        assert bob_uri.startswith("viking://user/bob/peers/hermes/")
+
 
     def test_handle_tool_call_reconnects_after_startup_health_failure(self, monkeypatch):
         instances = []
@@ -921,7 +963,7 @@ class TestEnsureClientReloadsEnv:
         assert instances[1].posts[0][1]["content"] == "stable fact"
         assert instances[1].posts[0][1]["mode"] == "create"
         assert instances[1].posts[0][1]["uri"].startswith(
-            "viking://user/peers/hermes/memories/"
+            "viking://user/default/peers/hermes/memories/"
         )
 
     def test_concurrent_refresh_does_not_return_stale_client(self, monkeypatch):
@@ -1287,3 +1329,140 @@ class TestUnavailableWarningsPromiseRetry:
         assert client is not None
         assert client.endpoint == "https://remote.example"
         assert len(probes) == 2
+
+
+# ===================================================================
+# Explicit-uid URIs (#91995 review) — `~` only expands for USER/ADMIN
+# ===================================================================
+
+class TestResolveUserSpace:
+    def test_uses_server_asserted_user(self):
+        from plugins.memory.openviking import _resolve_user_space
+
+        class _Client:
+            def get(self, path):
+                assert path == "/api/v1/system/status"
+                return {"status": "ok", "result": {"user": "alice"}}
+
+        assert _resolve_user_space(_Client()) == "alice"
+
+    def test_probe_failure_returns_unresolved(self):
+        from plugins.memory.openviking import _resolve_user_space
+
+        class _Client:
+            def get(self, path):
+                raise RuntimeError("probe down")
+
+        assert _resolve_user_space(_Client()) is None
+
+    def test_missing_user_field_returns_unresolved(self):
+        from plugins.memory.openviking import _resolve_user_space
+
+        class _Client:
+            def get(self, path):
+                return {"status": "ok", "result": {}}
+
+        assert _resolve_user_space(_Client()) is None
+
+
+class TestOpenVikingMemoryUriBuilderUserSpace:
+    def test_confirmed_user_space_flows_into_uri(self):
+        class _Client:
+            def get(self, path):
+                assert path == "/api/v1/system/status"
+                return {"status": "ok", "result": {"user": "alice"}}
+
+        p = OpenVikingMemoryProvider.__new__(OpenVikingMemoryProvider)
+        p._agent = "coder"
+        p._user = "default"
+        p._client = _Client()
+        p._user_space_cache = None
+        uri = p._build_memory_uri("preferences")
+        assert uri.startswith("viking://user/alice/peers/coder/memories/preferences/mem_")
+        assert uri.endswith(".md")
+
+    def test_transient_probe_failure_is_not_cached(self):
+        class _Client:
+            def __init__(self):
+                self.calls = 0
+
+            def get(self, path):
+                assert path == "/api/v1/system/status"
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("temporary failure")
+                return {"status": "ok", "result": {"user": "alice"}}
+
+        p = OpenVikingMemoryProvider.__new__(OpenVikingMemoryProvider)
+        p._agent = "coder"
+        p._user = "fallback-user"
+        p._client = _Client()
+        p._user_space_cache = None
+
+        first = p._build_memory_uri("preferences")
+        second = p._build_memory_uri("preferences")
+
+        assert first.startswith("viking://user/fallback-user/peers/coder/")
+        assert second.startswith("viking://user/alice/peers/coder/")
+        assert p._client.calls == 2
+
+    def test_cache_is_bound_to_the_client_that_asserted_the_user(self):
+        class _Client:
+            def __init__(self, user):
+                self.user = user
+                self.calls = 0
+
+            def get(self, path):
+                assert path == "/api/v1/system/status"
+                self.calls += 1
+                return {"status": "ok", "result": {"user": self.user}}
+
+        p = OpenVikingMemoryProvider.__new__(OpenVikingMemoryProvider)
+        p._agent = "coder"
+        p._user = "default"
+        p._user_space_cache = None
+        alice = _Client("alice")
+        bob = _Client("bob")
+
+        p._client = alice
+        assert "/user/alice/" in p._build_memory_uri("preferences")
+        p._client = bob
+        assert "/user/bob/" in p._build_memory_uri("preferences")
+        assert (alice.calls, bob.calls) == (1, 1)
+
+    def test_old_inflight_probe_cannot_replace_new_client_cache(self):
+        old_probe_started = threading.Event()
+        release_old_probe = threading.Event()
+
+        class _Client:
+            def __init__(self, user, wait=False):
+                self.user = user
+                self.wait = wait
+
+            def get(self, path):
+                assert path == "/api/v1/system/status"
+                if self.wait:
+                    old_probe_started.set()
+                    assert release_old_probe.wait(2.0)
+                return {"status": "ok", "result": {"user": self.user}}
+
+        p = OpenVikingMemoryProvider.__new__(OpenVikingMemoryProvider)
+        p._user = "default"
+        p._user_space_cache = None
+        alice = _Client("alice", wait=True)
+        bob = _Client("bob")
+        p._client = alice
+        old_result = []
+
+        worker = threading.Thread(target=lambda: old_result.append(p._user_space(alice)))
+        worker.start()
+        assert old_probe_started.wait(2.0)
+
+        p._client = bob
+        assert p._user_space() == "bob"
+        release_old_probe.set()
+        worker.join(timeout=2.0)
+
+        assert not worker.is_alive()
+        assert old_result == ["alice"]
+        assert p._user_space() == "bob"

@@ -30,12 +30,24 @@ def mirror_to_session(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     role: str = "assistant",
+    session_id: Optional[str] = None,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
 
     Finds the gateway session that matches the given platform + chat_id,
     then writes a mirror entry to both the JSONL transcript and SQLite DB.
+
+    ``session_id``: when the caller already KNOWS the exact session (e.g. the
+    cron in_channel seed, which just created the row via
+    ``get_or_create_session``), pass it to skip the origin-scan heuristics
+    entirely. ``_find_session_id`` matches by origin (chat_id + user
+    preference with a multi-candidate bail-out), which is correct for
+    "mirror into whatever conversation lives here" callers but WRONG for a
+    caller holding the precise target — on a populated chat (flat session +
+    N per-message thread sessions sharing one chat_id) the scan can refuse
+    to guess and silently drop the mirror (live failure, Alice 2026-08-19:
+    'in_channel seed did NOT land').
 
     ``role`` defaults to ``"assistant"`` — correct for the interactive
     ``send_message`` mirror, where the mirrored text is the agent's own
@@ -52,15 +64,17 @@ def mirror_to_session(
     All errors are caught -- this is never fatal.
     """
     try:
-        session_id = _find_session_id(
-            platform,
-            str(chat_id),
-            thread_id=thread_id,
-            user_id=user_id,
-        )
         if not session_id:
-            logger.debug(
-                "Mirror: no session found for %s:%s:%s:%s",
+            session_id = _find_session_id(
+                platform,
+                str(chat_id),
+                thread_id=thread_id,
+                user_id=user_id,
+            )
+        if not session_id:
+            logger.warning(
+                "Mirror: no session found for %s:%s thread=%s user=%s "
+                "(explicit_id=none, origin-scan bailed)",
                 platform,
                 chat_id,
                 thread_id,
@@ -82,12 +96,17 @@ def mirror_to_session(
         return True
 
     except Exception as e:
-        logger.debug(
-            "Mirror failed for %s:%s:%s:%s: %s",
+        # WARNING with the exception: a silent mirror drop IS the cron
+        # continuation-amnesia bug (Alice 2026-08-19 — the seed's own
+        # deterministic session_id was in hand and the append STILL failed
+        # invisibly at debug level).
+        logger.warning(
+            "Mirror failed for %s:%s thread=%s user=%s session=%s: %s",
             platform,
             chat_id,
             thread_id,
             user_id,
+            session_id,
             e,
         )
         return False

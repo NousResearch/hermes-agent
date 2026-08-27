@@ -308,6 +308,10 @@ export function DesktopOnboardingOverlay({
         bare && leaving ? '[transition-delay:660ms]' : '',
         leaving ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Masks the whole app until onboarding finishes — must stay filled under
+      // window glass or the shell shows through. Contract:
+      // `[data-glass-opaque]` in styles.css.
+      data-glass-opaque=""
     >
       <div
         className={cn(

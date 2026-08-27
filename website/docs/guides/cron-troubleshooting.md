@@ -40,6 +40,8 @@ Cron jobs are fired by the gateway's background ticker thread, which ticks every
 
 If you're expecting jobs to fire automatically, you need a running gateway (`hermes gateway` for foreground, or `hermes gateway start` for the installed service). For one-off debugging, you can manually trigger a tick with `hermes cron tick`.
 
+**Desktop app:** the desktop's primary backend runs its own ticker, and it ticks **every local profile's** cron store — so jobs on a secondary profile keep firing even while that profile's backend is asleep (the desktop puts idle profile backends to sleep after ~10 minutes). You do not need to keep a profile open for its scheduled jobs to run.
+
 ### Check 4: Check the system clock and timezone
 
 Jobs use the local timezone. If your machine's clock is wrong or in a different timezone than expected, jobs will fire at the wrong times. Verify:

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-17T19:11:38Z",
+  "updated_at": "2026-08-26T14:32:05Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -117,13 +117,17 @@
           "description": ""
         },
         {
+          "id": "z-ai/glm-5.3",
+          "description": ""
+        },
+        {
+          "id": "z-ai/glm-5.3-flash",
+          "description": ""
+        },
+        {
           "id": "z-ai/glm-5.2",
           "description": "default",
           "default": true
-        },
-        {
-          "id": "z-ai/glm-5.1",
-          "description": ""
         },
         {
           "id": "xiaomi/mimo-v2.5-pro",
@@ -158,11 +162,15 @@
           "description": "free"
         },
         {
-          "id": "poolside/laguna-m.1:free",
+          "id": "z-ai/glm-5.2:free",
           "description": "free"
         },
         {
-          "id": "tencent/hy3:free",
+          "id": "poolside/laguna-s-2.1:free",
+          "description": "free"
+        },
+        {
+          "id": "poolside/laguna-xs-2.1:free",
           "description": "free"
         },
         {
@@ -174,7 +182,7 @@
           "description": "free"
         },
         {
-          "id": "inclusionai/ring-2.6-1t:free",
+          "id": "nvidia/nemotron-3.5-lightning:free",
           "description": "free"
         }
       ]
@@ -258,11 +266,14 @@
           "id": "minimax/minimax-m3"
         },
         {
-          "id": "z-ai/glm-5.2",
-          "default": true
+          "id": "z-ai/glm-5.3"
         },
         {
-          "id": "z-ai/glm-5.1"
+          "id": "z-ai/glm-5.3-flash"
+        },
+        {
+          "id": "z-ai/glm-5.2",
+          "default": true
         },
         {
           "id": "xiaomi/mimo-v2.5-pro"

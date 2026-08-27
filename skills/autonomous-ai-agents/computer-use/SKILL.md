@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: "Drive the desktop in the background without stealing focus."
+description: "Drive the desktop background-first; escalate on signal."
 version: 2.0.0
 author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT

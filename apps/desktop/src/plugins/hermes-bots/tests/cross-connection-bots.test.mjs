@@ -51,20 +51,20 @@ function runtime() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__x = { botConnectionRoute, requestForBot, groupMemberKey, parseGroupChatMentions, resolveGroupResponders, formatGroupChatLine, buildGroupChatTurnPrompt };\n'
+      '\nglobalThis.__x = { botConnectionRoute, scopedBotParams, botBackendProfileScope, requestForBot, groupMemberKey, parseGroupChatMentions, resolveGroupResponders, formatGroupChatLine, buildGroupChatTurnPrompt };\n'
     )
   vm.runInNewContext(code, context, { filename: 'plugin.js' })
   return context
 }
 
-test('botConnectionRoute: remote rows get a route descriptor, local rows do not', () => {
+test('botConnectionRoute: every source-scoped row gets an immutable route', () => {
   const ctx = runtime()
   const { botConnectionRoute } = ctx.__x
 
   assert.equal(botConnectionRoute({ name: 'writer', connectionId: 'local' }), null)
   assert.equal(botConnectionRoute({ name: 'writer' }), null)
-  // remoteSource is required — an annotated ACTIVE row keeps the active door.
-  assert.equal(botConnectionRoute({ name: 'writer', connectionId: 'spark', sourceScoped: true }), null)
+  const active = botConnectionRoute({ name: 'writer', connectionId: 'spark', sourceScoped: true })
+  assert.equal(Object.isFrozen(active), true)
 
   const route = botConnectionRoute({ name: 'dixie', connectionId: 'mac-mini', remoteSource: true })
   assert.deepEqual(JSON.parse(JSON.stringify(route)), {
@@ -75,7 +75,7 @@ test('botConnectionRoute: remote rows get a route descriptor, local rows do not'
   })
 })
 
-test('requestForBot: remote members go through requestProfile, local through host.request', async () => {
+test('requestForBot: source-scoped members go through requestProfile', async () => {
   const ctx = runtime()
   const calls = []
   ctx.host.request = async (method, params) => {
@@ -90,13 +90,67 @@ test('requestForBot: remote members go through requestProfile, local through hos
   const { requestForBot } = ctx.__x
 
   await requestForBot({ name: 'local-bot' }, 'session.create', { title: 'x' })
+  await requestForBot({ name: 'local-bot', connectionId: 'local', sourceScoped: true }, 'session.create', { title: 'x' })
   await requestForBot({ name: 'dixie', connectionId: 'mac-mini', remoteSource: true }, 'prompt.submit', { text: 'hi' })
 
   assert.equal(calls[0][0], 'active')
   assert.equal(calls[0][1], 'session.create')
   assert.equal(calls[1][0], 'routed')
-  assert.equal(calls[1][1], 'mac-mini')
-  assert.equal(calls[1][2], 'prompt.submit')
+  assert.equal(calls[1][1], 'local')
+  assert.equal(calls[2][0], 'routed')
+  assert.equal(calls[2][1], 'mac-mini')
+  assert.equal(calls[2][2], 'prompt.submit')
+})
+
+test('requestForBot: non-identity aliases translate every backend profile RPC shape', async () => {
+  const ctx = runtime()
+  const calls = []
+  ctx.host.requestProfile = async (route, method, params) => {
+    calls.push({ route, method, params })
+    return {}
+  }
+  const bot = {
+    name: 'worker',
+    sourceScoped: true,
+    route: {
+      connectionId: 'remote-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    }
+  }
+
+  await ctx.__x.requestForBot(bot, 'profiles.describe', { name: 'worker' })
+  await ctx.__x.requestForBot(bot, 'profiles.configure', { name: 'worker', soul: 'x' })
+  await ctx.__x.requestForBot(bot, 'profiles.create', { name: 'worker-2', clone_from: 'worker' })
+  await ctx.__x.requestForBot(bot, 'session.create', { profile: 'worker', title: 'Bot Chat' })
+  await ctx.__x.requestForBot(bot, 'cli.exec', { argv: ['--profile', 'worker', 'config', 'unset', 'model'] })
+  await ctx.__x.requestForBot(bot, 'cli.exec', {
+    argv: ['profile', 'describe', 'worker', '--text', 'worker']
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call.params))), [
+    { name: 'backend-worker' },
+    { name: 'backend-worker', soul: 'x' },
+    { name: 'worker-2', clone_from: 'backend-worker' },
+    { profile: 'backend-worker', title: 'Bot Chat' },
+    { argv: ['--profile', 'backend-worker', 'config', 'unset', 'model'] },
+    { argv: ['profile', 'describe', 'backend-worker', '--text', 'worker'] }
+  ])
+  assert.equal(calls.every(call => call.route.profile === 'worker'), true)
+})
+
+test('advanced capability scope keeps Desktop identity separate from backend targetProfile', () => {
+  const scope = runtime().__x.botBackendProfileScope({
+    connectionId: 'remote-a',
+    profile: 'worker',
+    targetProfile: 'backend-worker'
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(scope)), {
+    connectionId: 'remote-a',
+    profile: 'backend-worker'
+  })
 })
 
 test('groupMemberKey: local members keep bare names (persisted-room compat), remote members are source-qualified', () => {
@@ -161,4 +215,17 @@ test('source contract: group chat turns route through requestForBot on the membe
   assert.match(pluginSource, /await requestForBot\(member, 'session\.create'/)
   // Room records persist remote member descriptors.
   assert.match(pluginSource, /members: Array\.isArray\(room\.members\) \? room\.members : \[\]/)
+})
+
+test('regression: host.connections() result is normalized for BOTH SDK shapes before the picker gate', () => {
+  // Current SDKs return the registry ROWS from host.connections() (the
+  // documented contract); desktops that predate the SDK-side unwrap resolve
+  // the raw IPC payload — the registry OBJECT ({version, primary,
+  // connections: [...]}). The picker gate (Array.isArray(connections) &&
+  // length > 1) needs rows either way, so the plugin must accept both
+  // shapes. Pinning one shape only reopens #89823 on the other.
+  assert.match(
+    pluginSource,
+    /setConnections\(Array\.isArray\(value\) \? value : Array\.isArray\(value\?\.connections\) \? value\.connections : \[\]\)/
+  )
 })

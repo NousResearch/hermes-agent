@@ -161,7 +161,11 @@ def aux_probe_mode():
         _aux_probe_state.active = prev
 
 from agent.credential_pool import load_pool
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.model_metadata import (
+    MINIMUM_CONTEXT_LENGTH,
+    get_model_context_length,
+    strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
+)
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -191,7 +195,7 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
     """Resolve httpx ``verify`` for an auxiliary-client base_url.
 
     Mirrors the main client's TLS resolution so auxiliary calls (compression,
-    vision, web_extract, title generation, etc.) honor per-provider
+    vision, title generation, etc.) honor per-provider
     ``ssl_ca_cert`` / ``ssl_verify`` config and the ``HERMES_CA_BUNDLE`` /
     ``SSL_CERT_FILE`` env conventions. Best-effort: any failure falls back to
     the httpx/certifi default (``True``).
@@ -262,6 +266,22 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         # answer. Skip the openai import + httpx/SSL construction entirely.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
+    # OpenCode Zen free tier: the keyless placeholder must never reach the
+    # wire — the Zen relay serves free models anonymously but 401s any
+    # unrecognized bearer. Override the SDK's Authorization header with an
+    # empty value (single shared chokepoint for every aux client build).
+    try:
+        from hermes_cli.models import (
+            OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
+            opencode_zen_free_headers,
+        )
+        if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
+            merged = dict(kwargs.get("default_headers") or {})
+            merged.update(opencode_zen_free_headers())
+            kwargs["default_headers"] = merged
+    except Exception:
+        pass
+    _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain
     # fallback). The OpenAI SDK's own default (max_retries=2 → up to 3
@@ -656,12 +676,22 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     via prefix so the override tracks every 272K-capped family (5.4, 5.5,
     5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
     variant. (Name kept for backward compatibility with the
-    ``compression.codex_gpt55_autoraise`` config key.)
+    ``compression.codex_gpt55_autoraise`` config key.) The exact
+    ``gpt-daybreak-blue-latest`` Codex slug is also a verified Sol-family
+    alias and receives the same autoraise.
+
+    ``-900k`` large-context picker variants are explicitly EXCLUDED: the
+    85% autoraise exists to stop wasting a small 272K window, and a 900K
+    window doesn't have that problem — those sessions keep the user's
+    global ``compression.threshold`` (default 50%, ~450K).
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
         return False
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    from agent.model_metadata import is_codex_context_variant
+    if is_codex_context_variant(bare):
+        return False
     return (
         bare == "gpt-5.4"
         or bare.startswith("gpt-5.4-")
@@ -672,6 +702,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         or bare == "gpt-5.6"
         or bare.startswith("gpt-5.6-")
         or bare.startswith("gpt-5.6.")
+        or bare == "gpt-daybreak-blue-latest"
     )
 
 
@@ -726,7 +757,8 @@ def _compression_threshold_for_model(
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth route → 0.85, because
+      - gpt-5.4 / gpt-5.5 / gpt-5.6 and the exact Daybreak Sol alias on the
+        Codex OAuth route → 0.85, because
         Codex caps all three families at 272K and the default 50% trigger
         would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
         (historical config-key name kept for backward compatibility) so the
@@ -1191,19 +1223,31 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
-def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
-    """Headers required to avoid Cloudflare 403s on chatgpt.com/backend-api/codex.
+def _is_official_codex_base_url(base_url: str) -> bool:
+    """Identify OpenAI's Codex endpoint without matching custom proxies."""
+    try:
+        parsed = urlparse(base_url)
+        path = parsed.path.rstrip("/")
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "chatgpt.com"
+            and parsed.port in (None, 443)
+            and (path == "/backend-api/codex" or path.startswith("/backend-api/codex/"))
+        )
+    except (TypeError, ValueError):
+        return False
 
-    The Cloudflare layer in front of the Codex endpoint whitelists a small set of
-    first-party originators (``codex_cli_rs``, ``codex_vscode``, ``codex_sdk_ts``,
-    anything starting with ``Codex``). Requests from non-residential IPs (VPS,
-    server-hosted agents) that don't advertise an allowed originator are served
-    a 403 with ``cf-mitigated: challenge`` regardless of auth correctness.
 
-    We pin ``originator: codex_cli_rs`` to match the upstream codex-rs CLI, set
-    ``User-Agent`` to a codex_cli_rs-shaped string (beats SDK fingerprinting),
-    and extract ``ChatGPT-Account-ID`` (canonical casing, from codex-rs
-    ``auth.rs``) out of the OAuth JWT's ``chatgpt_account_id`` claim.
+def _codex_cloudflare_headers(
+    access_token: str, *, base_url: str = _CODEX_AUX_BASE_URL,
+) -> Dict[str, str]:
+    """Identity and account headers for chatgpt.com/backend-api/codex.
+
+    OpenAI requires third-party harnesses to identify themselves. Requests to
+    the official endpoint always send Hermes' originator and version. Custom
+    endpoints retain the existing compatibility identity. In either case,
+    preserve ``ChatGPT-Account-ID`` from the OAuth JWT's
+    ``chatgpt_account_id`` claim.
 
     Malformed tokens are tolerated — we drop the account-ID header rather than
     raise, so a bad token still surfaces as an auth error (401) instead of a
@@ -1213,6 +1257,13 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
         "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
         "originator": "codex_cli_rs",
     }
+    if _is_official_codex_base_url(base_url):
+        from hermes_cli import __version__
+
+        headers.update({
+            "User-Agent": f"HermesAgent/{__version__}",
+            "originator": "hermes-agent",
+        })
     if not isinstance(access_token, str) or not access_token.strip():
         return headers
     try:
@@ -1228,6 +1279,22 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     except Exception:
         pass
     return headers
+
+
+def _apply_required_codex_headers(
+    client_kwargs: Dict[str, Any], *, access_token: str, base_url: str,
+) -> None:
+    """Keep required Codex identity after user/provider header overrides."""
+    if not _is_official_codex_base_url(base_url):
+        return
+    required = _codex_cloudflare_headers(access_token, base_url=base_url)
+    required_names = {name.lower() for name in required}
+    existing = client_kwargs.get("default_headers") or {}
+    client_kwargs["default_headers"] = {
+        **{name: value for name, value in existing.items()
+           if str(name).lower() not in required_names},
+        **required,
+    }
 
 
 # Hosts that expose BOTH an Anthropic-style ``…/anthropic`` path and a sibling
@@ -1512,7 +1579,10 @@ class _CodexCompletionsAdapter:
         )
 
         resp_kwargs: Dict[str, Any] = {
-            "model": model,
+            # Strip the Hermes-side ``-900k`` large-context picker suffix —
+            # the Codex backend only knows the base slug (mirrors the main
+            # transport in agent/transports/codex.py::build_kwargs).
+            "model": _strip_codex_ctx_variant(model),
             "instructions": instructions,
             "input": input_items or [{"role": "user", "content": ""}],
             "store": False,
@@ -1551,10 +1621,16 @@ class _CodexCompletionsAdapter:
                     # Codex backend, which rejects e.g. {"effort": null}
                     # with a 400.
                     effort = reasoning_cfg.get("effort") or "medium"
-                    # Codex backend rejects "minimal"; clamp to "low" to
-                    # match the main-agent Codex transport behavior.
-                    if effort == "minimal":
-                        effort = "low"
+                    # Same declared vocabulary + shared clamp as the main
+                    # Codex transport (agent.reasoning_effort): per-model —
+                    # "max" is gpt-5.6-only, "minimal"/"ultra" always
+                    # rejected (live-verified, #68365).
+                    from agent.reasoning_effort import (
+                        clamp_effort,
+                        codex_supported_efforts,
+                    )
+
+                    effort = clamp_effort(effort, codex_supported_efforts(model))
                     resp_kwargs["reasoning"] = {
                         "effort": effort,
                         "summary": "auto",
@@ -1766,10 +1842,16 @@ class _CodexCompletionsAdapter:
             # Consuming raw events and assembling the final response
             # ourselves from ``response.output_item.done`` makes us
             # structurally immune to that drift.
-            from agent.codex_runtime import _consume_codex_event_stream
+            from agent.codex_runtime import (
+                _bypass_sdk_request_transform,
+                _consume_codex_event_stream,
+            )
 
             stream_kwargs = dict(resp_kwargs)
             stream_kwargs["stream"] = True
+            # #93650: keep bulk wire-format payload out of the SDK's
+            # GIL-holding request transform on auxiliary calls too.
+            stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
 
             def _on_each_event(_event: Any) -> None:
                 # Re-check timeout/cancellation per event, matching the
@@ -1956,6 +2038,39 @@ class AsyncCodexAuxiliaryClient:
         self._real_client = sync_wrapper._real_client
 
 
+def _translate_anthropic_response_format(
+    anthropic_kwargs: Dict[str, Any], response_format: Any,
+) -> None:
+    """Merge an OpenAI response format into Anthropic ``output_config``."""
+    if not isinstance(response_format, dict):
+        return
+
+    format_type = response_format.get("type")
+    if format_type == "json_schema":
+        json_schema = response_format.get("json_schema")
+        if not isinstance(json_schema, dict) or "schema" not in json_schema:
+            return
+        native_format = {
+            "type": "json_schema",
+            "schema": json_schema["schema"],
+        }
+    elif format_type == "json_object":
+        # Anthropic SDK 0.87.0 exposes only JSONOutputFormatParam, whose
+        # required type is ``json_schema``; it has no schema-less JSON mode.
+        native_format = {
+            "type": "json_schema",
+            "schema": {"type": "object"},
+        }
+    else:
+        return
+
+    output_config = anthropic_kwargs.get("output_config")
+    if not isinstance(output_config, dict):
+        output_config = {}
+        anthropic_kwargs["output_config"] = output_config
+    output_config["format"] = native_format
+
+
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
@@ -2056,18 +2171,38 @@ class _AnthropicCompletionsAdapter:
         # form is the documented Anthropic SDK passthrough for non-standard
         # request body keys; merge on top of whatever build_anthropic_kwargs
         # already produced (e.g. fast-mode ``speed``) so call-time settings
-        # survive. Two exclusions:
+        # survive. Three exclusions:
         #   - ``reasoning``: the OpenAI-shaped config dict is TRANSLATED into
         #     the native ``thinking`` field above (build_anthropic_kwargs);
         #     forwarding the raw field alongside would double-specify
         #     reasoning and 400 on strict gateways.
+        #   - ``response_format``: the OpenAI structured-output shape is
+        #     TRANSLATED into top-level ``output_config.format`` below;
+        #     forwarding the raw field 400s on strict Anthropic gateways.
         #   - ``_``-prefixed keys: private Hermes plumbing (_reasoning_config
         #     et al.), never wire fields.
         caller_extra_body = kwargs.get("extra_body")
+        # A top-level ``response_format`` kwarg (the OpenAI SDK's documented
+        # call shape) must get the same translation as the extra_body form.
+        # The adapter builds the Messages body from a fixed allow-list of
+        # kwargs, so before this an unrecognized top-level kwarg was dropped
+        # on the floor: the request succeeded but the schema contract
+        # silently became prompt compliance (#85626 review, point 2). When
+        # both shapes are present, the extra_body form wins — it is the shape
+        # every in-tree caller uses.
+        top_level_response_format = kwargs.get("response_format")
+        if top_level_response_format is not None:
+            _translate_anthropic_response_format(
+                anthropic_kwargs, top_level_response_format,
+            )
         if caller_extra_body and isinstance(caller_extra_body, dict):
+            _translate_anthropic_response_format(
+                anthropic_kwargs, caller_extra_body.get("response_format"),
+            )
             passthrough = {
                 k: v for k, v in caller_extra_body.items()
-                if k != "reasoning" and not str(k).startswith("_")
+                if k not in {"reasoning", "response_format"}
+                and not str(k).startswith("_")
             }
             if passthrough:
                 existing = anthropic_kwargs.get("extra_body") or {}
@@ -2752,8 +2887,15 @@ _paid_lane_warned: set = set()
 
 
 def _is_free_model(model: Optional[str]) -> bool:
-    """True when ``model`` is an OpenRouter free SKU (``:free`` suffix)."""
-    return bool(model) and str(model).strip().endswith(":free")
+    """True when ``model`` is a free SKU (``:free`` suffix or ``stealth/`` prefix).
+
+    Naming-convention trust: a paid model shipped under ``stealth/`` would
+    silently bypass both the free_only gate and the paid-lane warning.
+    """
+    if not model:
+        return False
+    normalized = str(model).strip()
+    return normalized.endswith(":free") or normalized.startswith("stealth/")
 
 
 def _aux_openrouter_settings() -> Tuple[bool, str]:
@@ -2775,7 +2917,8 @@ def _aux_openrouter_settings() -> Tuple[bool, str]:
 
 
 def _warn_paid_lane_once(model: str) -> None:
-    """Log a WARNING the first time a non-:free OpenRouter model is engaged."""
+    """Log a WARNING the first time a non-free (neither ``:free`` nor
+    ``stealth/``) OpenRouter model is engaged."""
     if model in _paid_lane_warned:
         return
     _paid_lane_warned.add(model)
@@ -3697,7 +3840,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     real_client = _create_openai_client(
         api_key=codex_token,
         base_url=base_url,
-        default_headers=_codex_cloudflare_headers(codex_token),
+        default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
     )
     return CodexAuxiliaryClient(real_client, model), model
 
@@ -4313,6 +4456,71 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
     public symbol because existing tests and call sites import it by name.
     """
     return _is_unsupported_parameter_error(exc, "temperature")
+
+
+def _is_structured_output_rejection(exc: Exception) -> bool:
+    """Detect provider 400s that reject the structured-output request field.
+
+    One predicate covers the field on both wires, because both come from the
+    same caller-supplied ``response_format``:
+
+    - OpenAI wire: the provider rejects ``response_format`` itself. vLLM
+      gateways translate the field into ``guided_grammar`` and fail when the
+      grammar backend is absent (``compile_grammar_error: No module named
+      'xgrammar'``, #82816). Other endpoints answer ``This response_format
+      type is unavailable now``.
+    - Anthropic wire: the adapter translates ``response_format`` into
+      ``output_config.format``. Gateways that predate structured outputs
+      (the documented case is the ``bedrock-mantle`` Messages endpoint)
+      reject that field: ``output_config: Extra inputs are not permitted``.
+
+    Callers tolerate an unconstrained reply — the title prompt demands bare
+    JSON and ``_extract_title_text`` has a loose-JSON fallback — so the right
+    reaction is one retry without the field, not a hard failure.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    err_lower = str(exc).lower()
+    # vLLM grammar-backend failures name the translated parameter, not ours.
+    if "guided_grammar" in err_lower or "xgrammar" in err_lower or (
+        "compile_grammar_error" in err_lower
+    ):
+        return True
+    if "extra inputs are not permitted" in err_lower and (
+        "response_format" in err_lower or "output_config" in err_lower
+    ):
+        return True
+    if "response_format" in err_lower and "unavailable" in err_lower:
+        return True
+    return (
+        _is_unsupported_parameter_error(exc, "response_format")
+        or _is_unsupported_parameter_error(exc, "output_config")
+    )
+
+
+def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without any ``response_format`` request field.
+
+    Removes the top-level kwarg and the ``extra_body`` entry. Returns None
+    when the kwargs carry no such field, so call sites do not retry a
+    request that the removal did not change.
+    """
+    changed = False
+    retry_kwargs = dict(kwargs)
+    if retry_kwargs.pop("response_format", None) is not None:
+        changed = True
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict) and "response_format" in extra_body:
+        remaining = {
+            k: v for k, v in extra_body.items() if k != "response_format"
+        }
+        if remaining:
+            retry_kwargs["extra_body"] = remaining
+        else:
+            retry_kwargs.pop("extra_body", None)
+        changed = True
+    return retry_kwargs if changed else None
 
 
 def _is_model_not_found_error(exc: Exception) -> bool:
@@ -5406,7 +5614,7 @@ def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
     Only ``compression`` carries an explicit minimum today (the same
     ``MINIMUM_CONTEXT_LENGTH`` (64K) floor that
     ``check_compression_model_feasibility`` already enforces at startup).
-    Other tasks (``vision``, ``title_generation``, ``web_extract``,
+    Other tasks (``vision``, ``title_generation``,
     ``skills_hub``, ``mcp``, ``session_search``) return ``None`` — they
     have no per-task context floor and the runtime chain must remain
     permissive for them.
@@ -6029,6 +6237,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
         async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
+    elif _is_official_codex_base_url(sync_base_url):
+        async_kwargs["default_headers"] = _codex_cloudflare_headers(
+            sync_client.api_key, base_url=sync_base_url,
+        )
     elif base_url_host_matches(sync_base_url, "x.ai"):
         from tools.xai_http import hermes_xai_default_headers
 
@@ -6050,6 +6262,9 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
+    _apply_required_codex_headers(
+        async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url,
+    )
     async_kwargs = {
         **_openai_http_client_kwargs(sync_base_url, async_mode=True),
         **async_kwargs,
@@ -6657,6 +6872,18 @@ def resolve_provider_client(
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
         if explicit_base_url:
             raw_base_url = explicit_base_url.strip().rstrip("/")
+        # OpenCode Zen free tier (*-free slugs): served anonymously on the
+        # Zen relay only — no credential needed, and any unknown bearer
+        # (including a Go subscription key) is rejected. Route through the
+        # keyless Zen runtime regardless of configured OpenCode credentials.
+        try:
+            from hermes_cli.models import opencode_zen_free_runtime as _oc_free_rt
+            _free_rt = _oc_free_rt(provider, model)
+        except Exception:
+            _free_rt = None
+        if _free_rt is not None:
+            api_key = _free_rt["api_key"]
+            raw_base_url = str(_free_rt["base_url"]).rstrip("/")
         if provider == "actual":
             try:
                 from hermes_cli.auth import (
@@ -6828,8 +7055,12 @@ def resolve_provider_client(
         default_model = "google/gemini-3-flash-preview"
         final_model = _normalize_resolved_model(model or default_model, provider)
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=token, base_url=base_url)
+            # Alias the import: a bare `from openai import OpenAI` here would
+            # make `OpenAI` function-local and shadow the module-level lazy
+            # proxy for every other branch of this function (breaking both the
+            # Bedrock Mantle branch below and patch("agent.auxiliary_client.OpenAI")).
+            from openai import OpenAI as _VertexOpenAI
+            client = _VertexOpenAI(api_key=token, base_url=base_url)
         except Exception as exc:
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)
@@ -6840,17 +7071,23 @@ def resolve_provider_client(
 
     elif pconfig.auth_type == "aws_sdk":
         # AWS SDK providers (Bedrock) — Claude models use the Anthropic Bedrock
-        # SDK (prompt caching, thinking); non-Claude models use Converse API.
+        # SDK (prompt caching, thinking); OpenAI models (GPT-5.5/5.6) use
+        # Bedrock Mantle's OpenAI Responses endpoint; all other models use the
+        # Converse API.
         try:
             from agent.bedrock_adapter import (
                 has_aws_credentials,
                 is_anthropic_bedrock_model,
-                resolve_bedrock_region,
+                resolve_bedrock_runtime_region,
+                is_openai_bedrock_model,
+                bedrock_openai_base_url,
+                resolve_bedrock_bearer_token,
+                configure_bedrock_openai_client_kwargs,
             )
             from agent.anthropic_adapter import build_anthropic_bedrock_client
         except ImportError:
             logger.warning("resolve_provider_client: bedrock requested but "
-                           "boto3 or anthropic SDK not installed")
+                           "boto3, httpx/openai, or anthropic SDK not installed")
             return None, None
 
         if not has_aws_credentials():
@@ -6858,9 +7095,34 @@ def resolve_provider_client(
                          "no AWS credentials found")
             return None, None
 
-        region = resolve_bedrock_region()
+        # Region must match the main runtime's resolution (bedrock.region in
+        # config.yaml first, then env/profile) — see review on #53880/#65076:
+        # a bare resolve_bedrock_region() here let auxiliary calls (compression,
+        # memory, vision) leave the primary runtime's configured region.
+        region = resolve_bedrock_runtime_region()
         default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
-        final_model = _normalize_resolved_model(model or default_model, provider)
+        final_model = _normalize_resolved_model(model or default_model, provider) or default_model
+
+        if is_openai_bedrock_model(final_model):
+            # NOTE: no local `from openai import OpenAI` here — the module-level
+            # lazy proxy (see top of file) must stay visible so tests can
+            # patch("agent.auxiliary_client.OpenAI", ...).
+            bearer = resolve_bedrock_bearer_token()
+            mantle_base_url = bedrock_openai_base_url(region)
+            client_kwargs: Dict[str, Any] = {
+                "api_key": bearer or "aws-sdk",
+                "base_url": mantle_base_url,
+            }
+            configure_bedrock_openai_client_kwargs(client_kwargs)
+            client = OpenAI(**client_kwargs)
+            logger.debug("resolve_provider_client: bedrock-openai (%s, %s)", final_model, region)
+            if raw_codex:
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        else (client, final_model))
+            wrapped = CodexAuxiliaryClient(client, final_model)
+            return (_to_async_client(wrapped, final_model, is_vision=is_vision) if async_mode
+                    else (wrapped, final_model))
+
         base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
 
         if is_anthropic_bedrock_model(final_model):
@@ -6920,11 +7182,11 @@ def get_text_auxiliary_client(
     """Return (client, default_model_slug) for text-only auxiliary tasks.
 
     Args:
-        task: Optional task name ("compression", "web_extract") to check
+        task: Optional task name ("compression", "skills_hub") to check
               for a task-specific provider override.
 
     Callers may override the returned model via config.yaml
-    (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
+    (e.g. auxiliary.compression.model, auxiliary.skills_hub.model).
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
@@ -9177,7 +9439,7 @@ def _call_llm_impl(
     handles auth, request formatting, and model-specific arg adjustments.
 
     Args:
-        task: Auxiliary task name ("compression", "vision", "web_extract",
+        task: Auxiliary task name ("compression", "vision",
               "session_search", "skills_hub", "mcp", "title_generation").
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
@@ -9487,6 +9749,39 @@ def _call_llm_impl(
                     raise
                 first_err = retry_err
                 kwargs = retry_kwargs
+
+        if _is_structured_output_rejection(first_err):
+            retry_kwargs = _without_structured_output_format(kwargs)
+            if retry_kwargs is not None:
+                logger.info(
+                    "Auxiliary %s: provider rejected the structured-output "
+                    "format field; retrying once without it (schema "
+                    "enforcement degrades to prompt compliance): %s",
+                    task or "call", first_err,
+                )
+                try:
+                    return _validate_llm_response(
+                        _relay_sync_completion(
+                            client,
+                            retry_kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
+                except Exception as retry_err:
+                    # Same contract as the temperature rung: fall through to
+                    # the max_tokens / payment / auth chains below with the
+                    # stripped kwargs; re-raise anything those chains do not
+                    # handle.
+                    if not (
+                        _is_payment_error(retry_err)
+                        or _is_connection_error(retry_err)
+                        or _is_auth_error(retry_err)
+                        or "max_tokens" in str(retry_err)
+                        or "unsupported_parameter" in str(retry_err)
+                    ):
+                        raise
+                    first_err = retry_err
+                    kwargs = retry_kwargs
 
         err_str = str(first_err)
         # ZAI vision models (glm-4v-flash etc.) return error code 1210
@@ -10199,6 +10494,40 @@ async def _async_call_llm_impl(
                     raise
                 first_err = retry_err
                 kwargs = retry_kwargs
+
+        if _is_structured_output_rejection(first_err):
+            retry_kwargs = _without_structured_output_format(kwargs)
+            if retry_kwargs is not None:
+                logger.info(
+                    "Auxiliary %s (async): provider rejected the "
+                    "structured-output format field; retrying once without "
+                    "it (schema enforcement degrades to prompt "
+                    "compliance): %s",
+                    task or "call", first_err,
+                )
+                try:
+                    return _validate_llm_response(
+                        await _relay_async_completion(
+                            client,
+                            retry_kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
+                except Exception as retry_err:
+                    # Same contract as the temperature rung: fall through to
+                    # the max_tokens / payment / auth chains below with the
+                    # stripped kwargs; re-raise anything those chains do not
+                    # handle.
+                    if not (
+                        _is_payment_error(retry_err)
+                        or _is_connection_error(retry_err)
+                        or _is_auth_error(retry_err)
+                        or "max_tokens" in str(retry_err)
+                        or "unsupported_parameter" in str(retry_err)
+                    ):
+                        raise
+                    first_err = retry_err
+                    kwargs = retry_kwargs
 
         err_str = str(first_err)
         # ZAI vision models (glm-4v-flash etc.) return error code 1210

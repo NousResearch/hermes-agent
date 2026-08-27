@@ -2398,10 +2398,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not sent or not text.startswith(sent):
             # A turn-final payload can legitimately differ from the streamed
             # draft after markdown conversion, verifier/footer augmentation,
-            # or a final answer rewrite. Keep delivery on the already-created
-            # Slack message: stop the append-only stream, then replace its
-            # contents with the authoritative final text. Plain/interim sends
-            # still pass through without touching the live stream.
+            # or a final answer rewrite. Slack retains a native stream's rich
+            # text after chat.stopStream, so chat.update would render that
+            # text alongside the replacement markdown. Remove the incomplete
+            # stream before allowing the normal final-send path to post once.
+            # Plain/interim sends still pass through without touching the
+            # live stream.
             if not metadata or not metadata.get("final"):
                 return None
             ts = stream["ts"]
@@ -2410,17 +2412,21 @@ class SlackAdapter(BasePlatformAdapter):
                 # a best-effort delivery rather than swallowing the answer.
                 return None
             self._active_streams.pop(chat_id, None)
-            replaced = await self.edit_message(
-                chat_id,
+            if await self.delete_message(chat_id, ts):
+                # Returning None lets send() post the authoritative final
+                # message exactly once.
+                return None
+            logger.warning(
+                "[Slack] Could not delete incomplete native stream %s in channel %s; "
+                "suppressing rewritten final to avoid a duplicate message",
                 ts,
-                text,
-                finalize=True,
-                metadata=metadata,
+                chat_id,
             )
-            if replaced.success:
-                await self.stop_typing(chat_id)
-                return replaced
-            return None
+            # A deleted stream is normally followed by a new post. If the
+            # deletion fails, the best available user-visible result is the
+            # sealed prefix rather than two competing answer bodies.
+            await self.stop_typing(chat_id)
+            return SendResult(success=True, message_id=ts)
         ts = stream["ts"]
         ok = await self._seal_stream(chat_id, stream, final_text=text)
         if not ok:

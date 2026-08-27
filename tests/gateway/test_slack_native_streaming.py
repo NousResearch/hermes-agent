@@ -36,6 +36,7 @@ def _make_adapter(extra=None):
     client.chat_startStream = AsyncMock(return_value={"ok": True, "ts": "123.456"})
     client.chat_appendStream = AsyncMock(return_value={"ok": True})
     client.chat_stopStream = AsyncMock(return_value={"ok": True})
+    client.chat_delete = AsyncMock(return_value={"ok": True})
     a._get_client = MagicMock(return_value=client)
     a.stop_typing = AsyncMock()
     a._running = True
@@ -210,16 +211,38 @@ class TestSendFinalization:
         assert "D1" in adapter._active_streams
 
     @pytest.mark.asyncio
-    async def test_rewritten_final_updates_stream_message_without_duplicate(self):
-        """A final answer that is not a raw prefix still owns the stream.
-
-        Slack markdown formatting and post-stream finalization can change the
-        completed text. The adapter must update the existing stream message,
-        rather than post a second answer.
-        """
+    async def test_rewritten_final_deletes_stream_then_posts_once(self):
+        """A rewritten final replaces an incomplete native stream safely."""
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
-        adapter.edit_message = AsyncMock(wraps=adapter.edit_message)
+
+        result = await adapter.send(
+            "D1",
+            "Final answer with the completed details.",
+            metadata={**META, "final": True},
+        )
+
+        assert result.success
+        assert result.message_id == "999.111"
+        client.chat_stopStream.assert_awaited_once_with(
+            channel="D1",
+            ts="123.456",
+        )
+        client.chat_delete.assert_awaited_once_with(channel="D1", ts="123.456")
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once()
+        assert client.chat_postMessage.await_args.kwargs["text"] == (
+            "Final answer with the completed details."
+        )
+        assert "D1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_rewritten_final_keeps_prefix_when_stream_delete_fails(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
+        client.chat_delete = AsyncMock(
+            return_value={"ok": False, "error": "cant_delete_message"}
+        )
 
         result = await adapter.send(
             "D1",
@@ -233,12 +256,8 @@ class TestSendFinalization:
             channel="D1",
             ts="123.456",
         )
-        client.chat_update.assert_awaited_once()
-        update = client.chat_update.await_args.kwargs
-        assert update["channel"] == "D1"
-        assert update["ts"] == "123.456"
-        assert update["text"] == "Final answer with the completed details."
-        assert adapter.edit_message.await_args.kwargs["finalize"] is True
+        client.chat_delete.assert_awaited_once_with(channel="D1", ts="123.456")
+        client.chat_update.assert_not_awaited()
         client.chat_postMessage.assert_not_awaited()
         assert "D1" not in adapter._active_streams
 

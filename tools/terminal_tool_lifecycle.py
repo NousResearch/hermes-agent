@@ -186,8 +186,9 @@ def ensure_task_env(task_id: Optional[str] = None):
 
     Lets non-terminal callers (``tools.image_source`` reading container-only
     paths) bring the sandbox up on demand with the same machinery as the
-    terminal tool. No-op on local. Returns the env, or ``None`` when local or
-    when creation fails (best-effort; the caller's fail-closed path stays intact).
+    terminal tool. No-op on the host-path backends (local and bubblewrap: images are
+    read host-side). Returns the env, or ``None`` when host-path or when creation
+    fails (best-effort; the caller's fail-closed path stays intact).
 
     :func:`terminal_tool` creates the environment on the first terminal command, but nothing else did — so
     under a non-local backend (ssh, docker, …) a session whose first action is ``vision_analyze`` on a
@@ -202,7 +203,7 @@ def ensure_task_env(task_id: Optional[str] = None):
     )
     config = _get_env_config()
     env_type = config["env_type"]
-    if env_type == "local":
+    if env_type in ("local", "bubblewrap"):
         return None
 
     effective_task_id = _resolve_container_task_id(task_id)

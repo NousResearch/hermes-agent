@@ -340,7 +340,9 @@ class TestConstructionTimeMounts:
 
     def test_builder_signature_takes_only_construction_inputs_and_tracked_cwd(self):
         params = list(inspect.signature(build_bwrap_args).parameters)
-        assert params == ["config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path"]
+        # hidden_paths is the sensitive set the environment resolved at
+        # construction; it never comes from inside a sandbox.
+        assert params == ["config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths"]
 
     def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):
         home = os.path.expanduser("~")
@@ -682,6 +684,25 @@ class TestDeletedCwdRecovery:
             result = env.execute(f"cd {work} && touch r1-probe")
             assert result["returncode"] == 0, result["output"]
             assert (work / "r1-probe").is_file()
+        finally:
+            env.cleanup()
+
+
+@needs_bwrap
+class TestSymlinkedCwd:
+    def test_cwd_that_is_an_absolute_symlink_runs_commands_at_its_target(self, sandbox_root, tmp_path):
+        # bwrap resolves a mount destination inside the sandbox root, where
+        # an absolute symlink points nowhere, so the bind goes on the target.
+        real = tmp_path / "real-work"
+        real.mkdir()
+        link = tmp_path / "work-link"
+        link.symlink_to(real)
+        env = BubblewrapEnvironment(cwd=str(link), timeout=30)
+        try:
+            result = env.execute("touch probe && pwd")
+            assert result["returncode"] == 0, result["output"]
+            assert result["output"].strip() == str(real)
+            assert (real / "probe").is_file()
         finally:
             env.cleanup()
 

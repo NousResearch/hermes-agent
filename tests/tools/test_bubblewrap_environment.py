@@ -741,6 +741,28 @@ class TestSandboxDirGuard:
         finally:
             env.cleanup()
 
+    @pytest.mark.parametrize("spelling", ["link", "target"])
+    @pytest.mark.parametrize("link", ["absolute", "relative"])
+    def test_sandbox_dir_under_a_symlinked_profile_home_is_refused_under_home_mode_profile(self, tmp_path, work_dir, monkeypatch, link, spelling):
+        # HERMES_HOME/home symlinked outside HERMES_HOME: the sandbox root
+        # resolves outside every hidden path, but the profile-home bind still
+        # makes it writable inside.
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        target = tmp_path / "elsewhere" / "home"
+        target.mkdir(parents=True)
+        (hermes_home / "home").symlink_to(target if link == "absolute" else os.path.relpath(target, hermes_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        root = (hermes_home / "home" if spelling == "link" else target) / "sandboxes"
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(root))
+        with _no_session(), pytest.raises(ValueError, match="terminal.sandbox_dir"):
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode="profile"))
+        assert not root.exists() or not any(root.iterdir())
+        # Under auto nothing binds the profile home back, so the same root constructs.
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode="auto"))
+        env.cleanup()
+
     def test_rw_bind_of_home_elsewhere_with_the_default_sandbox_dir_constructs_with_the_bind_dropped(self, tmp_path, monkeypatch):
         # A rw mirror of HOME at /mnt gave a second writable view of
         # HERMES_HOME/sandboxes and the empty file. filter_binds drops the

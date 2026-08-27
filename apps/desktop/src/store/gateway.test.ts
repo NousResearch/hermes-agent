@@ -295,6 +295,11 @@ describe('secondary connection timeout (#93454)', () => {
 
     installDesktop({ getConnection })
 
+    // The #92434 pin above leaves gatewayMocks.connect latched on a
+    // never-resolving mockImplementation (vi.clearAllMocks() clears calls, not
+    // implementations). Restore the default resolving dial for this test.
+    gatewayMocks.connect.mockImplementation(async () => undefined)
+
     const pending = ensureGatewayForProfile('work')
 
     await vi.advanceTimersByTimeAsync(20_000)

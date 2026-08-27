@@ -1022,6 +1022,29 @@ def build_anthropic_bedrock_client(region: str):
     )
 
 
+class CredentialPersistError(RuntimeError):
+    """A rotated single-use credential could not be durably committed.
+
+    Anthropic OAuth refresh tokens are single-use: a successful refresh POST
+    consumes the old refresh token server-side and returns a replacement. The
+    replacement exists only in memory until it reaches its authoritative
+    on-disk store (``~/.claude/.credentials.json`` for ``claude_code``,
+    ``~/.hermes/.anthropic_oauth.json`` for ``hermes_pkce``).
+
+    If that write fails and the caller reports success anyway, the on-disk
+    (already consumed) pair survives and is re-seeded on the next
+    ``load_pool()``, so the following refresh replays a spent token and fails
+    with ``invalid_grant`` / ``refresh_token_reused``. Callers must therefore
+    treat this as a failed refresh, not a successful one, and fail closed.
+    """
+
+    def __init__(self, path: Any, cause: BaseException) -> None:
+        super().__init__(
+            f"failed to durably persist rotated Anthropic credentials to {path}: {cause}"
+        )
+        self.path = path
+
+
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from the macOS Keychain.
 
@@ -1300,16 +1323,35 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
 
             try:
                 refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
+            except Exception as e:
+                logger.debug("Failed to refresh Claude Code token: %s", e)
+                return None
+
+            # The POST above already consumed ``refresh_token`` server-side.
+            # Writing the replacement pair is the commit step of that
+            # transaction, not a cache update: if it fails, the rotation is
+            # unrecoverable and the pair still on disk is spent. Fail closed
+            # rather than handing back an access token whose refresh half was
+            # lost — reporting success here is what lets a later load replay
+            # the consumed token and produce ``invalid_grant``.
+            try:
                 _write_claude_code_credentials(
                     refreshed["access_token"],
                     refreshed["refresh_token"],
                     refreshed["expires_at_ms"],
                 )
-                logger.debug("Successfully refreshed Claude Code OAuth token")
-                return refreshed["access_token"]
             except Exception as e:
-                logger.debug("Failed to refresh Claude Code token: %s", e)
+                logger.error(
+                    "Anthropic OAuth refresh rotated the single-use token but could not "
+                    "commit it to %s (%s) — treating the refresh as failed; "
+                    "re-run 'claude setup-token' to reauthenticate",
+                    claude_code_credentials_path(),
+                    e,
+                )
                 return None
+
+            logger.debug("Successfully refreshed Claude Code OAuth token")
+            return refreshed["access_token"]
     except Exception as e:
         # Lock acquisition/read failures should preserve the resolver's
         # existing fail-soft contract rather than taking down agent startup.
@@ -1330,6 +1372,12 @@ def _write_claude_code_credentials(
     is persisted so that Claude Code's own auth check recognises the credential
     as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
     in the stored scopes before it will use the token.
+
+    Raises ``CredentialPersistError`` when the rotated pair does not reach the
+    file. This write is the commit step of the refresh transaction, not a
+    best-effort cache update: a swallowed failure leaves the consumed
+    pre-rotation pair on disk to be re-seeded and replayed (see
+    ``CredentialPersistError``).
     """
     cred_path = claude_code_credentials_path()
     try:
@@ -1381,8 +1429,12 @@ def _write_claude_code_credentials(
             except OSError:
                 pass
             raise
-    except (OSError, IOError) as e:
-        logger.debug("Failed to write refreshed credentials: %s", e)
+    except (OSError, IOError, ValueError) as e:
+        # ValueError covers a corrupt existing file (JSONDecodeError): the
+        # merge-read is part of the commit, so failing it means the rotated
+        # pair never landed either.
+        logger.error("Failed to write refreshed credentials to %s: %s", cred_path, e)
+        raise CredentialPersistError(cred_path, e) from e
 
 
 def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
@@ -1761,6 +1813,10 @@ def _write_hermes_oauth_credentials(
     runs ``_seed_from_singletons()``, which reads the stale file and
     overwrites the freshly-rotated pool entry with the pre-refresh (and, for
     single-use Anthropic refresh tokens, already-consumed) token pair.
+
+    Raises ``CredentialPersistError`` when the rotated pair does not reach the
+    file, for the same reason ``_write_claude_code_credentials`` does: this is
+    the commit step of the refresh transaction.
     """
     oauth_file = _get_hermes_oauth_file()
     try:
@@ -1788,8 +1844,11 @@ def _write_hermes_oauth_credentials(
             except OSError:
                 pass
             raise
-    except (OSError, IOError) as e:
-        logger.debug("Failed to write refreshed Hermes OAuth credentials: %s", e)
+    except (OSError, IOError, ValueError) as e:
+        logger.error(
+            "Failed to write refreshed Hermes OAuth credentials to %s: %s", oauth_file, e
+        )
+        raise CredentialPersistError(oauth_file, e) from e
 
 
 # ---------------------------------------------------------------------------

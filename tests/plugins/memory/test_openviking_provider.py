@@ -394,6 +394,22 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(
     assert json.loads(saved_path.read_text(encoding="utf-8")) == saved_values
 
 
+@pytest.mark.parametrize(
+    ("setup_type", "visible"),
+    [("service", True), ("custom", True), ("profile", False)],
+)
+def test_desktop_agent_id_is_available_for_manual_setup(setup_type, visible):
+    from plugins.memory.openviking.config_schema import CONFIG_SCHEMA
+
+    field = next(field for field in CONFIG_SCHEMA.fields if field.key == "actor_peer_id")
+
+    assert field.required
+    assert field.default == "hermes"
+    assert field.visible_when
+    assert all(condition.key == "setup_type" for condition in field.visible_when)
+    assert all(setup_type in condition.values for condition in field.visible_when) is visible
+
+
 def test_desktop_snapshot_is_redacted_and_does_not_probe_network(monkeypatch):
     _clear_openviking_env(monkeypatch)
     from hermes_constants import get_hermes_home
@@ -544,11 +560,8 @@ def test_desktop_root_profile_uses_current_ovcli_schema(monkeypatch):
     _clear_openviking_env(monkeypatch)
     from hermes_constants import get_hermes_home
 
-    monkeypatch.setattr(
-        openviking_module,
-        "_validate_openviking_setup_values",
-        lambda _values, *, require_api_key=False: (True, "", "root"),
-    )
+    validate = MagicMock(return_value=(True, "", "root"))
+    monkeypatch.setattr(openviking_module, "_validate_openviking_setup_values", validate)
 
     result = openviking_module._save_desktop_openviking_setup(
         values={
@@ -559,20 +572,21 @@ def test_desktop_root_profile_uses_current_ovcli_schema(monkeypatch):
             "api_key": "root-key",
             "account": "acct",
             "user": "alice",
-            "actor_peer_id": "hermes",
+            "actor_peer_id": "support-agent",
         },
         hermes_home=get_hermes_home(),
         overwrite=False,
     )
 
     profile = json.loads(openviking_module.Path(result["profile_path"]).read_text(encoding="utf-8"))
+    assert validate.call_args.args[0]["agent"] == "support-agent"
     assert profile == {
         "url": "https://openviking.example",
         "api_key": "root-key",
         "root_api_key": "root-key",
         "account": "acct",
         "user": "alice",
-        "actor_peer_id": "hermes",
+        "actor_peer_id": "support-agent",
     }
 
 

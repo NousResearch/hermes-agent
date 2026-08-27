@@ -3324,7 +3324,7 @@ def _probe_journal_mode_for_repair(db_path: Path) -> Optional[str]:
     configured ``database.journal_mode`` for ``None``.
     """
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = _connect_repair_durable(db_path)
         try:
             return _on_disk_journal_mode(conn)
         finally:
@@ -3359,7 +3359,7 @@ def _restore_journal_mode_after_repair(db_path: Path, before_mode: Optional[str]
     to re-apply are logged at WARNING, never raised.
     """
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = _connect_repair_durable(db_path)
         try:
             after = apply_wal_with_fallback(conn, db_label=db_path.name)
         finally:

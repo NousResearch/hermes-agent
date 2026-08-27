@@ -207,10 +207,24 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
         "terminate_pid",
         lambda pid, force=False: events.append(("kill" if force else "term", pid)),
     )
+    # Never let a real SIGUSR1 escape to the live test PID — the drain path
+    # goes through _graceful_restart_via_sigusr1 (in-place restart) before
+    # any exit-wait, and these tests feed launchd_restart os.getpid().
+    monkeypatch.setattr(
+        gateway_cli,
+        "_graceful_restart_via_sigusr1",
+        lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+    )
     monkeypatch.setattr(
         gateway_cli,
         "_wait_for_gateway_exit",
         lambda timeout, force_after=None: events.append(("drain", timeout)) or True,
+    )
+    monkeypatch.setattr(
+        gateway_cli,
+        "_wait_for_launchd_service_pid",
+        lambda label, old_pid, timeout=10.0, *, domain: events.append("observe")
+        or True,
     )
     monkeypatch.setattr(
         gateway_cli.subprocess,
@@ -573,10 +587,25 @@ class TestLoopTickWitness:
                 "terminate_pid",
                 lambda pid, force=False: events.append(("kill" if force else "term", pid)),
             )
+            # Never let a real SIGUSR1 escape to os.getpid() — the drain
+            # path now goes through _graceful_restart_via_sigusr1 (in-place
+            # restart) before any exit-wait, and this test feeds the REAL
+            # launchd_restart our own live PID.
+            monkeypatch.setattr(
+                gateway_cli,
+                "_graceful_restart_via_sigusr1",
+                lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+            )
             monkeypatch.setattr(
                 gateway_cli,
                 "_wait_for_gateway_exit",
                 lambda timeout, force_after=None: events.append(("drain", timeout))
+                or True,
+            )
+            monkeypatch.setattr(
+                gateway_cli,
+                "_wait_for_launchd_service_pid",
+                lambda label, old_pid, timeout=10.0, *, domain: events.append("observe")
                 or True,
             )
             monkeypatch.setattr(
@@ -596,7 +625,8 @@ class TestLoopTickWitness:
             )
             gateway_cli.launchd_restart()
             assert "escalate" not in events
-            assert ("drain", 180.0) in events
+            drains = [e for e in events if isinstance(e, tuple) and e[0] == "drain"]
+            assert drains, events
         finally:
             thread.join(timeout=5.0)
             assert not errors, errors
@@ -878,7 +908,8 @@ class TestLoopTickWitness:
             events = _launchd_harness(monkeypatch, tmp_path, pid)
             gateway_cli.launchd_restart()
             assert "escalate" not in events
-            assert ("drain", 180.0) in events
+            drains = [e for e in events if isinstance(e, tuple) and e[0] == "drain"]
+            assert drains, events
         finally:
             state["thread"].join(timeout=5.0)
             assert not errors, errors

@@ -173,10 +173,10 @@ def test_resolve_vlm_accepts_structured_persisted_default(monkeypatch):
                 "provider": "custom",
                 "api_mode": "chat_completions",
                 "base_url": "https://llm.example/v1",
-                "api_key": lambda: "short-lived",
+                "api_key": lambda: pytest.fail("Setup must not execute key commands"),
                 "source": "key_cmd",
             },
-            "did not resolve reusable static credentials",
+            "cannot be copied safely",
         ),
         (
             {
@@ -207,6 +207,36 @@ def test_resolve_vlm_accepts_structured_persisted_default(monkeypatch):
                 "source": "OPENAI_API_KEY",
             },
             "transport is not supported",
+        ),
+        (
+            {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": "https://llm.example/v1",
+                "api_key": False,
+                "source": "env/config",
+            },
+            "cannot be copied safely",
+        ),
+        (
+            {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": {"url": "https://llm.example/v1"},
+                "api_key": "secret",
+                "source": "env/config",
+            },
+            "API base URL must be a string",
+        ),
+        (
+            {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": False,
+                "api_key": "secret",
+                "source": "env/config",
+            },
+            "API base URL must be a string",
         ),
     ],
 )

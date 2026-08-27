@@ -196,14 +196,20 @@ def resolve_hermes_vlm_config() -> dict[str, Any]:
     provider = _clean_value(runtime.get("provider")).lower()
     api_mode = _clean_value(runtime.get("api_mode")).lower()
     source = _clean_value(runtime.get("source")).lower()
-    api_base = _clean_value(runtime.get("base_url"))
-    api_key = _clean_value(runtime.get("api_key"))
+    raw_api_base = runtime.get("base_url")
+    raw_api_key = runtime.get("api_key")
+    api_base = _clean_value(raw_api_base)
+    api_key = _clean_value(raw_api_key)
 
+    if raw_api_base is not None and not isinstance(raw_api_base, str):
+        raise QuickLocalSetupError(
+            "Hermes' LLM provider API base URL must be a string."
+        )
     if not api_base:
         raise QuickLocalSetupError(
             "Hermes' LLM provider did not resolve an API base URL."
         )
-    if not api_key:
+    if raw_api_key is None or (isinstance(raw_api_key, str) and not api_key):
         raise QuickLocalSetupError(
             "Hermes' LLM provider did not resolve reusable static credentials."
         )

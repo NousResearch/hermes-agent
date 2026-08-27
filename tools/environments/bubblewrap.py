@@ -30,12 +30,13 @@ import logging
 import os
 import resource
 import shutil
+import subprocess
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import get_sandbox_dir
+from tools.environments.base import EnvironmentConnectionError, get_sandbox_dir
 from tools.environments.local import LocalEnvironment, _resolve_local_initial_cwd
 
 logger = logging.getLogger(__name__)
@@ -309,6 +310,63 @@ def build_bwrap_args(
     return argv
 
 
+PROBE_ARGS: tuple[str, ...] = ("--unshare-user", "--ro-bind", "/", "/", "true")
+PROBE_TIMEOUT_SECONDS = 5
+INSTALL_HINT = (
+    "Install the bubblewrap package (apt, dnf or pacman: bubblewrap) and make "
+    "sure unprivileged user namespaces are allowed on this host, then retry; "
+    "or set terminal.backend to another backend."
+)
+
+# Path of the bwrap that passed the runtime probe, kept for the life of the
+# process. A failed probe is not cached: the next construction probes again,
+# so installing or fixing bwrap needs no restart.
+_probed_bwrap_path: str | None = None
+
+
+def run_probe() -> tuple[str | None, str | None]:
+    """Run the bwrap probe once: ``(path, None)`` on success, ``(path, failure)`` otherwise.
+
+    The probe is ``bwrap --unshare-user --ro-bind / / true`` with a
+    5 s timeout: it fails where user namespaces are disabled, where bwrap
+    is not setuid on a kernel that needs it, or where bwrap is missing.
+    """
+    path = shutil.which("bwrap")
+    if path is None:
+        return None, "bubblewrap (bwrap) is not on PATH"
+    try:
+        result = subprocess.run(
+            [path, *PROBE_ARGS],
+            capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return path, f"bwrap probe timed out after {PROBE_TIMEOUT_SECONDS} s: {path} {' '.join(PROBE_ARGS)}"
+    except OSError as exc:
+        return path, f"bwrap probe could not start: {exc}"
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no output"
+        return path, f"bwrap probe failed (exit {result.returncode}): {detail}"
+    return path, None
+
+
+def probe_bwrap() -> str:
+    """Return the path of a bwrap that passed the probe, probing once per process.
+
+    Raises EnvironmentConnectionError, with a retry hint naming the
+    bubblewrap package, when bwrap is missing from PATH or the probe fails.
+    """
+    global _probed_bwrap_path
+    if _probed_bwrap_path is None:
+        path, failure = run_probe()
+        if failure is not None:
+            raise EnvironmentConnectionError(
+                f"bubblewrap backend unavailable: {failure}",
+                retry_hint=INSTALL_HINT,
+            )
+        _probed_bwrap_path = path
+    return _probed_bwrap_path
+
+
 def uid_thread_count(uid: int) -> int:
     """Threads owned by *uid* host-wide, counted from /proc.
 
@@ -388,11 +446,13 @@ class BubblewrapEnvironment(LocalEnvironment):
         config: BubblewrapConfig | None = None,
     ):
         self._config = load_bubblewrap_config() if config is None else config
-        # Reject an unknown profile before anything is created on disk.
+        # Reject an unknown profile and an unusable bwrap before anything is
+        # created on disk; the probe raises EnvironmentConnectionError, which
+        # the terminal tool turns into its degraded or error result.
         resolve_profile(self._config.profile)
+        self._bwrap_path = probe_bwrap()
         self._home = os.path.expanduser("~")
         self._hermes_home = str(get_hermes_home())
-        self._bwrap_path = shutil.which("bwrap") or "bwrap"
         # The mount set is fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = _resolve_local_initial_cwd(cwd)
         # BaseEnvironment.__init__ derives the snapshot and cwd file paths

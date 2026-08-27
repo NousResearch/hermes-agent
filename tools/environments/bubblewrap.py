@@ -561,6 +561,12 @@ class BubblewrapEnvironment(LocalEnvironment):
         return prefix + list(args)
 
     def _popen_preexec(self):
+        # uid_thread_count scans /proc once per spawn, and only when max_procs
+        # is non-zero (the one limit that needs it). The count must be fresh:
+        # the kernel checks RLIMIT_NPROC against the uid's live thread count
+        # when the sandbox forks, so a count taken at construction goes stale
+        # as the host starts threads, and a limit that falls below the live
+        # count stops bwrap from creating its namespace at all.
         uid_threads = uid_thread_count(os.getuid()) if self._config.max_procs else 0
         return make_preexec(rlimit_values(self._config, uid_threads=uid_threads))
 

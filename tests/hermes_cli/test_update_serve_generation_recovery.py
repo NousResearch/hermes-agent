@@ -893,3 +893,97 @@ def test_recovery_module_reports_serve_units_in_a_real_process():
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert set(payload["serve_units"]) == {"verified", "failed"}
+
+
+# ---------------------------------------------------------------------------
+# The managed-dashboard fallback must not short-circuit the serve scan
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_main_stub(scan_calls, *, restart_result=True):
+    """A ``_m()`` stand-in for the dashboard-cleanup path."""
+    return SimpleNamespace(
+        _DASHBOARD_SYSTEMD_UNIT="hermes-dashboard.service",
+        _restart_managed_dashboard_service=lambda reason, *a, **k: restart_result,
+        _find_stale_dashboard_pids=lambda **kwargs: scan_calls.append(kwargs) or [],
+    )
+
+
+def test_managed_dashboard_restart_still_scans_for_serve_backends(monkeypatch):
+    """A restarted dashboard unit may not end the pass (#92145).
+
+    The reporter's host runs ``hermes-dashboard.service`` AND
+    ``hermes-serve.service``.  Returning as soon as the dashboard unit was
+    restarted meant the serve backend hosting ``tui_gateway`` was never even
+    looked for, so it kept serving the pre-update generation.
+    """
+    from hermes_cli import dashboard_procs
+
+    scan_calls: list[dict] = []
+    monkeypatch.setattr(
+        dashboard_procs, "_m", lambda: _dashboard_main_stub(scan_calls)
+    )
+    monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
+
+    dashboard_procs._kill_stale_dashboard_processes(restart_managed=True)
+
+    assert scan_calls, "serve/dashboard scan never ran after the dashboard restart"
+
+
+def test_restarted_dashboard_unit_is_not_killed_by_the_continued_scan(monkeypatch):
+    """Continuing the scan must not undo the restart it just performed."""
+    from hermes_cli import dashboard_procs
+
+    killed: list[int] = []
+    main = SimpleNamespace(
+        _DASHBOARD_SYSTEMD_UNIT="hermes-dashboard.service",
+        _restart_managed_dashboard_service=lambda reason, *a, **k: True,
+        _find_stale_dashboard_pids=lambda **kwargs: [4242],
+        _get_pid_cgroup_path=lambda pid: None,
+        _get_systemd_service_for_pid=lambda pid: "hermes-dashboard.service",
+        _dashboard_cmdline_for_pid=lambda pid: None,
+    )
+    monkeypatch.setattr(dashboard_procs, "_m", lambda: main)
+    monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
+    monkeypatch.setattr(dashboard_procs.sys, "platform", "linux")
+    monkeypatch.setattr(
+        dashboard_procs.os, "kill", lambda pid, sig: killed.append(pid)
+    )
+
+    result = dashboard_procs._kill_stale_dashboard_processes(restart_managed=True)
+
+    assert killed == []
+    assert result["killed"] == []
+
+
+def test_serve_backend_survives_selection_when_the_dashboard_unit_restarts(monkeypatch):
+    """A serve PID owned by a DIFFERENT unit is still selected for recovery."""
+    from hermes_cli import dashboard_procs
+
+    signalled: list[int] = []
+    restarted: list[str] = []
+    main = SimpleNamespace(
+        _DASHBOARD_SYSTEMD_UNIT="hermes-dashboard.service",
+        _restart_managed_dashboard_service=lambda reason, *a, **k: True,
+        _find_stale_dashboard_pids=lambda **kwargs: [7001],
+        _get_pid_cgroup_path=lambda pid: "/user.slice/hermes-serve.service",
+        _get_systemd_service_for_pid=lambda pid: "hermes-serve.service",
+        _dashboard_cmdline_for_pid=lambda pid: None,
+        _try_restart_systemd_service=lambda svc, cg: restarted.append(svc) or True,
+        _respawn_dashboard_processes=lambda cmds: [],
+    )
+    monkeypatch.setattr(dashboard_procs, "_m", lambda: main)
+    monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
+    monkeypatch.setattr(dashboard_procs.sys, "platform", "linux")
+
+    def _fake_kill(pid, sig):
+        signalled.append(pid)
+        raise ProcessLookupError
+
+    monkeypatch.setattr(dashboard_procs.os, "kill", _fake_kill)
+
+    result = dashboard_procs._kill_stale_dashboard_processes(restart_managed=True)
+
+    assert signalled == [7001]
+    assert restarted == ["hermes-serve.service"]
+    assert result["killed"] == [7001]

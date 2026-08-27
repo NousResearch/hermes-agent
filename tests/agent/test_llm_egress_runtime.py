@@ -291,6 +291,7 @@ def test_protected_kanban_admits_exact_pr_receipt_decomposer_structure(
         task_id="t_ff23ef8a",
         title="PR repair: acme/widget#103",
         body=body,
+        handoffs="(no root handoff comments were recorded)",
         roster=roster,
         default_assignee="pr-repair-steward",
     )

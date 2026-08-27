@@ -494,7 +494,7 @@ function groupActivityLabel(event) {
   const kind = event?.kind
   const base = GROUP_ACTIVITY_LABELS[kind] || kind || 'did something'
 
-  if (kind === 'cancelled' || kind === 'settled') {
+  if (kind === 'cancelled' || kind === 'settled' || kind === 'capped') {
     return base
   }
 
@@ -512,6 +512,7 @@ const GROUP_ACTIVITY_LABELS = {
   failed: 'hit an error',
   cancelled: 'turn interrupted by a newer message',
   settled: 'turn settled',
+  capped: 'turn stopped at the round/message cap',
   delivered: 'delivered a late reply',
   held: 'is held (stopped by you) — @mention it or say resume to release'
 }
@@ -525,6 +526,7 @@ const GROUP_ACTIVITY_GLYPHS = {
   failed: 'error',
   cancelled: 'close',
   settled: 'check-all',
+  capped: 'debug-step-over',
   delivered: 'mail-read',
   held: 'debug-pause'
 }
@@ -8059,6 +8061,10 @@ async function runGroupChatRounds(group, members, thread) {
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
   let continuations = 0
+  // #94478: how this drive ended. 'settled' means quiet consensus (everyone
+  // passed with nothing pending); 'capped' means a round/message/continuation
+  // cap forced the exit — the activity feed must tell those apart.
+  let exitKind = 'settled'
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
@@ -8096,6 +8102,8 @@ async function runGroupChatRounds(group, members, thread) {
         if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
           if (!isCurrent()) {
             recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
+          } else {
+            exitKind = 'capped' // message cap, not consensus (#94478)
           }
           return
         }
@@ -8348,14 +8356,24 @@ async function runGroupChatRounds(group, members, thread) {
 
         if (spokeThisRound === 0) {
           // Genuinely nothing left to say — including after the continuation
-          // attempt above produced no spoken turns. Settle honestly.
+          // attempt above produced no spoken turns. Settle honestly, but if
+          // cited members are STILL owed a turn and only the continuation /
+          // message caps stopped us from driving them, this is a capped
+          // exit, not consensus. (#94478)
+          if (pendingKeys.length && (continuations > GROUP_CHAT_MAX_CONTINUATIONS || posted >= GROUP_CHAT_MAX_MESSAGES)) {
+            exitKind = 'capped'
+          }
           return
         }
       }
     }
+
+    // All GROUP_CHAT_MAX_ROUNDS rounds ran with someone still speaking —
+    // the round cap ended the drive, not consensus. (#94478)
+    exitKind = 'capped'
   } finally {
     if (isCurrent()) {
-      recordGroupActivity(group, { kind: 'settled', member: null, thread })
+      recordGroupActivity(group, { kind: exitKind, member: null, thread })
       updateGroupChat(group, r => {
         r.running = false
         r.turn = null

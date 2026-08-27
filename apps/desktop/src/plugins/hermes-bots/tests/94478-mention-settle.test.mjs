@@ -83,3 +83,44 @@ test('#94478: does not flag a handoff the cited member already answered', () => 
 
   assert.ok(answerIdx > mentionIdx, 'answer must postdate the mention')
 })
+
+// --- exit-path wiring contracts (salvage follow-up) -------------------------
+// The two tests above pin the detector's semantics in isolation; these pin the
+// WIRING — the quiet-round exit must consult the detector before settling, and
+// a cap-forced exit must be labelled distinctly from consensus settle.
+import { readFileSync } from 'node:fs'
+
+const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
+
+test('#94478: the quiet-round exit consults unaddressedGroupMentions before settling', () => {
+  const loopStart = pluginSource.indexOf('async function runGroupChatRounds')
+  assert.ok(loopStart >= 0, 'runGroupChatRounds must exist')
+
+  const loop = pluginSource.slice(loopStart, pluginSource.indexOf('\n}', loopStart) + 2)
+
+  // The spokeThisRound === 0 path may no longer settle unconditionally: it
+  // must call the detector and drive a bounded continuation round first.
+  assert.ok(
+    loop.includes('unaddressedGroupMentions(group, members, thread)'),
+    'quiet-round exit must check for unanswered @mention handoffs before settling'
+  )
+  assert.ok(
+    loop.includes('GROUP_CHAT_MAX_CONTINUATIONS'),
+    'continuation rounds must be bounded by GROUP_CHAT_MAX_CONTINUATIONS'
+  )
+})
+
+test('#94478: a cap-forced exit is labelled distinctly from consensus settle', () => {
+  const loopStart = pluginSource.indexOf('async function runGroupChatRounds')
+  const loop = pluginSource.slice(loopStart, pluginSource.indexOf('\n}', loopStart) + 2)
+
+  // The finally must record the tracked exit kind, not a hardcoded 'settled'.
+  assert.ok(
+    /recordGroupActivity\(group, \{ kind: exitKind, member: null, thread \}\)/.test(loop),
+    'the drive-end activity entry must use the tracked exit kind'
+  )
+  assert.ok(/exitKind = 'capped'/.test(loop), 'cap exits must set the capped exit kind')
+
+  // And the activity vocabulary must know the new kind.
+  assert.ok(/\bcapped:\s*'/.test(pluginSource), "GROUP_ACTIVITY_LABELS must define 'capped'")
+})

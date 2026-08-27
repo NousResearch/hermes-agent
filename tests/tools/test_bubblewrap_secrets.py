@@ -64,7 +64,7 @@ def _bwrap_usable() -> bool:
 BWRAP_USABLE = _bwrap_usable()
 needs_bwrap = pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap missing or its namespace probe failed")
 
-MOUNT_FLAGS = {"--bind": 2, "--ro-bind": 2, "--tmpfs": 1, "--dev": 1, "--proc": 1}
+MOUNT_FLAGS = {"--bind": 2, "--ro-bind": 2, "--bind-try": 2, "--ro-bind-try": 2, "--tmpfs": 1, "--dev": 1, "--proc": 1}
 
 
 def _mounts(argv):
@@ -232,7 +232,7 @@ class TestOverlayArgs:
         mounts = _mounts(build_bwrap_args(config, **paths))
         overlay_idx = [mounts.index(m) for m in self._overlays(paths)]
         assert len(overlay_idx) == len(SENSITIVE_HOME_PATHS) + 1
-        i_cwd = mounts.index(("--bind", paths["initial_cwd"], paths["initial_cwd"]))
+        i_cwd = mounts.index(("--bind-try", paths["initial_cwd"], paths["initial_cwd"]))
         i_shared = mounts.index(("--ro-bind", str(shared), str(shared)))
         i_state = mounts.index(("--bind", paths["state_dir"], paths["state_dir"]))
         assert i_cwd < i_shared < min(overlay_idx)

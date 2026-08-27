@@ -250,3 +250,27 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+def test_show_status_reports_bubblewrap_backend(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_ENV", "bubblewrap")
+    monkeypatch.setenv("TERMINAL_BUBBLEWRAP_PROFILE", "workspace")
+    monkeypatch.setattr(status_mod.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"terminal": {"backend": "bubblewrap"}}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Backend:      bubblewrap" in output
+    assert "Profile:      workspace" in output
+    assert "bwrap:        /usr/bin/bwrap" in output

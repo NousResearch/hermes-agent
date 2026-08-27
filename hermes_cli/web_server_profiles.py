@@ -258,6 +258,8 @@ _TERMINAL_BACKENDS: List[Dict[str, str]] = [
          "Run commands in an isolated Docker container with a persistent workspace."),
         ("singularity", "Singularity / Apptainer",
          "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
+        ("bubblewrap", "Bubblewrap",
+         "Run each command in a bwrap sandbox on this machine (Linux): read-only root, writable cwd, secrets hidden."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),
         ("daytona", "Daytona", "Run commands in a Daytona cloud sandbox."),
         ("ssh", "SSH", "Run commands on a remote host over SSH."))]

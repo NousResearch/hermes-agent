@@ -1,0 +1,247 @@
+"""Tests for the rlimits BubblewrapEnvironment applies through the preexec
+seam: RLIMIT_AS, RLIMIT_CPU and RLIMIT_NPROC from
+terminal.bubblewrap_memory_mb, _cpu_seconds and _max_procs.
+
+On kernel 6.8.0 with bwrap 0.9.0, RLIMIT_NPROC is counted per uid
+host-wide inside the bwrap user namespace too, and it counts threads. With
+the limit set to 5 and 192 processes on the uid, bwrap failed with
+"Creating new namespace failed: Resource temporarily unavailable", the
+same as a plain fork outside bwrap; a limit of processes + 256 failed the
+same way because the uid ran about 2000 threads (193 processes). A fixed default would
+therefore break every spawn on a desktop with more threads than the
+limit, so max_procs is applied on top of the uid's current thread count
+and bounds what the sandbox may add. The default stays 256.
+
+Unit tests never spawn bwrap. Integration tests are skipped as a module
+when bwrap is missing or its runtime probe fails, so CI without bwrap
+stays green.
+"""
+
+import os
+import resource
+import shutil
+import subprocess
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from tools.environments import bubblewrap
+from tools.environments.bubblewrap import (
+    BubblewrapConfig,
+    BubblewrapEnvironment,
+    make_preexec,
+    rlimit_values,
+    uid_thread_count,
+)
+from tools.environments.local import LocalEnvironment
+
+
+def _bwrap_usable() -> bool:
+    if shutil.which("bwrap") is None:
+        return False
+    try:
+        probe = subprocess.run(
+            ["bwrap", "--unshare-user", "--ro-bind", "/", "/", "true"],
+            capture_output=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
+
+
+BWRAP_USABLE = _bwrap_usable()
+needs_bwrap = pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap missing or its namespace probe failed")
+
+MB = 1024 * 1024
+
+
+@pytest.fixture
+def sandbox_root(tmp_path, monkeypatch):
+    root = tmp_path / "sandboxes"
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(root))
+    return root
+
+
+@pytest.fixture
+def work_dir(tmp_path):
+    d = tmp_path / "work"
+    d.mkdir()
+    return d
+
+
+def _no_session():
+    return patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None)
+
+
+class TestRlimitValues:
+    def test_defaults_map_to_the_three_limits(self):
+        limits = rlimit_values(BubblewrapConfig(), uid_threads=100)
+        assert limits == {
+            resource.RLIMIT_AS: 256 * MB,
+            resource.RLIMIT_CPU: 30,
+            resource.RLIMIT_NPROC: 100 + 256,
+        }
+
+    @pytest.mark.parametrize("key, res", [
+        ("memory_mb", resource.RLIMIT_AS),
+        ("cpu_seconds", resource.RLIMIT_CPU),
+        ("max_procs", resource.RLIMIT_NPROC),
+    ])
+    def test_zero_leaves_that_limit_out(self, key, res):
+        limits = rlimit_values(BubblewrapConfig(**{key: 0}), uid_threads=100)
+        assert res not in limits
+        assert len(limits) == 2
+
+    def test_all_zero_gives_no_preexec(self):
+        limits = rlimit_values(BubblewrapConfig(memory_mb=0, cpu_seconds=0, max_procs=0), uid_threads=100)
+        assert limits == {}
+        assert make_preexec(limits) is None
+
+    def test_uid_thread_count_covers_this_process_and_its_threads(self):
+        count = uid_thread_count(os.getuid())
+        own_threads = len(os.listdir("/proc/self/task"))
+        assert count >= own_threads >= 1
+
+
+class TestPreexec:
+    @pytest.fixture
+    def recorded(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(bubblewrap.resource, "setrlimit", lambda res, pair: calls.append((res, pair)))
+        return calls
+
+    def test_preexec_sets_each_limit_soft_and_hard(self, recorded, monkeypatch):
+        monkeypatch.setattr(bubblewrap.resource, "getrlimit", lambda res: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+        make_preexec({resource.RLIMIT_AS: 5 * MB, resource.RLIMIT_CPU: 7, resource.RLIMIT_NPROC: 300})()
+        assert recorded == [
+            (resource.RLIMIT_AS, (5 * MB, 5 * MB)),
+            (resource.RLIMIT_CPU, (7, 7)),
+            (resource.RLIMIT_NPROC, (300, 300)),
+        ]
+
+    def test_preexec_clamps_to_the_inherited_hard_limit(self, recorded, monkeypatch):
+        monkeypatch.setattr(bubblewrap.resource, "getrlimit", lambda res: (10, 20))
+        make_preexec({resource.RLIMIT_NPROC: 300, resource.RLIMIT_CPU: 7})()
+        assert recorded == [(resource.RLIMIT_NPROC, (20, 20)), (resource.RLIMIT_CPU, (7, 7))]
+
+    def test_environment_preexec_applies_defaults_over_the_uid_count(self, sandbox_root, work_dir, recorded, monkeypatch):
+        monkeypatch.setattr(bubblewrap, "uid_thread_count", lambda uid: 100)
+        monkeypatch.setattr(bubblewrap.resource, "getrlimit", lambda res: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        preexec = env._popen_preexec()
+        assert callable(preexec)
+        preexec()
+        assert dict(recorded) == {
+            resource.RLIMIT_AS: (256 * MB, 256 * MB),
+            resource.RLIMIT_CPU: (30, 30),
+            resource.RLIMIT_NPROC: (356, 356),
+        }
+
+    def test_environment_preexec_skips_zeroed_keys(self, sandbox_root, work_dir, recorded, monkeypatch):
+        monkeypatch.setattr(bubblewrap.resource, "getrlimit", lambda res: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+        counted = []
+        monkeypatch.setattr(bubblewrap, "uid_thread_count", lambda uid: counted.append(uid) or 100)
+        config = BubblewrapConfig(memory_mb=1024, cpu_seconds=0, max_procs=0)
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        env._popen_preexec()()
+        assert recorded == [(resource.RLIMIT_AS, (1024 * MB, 1024 * MB))]
+        assert counted == []  # /proc is not scanned when max_procs is 0
+
+    def test_environment_preexec_none_when_every_key_is_zero(self, sandbox_root, work_dir):
+        config = BubblewrapConfig(memory_mb=0, cpu_seconds=0, max_procs=0)
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        assert env._popen_preexec() is None
+
+
+FORK_SCRIPT = """
+import os, sys, time
+mode, n = sys.argv[1], int(sys.argv[2])
+started = failed = 0
+kids = []
+for _ in range(n):
+    try:
+        pid = os.fork()
+    except BlockingIOError:
+        failed += 1
+        continue
+    if pid == 0:
+        if mode == "concurrent":
+            time.sleep(2)
+        os._exit(0)
+    started += 1
+    if mode == "sequential":
+        os.waitpid(pid, 0)
+    else:
+        kids.append(pid)
+for pid in kids:
+    os.waitpid(pid, 0)
+print(f"started={started} failed={failed}")
+"""
+
+
+@needs_bwrap
+class TestLimitsIntegration:
+    @pytest.fixture
+    def make_env(self, sandbox_root, work_dir):
+        envs = []
+
+        def factory(**config):
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(**config))
+            envs.append(env)
+            return env
+
+        try:
+            yield factory
+        finally:
+            for env in envs:
+                env.cleanup()
+
+    @pytest.fixture
+    def fork_script(self, work_dir):
+        path = work_dir / "forks.py"
+        path.write_text(FORK_SCRIPT)
+        return path
+
+    def test_memory_default_denies_400mb_and_1024mb_allows_it(self, make_env):
+        alloc = "python3 -c 'bytearray(400*1024*1024)'"
+        result = make_env().execute(alloc)
+        assert result["returncode"] != 0
+        assert "MemoryError" in result["output"]
+        result = make_env(memory_mb=1024).execute(alloc)
+        assert result["returncode"] == 0, result["output"]
+
+    def test_cpu_seconds_ends_a_spinning_command_with_a_signal(self, make_env):
+        env = make_env(cpu_seconds=2)
+        start = time.monotonic()
+        result = env.execute("yes > /dev/null", timeout=30)
+        elapsed = time.monotonic() - start
+        assert elapsed < 10, elapsed
+        # Soft and hard are equal, so the kernel checks the hard limit first
+        # and sends SIGKILL (bash reports 128 + 9) rather than SIGXCPU.
+        assert result["returncode"] > 128, result
+
+    def test_max_procs_default_lets_300_short_children_run(self, make_env, fork_script):
+        # Sequential forks never exceed the uid thread count by more than a few,
+        # so they all succeed while max_procs sits on top of that count.
+        result = make_env().execute(f"python3 {fork_script} sequential 300")
+        assert result["returncode"] == 0, result["output"]
+        assert result["output"].strip() == "started=300 failed=0"
+
+    def test_max_procs_bounds_what_the_sandbox_adds(self, make_env, fork_script):
+        result = make_env(max_procs=16).execute(f"python3 {fork_script} concurrent 100")
+        assert result["returncode"] == 0, result["output"]
+        counts = dict(part.split("=") for part in result["output"].split())
+        assert int(counts["failed"]) >= 1, counts
+        # Host activity shifts the uid count a little between the preexec
+        # scan and the forks, so allow slack above max_procs.
+        assert int(counts["started"]) <= 16 + 32, counts
+
+    def test_max_procs_zero_disables_the_process_limit(self, make_env, fork_script):
+        result = make_env(max_procs=0).execute(f"python3 {fork_script} concurrent 100")
+        assert result["returncode"] == 0, result["output"]
+        assert result["output"].strip() == "started=100 failed=0"

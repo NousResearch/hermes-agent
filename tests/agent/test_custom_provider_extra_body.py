@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
-from agent.agent_init import _merge_custom_provider_extra_body
+from agent.agent_init import (
+    _configure_custom_provider_reasoning_replay,
+    _merge_custom_provider_extra_body,
+)
 
 
 
@@ -71,3 +74,34 @@ def test_named_custom_provider_extra_body_matches_provider_key():
     )
 
     assert agent.request_overrides == {"extra_body": {"enable_thinking": False}}
+
+
+def test_named_custom_provider_reasoning_replay_matches_provider_key_and_model():
+    agent = SimpleNamespace(
+        provider="custom:qwen-vllm",
+        model="Qwen/Qwen3.8-27B",
+        base_url="http://127.0.0.1:8000/v1",
+        _reasoning_replay_field=None,
+    )
+
+    _configure_custom_provider_reasoning_replay(
+        agent,
+        [
+            {
+                "provider_key": "other-provider",
+                "name": "Other Provider",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "models": {"Qwen/Qwen3.8-27B": {}},
+                "reasoning_replay_field": "reasoning_content",
+            },
+            {
+                "provider_key": "qwen-vllm",
+                "name": "Qwen vLLM",
+                "base_url": "http://127.0.0.1:8000/v1/",
+                "models": {"Qwen/Qwen3.8-27B": {}},
+                "reasoning_replay_field": "reasoning",
+            },
+        ],
+    )
+
+    assert agent._reasoning_replay_field == "reasoning"

@@ -1410,6 +1410,25 @@ extra_body:
 
 The configured `extra_body` follows the provider everywhere: it is merged at agent construction, **survives every gateway turn** (including turns where `/fast` layers `service_tier`/`speed` overrides on top — those merge over your `extra_body` rather than replacing it), and is **re-derived on `/model` switches** — switching to a named custom provider applies its `extra_body`, and switching away clears it so it never leaks to another provider.
 
+To preserve Qwen's historical thinking across turns, opt the active model into the structured field consumed by your server and keep template preservation explicit:
+
+```yaml
+model:
+  provider: qwen-vllm
+  default: Qwen/Qwen3.8-27B
+
+providers:
+  qwen-vllm:
+    api: http://localhost:8000/v1
+    default_model: Qwen/Qwen3.8-27B
+    reasoning_replay_field: reasoning
+    extra_body:
+      chat_template_kwargs:
+        preserve_thinking: true
+```
+
+`reasoning_replay_field` accepts only `reasoning` or `reasoning_content`. Use the field documented by your endpoint: vLLM's Qwen template consumes `reasoning`, while some OpenAI-compatible gateways consume `reasoning_content`. The opt-in is intentionally not inferred from `preserve_thinking`, because strict providers reject unsupported message fields. The same key may be set on a `fallback_providers:` entry so failover applies the destination provider's policy.
+
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.

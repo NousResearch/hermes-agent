@@ -22,10 +22,10 @@ logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module
 # One INSERT shape for every message writer (append, batch, replace, compact, import).
 _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                   reasoning, reasoning_content, reasoning_details, _reasoning_route, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -252,12 +252,17 @@ class SessionMessagesMixin:
             "tool_name": encoded_tool_name, "display_kind": msg.get("display_kind"),
             "display_metadata": display_metadata,
         }
+        _route = None
+        if keep_reasoning and role == "assistant":
+            _route = msg.get("_reasoning_route") or msg.get("reasoning_route")
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
             msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
             _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
+            self._reasoning_json_text(_reasoning("reasoning_details")),
+            _scrub_surrogates(_route) if isinstance(_route, str) else None,
             *(self._reasoning_json_text(_reasoning(k))
-              for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
+              for k in ("codex_reasoning_items", "codex_message_items")),
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
@@ -279,8 +284,8 @@ class SessionMessagesMixin:
     def append_message(
         self, session_id: str, role: str, content: str = None, tool_name: str = None, tool_calls: Any = None,
         tool_call_id: str = None, token_count: int = None, finish_reason: str = None, reasoning: str = None,
-        reasoning_content: str = None, reasoning_details: Any = None, codex_reasoning_items: Any = None,
-        codex_message_items: Any = None, platform_message_id: str = None, observed: bool = False,
+        reasoning_content: str = None, reasoning_details: Any = None, reasoning_route: str = None,
+        codex_reasoning_items: Any = None, codex_message_items: Any = None, platform_message_id: str = None, observed: bool = False,
         effect_disposition: Optional[str] = None, _compressed_summary: bool = False, timestamp: Any = None,
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
@@ -979,6 +984,8 @@ class SessionMessagesMixin:
                 msg.update((col, row[col]) for col in ("finish_reason", "reasoning") if row[col])
                 if row["reasoning_content"] is not None:
                     msg["reasoning_content"] = row["reasoning_content"]
+                if row["_reasoning_route"]:
+                    msg["_reasoning_route"] = row["_reasoning_route"]
                 msg.update(
                     (col, _json_or(row[col], None, f"Failed to deserialize {col}, falling back to None"))
                     for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])

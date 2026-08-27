@@ -255,6 +255,16 @@ def assemble_api_request(
         request_pressure_tokens = _pressure_with_real_floor(
             agent.context_compressor, request_pressure_tokens
         )
+    # This freshly rebuilt list was shaped for the route active above.
+    # Reset the in-place retry marker so restoration or a same-fallback
+    # rebuild is not mistaken for a cross-provider transition.
+    from agent.agent_runtime_helpers import reasoning_api_route_identity
+
+    agent._reasoning_replay_api_route = (
+        *reasoning_api_route_identity(agent),
+        agent._needs_thinking_reasoning_pad(),
+        agent._reasoning_replay_field_for_api(),
+    )
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,

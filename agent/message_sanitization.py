@@ -471,11 +471,57 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
 
 
-def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:
-    """Copy provider-facing reasoning fields onto an API replay message (mutates ``api_msg``).
-    ``needs_thinking_pad`` is the require-side flag (``needs_reasoning_echo``)."""
+def apply_reasoning_content_policy(
+    source_msg: dict,
+    api_msg: dict,
+    needs_thinking_pad: bool,
+    reasoning_replay_field: str | None = None,
+) -> None:
+    """Copy provider-facing reasoning fields onto an API replay message.
+
+    ``needs_thinking_pad`` is the require-side flag (see
+    ``needs_reasoning_echo`` / the agent's cached
+    ``_needs_thinking_reasoning_pad``). ``reasoning_replay_field`` selects an
+    opt-in soft replay carrier for endpoints that consume historical reasoning
+    without requiring fabricated pads. Mutates ``api_msg`` in place.
+    """
     if source_msg.get("role") != "assistant":
         return
+
+    if reasoning_replay_field == "reasoning_content":
+        normalized_reasoning = source_msg.get("reasoning")
+        existing = source_msg.get("reasoning_content")
+        replay = (
+            existing
+            if isinstance(existing, str) and existing.strip()
+            else normalized_reasoning
+            if isinstance(normalized_reasoning, str) and normalized_reasoning.strip()
+            else None
+        )
+        api_msg.pop("reasoning", None)
+        if replay is None:
+            api_msg.pop("reasoning_content", None)
+        else:
+            api_msg["reasoning_content"] = replay
+        return
+
+    if reasoning_replay_field == "reasoning":
+        normalized_reasoning = source_msg.get("reasoning")
+        existing = source_msg.get("reasoning_content")
+        replay = (
+            normalized_reasoning
+            if isinstance(normalized_reasoning, str) and normalized_reasoning.strip()
+            else existing
+            if isinstance(existing, str) and existing.strip()
+            else None
+        )
+        api_msg.pop("reasoning_content", None)
+        if replay is None:
+            api_msg.pop("reasoning", None)
+        else:
+            api_msg["reasoning"] = replay
+        return
+
     if not needs_thinking_pad:
         # Strict side: never carry the field — a reasoning primary pads history with " ",
         # then a fallback to Mistral/Cerebras/Groq replays the pad and 422s. Also drops a
@@ -506,34 +552,55 @@ def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinki
         api_msg["reasoning_content"] = " "
 
 
-def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
-    """Re-pad (or strip) assistant turns' reasoning_content for the ACTIVE provider.
+def reapply_reasoning_echo(
+    api_messages: list,
+    needs_thinking_pad: bool,
+    reasoning_replay_field: str | None = None,
+    provider_boundary: bool = False,
+) -> int:
+    """Reconcile provider-facing reasoning fields for the active provider.
 
-    ``api_messages`` is built once under the primary provider; a mid-conversation fallback
-    can switch providers, so baked-in fields must be reconciled: TO a require-side provider
-    re-applies the pad (else 400), TO a strict one strips it (else 422). Idempotent.
-    Returns the number of assistant turns changed.
+    ``api_messages`` is built once before the retry loop. Canonical source
+    history is intentionally not imported here: a fallback may target a
+    different provider/model, and forwarding another model's hidden trace would
+    be a cross-provider privacy leak. Primary restoration rebuilds a fresh wire
+    message list from canonical history on the next request instead. The
+    ``provider_boundary`` means the already-built messages came from a different
+    provider. In that case both structured carriers are discarded before the
+    destination policy is applied, so one provider's hidden trace cannot be
+    forwarded to another opt-in replay route. The operation is idempotent and
+    returns the number of assistant turns changed.
     """
     changed = 0
     for api_msg in api_messages:
-        if api_msg.get("role") != "assistant":
+        if not isinstance(api_msg, dict) or api_msg.get("role") != "assistant":
             continue
-        # 3. Healthy session: promote 'reasoning' field to 'reasoning_content' for providers that use the
-        #   internal 'reasoning' key. This must happen before the unconditional empty-string fallback so
-        #   genuine reasoning content is not overwritten (#15812 regression in PR #15478). Only promote for
-        #   providers that enforce echo-back — strict providers reject the field (refs #45655).
-        # 4. DeepSeek / Kimi thinking mode: all assistant messages need reasoning_content. Inject a single
-        #   space to satisfy the provider's requirement when no explicit reasoning content is present.
-        #   Covers both tool-call turns (already-poisoned history with no reasoning at all) and plain text
-        #   turns. Space (not "") because DeepSeek V4 Pro tightened validation and rejects empty string with
-        #   HTTP 400 ("The reasoning content in the thinking mode must be passed back to the API"). Refs
-        #   #17341.
-        if needs_thinking_pad:
-            if not api_msg.get("reasoning_content"):
-                apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad)
-                changed += 1 if api_msg.get("reasoning_content") else 0
-        elif "reasoning_content" in api_msg:
+        before = dict(api_msg)
+        if provider_boundary:
             api_msg.pop("reasoning_content", None)
+            api_msg.pop("reasoning", None)
+            api_msg.pop("reasoning_details", None)
+        source_msg = api_msg
+        if provider_boundary and needs_thinking_pad:
+            apply_reasoning_content_policy(
+                source_msg, api_msg, needs_thinking_pad=True
+            )
+        elif reasoning_replay_field in {"reasoning", "reasoning_content"}:
+            apply_reasoning_content_policy(
+                source_msg,
+                api_msg,
+                needs_thinking_pad=False,
+                reasoning_replay_field=reasoning_replay_field,
+            )
+        elif needs_thinking_pad:
+            if not api_msg.get("reasoning_content"):
+                apply_reasoning_content_policy(
+                    api_msg, api_msg, needs_thinking_pad
+                )
+        else:
+            api_msg.pop("reasoning_content", None)
+            api_msg.pop("reasoning", None)
+        if api_msg != before:
             changed += 1
     return changed
 

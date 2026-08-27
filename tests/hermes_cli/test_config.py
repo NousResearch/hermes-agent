@@ -1191,6 +1191,29 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
 
+    def test_providers_dict_normalizes_reasoning_replay_field(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "qwen-vllm": {
+                            "api": "http://127.0.0.1:8000/v1",
+                            "default_model": "Qwen/Qwen3.8-27B",
+                            "reasoningReplayField": " Reasoning ",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible[0]["reasoning_replay_field"] == "reasoning"
+
 
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
         """URL field precedence is base_url > url > api (PR #9332)."""

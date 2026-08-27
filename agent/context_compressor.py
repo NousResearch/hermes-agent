@@ -2301,9 +2301,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, replay_historical_reasoning: bool = False,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        self.replay_historical_reasoning = bool(replay_historical_reasoning)
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model context_length overrides live in custom_providers; without them deferred
@@ -4220,6 +4221,8 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _stale_thinking_on_wire(self) -> bool:
         """Whether the route replays stale thinking every turn; tail walks and preflight MUST agree or compaction loops."""
+        if bool(getattr(self, "replay_historical_reasoning", False)):
+            return True
         try:
             from agent.message_sanitization import stale_thinking_reaches_wire
             return stale_thinking_reaches_wire(

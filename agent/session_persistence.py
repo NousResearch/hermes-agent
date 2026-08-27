@@ -39,7 +39,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
 
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 # Reasoning/codex fields are role-gated (assistant-only) inside _insert_message_rows.
-_ROW_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items")
+_ROW_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "_reasoning_route", "codex_reasoning_items", "codex_message_items")
 
 
 def _is_ephemeral_scaffolding(msg: Any) -> bool:

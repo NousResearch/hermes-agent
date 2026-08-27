@@ -69,6 +69,11 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
     """Whether the active route replays stale thinking text; ``True`` (conservative full
     charge) when route facts are unavailable."""
     try:
+        compressor = getattr(agent, "context_compressor", None)
+        if bool(getattr(compressor, "replay_historical_reasoning", False)):
+            return True
+        if getattr(agent, "_reasoning_replay_field", None):
+            return True
         from agent.message_sanitization import stale_thinking_reaches_wire
 
         return stale_thinking_reaches_wire(
@@ -1087,9 +1092,10 @@ def build_api_messages(
         # Pass reasoning back to the API for ALL assistant messages so multi-turn
         # reasoning context is preserved.
         agent._copy_reasoning_content_for_api(msg, api_msg)
-        # 'reasoning' is trajectory-only (copied to 'reasoning_content' above);
-        # finish_reason is rejected by strict APIs (e.g. Mistral).
-        api_msg.pop("reasoning", None)
+        # ``reasoning`` is normally trajectory-only. An explicitly
+        # configured replay provider may consume it as a wire field.
+        if agent._reasoning_replay_field_for_api() != "reasoning":
+            api_msg.pop("reasoning", None)
         api_msg.pop("finish_reason", None)
         # Fill empty non-final user/assistant wire copies so the pre-call sanitizer
         # stops re-healing and flooding errors.log; durable history is untouched.

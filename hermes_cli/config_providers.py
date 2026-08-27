@@ -107,7 +107,8 @@ _CAMEL_ALIASES: Dict[str, str] = {
     "apiKeyEnv": "key_env",  # OpenClaw-compatible + docs variant
     "defaultModel": "default_model",
     "contextLength": "context_length",
-    "rateLimitDelay": "rate_limit_delay"}
+    "rateLimitDelay": "rate_limit_delay",
+    "reasoningReplayField": "reasoning_replay_field"}
 
 
 _KNOWN_PROVIDER_KEYS = {
@@ -117,7 +118,8 @@ _KNOWN_PROVIDER_KEYS = {
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
-    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify"}
+    "discover_models", "extra_body", "extra_headers", "capabilities",
+    "reasoning_replay_field", "ssl_ca_cert", "ssl_verify"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -261,6 +263,12 @@ def _normalize_custom_provider_entry(
     if isinstance(entry.get("extra_body"), dict):
         normalized["extra_body"] = dict(entry["extra_body"])
 
+    reasoning_replay_field = entry.get("reasoning_replay_field")
+    if isinstance(reasoning_replay_field, str):
+        reasoning_replay_field = reasoning_replay_field.strip().lower()
+        if reasoning_replay_field in {"reasoning", "reasoning_content"}:
+            normalized["reasoning_replay_field"] = reasoning_replay_field
+
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
     _put("ssl_ca_cert", _stripped("ssl_ca_cert"))
@@ -284,8 +292,8 @@ def _custom_provider_entry_to_provider_config(
     provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
-        "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify"):
+        "rate_limit_delay", "discover_models", "extra_body", "reasoning_replay_field",
+        "extra_headers", "ssl_ca_cert", "ssl_verify"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:

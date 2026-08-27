@@ -180,6 +180,8 @@ class ReasoningParamsMixin:
 
     _copy_reasoning_content_for_api = _forward("agent.agent_runtime_helpers", "copy_reasoning_content_for_api")
 
+    _reasoning_replay_field_for_api = _forward("agent.agent_runtime_helpers", "reasoning_replay_field_for_api")
+
     _reapply_reasoning_echo_for_provider = _forward("agent.agent_runtime_helpers", "reapply_reasoning_echo_for_provider")
 
     @staticmethod

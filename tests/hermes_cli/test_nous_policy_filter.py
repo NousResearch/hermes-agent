@@ -157,3 +157,30 @@ class TestNousPolicyPresent:
     def test_undecodable_token_is_unknown(self, monkeypatch):
         self._patch_token(monkeypatch, "not-a-jwt")
         assert nous_policy_present() is None
+
+
+class TestNousPolicyNotice:
+    """A governed org is told its choice is restricted, rather than left to
+    read an omitted model as one Hermes does not support."""
+
+    def _patch(self, monkeypatch, present):
+        monkeypatch.setattr(account_mod, "nous_policy_present", lambda: present)
+
+    def test_shows_a_line_for_a_governed_org(self, monkeypatch):
+        self._patch(monkeypatch, True)
+        assert "restricts which models" in account_mod.nous_policy_notice()
+
+    @pytest.mark.parametrize("present", [False, None])
+    def test_silent_otherwise(self, monkeypatch, present):
+        """Absent is an older mint, not an unrestricted org — either way there
+        is nothing truthful to say."""
+        self._patch(monkeypatch, present)
+        assert account_mod.nous_policy_notice() == ""
+
+    def test_names_no_models(self, monkeypatch):
+        """Policy is an allowlist, so the blocked set is most of the catalog;
+        the notice must not try to enumerate it."""
+        self._patch(monkeypatch, True)
+        notice = account_mod.nous_policy_notice()
+        assert "/" not in notice, f"looks like it names a model: {notice}"
+        assert len(notice.splitlines()) == 1

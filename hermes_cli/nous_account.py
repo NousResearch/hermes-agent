@@ -427,6 +427,27 @@ def nous_policy_present() -> Optional[bool]:
         return None
 
 
+def nous_policy_notice() -> str:
+    """A one-line notice for an org that restricts model choice, else ``""``.
+
+    Under the gateway's policy filter a blocked model is omitted rather than
+    marked, which reads as "Hermes does not support this" instead of "your org
+    disallows it". This says which it is without enumerating anything: model
+    policy is an allowlist, so an org that admits a handful of models blocks
+    the whole rest of the catalog, and listing those would be a worse UI than
+    omitting them.
+
+    Silent unless the claim is explicitly true — absent means an older mint,
+    not an unrestricted org.
+    """
+    if nous_policy_present() is not True:
+        return ""
+    return (
+        "Your organization restricts which models are available — "
+        "models outside its policy are not listed."
+    )
+
+
 def _fresh_account_info(
     *,
     state: dict[str, Any],

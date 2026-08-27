@@ -581,6 +581,11 @@ def _model_flow_nous(config, current_model="", args=None):
             print(unavailable_message or f"Upgrade at {_url} to access paid models.")
         return
 
+    from hermes_cli.nous_account import nous_policy_notice
+
+    _policy_notice = nous_policy_notice()
+    if _policy_notice:
+        print(_policy_notice)
     print(
         f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.'
     )

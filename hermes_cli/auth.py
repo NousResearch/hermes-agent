@@ -9438,6 +9438,11 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 )
             _portal = auth_state.get("portal_base_url", "")
             if model_ids:
+                from hermes_cli.nous_account import nous_policy_notice
+
+                _policy_notice = nous_policy_notice()
+                if _policy_notice:
+                    print(_policy_notice)
                 print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
                 selected_model = _prompt_model_selection(
                     model_ids, pricing=pricing,

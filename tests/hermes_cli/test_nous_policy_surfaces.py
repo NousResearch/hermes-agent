@@ -217,3 +217,23 @@ class TestNousPrefetch:
         )
         slugs = ms._collect_authed_provider_slugs({}, {"nous": list(CURATED)}, [])
         assert "nous" not in slugs
+
+
+class TestPolicyNoticeIsShown:
+    """The notice reaches the two flows where a user picks a model."""
+
+    def test_login_prints_it(self, monkeypatch, tmp_path, policy, capsys):
+        import hermes_cli.nous_account as account_mod
+
+        monkeypatch.setattr(account_mod, "nous_policy_present", lambda: True)
+        TestLoginNous()._run(monkeypatch, tmp_path)
+        assert "restricts which models" in capsys.readouterr().out
+
+    def test_login_silent_for_an_ungoverned_org(
+        self, monkeypatch, tmp_path, no_policy, capsys
+    ):
+        import hermes_cli.nous_account as account_mod
+
+        monkeypatch.setattr(account_mod, "nous_policy_present", lambda: False)
+        TestLoginNous()._run(monkeypatch, tmp_path)
+        assert "restricts which models" not in capsys.readouterr().out

@@ -219,3 +219,16 @@ async def test_commands_keeps_slash_prefix_on_non_matrix_gateway(monkeypatch):
     assert "`!start" not in result
 
 
+def test_matrix_command_rendering_preserves_paths_and_multi_backtick_code():
+    from gateway.run import _platformize_command_mentions
+
+    source = (
+        "Use `/tmp` and `/tmp/file`; keep ``/commands`` and "
+        "`` `/commands` `` unchanged.\n"
+        "```text\n`/commands`\n```\n"
+        "```/commands``` also stays unchanged."
+    )
+
+    assert _platformize_command_mentions(source, Platform.MATRIX) == source
+
+

@@ -263,7 +263,6 @@ class SingularityEnvironment(BaseEnvironment):
         self._owner_generation = (
             boundary.target_generation if boundary is not None else ""
         )
-        self._image_authority_id = _image_identity(image)
         self._artifact_epoch = (
             hashlib.sha256(self._owner_generation.encode()).hexdigest()
             if self._owner_generation
@@ -279,6 +278,11 @@ class SingularityEnvironment(BaseEnvironment):
             owner_home=self._owner_home,
             source_home=self._source_home,
             policy_generation=self._owner_generation,
+        )
+        self._image_authority_id = _resolved_image_identity(
+            image,
+            self.image,
+            require_immutable=boundary is not None,
         )
         self.instance_id = f"hermes_{uuid.uuid4().hex[:12]}"
         self._instance_started = False

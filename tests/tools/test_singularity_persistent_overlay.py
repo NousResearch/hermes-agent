@@ -135,6 +135,52 @@ def test_same_task_uses_distinct_overlay_authority_for_distinct_images(
     assert first._overlay_dir.name == second._overlay_dir.name == "overlay-same-task"
 
 
+def test_same_mutable_tag_cannot_reuse_overlay_under_multiplex(
+    monkeypatch, tmp_path
+):
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    _stub_singularity(monkeypatch, tmp_path)
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    for home in (source, target):
+        home.mkdir()
+        (home / ".env").write_text("", encoding="utf-8")
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(source))
+    monkeypatch.setattr("hermes_constants.get_process_hermes_home", lambda: source)
+
+    set_multiplex_active(True)
+    scope_token = set_secret_scope(build_profile_secret_scope(target))
+    home_token = set_hermes_home_override(target)
+    try:
+        first = singularity_env.SingularityEnvironment(
+            image="docker://example/image:mutable",
+            persistent_filesystem=True,
+            task_id="same-task",
+        )
+        second = singularity_env.SingularityEnvironment(
+            image="docker://example/image:mutable",
+            persistent_filesystem=True,
+            task_id="same-task",
+        )
+    finally:
+        reset_hermes_home_override(home_token)
+        reset_secret_scope(scope_token)
+        set_multiplex_active(False)
+
+    assert first._image_authority_id != second._image_authority_id
+    assert first._overlay_dir is not None
+    assert second._overlay_dir is not None
+    assert first._overlay_dir != second._overlay_dir
+
+
 def test_multiplex_singularity_quarantines_unbound_credential_mounts(
     monkeypatch, tmp_path
 ):

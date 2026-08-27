@@ -572,11 +572,13 @@ Hermes only normalizes `!command` when the command is known to the gateway, a
 registered plugin command, or an installed skill command. Ordinary exclamations
 such as `!important` remain normal chat messages.
 
-Here, the “full list” means every gateway-compatible built-in command and alias,
-registered plugin command, and installed skill command. CLI-only commands remain
-available only in the CLI/TUI. Matrix and Element X do not currently provide a
-Telegram Bot API-style remote command menu or autocomplete, so `!commands` is
-the authoritative in-room directory.
+The generated directory includes every gateway-compatible built-in command and alias
+plus installed skill commands. Registered plugin commands can also be invoked with
+`!command` when installed, but they are not currently enumerated by `!commands`.
+CLI-only commands remain available only in the CLI/TUI. Matrix and Element X do
+not currently provide a Telegram Bot API-style remote command menu or autocomplete,
+so `!commands` is the primary in-room discovery surface rather than a complete
+inventory of installed plugin commands.
 
 ## Troubleshooting
 

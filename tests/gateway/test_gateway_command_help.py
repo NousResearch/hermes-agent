@@ -192,6 +192,26 @@ async def test_help_uses_matrix_safe_bang_command_mentions(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_matrix_help_skills_lists_all_installed_skill_commands(monkeypatch):
+    skill_commands = {
+        f"/skill-{index:02d}": {"description": f"Skill {index:02d}"}
+        for index in range(12)
+    }
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: skill_commands,
+    )
+
+    result = await _make_runner()._handle_help_command(
+        _make_event("/help skills", Platform.MATRIX)
+    )
+
+    assert "`!skill-00`" in result
+    assert "`!skill-11`" in result
+    assert "`!model" not in result
+
+
+@pytest.mark.asyncio
 async def test_commands_uses_matrix_safe_bang_entries_and_navigation(monkeypatch):
     monkeypatch.setattr(
         "agent.skill_commands.get_skill_commands",

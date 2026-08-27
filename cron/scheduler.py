@@ -6821,7 +6821,7 @@ def run_job(
                             break
                     except (Exception, KeyboardInterrupt):
                         continue
-            # Fail-closed completion booking (#93820): the run may only be
+            # Verified completion booking (#93820): the run may only be
             # recorded as cron_complete when the session's LAST message row is
             # a real assistant reply — a plain answer or the [SILENT] sentinel
             # (both are assistant-text rows, so both classify as 'complete').
@@ -6830,9 +6830,12 @@ def run_job(
             # call / user prompt and must not surface as a healthy run.
             # session_lifecycle_statuses is the existing cost-bounded
             # classifier for exactly this shape. Only a POSITIVELY recognized
-            # pathological status downgrades the booking: an unknown value
-            # (newer classifier shape, test doubles) keeps the historical
-            # reason, and so does a failed probe — classification is
+            # pathological status (see the status vocabulary in
+            # hermes_state's session_lifecycle_statuses docstring — keep the
+            # tuple below in sync when it grows) downgrades the booking: an
+            # unknown value (newer classifier shape, test doubles) keeps the
+            # historical reason, and so does a failed probe — the booking
+            # itself is FAIL-OPEN on probe errors, because classification is
             # best-effort metadata and must not mislabel a healthy run.
             _end_reason = "cron_complete"
             try:

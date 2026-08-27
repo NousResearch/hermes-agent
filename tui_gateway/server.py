@@ -1832,6 +1832,29 @@ def _transfer_db_to_agent(agent, db) -> bool:
         return False
 
 
+def _open_profile_session_db(profile_home):
+    """Open a DEDICATED handle on ``profile_home``'s ``state.db`` — FAIL CLOSED.
+
+    A named-profile agent whose profile store cannot be opened must surface a
+    clear error and never get built against the launch ``state.db``: a silent
+    fallback bleeds the session's rows and messages into the wrong profile's
+    store exactly when the profile store is briefly unopenable (locked,
+    unreadable, mid-restore), and the named profile then looks blank. Callers
+    let the raised error abort the agent build (deferred builds route it to
+    the build's ``agent_error`` path) instead of swallowing it back onto the
+    launch handle.
+    """
+    from hermes_state import SessionDB
+
+    db_path = Path(profile_home) / "state.db"
+    try:
+        return SessionDB(db_path=db_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"profile session store unavailable: {db_path}: {exc}"
+        ) from exc
+
+
 @contextlib.contextmanager
 def _profile_db(params: dict | None = None):
     """Yield the SessionDB for ``params['profile']`` (app-global remote mode).
@@ -2720,17 +2743,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 except Exception:
                     pass
-                try:
-                    from hermes_state import SessionDB
-
-                    # DEDICATED handle — ours until _transfer_db_to_agent hands
-                    # it to the built agent in the finally below. Every path
-                    # that leaves this build without that transfer (the except
-                    # below, and a session reaped mid-build) must close it.
-                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
-                    owns_db = True
-                except Exception:
-                    session_db = None
+                # DEDICATED handle — ours until _transfer_db_to_agent hands
+                # it to the built agent in the finally below. Every path
+                # that leaves this build without that transfer (the except
+                # below, and a session reaped mid-build) must close it.
+                # FAIL CLOSED on open failure: the raise routes to the
+                # ``except`` below (clear agent_error, no agent turn) instead
+                # of silently binding _make_agent's launch-DB default and
+                # bleeding this session into the wrong profile's state.db.
+                session_db = _open_profile_session_db(profile_home)
+                owns_db = True
 
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started

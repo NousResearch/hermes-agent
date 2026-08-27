@@ -1316,11 +1316,9 @@ def _apply_context_engine_selection(
     # Require a NON-EMPTY list of dicts: ``all([])`` is ``True``, so a ``[]`` from a
     # buggy engine would otherwise replace the request instead of failing open.
     if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
-        # The engine may hand back the ``conversation_messages`` clones (or its own dicts) that still
-        # carry persistence-only fields; the request copy was stripped BEFORE this hook, so strip the
-        # selection too or those fields reach the provider. Dicts without them pass through as-is.
-        stripped = [without_persistence_fields(m) for m in selected]
-        return selected if all(a is b for a, b in zip(stripped, selected)) else stripped
+        # The engine may return cached selections carrying persistence-only fields. Strip those fields
+        # and then structurally clone the result because downstream request shaping mutates in place.
+        return [_clone_message_for_send(without_persistence_fields(m)) for m in selected]
     logger.warning(
         "Context engine select_context returned an invalid value "
         "(not a non-empty list of dicts); ignoring (session=%s)", session_label,

@@ -146,8 +146,27 @@ def assemble_api_request(
         agent, api_messages, messages, _sel_incoming, logger=request_logger
     )
 
+    # Context selection may return canonical/history messages rather than
+    # the already-shaped request copies above. Revalidate reasoning at this
+    # final selection boundary so unknown or foreign hidden traces cannot
+    # bypass route provenance checks. This also strips the internal marker
+    # before any provider transport sees the request.
+    for api_msg in api_messages:
+        if not isinstance(api_msg, dict):
+            continue
+        if api_msg.get("role") == "assistant":
+            agent._copy_reasoning_content_for_api(api_msg, api_msg)
+            continue
+        # Structured reasoning and its provenance are assistant-only.
+        # A context engine must not be able to place them on another role
+        # and bypass the assistant validation path.
+        api_msg.pop("_reasoning_route", None)
+        api_msg.pop("reasoning", None)
+        api_msg.pop("reasoning_content", None)
+        api_msg.pop("reasoning_details", None)
     # Context selection may replace the request with a fresh clone of canonical history.
-    # Re-apply durable rejection suppression after that final replacement hook.
+    # Re-apply durable rejection suppression after replay validation so a rejected
+    # signed carrier cannot re-enter native conversion through a readable mirror.
     from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
 
     apply_rejected_thinking_suppression(agent, api_messages)

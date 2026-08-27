@@ -52,6 +52,7 @@ test('Windows spawn publishes the initial ownership record before releasing the 
       startedAt: '2026-07-14T00:00:00.000Z'
     }
   )
+
   const encoded = command.split(' ').at(-1) || ''
   const script = encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : ''
 
@@ -73,6 +74,7 @@ test('PowerShell transport uses UTF-16LE encoded commands and literal escaping',
 test('Windows relaunch gate refuses live and uncertain markers before executing the remote runtime', async () => {
   for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
     const scripts: string[] = []
+
     const ssh = sshWith(async command => {
       const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
       scripts.push(script)
@@ -86,9 +88,11 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
           python: 'C:\\Hermes\\python.exe'
         })
       }
+
       if (script.includes('.hermes-update-in-progress')) {
         return observation
       }
+
       throw new Error(`unexpected command after update gate: ${script}`)
     })
 
@@ -114,6 +118,7 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
 
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
   let script = ''
+
   const ssh = sshWith(async command => {
     script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
 
@@ -134,6 +139,7 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   await probeWindowsRemote(
     sshWith(async command => {
       script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
       return JSON.stringify({
         os: 'Windows',
         arch: 'AMD64',
@@ -300,7 +306,9 @@ test('managed update drain preserves a Windows owner when creation time does not
     hermesPath: 'C:\\h\\hermes.exe',
     hermesHome: 'C:\\h'
   }
+
   const operations: string[] = []
+
   const ssh = sshWith(async command => {
     const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
     operations.push(script)
@@ -340,7 +348,9 @@ test('managed update drain rechecks Windows PID/create-time ownership before exa
     hermesPath: 'C:\\h\\hermes.exe',
     hermesHome: 'C:\\h'
   }
+
   const operations: string[] = []
+
   const ssh = sshWith(async command => {
     const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
     operations.push(script)
@@ -348,6 +358,7 @@ test('managed update drain rechecks Windows PID/create-time ownership before exa
     if (script.includes("'read-lock'")) {
       return JSON.stringify(lock)
     }
+
     if (script.includes("'process-state'")) {
       return JSON.stringify({ alive: true, owned: true, indeterminate: false })
     }

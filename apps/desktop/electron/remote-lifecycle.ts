@@ -358,11 +358,13 @@ async function assertRemoteInstallUpdateClear(ssh, hermesHome) {
   }
 
   const live = /^LIVE:([1-9][0-9]*)$/.exec(observation)
+
   const error: any = new Error(
     live
       ? `Remote Hermes update process ${live[1]} is still running; SSH startup is paused.`
       : 'The remote Hermes update marker is unreadable or malformed; refusing SSH startup.'
   )
+
   error.kind = 'update-in-progress'
   throw error
 }
@@ -399,6 +401,7 @@ function assertSafeRemoteHome(home) {
 function remoteInstallRoot(home) {
   const value = assertSafeRemoteHome(home)
   const profile = value.match(/^(.*)\/profiles\/[^/]+$/)
+
   return profile ? profile[1] : value
 }
 
@@ -738,9 +741,11 @@ function buildOwnedStaleTerminationCommand(lock, ownershipId) {
   const nonce = shq(lock.spawnNonce)
   const profile = shq(lock.profile || '')
   const command = `$(ps -ww -o command= -p ${pid} 2>/dev/null || true)`
+
   const executableMatch = lock.hermesHome
     ? `case "$cmd" in *"$path"*|*"$home"*) ;; *) printf REFUSED; exit 0;; esac; `
     : `case "$cmd" in *"$path"*) ;; *) printf REFUSED; exit 0;; esac; `
+
   const identity =
     `cmd=${command}; ` +
     `path=${expectedPath}; home=${expectedHome}; token=${expectedToken}; nonce=${nonce}; profile=${profile}; ` +
@@ -779,6 +784,7 @@ function buildOwnedTerminationCommand(lock, ownershipId) {
   const pid = Number(lock.pid)
   const py = value => JSON.stringify(String(value || ''))
   const expectedToken = spawnTokenPath(ownershipId, lock.spawnNonce)
+
   const script = `
 import os,select,shlex,signal,subprocess,sys,time
 pid=${pid}
@@ -927,6 +933,7 @@ async function terminateOwnedDashboardForUpdate(ssh, expected) {
     error.kind = 'ownership-changed'
     throw error
   }
+
   let lock = await readLockfile(ssh, ownershipId)
 
   if (!lock || !lockMatchesManagedUpdateScope(lock, expected)) {
@@ -994,6 +1001,7 @@ async function terminateOwnedDashboardForUpdate(ssh, expected) {
     if (result === 'ALREADY_STOPPED') {
       return { pid: lock.pid, terminated: false, alreadyStopped: true }
     }
+
     if (result !== 'TERMINATED') {
       const error: any = new Error(
         result === 'REFUSED'
@@ -1002,13 +1010,16 @@ async function terminateOwnedDashboardForUpdate(ssh, expected) {
             ? 'Darwin cannot atomically bind a signal to the verified PID; refusing termination.'
             : 'The remote POSIX signal boundary was unavailable.'
       )
-      error.kind = result === 'REFUSED' || result === 'DARWIN_UNAVAILABLE' ? 'ownership-changed' : 'transient-transport-error'
+
+      error.kind =
+        result === 'REFUSED' || result === 'DARWIN_UNAVAILABLE' ? 'ownership-changed' : 'transient-transport-error'
       throw error
     }
   } catch (cause: any) {
     if (cause?.kind === 'ownership-changed') {
       throw cause
     }
+
     const error: any = new Error('Could not terminate the Desktop-owned remote serve for update.')
     error.kind = 'transient-transport-error'
     error.cause = cause
@@ -1030,9 +1041,11 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const ownerArg = opts.spawnNonce ? ` --ssh-owner-nonce ${validateSpawnNonce(opts.spawnNonce)}` : ''
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
   const marker = expandRemotePath(`${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress`)
+
   const updateMutex = expandRemotePath(
     `${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress.mutex`
   )
+
   // The marker probe, ownership reservation, process creation, and initial
   // lockfile publication must be one remote command. A second Desktop process
   // can therefore never observe an empty lock and spawn before this one records
@@ -1436,6 +1449,7 @@ async function connect(deps) {
         await writeLockfile(ssh, ownershipId, { ...lock, creationTime })
         lock.creationTime = creationTime
       }
+
       assertBootstrapNotSuperseded(signal)
       await assertRemoteInstallUpdateClear(ssh, hermesHome)
       const localPort = await openForward(deps, lock.port)
@@ -1523,6 +1537,7 @@ async function connect(deps) {
       const error: any = new Error(
         'Another SSH connection owns this remote dashboard; a session token is required to reuse it.'
       )
+
       error.kind = 'remote-ownership-contended'
       throw error
     }

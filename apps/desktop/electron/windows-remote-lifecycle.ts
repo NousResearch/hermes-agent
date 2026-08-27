@@ -159,11 +159,13 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
   }
 
   const live = /^LIVE:([1-9][0-9]*)$/.exec(observation)
+
   const error: any = new Error(
     live
       ? `Remote Hermes update process ${live[1]} is still running; SSH startup is paused.`
       : 'The remote Hermes update marker is unreadable or malformed; refusing SSH startup.'
   )
+
   error.kind = 'update-in-progress'
   throw error
 }
@@ -247,6 +249,7 @@ async function helper(ssh, runtime, operation, args = [], stdinData?) {
 function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
   const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', 'spawn']
   const helper = operation => [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation]
+
   const script = [
     '$ErrorActionPreference="Stop"',
     `$home=${psLiteral(runtime.hermesHome)}`,
@@ -281,16 +284,19 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
   ]
     .filter(line => line !== '')
     .join(';')
+
   return powerShellCommand(script)
 }
 
 async function atomicWindowsSpawn(ssh, runtime, stdinData, reservation: any = {}) {
   const output = await ssh.exec(atomicWindowsSpawnCommand(runtime, reservation), { stdinData })
+
   const lines = String(output || '')
     .replace(/^\uFEFF/, '')
     .trim()
     .split(/\r?\n/)
     .filter(Boolean)
+
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
   if (parsed?.error) {
@@ -421,9 +427,11 @@ async function terminateOwnedWindowsDashboardForUpdate(ssh, runtime, expected) {
     error.kind = 'transient-transport-error'
     throw error
   }
+
   if (!state.alive) {
     return { pid: lock.pid, terminated: false, alreadyStopped: true }
   }
+
   if (!state.owned) {
     const error: any = new Error('Refusing to terminate a remote Windows process whose ownership is unproven.')
     error.kind = 'foreign-backend'
@@ -438,6 +446,7 @@ async function terminateOwnedWindowsDashboardForUpdate(ssh, runtime, expected) {
     error.kind = 'ownership-changed'
     throw error
   }
+
   state = await processState(ssh, runtime, lock)
 
   if (state.indeterminate || !state.alive || !state.owned) {
@@ -668,6 +677,7 @@ async function connectWindowsRemote(deps) {
       const error: any = new Error(
         'Another SSH connection owns this remote dashboard; a session token is required to reuse it.'
       )
+
       error.kind = 'remote-ownership-contended'
       throw error
     }

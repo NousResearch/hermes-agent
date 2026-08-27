@@ -153,6 +153,7 @@ function managedSshScopeRole(input: {
   if (input.state?.registryConnectionId === input.connectionId) {
     return input.state.primaryRegistryScope === true ? 'primary' : 'pool'
   }
+
   if (input.key.startsWith(input.prefix) || input.routeConnectionId === input.connectionId) {
     return 'pool'
   }
@@ -175,6 +176,7 @@ function managedSshRecoveryScopes(
   for (const scope of scopes) {
     const key = String(scope.key)
     const existing = unique.get(key)
+
     const next = {
       key,
       kind: scope.primary ? 'primary' : key.startsWith(registryPrefix) ? 'registry' : 'legacy',
@@ -218,6 +220,7 @@ function buildPosixManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId
   const intentWord = expandRemotePath(intentPath)
   const outputWord = expandRemotePath(outputPath)
   const launcherWord = expandRemotePath(hermesPath)
+
   const updateCommand =
     `env HERMES_HOME=${homeWord} ` +
     `HERMES_UPDATE_CORRELATION_ID=${shq(correlation)} ` +
@@ -225,6 +228,7 @@ function buildPosixManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId
     `HERMES_UPDATE_ORIGIN_HOME=${homeWord} ` +
     `HERMES_UPDATE_OUTPUT_PATH=${outputWord} ` +
     `${launcherWord} update --yes`
+
   const inner =
     `set +e; if [ -r "/proc/$$/stat" ]; then ` +
     `intent_creation="linux:$(awk '{print $22}' "/proc/$$/stat")"; ` +
@@ -257,6 +261,7 @@ function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlation
   const readyPath = windowsChildPath(home, `.update_coordinator_ready.${correlation}`)
   const intentPath = windowsChildPath(home, `.update_launch_intent.${correlation}`)
   const outputPath = windowsChildPath(home, `logs\\desktop-update-${correlation}.log`)
+
   const wrapper = [
     '$ErrorActionPreference="Continue"',
     `$env:HERMES_HOME=${psLiteral(home)}`,
@@ -288,6 +293,7 @@ function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlation
     '}',
     'exit $rc'
   ].join(';')
+
   const outer = [
     '$ErrorActionPreference="Stop"',
     `$output=${psLiteral(outputPath)}`,
@@ -453,6 +459,7 @@ function buildRemoteUpdateObservationCommand(target: RemoteUpdateTarget, correla
 
   if (target.platform === 'Windows') {
     const python = validateRemoteValue(target.pythonPath || '', 'Python path')
+
     const script = [
       '$ErrorActionPreference="Stop"',
       `& ${psLiteral(python)} -c ${psLiteral(OBSERVATION_SCRIPT)} ${psLiteral(home)} ${psLiteral(correlation)}`,
@@ -509,6 +516,7 @@ function parseRemoteUpdateObservation(raw: string, correlationId: string): Remot
     ) {
       throw new Error('Remote update receipt did not match this transaction.')
     }
+
     receipt = parsed.receipt as ManagedUpdateReceiptSummary
   }
 
@@ -525,6 +533,7 @@ function parseRemoteUpdateObservation(raw: string, correlationId: string): Remot
     ) {
       throw new Error('Remote update coordinator readiness proof was malformed.')
     }
+
     coordinatorReady = { correlationId: correlation, pid }
   }
 
@@ -572,6 +581,7 @@ async function launchManagedRemoteUpdate(target: RemoteUpdateTarget, correlation
     target.platform === 'Windows'
       ? buildWindowsManagedUpdateLaunch(target, correlationId)
       : buildPosixManagedUpdateLaunch(target, correlationId)
+
   const output = await target.ssh.exec(command, { timeoutMs: 30_000 })
 
   if (target.platform === 'Windows') {
@@ -583,6 +593,7 @@ async function launchManagedRemoteUpdate(target: RemoteUpdateTarget, correlation
         .trim()
         .split(/\r?\n/)
         .filter(Boolean)
+
       parsed = JSON.parse(lines.at(-1) || 'null')
     } catch {
       parsed = null
@@ -622,7 +633,9 @@ async function waitForManagedRemoteUpdate(
       if (now() >= deadline) {
         throw error
       }
+
       await sleep(pollMs)
+
       continue
     }
 
@@ -633,7 +646,9 @@ async function waitForManagedRemoteUpdate(
             'services remain stopped and Desktop recorded them for safe recovery.'
         )
       }
+
       await sleep(pollMs)
+
       continue
     }
 
@@ -741,6 +756,7 @@ async function waitForManagedRemoteClearance(
           'services were not restarted and Desktop retained a durable recovery record.'
       )
     }
+
     await sleep(pollMs)
   }
 }
@@ -753,6 +769,7 @@ function resultOutcome(updateOk: boolean, restoreOk: boolean): ManagedUpdateOutc
   if (updateOk && restoreOk) {
     return 'updated'
   }
+
   if (!updateOk && !restoreOk) {
     return 'update-and-restore-failed'
   }
@@ -782,17 +799,21 @@ async function runManagedSshUpdate<TScope extends ManagedSshScope>(
     const drainErrors: string[] = []
 
     restoreNeedsMarkerFence = scopes.length > 0
+
     for (const scope of scopes) {
       restoreCandidates.add(scope)
+
       try {
         await deps.drainScope(scope)
       } catch (error) {
         drainErrors.push(`${scope.profile}: ${errorMessage(error)}`)
       }
     }
+
     if (drainErrors.length) {
       throw new Error(`Could not safely drain every managed SSH scope (${drainErrors.join('; ')}).`)
     }
+
     // A zero-scope update still launches a mutator, so any subsequent error
     // must wait for its marker to clear before closing the update transport.
     restoreNeedsMarkerFence = true
@@ -812,6 +833,7 @@ async function runManagedSshUpdate<TScope extends ManagedSshScope>(
         updateError = [updateError, restorationBlocked].filter(Boolean).join(' ')
       }
     }
+
     try {
       await deps.closeTransports()
     } catch (error) {
@@ -934,6 +956,7 @@ async function fenceManagedSshBootstrapPublication<T>(deps: {
 }): Promise<T> {
   try {
     deps.assertCanPublish()
+
     // Deliberately no await between the final gate assertion and publication:
     // both run in this JavaScript turn, so a queued update claim either lands
     // before the assertion (and triggers rollback) or after the scope is
@@ -951,6 +974,7 @@ async function waitForManagedSshBootstrapFence(
 ): Promise<void> {
   const pending = [...entries].filter(entry => entry.metadata?.registryConnectionId === connectionId)
   const results = await Promise.allSettled(pending.map(entry => entry.promise))
+
   const unsafe = results.find(
     result => result.status === 'rejected' && (result.reason as any)?.unsafeManagedBootstrap === true
   )
@@ -973,6 +997,7 @@ class ManagedConnectionUpdateGate {
     if (!id || this.claims.has(id) || (durable && durable !== correlation)) {
       return false
     }
+
     this.claims.set(id, correlation)
 
     return true
@@ -1005,6 +1030,7 @@ class ManagedConnectionUpdateGate {
       const error: any = new Error(
         `SSH connection "${id}" cannot be edited or removed while its managed update recovery is pending.`
       )
+
       error.code = 'managed-update-in-progress'
       throw error
     }

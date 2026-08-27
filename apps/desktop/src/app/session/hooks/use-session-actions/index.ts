@@ -110,7 +110,12 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { dropTranscriptTail, dropTranscriptTailEverywhere, loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
+import {
+  dropTranscriptTail,
+  dropTranscriptTailEverywhere,
+  loadTranscriptTail,
+  saveTranscriptTail
+} from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 

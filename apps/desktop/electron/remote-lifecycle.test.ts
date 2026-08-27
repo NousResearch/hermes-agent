@@ -99,6 +99,7 @@ function fakeSsh(rules: any[] = []) {
       }
 
       const mutexWrapped = cmd.includes('fcntl.flock(fd,fcntl.LOCK_EX)')
+
       const applicableRules = rules.filter(([matcher]) => {
         if (cmd.includes('marker_clear()') && matcher instanceof RegExp && /kill -0/.test(matcher.source)) {
           return false
@@ -110,6 +111,7 @@ function fakeSsh(rules: any[] = []) {
       if ((cmd.includes('os.kill(pid') && !cmd.includes('pidfd_open')) || cmd.includes('printf TERMINATED')) {
         return 'TERMINATED'
       }
+
       for (const [matcher, resp] of applicableRules) {
         const hit = typeof matcher === 'function' ? matcher(cmd) : matcher.test(cmd)
 
@@ -132,6 +134,7 @@ function fakeSsh(rules: any[] = []) {
 test('POSIX relaunch gate refuses live and uncertain install markers without executing Hermes', async () => {
   for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
     const calls: string[] = []
+
     const ssh = {
       async exec(command) {
         calls.push(command)
@@ -139,12 +142,15 @@ test('POSIX relaunch gate refuses live and uncertain install markers without exe
         if (command === 'uname -s; uname -m') {
           return 'Linux\nx86_64\n'
         }
+
         if (command.includes('HERMES_HOME')) {
           return '/home/alice/.hermes\n'
         }
+
         if (command.includes('.hermes-update-in-progress')) {
           return observation
         }
+
         throw new Error(`unexpected command after update gate: ${command}`)
       }
     }
@@ -162,6 +168,7 @@ test('POSIX relaunch gate refuses live and uncertain install markers without exe
 
 test('POSIX relaunch gate permits absent/dead markers and normalizes named-profile homes install-wide', async () => {
   const commands: string[] = []
+
   const ssh = {
     async exec(command) {
       commands.push(command)
@@ -179,6 +186,7 @@ test('POSIX relaunch gate permits absent/dead markers and normalizes named-profi
 test('POSIX relaunch gate rechecks after token upload immediately before process creation', async () => {
   const calls: string[] = []
   let markerChecks = 0
+
   const ssh = {
     async exec(command) {
       calls.push(command)
@@ -186,23 +194,29 @@ test('POSIX relaunch gate rechecks after token upload immediately before process
       if (command === 'uname -s; uname -m') {
         return 'Linux\nx86_64\n'
       }
+
       if (command.includes('HERMES_HOME')) {
         return '/home/alice/.hermes\n'
       }
+
       if (command.includes('.hermes-update-in-progress')) {
         markerChecks += 1
 
         return markerChecks >= 3 ? 'LIVE:4242' : 'CLEAR'
       }
+
       if (/\[ -x /.test(command)) {
         return 'OK'
       }
+
       if (command.includes('serve --help')) {
         return 'YES\n'
       }
+
       if (command.includes('python3 -c')) {
         return ''
       }
+
       if (command.includes('lock.json')) {
         return ''
       }
@@ -739,6 +753,7 @@ test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', a
     [/print\("OWNED"/, 'OWNED\n'],
     [cmd => /printf TERMINATED/.test(cmd), 'TERMINATED\n']
   ])
+
   await cleanupStale(ours, OWNERSHIP_ID, {
     pid: 9,
     spawnNonce: SPAWN_NONCE,
@@ -799,7 +814,10 @@ test('buildSpawnCommand atomically reserves the ownership slot through spawn and
   assert.ok(cmd.includes('.hermes-update-in-progress.mutex'))
   assert.match(cmd, /fcntl\.flock\(fd,fcntl\.LOCK_EX\)/)
   assert.match(cmd, /os\.O_CLOEXEC/)
-  assert.match(cmd, /subprocess\.run\(\["sh","-c",payload,"hermes-update-mutex",str\(fd\)\],pass_fds=\(fd,\),check=False\)/)
+  assert.match(
+    cmd,
+    /subprocess\.run\(\["sh","-c",payload,"hermes-update-mutex",str\(fd\)\],pass_fds=\(fd,\),check=False\)/
+  )
   assert.doesNotMatch(cmd, /os\.set_inheritable\(fd,True\)/)
   assert.match(cmd, /hermes-update-child "\$1"/)
   assert.match(cmd, /eval "exec \$1>&-"/)
@@ -834,17 +852,20 @@ done
       hermesHome: path.join(directory, 'home'),
       logPath
     })
+
     await exec(command, { shell: '/bin/bash' })
 
     for (let attempt = 0; attempt < 40; attempt += 1) {
       try {
         const report = await readFile(reportPath, 'utf8')
         assert.equal(report, '', 'the backend process must not retain the update mutex descriptor')
+
         return
       } catch (error: any) {
         if (error?.code !== 'ENOENT') {
           throw error
         }
+
         await new Promise(resolve => setTimeout(resolve, 25))
       }
     }
@@ -1195,6 +1216,7 @@ test('connect() respawns when the lockfile pid is dead (killed dashboard)', asyn
 test('managed update drain preserves a live foreign POSIX owner and its lock bytes', async () => {
   const lock = ownedLock()
   const rawLock = JSON.stringify(lock)
+
   const ssh = fakeSsh([
     [/cat .*lock\.json/, rawLock],
     [/kill -0 333/, 'ALIVE'],
@@ -1219,6 +1241,7 @@ test('managed update drain rechecks the POSIX ownership record before signalling
   const lock = ownedLock()
   const replacement = ownedLock({ pid: 334, spawnNonce: 'fedcba9876543210' })
   let reads = 0
+
   const ssh = fakeSsh([
     [
       /cat .*lock\.json/,
@@ -1243,6 +1266,7 @@ test('managed update drain rechecks the POSIX ownership record before signalling
 test('managed update drain refuses Darwin termination because PID signals cannot be atomically bound', async () => {
   const lock = ownedLock()
   const rawLock = JSON.stringify(lock)
+
   const ssh = fakeSsh([
     [/cat .*lock\.json/, rawLock],
     [/kill -0 333/, 'ALIVE'],
@@ -1620,6 +1644,7 @@ test('cleanupStale never deletes a lock-supplied unexpected log path', async () 
     [/print\("OWNED"/, 'OWNED\n'],
     [cmd => /pidfd_open/.test(cmd), 'TERMINATED\n']
   ])
+
   await cleanupStale(ssh, OWNERSHIP_ID, ownedLock({ logPath: '~/.hermes/unrelated.log' }))
   assert.ok(!ssh.calls.some(command => command.includes('unrelated.log')))
 })

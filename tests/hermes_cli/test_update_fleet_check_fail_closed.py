@@ -67,7 +67,13 @@ class TestEmptySnapshotFailClosed:
             _fleet_probe_expected_runtimes(None, [], token, [], set()) is False
         )
 
-    def test_incomplete_when_windows_resume_token_has_services(self):
+    def test_windows_resume_token_services_do_not_demand_rows(self):
+        # Deliberately inverted from the original pin (#93406/#95589): SCM
+        # services the updater itself paused/resumed produce NO probe rows —
+        # counting them as "expected runtimes" made every healthy Windows
+        # desktop update stall ~14min in fleet verification and exit 1.
+        # The token is excluded wholesale; restart-phase and pre-restart
+        # signals below still fail closed.
         token = {
             "resume_needed": False,
             "profiles": {},
@@ -75,7 +81,7 @@ class TestEmptySnapshotFailClosed:
             "services": ["HermesGateway"],
         }
         assert (
-            _fleet_probe_expected_runtimes(None, [], token, [], set()) is True
+            _fleet_probe_expected_runtimes(None, [], token, [], set()) is False
         )
 
     def test_incomplete_when_restart_phase_touched_gateways(self):

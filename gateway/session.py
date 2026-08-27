@@ -1618,24 +1618,22 @@ class SessionStore:
                         recovered_keys += 1
                         continue
 
-                    # A non-None recovery with the SAME session id is a successful
-                    # resume: _recover_session_from_db only returns non-None after
-                    # passing all safety gates (recoverable end reason, reset
-                    # boundary NOT EXISTS, source-scope match, active-profile
-                    # check, _should_reset). Keep the routing entry in place — it
-                    # is still valid, not a dead route. The `!=` guard above is
-                    # only for the compression-rotation case where a newer live
-                    # child session exists; a same-id recovery must NOT fall
-                    # through to the prune branch (#95957).
+                    # A non-None recovery with the SAME session id is a
+                    # successful resume (all recovery gates passed, row
+                    # reopened): keep the routing entry — it is proven valid,
+                    # not a dead route (#95957). Keep the ORIGINAL entry
+                    # object, not the recovered one: the recovered entry is
+                    # rebuilt minimal from the DB row and would silently drop
+                    # live state the existing entry carries (token/cost
+                    # counters, model_override, resume_pending/queued-work
+                    # markers, metadata). Nothing in sessions.json changes,
+                    # so no save is needed for this branch.
                     if recovered_entry is not None:
-                        logger.warning(
-                            "gateway.session: keeping stale sessions.json entry "
-                            "%r -> %s (end_reason=%r); recovery succeeded with "
-                            "same session id",
-                            key, entry.session_id, row["end_reason"],
+                        logger.info(
+                            "gateway.session: reopened ended session %s for "
+                            "sessions.json entry %r (end_reason=%r); keeping route",
+                            entry.session_id, key, row["end_reason"],
                         )
-                        self._entries[key] = recovered_entry
-                        recovered_keys += 1
                         continue
 
                     logger.warning(

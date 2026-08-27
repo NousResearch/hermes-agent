@@ -128,7 +128,10 @@ class TestPruneStaleSessionsLocked:
             ).timestamp(),
         }
         store = _make_store_with_db(tmp_path, db)  # default mode="none"
-        store._entries[key] = _make_entry_with_origin(key, "sid_parent")
+        original_entry = _make_entry_with_origin(key, "sid_parent")
+        original_entry.model_override = {"model": "custom/model", "provider": "openrouter"}
+        original_entry.resume_pending = True
+        store._entries[key] = original_entry
 
         with patch.object(store, "_save") as mock_save:
             store._prune_stale_sessions_locked()
@@ -136,8 +139,17 @@ class TestPruneStaleSessionsLocked:
         # The successfully-recovered route must survive the sweep.
         assert key in store._entries
         assert store._entries[key].session_id == "sid_parent"
-        mock_save.assert_called_once()
-
+        # The ORIGINAL entry object is kept — a rebuilt entry would silently
+        # drop live state (model_override, resume_pending, token counters).
+        assert store._entries[key] is original_entry
+        assert store._entries[key].model_override == {
+            "model": "custom/model", "provider": "openrouter"
+        }
+        assert store._entries[key].resume_pending is True
+        # The row is reopened in state.db by recovery.
+        db.reopen_session.assert_called_once_with("sid_parent")
+        # Nothing in sessions.json changed, so no rewrite is needed.
+        mock_save.assert_not_called()
 
     def test_noop_when_db_is_none(self, tmp_path):
         config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))

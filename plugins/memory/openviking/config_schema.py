@@ -145,7 +145,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             default="hermes",
             description="Identifies this Hermes agent inside OpenViking.",
             required=True,
-            visible_when=(_SERVICE, _CUSTOM),
+            visible_when=(_MANUAL,),
         ),
     ),
 )

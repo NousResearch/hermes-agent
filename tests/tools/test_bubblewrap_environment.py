@@ -1015,6 +1015,17 @@ class TestMaskedInside:
         env.cwd = str(p["work"])
         assert env._reset_masked_cwd() is None
 
+    def test_a_deleted_tracked_cwd_is_left_to_local_recovery(self, layout):
+        # masked_inside reports a host directory that is gone as masked
+        # (the root bind shows nothing there); the deleted cwd takes
+        # LocalEnvironment's parent recovery instead.
+        env, p = layout
+        gone = p["work"] / "sub"
+        env.cwd = str(gone)
+        shutil.rmtree(gone)
+        assert env._reset_masked_cwd() is None
+        assert env.cwd == str(gone)
+
 
 @needs_bwrap
 class TestMaskedCwdRecovery:
@@ -1272,6 +1283,39 @@ class TestDeletedCwdRecovery:
             result = env.execute(f"cd {work} && touch r1-probe")
             assert result["returncode"] == 0, result["output"]
             assert (work / "r1-probe").is_file()
+        finally:
+            env.cleanup()
+
+    @pytest.mark.parametrize("how", ["host", "inside"])
+    def test_deleted_non_initial_cwd_takes_local_recovery_not_the_masked_reset(self, sandbox_root, host_dir, caplog, how):
+        # The same landing as the local backend, with local's warning and
+        # no bubblewrap note.
+        work = host_dir / "work"
+        sub = work / "sub"
+        sub.mkdir(parents=True)
+        env = BubblewrapEnvironment(cwd=str(work), timeout=30)
+        try:
+            assert env.execute(f"cd {sub} && pwd")["output"].strip() == str(sub)
+            assert env.cwd == str(sub)
+            if how == "host":
+                shutil.rmtree(sub)
+            else:
+                assert env.execute('rm -rf "$PWD"')["returncode"] == 0
+            assert env.cwd == str(sub) and not sub.exists()
+            with caplog.at_level(logging.WARNING):
+                first = env.execute("pwd")
+            # The wrapper still cd's to the gone directory on this spawn, as
+            # for the local backend; the tracked cwd is recovered from here on.
+            assert first["returncode"] == 126, first["output"]
+            assert "not visible inside the sandbox" not in first["output"]
+            assert "bwrap:" not in first["output"]
+            assert env.cwd == str(work)
+            messages = [r.getMessage() for r in caplog.records]
+            assert any("missing on disk" in m and str(sub) in m for m in messages)
+            assert not any("bubblewrap" in m for m in messages)
+            result = env.execute("pwd")
+            assert result["returncode"] == 0, result["output"]
+            assert result["output"].strip() == str(work)
         finally:
             env.cleanup()
 

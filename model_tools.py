@@ -592,6 +592,54 @@ def _compute_tool_definitions(
         ]
         available_tool_names.discard("browser_exec")
 
+    # delegate_task's child-restrictions rule names sibling tools (clarify,
+    # memory, cronjob). Warning about tools this session doesn't even have
+    # teaches ghost vocabulary — filter the list to tools actually present
+    # and drop the line entirely when none apply. Two source variants exist
+    # (depth-derived): the depth-off line also names delegate_task itself;
+    # the depth-on line lists only the siblings. Pattern order matters —
+    # the sibling list is a substring of the full list.
+    # Same session-level seam as the browser_exec gate above.
+    if "delegate_task" in available_tool_names:
+        blocked_present = [
+            t for t in ("clarify", "memory", "cronjob") if t in available_tool_names
+        ]
+        if len(blocked_present) < 3:
+            full_offvariant = "delegate_task, clarify, memory, or cronjob"
+            full_onvariant = "clarify, memory, or cronjob"
+            for i, td in enumerate(filtered_tools):
+                fn = td.get("function", {})
+                desc = fn.get("description", "")
+                if fn.get("name") != "delegate_task":
+                    continue
+                if full_offvariant in desc:
+                    full, keep_self = full_offvariant, True
+                elif full_onvariant in desc:
+                    full, keep_self = full_onvariant, False
+                else:
+                    break
+                names = (["delegate_task"] if keep_self else []) + blocked_present
+                if blocked_present:
+                    if len(names) == 1:
+                        replacement = names[0]
+                    elif len(names) == 2:
+                        replacement = f"{names[0]} or {names[1]}"
+                    else:
+                        replacement = ", ".join(names[:-1]) + ", or " + names[-1]
+                    desc = desc.replace(full, replacement)
+                else:
+                    # No sibling tools here — drop the restriction line
+                    # (both variants end at the following "\n").
+                    start = desc.find("- Children cannot call " + full)
+                    if start != -1:
+                        end = desc.index("\n", start) + 1
+                        desc = desc[:start] + desc[end:]
+                filtered_tools[i] = {
+                    **td,
+                    "function": {**fn, "description": desc},
+                }
+                break
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]

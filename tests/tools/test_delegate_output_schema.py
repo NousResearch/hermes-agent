@@ -133,10 +133,14 @@ class TestToolSchemaSurface:
             "properties"
         ]["tasks"]["items"]["required"]
 
-    def test_output_schema_on_top_level_goal_form(self):
+    def test_output_schema_advertised_per_task_only(self):
+        """output_schema is advertised inside tasks[] items (the only spawn
+        shape); the legacy top-level param stays handler-accepted but out
+        of the schema."""
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        assert "output_schema" in props
-        assert props["output_schema"]["type"] == "object"
+        assert "output_schema" not in props
+        task_props = props["tasks"]["items"]["properties"]
+        assert task_props["output_schema"]["type"] == "object"
 
 
 # ---------------------------------------------------------------------------

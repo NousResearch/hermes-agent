@@ -329,14 +329,46 @@ def is_sensitive_source(src: str, hidden_paths: Sequence[str]) -> bool:
     return any(_is_within(c, root) for c in candidates for root in hidden_paths)
 
 
+def hidden_path_under(src: str, hidden_paths: Sequence[str]) -> str | None:
+    """The first hidden path strictly under *src* (or under what it symlinks to), else None."""
+    abs_src = os.path.abspath(os.path.expanduser(src))
+    for root in (abs_src, os.path.realpath(abs_src)):
+        for hidden in hidden_paths:
+            if hidden != root and _is_within(hidden, root):
+                return hidden
+    return None
+
+
+def _same_host_path(a: str, b: str) -> bool:
+    resolve = lambda p: os.path.realpath(os.path.abspath(os.path.expanduser(p)))
+    return resolve(a) == resolve(b)
+
+
 def filter_binds(binds: tuple[BindMount, ...], hidden_paths: Sequence[str]) -> list[BindMount]:
-    """Drop binds whose source is sensitive, logging a warning for each."""
+    """Drop binds that would expose a hidden path, logging a warning for each.
+
+    A source at or under a hidden path would mount the secret itself. A
+    source that contains a hidden path and lands at another destination
+    would show the secret there: the overlays cover a hidden path only at
+    its real location, and a mirror of an ancestor is a second view of the
+    same host tree. With dest equal to src the bind
+    is the cwd=HOME shape, and the overlays and pins land on top of it.
+    """
     kept: list[BindMount] = []
     for bind in binds:
         if is_sensitive_source(bind.src, hidden_paths):
             logger.warning(
                 "Ignoring terminal.bubblewrap_binds entry %s: source is under a sensitive path",
                 bind.src,
+            )
+            continue
+        hidden = hidden_path_under(bind.src, hidden_paths)
+        if hidden is not None and not _same_host_path(bind.src, bind.dest):
+            logger.warning(
+                "Ignoring terminal.bubblewrap_binds entry %s -> %s: the source contains the "
+                "hidden path %s, which would be readable at the destination. Bind it at its "
+                "own path (dest equal to src) instead.",
+                bind.src, bind.dest, hidden,
             )
             continue
         kept.append(bind)

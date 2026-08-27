@@ -27,7 +27,10 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from hermes_cli.runtime_provider import resolve_runtime_provider
-from agent.agent_runtime_helpers import copy_reasoning_content_for_api
+from agent.agent_runtime_helpers import (
+    copy_reasoning_content_for_api,
+    reasoning_route_fingerprint,
+)
 from agent.agent_init import _configure_custom_provider_reasoning_replay
 from run_agent import AIAgent
 
@@ -103,8 +106,14 @@ class TestReasoningEchoResolverE2E:
         assert agent._reasoning_echo_opt_in() is True
         assert agent._needs_thinking_reasoning_pad() is True
 
-        source = {"role": "assistant", "content": "calling a tool",
-                  "reasoning_content": "the model's chain of thought"}
+        source = {
+            "role": "assistant",
+            "content": "calling a tool",
+            "reasoning_content": "the model's chain of thought",
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url
+            ),
+        }
         api_msg = dict(source)
         copy_reasoning_content_for_api(agent, source, api_msg)
         assert api_msg["reasoning_content"] == "the model's chain of thought"
@@ -145,6 +154,9 @@ class TestReasoningEchoResolverE2E:
             "role": "assistant",
             "content": "calling a tool",
             "reasoning": "SYNTHETIC_REASONING_MARKER",
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url
+            ),
         }
         api_msg = {"role": "assistant", "content": "calling a tool"}
 

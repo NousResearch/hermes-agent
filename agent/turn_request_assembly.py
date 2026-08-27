@@ -143,6 +143,25 @@ def assemble_api_request(
         agent, api_messages, messages, _sel_incoming, logger=request_logger
     )
 
+    # Context selection may return canonical/history messages rather than
+    # the already-shaped request copies above. Revalidate reasoning at this
+    # final selection boundary so unknown or foreign hidden traces cannot
+    # bypass route provenance checks. This also strips the internal marker
+    # before any provider transport sees the request.
+    for api_msg in api_messages:
+        if not isinstance(api_msg, dict):
+            continue
+        if api_msg.get("role") == "assistant":
+            agent._copy_reasoning_content_for_api(api_msg, api_msg)
+            continue
+        # Structured reasoning and its provenance are assistant-only.
+        # A context engine must not be able to place them on another role
+        # and bypass the assistant validation path.
+        api_msg.pop("_reasoning_route", None)
+        api_msg.pop("reasoning", None)
+        api_msg.pop("reasoning_content", None)
+        api_msg.pop("reasoning_details", None)
+
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.
     api_messages = agent._sanitize_api_messages(api_messages)

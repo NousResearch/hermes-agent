@@ -78,6 +78,15 @@ def _builtin_gateway_liveness() -> Optional[bool]:
     try:
         if _active_cron_provider_name() != "builtin":
             return True  # external provider fires jobs without the gateway
+        # The gateway runtime lock is held for exactly the gateway's lifetime, so it
+        # is a more reliable "is the ticker's process alive" signal than PID scanning
+        # — and inside the gateway process it short-circuits to True, so the in-gateway
+        # cron tool never emits a false "gateway not running" (find_gateway_pids can
+        # transiently miss the gateway just after a restart).
+        from gateway.status import is_gateway_runtime_lock_active
+
+        if is_gateway_runtime_lock_active():
+            return True
         from hermes_cli.gateway import find_gateway_pids
 
         return bool(find_gateway_pids())

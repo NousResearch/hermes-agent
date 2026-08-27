@@ -25,6 +25,7 @@ from unittest.mock import patch
 from hermes_cli.inventory import (
     ConfigContext,
     build_models_payload,
+    configured_model_order,
     load_picker_context,
 )
 
@@ -38,6 +39,38 @@ def _cfg(model=None, providers=None, custom_providers=None) -> dict:
         "providers": providers if providers is not None else {},
         "custom_providers": custom_providers if custom_providers is not None else [],
     }
+
+
+def test_load_picker_context_records_primary_then_fallback_model_order():
+    config = _cfg(
+        model={"provider": "openai-codex", "default": "gpt-5.6-sol"},
+    )
+    config["fallback_providers"] = [
+        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        {"provider": "anthropic", "model": "claude-opus-5"},
+        {"provider": "grok-oauth", "model": "grok-4.6"},
+        {"provider": "kimi-coding", "model": "k3-256k"},
+        {"provider": "", "model": "must-be-ignored"},
+        {"provider": "alibaba", "model": "qwen3.8-max"},
+    ]
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=config),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+    ):
+        ctx = load_picker_context()
+
+    assert ctx.preferred_models == (
+        ("openai-codex", "gpt-5.6-sol"),
+        ("anthropic", "claude-opus-5"),
+        ("xai-oauth", "grok-4.6"),
+        ("kimi-coding", "k3-256k"),
+        ("alibaba", "qwen3.8-max"),
+    )
+
+
+def test_configured_model_order_does_not_infer_a_missing_primary_provider():
+    assert configured_model_order({"model": {"default": "providerless-model"}}) == ()
 
 
 def test_load_picker_context_coerces_numeric_yaml_provider():
@@ -110,6 +143,73 @@ def _nous_row(model: str = "openai/gpt-5.5") -> dict:
     }
 
 
+def test_models_payload_prioritizes_primary_then_fallback_models():
+    rows = [
+        {
+            "slug": "anthropic",
+            "name": "Anthropic",
+            "models": ["claude-opus-5"],
+            "total_models": 1,
+        },
+        {
+            "slug": "alibaba",
+            "name": "Alibaba",
+            "models": ["deepseek-v4-pro", "qwen3.8-max", "deepseek-v4-flash-0731"],
+            "total_models": 3,
+        },
+        {
+            "slug": "openai-codex",
+            "name": "OpenAI Codex",
+            "models": ["gpt-5.6-sol"],
+            "total_models": 1,
+        },
+        {
+            "slug": "gemini",
+            "name": "Gemini",
+            "models": ["gemini-3.7-flash"],
+            "total_models": 1,
+        },
+    ]
+    ctx = ConfigContext(
+        current_provider="openai-codex",
+        current_model="gpt-5.6-sol",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        preferred_models=(
+            ("openai-codex", "gpt-5.6-sol"),
+            ("anthropic", "claude-opus-5"),
+            ("alibaba", "qwen3.8-max"),
+            ("alibaba", "deepseek-v4-flash-0731"),
+            ("alibaba", "deepseek-v4-pro"),
+        ),
+    )
+
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx, canonical_order=True)
+
+    configured_slugs = [
+        row["slug"] for row in payload["providers"] if row["slug"] != "moa"
+    ]
+    assert configured_slugs == [
+        "openai-codex",
+        "anthropic",
+        "alibaba",
+        "gemini",
+    ]
+    alibaba = next(row for row in payload["providers"] if row["slug"] == "alibaba")
+    assert alibaba["models"] == [
+        "qwen3.8-max",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-pro",
+    ]
+    assert payload["preferred_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        {"provider": "anthropic", "model": "claude-opus-5"},
+        {"provider": "alibaba", "model": "qwen3.8-max"},
+        {"provider": "alibaba", "model": "deepseek-v4-flash-0731"},
+        {"provider": "alibaba", "model": "deepseek-v4-pro"},
+    ]
 
 
 def test_cli_model_picker_forwards_force_refresh_to_probe_flags():

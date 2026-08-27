@@ -124,6 +124,42 @@ describe('the catalog owns model curation', () => {
     })
   })
 
+  it('renders the configured primary then fallbacks instead of alphabetical providers', async () => {
+    setVisibleModels(
+      new Set([
+        modelVisibilityKey('openai-codex', 'gpt-5.6-sol'),
+        modelVisibilityKey('anthropic', 'claude-opus-5'),
+        modelVisibilityKey('alibaba', 'qwen3.8-max'),
+        modelVisibilityKey('alibaba', 'deepseek-v4-flash-0731'),
+        modelVisibilityKey('alibaba', 'deepseek-v4-pro')
+      ])
+    )
+    getGlobalModelOptions.mockResolvedValue({
+      preferred_models: [
+        { provider: 'openai-codex', model: 'gpt-5.6-sol' },
+        { provider: 'anthropic', model: 'claude-opus-5' },
+        { provider: 'alibaba', model: 'qwen3.8-max' },
+        { provider: 'alibaba', model: 'deepseek-v4-flash-0731' },
+        { provider: 'alibaba', model: 'deepseek-v4-pro' }
+      ],
+      providers: [
+        { models: ['deepseek-v4-pro', 'qwen3.8-max', 'deepseek-v4-flash-0731'], name: 'Alibaba', slug: 'alibaba' },
+        { models: ['claude-opus-5'], name: 'Anthropic', slug: 'anthropic' },
+        { models: ['gpt-5.6-sol'], name: 'ChatGPT', slug: 'openai-codex' }
+      ]
+    })
+
+    renderMenu()
+    await screen.findByText(/GPT-5\.6-sol/i)
+
+    const labels = screen.getAllByRole('menuitem').map(row => row.textContent ?? '')
+    const indexOf = (needle: RegExp) => labels.findIndex(label => needle.test(label))
+
+    expect(indexOf(/GPT-5\.6-sol/i)).toBeLessThan(indexOf(/Opus 5/i))
+    expect(indexOf(/Qwen3\.8 Max/i)).toBeLessThan(indexOf(/Deepseek V4 Flash/i))
+    expect(indexOf(/Deepseek V4 Flash/i)).toBeLessThan(indexOf(/Deepseek V4 Pro/i))
+  })
+
   it('offers Edit Models without the host wiring it up', async () => {
     renderMenu()
     await screen.findByText(/Gemini 3\.1 Pro/i)

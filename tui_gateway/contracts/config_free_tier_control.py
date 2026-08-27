@@ -270,10 +270,18 @@ class ModelOptionProvider(OpenModel):
     unavailable_models: list[str] | None = None
 
 
+class ModelPreferredEntry(Result):
+    """One configured primary/fallback ``(provider, model)`` entry, in chain order."""
+
+    provider: str
+    model: str
+
+
 class ModelOptionsResult(Result):
     providers: list[ModelOptionProvider]
     model: str = ""
     provider: str = ""
+    preferred_models: list[ModelPreferredEntry] = Field(default_factory=list)
 
 
 method("model.options", params=ModelOptionsParams, result=ModelOptionsResult,

@@ -17277,12 +17277,39 @@
             "default": "",
             "title": "Provider",
             "type": "string"
+          },
+          "preferred_models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelPreferredEntry"
+            },
+            "title": "Preferred Models",
+            "type": "array"
           }
         },
         "required": [
           "providers"
         ],
         "title": "ModelOptionsResult",
+        "type": "object"
+      },
+      "ModelPreferredEntry": {
+        "additionalProperties": false,
+        "description": "One configured primary/fallback ``(provider, model)`` entry, in chain order.",
+        "properties": {
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model"
+        ],
+        "title": "ModelPreferredEntry",
         "type": "object"
       },
       "ModelPricing": {

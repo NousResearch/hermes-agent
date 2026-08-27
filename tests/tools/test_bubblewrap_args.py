@@ -19,6 +19,7 @@ from tools.environments.bubblewrap import (
     empty_file_path,
     load_bubblewrap_config,
     runtime_overlay_args,
+    sensitive_paths,
 )
 
 BWRAP = "/usr/bin/bwrap"
@@ -55,6 +56,11 @@ def build(config=None, bwrap_path=BWRAP, **overrides):
 def triples(argv, flag):
     """Return the (src, dest) pairs that follow every occurrence of *flag*."""
     return [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv) if a == flag]
+
+
+def singles(argv, flag):
+    """Return the operand that follows every occurrence of a one-operand *flag*."""
+    return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
 
 
 def contains_sequence(argv, seq):
@@ -411,3 +417,72 @@ class TestAncestorPins:
         argv = build(config, paths=paths, initial_cwd=parent, tracked_cwd=parent)
         pins = triples(argv, "--bind")
         assert pins.count((str(home / ".config"), str(home / ".config"))) == 1
+
+
+class TestResolvedHiddenSet:
+    """A symlinked entry is hidden at its target: the set is resolved through
+    realpath once, at construction, and the builder mounts only over real
+    paths."""
+
+    def test_relative_symlinked_entry_is_hidden_at_its_target_and_the_target_parent_pinned(self, paths):
+        home = Path(paths["home"])
+        (home / "dotfiles" / "ssh").mkdir(parents=True)
+        (home / ".ssh").symlink_to("dotfiles/ssh")
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        assert str(home / "dotfiles" / "ssh") in hidden
+        assert str(home / ".ssh") not in hidden
+        argv = build(paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        assert str(home / "dotfiles" / "ssh") in singles(argv, "--tmpfs")
+        assert str(home / ".ssh") not in argv
+        assert (str(home / "dotfiles"), str(home / "dotfiles")) in triples(argv, "--bind")
+
+    def test_absolute_symlinked_file_entry_binds_the_empty_file_over_its_target(self, paths, tmp_path):
+        home = Path(paths["home"])
+        home.mkdir()
+        real = tmp_path / "vault" / "npmrc"
+        real.parent.mkdir()
+        real.write_text("token")
+        (home / ".npmrc").symlink_to(real)
+        argv = build(paths=paths)
+        assert (empty_file_path(paths["state_dir"]), str(real)) in triples(argv, "--ro-bind")
+        assert str(home / ".npmrc") not in argv
+
+    def test_symlinked_component_resolves_the_whole_set(self, paths, tmp_path):
+        real_home = tmp_path / "real-home"
+        (real_home / ".ssh").mkdir(parents=True)
+        Path(paths["home"]).symlink_to(real_home)
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        assert all(h.startswith(str(real_home) + os.sep) for h in hidden), hidden
+        argv = build(paths=paths)
+        assert str(real_home / ".ssh") in singles(argv, "--tmpfs")
+        assert str(Path(paths["home"]) / ".ssh") not in argv
+
+    def test_dangling_entry_emits_nothing(self, paths, tmp_path):
+        home = Path(paths["home"])
+        home.mkdir()
+        (home / ".netrc").symlink_to(tmp_path / "gone")
+        argv = build(paths=paths)
+        assert str(tmp_path / "gone") not in argv
+        assert str(home / ".netrc") not in argv
+
+    def test_symlink_planted_at_a_resolved_path_after_construction_emits_nothing(self, paths):
+        home = Path(paths["home"])
+        home.mkdir()
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])  # .aws is missing: resolved as itself
+        (home / ".aws").symlink_to("/etc")
+        argv = build(paths=paths, hidden_paths=hidden)
+        assert str(home / ".aws") not in argv
+        assert "/etc" not in argv
+
+    def test_builder_uses_the_hidden_set_it_is_given(self, paths, tmp_path):
+        home = Path(paths["home"])
+        (home / ".ssh").mkdir(parents=True)
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        # The host (or a sandbox with HOME writable) swaps the entry for a
+        # symlink afterwards: the fixed set neither follows it nor mounts on it.
+        (home / ".ssh").rmdir()
+        (home / "elsewhere").mkdir()
+        (home / ".ssh").symlink_to("elsewhere")
+        argv = build(paths=paths, hidden_paths=hidden)
+        assert str(home / "elsewhere") not in argv
+        assert str(home / ".ssh") not in argv

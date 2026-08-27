@@ -697,6 +697,31 @@ describe('assistant-ui streaming renderer', () => {
     expect(body.scrollTop).toBe(height - body.clientHeight)
   })
 
+  it('allows vertical handoff in both preview and expanded thinking bodies', () => {
+    const { container } = render(<RunningReasoningHarness />)
+    const ui = within(container)
+    const toggle = ui.getByRole('button', { name: /thinking/i })
+
+    const preview = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(preview).toContain('max-h-40')
+    expect(preview).toMatch(/\boverflow-auto\b/)
+    expect(preview).toMatch(/\boverscroll-y-auto\b/)
+
+    // Manual expansion removes the cap but must keep vertical handoff.
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+    const expanded = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(expanded).toMatch(/\boverflow-auto\b/)
+    expect(expanded).not.toContain('max-h-40')
+    expect(expanded).toMatch(/\boverscroll-y-auto\b/)
+  })
+
   it('does not collapse a live thinking preview when the turn settles', async () => {
     const { container, settle } = renderSettlingReasoning()
     const toggle = within(container).getByRole('button', { name: /thinking/i })

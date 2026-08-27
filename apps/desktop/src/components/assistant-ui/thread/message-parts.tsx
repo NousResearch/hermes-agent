@@ -271,6 +271,7 @@ const ThinkingDisclosure: FC<{
             // and inherits the disclosure-level opacity fade defined in
             // styles.css (~0.67 at rest, 1 on hover/focus). overflow-auto so
             // the max-h-40 preview is a real scroller, not a clip.
+            // Even a body that fits must hand vertical input to the thread.
             'mt-0.5 w-full min-w-0 max-w-full overflow-auto overscroll-x-contain overscroll-y-auto wrap-anywhere pb-1',
             isPreview && 'max-h-40'
           )}

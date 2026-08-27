@@ -163,6 +163,52 @@ def test_decompose_makes_leaf_handoff_self_contained(kanban_home):
     assert "do not decompose this task" in (child.body or "").lower()
 
 
+def test_decompose_inherits_recent_root_handoffs(kanban_home):
+    """Comments added after creation must reach fresh phase workers."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="continue monolith burndown",
+            triage=True,
+        )
+        kb.add_comment(
+            conn,
+            tid,
+            "operator",
+            "Phase 1 target is the live_runner.py Stage-1 adapter seam. "
+            "Produce an exact-head PR before starting the next phase.",
+        )
+
+    payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "bounded phase",
+        "tasks": [{
+            "title": "Define phase one seam",
+            "body": "Inspect the named target and document entry and exit points.",
+            "assignee": "researcher",
+            "parents": [],
+        }],
+    })
+    patches = _patch_list_profiles(["orchestrator", "researcher"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert child is not None
+    assert "Recent root handoffs/comments" in (child.body or "")
+    assert "live_runner.py Stage-1 adapter seam" in (child.body or "")
+    assert "exact-head PR" in (child.body or "")
+    assert "untrusted" in (child.body or "")
+
+
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="route me safely", triage=True)

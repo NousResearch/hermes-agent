@@ -103,6 +103,14 @@ class TestHostPathGates:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         assert image_source._is_local_terminal_backend() is False
 
+    def test_vision_tools_reads_video_sources_host_side_for_bubblewrap(self, monkeypatch):
+        from tools import vision_tools
+
+        monkeypatch.setenv("TERMINAL_ENV", "bubblewrap")
+        assert vision_tools._terminal_backend_is_local() is True
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        assert vision_tools._terminal_backend_is_local() is False
+
     def test_cwd_placeholder_resolves_messaging_cwd_for_bubblewrap(self):
         from gateway import cwd_placeholder
 

@@ -31,12 +31,17 @@ Layout of the argv (later mounts overlay earlier ones):
 9. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
    shell argv
 
-The paths in the argv are fixed at construction. What varies per spawn is
-presence only: an overlay is emitted for a sensitive path that exists on
-the host at spawn time and never for one that does not, and a pin for an
-ancestor directory that exists inside a bind that is writable anyway. So
-host changes (or a sandbox with a writable HOME planting a symlink) can
-only add hiding mounts and pins, never expose anything. The pins are what
+The paths in the argv are fixed at construction: the hidden set is
+resolved through realpath once, so a symlinked entry is hidden at its
+target, and the cwd and state dir binds use their real paths (bwrap
+resolves a mount destination inside the sandbox root, where an absolute
+symlink points nowhere). What varies per spawn is presence only: an
+overlay is emitted for a sensitive path that exists on the host at spawn
+time and never for one that does not, a pin for an ancestor directory that
+exists inside a bind that is writable anyway, and nothing at all for a
+path that has become a symlink since construction. So host changes (or a
+sandbox with a writable HOME planting a symlink) can only add hiding
+mounts and pins, never expose anything. The pins are what
 keep that true: a hidden entry is a mount point and cannot be renamed
 from inside the sandbox, but without the pins a writable cwd covering its
 parent lets a command rename the parent, and the next spawn then finds
@@ -213,11 +218,27 @@ def load_bubblewrap_config(environ: Mapping[str, str] | None = None) -> Bubblewr
 
 
 def sensitive_paths(home: str, hermes_home: str) -> tuple[str, ...]:
-    """Absolute host paths that must stay hidden: the HOME set plus HERMES_HOME."""
+    """Real host paths that must stay hidden: the HOME set plus HERMES_HOME.
+
+    Each path goes through os.path.realpath, so an entry that is a symlink
+    (a dotfiles repository linking ~/.ssh to ~/dotfiles/ssh) or that sits
+    under a symlinked component names the directory or file holding the
+    secret. That is also the only path bwrap can mount over: it resolves a
+    mount destination inside the sandbox root, where an absolute symlink
+    points nowhere. BubblewrapEnvironment resolves the set once at
+    construction and keeps it for its life. Resolving per spawn would let
+    a sandbox that can replace the symlink (HOME in its writable set)
+    point the next overlay elsewhere and leave the secret bare.
+    """
     home = os.path.abspath(os.path.expanduser(home))
-    return tuple(os.path.join(home, rel) for rel in SENSITIVE_HOME_PATHS) + (
-        os.path.abspath(os.path.expanduser(hermes_home)),
-    )
+    nominal = [os.path.join(home, rel) for rel in SENSITIVE_HOME_PATHS]
+    nominal.append(os.path.abspath(os.path.expanduser(hermes_home)))
+    resolved: list[str] = []
+    for path in nominal:
+        real = os.path.realpath(path)
+        if real not in resolved:
+            resolved.append(real)
+    return tuple(resolved)
 
 
 def empty_file_path(state_dir: str) -> str:
@@ -230,19 +251,25 @@ def empty_file_path(state_dir: str) -> str:
     return state_dir.rstrip(os.sep) + ".empty"
 
 
-def sensitive_overlay_args(home: str, hermes_home: str, state_dir: str) -> list[str]:
-    """Mount directives that hide the sensitive set and HERMES_HOME.
+def sensitive_overlay_args(hidden_paths: Sequence[str], state_dir: str) -> list[str]:
+    """Mount directives that hide *hidden_paths*, the set from sensitive_paths.
 
     A directory gets a fresh tmpfs, a file gets the empty file bound over
     it, and a path missing on the host gets nothing so bwrap never fails
-    on an absent mount target. On bwrap 0.9.0, ``--tmpfs`` on a
-    file path fails with "Not a directory", and a ro-bind of /dev/null
-    mounts but reads fail with EACCES because bwrap remounts binds nodev
-    inside the user namespace; only the empty-file bind works for files.
+    on an absent mount target. A path that is a symlink at spawn time gets
+    nothing either: the set holds real paths, so a symlink there was
+    planted after construction where nothing hidden existed (by a sandbox
+    whose writable set covers it), and a mount on it would follow it. On
+    bwrap 0.9.0: ``--tmpfs`` on a file path fails with "Not a
+    directory", and a ro-bind of /dev/null mounts but reads fail with
+    EACCES because bwrap remounts binds nodev inside the user namespace;
+    only the empty-file bind works for files.
     """
     empty = empty_file_path(state_dir)
     argv: list[str] = []
-    for path in sensitive_paths(home, hermes_home):
+    for path in hidden_paths:
+        if os.path.islink(path):
+            continue
         if os.path.isdir(path):
             argv += ["--tmpfs", path]
         elif os.path.exists(path):
@@ -287,22 +314,18 @@ def _is_within(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
-def is_sensitive_source(src: str, home: str, hermes_home: str) -> bool:
-    """True when *src* (or what it symlinks to) is at or under a sensitive path."""
+def is_sensitive_source(src: str, hidden_paths: Sequence[str]) -> bool:
+    """True when *src* (or what it symlinks to) is at or under a hidden path."""
     abs_src = os.path.abspath(os.path.expanduser(src))
     candidates = {abs_src, os.path.realpath(abs_src)}
-    for root in sensitive_paths(home, hermes_home):
-        roots = {root, os.path.realpath(root)}
-        if any(_is_within(c, r) for c in candidates for r in roots):
-            return True
-    return False
+    return any(_is_within(c, root) for c in candidates for root in hidden_paths)
 
 
-def filter_binds(binds: tuple[BindMount, ...], home: str, hermes_home: str) -> list[BindMount]:
+def filter_binds(binds: tuple[BindMount, ...], hidden_paths: Sequence[str]) -> list[BindMount]:
     """Drop binds whose source is sensitive, logging a warning for each."""
     kept: list[BindMount] = []
     for bind in binds:
-        if is_sensitive_source(bind.src, home, hermes_home):
+        if is_sensitive_source(bind.src, hidden_paths):
             logger.warning(
                 "Ignoring terminal.bubblewrap_binds entry %s: source is under a sensitive path",
                 bind.src,
@@ -326,8 +349,7 @@ def _ancestors_within(path: str, root: str) -> list[str]:
 def ancestor_pin_args(
     writable_binds: Sequence[tuple[str, str]],
     mount_points: Iterable[str],
-    home: str,
-    hermes_home: str,
+    hidden_paths: Sequence[str],
 ) -> list[str]:
     """Bind over itself each ancestor of a hidden path that lies strictly inside a writable bind.
 
@@ -350,11 +372,10 @@ def ancestor_pin_args(
     """
     normalize = lambda p: os.path.abspath(os.path.expanduser(p))
     seen: set[str] = {normalize(p) for p in mount_points}
-    hidden = sensitive_paths(home, hermes_home)
     argv: list[str] = []
     for src, dest in writable_binds:
         root = normalize(dest)
-        for path in hidden:
+        for path in hidden_paths:
             for ancestor in _ancestors_within(path, root):
                 if ancestor in seen:
                     continue
@@ -374,13 +395,19 @@ def build_bwrap_args(
     tracked_cwd: str,
     *,
     bwrap_path: str = "bwrap",
+    hidden_paths: Sequence[str] | None = None,
 ) -> list[str]:
     """Build the bwrap argv prefix; the caller appends the shell argv after the trailing ``--``.
 
     All arguments are fixed at environment construction except *tracked_cwd*,
-    which only sets ``--chdir``.
+    which only sets ``--chdir``. *hidden_paths* is the set
+    BubblewrapEnvironment resolved at construction; when omitted it is
+    resolved from *home* and *hermes_home* on this call, which suits tests
+    of the pure builder only.
     """
     profile = resolve_profile(config.profile)
+    if hidden_paths is None:
+        hidden_paths = sensitive_paths(home, hermes_home)
 
     argv: list[str] = [
         bwrap_path,
@@ -410,7 +437,7 @@ def build_bwrap_args(
     # failing on a missing bind source.
     argv += ["--bind-try" if profile.writable_cwd else "--ro-bind-try", initial_cwd, initial_cwd]
 
-    binds = filter_binds(config.binds, home, hermes_home)
+    binds = filter_binds(config.binds, hidden_paths)
     for bind in binds:
         argv += ["--ro-bind" if bind.readonly else "--bind", bind.src, bind.dest]
 
@@ -419,12 +446,12 @@ def build_bwrap_args(
     # them, and before the overlays, so the overlays land on the pins.
     writable = [(initial_cwd, initial_cwd)] if profile.writable_cwd else []
     writable += [(bind.src, bind.dest) for bind in binds if not bind.readonly]
-    argv += ancestor_pin_args(writable, [initial_cwd, *(bind.dest for bind in binds)], home, hermes_home)
+    argv += ancestor_pin_args(writable, [initial_cwd, *(bind.dest for bind in binds)], hidden_paths)
 
     # The overlays come after the cwd, operator binds and pins so a bind of
     # HOME itself still hides what sits under it, and before the state dir
     # so that stays reachable under a hidden HERMES_HOME.
-    argv += sensitive_overlay_args(home, hermes_home, state_dir)
+    argv += sensitive_overlay_args(hidden_paths, state_dir)
 
     # Under home_mode=profile the subprocess HOME is HERMES_HOME/home
     # (hermes_constants.get_subprocess_home), so bind it back read-write on
@@ -598,16 +625,21 @@ class BubblewrapEnvironment(LocalEnvironment):
         resolve_profile(self._config.profile)
         self._bwrap_path = probe_bwrap()
         # The OS user's home anchors the sensitive set even when this process
-        # runs with HOME pointed at the profile home.
-        self._home = get_real_home() or os.path.expanduser("~")
-        self._hermes_home = str(get_hermes_home())
+        # runs with HOME pointed at the profile home. Every mount path is
+        # taken through realpath: bwrap resolves a mount destination inside
+        # the sandbox root, where an absolute symlink points nowhere.
+        self._home = os.path.realpath(get_real_home() or os.path.expanduser("~"))
+        self._hermes_home = os.path.realpath(str(get_hermes_home()))
+        # Resolved once and kept for the life of the environment: the set
+        # never follows a symlink swapped in later.
+        self._hidden_paths = sensitive_paths(self._home, self._hermes_home)
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
-        self._initial_cwd = _resolve_local_initial_cwd(cwd)
+        self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
         self._check_initial_cwd()
         # BaseEnvironment.__init__ derives the snapshot and cwd file paths
         # from get_temp_dir() and LocalEnvironment.__init__ runs the login
         # bootstrap straight away, so the state dir must exist first.
-        self._state_dir = str(get_sandbox_dir() / f"bwrap-{uuid.uuid4().hex[:12]}")
+        self._state_dir = os.path.join(os.path.realpath(get_sandbox_dir()), f"bwrap-{uuid.uuid4().hex[:12]}")
         os.makedirs(self._state_dir, mode=0o700)
         # Read-only and outside the state dir: nothing in a sandbox can
         # write to what shows at the hidden file paths.
@@ -649,6 +681,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             self._hermes_home,
             self.cwd,
             bwrap_path=self._bwrap_path,
+            hidden_paths=self._hidden_paths,
         )
         return prefix + list(args)
 

@@ -3270,8 +3270,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = transport.config
             runtime_adapter = transport.adapter
         else:
-            # No live transport: preserve the existing standalone delivery path,
-            # which uses the logical platform's configured credential.
+            # No live transport. A relay-fronted platform's ONLY sender is the
+            # gateway's live relay adapter — there is no standalone fallback
+            # (the connector owns the credential). A manual in-process run
+            # (`hermes cron run`) has no live relay adapter, so surface the
+            # accurate remediation instead of the native configured/enabled
+            # gate, which misdiagnoses relay-fronted deployments.
+            from gateway.relay import relay_fronted_platforms
+
+            if platform_name in relay_fronted_platforms():
+                msg = (
+                    f"platform '{platform_name}' is relay-fronted and has no "
+                    "live gateway transport; start the gateway or use "
+                    "`hermes cron trigger` (the gateway ticker owns relay-"
+                    "fronted delivery)"
+                )
+                logger.warning("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+            # Preserve the existing standalone delivery path, which uses the
+            # logical platform's configured credential.
             pconfig = config.platforms.get(platform)
             runtime_adapter = None
 

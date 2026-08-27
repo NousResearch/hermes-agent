@@ -21,6 +21,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from agent.message_sanitization import _sanitize_surrogates

@@ -162,3 +162,74 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+@pytest.mark.parametrize(
+    ("idempotency_key", "body"),
+    [
+        (
+            "github-pr-feedback:repair:mrkillbob/luna-bot:132:abc123",
+            "Repair the pull request and push the exact-head fix.",
+        ),
+        (
+            None,
+            jsonlib.dumps(
+                {
+                    "repository": "mrkillbob/luna-bot",
+                    "pr_number": 132,
+                    "expected_head_sha": "a" * 40,
+                    "action": "repair_and_push",
+                }
+            ),
+        ),
+    ],
+)
+def test_decompose_refuses_atomic_pr_automation_before_llm(
+    kanban_home, idempotency_key, body
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Repair LunaBot PR #132",
+            body=body,
+            triage=True,
+            idempotency_key=idempotency_key,
+        )
+
+    with patch(
+        "agent.auxiliary_client.call_llm",
+        side_effect=AssertionError("atomic PR work must never reach the decomposer LLM"),
+    ):
+        outcome = decomp.decompose_task(tid, author="auto-decomposer")
+
+    assert outcome.ok is False
+    assert "atomic PR automation" in outcome.reason
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_decompose_refuses_governed_research_intake_before_llm(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="[Lab] Research intake",
+            body=(
+                "Choose only source-backed hypotheses and complete as "
+                "RESEARCH_LAB_IDLE when none qualify."
+            ),
+            assignee="lunabot-research-lab-director",
+            triage=True,
+            idempotency_key="research-lab-intake-20260826-12",
+        )
+
+    with patch(
+        "agent.auxiliary_client.call_llm",
+        side_effect=AssertionError("governed research intake must retain its typed owner"),
+    ):
+        outcome = decomp.decompose_task(tid, author="auto-decomposer")
+
+    assert outcome.ok is False
+    assert "governed research intake" in outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "triage"
+    assert task.assignee == "lunabot-research-lab-director"

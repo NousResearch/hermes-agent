@@ -142,6 +142,41 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def test_distinct_terminal_failure_causes_do_not_accumulate_as_one_broken_path():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=2,
+            same_tool_failure_warn_after=2,
+            same_tool_failure_halt_after=3,
+        )
+    )
+
+    decisions = [
+        controller.after_call(
+            "terminal",
+            {"command": "git status"},
+            '{"exit_code":1,"stderr":"not a git repository"}',
+            failed=True,
+        ),
+        controller.after_call(
+            "terminal",
+            {"command": "pytest focused"},
+            '{"exit_code":1,"stderr":"assertion reproduced"}',
+            failed=True,
+        ),
+        controller.after_call(
+            "terminal",
+            {"command": "rg expected path"},
+            '{"exit_code":2,"stderr":"path missing"}',
+            failed=True,
+        ),
+    ]
+
+    assert [decision.action for decision in decisions] == ["allow", "allow", "allow"]
+    assert controller.halt_decision is None
+
+
 
 
 

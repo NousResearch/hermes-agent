@@ -81,6 +81,209 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_protected_show_surfaces_completed_parent_handoff(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        parent_id = kb.create_task(conn, title="Upstream verifier", assignee="verifier")
+        assert kb.claim_task(conn, parent_id) is not None
+        assert kb.complete_task(
+            conn,
+            parent_id,
+            summary="Canonical receipt passed.",
+            metadata={"receipt_status": "passed"},
+        )
+        child_id = kb.create_task(
+            conn,
+            title="Downstream repair",
+            assignee="test-worker",
+            parents=[parent_id],
+        )
+        assert kb.claim_task(conn, child_id) is not None
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", child_id)
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    payload = json.loads(kt._handle_show({}))
+
+    assert payload["parent_handoffs"] == [
+        {
+            "id": parent_id,
+            "title": "Upstream verifier",
+            "completed_at": str(payload["parent_handoffs"][0]["completed_at"]),
+            "summary": "Canonical receipt passed.",
+            "metadata": {"receipt_status": "passed"},
+        }
+    ]
+
+
+def test_remote_worker_payload_replaces_private_paths_with_local_tokens():
+    from tools.kanban_tools import (
+        _project_remote_worker_state,
+        _sanitize_remote_worker_payload,
+    )
+
+    workspace = "/Users/example/.hermes/kanban/boards/demo/workspaces/t_12345678"
+    payload = {
+        "task": {
+            "workspace_path": workspace,
+            "body": (
+                "Run env HERMES_HOME=/Users/example/.hermes hermes check "
+                "then inspect /home/user/private.txt; command --worktree "
+                f"{workspace}. Then continue."
+            ),
+        },
+        "events": [{"payload": {"workspace": workspace}}],
+    }
+    projected = _project_remote_worker_state(payload, current_run_id=None)
+    sanitized = _sanitize_remote_worker_payload(
+        projected,
+        workspace_path=workspace,
+        control_home="/Users/example/.hermes",
+    )
+
+    rendered = json.dumps(sanitized)
+    assert "/Users/" not in rendered
+    assert "/home/" not in rendered
+    assert sanitized["task"]["workspace_path"] is None
+    assert sanitized["task"]["workspace_access"] == "dispatcher_current_directory"
+    assert "$HERMES_CONTROL_HOME" in sanitized["task"]["body"]
+    assert "--worktree $HERMES_KANBAN_WORKSPACE. Then" in sanitized["task"]["body"]
+    assert "--worktree .." not in sanitized["task"]["body"]
+    assert "<private-path>" in sanitized["task"]["body"]
+
+
+def test_remote_worker_projection_excludes_obsolete_attempt_history():
+    from tools.kanban_tools import _project_remote_worker_state
+
+    payload = {
+        "task": {
+            "id": "t_12345678",
+            "body": "Repair current PR state.",
+            "status": "running",
+        },
+        "parents": [],
+        "children": [],
+        "comments": [{"author": "worker", "body": "protocol violation"}],
+        "events": [
+            {"kind": "blocked", "run_id": "run-old", "payload": "old failure"},
+            {"kind": "started", "run_id": "run-current", "payload": "current"},
+        ],
+        "runs": [
+            {"id": "run-old", "status": "blocked", "error": "manual_reclaim"},
+            {
+                "id": "run-review",
+                "status": "review_requested",
+                "outcome": "review_requested",
+                "summary": "Verify canonical head and the bounded CI handoff; do not reimplement.",
+            },
+            {"id": "run-current", "status": "running", "error": None},
+        ],
+        "worker_context": "Prior attempts: protocol violation and manual reclaim",
+    }
+
+    projected = _project_remote_worker_state(payload, current_run_id="run-current")
+
+    rendered = json.dumps(projected)
+    assert "run-old" not in rendered
+    assert "old failure" not in rendered
+    assert "protocol violation" not in rendered
+    assert projected["comments"] == []
+    assert projected["runs"] == []
+    assert projected["events"] == []
+    assert projected["task"].get("current_run_id") is None
+    assert projected["review_assignment"] is True
+    assert "This is a review run" in projected["worker_context"]
+    assert "bounded CI handoff" not in rendered
+    assert "Verify canonical current state" in projected["history_policy"]
+    assert "role-owned decision" in projected["worker_context"]
+    assert "no change is needed" in projected["worker_context"]
+
+
+def test_remote_worker_projection_keeps_only_bounded_sanitized_completed_parent_handoffs():
+    from tools.kanban_tools import (
+        _project_remote_worker_state,
+        _sanitize_remote_worker_payload,
+    )
+
+    private_root = "/Users/operator/private-repo"
+    payload = {
+        "task": {"id": "t_12345678", "status": "running"},
+        "parents": ["t_aaaaaaaa", "t_bbbbbbbb"],
+        "children": [],
+        "runs": [],
+        "parent_handoffs": [
+            {
+                "id": "t_aaaaaaaa",
+                "title": "Completed evidence parent",
+                "status": "done",
+                "completed_at": "2026-08-26T12:00:00Z",
+                "summary": "verified at " + private_root + "/report.json\n" + "x" * 9000,
+                "metadata": {
+                    "artifact": private_root + "/receipt.json",
+                    "token": "token=super-secret-value",
+                    "nested": {"result": "passed"},
+                },
+                "comments": ["obsolete attempt"],
+                "events": ["obsolete event"],
+                "runs": ["obsolete run"],
+            },
+            {
+                "id": "t_bbbbbbbb",
+                "title": "Still running",
+                "status": "running",
+                "summary": "must not be treated as a handoff",
+            },
+        ],
+    }
+
+    projected = _project_remote_worker_state(payload, current_run_id="run-current")
+    sanitized = _sanitize_remote_worker_payload(
+        projected,
+        workspace_path=private_root,
+        control_home="/Users/operator/.hermes",
+    )
+
+    assert len(sanitized["parent_handoffs"]) == 1
+    handoff = sanitized["parent_handoffs"][0]
+    assert set(handoff) == {"id", "title", "completed_at", "summary", "metadata"}
+    assert len(handoff["summary"].encode("utf-8")) <= 4096
+    assert private_root not in json.dumps(handoff)
+    assert "super-secret-value" not in json.dumps(handoff)
+    assert handoff["metadata"]["nested"] == {"result": "passed"}
+
+
+def test_remote_worker_projection_does_not_reuse_superseded_review_handoff():
+    from tools.kanban_tools import _project_remote_worker_state
+
+    payload = {
+        "task": {
+            "id": "t_12345678",
+            "body": "Original implementation assignment.",
+            "status": "running",
+        },
+        "runs": [
+            {
+                "status": "review_requested",
+                "summary": "obsolete review handoff",
+            },
+            {
+                "outcome": "blocked",
+                "summary": "reviewer failed after the handoff",
+            },
+            {"status": "running"},
+        ],
+    }
+
+    projected = _project_remote_worker_state(payload, current_run_id="run-current")
+
+    assert projected["review_assignment"] is False
+    assert "obsolete review handoff" not in json.dumps(projected)
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -429,6 +632,33 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_normalizes_worker_supplied_scratch_path(worker_env):
+    """Model-generated scratch paths must stay under Hermes-managed storage."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "review child",
+        "assignee": "reviewer",
+        "workspace_kind": "scratch",
+        "workspace_path": "/home/user/worktrees/guessed-parent",
+    })
+    result = json.loads(out)
+    assert result["ok"] is True
+    assert result["workspace_kind"] == "scratch"
+    assert result["workspace_path"] is None
+
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, result["task_id"])
+        assert child.workspace_path is None
+        resolved = kb.resolve_workspace(child)
+        assert kb._is_managed_scratch_path(resolved)
+    finally:
+        conn.close()
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -594,6 +824,14 @@ def test_kanban_guidance_orchestrator_decision_ownership():
     assert KANBAN_GUIDANCE.count("Decision ownership.") == 1
     assert "Never let two subtree cards decide the same question" in KANBAN_GUIDANCE
     assert "workers cannot see sibling context" in KANBAN_GUIDANCE
+
+
+def test_kanban_guidance_rejects_self_referential_reclaim_and_crash_blockers():
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "attempt-management evidence, not task blockers" in KANBAN_GUIDANCE
+    assert "Never block because an earlier worker crashed" in KANBAN_GUIDANCE
+    assert "Do not pass the literal environment-variable token" in KANBAN_GUIDANCE
 
 
 # ---------------------------------------------------------------------------

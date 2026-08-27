@@ -110,6 +110,7 @@ def test_idle_exactly_at_threshold():
 import os
 import socket as _socket
 import threading
+import uuid
 
 
 from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
@@ -124,7 +125,9 @@ _FLY_ENV = {FLY_APP_NAME_ENV: "hermes-agent-stg-test", FLY_MACHINE_ID_ENV: "d891
 
 def _fake_flaps(tmp_path, status_line, capture):
     """One-shot unix-socket HTTP server standing in for flaps."""
-    sock_path = str(tmp_path / "fly-api.sock")
+    # Darwin caps AF_UNIX paths at 104 bytes; pytest's nested temp roots can
+    # exceed that before the filename is added.
+    sock_path = f"/tmp/hermes-flaps-{uuid.uuid4().hex[:12]}.sock"
     server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     server.bind(sock_path)
     server.listen(1)
@@ -155,6 +158,7 @@ def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
     sock_path, t = _fake_flaps(tmp_path, "200 OK", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is True
     t.join(timeout=5)
+    os.unlink(sock_path)
     request = captured[0].decode()
     # The request must target THIS machine's suspend endpoint, per the Fly
     # Machines API (POST /v1/apps/{app}/machines/{id}/suspend on /.fly/api).
@@ -169,6 +173,7 @@ def test_suspend_self_non_2xx_is_false_not_raise(tmp_path):
     sock_path, t = _fake_flaps(tmp_path, "412 Precondition Failed", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is False
     t.join(timeout=5)
+    os.unlink(sock_path)
 
 
 def test_suspend_self_missing_socket_is_false_not_raise(tmp_path):

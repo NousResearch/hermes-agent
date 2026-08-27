@@ -946,6 +946,95 @@ def _title_read(session: dict, db, key: str) -> str:
     return resolved_title
 
 
+@method("session.worktree_cleanup")
+def _(rid, params: dict) -> dict:
+    """Inspect or explicitly remove one exact managed conversation worktree."""
+    target = str(params.get("session_id") or "").strip()
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    action = str(params.get("action") or "inspect").strip()
+    if action not in {"inspect", "remove"}:
+        return _err(rid, 4006, "action must be 'inspect' or 'remove'")
+
+    profile = str(params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5036)
+        try:
+            current = target
+            seen: set[str] = set()
+            root_session_id = None
+            while current and current not in seen:
+                seen.add(current)
+                if db.get_conversation_worktree(current) is not None:
+                    root_session_id = current
+                    break
+                row = db.get_session(current) or {}
+                current = str(row.get("parent_session_id") or "").strip()
+            if root_session_id is None:
+                return _err(rid, 4007, "conversation worktree binding not found")
+            manager, _owned_db, owns_db = _conversation_worktree_manager(
+                profile_home=profile_home,
+                db=db,
+            )
+            if owns_db:
+                return _err(rid, 5036, "conversation worktree database ownership mismatch")
+            if manager is None:
+                return _err(rid, 4007, "conversation worktree isolation is disabled")
+
+            # Keep the live-root decision stable through inspect/remove. Session
+            # close/archive/delete do not enter this handler and therefore never
+            # imply cleanup.
+            with _sessions_lock:
+                active = any(
+                    not session.get("_finalized")
+                    and str(
+                        (session.get("conversation_worktree") or {}).get(
+                            "root_session_id"
+                        )
+                        or ""
+                    )
+                    == root_session_id
+                    for session in _sessions.values()
+                )
+                if action == "inspect":
+                    verdict = manager.inspect_cleanup(
+                        root_session_id,
+                        active_session_bound=active,
+                    )
+                    removed = False
+                    failure_phase = None
+                    failure_message = None
+                else:
+                    result = manager.remove_after_explicit_request(
+                        root_session_id,
+                        active_session_bound=active,
+                    )
+                    verdict = result.verdict
+                    removed = result.removed
+                    failure_phase = result.failure_phase
+                    failure_message = result.failure_message
+
+            record = db.get_conversation_worktree(root_session_id)
+            if record is None:
+                return _err(rid, 5036, "conversation worktree binding disappeared")
+            from hermes_cli.worktree_cmd import conversation_cleanup_status
+
+            return _ok(
+                rid,
+                conversation_cleanup_status(
+                    verdict,
+                    record,
+                    removed=removed,
+                    failure_phase=failure_phase,
+                    failure_message=failure_message,
+                ),
+            )
+        except Exception as exc:
+            return _err(rid, 5036, f"conversation worktree cleanup failed: {exc}")
+
+
 @method("session.title")
 @_with_db(5007, session_scoped=True)
 def _(rid, params: dict, session: dict, db) -> dict:

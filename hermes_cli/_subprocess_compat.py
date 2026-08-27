@@ -370,7 +370,7 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
     # Ensure Popen's own bookkeeping sees the exit so communicate()/wait() cannot hang.
     try:
         proc.kill()
-    except OSError:
+    except Exception:
         pass
 
 
@@ -388,7 +388,7 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
             pass
     try:
         proc.kill()
-    except OSError:
+    except Exception:
         pass
     if IS_WINDOWS:
         # No identity guard on purpose: *proc* is our own retained Popen handle, so the PID cannot

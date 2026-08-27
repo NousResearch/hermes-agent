@@ -191,13 +191,16 @@ def reclaim_worktrees(
             actions.append(f"would remove {record.name} ({record.reason})")
             continue
 
+    def reclaim_one(record: TreeRecord) -> List[str]:
+        record_actions: List[str] = []
         entry = Path(record.path)
         if record.untracked:
             archive = _archive_untracked(entry, record.untracked)
             if archive is None:
-                actions.append(f"kept {record.name} (archive of untracked files failed)")
-                continue
-            actions.append(f"archived {len(record.untracked)} untracked file(s) → {archive}")
+                return [f"kept {record.name} (archive of untracked files failed)"]
+            record_actions.append(
+                f"archived {len(record.untracked)} untracked file(s) → {archive}"
+            )
 
         # Dead-pid locks must be unlocked or `remove --force` refuses.
         with contextlib.suppress(Exception):
@@ -212,9 +215,39 @@ def reclaim_worktrees(
                 continue
             if record.branch and record.branch not in _PROTECTED_BRANCHES:
                 _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
-            actions.append(f"removed {record.name}")
+            record_actions.append(f"removed {record.name}")
         except Exception as exc:
-            actions.append(f"failed to remove {record.name}: {exc}")
+            record_actions.append(f"failed to remove {record.name}: {exc}")
+        return record_actions
+
+    actions: List[str] = []
+    for record in records:
+        if record.verdict not in {"reap", "reap-archive"}:
+            continue
+        if dry_run:
+            actions.append(f"would remove {record.name} ({record.reason})")
+            continue
+
+        try:
+            with conversation_worktree_reclaim_guard(
+                Path(repo_root), Path(record.path)
+            ) as manager_owned:
+                if manager_owned is True:
+                    actions.append(
+                        f"kept {record.name} (manager-owned conversation worktree)"
+                    )
+                    continue
+                if manager_owned is None:
+                    actions.append(
+                        f"kept {record.name} (conversation ownership could not be verified)"
+                    )
+                    continue
+                actions.extend(reclaim_one(record))
+        except Exception as exc:
+            logger.warning("Could not lock worktree reclaim for %s: %s", record.name, exc)
+            actions.append(
+                f"kept {record.name} (conversation ownership could not be verified)"
+            )
 
     if not dry_run:
         with contextlib.suppress(Exception):

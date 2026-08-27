@@ -2552,6 +2552,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        manage_conversation_worktree: bool = True,
     ):
         """CLI args win over config; ``reasoning`` is per-run only; ``resume`` restores history from SQLite."""
         self._init_display_options(verbose, compact)
@@ -2980,14 +2981,21 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
     def _release_active_session(self) -> None:
         lease = getattr(self, "_active_session_lease", None)
-        if lease is None:
-            return
-        try:
-            lease.release()
-        except Exception:
-            logger.debug("Failed to release active session slot", exc_info=True)
-        finally:
-            self._active_session_lease = None
+        if lease is not None:
+            try:
+                lease.release()
+            except Exception:
+                logger.debug("Failed to release active session slot", exc_info=True)
+            finally:
+                self._active_session_lease = None
+        root_lease = getattr(self, "_conversation_root_lease", None)
+        if root_lease is not None:
+            try:
+                root_lease.release()
+            except Exception:
+                logger.debug("Failed to release conversation root lease", exc_info=True)
+            finally:
+                self._conversation_root_lease = None
 
     _PET_FRAME_INTERVAL = 0.16
     _PET_CFG_INTERVAL = 2.5

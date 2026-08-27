@@ -2620,7 +2620,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
-        "browser",
+        "secure-worker", "browser",
         "verify",
         # Plugin commands missing from top-level --help is an accepted trade-off.
         "help",

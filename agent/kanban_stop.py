@@ -6,13 +6,45 @@ Policy-only: return a bounded synthetic nudge so the loop continues instead of e
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable, Optional
 
 
-_TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
+_TERMINAL_KANBAN_TOOLS = frozenset(
+    {
+        "kanban_complete",
+        "kanban_block",
+        "kanban_request_review",
+        "kanban_request_changes",
+    }
+)
 
 _DEFAULT_MAX_ATTEMPTS = 2
+_MAX_REVIEW_SUMMARY_CHARS = 4000
+
+
+def _configured_review_profile() -> str | None:
+    """Return an installed independent reviewer configured for stop handoffs."""
+
+    configured = (os.environ.get("HERMES_KANBAN_REVIEWER_PROFILE") or "").strip()
+    if not configured:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban = load_config().get("kanban") or {}
+            configured = str(kanban.get("reviewer_profile") or "").strip()
+        except Exception:
+            return None
+    if not configured:
+        return None
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        profile_dir = get_default_hermes_root() / "profiles" / configured
+        return configured if profile_dir.is_dir() else None
+    except Exception:
+        return None
 
 
 def kanban_stop_nudge_enabled() -> bool:
@@ -40,6 +72,63 @@ def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
         ):
             return True
         if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:
+            return True
+    return False
+
+
+def successful_kanban_terminal_transition(
+    *,
+    messages: Iterable[dict] | None,
+    tool_calls: Iterable[Any] | None,
+) -> bool:
+    """Return whether this worker's current tool batch durably transitioned it.
+
+    The conversation loop calls this only after the executor has persisted
+    every tool-result row.  Match the current batch by tool-call id and require
+    the canonical Kanban ``{"ok": true}`` response; merely attempting a
+    terminal tool (or receiving an error) must not stop the worker before it
+    can correct the handoff.
+    """
+    if not kanban_stop_nudge_enabled():
+        return False
+    try:
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        if not is_dispatcher_owned_worker_context():
+            return False
+    except Exception:
+        return False
+
+    terminal_ids: set[str] = set()
+    for tool_call in tool_calls or []:
+        if _tool_call_name(tool_call) not in _TERMINAL_KANBAN_TOOLS:
+            continue
+        if isinstance(tool_call, dict):
+            call_id = tool_call.get("id") or tool_call.get("tool_call_id")
+        else:
+            call_id = getattr(tool_call, "id", None)
+        if call_id:
+            terminal_ids.add(str(call_id))
+    if not terminal_ids:
+        return False
+
+    for message in messages or []:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        if str(message.get("tool_call_id") or "") not in terminal_ids:
+            continue
+        if str(message.get("name") or message.get("tool_name") or "") not in (
+            _TERMINAL_KANBAN_TOOLS
+        ):
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            payload = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict) and payload.get("ok") is True:
             return True
     return False
 

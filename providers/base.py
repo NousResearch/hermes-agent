@@ -178,6 +178,16 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def owns_reasoning_policy(self, **context: Any) -> bool:
+        """Return True when this profile owns whether reasoning is emitted.
+
+        This is an explicit contract for profiles whose policy may intentionally
+        omit a reasoning field (for example, when a route rejects a disable).
+        Overriding an unrelated API-kwargs hook must not implicitly claim
+        ownership of generic reasoning configuration.
+        """
+        return False
+
     def default_vision_model(self) -> str | None:
         """Return a default vision model id for this provider, or None.
 

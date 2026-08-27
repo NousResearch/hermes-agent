@@ -675,6 +675,36 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     return finish(raw_response)
 
 
+_EGRESS_PROTECTED_PROVIDERS = frozenset(
+    {"anthropic", "openai-codex", "nous", "nous-portal", "nousresearch"}
+)
+
+
+def _attach_source_provenance_sidecar(agent, kwargs: dict, messages: list) -> dict:
+    """Carry internal read proofs around strict wire-message conversion."""
+
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider not in _EGRESS_PROTECTED_PROVIDERS:
+        return kwargs
+    from agent.source_provenance_tools import build_source_provenance_sidecar
+
+    sidecar = build_source_provenance_sidecar(messages)
+    if not sidecar:
+        return kwargs
+    return {**kwargs, "_hermes_source_provenance": sidecar}
+
+
+def _dispatch_provider_request(agent, request, callback):
+    """Apply the exact provider-bound egress policy at a physical call site."""
+
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider not in _EGRESS_PROTECTED_PROVIDERS:
+        return callback(request)
+    from agent.llm_egress_runtime import dispatch_authorized_agent_request
+
+    return dispatch_authorized_agent_request(agent, request, callback)
+
+
 def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
@@ -1356,6 +1386,9 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         provider_name=agent.provider,
+    )
+    return _attach_source_provenance_sidecar(
+        agent, _chat_kwargs, _source_sidecar_messages
     )
 
 

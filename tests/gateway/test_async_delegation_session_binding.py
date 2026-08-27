@@ -88,6 +88,7 @@ class TestGatewayPinningFailsClosed:
         runner.session_store.advance_compression_session = MagicMock(
             return_value=switched_entry
         )
+        runner.session_store.reconcile_conversation_root_transition = MagicMock()
         runner._async_session_store = AsyncSessionStore(runner.session_store)
         return runner
 
@@ -116,6 +117,9 @@ class TestGatewayPinningFailsClosed:
         getattr(runner.session_store, "switch_session").assert_called_once_with(
             current.session_key, "sess_live"
         )
+        getattr(
+            runner.session_store, "reconcile_conversation_root_transition"
+        ).assert_called_once_with(current, pinned)
 
     @pytest.mark.asyncio
     async def test_non_compression_ended_parent_drops(self):

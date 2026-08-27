@@ -79,6 +79,52 @@ def _record_kanban_budget_exhausted(
         )
 
 
+def _record_kanban_guardrail_halt(
+    kanban_task: str,
+    decision,
+    logger: logging.Logger,
+) -> None:
+    """Close a Kanban run stopped by a tool-loop safety guard.
+
+    A controlled guardrail halt returns a normal CLI response and process exit
+    code.  Without an explicit board transition the dispatcher mistakes that
+    clean process exit for a missing ``kanban_complete``/``kanban_block`` call
+    and retries it as a protocol violation.  Route the halt through the normal
+    failure circuit instead, preserving bounded retries and the task override.
+    """
+    tool_name = str(getattr(decision, "tool_name", "") or "unknown")
+    code = str(getattr(decision, "code", "") or "tool_guardrail_halt")
+    error = f"Tool guardrail halted {tool_name}: {code}"
+    try:
+        from hermes_cli import kanban_db as _kb
+
+        _conn = _kb.connect()
+        try:
+            _kb._record_task_failure(
+                _conn,
+                kanban_task,
+                error,
+                outcome="crashed",
+                release_claim=True,
+                end_run=True,
+                event_payload_extra={
+                    "guardrail": code,
+                    "tool_name": tool_name,
+                },
+            )
+        finally:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+    except Exception:
+        logger.warning(
+            "Failed to record tool-guardrail halt for task %s",
+            kanban_task,
+            exc_info=True,
+        )
+
+
 def _drop_verification_continuation_scaffolding(messages) -> None:
     """Remove verification-continuation nudges in place; only the synthetic nudges carry
     these flags, so the real attempted final answer persisted to state.db survives."""

@@ -1,0 +1,15 @@
+{
+  "excluded_segments": [
+    ".git",
+    ".env",
+    ".ssh",
+    "credentials",
+    "data",
+    "datasets",
+    "logs",
+    "secrets"
+  ],
+  "max_file_bytes": 262144,
+  "max_pack_bytes": 4194304,
+  "policy_version": "ox-pack-v1"
+}

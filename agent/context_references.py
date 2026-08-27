@@ -168,6 +168,11 @@ def parse_context_references(message: str) -> list[ContextReference]:
 def preprocess_context_references(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
     allowed_root: str | Path | None = None,
+    source_provenance_registry=None,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    request_id: str | None = None,
+    policy_digest: str | None = None,
 ) -> ContextReferenceResult:
     """Sync wrapper; safe both without a loop (CLI) and inside a running loop (gateway)."""
     coro = preprocess_context_references_async(
@@ -185,6 +190,11 @@ def preprocess_context_references(
 async def preprocess_context_references_async(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
     allowed_root: str | Path | None = None,
+    source_provenance_registry=None,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    request_id: str | None = None,
+    policy_digest: str | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:

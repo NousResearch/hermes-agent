@@ -175,6 +175,17 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
 
 
+def find_gateway_approval_session(request_id: str) -> Optional[str]:
+    """Return the session key holding the exact unresolved approval request."""
+    if not request_id:
+        return None
+    with _lock:
+        for session_key, entries in _gateway_queues.items():
+            if any(entry.data.get("request_id") == request_id for entry in entries):
+                return session_key
+    return None
+
+
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:

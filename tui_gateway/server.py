@@ -2326,7 +2326,7 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
     try:
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
-            if row and row.get("cwd"):
+            if row and row.get("cwd") and not conversation_worktree:
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
@@ -2565,6 +2565,9 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
                 discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
             if (lease := (discarded or {}).get("active_session_lease")) is not None:
                 lease.release()
+            root_lease = (discarded or {}).get("conversation_root_lease")
+            if root_lease is not None:
+                root_lease.release()
         finally:
             if close_db and hasattr(db, "close"):
                 try:

@@ -69,10 +69,13 @@ class GatewayKanbanWatchersMixin:
         one tick's failure never stops the next.
         """
         from gateway.config import Platform as _Platform
+
         try:
             from hermes_cli import kanban_db as _kb
         except Exception:
-            logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
+            logger.warning(
+                "kanban notifier: kanban_db not importable; notifier disabled"
+            )
             return
 
         sub_fail_counts: dict[tuple, int] = getattr(self, "_kanban_sub_fail_counts", {})
@@ -158,6 +161,7 @@ class GatewayKanbanWatchersMixin:
             return
 
         from gateway.platforms.base import BasePlatformAdapter
+
         candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
         if not candidates:
             return
@@ -223,8 +227,12 @@ class GatewayKanbanWatchersMixin:
                         "lock (%s); this gateway will NOT dispatch.", _lock_path)
             return None
         if _lock_state == "held":
-            self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
-            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
+            self._kanban_dispatcher_lock_handle = (
+                _lock_handle  # hold for process lifetime
+            )
+            logger.info(
+                "kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path
+            )
         else:
             logger.warning("kanban dispatcher: advisory lock unavailable at %s; proceeding "
                            "on config control alone.", _lock_path)

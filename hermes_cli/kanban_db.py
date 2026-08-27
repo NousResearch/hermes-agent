@@ -30,6 +30,100 @@ from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
 
+_GITHUB_PR_FEEDBACK_IDEMPOTENCY_PREFIX = "github-pr-feedback:"
+_GITHUB_PR_INTENT_REVIEW_PREFIX = "github-pr-feedback:intent-review:"
+_RESEARCH_LAB_INTAKE_IDEMPOTENCY_PREFIX = "research-lab-intake-"
+_EXACT_HEAD_PR_MARKERS = ("expected_head_sha", "pr_number", "repository")
+_PR_WRITE_ACTION_RE = re.compile(
+    r"\b(?:repair|fix|push|reply|respond|base[-_ ]?refresh|"
+    r"refresh(?:ing)?\s+(?:the\s+)?base|resolve(?:d|s|ing)?\s+(?:a\s+)?merge\s+conflict)\b",
+    re.IGNORECASE,
+)
+
+
+def is_atomic_pr_automation_task(
+    *, body: Optional[str], idempotency_key: Optional[str]
+) -> bool:
+    """Return whether a task carries indivisible PR-automation identity.
+
+    The feedback plugin's idempotency namespace is authoritative. Typed
+    exact-head handoffs are also atomic even if a caller omitted that key;
+    marker order and JSON formatting deliberately do not matter.
+    """
+    key = (idempotency_key or "").strip().casefold()
+    if key.startswith(_GITHUB_PR_FEEDBACK_IDEMPOTENCY_PREFIX):
+        return True
+    evidence = (body or "").casefold()
+    return all(marker in evidence for marker in _EXACT_HEAD_PR_MARKERS)
+
+
+def is_governed_research_intake(*, idempotency_key: Optional[str]) -> bool:
+    """Return whether a typed Research Lab intake must retain its specialist owner."""
+    key = (idempotency_key or "").strip().casefold()
+    return key.startswith(_RESEARCH_LAB_INTAKE_IDEMPOTENCY_PREFIX)
+
+
+def _task_requires_pr_write_authority(
+    *, title: str, body: Optional[str], idempotency_key: Optional[str]
+) -> bool:
+    if not is_atomic_pr_automation_task(
+        body=body, idempotency_key=idempotency_key
+    ):
+        return False
+    return _PR_WRITE_ACTION_RE.search(f"{title}\n{body or ''}") is not None
+
+
+def _profile_is_explicitly_read_only(profile: Optional[str]) -> bool:
+    """Read operator-authored profile authority metadata, failing open."""
+    if not profile:
+        return False
+    try:
+        import yaml
+
+        from hermes_cli.profiles import get_profile_dir
+
+        profile_path = get_profile_dir(profile) / "profile.yaml"
+        with profile_path.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    authority = str(
+        data.get("execution_authority") or data.get("authority") or ""
+    ).strip().casefold()
+    if authority in {"read-only", "read_only", "readonly", "review-only"}:
+        return True
+    description = str(data.get("description") or "").casefold()
+    return "read-only" in description or "read only" in description
+
+
+def _validate_pr_task_assignee_authority(
+    *,
+    title: str,
+    body: Optional[str],
+    idempotency_key: Optional[str],
+    assignee: Optional[str],
+    initial_status: Optional[str] = None,
+) -> None:
+    key = (idempotency_key or "").strip().casefold()
+    evidence = (body or "").casefold()
+    blocked_read_only_intent = (
+        initial_status == "blocked"
+        and key.startswith(_GITHUB_PR_INTENT_REVIEW_PREFIX)
+        and "do not edit, push, reply, approve, or merge" in evidence
+        and "operator intent decision" in evidence
+    )
+    if blocked_read_only_intent:
+        return
+    if _task_requires_pr_write_authority(
+        title=title, body=body, idempotency_key=idempotency_key
+    ) and _profile_is_explicitly_read_only(assignee):
+        raise ValueError(
+            f"read-only profile {assignee!r} cannot own PR repair, push, "
+            "reply, or base-refresh work"
+        )
+
 
 # --- Shared micro-helpers (row access, JSON, env, git) ---
 
@@ -1258,6 +1352,13 @@ def create_task(
     # performs the profile-existence check only on the local spawn path.
     if not title or not title.strip():
         raise ValueError("title is required")
+    _validate_pr_task_assignee_authority(
+        title=title,
+        body=body,
+        idempotency_key=idempotency_key,
+        assignee=assignee,
+        initial_status=initial_status,
+    )
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
     if workspace_kind not in VALID_WORKSPACE_KINDS:
@@ -1500,10 +1601,18 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee, title, body, idempotency_key "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if not row:
             return False
+        _validate_pr_task_assignee_authority(
+            title=row["title"],
+            body=row["body"],
+            idempotency_key=row["idempotency_key"],
+            assignee=profile,
+        )
         if row["claim_lock"] is not None and row["status"] == "running":
             raise RuntimeError(
                 f"cannot reassign {task_id}: currently running (claimed). "
@@ -2433,6 +2542,103 @@ def reclaim_task(
         )
     # Operator intervention = fresh retry budget (own txn, runs after commit).
     _clear_failure_counter(conn, task_id)
+    return True
+
+
+def suspend_task_for_watchdog(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    reason: str,
+    finding: dict[str, Any],
+    termination_fn=None,
+) -> bool:
+    """Stop one unhealthy worker and preserve its task as ``blocked``.
+
+    This is stricter than operator-driven :func:`reclaim_task`: automatic
+    supervision must prove that a host-local worker terminated before its
+    claim is released. If termination cannot be verified, no task or run row
+    changes and the caller can surface the task for operator intervention.
+    """
+    row = conn.execute(
+        "SELECT status, current_run_id, claim_lock, worker_pid "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if (
+        row is None
+        or row["status"] != "running"
+        or row["current_run_id"] is None
+        or int(row["current_run_id"]) != int(expected_run_id)
+    ):
+        return False
+
+    terminate = termination_fn or (
+        lambda pid, lock: _terminate_reclaimed_worker(pid, lock)
+    )
+    termination = terminate(row["worker_pid"], row["claim_lock"])
+    if not (
+        isinstance(termination, dict)
+        and termination.get("host_local")
+        and termination.get("termination_attempted")
+        and termination.get("terminated")
+    ):
+        return False
+
+    with write_txn(conn):
+        current = conn.execute(
+            "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            current is None
+            or current["status"] != "running"
+            or current["current_run_id"] is None
+            or int(current["current_run_id"]) != int(expected_run_id)
+            or current["claim_lock"] != row["claim_lock"]
+        ):
+            return False
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, block_kind = 'transient' "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+            (task_id, int(expected_run_id)),
+        )
+        if cur.rowcount != 1:
+            return False
+        metadata = {"watchdog_finding": finding, "termination": termination}
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="watchdog_blocked",
+            status="blocked",
+            summary=reason,
+            metadata=metadata,
+        )
+        # Preserve the kernel's sticky-block contract. ``recompute_ready``
+        # distinguishes deliberate blocks from circuit-breaker recovery by
+        # the canonical ``blocked`` event; without it, completing the repair
+        # parent could prematurely promote the original before watchdog
+        # reconciliation verifies the receipt.
+        _append_event(
+            conn,
+            task_id,
+            "blocked",
+            {"reason": reason, "kind": "transient", "source": "worker_watchdog"},
+            run_id=run_id,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "watchdog_blocked",
+            {
+                **finding,
+                "reason": reason,
+                "termination": termination,
+            },
+            run_id=run_id,
+        )
     return True
 
 

@@ -30,6 +30,196 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+_PARENT_HANDOFF_SUMMARY_MAX_BYTES = 4096
+_PARENT_HANDOFF_METADATA_STRING_MAX_BYTES = 2048
+_PARENT_HANDOFF_METADATA_MAX_ITEMS = 32
+_PARENT_HANDOFF_METADATA_MAX_DEPTH = 4
+
+_PRIVATE_PATH_IN_TEXT = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    r"/(?:Users|home|private|var/folders|root|Volumes)/[^\s\"'`)]+"
+    r"|~(?:/|\\)[^\s\"'`)]+"
+    r"|[A-Za-z]:\\+(?:Users|Documents and Settings)\\+[^\s\"'`)]+"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_remote_worker_payload(
+    value: Any,
+    *,
+    workspace_path: str | None,
+    control_home: str,
+) -> Any:
+    """Make Kanban state useful to a remote worker without host path egress."""
+
+    if isinstance(value, str):
+        text = redact_sensitive_text(
+            value,
+            force=True,
+            redact_url_credentials=True,
+        )
+        if workspace_path:
+            text = text.replace(
+                str(workspace_path), "$HERMES_KANBAN_WORKSPACE"
+            )
+        if control_home:
+            text = text.replace(str(control_home), "$HERMES_CONTROL_HOME")
+        return _PRIVATE_PATH_IN_TEXT.sub("<private-path>", text)
+    if isinstance(value, dict):
+        return {
+            _sanitize_remote_worker_payload(
+                key,
+                workspace_path=workspace_path,
+                control_home=control_home,
+            ): _sanitize_remote_worker_payload(
+                item,
+                workspace_path=workspace_path,
+                control_home=control_home,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _sanitize_remote_worker_payload(
+                item,
+                workspace_path=workspace_path,
+                control_home=control_home,
+            )
+            for item in value
+        ]
+    return value
+
+
+def _truncate_utf8(text: Any, max_bytes: int) -> str:
+    rendered = text if isinstance(text, str) else str(text or "")
+    encoded = rendered.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return rendered
+    suffix = "\n<truncated>"
+    budget = max(0, max_bytes - len(suffix.encode("utf-8")))
+    return encoded[:budget].decode("utf-8", errors="ignore") + suffix
+
+
+def _bounded_parent_metadata(value: Any, *, depth: int = 0) -> Any:
+    """Keep a small JSON-safe completion handoff, never historical attempt text."""
+
+    if depth >= _PARENT_HANDOFF_METADATA_MAX_DEPTH:
+        return "<depth-capped>"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _truncate_utf8(value, _PARENT_HANDOFF_METADATA_STRING_MAX_BYTES)
+    if isinstance(value, dict):
+        bounded: dict[str, Any] = {}
+        for key, item in list(value.items())[:_PARENT_HANDOFF_METADATA_MAX_ITEMS]:
+            bounded[_truncate_utf8(key, 256)] = _bounded_parent_metadata(
+                item,
+                depth=depth + 1,
+            )
+        return bounded
+    if isinstance(value, (list, tuple)):
+        return [
+            _bounded_parent_metadata(item, depth=depth + 1)
+            for item in list(value)[:_PARENT_HANDOFF_METADATA_MAX_ITEMS]
+        ]
+    return _truncate_utf8(value, _PARENT_HANDOFF_METADATA_STRING_MAX_BYTES)
+
+
+def _bounded_completed_parent_handoffs(value: Any) -> list[dict[str, Any]]:
+    handoffs: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return handoffs
+    for item in value[:_PARENT_HANDOFF_METADATA_MAX_ITEMS]:
+        if not isinstance(item, dict) or item.get("status") != "done":
+            continue
+        handoffs.append(
+            {
+                "id": _truncate_utf8(item.get("id"), 64),
+                "title": _truncate_utf8(item.get("title"), 512),
+                "completed_at": _truncate_utf8(item.get("completed_at"), 64),
+                "summary": _truncate_utf8(
+                    item.get("summary"),
+                    _PARENT_HANDOFF_SUMMARY_MAX_BYTES,
+                ),
+                "metadata": _bounded_parent_metadata(item.get("metadata") or {}),
+            }
+        )
+    return handoffs
+
+
+def _project_remote_worker_state(payload: dict, *, current_run_id: str | None) -> dict:
+    """Expose current task truth without recycling obsolete attempt failures."""
+
+    del current_run_id
+    task = dict(payload.get("task") or {})
+    if task.get("current_run_id") is not None:
+        task["current_run_id"] = "$HERMES_KANBAN_RUN_ID"
+    # The dispatcher has already rooted terminal and file tools in the exact
+    # task workspace. Exposing the shell token as structured ``workspace_path``
+    # tempts models to copy it into the tool's literal ``workdir`` field, where
+    # ``$`` is (correctly) rejected as a metacharacter. Keep the token only in
+    # sanitized command text, where the shell can expand the exact grant.
+    task["workspace_path"] = None
+    task["workspace_access"] = "dispatcher_current_directory"
+    review_assignment = False
+    if task.get("status") in {"review", "running"}:
+        for run in reversed(payload.get("runs") or []):
+            if not isinstance(run, dict):
+                continue
+            state = str(run.get("outcome") or run.get("status") or "").strip()
+            if state in {"running", "claimed", "spawned", ""}:
+                continue
+            review_assignment = state == "review_requested"
+            break
+    worker_context = (
+        "Work only from the current task body and current repository state. "
+        "Terminal and file tools already start in the dispatcher-selected task "
+        "workspace; do not pass an environment token as a tool workdir. "
+        "Prior crash, protocol, manual-reclaim, local-fallback, and blocked "
+        "records are attempt evidence only and cannot block this retry."
+    )
+    if review_assignment:
+        worker_context = (
+            "This is a review run. Do not redo the implementation assignment. "
+            "Terminal and file tools already start in the dispatcher-selected "
+            "task workspace; do not pass an environment token as a tool workdir. "
+            "Inspect the current deliverable and canonical state, verify the "
+            "claimed evidence, then complete it or request concrete changes. "
+            "Block only on a newly reproduced external dependency."
+        )
+    worker_context += (
+        " A safe role-owned decision is work, not human input: make it and "
+        "record the rationale. If canonical verification shows no change is needed, "
+        "complete with that evidence instead of idling, rejecting, or blocking. "
+        "Use needs_input only for a decision whose authority is genuinely outside "
+        "the assigned role."
+    )
+    return {
+        "task": task,
+        "parents": payload.get("parents", []),
+        "children": payload.get("children", []),
+        "parent_handoffs": _bounded_completed_parent_handoffs(
+            payload.get("parent_handoffs")
+        ),
+        # Boolean current-state signal only: review summaries remain excluded
+        # with all other historical run text from the remote egress boundary.
+        "review_assignment": review_assignment,
+        # The task body is the authoritative bounded assignment. Historical
+        # worker comments are attempt evidence and previously caused agents to
+        # re-enact already-repaired failures.
+        "comments": [],
+        # Run/event counters are local lifecycle metadata and are not needed
+        # to execute the current assignment. The worker reports liveness via
+        # its lifecycle tools instead of replaying those identifiers remotely.
+        "events": [],
+        "runs": [],
+        "worker_context": worker_context,
+        "history_policy": (
+            "Verify canonical current state. Do not repeat or summarize obsolete "
+            "attempt failures. Finish, or report one newly reproduced blocker."
+        ),
+    }
 
 
 # --- Gating ---

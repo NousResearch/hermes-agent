@@ -1,0 +1,48 @@
+model:
+  provider: nous
+  default: stealth/ox-alpha
+  base_url: https://inference-api.nousresearch.com/v1
+fallback_providers: []
+provider_routing:
+  data_collection: deny
+toolsets: []
+terminal:
+  backend: docker
+  docker_image: REPLACE_WITH_ADMITTED_IMAGE@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  cwd: /ABSOLUTE/PATH/TO/SANITIZED/PACK
+  container_persistent: false
+  docker_persist_across_processes: false
+  persistent_shell: false
+  docker_network: false
+  docker_isolate_host_data: true
+  docker_mount_cwd_to_workspace: true
+  docker_volumes: []
+  docker_forward_env: []
+  docker_env: {}
+  docker_run_as_host_user: false
+  docker_extra_args: []
+  home_mode: isolated
+platform_toolsets:
+  cli: [terminal, file]
+skills:
+  trusted_project_dirs: []
+plugins:
+  enabled: []
+  disabled: []
+mcp_servers:
+  secure-github-staging:
+    command: /ABSOLUTE/PINNED/PYTHON
+    args: [-m, hermes_cli.secure_github_broker]
+    env:
+      HERMES_STAGING_GITHUB_OWNER: STAGING_OWNER
+      HERMES_STAGING_GITHUB_REPO: STAGING_REPOSITORY
+      HERMES_STAGING_GITHUB_TOKEN: ${HERMES_STAGING_GITHUB_TOKEN}
+    enabled: true
+checkpoints:
+  enabled: false
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+telemetry:
+  shared_metrics:
+    enabled: false

@@ -179,6 +179,12 @@ def build_learning_graph() -> dict[str, Any]:
     clusters = Counter(node.category for node in learned_skills.values())
     if memory_cards:
         clusters["memory"] = len(memory_cards)
+    for node in shared_nodes:
+        clusters[f"shared:{node.area}"] = clusters.get(f"shared:{node.area}", 0) + 1
+        origin = f"shared-origin:{node.origin_agent}"
+        clusters[origin] = clusters.get(origin, 0) + 1
+        status = f"shared-status:{node.status}"
+        clusters[status] = clusters.get(status, 0) + 1
 
     graph_nodes = [
         {

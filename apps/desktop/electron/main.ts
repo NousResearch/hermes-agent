@@ -170,6 +170,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
+import { ensureKanbanDispatcherReady } from './dispatcher-readiness'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
@@ -383,6 +384,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { shouldHealMissingUpdateBranch } from './update-branch-policy'
 import {
   compareApiUrl,
   parseCompareBehindCount,
@@ -3132,6 +3134,15 @@ async function resolveHealedBranch(updateRoot, branch) {
   const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
 
   if (probe.code !== 2) {
+    return branch
+  }
+
+  const current = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
+  const currentBranch = current.code === 0 ? current.stdout.trim() : ''
+  if (!shouldHealMissingUpdateBranch({ configuredBranch: branch, currentBranch })) {
+    rememberLog(
+      `[updates] origin/${branch} is gone, but it is the active local checkout; retaining it instead of falling back to main`
+    )
     return branch
   }
 
@@ -13242,6 +13253,9 @@ async function startHermes() {
         `Local Hermes backend is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
       )
     }
+
+    await advanceBootProgress('backend.dispatcher', 'Verifying Kanban dispatcher readiness', 92)
+    await ensureKanbanDispatcherReady(baseUrl, authToken, fetchJson)
 
     updateBootProgress({
       phase: 'backend.ready',

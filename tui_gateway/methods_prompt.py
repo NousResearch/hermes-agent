@@ -1137,7 +1137,7 @@ def _approval_respond_session_fallback(params: dict):
             from tools.approval import list_gateway_approvals
             with _sessions_lock:
                 live = list(_sessions.items())
-            for sid, session in live:
+            for _, session in live:
                 key = str(session.get("session_key") or "")
                 if key and any(
                     str(pending.get("request_id") or "") == request_id

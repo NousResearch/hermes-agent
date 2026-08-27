@@ -7,6 +7,7 @@ and neither replaces a name the user typed."""
 
 import json
 import logging
+import os
 import re
 import threading
 from contextlib import suppress

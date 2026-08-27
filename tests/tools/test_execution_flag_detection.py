@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
 import pytest
@@ -49,6 +50,8 @@ def test_real_binaries_execute_leading_dash_program_payload(
     """A PATH marker proves these binaries do not reparse '-program' as an option."""
     if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
         pytest.skip(f"{tool} or script is not installed")
+    if sys.platform == "darwin" and tool in {"sort", "man"}:
+        pytest.skip(f"{tool} execution-option integration is Linux-specific")
 
     marker = tmp_path / "executed"
     payload = tmp_path / "-payload-marker"

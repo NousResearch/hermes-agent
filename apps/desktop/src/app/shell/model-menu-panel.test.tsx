@@ -10,9 +10,9 @@ import { $activeSessionId, $currentModel, $currentProvider } from '@/store/sessi
 
 import { ModelMenuPanel } from './model-menu-panel'
 
-const notify = vi.fn(() => 'confirm-toast-1')
-const notifyError = vi.fn()
-const dismissNotification = vi.fn()
+const notify = vi.fn((..._args: unknown[]) => 'confirm-toast-1')
+const notifyError = vi.fn((..._args: unknown[]) => undefined)
+const dismissNotification = vi.fn((..._args: unknown[]) => undefined)
 
 vi.mock('@/store/notifications', () => ({
   dismissNotification: (...args: unknown[]) => dismissNotification(...args),
@@ -497,15 +497,29 @@ describe('ModelMenuPanel refresh reconcile × guarded-switch confirm handshake',
         providers: [{ models: ['muse-spark-1.2-contributor'], name: 'OpenCode', slug: 'opencode-go' }, MOA_PROVIDER]
       })
 
-    const requestGateway = vi
-      .fn()
-      .mockResolvedValueOnce({
-        confirm_message: 'CONTRIBUTOR TIER: this model may train on your data.',
-        confirm_required: true,
-        key: 'model',
-        value: 'muse-spark-1.2-contributor'
-      })
-      .mockResolvedValueOnce({ key: 'model', scope: 'global', value: 'muse-spark-1.2-contributor' })
+    // Method-aware gateway: the panel's catalog reads (`model.options`) fall
+    // back to the REST mock; `config.set` runs the guarded handshake —
+    // confirm_required first, success on the confirmed resend.
+    let configSets = 0
+
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method !== 'config.set') {
+        throw new Error('use REST catalog')
+      }
+
+      configSets += 1
+
+      if (configSets === 1) {
+        return {
+          confirm_message: 'CONTRIBUTOR TIER: this model may train on your data.',
+          confirm_required: true,
+          key: 'model',
+          value: 'muse-spark-1.2-contributor'
+        }
+      }
+
+      return { key: 'model', scope: 'global', value: 'muse-spark-1.2-contributor' }
+    })
 
     const content = render(<ConfirmHarness requestGateway={requestGateway as never} />)
 
@@ -533,10 +547,10 @@ describe('ModelMenuPanel refresh reconcile × guarded-switch confirm handshake',
     expect($currentProvider.get()).toBe('zhipu')
 
     // User confirms → ONE resend carrying confirm_expensive_model: true.
-    const action = notify.mock.calls.at(-1)?.[0]?.action as { onClick: () => Promise<void> }
+    const lastNotify = notify.mock.calls.at(-1)?.[0] as { action: { onClick: () => Promise<void> } }
 
     await act(async () => {
-      await action.onClick()
+      await lastNotify.action.onClick()
     })
 
     await vi.waitFor(() => {

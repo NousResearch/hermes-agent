@@ -30,31 +30,39 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
   const [statusRevision, setStatusRevision] = useState(0)
   const refreshGeneration = useRef(0)
 
-  const refresh = useCallback(async () => {
-    const generation = ++refreshGeneration.current
+  const refresh = useCallback(
+    async (propagateError = false) => {
+      const generation = ++refreshGeneration.current
 
-    try {
-      const next = await getMemoryProviderConfig(provider, profile)
+      try {
+        const next = await getMemoryProviderConfig(provider, profile)
 
-      if (generation !== refreshGeneration.current) {
-        return
+        if (generation !== refreshGeneration.current) {
+          return
+        }
+
+        const seed = seedValues(next)
+        setConfig(next)
+        setValues(seed)
+        setSaved(seed)
+        setLoadError(null)
+        setStatusRevision(current => current + 1)
+      } catch (err) {
+        if (generation !== refreshGeneration.current) {
+          return
+        }
+
+        if (propagateError) {
+          // Let the managed form show the error without unmounting its draft.
+          throw err
+        }
+
+        setConfig(null)
+        setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
       }
-
-      const seed = seedValues(next)
-      setConfig(next)
-      setValues(seed)
-      setSaved(seed)
-      setLoadError(null)
-      setStatusRevision(current => current + 1)
-    } catch (err) {
-      if (generation !== refreshGeneration.current) {
-        return
-      }
-
-      setConfig(null)
-      setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
-    }
-  }, [profile, provider])
+    },
+    [profile, provider]
+  )
 
   // eslint-disable-next-line no-restricted-syntax -- request generation cleanup, not an atom mirror
   useEffect(() => {
@@ -247,7 +255,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
         <ProviderConfigModal
           config={config}
           onOpenChange={setShowModal}
-          onSaved={refresh}
+          onSaved={() => refresh(true)}
           open={showModal}
           profile={profile}
           provider={provider}

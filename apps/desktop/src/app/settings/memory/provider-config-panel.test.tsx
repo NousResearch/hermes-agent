@@ -315,4 +315,33 @@ describe('ProviderConfigPanel', () => {
     await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('example', 'work'))
     await waitFor(() => expect(runMemoryProviderAction).toHaveBeenCalledWith('example', 'health', {}, 'work'))
   })
+
+  it.each(['Save setup', 'Start server'])('keeps the managed form open when refresh fails after %s', async button => {
+    const schema = managedSchema()
+    schema.actions = [
+      {
+        name: 'start',
+        label: 'Start server',
+        description: '',
+        after_field: 'name',
+        payload_fields: ['name'],
+        refresh_after: true,
+        visible_when: []
+      }
+    ]
+    getMemoryProviderConfig.mockResolvedValueOnce(schema).mockRejectedValueOnce(new Error('Could not reload settings'))
+    runMemoryProviderAction.mockImplementation((_provider: string, action: string) =>
+      Promise.resolve(action === 'health' ? { label: 'Healthy', message: '', state: 'healthy' } : { ok: true })
+    )
+
+    await renderPanel('example')
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure' }))
+    fireEvent.change(await screen.findByDisplayValue('primary'), { target: { value: 'edited-profile' } })
+    fireEvent.click(screen.getByRole('button', { name: button }))
+
+    expect((await screen.findByRole('alert')).textContent).toBe('Could not reload settings')
+    expect(screen.getByRole('dialog', { name: 'Configure Example Memory' })).toBeTruthy()
+    expect(screen.getByDisplayValue('edited-profile')).toBeTruthy()
+    expect(getMemoryProviderConfig).toHaveBeenCalledTimes(2)
+  })
 })

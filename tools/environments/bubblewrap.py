@@ -36,9 +36,10 @@ Layout of the argv (later mounts overlay earlier ones):
 
 The paths in the argv are fixed at construction: the hidden set is
 resolved through realpath once, so a symlinked entry is hidden at its
-target, and the cwd and state dir binds use their real paths (bwrap
-resolves a mount destination inside the sandbox root, where an absolute
-symlink points nowhere). What varies per spawn is presence only: an
+target, and the cwd, state dir and operator bind destinations use their
+real paths (bwrap resolves a mount destination inside the sandbox root,
+where an absolute symlink points nowhere), so the pins are computed in
+the real tree of each bind. What varies per spawn is presence only: an
 overlay is emitted for a sensitive path that exists on the host at spawn
 time and never for one that does not, a pin for an ancestor directory that
 exists inside a bind that is writable anyway, and nothing at all for a
@@ -47,7 +48,8 @@ sandbox with a writable HOME planting a symlink) can only add hiding
 mounts and pins, never expose anything. The pins are what
 keep that true: a hidden entry is a mount point and cannot be renamed
 from inside the sandbox, but without the pins a writable cwd covering its
-parent lets a command rename the parent, and the next spawn then finds
+parent, or a writable bind whose destination resolves into the real tree
+above it, lets a command rename the parent, and the next spawn then finds
 nothing to hide at the old path while the secret is readable under the
 new one.
 
@@ -67,7 +69,7 @@ import signal
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Iterable, Mapping, Sequence
 
 from hermes_constants import get_hermes_home, get_real_home
@@ -375,6 +377,21 @@ def filter_binds(binds: tuple[BindMount, ...], hidden_paths: Sequence[str]) -> l
     return kept
 
 
+def resolve_bind_dests(binds: Iterable[BindMount]) -> list[BindMount]:
+    """Return *binds* with each dest taken through realpath on the host.
+
+    bwrap resolves a mount destination inside the sandbox root: a relative
+    symlink lands the mount on its target, an absolute one aborts the
+    spawn. Naming the real path up front gives both the same mount, and
+    the ancestor pins are then computed against the real tree the bind
+    makes writable.
+    """
+    return [
+        replace(bind, dest=os.path.realpath(os.path.abspath(os.path.expanduser(bind.dest))))
+        for bind in binds
+    ]
+
+
 def _ancestors_within(path: str, root: str) -> list[str]:
     """Ancestors of *path* (not *path* itself) strictly inside *root*, outermost first."""
     found: list[str] = []
@@ -487,7 +504,7 @@ def build_bwrap_args(
     # failing on a missing bind source.
     argv += ["--bind-try" if profile.writable_cwd else "--ro-bind-try", initial_cwd, initial_cwd]
 
-    binds = filter_binds(config.binds, hidden_paths)
+    binds = resolve_bind_dests(filter_binds(config.binds, hidden_paths))
     for bind in binds:
         argv += ["--ro-bind" if bind.readonly else "--bind", bind.src, bind.dest]
 
@@ -670,6 +687,10 @@ class BubblewrapEnvironment(LocalEnvironment):
         config: BubblewrapConfig | None = None,
     ):
         self._config = load_bubblewrap_config() if config is None else config
+        # Bind destinations are resolved once here, like the hidden set and
+        # the cwd, so the mount paths are fixed for the life of the
+        # environment; the builder resolves again for its own callers.
+        self._config = replace(self._config, binds=tuple(resolve_bind_dests(self._config.binds)))
         # Reject an unknown profile and an unusable bwrap before anything is
         # created on disk; the probe raises EnvironmentConnectionError, which
         # the terminal tool turns into its degraded or error result.

@@ -100,6 +100,13 @@ def _isoformat(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _parse_stamp(value: str) -> datetime:
+    """Parse a stamp this module itself wrote (Z-suffixed ISO-8601, UTC)."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+        timezone.utc
+    )
+
+
 @dataclass
 class SendOutcome:
     """What one pass did. Returned for tests and diagnostics."""
@@ -164,6 +171,18 @@ def _retry_after_seconds(value: str | None, default: int) -> int:
         return default
 
 
+#: Maximum distance one reconcile call can advance the 'obs' mark. Honest
+#: heartbeats arrive hours apart at most, so the cap never binds in normal
+#: operation; a machine legitimately off for months catches up in a few
+#: hook fires (fail-closed latency only). What it bounds is FORWARD clock
+#: poison: without it, a single glitched sample (NTP flap reading 2099)
+#: permanently drags the mark — and with it every window open and every
+#: confirmation horizon — decades ahead, which round 6 reproduced as a
+#: refused-data leak. Capped, one insane sample moves the mark at most
+#: this far, and real time overtakes it again.
+MAX_OBS_ADVANCE_SECONDS = 30 * 24 * 3600
+
+
 def reconcile_send_consent(
     connection: sqlite3.Connection,
     send_enabled: bool,
@@ -182,9 +201,15 @@ def reconcile_send_consent(
     Timestamp discipline (each rule is load-bearing; see the validation
     harness in tests/hermes_cli/test_shared_metrics_consent_windows.py):
 
-    - The 'obs' mark advances to every observation stamp, monotonically.
-      An open window's ``last_confirmed_at`` follows it: consent is asserted
-      only for time that was actually observed.
+    - The 'obs' mark advances to every observation stamp, monotonically —
+      but by at most ``MAX_OBS_ADVANCE_SECONDS`` per call. Unbounded, the
+      mark is monotonic in the LEAK direction: one glitched-forward sample
+      would drag ``last_confirmed_at`` decades ahead, a later close would
+      stamp that horizon, and the closed window would contain every future
+      refused period (reproduced in round 6). Bounded, a poisoned sample
+      costs at most one cap's width, and real time overtakes it.
+      An open window's ``last_confirmed_at`` follows the mark: consent is
+      asserted only for time that was actually observed.
     - A close is stamped at ``last_confirmed_at`` — never "now" — so an
       unobserved gap (hand-edited config, machine off for 90 days) is never
       inside a window and fails closed.
@@ -193,6 +218,16 @@ def reconcile_send_consent(
       make the new window adjacent to the previous close.
     """
     stamp = _isoformat(now or _utc_now())
+    raw_stamp = stamp  # pre-cap observation time, used to clamp closes
+    previous_obs = connection.execute(
+        "SELECT stamp FROM consent_marks WHERE name = 'obs'"
+    ).fetchone()
+    if previous_obs is not None:
+        ceiling = _isoformat(
+            _parse_stamp(str(previous_obs[0]))
+            + timedelta(seconds=MAX_OBS_ADVANCE_SECONDS)
+        )
+        stamp = min(stamp, ceiling)
     connection.execute(
         """
         INSERT INTO consent_marks(name, stamp) VALUES ('obs', ?)
@@ -226,10 +261,22 @@ def reconcile_send_consent(
                 (obs, open_row[0]),
             )
     elif open_row is not None:
+        # Close at the last CONFIRMED moment, but never after the closing
+        # observation's own raw stamp. The two clamps serve different
+        # adversaries and both are load-bearing:
+        # - min with last_confirmed_at: an unobserved gap (machine off,
+        #   hand-edited config) is never asserted as consented (v1's leak).
+        # - min with the RAW stamp (pre-cap, pre-MAX): if last_confirmed_at
+        #   was poisoned by a glitched-forward sample, an honest clock at
+        #   revoke time pulls the close back to the true revoke moment, so
+        #   the refused era that follows falls OUTSIDE the closed window
+        #   (round 6's D1 leak). A rolled-back clock at close time only
+        #   closes EARLIER — fail-closed.
         connection.execute(
-            "UPDATE send_consent_windows SET closed_at = last_confirmed_at"
+            "UPDATE send_consent_windows"
+            " SET closed_at = MIN(last_confirmed_at, ?)"
             " WHERE rowid = ?",
-            (open_row[0],),
+            (raw_stamp, open_row[0]),
         )
 
 

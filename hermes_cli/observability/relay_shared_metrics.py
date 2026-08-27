@@ -1256,11 +1256,19 @@ def _reconcile_send_consent_once() -> None:
             reconcile_send_consent,
         )
         from hermes_cli.sqlite_util import write_txn
+        from hermes_constants import get_hermes_home
 
         resolved = resolve_send_config(read_raw_config_readonly() or {})
-        store = SharedMetricsStore()
-        if not resolved.send and not store.database_path.exists():
+        # Probe for an existing store WITHOUT constructing one: the
+        # constructor creates the directory and schema as a side effect,
+        # which round 6 caught making this skip dead code — every
+        # fully-disabled user was getting a ~/.hermes/telemetry directory.
+        default_path = (
+            get_hermes_home() / "telemetry" / "shared_metrics" / "metrics.sqlite3"
+        )
+        if not resolved.send and not default_path.exists():
             return
+        store = SharedMetricsStore()
         with store._connection() as connection:
             with write_txn(connection):
                 reconcile_send_consent(connection, resolved.send)

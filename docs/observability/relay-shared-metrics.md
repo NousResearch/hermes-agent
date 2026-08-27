@@ -403,11 +403,22 @@ Turning sending off also **closes the consent window** — at the last moment
 consent was actually observed, not at the wall clock. Packages whose periods
 fall between one window and the next are never transmitted, even if sending
 is later re-enabled, and this holds for any number of on/off cycles, across
-hand-edits with no process running, and under a clock that jumps backwards
-(window opens are clamped above every timestamp already in the store).
+hand-edits with no process running, and under a clock that jumps in either
+direction (window opens are clamped above every timestamp already in the
+store; observation marks advance by a bounded step per call, so one glitched
+forward sample cannot drag the confirmation horizon years ahead; a close
+never lands after the closing observation's own clock).
 Unlike the earlier single moving opt-in date, closing and reopening does NOT
 discard the still-undelivered backlog from a previous consented window —
 those packages stay inside their own interval and remain eligible.
+
+One deliberate upgrade-path consequence: packages exported under the
+pre-interval consent model (before `send_consent_windows` existed) predate
+the first recorded window and are therefore never transmitted after an
+upgrade. This is the fail-closed direction — re-importing the old moving
+day-stamp to release them would re-import the semantics five review rounds
+showed to be unsound — and it costs at most the undelivered backlog, never
+collected data.
 
 ### A.5 Retention
 

@@ -131,6 +131,62 @@ class TestRefusedWindowIsNeverReleased:
 
 
 class TestClockAdversaries:
+    def test_forward_poison_then_revoke_releases_nothing(self, store):
+        """Round 6 D1: one glitched-forward sample must not defeat a close.
+
+        Unfixed, the poisoned obs mark dragged last_confirmed_at to 2099, a
+        later revoke stamped closed_at = 2099, and the closed window then
+        CONTAINED every refused period that followed — all 8 refused
+        packages became eligible. The close now clamps to the closing
+        observation's own raw stamp, so an honest clock at revoke time pulls
+        the window back to the true revoke moment.
+        """
+        _observe(store, True, dt(0))
+        _observe(store, True, datetime(2099, 1, 1, tzinfo=timezone.utc))
+        _observe(store, False, dt(1))            # honest clock at revoke
+        for n in range(2, 10):
+            _add(store, f"REFUSED-{n}", ts(days=n), ts(days=n, hours=2))
+
+        leaked = [p for p in _eligible(store) if p.startswith("REFUSED")]
+        assert not leaked, f"poisoned horizon released refused data: {leaked}"
+
+    def test_forward_poison_cannot_wedge_consent_forever(self, store):
+        """The obs-advance cap bounds the damage of one insane sample.
+
+        Uncapped, a 2099 sample would clamp every future window open at
+        2099, suppressing consented data for decades (fail-closed but
+        permanent). Capped, the mark moves at most MAX_OBS_ADVANCE_SECONDS
+        past its previous value, so honest time overtakes it.
+        """
+        from hermes_cli.observability.shared_metrics_sender import (
+            MAX_OBS_ADVANCE_SECONDS,
+        )
+
+        _observe(store, True, dt(0))
+        _observe(store, True, datetime(2099, 1, 1, tzinfo=timezone.utc))
+        with store._connection() as connection:
+            stamp = connection.execute(
+                "SELECT stamp FROM consent_marks WHERE name = 'obs'"
+            ).fetchone()[0]
+        ceiling = ts(days=MAX_OBS_ADVANCE_SECONDS // 86_400)
+        assert stamp <= ceiling, (
+            f"one glitched sample advanced the mark unboundedly: {stamp}"
+        )
+
+        # Consented data from shortly after the cap horizon still flows once
+        # honest observations catch the marks up.
+        horizon_days = MAX_OBS_ADVANCE_SECONDS // 86_400
+        _add(
+            store,
+            "post-glitch",
+            ts(days=horizon_days + 1),
+            ts(days=horizon_days + 1, hours=4),
+        )
+        _observe(store, True, dt(days=horizon_days + 2))
+        assert "post-glitch" in _eligible(store), (
+            "consent wedged after a forward glitch"
+        )
+
     def test_rollback_at_re_enable_releases_nothing(self, store):
         """Round 5 D2: the data mark clamps opens above existing packages."""
         _observe(store, True, dt(0))
@@ -200,6 +256,39 @@ class TestReconcilerProperties:
                 "SELECT stamp FROM consent_marks WHERE name = 'obs'"
             ).fetchone()[0]
         assert stamp == ts(5), f"obs mark moved backwards: {stamp}"
+
+    def test_the_real_package_writer_advances_the_data_mark(self, store):
+        """Round 6 D2: the harness's _add re-implements the data-mark insert,
+        so deleting the advance from the REAL writer survived 314 tests.
+        This drives the production exporter instead.
+        """
+        from datetime import date, timedelta as _td
+
+        yesterday = (date.today() - _td(days=1)).isoformat()
+        with store._connection() as connection:
+            with write_txn(connection):
+                connection.execute(
+                    "INSERT INTO counter_aggregates("
+                    " period_start, metric_name, hermes_version, os_family,"
+                    " architecture, install_method, dimensions_json, value,"
+                    " packaged_value"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        yesterday, "hermes.client.active", "0.0.0-test",
+                        "macos", "arm64", "git", "{}", 1, 0,
+                    ),
+                )
+
+        exported = store.create_and_export_package_if_due()
+        assert exported, "the generator was expected to export yesterday's period"
+
+        with store._connection() as connection:
+            row = connection.execute(
+                "SELECT stamp FROM consent_marks WHERE name = 'data'"
+            ).fetchone()
+        assert row is not None and row[0] >= yesterday, (
+            "the production package writer did not advance the data mark"
+        )
 
     def test_the_gate_is_read_only(self, store):
         _observe(store, True, dt(0))

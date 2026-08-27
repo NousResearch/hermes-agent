@@ -315,8 +315,18 @@ class TestConsentWindows:
         )
         from hermes_cli.sqlite_util import write_txn
 
+        # Lay the store out exactly as production does, under a redirected
+        # HERMES_HOME: the boot reconciler probes the default path (without
+        # constructing the store — the constructor creates directories), so
+        # the probe and the store must agree the way they do in production.
+        home = tmp_path / "home"
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home", lambda: home
+        )
+        root = home / "telemetry" / "shared_metrics"
         store = SharedMetricsStore(
-            database_path=tmp_path / "m.db", outbox_directory=tmp_path / "o"
+            database_path=root / "metrics.sqlite3",
+            outbox_directory=root / "outbox",
         )
         # A consent window is open from an earlier consented era.
         with store._connection() as connection:

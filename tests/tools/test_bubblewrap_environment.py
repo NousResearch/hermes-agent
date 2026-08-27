@@ -141,6 +141,18 @@ class TestStateDir:
             i = prefix.index(name)
             assert prefix[i - 1] == "--unsetenv", name
 
+    def test_wrap_command_unsets_the_socket_variables_in_front_of_the_command(self, sandbox_root, work_dir):
+        """A shell init file sourced into the snapshot can export them
+        again, so the wrapped script unsets them before the command runs;
+        LocalEnvironment's wrapper is untouched."""
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+            local = LocalEnvironment(cwd=str(work_dir), timeout=10)
+        prefix = "unset " + " ".join(HOST_SOCKET_VARS) + "; "
+        assert f"eval '{prefix}echo hi'" in env._wrap_command("echo hi", str(work_dir))
+        assert "eval 'echo hi'" in local._wrap_command("echo hi", str(work_dir))
+        assert "unset SSH_AUTH_SOCK" not in local._wrap_command("echo hi", str(work_dir))
+
 
 @needs_bwrap
 class TestSandboxIntegration:
@@ -193,6 +205,30 @@ class TestSandboxIntegration:
         try:
             assert env._snapshot_ready
             assert env.execute("echo $HERMES_BWRAP_INIT_MARK")["output"].strip() == "seen-in-sandbox"
+        finally:
+            env.cleanup()
+
+    def test_socket_variables_exported_by_a_shell_init_file_stay_unset(self, sandbox_root, work_dir):
+        # --unsetenv strips them from what bwrap receives, but the login
+        # bootstrap sources the init files into the snapshot afterwards
+        # (a 1Password or gpg-agent setup exports SSH_AUTH_SOCK from
+        # ~/.bashrc), so the wrapper unsets them again per command.
+        init_file = work_dir / "init.sh"
+        init_file.write_text(
+            "export HERMES_BWRAP_INIT_PLAIN=plain-from-init\n"
+            + "".join(f"export {name}=/run/user/1000/{name.lower()}\n" for name in HOST_SOCKET_VARS)
+        )
+        with patch("tools.environments.local._read_terminal_shell_init_config", return_value=([str(init_file)], False)):
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            assert env._snapshot_ready
+            # Twice: the second command sources the snapshot the first re-dumped.
+            for _ in range(2):
+                out = env.execute("env")["output"]
+                assert "HERMES_BWRAP_INIT_PLAIN=plain-from-init" in out
+                for name in HOST_SOCKET_VARS:
+                    assert f"{name}=" not in out, name
+                assert "/run/user/1000/" not in out
         finally:
             env.cleanup()
 

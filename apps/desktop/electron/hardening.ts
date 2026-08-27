@@ -371,8 +371,16 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
 }
 
 /** Strip chat markdown / @url: wrappers before handing a path to the OS (#95713). */
+function looksLikePathTarget(value: string): boolean {
+  return /[./:\\]/.test(value)
+}
+
 function stripPathOpenAnnotations(value: string): string {
-  let raw = String(value || '').trim()
+  if (typeof value !== 'string') {
+    return value
+  }
+
+  let raw = value.trim()
   if (!raw) {
     return raw
   }
@@ -387,12 +395,20 @@ function stripPathOpenAnnotations(value: string): string {
   for (;;) {
     let next = raw
     if (next.startsWith('**') && next.endsWith('**') && next.length > 4) {
-      next = next.slice(2, -2).trim()
+      const inner = next.slice(2, -2).trim()
+      if (inner) {
+        next = inner
+      }
     } else if (next.startsWith('__') && next.endsWith('__') && next.length > 4) {
-      next = next.slice(2, -2).trim()
+      const inner = next.slice(2, -2).trim()
+      // Keep dunder names (`__pycache__`, `__init__`). Only unwrap underline
+      // when the inner text looks like a filesystem target.
+      if (inner && looksLikePathTarget(inner)) {
+        next = inner
+      }
     } else if (next.endsWith('**') && next.length > 2) {
       next = next.slice(0, -2).trim()
-    } else if (next.endsWith('__') && next.length > 2) {
+    } else if (/\.[A-Za-z0-9]{1,16}__$/.test(next)) {
       next = next.slice(0, -2).trim()
     }
     if (next === raw) {
@@ -434,7 +450,8 @@ function assertExistingPathForOpen(resolvedPath: string, purpose = 'Open file') 
 
 function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
   const purpose = String(options.purpose || 'File read')
-  let raw = rejectUnsafePathSyntax(stripPathOpenAnnotations(filePath), purpose)
+  const annotated = typeof filePath === 'string' ? stripPathOpenAnnotations(filePath) : filePath
+  let raw = rejectUnsafePathSyntax(annotated, purpose)
 
   // Gateway-reported cwds (config `terminal.cwd`, remote sessions) routinely
   // arrive as `~/...`. Node's fs has no shell — without expansion the path

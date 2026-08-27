@@ -821,8 +821,13 @@ test('stripPathOpenAnnotations drops wrapping markdown and @url: wrappers', () =
   assert.equal(stripPathOpenAnnotations('C:/docs/xyz.pdf**'), 'C:/docs/xyz.pdf')
   assert.equal(stripPathOpenAnnotations('@url:`C:/docs/xyz.pdf`'), 'C:/docs/xyz.pdf')
   assert.equal(stripPathOpenAnnotations('@url:C:/docs/xyz.pdf'), 'C:/docs/xyz.pdf')
-  // Inner emphasis is a real filename — do not rewrite it.
   assert.equal(stripPathOpenAnnotations('report**final.pdf'), 'report**final.pdf')
+  // Dunder directories/modules are real paths, not markdown underline.
+  assert.equal(stripPathOpenAnnotations('__pycache__'), '__pycache__')
+  assert.equal(stripPathOpenAnnotations('__init__'), '__init__')
+  assert.equal(stripPathOpenAnnotations('xyz.pdf__'), 'xyz.pdf')
+  assert.equal(stripPathOpenAnnotations('file:///C:/docs/xyz.pdf**'), 'file:///C:/docs/xyz.pdf')
+  assert.equal(stripPathOpenAnnotations(''), '')
 })
 
 test('resolveRequestedPathForIpc strips markdown wrappers before resolving (#95713)', () => {
@@ -843,6 +848,11 @@ test('resolveRequestedPathForIpc strips markdown wrappers before resolving (#957
   assert.equal(
     resolveRequestedPathForIpc(dirtyUrl, { purpose: 'Open external file' }),
     path.resolve(abs)
+  )
+
+  assert.throws(
+    () => resolveRequestedPathForIpc(['not', 'a', 'path'] as unknown as string, { purpose: 'Open external file' }),
+    /file path is required/
   )
 })
 

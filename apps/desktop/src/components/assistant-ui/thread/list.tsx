@@ -105,6 +105,13 @@ export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): num
   hidden
     ? HIDDEN_TRANSCRIPT_RENDER_BUDGET
     : Math.max(Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes)), RENDER_BUDGET / 4)
+
+// "Show earlier" raises renderBudget ABOVE paneBudget (one pane page per click).
+// The render-phase cap must only snap a hot-hidden pane down to its retention
+// budget — a visible pane's growth has to survive the next render or the click
+// is a no-op. Parked panes are unmounted, so they never hit this path.
+export const shouldClampTranscriptBudget = (hidden: boolean, renderBudget: number, paneBudget: number): boolean =>
+  hidden && renderBudget > paneBudget
 // Units the backfill adds per committed step (see the backfill effect). ~8-15
 // ordinary turns or 1-2 tool-heavy ones per frame — big enough to fill a page
 // in ~10 frames, small enough that no single commit approaches a frame budget.
@@ -433,7 +440,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     setBudgetSessionKey(sessionKey)
     setHadGroups(hasGroups)
     setRenderBudget(FIRST_PAINT_BUDGET)
-  } else if (renderBudget > paneBudget) {
+  } else if (shouldClampTranscriptBudget(paneLifecycle === 'hot-hidden', renderBudget, paneBudget)) {
     // Apply the hidden budget during render so React never first commits the
     // stale full transcript after this pane moves to the background.
     setRenderBudget(paneBudget)
@@ -692,14 +699,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     anchorBeforePrepend()
+    // Both paths grow the DOM budget by one pane page. Windowed rows are older
+    // than the current page, so expand-without-grow paints nothing.
+    setRenderBudget(budget => budget + paneBudget)
 
-    if (action === 'dom') {
-      setRenderBudget(budget => budget + paneBudget)
-
-      return
+    if (action === 'window') {
+      expandWindow()
     }
-
-    expandWindow()
   }, [anchorBeforePrepend, expandWindow, hiddenCount, olderAvailable, paneBudget])
 
   useLayoutEffect(() => {

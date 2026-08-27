@@ -372,22 +372,32 @@ def ancestor_pin_args(
     ancestor that is a mount point already (*mount_points*: the cwd and the
     operator bind destinations), nor for one missing on the host or a
     symlink there: a mount cannot pin a symlink and would bind its target
-    instead. Presence is the only per-spawn input, and a pin never grants
-    more than the bind around it already did.
+    instead. Nor for one reached through a symlinked component between
+    the bind root and the ancestor: the pin must land inside the real tree
+    of the bind (realpath of the host path equals realpath of the bind
+    source plus the relative path), or a link leaving the bind would carry
+    the pin, and write access, outside it. Presence is the only per-spawn
+    input, and a pin never grants more than the bind around it already
+    did.
     """
     normalize = lambda p: os.path.abspath(os.path.expanduser(p))
     seen: set[str] = {normalize(p) for p in mount_points}
     argv: list[str] = []
     for src, dest in writable_binds:
         root = normalize(dest)
+        real_src = os.path.realpath(normalize(src))
         for path in hidden_paths:
             for ancestor in _ancestors_within(path, root):
                 if ancestor in seen:
                     continue
                 seen.add(ancestor)
-                host = os.path.join(normalize(src), os.path.relpath(ancestor, root))
-                if os.path.isdir(host) and not os.path.islink(host):
-                    argv += ["--bind", host, ancestor]
+                rel = os.path.relpath(ancestor, root)
+                host = os.path.join(normalize(src), rel)
+                if not os.path.isdir(host) or os.path.islink(host):
+                    continue
+                if os.path.realpath(host) != os.path.join(real_src, rel):
+                    continue
+                argv += ["--bind", host, ancestor]
     return argv
 
 

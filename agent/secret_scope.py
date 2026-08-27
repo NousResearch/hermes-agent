@@ -224,6 +224,9 @@ _GLOBAL_ENV_EXACT = frozenset({
     # OS / interpreter
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "PWD", "SHELL", "TMPDIR",
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
+    # Explicit non-secret terminal coordinate. Keep this exact: a broad
+    # TERMINAL_* grant would also authorize future credential/control names.
+    "TERMINAL_CWD",
     # Kanban paths (per-board, not per-profile-secret)
     "HERMES_KANBAN_DB", "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_BOARD",
     # API-server LISTENER settings — deployment config (compose/systemd env),

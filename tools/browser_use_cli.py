@@ -822,32 +822,25 @@ def browser_exec(
 
 # The tool description is the CLI's skill, fetched from browser-use skill
 _HEADER_BASE = (
-    "Drive a real web browser via the Browser Use CLI. The `code` argument "
-    "is piped verbatim to the `browser-use` CLI on stdin and executed as "
-    "full Python (standard library available) with the CLI's pre-imported "
-    "browser helpers; stdout comes back in the result. Start `code` with a "
-    "one-line comment describing the step for the user in plain, "
-    "non-technical language, max 60 chars (e.g. `# Searching Amazon for "
-    "paper towels`) — the UI displays it as the step label.\n\n"
-    "STATE: the browser session and the workspace persist across calls; "
-    "Python variables do NOT (each call is a fresh interpreter). The "
-    "workspace is a stable directory — path in $BH_AGENT_WORKSPACE and "
-    "returned as `workspace` in every result. For multi-item tasks "
-    "('collect all N products / every entry / the full table'), append each "
-    "batch to a JSON/CSV file in the workspace as you go, then read it back "
-    "to assemble the final answer; define reusable functions in "
-    "agent_helpers.py there — the harness auto-imports it into every call. "
-    "Do aggregation in code, not in your head: dedupe, count, sort, and "
-    "format with Python inside the exec. Before giving a final answer on a "
-    "multi-item task, verify the collected count against what was asked "
-    "and go back for anything missing.\n\n"
+    "Drive a real web browser via the Browser Use CLI: `code` runs as full "
+    "Python (stdlib available) with pre-imported browser helpers; stdout "
+    "comes back in the result. Start `code` with a one-line comment "
+    "describing the step for the user in plain language, max 60 chars "
+    "(e.g. `# Searching Amazon for paper towels`) — the UI shows it as the "
+    "step label.\n\n"
+    "STATE: the browser session and workspace persist across calls; Python "
+    "variables do NOT (fresh interpreter each call). The workspace dir is "
+    "$BH_AGENT_WORKSPACE (also `workspace` in every result); functions "
+    "defined in agent_helpers.py there are auto-imported into every call. "
+    "For multi-item tasks ('all N products / every entry'), append each "
+    "batch to a JSON/CSV file in the workspace, then read it back and "
+    "aggregate in code — dedupe/count/sort with Python, not in your head — "
+    "and verify the collected count against what was asked before "
+    "answering.\n\n"
     "Batch each sub-procedure (navigate, wait, extract, act) into one call "
     "— do not spend a call per action — but for long extractions prefer "
     "several medium calls that append to workspace files over one giant "
-    "call, so progress survives timeouts. For an isolated concurrent "
-    "browser session (parallel tasks that must not share tabs), pass "
-    "session=<name> (never BU_NAME env syntax) and reuse the same name on "
-    "every related call."
+    "call, so progress survives timeouts."
 )
 
 _HEADER_VISION = (
@@ -967,7 +960,7 @@ BROWSER_EXEC_SCHEMA = {
             },
             "session": {
                 "type": "string",
-                "description": "Named isolated browser session (sets BU_NAME): each name gets its own harness daemon — and on cloud backends its own browser — so concurrent tasks don't clobber each other. Omit for the shared default session. Reuse the same name across calls to keep working in that session (and the name passed to start_remote_daemon(), if used).",
+                "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session.",
             },
             "timeout_s": {
                 "type": "integer",

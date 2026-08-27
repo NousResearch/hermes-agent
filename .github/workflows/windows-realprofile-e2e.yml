@@ -22,8 +22,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-realprofile-e2e-${{ github.ref }}
-  cancel-in-progress: true
+  group: windows-realprofile-e2e-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   real-profile-e2e:

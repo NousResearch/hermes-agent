@@ -16,8 +16,10 @@ Layout of the argv (later mounts overlay earlier ones):
 5. the sensitive overlays: a tmpfs over each sensitive directory and an
    empty file over each sensitive file that exists on the host, then the
    same for HERMES_HOME
-6. the per-environment state dir read-write at the same path
-7. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
+6. under terminal.home_mode=profile, HERMES_HOME/home read-write on top of
+   that overlay (it is the subprocess HOME then)
+7. the per-environment state dir read-write at the same path
+8. ``--chdir`` to the tracked cwd, then ``--`` so the caller can append the
    shell argv
 """
 
@@ -55,6 +57,7 @@ SENSITIVE_HOME_PATHS: tuple[str, ...] = (
 )
 
 DEFAULT_PROFILE = "network"
+DEFAULT_HOME_MODE = "auto"
 DEFAULT_MEMORY_MB = 256
 DEFAULT_CPU_SECONDS = 30
 DEFAULT_MAX_PROCS = 256
@@ -64,6 +67,10 @@ ENV_BINDS = "TERMINAL_BUBBLEWRAP_BINDS"
 ENV_MEMORY_MB = "TERMINAL_BUBBLEWRAP_MEMORY_MB"
 ENV_CPU_SECONDS = "TERMINAL_BUBBLEWRAP_CPU_SECONDS"
 ENV_MAX_PROCS = "TERMINAL_BUBBLEWRAP_MAX_PROCS"
+# terminal.home_mode, bridged like the keys above. The spellings that
+# hermes_constants.get_subprocess_home treats as "profile".
+ENV_HOME_MODE = "TERMINAL_HOME_MODE"
+PROFILE_HOME_MODES: frozenset[str] = frozenset({"profile", "isolated", "profile_home", "profile-home"})
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,9 @@ class BubblewrapConfig:
     memory_mb: int = DEFAULT_MEMORY_MB
     cpu_seconds: int = DEFAULT_CPU_SECONDS
     max_procs: int = DEFAULT_MAX_PROCS
+    # terminal.home_mode rides along because it decides whether HERMES_HOME/home
+    # is the subprocess HOME and so must be bound back over the overlay.
+    home_mode: str = DEFAULT_HOME_MODE
 
 
 def _parse_binds(raw: str) -> tuple[BindMount, ...]:
@@ -164,6 +174,7 @@ def load_bubblewrap_config(environ: Mapping[str, str] | None = None) -> Bubblewr
         memory_mb=_parse_limit(ENV_MEMORY_MB, env.get(ENV_MEMORY_MB, ""), DEFAULT_MEMORY_MB),
         cpu_seconds=_parse_limit(ENV_CPU_SECONDS, env.get(ENV_CPU_SECONDS, ""), DEFAULT_CPU_SECONDS),
         max_procs=_parse_limit(ENV_MAX_PROCS, env.get(ENV_MAX_PROCS, ""), DEFAULT_MAX_PROCS),
+        home_mode=env.get(ENV_HOME_MODE, "").strip().lower() or DEFAULT_HOME_MODE,
     )
 
 
@@ -279,6 +290,14 @@ def build_bwrap_args(
     # itself still hides what sits under it, and before the state dir so
     # that stays reachable under a hidden HERMES_HOME.
     argv += sensitive_overlay_args(home, hermes_home, state_dir)
+
+    # Under home_mode=profile the subprocess HOME is HERMES_HOME/home
+    # (hermes_constants.get_subprocess_home), so bind it back read-write on
+    # top of the overlay; the rest of HERMES_HOME stays hidden.
+    if config.home_mode in PROFILE_HOME_MODES:
+        profile_home = os.path.join(os.path.abspath(os.path.expanduser(hermes_home)), "home")
+        if os.path.isdir(profile_home):
+            argv += ["--bind", profile_home, profile_home]
 
     # The state dir holds the shell snapshot and cwd file; it is bound after
     # the sensitive overlays so it stays writable at the same path in every

@@ -186,7 +186,14 @@ export function unquoteReferenceValue(raw: string): string {
     : raw
 }
 
-/** Remove optional wire-format quotes and terminal prose punctuation from a reference value. */
+/**
+ * Remove wire-format quotes; bare directives also shed terminal prose punctuation.
+ *
+ * Punctuation inside a quoted value is part of that value, while a bare
+ * `@file:report!` retains the historical sentence-boundary behavior.
+ */
 export function unwrapReferenceValue(raw: string): string {
-  return unquoteReferenceValue(raw).replace(/[,.;!?]+$/, '')
+  const value = unquoteReferenceValue(raw)
+
+  return value === raw ? value.replace(/[,.;!?]+$/, '') : value
 }

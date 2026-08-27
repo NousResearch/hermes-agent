@@ -28,6 +28,7 @@ from tools.environments.bubblewrap import (
     BubblewrapConfig,
     BubblewrapEnvironment,
     chdir_failed,
+    masked_inside,
     HOST_SOCKET_VARS,
     build_bwrap_args,
 )
@@ -850,11 +851,77 @@ class TestChdirFailureDetection:
         assert not chdir_failed({"output": self.MSG, "returncode": 1}, "/srv/hermes")
 
 
+class TestMaskedInside:
+    """masked_inside reads the fixed mount layout, so a masked tracked cwd
+    is reset before the spawn and every command runs once."""
+
+    @pytest.fixture
+    def layout(self, tmp_path, monkeypatch):
+        home = tmp_path / "homes" / "home"
+        (home / ".ssh" / "deep").mkdir(parents=True)
+        hermes_home = home / ".hermes"
+        (hermes_home / "logs").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
+        work = tmp_path / "work"
+        (work / "sub").mkdir(parents=True)
+        src = tmp_path / "scratch"
+        (src / "present").mkdir(parents=True)
+        dest = tmp_path / "data"
+        (dest / "present").mkdir(parents=True)
+        (dest / "absent").mkdir()
+        (tmp_path / "other").mkdir()
+        config = BubblewrapConfig(binds=(BindMount(src=str(src), dest=str(dest), readonly=False),))
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work), timeout=10, config=config)
+        (Path(env.get_temp_dir()) / "inner").mkdir()
+        try:
+            yield env, {"home": home, "hermes_home": hermes_home, "work": work, "dest": dest, "tmp": tmp_path}
+        finally:
+            env.cleanup()
+
+    def test_visible_and_masked_paths(self, layout):
+        env, p = layout
+        argv = env._wrap_popen_args(["bash"])
+        state = Path(env.get_temp_dir())
+        visible = [p["work"] / "sub", p["home"] / ".ssh", p["hermes_home"], state / "inner", p["dest"] / "present", Path("/usr/share"), Path("/tmp")]
+        masked = [p["home"] / ".ssh" / "deep", p["hermes_home"] / "logs", p["dest"] / "absent", p["tmp"] / "other"]
+        assert [str(x) for x in visible if masked_inside(argv, str(x))] == []
+        assert [str(x) for x in masked if not masked_inside(argv, str(x))] == []
+
+    def test_runtime_dir_is_masked(self, layout):
+        env, _ = layout
+        runtime_dir = f"/run/user/{os.getuid()}"
+        if not os.path.isdir(runtime_dir):
+            pytest.skip("no runtime dir on this host")
+        argv = env._wrap_popen_args(["bash"])
+        assert not masked_inside(argv, runtime_dir)
+        assert masked_inside(argv, runtime_dir + "/keyring")
+
+    def test_execute_resets_a_masked_tracked_cwd_before_the_spawn(self, layout, caplog):
+        env, p = layout
+        env.cwd = str(p["work"] / "sub")
+        assert env._reset_masked_cwd() is None
+        assert env.cwd == str(p["work"] / "sub")
+        masked = str(p["hermes_home"] / "logs")
+        env.cwd = masked
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"):
+            note = env._reset_masked_cwd()
+        assert env.cwd == str(p["work"])
+        assert masked in note and str(p["work"]) in note
+        assert _chdir(env._wrap_popen_args(["bash"])) == str(p["work"])
+        assert any(masked in r.getMessage() for r in caplog.records)
+        # The initial cwd is never reset, even when it is gone from the host.
+        env.cwd = str(p["work"])
+        assert env._reset_masked_cwd() is None
+
+
 @needs_bwrap
 class TestMaskedCwdRecovery:
     """A tracked cwd that exists on the host but not inside the sandbox
-    (masked by an overlay tmpfs or by the fresh /tmp) recovers to the
-    initial cwd instead of wedging every later spawn."""
+    (masked by an overlay tmpfs or by the fresh /tmp) is reset to the
+    initial cwd before the spawn instead of wedging every later spawn."""
 
     @staticmethod
     def _check_recovery(env, masked, work_dir):
@@ -891,6 +958,22 @@ class TestMaskedCwdRecovery:
         finally:
             env.cleanup()
             masked.rmdir()
+
+    def test_a_forged_chdir_line_never_runs_the_command_twice(self, sandbox_root, work_dir):
+        # The backstop only resets the tracked cwd; it never re-runs the command.
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            env.execute(f"mkdir -p {work_dir}/sub && cd {work_dir}/sub")
+            assert env.cwd == str(work_dir / "sub")
+            forged = r"""echo x >> counter; printf 'bwrap: Can'"'"'t chdir to %s: boom\n' "$PWD"; exec false"""
+            result = env.execute(forged)
+            assert result["returncode"] != 0
+            assert (work_dir / "sub" / "counter").read_text() == "x\n"
+            assert "run the command again" in result["output"]
+            assert env.cwd == str(work_dir)
+            assert env.execute("pwd")["output"].strip() == str(work_dir)
+        finally:
+            env.cleanup()
 
 
 @needs_bwrap

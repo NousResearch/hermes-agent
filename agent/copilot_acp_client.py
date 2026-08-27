@@ -358,6 +358,12 @@ class _ACPChatNamespace:
 class CopilotACPClient:
     """Minimal OpenAI-client-compatible facade for Copilot ACP."""
 
+    # Declared for agent/auxiliary_client.py: this shim drives an ACP subprocess
+    # over stdio, so it is already a complete client (never re-dispatch it
+    # through a wire adapter) and is safe to use from async code as-is.
+    HERMES_SKIP_TRANSPORT_WRAP = True
+    HERMES_SKIP_ASYNC_WRAP = True
+
     def __init__(
         self,
         *,

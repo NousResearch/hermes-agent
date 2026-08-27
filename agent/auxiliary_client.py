@@ -749,6 +749,23 @@ def _run_protected_sync_provider_call(
         return outcome.get("result")
 
 
+def _client_declares(client_obj: Any, flag: str) -> bool:
+    """Whether ``client_obj`` (or its class) sets ``flag`` truthy.
+
+    Capability declaration instead of isinstance: a client shipped by an
+    out-of-tree provider profile can opt out of the transport/async wrappers
+    without this module importing it. Mirrors ``SUPPORTS_HERMES_TOOL_CALLS`` in
+    ``agent/background_review.py``. Absent attribute → False, so every ordinary
+    client keeps its existing behaviour.
+    """
+    if client_obj is None:
+        return False
+    try:
+        return bool(getattr(client_obj, flag, False))
+    except Exception:
+        return False
+
+
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
     try:
@@ -2833,7 +2850,9 @@ def _maybe_wrap_anthropic(
 
     Returns ``client_obj`` unchanged when:
 
-    - It's already an Anthropic/Codex/Gemini/CopilotACP wrapper.
+    - It's already a complete client — an Anthropic/Codex wrapper, or any
+      client declaring ``HERMES_SKIP_TRANSPORT_WRAP`` (the native and ACP
+      shims, in-tree or from a provider plugin).
     - The endpoint is an OpenAI-wire endpoint.
     - ``api_mode`` is explicitly set to a non-Anthropic transport.
     - The ``anthropic`` SDK is not installed (falls back to OpenAI wire).
@@ -2851,18 +2870,12 @@ def _maybe_wrap_anthropic(
     # Other specialized adapters we should never re-dispatch.
     if _safe_isinstance(client_obj, CodexAuxiliaryClient):
         return client_obj
-    try:
-        from agent.gemini_native_adapter import GeminiNativeClient
-        if _safe_isinstance(client_obj, GeminiNativeClient):
-            return client_obj
-    except ImportError:
-        pass
-    try:
-        from agent.copilot_acp_client import CopilotACPClient
-        if _safe_isinstance(client_obj, CopilotACPClient):
-            return client_obj
-    except ImportError:
-        pass
+    # A client that declares itself complete is never re-dispatched through a
+    # wire adapter. Declared as a class attribute rather than isinstance-checked
+    # so an out-of-tree provider's client is covered too — and so this hot path
+    # no longer imports the native/ACP client modules just to type-test.
+    if _client_declares(client_obj, "HERMES_SKIP_TRANSPORT_WRAP"):
+        return client_obj
 
     # Explicit non-anthropic api_mode wins over URL heuristics.
     if api_mode and api_mode != "anthropic_messages":
@@ -6660,12 +6673,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
             return AsyncGeminiNativeClient(sync_client), model
     except ImportError:
         pass
-    try:
-        from agent.copilot_acp_client import CopilotACPClient
-        if isinstance(sync_client, CopilotACPClient):
-            return sync_client, model
-    except ImportError:
-        pass
+    # Clients that are already usable from async code (the ACP shims drive a
+    # subprocess, not an HTTP connection pool) opt out of the async wrapper.
+    if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
+        return sync_client, model
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -7479,34 +7490,55 @@ def resolve_provider_client(
             or _read_main_model_for_aux(),
             provider,
         )
-        if provider == "copilot-acp":
+        # Any external-process provider whose registered profile supplies a
+        # client is served here — keyed on the profile, not on a provider name,
+        # so an out-of-tree ACP provider reaches the auxiliary path (compression,
+        # vision, background review) exactly like the in-tree one.
+        _extproc_profile = None
+        try:
+            from providers import get_provider_profile as _get_provider_profile
+
+            _extproc_profile = _get_provider_profile(provider)
+        except Exception:
+            _extproc_profile = None
+        if _extproc_profile is not None:
             api_key = str(creds.get("api_key", "")).strip()
             base_url = str(creds.get("base_url", "")).strip()
             command = str(creds.get("command", "")).strip() or None
             args = list(creds.get("args") or [])
             if not final_model:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but no model "
-                    "was provided or configured"
+                    "resolve_provider_client: %s requested but no model "
+                    "was provided or configured",
+                    provider,
                 )
                 return None, None
             if not api_key or not base_url:
                 logger.warning(
-                    "resolve_provider_client: copilot-acp requested but external "
-                    "process credentials are incomplete"
+                    "resolve_provider_client: %s requested but external "
+                    "process credentials are incomplete",
+                    provider,
                 )
                 return None, None
-            from agent.copilot_acp_client import CopilotACPClient
-
-            client = CopilotACPClient(
-                api_key=api_key,
-                base_url=base_url,
-                command=command,
-                args=args,
-            )
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                    else (client, final_model))
+            try:
+                client = _extproc_profile.create_client(
+                    api_key=api_key,
+                    base_url=base_url,
+                    command=command,
+                    args=args,
+                )
+            except Exception:
+                logger.warning(
+                    "resolve_provider_client: profile %r failed to create an "
+                    "external-process client",
+                    provider,
+                    exc_info=True,
+                )
+                client = None
+            if client is not None:
+                logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        else (client, final_model))
         if provider not in _LOGGED_UNSUPPORTED_EXTPROC_KEYS:
             _LOGGED_UNSUPPORTED_EXTPROC_KEYS.add(provider)
             logger.debug("resolve_provider_client: external-process provider %s not "

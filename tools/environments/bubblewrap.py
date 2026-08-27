@@ -730,9 +730,25 @@ class BubblewrapEnvironment(LocalEnvironment):
         replace it with a symlink to a hidden file, and bwrap resolves the
         bind source on the next spawn, showing the whole secret. Under a
         hidden path (the default HERMES_HOME/sandboxes) the overlay covers
-        it and nothing in a sandbox can reach it.
+        it and nothing in a sandbox can reach it, unless a later bind lands
+        on top of the overlay. The profile home under home_mode=profile
+        is the one such bind, so a sandbox dir under it is refused
+        too. An operator bind cannot re-expose the dir: filter_binds drops
+        a source under a hidden path and a source containing one that maps
+        elsewhere, and a source containing one at its own path sits below
+        the overlay.
         """
         if any(_is_within(sandbox_root, hidden) for hidden in self._hidden_paths):
+            profile_home = os.path.realpath(os.path.join(self._hermes_home, "home"))
+            if self._config.home_mode in PROFILE_HOME_MODES and _is_within(sandbox_root, profile_home):
+                raise ValueError(
+                    f"terminal.sandbox_dir {sandbox_root} lies inside the profile home "
+                    f"{profile_home}, which terminal.home_mode={self._config.home_mode} binds "
+                    "read-write inside the sandbox with the bubblewrap backend: a command "
+                    "could replace the empty file bound over hidden files. Set "
+                    "terminal.sandbox_dir to a directory outside HERMES_HOME/home; the "
+                    "default HERMES_HOME/sandboxes is covered by the HERMES_HOME overlay."
+                )
             return
         writable: list[str] = [self._initial_cwd] if resolve_profile(self._config.profile).writable_cwd else []
         writable += [

@@ -50,10 +50,21 @@ class _BaseStubProvider(MemoryProvider):
 class _CheckpointProvider(_BaseStubProvider):
     pre_compress_checkpoint_api_version = PRE_COMPRESS_CHECKPOINT_API_VERSION
 
+    def __init__(self, name="stub"):
+        super().__init__(name)
+        self.require_checkpoint_calls = []
+
+    def on_pre_compress(self, messages, *, require_checkpoint=False):
+        self.require_checkpoint_calls.append(require_checkpoint)
+        return super().on_pre_compress(messages)
+
 
 class _FailingCheckpointProvider(_CheckpointProvider):
-    def on_pre_compress(self, messages):
-        raise RuntimeError("durable store unreachable")
+    def on_pre_compress(self, messages, *, require_checkpoint=False):
+        self.require_checkpoint_calls.append(require_checkpoint)
+        if require_checkpoint:
+            raise RuntimeError("durable store unreachable")
+        return ""
 
 
 class _FailingLegacyProvider(_BaseStubProvider):
@@ -163,6 +174,45 @@ def test_manager_require_checkpoint_raises_without_capable_provider():
             require_checkpoint=True,
             checkpoint_api_version=PRE_COMPRESS_CHECKPOINT_API_VERSION,
         )
+
+
+def test_manager_passes_required_signal_to_checkpoint_provider():
+    manager = MemoryManager()
+    durable = _CheckpointProvider("durable")
+    manager.add_provider(durable)
+
+    manager.on_pre_compress(
+        [{"role": "user", "content": "evidence"}],
+        require_checkpoint=True,
+    )
+
+    assert durable.require_checkpoint_calls == [True]
+
+
+def test_manager_does_not_pass_checkpoint_keyword_to_legacy_provider():
+    manager = MemoryManager()
+    legacy = _BaseStubProvider("legacy")
+    manager.add_provider(legacy)
+
+    combined = manager.on_pre_compress(
+        [{"role": "user", "content": "evidence"}],
+    )
+
+    assert combined == "legacy context"
+    assert legacy.pre_compress_calls
+
+
+def test_checkpoint_provider_receives_false_in_best_effort_mode():
+    manager = MemoryManager()
+    durable = _FailingCheckpointProvider("durable")
+    manager.add_provider(durable)
+
+    combined = manager.on_pre_compress(
+        [{"role": "user", "content": "evidence"}],
+    )
+
+    assert combined == ""
+    assert durable.require_checkpoint_calls == [False]
 
 
 def test_manager_require_checkpoint_propagates_checkpoint_provider_failure():

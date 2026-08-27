@@ -1122,7 +1122,13 @@ class MemoryManager:
             if is_checkpoint_provider and evidence_messages is not None:
                 provider_messages = evidence_messages
             try:
-                result = provider.on_pre_compress(provider_messages)
+                if is_checkpoint_provider:
+                    result = provider.on_pre_compress(
+                        provider_messages,
+                        require_checkpoint=require_checkpoint,
+                    )
+                else:
+                    result = provider.on_pre_compress(provider_messages)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:

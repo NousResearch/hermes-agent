@@ -1,5 +1,5 @@
 ---
-sidebar_position: 8
+sidebar_position: 10
 title: "Bubblewrap"
 description: "Using bubblewrap (bwrap) as a terminal backend: a per-command sandbox on the host"
 ---

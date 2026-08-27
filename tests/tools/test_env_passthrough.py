@@ -1,6 +1,9 @@
 """Tests for tools.env_passthrough — skill and config env var passthrough."""
 
 import os
+import shutil
+import subprocess
+
 import pytest
 import yaml
 
@@ -13,6 +16,40 @@ from tools.env_passthrough import (
     register_env_passthrough,
     resolve_passthrough_value,
 )
+
+
+def _bwrap_usable() -> bool:
+    if shutil.which("bwrap") is None:
+        return False
+    try:
+        probe = subprocess.run(
+            ["bwrap", "--unshare-user", "--ro-bind", "/", "/", "true"],
+            capture_output=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
+
+
+# The terminal backends that build their subprocess env through
+# LocalEnvironment; bubblewrap must show the same passthrough behavior.
+ENV_BACKENDS = [
+    pytest.param("local", id="local"),
+    pytest.param(
+        "bubblewrap", id="bubblewrap",
+        marks=pytest.mark.skipif(not _bwrap_usable(), reason="bwrap missing or its namespace probe failed"),
+    ),
+]
+
+
+def _make_environment(backend: str, cwd: str):
+    if backend == "bubblewrap":
+        from tools.environments.bubblewrap import BubblewrapEnvironment
+
+        return BubblewrapEnvironment(cwd=cwd, timeout=30)
+    from tools.environments.local import LocalEnvironment
+
+    return LocalEnvironment(cwd=cwd)
 
 
 @pytest.fixture(autouse=True)
@@ -252,10 +289,9 @@ class TestTerminalIntegration:
 
         assert "SERVICE_TOKEN" not in child_env
 
-    def test_shared_local_snapshot_re_resolves_current_profile(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("backend", ENV_BACKENDS)
+    def test_shared_local_snapshot_re_resolves_current_profile(self, monkeypatch, tmp_path, backend):
         """A persistent shell snapshot must not retain the previous profile's value."""
-        from tools.environments.local import LocalEnvironment
-
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
         ss.set_multiplex_active(True)
@@ -265,7 +301,7 @@ class TestTerminalIntegration:
         try:
             token_a = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-profile-a"})
             try:
-                env = LocalEnvironment(cwd=str(tmp_path))
+                env = _make_environment(backend, str(tmp_path))
                 assert env.execute("printf '%s' \"$SERVICE_TOKEN\"")["output"] == "token-for-profile-a"
             finally:
                 ss.reset_secret_scope(token_a)

@@ -735,9 +735,12 @@ async function disconnect(ssh, ownershipId) {
 
 function buildOwnedStaleTerminationCommand(lock, ownershipId) {
   const pid = Number(lock.pid)
-  const expectedPath = shq(expandRemotePath(lock.hermesPath))
-  const expectedHome = lock.hermesHome ? shq(expandRemotePath(lock.hermesHome)) : "''"
-  const expectedToken = shq(expandRemotePath(spawnTokenPath(ownershipId, lock.spawnNonce)))
+  // expandRemotePath() output is already a shell-quoted fragment; embed it
+  // raw so $HOME expands at assignment. Double-quoting stores the quote
+  // characters in the variable and every identity match below REFUSEs.
+  const expectedPath = expandRemotePath(lock.hermesPath)
+  const expectedHome = lock.hermesHome ? expandRemotePath(lock.hermesHome) : "''"
+  const expectedToken = expandRemotePath(spawnTokenPath(ownershipId, lock.spawnNonce))
   const nonce = shq(lock.spawnNonce)
   const profile = shq(lock.profile || '')
   const command = `$(ps -ww -o command= -p ${pid} 2>/dev/null || true)`
@@ -1083,7 +1086,11 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 
   return withRemoteUpdateMutex(
     `umask 077 && mkdir -p "$(dirname ${reservation})"; ` +
-      `reservation=${shq(reservation)}; lock=${shq(lockPath)}; owner_file=${shq(ownerPath)}; ` +
+      // reservation/lockPath/ownerPath are expandRemotePath() output — already
+      // shell-quoted fragments ("$HOME"'/…'). Embed raw so the assignment
+      // expands $HOME; shq() here would store the quote characters literally
+      // and every mkdir/cat against the variable fails forever.
+      `reservation=${reservation}; lock=${lockPath}; owner_file=${ownerPath}; ` +
       `reservation_nonce=${shq(reservationNonce)}; ` +
       `i=0; while ! mkdir "$reservation" 2>/dev/null; do ` +
       `owner_data=$(cat "$owner_file" 2>/dev/null || true); owner_pid=${'${owner_data%%:*}'}; ` +
@@ -1098,7 +1105,11 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `${markerClear}; marker_clear || exit 75; mkdir -p "$(dirname ${logPath})" && ` +
       `${detachedSpawn}; ` +
       `marker_clear || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; ` +
-      `lock_json=${shq(metadata)}; lock_json=\${lock_json//__PID__/$child}; ` +
+      // ${var//pat/rep} is a bashism — this payload runs under plain sh (dash
+      // on Ubuntu), which aborts the whole script on it with "Bad
+      // substitution" AFTER the child was spawned, orphaning the backend and
+      // skipping the lockfile publication. Substitute with sed instead.
+      `lock_json=$(printf '%s' ${shq(metadata)} | sed "s/__PID__/\${child}/"); ` +
       `temporary_lock="\${lock}.${reservationNonce}.tmp"; ` +
       `printf '%s' "$lock_json" > "$temporary_lock" && mv -f "$temporary_lock" "$lock" || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
       `echo "$child"`,

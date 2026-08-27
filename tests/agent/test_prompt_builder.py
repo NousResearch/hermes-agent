@@ -459,6 +459,48 @@ class TestBuildSkillsSystemPrompt:
         assert gated, f"kanban-only missing from snapshot: {snapshot}"
         assert gated[0]["environments"] == ["kanban"]
 
+    def test_manual_only_gate_survives_the_disk_snapshot(self, monkeypatch, tmp_path):
+        """A manual-only skill stays out of the index on the warm path too.
+
+        Same failure mode as ``environments``, one field over: the gate runs in
+        the cold scan, the fast path rebuilds from the serialized entry, and a
+        verdict that was never written down cannot be re-applied. The leak is
+        quiet — the description is empty either way — so it shows up as bare
+        names reappearing in the index on the second process, not as an error.
+        """
+        import json
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        tools = tmp_path / "skills" / "tools"
+        (tools / "auto").mkdir(parents=True)
+        (tools / "auto" / "SKILL.md").write_text(
+            "---\nname: auto\ndescription: Offered\n---\n"
+        )
+        (tools / "by-hand").mkdir()
+        (tools / "by-hand" / "SKILL.md").write_text(
+            "---\nname: by-hand\ndescription: Wrapper\n"
+            "disable-model-invocation: true\n---\n"
+        )
+
+        cold = build_skills_system_prompt()
+        assert "auto" in cold
+        assert "by-hand" not in cold
+
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+        warm = build_skills_system_prompt()
+        assert "auto" in warm
+        assert "by-hand" not in warm
+
+        snapshot = json.loads(
+            (tmp_path / ".skills_prompt_snapshot.json").read_text(encoding="utf-8")
+        )
+        by_name = {e.get("skill_name"): e for e in (snapshot.get("skills") or [])}
+        assert by_name["by-hand"]["manual_only"] is True
+        assert by_name["auto"]["manual_only"] is False
+
 
 # =========================================================================
 # Context files prompt builder

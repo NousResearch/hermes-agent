@@ -1132,6 +1132,12 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "environments": [str(e).strip() for e in environments if str(e).strip()],
+        # Same reason again, and the same failure when it is missing: the
+        # manual-invocation gate runs on the cold scan only, so without the
+        # verdict recorded here every warm rebuild re-lists manual-only skills
+        # by bare name. The description stays empty, but the name is the part
+        # that costs context and the part that invites the model to try.
+        "manual_only": skill_is_manual_only(frontmatter),
         "conditions": extract_skill_conditions(frontmatter),
     }
     if org_id:
@@ -1369,7 +1375,8 @@ def _build_skills_system_prompt_inner(
     snapshot = _load_skills_snapshot(skills_dir)
     if snapshot is not None:
         candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
-                       and skill_matches_environment_list(entry.get("environments") or []))
+                       and skill_matches_environment_list(entry.get("environments") or [])
+                       and not entry.get("manual_only"))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
         category_descriptions = {str(k): str(v) for k, v in (snapshot.get("category_descriptions") or {}).items()}
     else:

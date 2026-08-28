@@ -3,7 +3,7 @@
  * frame as the bot's profile picture.
  */
 
-import { Button, cn, GlyphSpinner, host, Input, RowButton, useQuery } from '@hermes/plugin-sdk'
+import { Button, cn, GlyphSpinner, host, Input, LruCache, RowButton, useQuery } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
 import { useBots } from './i18n'
@@ -18,7 +18,12 @@ import { ID } from './shared'
 // so opening the tab doesn't fire dozens of 2MB fetches at once.
 const PET_FRAME_W = 192
 const PET_FRAME_H = 208
-const petFrameCache = new Map<string, Promise<null | string>>()
+// The gallery is 4500+ pets browsed 24 at a time, and each entry is a decoded
+// PNG data URL — an unbounded cache holds every pet the user ever scrolled
+// past for the life of the window. Five pages' worth keeps scrolling back up
+// instant; past that a revisit pays the fetch and crop again.
+const PET_FRAME_CACHE_MAX = 120
+const petFrameCache = new LruCache<string, Promise<null | string>>(PET_FRAME_CACHE_MAX)
 let petFetchActive = 0
 const petFetchQueue: Array<() => Promise<void>> = []
 
@@ -194,9 +199,7 @@ export function PetTab({ image, onImage }: PetTabProps) {
 
   return (
     <div className="grid w-full gap-2">
-      <div className="text-center text-[0.65rem] text-(--ui-text-quaternary)">
-        {b.avatar.pickPet}
-      </div>
+      <div className="text-center text-[0.65rem] text-(--ui-text-quaternary)">{b.avatar.pickPet}</div>
       <Input
         className="h-7 text-xs"
         onChange={event => {
@@ -224,10 +227,10 @@ export function PetTab({ image, onImage }: PetTabProps) {
         <div className="py-3 text-center text-xs text-(--ui-text-quaternary)">No pets match.</div>
       ) : (
         <div
+          className="overflow-y-auto"
           onScroll={onScroll}
           style={{
-            maxHeight: 220,
-            overflowY: 'auto'
+            maxHeight: 220
           }}
         >
           <div className="grid grid-cols-3 gap-1.5">

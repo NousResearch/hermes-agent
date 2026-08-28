@@ -15,8 +15,15 @@
 import { render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { hostMock, useQueryMock } = vi.hoisted(() => ({
+const { hostMock, UnboundedCache, useQueryMock } = vi.hoisted(() => ({
   hostMock: { notify: vi.fn(), request: vi.fn() },
+  // Stand-in for the SDK's LruCache. Its ceiling has its own unit test and no
+  // fixture here approaches it, so the double just drops the bound.
+  UnboundedCache: class extends Map {
+    constructor(_max: number) {
+      super()
+    }
+  },
   useQueryMock: vi.fn()
 }))
 
@@ -26,6 +33,7 @@ vi.mock('@hermes/plugin-sdk', () => ({
   GlyphSpinner: () => <span />,
   host: hostMock,
   Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
+  LruCache: UnboundedCache,
   RowButton: (props: React.ComponentProps<'button'>) => <button {...props} />,
   useQuery: useQueryMock
 }))

@@ -26,7 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProfileRoute } from './types'
 
-const { clearBotAttentionMock, hostMock, noteBotAttentionMock } = vi.hoisted(() => ({
+const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
   clearBotAttentionMock: vi.fn(),
   hostMock: {
     onEvent: vi.fn(),
@@ -34,10 +34,17 @@ const { clearBotAttentionMock, hostMock, noteBotAttentionMock } = vi.hoisted(() 
     requestProfile: vi.fn(),
     retainProfileSocket: vi.fn()
   } as Record<string, unknown>,
-  noteBotAttentionMock: vi.fn()
+  noteBotAttentionMock: vi.fn(),
+  // Stand-in for the SDK's LruCache. Its ceiling has its own unit test and no
+  // fixture here approaches it, so the double just drops the bound.
+  UnboundedCache: class extends Map {
+    constructor(_max: number) {
+      super()
+    }
+  }
 }))
 
-vi.mock('@hermes/plugin-sdk', () => ({ host: hostMock }))
+vi.mock('@hermes/plugin-sdk', () => ({ host: hostMock, LruCache: UnboundedCache }))
 
 vi.mock('./data', () => ({
   botHandle: (name: string) => (name === 'default' ? 'hermes' : name),

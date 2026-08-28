@@ -699,10 +699,10 @@ export {
   resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
-  stripPathOpenAnnotations,
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  stripPathOpenAnnotations,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
   writeSecretFileAtomic

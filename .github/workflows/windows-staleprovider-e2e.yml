@@ -1,0 +1,62 @@
+name: Windows stale-provider resume live E2E
+
+# ON-DEMAND PROOF (stale custom provider on Desktop/TUI session.resume —
+# salvage of PR #96111 + #90343 + legacy Bot Chat backfill).
+#
+# Proves on a REAL windows-latest runner that resuming a session whose
+# persisted provider was deleted/renamed no longer fails with
+# "Unknown provider '<name>'", and that a legacy canonical Bot Chat follows
+# the profile's CURRENT config. Drives the real dispatch path against a
+# real state.db (tests/tui_gateway/test_stale_provider_resume_live.py).
+#
+# PROOF workflow — reverted before merge; must not land on main. Per-sha
+# concurrency + no cancel-in-progress so runs complete.
+
+on:
+  push:
+    branches:
+      - "salvage/stale-provider-botmode-cluster"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-staleprovider-e2e-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  stale-provider-e2e:
+    name: stale-provider resume live E2E (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra dev
+
+      - name: Run stale-provider resume live E2E
+        shell: bash
+        run: |
+          set -uo pipefail
+          uv run --no-sync python -m pytest \
+            tests/tui_gateway/test_stale_provider_resume_live.py \
+            tests/tui_gateway/test_custom_provider_session_persistence.py \
+            -o addopts= -v -p no:cacheprovider

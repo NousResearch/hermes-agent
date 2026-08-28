@@ -211,6 +211,13 @@ def test_generation_refuses_to_overwrite_unowned_expected_page(
     page.parent.mkdir(parents=True)
     page.write_text("# Hand-written page\n", encoding="utf-8")
 
+    monkeypatch.setattr(gen_module, "REPO", tmp_path)
+    monkeypatch.setattr(gen_module, "DOCS", tmp_path / "docs")
+    monkeypatch.setattr(
+        gen_module,
+        "SKILLS_PAGES",
+        tmp_path / "docs" / "user-guide" / "skills",
+    )
     monkeypatch.setattr(gen_module, "discover_skills", lambda: [])
     monkeypatch.setattr(
         gen_module,
@@ -221,6 +228,196 @@ def test_generation_refuses_to_overwrite_unowned_expected_page(
     assert gen_module.generate_skill_docs() == 1
     assert page.read_text(encoding="utf-8") == "# Hand-written page\n"
     assert "Refusing to overwrite non-generated page" in capsys.readouterr().out
+
+
+def test_check_refuses_symlinked_generated_page_root(
+    gen_module, tmp_path, monkeypatch, capsys
+):
+    """Check mode must reject an empty generated-page root that is a symlink."""
+    repo = tmp_path / "repo"
+    docs = repo / "docs"
+    skills_pages = docs / "user-guide" / "skills"
+    outside = tmp_path / "outside"
+    nested = outside / "empty" / "nested"
+    nested.mkdir(parents=True)
+    skills_pages.mkdir(parents=True)
+    (skills_pages / "bundled").symlink_to(outside, target_is_directory=True)
+
+    bundled_catalog = docs / "reference" / "skills-catalog.md"
+    optional_catalog = docs / "reference" / "optional-skills-catalog.md"
+    sidebar = repo / "website" / "sidebars.ts"
+    bundled_catalog.parent.mkdir(parents=True)
+    sidebar.parent.mkdir(parents=True)
+    expected_outputs = {
+        bundled_catalog: "bundled\n",
+        optional_catalog: "optional\n",
+        sidebar: "sidebar\n",
+    }
+    for path, content in expected_outputs.items():
+        path.write_text(content, encoding="utf-8")
+
+    monkeypatch.setattr(gen_module, "REPO", repo)
+    monkeypatch.setattr(gen_module, "DOCS", docs)
+    monkeypatch.setattr(gen_module, "SKILLS_PAGES", skills_pages)
+    monkeypatch.setattr(gen_module, "discover_skills", lambda: [])
+    monkeypatch.setattr(
+        gen_module,
+        "build_expected_outputs",
+        lambda entries: (expected_outputs, set()),
+    )
+
+    assert gen_module.generate_skill_docs(check=True) == 1
+    assert nested.is_dir()
+    assert "Refusing to write through symlinked output path" in capsys.readouterr().out
+
+
+def test_generation_does_not_clean_through_symlinked_page_root(
+    gen_module, tmp_path, monkeypatch
+):
+    """Normal generation must not remove directories through a root symlink."""
+    repo = tmp_path / "repo"
+    docs = repo / "docs"
+    skills_pages = docs / "user-guide" / "skills"
+    outside = tmp_path / "outside"
+    nested = outside / "empty" / "nested"
+    nested.mkdir(parents=True)
+    skills_pages.mkdir(parents=True)
+    (skills_pages / "bundled").symlink_to(outside, target_is_directory=True)
+
+    bundled_catalog = docs / "reference" / "skills-catalog.md"
+    optional_catalog = docs / "reference" / "optional-skills-catalog.md"
+    sidebar = repo / "website" / "sidebars.ts"
+    bundled_catalog.parent.mkdir(parents=True)
+    sidebar.parent.mkdir(parents=True)
+    expected_outputs = {
+        bundled_catalog: "bundled\n",
+        optional_catalog: "optional\n",
+        sidebar: "sidebar\n",
+    }
+
+    monkeypatch.setattr(gen_module, "REPO", repo)
+    monkeypatch.setattr(gen_module, "DOCS", docs)
+    monkeypatch.setattr(gen_module, "SKILLS_PAGES", skills_pages)
+    monkeypatch.setattr(gen_module, "discover_skills", lambda: [])
+    monkeypatch.setattr(
+        gen_module,
+        "build_expected_outputs",
+        lambda entries: (expected_outputs, set()),
+    )
+
+    result = gen_module.generate_skill_docs()
+
+    assert nested.is_dir()
+    assert result == 1
+
+
+def test_generation_refuses_parent_escape_output(
+    gen_module, tmp_path, monkeypatch, capsys
+):
+    """Generated output paths containing ``..`` must fail before any write."""
+    repo = tmp_path / "repo"
+    docs = repo / "docs"
+    repo.mkdir()
+    bundled_catalog = docs / "reference" / "skills-catalog.md"
+    optional_catalog = docs / "reference" / "optional-skills-catalog.md"
+    sidebar = repo / "website" / "sidebars.ts"
+    bundled_catalog.parent.mkdir(parents=True)
+    sidebar.parent.mkdir(parents=True)
+
+    escaped = repo / ".." / "outside.md"
+    expected_outputs = {
+        escaped: _generated_page(gen_module, "escaped"),
+        bundled_catalog: "bundled\n",
+        optional_catalog: "optional\n",
+        sidebar: "sidebar\n",
+    }
+    monkeypatch.setattr(gen_module, "REPO", repo)
+    monkeypatch.setattr(gen_module, "DOCS", docs)
+    monkeypatch.setattr(
+        gen_module,
+        "SKILLS_PAGES",
+        docs / "user-guide" / "skills",
+    )
+    monkeypatch.setattr(gen_module, "discover_skills", lambda: [])
+    monkeypatch.setattr(
+        gen_module,
+        "build_expected_outputs",
+        lambda entries: (expected_outputs, {escaped}),
+    )
+
+    result = gen_module.generate_skill_docs()
+
+    assert not (tmp_path / "outside.md").exists()
+    assert result == 1
+    assert "Refusing to write through symlinked output path" in capsys.readouterr().out
+
+
+def test_generation_refuses_symlinked_output_paths(
+    gen_module, tmp_path, monkeypatch, capsys
+):
+    """Generation must not follow leaf or parent-directory symlinks."""
+    docs = tmp_path / "docs"
+    skills_pages = docs / "user-guide" / "skills"
+    bundled_catalog = docs / "reference" / "skills-catalog.md"
+    optional_catalog = docs / "reference" / "optional-skills-catalog.md"
+    sidebar = tmp_path / "website" / "sidebars.ts"
+    bundled_catalog.parent.mkdir(parents=True)
+    sidebar.parent.mkdir(parents=True)
+
+    leaf = skills_pages / "bundled" / "leaf" / "page.md"
+    outside_leaf = tmp_path / "outside-leaf.md"
+    leaf.parent.mkdir(parents=True)
+    leaf.symlink_to(outside_leaf)
+
+    linked_category = skills_pages / "bundled" / "linked"
+    outside_directory = tmp_path / "outside-directory"
+    outside_directory.mkdir()
+    linked_category.parent.mkdir(parents=True, exist_ok=True)
+    linked_category.symlink_to(outside_directory, target_is_directory=True)
+    nested = linked_category / "page.md"
+
+    expected_outputs = {
+        leaf: _generated_page(gen_module, "leaf"),
+        nested: _generated_page(gen_module, "nested"),
+        bundled_catalog: "bundled\n",
+        optional_catalog: "optional\n",
+        sidebar: "sidebar\n",
+    }
+    monkeypatch.setattr(gen_module, "REPO", tmp_path)
+    monkeypatch.setattr(gen_module, "DOCS", docs)
+    monkeypatch.setattr(gen_module, "SKILLS_PAGES", skills_pages)
+    monkeypatch.setattr(gen_module, "discover_skills", lambda: [])
+    monkeypatch.setattr(
+        gen_module,
+        "build_expected_outputs",
+        lambda entries: (expected_outputs, {leaf, nested}),
+    )
+
+    assert gen_module.generate_skill_docs() == 1
+    assert leaf.is_symlink()
+    assert linked_category.is_symlink()
+    assert not outside_leaf.exists()
+    assert not (outside_directory / "page.md").exists()
+    assert "Refusing to write through symlinked output path" in capsys.readouterr().out
+
+
+def test_stale_cleanup_does_not_follow_symlinks(gen_module, tmp_path, monkeypatch):
+    """Stale cleanup must leave symlinks and their targets untouched."""
+    skills_pages = tmp_path / "docs" / "user-guide" / "skills"
+    stale_link = skills_pages / "bundled" / "old" / "stale.md"
+    outside = tmp_path / "outside.md"
+    stale_link.parent.mkdir(parents=True)
+    outside.write_text(_generated_page(gen_module, "outside"), encoding="utf-8")
+    stale_link.symlink_to(outside)
+
+    monkeypatch.setattr(gen_module, "REPO", tmp_path)
+    monkeypatch.setattr(gen_module, "SKILLS_PAGES", skills_pages)
+
+    assert gen_module._remove_stale_generated_pages(set()) == []
+    assert stale_link.is_symlink()
+    assert outside.read_text(encoding="utf-8") == _generated_page(
+        gen_module, "outside"
+    )
 
 
 def test_main_check_flag_is_read_only_mode(gen_module, monkeypatch):

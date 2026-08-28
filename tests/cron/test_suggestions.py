@@ -19,7 +19,6 @@ def store(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # Reload so module-level CRON_DIR/SUGGESTIONS_FILE pick up the temp home.
     import hermes_constants
     importlib.reload(hermes_constants)
     import cron.suggestions as s
@@ -38,6 +37,31 @@ def _add(store, key="k1", title="Test", source="catalog", schedule="0 9 * * *"):
 
 
 class TestStore:
+    def test_profile_override_routes_writes_to_current_home(self, tmp_path):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        import cron.suggestions as suggestions_mod
+
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+
+        import_token = set_hermes_home_override(profile_a)
+        try:
+            importlib.reload(suggestions_mod)
+        finally:
+            reset_hermes_home_override(import_token)
+
+        runtime_token = set_hermes_home_override(profile_b)
+        try:
+            _add(suggestions_mod, key="profile-b")
+        finally:
+            reset_hermes_home_override(runtime_token)
+
+        assert (profile_b / "cron" / "suggestions.json").exists()
+        assert not (profile_a / "cron" / "suggestions.json").exists()
+
     def test_add_and_list_pending(self, store):
         rec = _add(store)
         assert rec is not None

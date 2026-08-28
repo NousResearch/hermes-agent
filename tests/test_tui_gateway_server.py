@@ -2607,17 +2607,24 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["kanban", "memory", "project"]. `kanban` is auto-recovered by
-    # _get_platform_tools (a non-configurable platform toolset in hermes-cli's
-    # universe); `project` is GUI-only, folded in by _load_enabled_toolsets.
+    # Sorted: ["desktop_ui", "kanban", "memory", "profiles", "project"].
+    # `kanban` and `profiles` are auto-recovered by _get_platform_tools
+    # (non-configurable platform toolsets in hermes-cli's universe — a
+    # profile_manage tool in _HERMES_CORE_TOOLS makes `profiles` recoverable
+    # the same way `kanban` is; the opt-in still lives in the tool's
+    # check_fn, not here); `desktop_ui` and `project` are GUI-only, folded
+    # in by _load_enabled_toolsets.
     # Toolsets inside their first release (_RECENTLY_SHIPPED_TOOLSETS) are
     # back-filled onto saved lists that never offered them — allow those too.
     from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"desktop_ui", "kanban", "memory", "profiles", "project"} <= set(result)
+    assert (
+        set(result) - {"desktop_ui", "kanban", "memory", "profiles", "project"}
+        <= _RECENTLY_SHIPPED_TOOLSETS
+    )
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -2642,8 +2649,11 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"desktop_ui", "kanban", "memory", "profiles", "project"} <= set(result)
+    assert (
+        set(result) - {"desktop_ui", "kanban", "memory", "profiles", "project"}
+        <= _RECENTLY_SHIPPED_TOOLSETS
+    )
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 

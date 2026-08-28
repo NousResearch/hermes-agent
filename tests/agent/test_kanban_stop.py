@@ -15,7 +15,11 @@ from agent.kanban_stop import (
 
 @pytest.fixture
 def clear_kanban_env(monkeypatch):
-    for var in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_STOP_NUDGE"):
+    for var in (
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_STOP_NUDGE",
+        "HERMES_KANBAN_AUTO_REVIEW_ON_STOP",
+    ):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
 
@@ -176,6 +180,7 @@ def test_exhausted_nudges_handoff_useful_output_to_review(
     clear_kanban_env, monkeypatch
 ):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_review_fallback")
+    clear_kanban_env.setenv("HERMES_KANBAN_AUTO_REVIEW_ON_STOP", "1")
     monkeypatch.setattr(
         "agent.kanban_stop._configured_review_profile",
         lambda: "review-verification-steward",
@@ -212,6 +217,29 @@ def test_exhausted_nudges_handoff_useful_output_to_review(
             },
         }
     ]
+
+
+def test_exhausted_nudges_retry_original_worker_by_default(
+    clear_kanban_env, monkeypatch
+):
+    """Unverified prose must not consume a reviewer slot without opt-in."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_retry_default")
+    monkeypatch.setattr(
+        "agent.kanban_stop._configured_review_profile",
+        lambda: "review-verification-steward",
+    )
+    calls = []
+    monkeypatch.setattr(
+        "tools.kanban_tools._handle_request_review",
+        lambda args: calls.append(args) or '{"ok": true}',
+    )
+
+    assert reconcile_kanban_stop_to_review(
+        messages=[],
+        final_response="I inspected the task but did not record a terminal receipt.",
+        attempts=2,
+    ) is False
+    assert calls == []
 
 
 def test_review_handoff_is_bounded_and_never_infers_completion(

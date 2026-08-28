@@ -24,6 +24,28 @@ _DEFAULT_MAX_ATTEMPTS = 2
 _MAX_REVIEW_SUMMARY_CHARS = 4000
 
 
+def _auto_review_on_stop_enabled() -> bool:
+    """Return whether unverified worker prose may enter the review lane.
+
+    A missing terminal Kanban action is normally a protocol violation, not
+    evidence that a reviewer can use.  Retrying the original assignee keeps
+    that worker accountable for its receipt and prevents unrelated review
+    workers from becoming a queue sink.  Deployments that deliberately want
+    the old evidence-preservation behavior can opt in per worker or config.
+    """
+
+    raw = os.environ.get("HERMES_KANBAN_AUTO_REVIEW_ON_STOP")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        from hermes_cli.config import load_config
+
+        kanban = load_config().get("kanban") or {}
+        return kanban.get("auto_review_on_stop") is True
+    except Exception:
+        return False
+
+
 def _configured_review_profile() -> str | None:
     """Return an installed independent reviewer configured for stop handoffs."""
 

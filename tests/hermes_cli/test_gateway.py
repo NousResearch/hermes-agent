@@ -392,9 +392,11 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert unit_path.exists()
+    # Absolute systemctl resolution (privileged-tool boundary, late review
+    # F1): commands are pinned to the system binary, not a bare PATH name.
     assert [cmd for cmd, _ in calls] == [
-        ["systemctl", "--user", "daemon-reload"],
-        ["systemctl", "--user", "enable", gateway.get_service_name()],
+        ["/usr/bin/systemctl", "--user", "daemon-reload"],
+        ["/usr/bin/systemctl", "--user", "enable", gateway.get_service_name()],
     ]
     assert helper_calls == [True]
     assert "User service installed and enabled" in out

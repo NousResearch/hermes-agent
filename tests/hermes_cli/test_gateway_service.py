@@ -784,9 +784,12 @@ class TestGatewayServiceDetection:
         )
 
         def fake_run(cmd, capture_output=True, text=True, **kwargs):
-            if cmd == ["systemctl", "--user", "is-active", gateway_cli.get_service_name()]:
+            # Absolute systemctl resolution (privileged-tool boundary, late
+            # review F1): compare on the resolved binary, not a bare name.
+            head_user = [c for c in cmd if not str(c).endswith("/systemctl")]
+            if str(cmd[0]).endswith("/systemctl") and head_user == ["--user", "is-active", gateway_cli.get_service_name()]:
                 return SimpleNamespace(returncode=0, stdout="inactive\n", stderr="")
-            if cmd == ["systemctl", "is-active", gateway_cli.get_service_name()]:
+            if str(cmd[0]).endswith("/systemctl") and head_user == ["is-active", gateway_cli.get_service_name()]:
                 return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
             raise AssertionError(f"Unexpected command: {cmd}")
 
@@ -1545,7 +1548,10 @@ class TestEnsureUserSystemdEnv:
         monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: calls.append("called"))
 
         result = gateway_cli._systemctl_cmd(system=False)
-        assert result == ["systemctl", "--user"]
+        # Resolution is absolute (privileged-tool boundary, late review F1):
+        # the binary path is pinned to the system directory, never bare PATH.
+        assert result[0].endswith("/systemctl")
+        assert result[1:] == ["--user"]
         assert calls == ["called"]
 
 

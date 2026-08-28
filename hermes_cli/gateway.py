@@ -3174,14 +3174,68 @@ def _raise_user_systemd_unavailable(
     raise UserSystemdUnavailableError(msg)
 
 
+# Absolute directories searched for privileged systemd tools when the
+# elevated system-gateway context is active (late review Finding 1).  PATH
+# is never consulted there — a unit-home ``.env`` could otherwise point at
+# an attacker-controlled ``systemctl``.
+_PRIVILEGED_TOOL_DIRS = (
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
+)
+
+
+def _privileged_system_gateway_context() -> bool:
+    """True when this process runs as root AND adopted a system unit home.
+
+    Only the combination is privileged: the sentinel alone (forgeable by any
+    process) or root alone (e.g. a plain ``sudo hermes chat``) does not lock
+    tool resolution to absolute directories.
+    """
+    if os.environ.get("_HERMES_SYSTEM_GATEWAY_ELEVATED") != "1":
+        return False
+    if not hasattr(os, "geteuid"):
+        return False  # Windows: system gateway units are not a thing.
+    return os.geteuid() == 0
+
+
+def privileged_system_tool_path(name: str, *, system: bool = False) -> str | None:
+    """Resolve a privileged tool without honouring PATH.
+
+    In the elevated context the tool must be found in the fixed system
+    directories above.  Outside it, resolution falls back to ``shutil.which``
+    (the historical behaviour for unprivileged callers).
+    """
+    if not _privileged_system_gateway_context():
+        found = shutil.which(name)
+        return found
+    for directory in _PRIVILEGED_TOOL_DIRS:
+        candidate = f"{directory}/{name}"
+        if os.access(candidate, os.X_OK, follow_symlinks=False):
+            return candidate
+    return None
+
+
+def _privileged_system_tool(name: str, *, system: bool = False) -> str:
+    resolved = privileged_system_tool_path(name, system=system)
+    if resolved is None:
+        raise RuntimeError(f"{name} is not available on this system")
+    return resolved
+
+
 def _systemctl_cmd(system: bool = False) -> list[str]:
     if not system:
         _ensure_user_systemd_env()
-    return ["systemctl"] if system else ["systemctl", "--user"]
+    base = _privileged_system_tool("systemctl", system=system)
+    return [base] if system else [base, "--user"]
 
 
 def _journalctl_cmd(system: bool = False) -> list[str]:
-    return ["journalctl"] if system else ["journalctl", "--user"]
+    base = _privileged_system_tool("journalctl", system=system)
+    return [base] if system else [base, "--user"]
 
 
 def _run_systemctl(

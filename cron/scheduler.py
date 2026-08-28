@@ -640,6 +640,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import (
+    _ensure_cron_dir,
     advance_next_runs,
     claim_dispatch,
     claim_job_for_fire,
@@ -971,7 +972,7 @@ def _record_forced_release(job_id: str, name: str, age_seconds: float, allowance
         del _forced_releases[:-_FORCED_RELEASE_HISTORY]
     try:
         path = _get_hermes_home() / "cron" / "inflight_forced_releases.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_cron_dir(path.parent)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
     except Exception as e:  # never let telemetry break a tick
@@ -1512,7 +1513,7 @@ def _write_usage_audit(record: dict) -> None:
     """
     try:
         path = _usage_audit_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_cron_dir(path.parent)
         line = json.dumps(record, ensure_ascii=False)
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -4310,7 +4311,7 @@ def _run_job_script(
         LLM can report the problem to the user.
     """
     scripts_dir = _get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_cron_dir(scripts_dir)
     scripts_dir_resolved = scripts_dir.resolve()
 
     # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path:
@@ -7062,6 +7063,15 @@ def run_one_job(
     run cooperatively — agent interruption AND script process-tree kill —
     through the single fenced completion path.
     """
+    if extra_prompt is None:
+        # A gateway-forwarded manual run (`hermes cron run --prompt` /
+        # cronjob(action='run', prompt=...) on a relay-fronted target) stamps
+        # its transient context on the job via trigger_job; the ticker/Chronos
+        # fire that consumes the manual occurrence carries it here. Single-fire:
+        # mark_job_run clears the field after the run.
+        _stamped = job.get("manual_run_prompt")
+        if _stamped and job.get("manual_run_at"):
+            extra_prompt = str(_stamped)
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
@@ -7705,7 +7715,7 @@ def tick(
         Number of jobs executed (0 if another tick is already running)
     """
     lock_dir, lock_file = _get_lock_paths()
-    lock_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_cron_dir(lock_dir)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows.
     # Only genuine lock contention (another ticker holds the lock) skips the

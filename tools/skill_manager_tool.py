@@ -855,17 +855,16 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
             other_profile, other_path = others[0]
             base += (
                 f" A skill by that name exists in profile "
-                f"'{other_profile}' ({other_path}). To edit a skill in "
-                f"another profile, switch profiles (`hermes -p "
-                f"{other_profile}`) or operate via explicit file tools "
-                f"with ``cross_profile=True``."
+                f"'{other_profile}' ({other_path}). To edit it, switch "
+                f"profiles (`hermes -p {other_profile}`) or edit the file "
+                f"directly (file tools / terminal)."
             )
         else:
             names = ", ".join(f"'{p}'" for p, _ in others)
             base += (
                 f" Skills by that name exist in other profiles: {names}. "
                 f"Switch profiles (`hermes -p <name>`) to edit there, or "
-                f"operate via explicit file tools with ``cross_profile=True``."
+                f"edit the files directly (file tools / terminal)."
             )
     else:
         base += " Use skills_list() to see available skills."
@@ -1763,16 +1762,12 @@ SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     "description": (
         "Create, update, or delete skills — your procedural memory for "
-        "recurring task types. Actions: create (full SKILL.md + optional "
-        f"category; lands in {display_hermes_home()}/skills/), patch "
-        "(old_string/new_string for a targeted fix — preferred; OR content "
-        "alone for a full SKILL.md rewrite), delete, write_file/remove_file "
-        "(supporting files). Existing skills are modified wherever they "
-        "live. Good skills: a self-contained trigger in the description's "
-        "first 57 chars ('Use when <trigger>. <one-line behavior>.'), "
-        "numbered steps with exact commands, pitfalls, verification (see "
-        "skill_view() for format). Confirm with the user before "
-        "create/delete."
+        f"recurring task types. Actions: create (lands in {display_hermes_home()}/skills/), "
+        "patch (targeted old_string/new_string fix — preferred), delete, "
+        "write_file/remove_file (supporting files). Existing skills are "
+        "modified wherever they live. Keep the description's first 57 chars "
+        "a self-contained trigger: 'Use when <trigger>. <one-line "
+        "behavior>.' — skill_view() shows full format conventions."
     ),
     "parameters": {
         "type": "object",
@@ -1785,58 +1780,61 @@ SKILL_MANAGE_SCHEMA = {
             "name": {
                 "type": "string",
                 "description": (
-                    "Skill name (lowercase, hyphens/underscores, max 64 chars). "
-                    "Must match an existing skill for patch/edit/delete/write_file/remove_file."
+                    "Skill name (lowercase, hyphens/underscores, max 64 "
+                    "chars); an existing skill's name for every action "
+                    "except create."
                 )
             },
             "content": {
                 "type": "string",
                 "description": (
-                    "Full SKILL.md content (YAML frontmatter + markdown body). "
-                    "Required for 'create'; on 'patch' it performs a full "
-                    "rewrite (major overhauls only — read the skill first with "
-                    "skill_view(), and don't combine with old_string)."
+                    "Full SKILL.md content (YAML frontmatter + markdown "
+                    "body). Required for 'create'. On 'patch' (without "
+                    "old_string) it REPLACES the whole file — read it via "
+                    "skill_view() first."
                 )
             },
+            # patch args: same fuzzy-matching semantics as the `patch` tool
+            # (uniqueness unless replace_all, context-for-uniqueness advice
+            # lives there) — teach only the skill-specific facts here.
             "old_string": {
                 "type": "string",
                 "description": (
-                    "Text to find in the file (required for 'patch'). Must be unique "
-                    "unless replace_all=true. Include enough surrounding context to "
-                    "ensure uniqueness."
+                    "Text to find (for 'patch'; same matching semantics as "
+                    "the patch tool)."
                 )
             },
             "new_string": {
                 "type": "string",
                 "description": (
-                    "Replacement text (required for 'patch'); must differ from "
-                    "old_string. Can be empty string to delete the matched text."
+                    "Replacement text (for 'patch'); empty string deletes "
+                    "the match."
                 )
             },
             "replace_all": {
                 "type": "boolean",
-                "description": "For 'patch': replace all occurrences instead of requiring a unique match (default: false)."
+                "description": "For 'patch': replace all occurrences (default: false)."
             },
             "category": {
                 "type": "string",
                 "description": (
-                    "Optional category/domain for organizing the skill (e.g., 'devops', "
-                    "'data-science', 'mlops'). Creates a subdirectory grouping. "
-                    "Only used with 'create'."
+                    "Optional category subdirectory for 'create' (e.g. "
+                    "'devops', 'mlops')."
                 )
             },
             "file_path": {
                 "type": "string",
                 "description": (
-                    "Path to a supporting file within the skill directory. "
-                    "For 'write_file'/'remove_file': required, must be under references/, "
-                    "templates/, scripts/, or assets/. "
-                    "For 'patch': optional, defaults to SKILL.md if omitted."
+                    "Path RELATIVE to the skill's own directory, e.g. "
+                    "'references/api.md' — no leading slash, never absolute. "
+                    "write_file/remove_file: required; first segment must be "
+                    "references/, templates/, scripts/, or assets/. patch: "
+                    "optional (default SKILL.md)."
                 )
             },
             "file_content": {
                 "type": "string",
-                "description": "Content for the file. Required for 'write_file'."
+                "description": "Content for write_file."
             },
             # NOTE: the handler also accepts `absorbed_into` on delete — the
             # curator's consolidation pass declares merge-vs-prune intent with

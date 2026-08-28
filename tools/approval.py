@@ -2980,6 +2980,14 @@ def clear_session(session_key: str) -> None:
         shutdown_kernels_for_owner(session_key)
     except Exception:
         pass
+    # Remote session kernels (docker/ssh/modal) share the owner model and
+    # the disposal boundary.
+    try:
+        from tools.code_kernel_remote import shutdown_remote_kernels_for_owner
+
+        shutdown_remote_kernels_for_owner(session_key)
+    except Exception:
+        pass
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:

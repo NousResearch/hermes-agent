@@ -2953,6 +2953,12 @@ def init_agent(
     # Copilot x-initiator flag: first API call of a user turn sends "user" (#3040).
     agent._is_user_initiated_turn = False
 
+    # Usage-anchored context accounting (agent/model_metadata.py): the last
+    # main-loop provider response's exact usage + transcript snapshot. None
+    # until the first response with usage; invalidated on compaction and
+    # session switches so stale anchors can never suppress compression.
+    agent._usage_anchor = None
+
     # Cumulative token usage for the session
     agent.session_prompt_tokens = 0
     agent.session_completion_tokens = 0

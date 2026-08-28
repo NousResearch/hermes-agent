@@ -406,8 +406,13 @@ class KreaImageGenProvider(ImageGenProvider):
 
     def capabilities(self) -> Dict[str, Any]:
         # Krea supports reference-guided generation (image-to-image style
-        # transfer) via image_style_references — up to 10 refs.
-        return {"modalities": ["text", "image"], "max_reference_images": 10}
+        # transfer) via image_style_references — up to 10 refs — and an
+        # opt-in Enhance upscale pass (see generate()'s upscale_requested).
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": 10,
+            "supports_upscale": True,
+        }
 
     # ------------------------------------------------------------------
     # generate()

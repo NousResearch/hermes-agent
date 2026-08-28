@@ -288,6 +288,106 @@ def test_repair_keeps_two_parallel_calls_answered_by_mixed_variants():
     ]
 
 
+def test_repair_merge_drops_stale_api_content_sidecar_on_surviving_turn():
+    """A pre-existing ``api_content`` sidecar on the surviving (first)
+    assistant turn must be dropped when the merge rewrites ``content`` —
+    otherwise the sidecar (which takes priority over ``content`` at
+    API-build time, see ``conversation_loop``'s ``api_messages`` build)
+    replays the STALE pre-merge bytes on the next call, silently discarding
+    everything the merge just concatenated on. Same stale-field-survives-
+    the-merge shape as the ``tool_calls`` gap above (#77921), for the
+    ``api_content`` field instead.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {
+            "role": "assistant",
+            "content": "first reply",
+            "api_content": "first reply (stale pre-merge bytes)",
+        },
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert "api_content" not in messages[1]
+    assert messages[1]["content"] == "first reply\nsecond reply"
+
+
+def test_repair_merge_preserves_api_content_sidecar_when_content_unchanged():
+    """Negative control (#78063 review): ``api_content`` must NOT be dropped
+    when the merge does not actually rewrite ``prev["content"]``.
+
+    When the later assistant turn's content is ``None``, neither the
+    both-str branch nor the ``not prev_content`` branch fires (``prev_content``
+    is a truthy string, so ``not prev_content`` is False) -- ``prev["content"]``
+    is left completely untouched. The sidecar is still the exact bytes
+    previously sent for that UNCHANGED content, so dropping it here would
+    diverge replay bytes and break the prompt-cache invariant for no reason.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "clean", "api_content": "wire bytes"},
+        {"role": "assistant", "content": None},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert messages[1]["content"] == "clean"
+    assert messages[1]["api_content"] == "wire bytes"
+
+
+def test_repair_merge_preserves_api_content_sidecar_when_content_unchanged_by_empty_string():
+    """Negative control (wz-heng, #78063 review): ``content_rewritten`` must
+    mean "the value changed", not "entered the assignment branch".
+
+    Later turn's content is ``""`` -- the both-str branch fires and
+    ``prev["content"]`` IS reassigned, but ``joined`` strips the falsy
+    empty string away and collapses back to the original ``prev_content``
+    unchanged. The sidecar must survive because no byte of ``content``
+    actually moved.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "clean", "api_content": "wire bytes"},
+        {"role": "assistant", "content": ""},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert messages[1]["content"] == "clean"
+    assert messages[1]["api_content"] == "wire bytes"
+
+
+def test_repair_merge_preserves_api_content_sidecar_with_multimodal_content():
+    """Same negative control, multimodal (list) content on the later turn --
+    the merge intentionally leaves list content alone (see the merge's
+    docstring), so ``prev["content"]`` is untouched and the sidecar must
+    survive."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "clean", "api_content": "wire bytes"},
+        {"role": "assistant", "content": [{"type": "text", "text": "img context"}]},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert len(messages) == 2
+    assert messages[1]["content"] == "clean"
+    assert messages[1]["api_content"] == "wire bytes"
+
+
+
 def test_sanitize_consumes_all_responses_id_variants_for_duplicate_result():
     """A sibling-id replay must not replace the first real result."""
     from agent.agent_runtime_helpers import sanitize_api_messages
@@ -327,6 +427,7 @@ def test_tool_executor_uses_canonical_responses_pairing_id():
     assert _pairing_tool_call_id(
         SimpleNamespace(id="call_ABC|fc_123")
     ) == "call_ABC"
+
 
 
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
@@ -375,7 +476,6 @@ def test_cursor_rewinds_when_compaction_happens_before_cursor():
 
 
 
-
 def test_flush_guard_clamps_overshooting_cursor():
     """_flush_messages_to_session_db safety net: an overshooting cursor must
     not produce a negative-start slice that skips everything (#44837)."""
@@ -410,15 +510,6 @@ def test_flush_guard_clamps_overshooting_cursor():
 
 
 # ── Pass 0: merge consecutive assistant messages (issue #29148, #49147) ─────
-
-
-
-
-
-
-
-
-
 
 
 
@@ -494,6 +585,34 @@ def test_sanitize_preserves_distinct_tool_call_ids():
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_A", "call_B"]
     assert sorted(m["tool_call_id"] for m in out if m.get("role") == "tool") == ["call_A", "call_B"]
+
+
+def test_sanitize_drops_tool_result_with_missing_tool_call_id():
+    """A tool message with NO ``tool_call_id`` must be dropped, not silently
+    passed through.
+
+    Before the fix: ``result_call_ids`` only ever collects TRUTHY ids, so a
+    missing/empty id is never added to that set and can therefore never land
+    in ``orphaned_results`` (a set-difference against ``surviving_call_ids``)
+    either -- the message survives sanitize_api_messages untouched and can
+    reach the provider with no ``tool_call_id`` at all, a schema violation
+    on strict OpenAI-compatible providers (#78071).
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_Z", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_Z", "content": "real result"},
+        {"role": "tool", "tool_call_id": "", "content": "no id"},
+        {"role": "tool", "content": "id key entirely absent"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    tool_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+    assert tool_ids == ["call_Z"]  # only the properly-paired result survives
 
 
 # ── tool_call_id reuse by local servers (#70724) ────────────────────────────
@@ -705,8 +824,6 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
 
 
 
-
-
 # ── Self-recovery: heal empty-content non-final messages ──────────────────
 # Repro of the production incident: a dead stream persisted an empty-content
 # assistant stub mid-transcript, and every later request 400'd with
@@ -715,32 +832,28 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
 # such turns on the per-call copy so the session recovers itself in memory.
 
 
-def test_sanitize_dedup_drops_tool_calls_key_when_all_removed():
-    """When dedup removes ALL tool_calls from an assistant message,
-    the key is dropped instead of writing tool_calls: [].
+def test_sanitize_interrupted_call_stubbed_and_replay_kept():
+    """A crash/resume glitch replays the SAME assistant call while the first
+    occurrence is still positionally unanswered.
 
-    DeepSeek v4 and newer OpenAI reject empty tool_calls with HTTP 400.
-    The dedup pass introduced by #58327 can produce this state when
-    all tool_call_ids are duplicates of earlier messages in a long
-    history. The fix (#64335) drops the key entirely rather than
-    writing an empty array.
+    With the positional pairing pass (#94704), the interrupted first call is
+    no longer a dedup candidate: it gets a synthetic unavailable-result stub
+    at the end of its (empty) tool run, and the replayed call — now with its
+    own immediate result — is a legitimate new round. This supersedes the
+    pre-positional shape where the dedup pass removed the replay's tool_calls
+    (the #64335 empty-key guard is still exercised by
+    ``test_sanitize_drops_empty_tool_calls_array``).
     """
     from agent.agent_runtime_helpers import sanitize_api_messages
 
-    # Simulate a crash/resume glitch or compression-window re-emission that
-    # replays the SAME assistant call while the first is still outstanding
-    # (no tool result has answered it yet). That is a true duplicate: the
-    # first occurrence is kept, the replay is removed. NOTE: a reuse AFTER
-    # the call was answered is NOT a duplicate — servers with per-turn or
-    # constant ids (llama.cpp, Kimi K3) legitimately re-issue ids across
-    # turns (#70724), which outstanding-call semantics now preserve.
+    # Simulate a crash/resume glitch that replays the SAME assistant call
+    # while the first is still outstanding (no tool result has answered it
+    # yet, and a second assistant turn interrupts the run).
     messages = [
         {"role": "user", "content": "step 1"},
         {"role": "assistant", "content": "running",
          "tool_calls": [{"id": "call_A", "type": "function",
                          "function": {"name": "foo", "arguments": "{}"}}]},
-        # Replayed assistant call BEFORE the result answers call_A —
-        # a duplicate of a still-outstanding call, so it must be removed.
         {"role": "assistant", "content": "retrying",
          "tool_calls": [{"id": "call_A", "type": "function",
                          "function": {"name": "foo", "arguments": "{}"}}]},
@@ -749,18 +862,18 @@ def test_sanitize_dedup_drops_tool_calls_key_when_all_removed():
 
     out = sanitize_api_messages(list(messages))
 
-    # First assistant should keep tool_calls (first occurrence)
-    assistant1 = [m for m in out if m.get("role") == "assistant"][0]
-    assert "tool_calls" in assistant1
-    assert len(assistant1["tool_calls"]) == 1
-    assert assistant1["tool_calls"][0]["id"] == "call_A"
-
-    # Second assistant should have tool_calls key DROPPED
-    # (all tool_calls were deduped as duplicates of call_A)
-    assistant2 = [m for m in out if m.get("role") == "assistant"][1]
-    assert "tool_calls" not in assistant2
-    # Content should be preserved
-    assert assistant2["content"] == "retrying"
+    # Both assistant turns survive; the interrupted one is answered by a
+    # stub inserted before the replay, the replay by its real result.
+    assert [m["role"] for m in out] == [
+        "user", "assistant", "tool", "assistant", "tool",
+    ]
+    assert out[2]["role"] == "tool"
+    assert out[2]["tool_call_id"] == "call_A"
+    assert "Result unavailable" in out[2]["content"]
+    assistants = [m for m in out if m.get("role") == "assistant"]
+    assert all("tool_calls" in a for a in assistants)
+    assert [a["tool_calls"][0]["id"] for a in assistants] == ["call_A", "call_A"]
+    assert out[4]["content"] == "result 1"
 
 
 def test_repair_drops_duplicate_tool_result_keyed_on_sibling_id():
@@ -956,3 +1069,322 @@ def test_compressor_sanitize_keeps_composite_keyed_pair():
     ]
     out = cc._sanitize_tool_pairs(msgs)
     assert not any(m.get("role") == "tool" for m in out)
+
+
+# ── _classify_tool_call_orphans ─────────────────────────────────────────
+
+def test_classify_orphans_empty():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    sv, rs, orphaned, missing = _classify_tool_call_orphans([])
+    assert sv == set()
+    assert rs == set()
+    assert orphaned == []
+    assert missing == []
+
+
+def test_classify_orphans_clean_pair():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert sv == {"call_1"}
+    assert rs == {"call_1"}
+    assert orphaned == []
+    assert missing == []
+
+
+def test_classify_orphans_detects_orphaned_result():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "tool", "tool_call_id": "orphan_1", "content": "no matching call"},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert [m["tool_call_id"] for m in orphaned] == ["orphan_1"]
+    assert missing == []
+
+
+def test_classify_orphans_detects_missing_result():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert orphaned == []
+    assert [tc["id"] for tc in missing] == ["call_1"]
+
+
+def test_classify_orphans_mixed():
+    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    messages = [
+        {"role": "assistant", "tool_calls": [
+            {"id": "call_A", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "call_B", "type": "function", "function": {"name": "g", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "ok"},
+        {"role": "tool", "tool_call_id": "call_C", "content": "orphan"},
+    ]
+    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
+    assert sv == {"call_A", "call_B"}
+    assert rs == {"call_A", "call_C"}
+    assert [m["tool_call_id"] for m in orphaned] == ["call_C"]
+    assert [tc["id"] for tc in missing] == ["call_B"]
+
+
+# ── Positional tool_call <-> tool_result pairing ───────────────────────────
+# Production incident (session 4d8727cbcf04): context compression displaced
+# a tool result ~110 messages past its declaring assistant turn (across a
+# user turn). repair_message_sequence Pass 1 dropped the displaced result as
+# stray but left the declaring assistant carrying an UNANSWERED tool_call
+# with empty content; sanitize_api_messages' global-set stub pass saw the
+# displaced result still present, considered the call answered, and injected
+# no stub — DeepSeek v4 then 400'd the payload: "An assistant message with
+# 'tool_calls' must be followed by tool messages responding to each
+# 'tool_call_id' (insufficient tool messages following tool_calls message)".
+
+
+def _assistant_with_call(call_id, content=""):
+    return {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [{
+            "id": call_id, "type": "function",
+            "function": {"name": "f", "arguments": "{}"},
+        }],
+    }
+
+
+def _tool_result(call_id, content="out"):
+    return {"role": "tool", "tool_call_id": call_id, "content": content}
+
+
+def test_repair_prunes_tool_call_whose_result_was_displaced():
+    """Pass 2: a tool_call with no result in the immediately-following run is
+    pruned, even when its result exists far later (post-compression shape).
+    The assistant turn keeps its plain content once the calls are pruned.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A", content=""),          # declares A, never answered here
+        _assistant_with_call("call_B", content="second"),    # merged into the above (Pass 0)
+        _tool_result("call_B"),
+        {"role": "user", "content": "meanwhile"},            # user redirect
+        _tool_result("call_A", content="late result"),       # displaced: dropped by Pass 1
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    assistants = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistants) == 1
+    ids = [tc["id"] for tc in assistants[0]["tool_calls"]]
+    assert ids == ["call_B"]          # unanswered call_A pruned
+    assert assistants[0]["content"] == "second"
+    # The legitimate call_B result survives; only the displaced late
+    # call_A result was dropped.
+    tools = [m for m in messages if m.get("role") == "tool"]
+    assert len(tools) == 1
+    assert tools[0]["tool_call_id"] == "call_B"
+
+
+def test_repair_drops_turn_when_pruned_calls_were_only_payload():
+    """Pass 2: when pruning empties the merged assistant turn (no content,
+    no reasoning), the whole turn is dropped instead of sending an empty
+    non-final assistant message (itself a 400 on most providers).
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A"),                    # empty content
+        {"role": "assistant", "content": ""},              # merged in (Pass 0)
+        {"role": "user", "content": "redirected"},
+        _tool_result("call_A", content="late"),            # displaced: dropped
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 2
+    assert all(m.get("role") != "assistant" for m in messages)
+    # The two user turns merge (Pass 3); nothing was lost.
+    users = [m for m in messages if m.get("role") == "user"]
+    assert len(users) == 1
+    assert "do it" in users[0]["content"] and "redirected" in users[0]["content"]
+
+
+def test_repair_keeps_calls_answered_within_following_run():
+    """Negative control: a legitimate assistant(tool_calls)+tool run must
+    survive Pass 2 untouched (the ongoing dialog pattern)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        _assistant_with_call("t1", content=""),
+        _tool_result("t1"),
+        {"role": "user", "content": "Q2"},
+    ]
+    original = [dict(m) for m in messages]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert messages == original
+
+
+def test_sanitize_stubs_call_unanswered_positionally_even_if_result_exists_elsewhere():
+    """sanitize_api_messages must inject a stub right after the declaring
+    assistant message when no result follows it, EVEN IF a (displaced)
+    result exists later in the transcript — the global-set check missed
+    this exact shape (production 400, session 4d8727cbcf04)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A", content=""),
+        {"role": "user", "content": "meanwhile"},
+        _tool_result("call_A", content="late result"),
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    roles = [m["role"] for m in out]
+    assert roles == ["user", "assistant", "tool", "user"]
+    stub = out[2]
+    assert stub["tool_call_id"] == "call_A"
+    assert "Result unavailable" in stub["content"]
+    # The displaced late result is dropped (positional orphan).
+    assert "late result" not in [m.get("content", "") for m in out]
+
+
+def test_sanitize_drops_result_appearing_before_its_call():
+    """A tool result that precedes its declaring assistant message is a
+    positional orphan — strict providers reject 'role=tool' messages that
+    don't follow a tool_calls message."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        _tool_result("call_A"),                    # before its call
+        _assistant_with_call("call_A", content=""),
+        _tool_result("call_A"),
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    tools = [m for m in out if m.get("role") == "tool"]
+    assert len(tools) == 1                          # only the valid one survives
+    assert tools[0]["tool_call_id"] == "call_A"
+
+
+def test_sanitize_positional_pairing_untouched_valid_transcript():
+    """Negative control: a fully paired transcript (each tool-calling
+    assistant immediately followed by its results) gets no stubs and loses
+    no results."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A", content=""),
+        _tool_result("call_A"),
+        _assistant_with_call("call_B", content=""),
+        _tool_result("call_B"),
+        {"role": "assistant", "content": "done"},
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    assert [m["role"] for m in out] == [
+        "user", "assistant", "tool", "assistant", "tool", "assistant",
+    ]
+    assert all("Result unavailable" not in str(m.get("content", "")) for m in out)
+
+
+def test_sanitize_stubs_replayed_call_masked_by_historical_result():
+    """Issue #94704 acceptance shape: a historical result masks a later
+    replayed call with no immediate result.
+
+    ```text
+    user
+    assistant(tool_calls=[call_old])                # first declaration, answered
+    tool(call_old)                                  # historical completed call
+    user
+    assistant(tool_calls=[call_old, call_new])      # call_old REPLAYED
+      tool(call_new)                                # call_old unanswered here
+    ```
+
+    The global presence check sees ``call_old`` answered somewhere and
+    injects no stub; DeepSeek v4 rejects the payload because the second
+    declaration's contiguous tool run covers only ``call_new``. The
+    positional pass must stub ``call_old`` at the end of the second run
+    while keeping the historical result and the fresh result intact.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "step 1"},
+        _assistant_with_call("call_old", content=""),
+        _tool_result("call_old", content="historical result"),
+        {"role": "user", "content": "step 2"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_old", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}},
+                {"id": "call_new", "type": "function",
+                 "function": {"name": "g", "arguments": "{}"}},
+            ],
+        },
+        _tool_result("call_new", content="fresh result"),
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    # The second run ends with a stub for the replayed call_old, inserted
+    # right after the fresh result and BEFORE any user turn.
+    roles = [m["role"] for m in out]
+    assert roles == ["user", "assistant", "tool", "user", "assistant",
+                     "tool", "tool"]
+    second_run = out[4:]
+    assert [m["tool_call_id"] for m in second_run if m["role"] == "tool"] == [
+        "call_new", "call_old",
+    ]
+    stub = second_run[2]
+    assert stub["role"] == "tool"
+    assert stub["tool_call_id"] == "call_old"
+    assert "Result unavailable" in stub["content"]
+    # Historical + fresh results both survive untouched.
+    contents = [m.get("content", "") for m in out]
+    assert "historical result" in contents
+    assert "fresh result" in contents
+
+
+def test_sanitize_stubs_interrupted_first_occurrence_keeps_replay_pair():
+    """Production shape (session 7d57a602b83d): an interrupted turn persists
+    an assistant tool_call with NO result (next message is user); on resume
+    the SAME call is re-issued and persisted again WITH its result. Each id
+    therefore exists twice — the first occurrence must be stubbed so the
+    positional invariant holds, while the replayed pair stays untouched.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A", content=""),   # interrupted: no result
+        {"role": "user", "content": "resumed"},
+        _assistant_with_call("call_A", content=""),   # replay: paired
+        _tool_result("call_A", content="real result"),
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    roles = [m["role"] for m in out]
+    assert roles == ["user", "assistant", "tool", "user", "assistant", "tool"]
+    # Stub inserted for the interrupted first occurrence, before the user turn.
+    assert out[2]["role"] == "tool"
+    assert out[2]["tool_call_id"] == "call_A"
+    assert "Result unavailable" in out[2]["content"]
+    # Replayed pair keeps the REAL result, not a stub.
+    assert out[5]["content"] == "real result"
+
+

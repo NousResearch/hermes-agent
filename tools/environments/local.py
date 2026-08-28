@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -21,6 +22,105 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
+
+# --- Terminal temp-cache pruning -------------------------------------------
+#
+# get_temp_dir() now defaults to HERMES_HOME/cache/terminal (real storage)
+# instead of tmpfs /tmp, so stale session artifacts no longer disappear on
+# reboot for free. Prune them ourselves: the gateway housekeeping loop calls
+# cleanup_terminal_temp_cache() hourly (same contract as the other
+# cleanup_*_cache helpers), and a once-per-process best-effort sweep covers
+# CLI-only installs that never run the gateway.
+#
+# Background-process artifacts come in triplets (hermes_bg_<id>.log/.pid/
+# .exit). A long-running server's .pid file never changes mtime while its
+# .log keeps updating — so age is judged per GROUP (newest mtime among files
+# sharing a stem) to avoid yanking the pid/exit files out from under a
+# still-live background session.
+TERMINAL_TEMP_MAX_AGE_HOURS = 72
+
+_terminal_temp_prune_lock = threading.Lock()
+_terminal_temp_pruned_once = False
+
+_BG_GROUP_RE = re.compile(r"^(hermes_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
+
+
+def _default_terminal_temp_dir() -> "Path | None":
+    """Return HERMES_HOME/cache/terminal, or None if unresolvable."""
+    try:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / "cache" / "terminal"
+    except Exception:
+        return None
+
+
+def cleanup_terminal_temp_cache(
+    max_age_hours: int = TERMINAL_TEMP_MAX_AGE_HOURS,
+) -> int:
+    """Delete session temp artifacts older than *max_age_hours*.
+
+    Same contract as the ``cleanup_*_cache`` helpers in
+    ``gateway.platforms.base`` — returns the number of entries removed — so
+    the gateway housekeeping loop can prune this dir on its hourly cadence.
+
+    Only prunes the managed default dir (``HERMES_HOME/cache/terminal``).
+    User-pointed ``terminal.temp_dir`` locations are the user's to manage —
+    we never bulk-delete inside a directory we don't own.
+    """
+    root = _default_terminal_temp_dir()
+    if root is None:
+        return 0
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+
+    # Newest mtime per hermes_bg_<id> group, so a live server's fresh .log
+    # protects its stale-looking .pid/.exit siblings.
+    group_newest: dict[str, float] = {}
+    for f in entries:
+        m = _BG_GROUP_RE.match(f.name)
+        if m:
+            try:
+                mt = f.stat().st_mtime
+            except OSError:
+                continue
+            key = m.group(1)
+            group_newest[key] = max(group_newest.get(key, 0.0), mt)
+
+    for f in entries:
+        try:
+            mt = f.stat().st_mtime
+        except OSError:
+            continue
+        m = _BG_GROUP_RE.match(f.name)
+        effective = group_newest.get(m.group(1), mt) if m else mt
+        if effective >= cutoff:
+            continue
+        try:
+            if f.is_dir():
+                shutil.rmtree(f, ignore_errors=True)
+            else:
+                f.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _prune_terminal_temp_once() -> None:
+    """Best-effort prune, at most once per process (CLI-only installs)."""
+    global _terminal_temp_pruned_once
+    with _terminal_temp_prune_lock:
+        if _terminal_temp_pruned_once:
+            return
+        _terminal_temp_pruned_once = True
+    try:
+        cleanup_terminal_temp_cache()
+    except Exception as exc:
+        logger.debug("Terminal temp prune failed: %s", exc)
 
 
 def _msys_to_windows_path(cwd: str) -> str:
@@ -1764,8 +1864,19 @@ class LocalEnvironment(BaseEnvironment):
         resolves to a POSIX path.
 
         Check the environment configured for this backend first so callers can
-        override the temp root explicitly (for example via terminal.env or a
-        custom TMPDIR), then fall back to the host process environment.
+        override the temp root explicitly (for example via terminal.temp_dir,
+        terminal.env, or a custom TMPDIR), then fall back to the host process
+        environment.
+
+        **Default (no override set):** a dedicated cache dir under
+        ``HERMES_HOME`` (``~/.hermes/cache/terminal``) rather than ``/tmp``.
+        On several distros (Arch and friends) ``/tmp`` is a small RAM-backed
+        tmpfs, and Hermes session artifacts — background-process logs,
+        code-execution sandboxes, spilled tool results — can fill it under
+        load. Real storage is the safer default; stale artifacts are pruned
+        by ``cleanup_terminal_temp_cache`` (gateway housekeeping + a
+        once-per-process best-effort sweep) since we no longer get tmpfs
+        reboot wipes for free.
 
         **Windows:** hardcoded ``/tmp`` is wrong in two ways — native Python
         can't open the path, and the Windows default temp (``%TEMP%``) often
@@ -1786,13 +1897,35 @@ class LocalEnvironment(BaseEnvironment):
             except Exception:
                 cache_dir = Path(tempfile.gettempdir()) / "hermes_terminal"
             cache_dir.mkdir(parents=True, exist_ok=True)
+            _prune_terminal_temp_once()
             # Force forward slashes so the same string serves both contexts.
             return str(cache_dir).replace("\\", "/")
+
+        # Explicit temp-dir override from terminal.temp_dir (TERMINAL_TEMP_DIR).
+        # Honored ahead of the generic TMPDIR so users can redirect Hermes' temp
+        # root to real storage when /tmp is a small tmpfs.
+        configured = self.env.get("TERMINAL_TEMP_DIR") or os.environ.get("TERMINAL_TEMP_DIR")
+        if configured and configured.startswith("/") and os.path.isdir(configured):
+            return configured.rstrip("/") or "/"
 
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
                 return candidate.rstrip("/") or "/"
+
+        # Default: HERMES_HOME/cache/terminal — real storage, mirroring the
+        # Windows branch above. /tmp is only a last-resort fallback now
+        # because RAM-backed tmpfs /tmp fills up under Hermes load.
+        try:
+            from hermes_constants import get_hermes_home
+            cache_dir = get_hermes_home() / "cache" / "terminal"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            resolved = str(cache_dir)
+            if resolved.startswith("/") and os.access(resolved, os.W_OK | os.X_OK):
+                _prune_terminal_temp_once()
+                return resolved.rstrip("/") or "/"
+        except Exception:
+            pass
 
         if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK | os.X_OK):
             return "/tmp"

@@ -26,6 +26,17 @@ from tools.vision_tools import (
     check_vision_requirements,
 )
 
+# A minimal but STRUCTURALLY VALID 1x1 RGB PNG (passes PIL verify/decode).
+# The proactive corrupt-image gates (salvaged #53307/#76896) now reject
+# magic-bytes-only fakes, so fixtures must be real images. Trailing padding
+# after IEND is ignored by decoders, letting size-sensitive tests keep
+# inflating fixtures with zero bytes.
+VALID_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc```\x00\x00"
+    b"\x00\x04\x00\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
 
 _RESOLVES = [(2, 1, 6, "", ("93.184.216.34", 0))]
 
@@ -90,7 +101,7 @@ class TestDetermineMimeType:
 class TestImageToBase64DataUrl:
     def test_returns_data_url_with_detected_or_given_mime(self, tmp_path):
         img = tmp_path / "test.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
         assert _image_to_base64_data_url(img).startswith("data:image/png;base64,")
 
         other = tmp_path / "test.bin"
@@ -245,7 +256,7 @@ class TestVisionConfig:
     @pytest.mark.asyncio
     async def test_temperature_and_timeout_come_from_config_with_defaults(self, tmp_path):
         img = tmp_path / "test.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
 
         async def call_with(config):
             mock_response = MagicMock()
@@ -384,7 +395,7 @@ class TestVisionSafetyGuards:
                 return None
 
             async def aiter_bytes(self):
-                yield b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+                yield VALID_PNG + b"\x00" * 16
 
         class _FakeAsyncStream:
             def __init__(self, response):
@@ -463,7 +474,7 @@ class TestVisionSafetyGuards:
         """Malformed Content-Length is ignored; streaming size cap still works."""
         from tools.vision_tools import _download_image
 
-        body = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+        body = VALID_PNG + b"\x00" * 16
         dest = tmp_path / "cat.png"
 
         class _FakeStreamResponse:
@@ -539,7 +550,7 @@ class TestLocalPathForms:
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
         img = fake_home / "test_image.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
 
         # Windows expanduser() prefers USERPROFILE over HOME; POSIX uses HOME.
         monkeypatch.setenv("HOME", str(fake_home))
@@ -576,7 +587,7 @@ class TestLocalPathForms:
     @pytest.mark.asyncio
     async def test_file_uri_resolved_as_local_path(self, tmp_path):
         img = tmp_path / "photo.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
 
         mock_response = MagicMock()
         mock_choice = MagicMock()
@@ -617,10 +628,16 @@ class TestBase64SizeLimit:
     @pytest.mark.asyncio
     async def test_oversized_rejected_before_api_call_small_passes(self, tmp_path):
         img = tmp_path / "huge.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (4 * 1024 * 1024))
+        img.write_bytes(VALID_PNG + b"\x00" * (4 * 1024 * 1024))
 
-        # Patch the hard limit to a small value so the test runs fast.
+        # Patch the hard limit to a small value so the test runs fast, and pin
+        # the resize target above it so the auto-resize can't legitimately
+        # shrink the (now decodable) fixture under the limit — this test
+        # isolates the pre-flight size REJECTION, not the resize recovery.
         with patch("tools.vision_tools._MAX_BASE64_BYTES", 1000), \
+             patch("tools.vision_tools._resize_image_for_vision",
+                   side_effect=lambda p, *a, **k: "data:image/png;base64," +
+                   base64.b64encode(Path(p).read_bytes()).decode("ascii")), \
              patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
             result = json.loads(await vision_analyze_tool(str(img), "describe this"))
 
@@ -630,7 +647,7 @@ class TestBase64SizeLimit:
 
         # An image well under the limit passes the size check.
         small = tmp_path / "small.png"
-        small.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        small.write_bytes(VALID_PNG + b"\x00" * 64)
 
         mock_response = MagicMock()
         mock_choice = MagicMock()
@@ -661,7 +678,7 @@ class TestErrorClassification:
     async def test_invalid_request_error_gives_image_guidance(self, tmp_path):
         """An invalid_request_error from the API should mention image size/format."""
         img = tmp_path / "test.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
 
         api_error = Exception(
             "Error code: 400 - {'type': 'error', 'error': "
@@ -730,7 +747,7 @@ class TestResizeImageForVision:
         # Create a dummy file
         path = tmp_path / "test.png"
         # Write enough bytes to exceed a tiny limit
-        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1000)
+        path.write_bytes(VALID_PNG + b"\x00" * 1000)
 
         with patch("tools.vision_tools._image_to_base64_data_url") as mock_b64:
             # Simulate a large base64 result
@@ -873,7 +890,7 @@ class TestImageExceedsDimension:
         # dimensions, so return False: the byte-based checks still apply and a
         # missing soft dep never breaks the embed path.
         path = tmp_path / "x.png"
-        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        path.write_bytes(VALID_PNG + b"\x00" * 100)
         with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
             assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
 

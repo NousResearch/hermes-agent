@@ -6789,8 +6789,30 @@ class APIServerAdapter(BasePlatformAdapter):
         job_id, id_err = self._check_job_id(request)
         if id_err:
             return id_err
+        # Optional transient per-run context forwarded from a standalone
+        # `hermes cron run` / cronjob(action='run', prompt=...) — same length
+        # cap and strict injection scan as a stored job prompt.
+        extra_prompt = None
         try:
-            job = _cron_trigger(job_id)
+            body = await request.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict):
+            raw_prompt = body.get("prompt")
+            if raw_prompt is not None:
+                extra_prompt = str(raw_prompt)
+                if len(extra_prompt) > self._MAX_PROMPT_LENGTH:
+                    return web.json_response(
+                        {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"},
+                        status=400,
+                    )
+                if extra_prompt and _scan_cron_prompt is not None:
+                    scan_error = _scan_cron_prompt(extra_prompt)
+                    if scan_error:
+                        return web.json_response({"error": scan_error}, status=400)
+                extra_prompt = extra_prompt or None
+        try:
+            job = _cron_trigger(job_id, extra_prompt=extra_prompt)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})

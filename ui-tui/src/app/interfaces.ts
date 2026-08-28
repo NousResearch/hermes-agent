@@ -483,6 +483,10 @@ export interface GatewayEventHandlerContext {
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {
+    /** Submit text literally as a prompt — no slash/!/interpolation dispatch.
+     *  Used for `-q` startup queries, which are arbitrary launcher-provided
+     *  text (parity with one-shot's literal prompt handling). */
+    submitLiteralRef: MutableRefObject<(value: string) => void>
     submitRef: MutableRefObject<(value: string) => void>
   }
   system: {

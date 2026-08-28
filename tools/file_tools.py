@@ -1064,36 +1064,28 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
 
 
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
-    """Return a soft-guard warning when ``filepath`` lands in another Hermes
-    profile's scoped area, a host-side sandbox-mirror of authoritative profile
-    state, or the Docker container's sandbox mirror of Hermes state.
+    """Return a soft-guard warning when ``filepath`` lands on a host-side
+    sandbox-mirror of authoritative profile state, or the Docker
+    container's sandbox mirror of Hermes state.
 
-    Three detectors run in order:
+    Two detectors (both #32049): these catch writes that would be
+    SILENTLY LOST — the host Hermes process never reads the mirror, so
+    the write succeeds but changes nothing. That is a lost-work guard,
+    not profile isolation.
 
-    * cross-profile — writes that hit another profile's
-      ``skills/plugins/cron/memories`` directory.
-    * sandbox-mirror (#32049) — writes that hit the
-      ``…/sandboxes/<backend>/<task>/home/.hermes/…`` mirror created by a
-      non-local terminal backend (Docker, Daytona, etc.), where the host
-      Hermes process never reads the mirror and the authoritative file is
-      left untouched.
-    * container-mirror (#32049 follow-up) — writes from inside a Docker
-      container whose bind-mounted home strips the ``sandboxes/`` prefix, so
-      the agent sees a plain ``/root/.hermes/…`` path.
+    NOTE: the third detector this shared check used to run — the
+    cross-PROFILE write guard (another profile's skills/plugins/cron/
+    memories) — was removed by maintainer decision: profiles were never
+    isolated (same OS user; terminal writes anywhere), so the guard was
+    ceremony. The system prompt's profile hint remains the only
+    steering. ``cross_profile=True`` still bypasses the mirror guards
+    (name kept for replay/transcript compat).
 
     Returns ``None`` when the write is in-scope or outside Hermes scope.
-    All detectors are soft guards — the agent can override any by
-    passing ``cross_profile=True`` to its write tool after explicit user
-    direction. Defense-in-depth, NOT a security boundary — the terminal
-    tool runs as the same OS user and can write any of these paths
-    directly. See ``agent/file_safety.classify_cross_profile_target``,
-    ``classify_sandbox_mirror_target`` and ``classify_container_mirror_target``
-    for the detection rules.
     """
     try:
         from agent.file_safety import (
             get_container_mirror_warning,
-            get_cross_profile_warning,
             get_sandbox_mirror_warning,
         )
     except Exception:
@@ -1101,17 +1093,12 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
         # plus the write_denied list still apply.
         return None
 
-    # Resolve via the task's cwd so a relative ``skills/foo/SKILL.md``
-    # in a session that cd'd into ``~/.hermes/profiles/other/`` is
-    # classified against the right base.
+    # Resolve via the task's cwd so a relative path in a session that
+    # cd'd elsewhere is classified against the right base.
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-
-    warning = get_cross_profile_warning(resolved)
-    if warning is not None:
-        return warning
 
     warning = get_sandbox_mirror_warning(resolved)
     if warning is not None:
@@ -2236,11 +2223,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                     session_id: str | None = None) -> str:
     """Write content to a file.
 
-    ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
-    guard fires only on writes that land in another profile's
-    skills/plugins/cron/memories directory; everything else is unaffected.
-    Pass ``True`` after explicit user direction — same shape as ``force``
-    on the terminal tool.
+    ``cross_profile`` bypasses the #32049 sandbox-mirror lost-write
+    guards (writes the host process would never read). Unadvertised in
+    the schema — the mirror rejection error teaches it. The cross-PROFILE
+    guard this flag was named for is removed (profiles are not isolated).
     """
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
@@ -2329,9 +2315,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                session_id: str | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
 
-    ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
-    targets under another profile's skills/plugins/cron/memories
-    directory. Same shape as ``write_file``'s flag.
+    ``cross_profile``: same semantics as ``write_file``'s flag (mirror-guard
+    bypass only; unadvertised).
     """
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
@@ -2663,7 +2648,15 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text; PDF, legacy Office (.doc/.ppt/.xls), OpenDocument, RTF, and EPUB convert too when the optional anydoc converter is available (auto-installed on first use where installs are permitted). PDF conversion reads the text layer only: scanned/image pages yield no text, and when many pages come back empty the output ends with an EXTRACTION COVERAGE WARNING listing the affected pages — follow its instructions (render pages with pdftoppm and inspect via vision_analyze, or OCR) instead of treating the extraction as complete. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
+    # Document formats are stated unconditionally: firecrawl-anydoc is a
+    # core dependency (bundled), so its absence is a broken install, not a
+    # configuration — the teaching error in read_extract handles that rare
+    # case with the pip-install fix. The ONE dynamic word: "PDF (text
+    # layer)" upgrades to "PDF (scanned or text)" when hosted OCR has a
+    # route we trust (_read_file_schema_overrides). Scanned-page coverage
+    # teaching lives in the response-time NEEDS-OCR warning
+    # (read_extract.py); the schema doesn't pre-teach it.
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB. Cannot read images/binary — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -2683,11 +2676,11 @@ WRITE_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
             "content": {"type": "string", "description": "Complete content to write to the file"},
-            "cross_profile": {
-                "type": "boolean",
-                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
-                "default": False,
-            },
+            # NOTE: the handler still accepts `cross_profile` (bool) — it now
+            # bypasses only the #32049 sandbox-mirror lost-write guards, whose
+            # rejection error teaches it. Unadvertised: the cross-PROFILE
+            # guard it was named for was removed (profiles are not isolated,
+            # maintainer decision), and mirror hits are rare + self-teaching.
         },
         "required": ["path", "content"]
     }
@@ -2734,11 +2727,8 @@ PATCH_SCHEMA = {
                 "type": "string",
                 "description": "REQUIRED when mode='patch'. V4A format patch content. Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
             },
-            "cross_profile": {
-                "type": "boolean",
-                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories.",
-                "default": False,
-            },
+            # NOTE: handler still accepts `cross_profile` — see write_file's
+            # NOTE (mirror-guard bypass only; unadvertised by design).
         },
         "required": ["mode"],
     },
@@ -2818,7 +2808,28 @@ def _handle_search_files(args, **kw):
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)
+def _read_file_schema_overrides():
+    """One-word capability upgrade: "PDF (text layer)" → "PDF (scanned or
+    text)" when hosted OCR has a trusted route (see
+    read_extract.hosted_ocr_available). Config/env probe only — no
+    network at schema-build time. Compaction's tool refresh (#97073)
+    picks up a key added mid-session.
+    """
+    try:
+        from tools.read_extract import hosted_ocr_available
+
+        if hosted_ocr_available():
+            return {
+                "description": READ_FILE_SCHEMA["description"].replace(
+                    "PDF (text layer)", "PDF (scanned or text)"
+                )
+            }
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
+registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000, dynamic_schema_overrides=_read_file_schema_overrides)
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)

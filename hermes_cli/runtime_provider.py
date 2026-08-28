@@ -40,14 +40,36 @@ from hermes_cli.auth import (
     is_actual_local_base_url,
     normalize_actual_base_url,
 )
-from hermes_cli.config import (
-    get_compatible_custom_providers,
-    load_config,
-    normalize_extra_headers,
-)
+from hermes_cli import config as _config_mod
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.providers import is_official_openai_host
+
+
+def load_config():
+    """Late-bound delegate to :func:`hermes_cli.config.load_config`.
+
+    Deliberately NOT a module-level ``from hermes_cli.config import
+    load_config``: this module is often imported lazily (inside functions),
+    so its first import can happen while a test has
+    ``hermes_cli.config.load_config`` patched — a from-import would then
+    bind the MagicMock *permanently*, poisoning every later caller in the
+    process (the mock's fixed config shadows the real one long after the
+    patch exits). Delegating at call time keeps both patch targets working:
+    patching ``hermes_cli.config.load_config`` OR
+    ``hermes_cli.runtime_provider.load_config`` behaves as expected.
+    """
+    return _config_mod.load_config()
+
+
+def get_compatible_custom_providers(config=None):
+    """Late-bound delegate — see :func:`load_config` for why."""
+    return _config_mod.get_compatible_custom_providers(config)
+
+
+def normalize_extra_headers(value):
+    """Late-bound delegate — see :func:`load_config` for why."""
+    return _config_mod.normalize_extra_headers(value)
 from utils import base_url_host_matches, base_url_hostname, env_int
 
 
@@ -1080,6 +1102,45 @@ def canonical_custom_identity(
     except Exception:
         pass
     return None
+
+
+def is_routable_provider(provider: Optional[str]) -> bool:
+    """Whether a provider name currently resolves to a routable route.
+
+    Empty/None is vacuously routable: agent build falls back to the
+    configured default instead of failing. A name that resolves through
+    the full chain (built-in -> user ``providers:`` -> ``custom_providers:``
+    -> models.dev) is routable; anything else would fail agent init with
+    "Unknown provider '<name>'".
+
+    Session resume uses this to detect a stale/renamed/removed provider
+    persisted in an older session snapshot, so recovery can fall back to
+    the configured default or the model the user picked instead of letting
+    the agent build die.
+    """
+    name = str(provider or "").strip()
+    if not name or name.lower() == "auto":
+        return True
+    if name.lower() == "custom":
+        # The bare string is the resolved billing class shared by every
+        # named custom entry — not a routable identity. restore paths must
+        # heal it (canonical_custom_identity) or fall back, never hand it
+        # straight to agent init.
+        return False
+    try:
+        from hermes_cli.providers import resolve_provider_full
+
+        config = load_config()
+        return (
+            resolve_provider_full(
+                name,
+                config.get("providers"),
+                get_compatible_custom_providers(config),
+            )
+            is not None
+        )
+    except Exception:
+        return False
 
 
 def _normalize_base_url_for_match(value) -> str:

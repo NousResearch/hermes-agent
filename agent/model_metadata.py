@@ -504,6 +504,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
     "qwen3.8-max": 1_000_000,     # 1M context (OpenRouter & Nous portal, verified 2026-08-03)
+    "qwen3.8-flash": 1_000_000,   # 1M context (OpenRouter & Nous portal, verified 2026-08-28)
     "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
     "qwen3.7-plus": 1048576,      # 1M context (DashScope/Alibaba)
     "qwen3-coder-plus": 1000000,  # 1M context
@@ -3760,6 +3761,91 @@ def estimate_request_tokens_rough(
         total += estimate_messages_tokens_rough(messages)
     if tools:
         total += _estimate_tools_tokens_rough(tools)
+    return total
+
+
+# --- Usage-anchored context accounting ------------------------------------
+#
+# Provider responses carry ``usage.prompt_tokens`` — EXACT ground truth for
+# everything sent on that request (system prompt + tool schemas + full
+# history). Re-estimating the whole conversation with chars/4 heuristics on
+# every context-size check compounds error over the entire transcript (flat
+# 1500-token images, CJK density, provider replay blobs). Anchoring on the
+# last real usage shrinks the estimation window to the messages appended
+# since that response; the error self-corrects at every new response.
+#
+# The anchor is a plain dict so callers can store it anywhere:
+#   prompt_tokens / completion_tokens — provider-reported usage at capture.
+#   base_count — len(messages) at capture time (the assistant reply for the
+#       captured response is NOT yet appended at the capture site; when it
+#       appears at index base_count its cost is covered by completion_tokens,
+#       so the delta walk skips it).
+#   base_last_id / base_last_role — identity fingerprint of the last message
+#       at capture time. Compaction, splices, and history rewrites shift or
+#       replace that element, failing the check and falling back to full
+#       estimation. Belt-and-braces on top of explicit invalidation.
+
+
+def capture_usage_anchor(
+    prompt_tokens: Any,
+    completion_tokens: Any,
+    messages: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Build a usage anchor from provider-reported usage, or None."""
+    try:
+        pt = int(prompt_tokens or 0)
+        ct = int(completion_tokens or 0)
+    except (TypeError, ValueError):
+        return None
+    if pt <= 0 or not isinstance(messages, list):
+        # No usable usage (some OpenAI-compatible endpoints omit it) — the
+        # caller keeps whatever anchor it had, or stays on pure estimation.
+        return None
+    base_count = len(messages)
+    last = messages[-1] if base_count else None
+    return {
+        "prompt_tokens": pt,
+        "completion_tokens": max(0, ct),
+        "base_count": base_count,
+        "base_last_id": id(last) if last is not None else None,
+        "base_last_role": last.get("role") if isinstance(last, dict) else None,
+    }
+
+
+def anchored_context_tokens(
+    messages: List[Dict[str, Any]],
+    anchor: Optional[Dict[str, Any]],
+) -> Optional[int]:
+    """Context size anchored on the last provider-reported usage.
+
+    Returns ``prompt_tokens + completion_tokens`` of the anchored response
+    plus a rough estimate of ONLY the messages appended since — or ``None``
+    when the anchor is missing or stale (caller falls back to full
+    estimation). The assistant reply produced by the anchored response
+    (first appended message after the base) is skipped: its cost is already
+    counted exactly by ``completion_tokens``.
+    """
+    if not isinstance(anchor, dict) or not isinstance(messages, list):
+        return None
+    base_count = anchor.get("base_count") or 0
+    if base_count <= 0 or len(messages) < base_count:
+        return None
+    base_msg = messages[base_count - 1]
+    if id(base_msg) != anchor.get("base_last_id"):
+        return None
+    base_role = base_msg.get("role") if isinstance(base_msg, dict) else None
+    if base_role != anchor.get("base_last_role"):
+        return None
+    total = int(anchor["prompt_tokens"]) + int(anchor.get("completion_tokens") or 0)
+    delta = messages[base_count:]
+    if delta:
+        first = delta[0]
+        if isinstance(first, dict) and first.get("role") == "assistant":
+            # The anchored response's own reply — already counted exactly by
+            # completion_tokens above.
+            delta = delta[1:]
+    if delta:
+        total += estimate_messages_tokens_rough(delta)
     return total
 
 

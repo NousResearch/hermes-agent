@@ -58,6 +58,7 @@ vi.mock('@/store/session-states', async () => {
     $sessionStates: atom({}),
     $stalledSessionIds: atom([]),
     $workingSessionIds: atom([]),
+    dropTilesForProfile: vi.fn(),
     sessionTileDelegate: vi.fn(() => null)
   }
 })
@@ -153,6 +154,8 @@ const {
   sessionTileDelegate
 } = await import('@/store/session-states')
 
+const { dropTilesForProfile } = await import('@/store/session-states')
+
 const { setWorkspaceScope } = await import('@/components/pane-shell/workspace-scope')
 
 const {
@@ -216,6 +219,9 @@ describe('connection-aware plugin host APIs', () => {
     // The rail paints from $profiles; skipping the refresh leaves a stale
     // badge whose click hot-loops against the deletion guard (#88769).
     expect(refreshProfiles).toHaveBeenCalled()
+    // A leftover Bot Mode tile would restore on relaunch and dial the deleted
+    // profile's backend, re-creating its HERMES_HOME (#94235).
+    expect(dropTilesForProfile).toHaveBeenCalledWith('worker', undefined)
   })
 
   it('pins an ambient SSH profile delete to the active connection and target profile', async () => {
@@ -370,6 +376,11 @@ describe('connection-aware plugin host APIs', () => {
       profile: 'worker'
     })
     expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+    expect(dropTilesForProfile).toHaveBeenCalledWith('worker', {
+      connectionId: 'source-a',
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    })
   })
 
   it('rejects a remote deletion route without a connection id', async () => {
@@ -415,6 +426,11 @@ describe('connection-aware plugin host APIs', () => {
     expect(deleteProfile).toHaveBeenCalledWith('backend-worker', {
       connectionId: 'source-local',
       profile: 'worker'
+    })
+    expect(dropTilesForProfile).toHaveBeenCalledWith('worker', {
+      connectionId: 'source-local',
+      profile: 'worker',
+      targetProfile: 'backend-worker'
     })
   })
 

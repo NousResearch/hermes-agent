@@ -1382,7 +1382,14 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         try:
-            result = subprocess.run(
+            # Off-loop: `gh` does network I/O and can take its full 30s
+            # timeout. Running it inline froze every adapter and timer on
+            # the gateway event loop for the duration (Pattern A, #91912
+            # class). asyncio.to_thread keeps the loop serving while the
+            # subprocess runs; the worker thread is bounded by the
+            # subprocess timeout below.
+            result = await asyncio.to_thread(
+                subprocess.run,
                 [
                     "gh",
                     "pr",

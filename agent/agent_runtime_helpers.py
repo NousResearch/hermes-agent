@@ -589,7 +589,11 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
          resumed histories. Refs #29148, #49147.
       1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
          any preceding assistant tool_call — dropped.
-      2. Consecutive ``user`` messages — merged with newline separator
+      2. ``tool_calls`` on an assistant message that no immediately
+         following ``tool`` result answers are pruned — and the turn is
+         dropped entirely if that leaves it payload-empty (an empty
+         non-final assistant message is itself a 400 on most providers).
+      3. Consecutive ``user`` messages — merged with newline separator
          so no user input is lost.
 
     Deliberately does NOT rewind orphan ``assistant(tool_calls)+tool``
@@ -598,6 +602,19 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     before the model got a continuation turn (the ongoing dialog
     pattern). The empty-response scaffolding stripper handles the
     genuinely-broken variant via its flag-gated rewind.
+
+    Pass 2 (prune unanswered ``tool_calls``) answers the complement of
+    Pass 1: Pass 1 removes the stray result, Pass 2 removes the orphaned
+    call it was displaced from. Context compression can move a tool
+    result past a user turn; without this pass the declaring assistant
+    message would keep replaying an unanswered ``tool_call`` and strict
+    providers (DeepSeek v4) reject that with HTTP 400 "An assistant
+    message with 'tool_calls' must be followed by tool messages
+    responding to each 'tool_call_id'". A call counts as answered when
+    the run of ``tool`` messages immediately following its assistant
+    message contains a result keyed to ANY of the call's ids (``id`` or
+    ``call_id`` — the same superset rule Pass 1 registers). Codex
+    interim turns are exempt, as in Pass 0.
 
     Returns the number of repairs made (for logging/telemetry).
     """
@@ -683,19 +700,46 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             # blocks — fall back to keeping the existing content.
             prev_content = prev.get("content")
             new_content = msg.get("content")
+            content_rewritten = False
             if isinstance(prev_content, str) and isinstance(new_content, str):
                 joined = "\n".join(
                     p for p in (prev_content.strip(), new_content.strip()) if p
                 )
                 prev["content"] = joined
+                # A falsy ``new_content`` (e.g. "") strips to nothing and
+                # ``joined`` collapses back to ``prev_content`` unchanged --
+                # that must NOT count as a rewrite (wz-heng, #78063 review).
+                content_rewritten = joined != prev_content
             elif not prev_content and new_content is not None:
                 prev["content"] = new_content
+                content_rewritten = new_content != prev_content
             # Carry reasoning_content from the later turn only if the
             # earlier turn lacks it (strict thinking providers require a
             # reasoning_content on the merged tool-call turn; the first
             # non-empty one suffices).
             if not prev.get("reasoning_content") and msg.get("reasoning_content"):
                 prev["reasoning_content"] = msg["reasoning_content"]
+            # ``prev`` may carry an ``api_content`` sidecar (the exact bytes
+            # previously sent to the API, e.g. a sanitize-divergence stamp —
+            # see ``_flush_messages_to_session_db``) from BEFORE this merge.
+            # The sidecar takes priority over ``content`` at API-build time
+            # (``conversation_loop``'s ``api_messages`` build substitutes it
+            # back in for role ``assistant``), so leaving it in place while
+            # ``prev["content"]`` changes would silently replay the pre-merge
+            # bytes and discard everything this merge just concatenated on —
+            # the same stale-field-survives-the-merge shape as the
+            # ``tool_calls`` gap above, just for a different field. Only drop
+            # it when the merge actually changed the resulting value (e.g.
+            # the later turn's content is ``None``, or either side is
+            # multimodal/list — both branches skip the reassignment and
+            # ``prev["content"]`` is untouched; a falsy ``new_content`` that
+            # strips to nothing also leaves ``joined`` equal to the original
+            # ``prev_content``): in those cases the sidecar is still the
+            # exact bytes previously sent for the UNCHANGED content, and
+            # dropping it would break the prompt-cache replay invariant for
+            # no reason (wz-heng, #78063 review).
+            if content_rewritten:
+                drop_stale_api_content(prev)
             repairs += 1
             continue
         collapsed.append(msg)
@@ -759,10 +803,86 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 matched_tool_groups = set()
             filtered.append(msg)
 
-    # Pass 2: merge consecutive user messages. Preserves all user input
+    # Pass 2: prune tool_calls that were never answered positionally.
+    #
+    # Pass 1 dropped the stray/displaced tool RESULT — but a tool_call
+    # whose result was displaced far beyond the following turn (context
+    # compression can move it past a user turn) leaves its declaring
+    # assistant message carrying an UNANSWERED tool_call, and strict
+    # OpenAI-compatible providers (DeepSeek v4) reject the payload with
+    # HTTP 400 "An assistant message with 'tool_calls' must be followed
+    # by tool messages responding to each 'tool_call_id' (insufficient
+    # tool messages following tool_calls message)". The per-call
+    # sanitizer's stub pass is keyed on GLOBAL id presence, which a
+    # displaced-but-present result masks (see sanitize_api_messages) —
+    # so the durable history must not keep replaying the poisoned turn
+    # either. Enforce the positional invariant here: a tool_call is only
+    # legitimate when a result for ANY of its id variants (``id`` /
+    # ``call_id`` / ``response_item_id`` / composite bridge — the same
+    # unified alias policy as Pass 1, via ``tool_call_id_variants`` /
+    # ``tool_result_id_variants``) appears in the run of tool messages
+    # IMMEDIATELY following the declaring assistant message — before any
+    # user turn or further assistant turn. Unanswered calls are pruned;
+    # if the message then carries no other payload (no content,
+    # reasoning, codex items), the whole turn is dropped — an empty
+    # non-final assistant message is itself rejected by providers.
+    # Codex interim turns are exempt, as in Pass 0: their calls are
+    # replayed through the Responses-items chain, not the tool-result
+    # run.
+    pruned: List[Dict] = []
+    i = 0
+    n = len(filtered)
+    while i < n:
+        msg = filtered[i]
+        if not (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and msg.get("tool_calls")
+            and not _is_codex_interim(msg)
+        ):
+            pruned.append(msg)
+            i += 1
+            continue
+        answered: set = set()
+        j = i + 1
+        while (
+            j < n
+            and isinstance(filtered[j], dict)
+            and filtered[j].get("role") == "tool"
+        ):
+            tid = (filtered[j].get("tool_call_id") or "").strip()
+            if tid:
+                answered.update(tool_result_id_variants(tid))
+            j += 1
+        kept_calls: List[Dict] = []
+        dropped_calls = 0
+        for tc in msg.get("tool_calls") or []:
+            variants = tool_call_id_variants(tc)
+            if variants and (variants & answered):
+                kept_calls.append(tc)
+            else:
+                dropped_calls += 1
+        if dropped_calls:
+            repairs += 1
+            if not kept_calls and not _msg_has_payload(
+                {k: v for k, v in msg.items() if k != "tool_calls"}
+            ):
+                # The pruned call(s) were the message's only payload —
+                # dropping the whole turn beats sending an empty
+                # assistant message (which most providers 400).
+                i += 1
+                continue
+            if kept_calls:
+                msg["tool_calls"] = kept_calls
+            else:
+                msg.pop("tool_calls", None)
+        pruned.append(msg)
+        i += 1
+
+    # Pass 3: merge consecutive user messages. Preserves all user input
     # so nothing the user typed is lost.
     merged: List[Dict] = []
-    for msg in filtered:
+    for msg in pruned:
         if (
             merged
             and isinstance(msg, dict)
@@ -3714,6 +3834,78 @@ def repair_empty_non_final_messages(
     return messages
 
 
+def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
+    """Classify orphaned tool-call / tool-result pairs in *messages*.
+
+    Returns a 4-tuple ``(surviving_call_ids, result_call_ids,
+    orphaned_results, missing_tool_calls)``:
+
+    - ``surviving_call_ids``: every id variant carried by any assistant
+      ``tool_calls`` entry. A tool_call may carry SEVERAL equivalent id
+      spellings (``id`` fc_..., ``call_id`` call_..., ``response_item_id``,
+      or a composite ``call|item`` bridge id) — register EVERY variant so a
+      result matching any of them survives (#55626, #63000).
+    - ``result_call_ids``: every id variant referenced by a ``tool`` result.
+    - ``orphaned_results``: the actual ``tool`` message dicts whose complete
+      alias set matches no assistant call (compare by identity — ``id(msg)``
+      — when filtering, since dicts are unhashable).
+    - ``missing_tool_calls``: the actual tool_call entries with no matching
+      result on ANY alias (after orphaned results are excluded).
+
+    This is the single source of truth for GLOBAL orphan *detection* (does
+    a matching id exist anywhere in the transcript). Its remaining consumer
+    is the context compressor's ``_sanitize_tool_pairs`` (strip orphans from
+    the durable history); the id-resolution and variant-expansion rules live
+    here so they can never drift between call sites again (#58357).
+
+    ``sanitize_api_messages`` no longer uses the global check: strict
+    positional providers (DeepSeek v4, Kimi) reject a call whose result is
+    not in the IMMEDIATELY-following tool run even when a matching id exists
+    elsewhere, so its pairing pass walks the transcript positionally instead
+    (#94704) — a strictly stronger invariant that subsumes the global one at
+    that site. Both share the same ``tool_call_id_variants`` /
+    ``tool_result_id_variants`` alias policy, which is the part that must
+    not fork.
+    """
+    assistant_call_variants: List[tuple[Any, frozenset[str]]] = []
+    surviving_call_ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            variants = tool_call_id_variants(tc)
+            if variants:
+                assistant_call_variants.append((tc, variants))
+                surviving_call_ids.update(variants)
+
+    result_entries = [
+        (msg, tool_result_id_variants(msg.get("tool_call_id")))
+        for msg in messages
+        if msg.get("role") == "tool"
+    ]
+    result_call_ids: set[str] = set()
+    for _, variants in result_entries:
+        result_call_ids.update(variants)
+
+    orphaned_results = [
+        msg
+        for msg, variants in result_entries
+        if variants and not (variants & surviving_call_ids)
+    ]
+    orphaned_ids = {id(msg) for msg in orphaned_results}
+    surviving_result_variants = [
+        variants
+        for msg, variants in result_entries
+        if variants and id(msg) not in orphaned_ids
+    ]
+    missing_tool_calls = [
+        tc
+        for tc, variants in assistant_call_variants
+        if not any(variants & rv for rv in surviving_result_variants)
+    ]
+    return surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -3826,83 +4018,130 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             elif isinstance(tc, dict):
                 tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
 
-    assistant_call_variants: List[tuple[Any, frozenset[str]]] = []
-    surviving_call_ids: set[str] = set()
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        for tc in msg.get("tool_calls") or []:
-            # A tool_call may carry SEVERAL equivalent id spellings (``id``
-            # fc_..., ``call_id`` call_..., ``response_item_id``, or a
-            # composite ``call|item`` bridge id). ``_get_tool_call_id_static``
-            # returns only the preferred one, but a tool result keyed on any
-            # OTHER spelling would then look orphaned and get dropped +
-            # replaced with a bogus "[Result unavailable]" stub — silently
-            # eating a perfectly valid tool result (#55626, #63000). Register
-            # EVERY variant so a result matching any of them survives.
-            variants = tool_call_id_variants(tc)
-            if variants:
-                assistant_call_variants.append((tc, variants))
-                surviving_call_ids.update(variants)
-
-    result_entries = [
-        (msg, tool_result_id_variants(msg.get("tool_call_id")))
-        for msg in messages
-        if msg.get("role") == "tool"
+    # --- Drop tool results with a missing/empty tool_call_id ---
+    # The positional pairing walk below also catches this shape (an id-less
+    # result expands to zero variants, matches no declared call, and is
+    # dropped as a positional orphan), but keep the explicit early filter so
+    # the distinct failure mode keeps its own log line and the guarantee
+    # doesn't silently depend on the walk's internals: a result with no
+    # ``tool_call_id`` at all is a schema violation strict OpenAI-compatible
+    # providers reject outright. ``repair_message_sequence``'s
+    # Pass 1 already drops this shape (`if tc_id and tc_id in
+    # known_tool_ids`) when it runs first on the same list, but any caller
+    # that reaches this function without going through
+    # ``repair_message_sequence`` first has no such guard. Drop explicitly
+    # here so this "final chokepoint" claim (see module docstring) actually
+    # holds regardless of caller (#78071).
+    _pre_id_filter_count = len(messages)
+    messages = [
+        m for m in messages
+        if not (m.get("role") == "tool" and not (m.get("tool_call_id") or "").strip())
     ]
-
-    # 1. Drop tool results whose complete alias set matches no assistant call.
-    orphaned_result_objects = {
-        id(msg)
-        for msg, variants in result_entries
-        if variants and not (variants & surviving_call_ids)
-    }
-    if orphaned_result_objects:
-        messages = [m for m in messages if id(m) not in orphaned_result_objects]
-        result_entries = [
-            (msg, variants)
-            for msg, variants in result_entries
-            if id(msg) not in orphaned_result_objects
-        ]
+    if len(messages) != _pre_id_filter_count:
         _ra().logger.debug(
-            "Pre-call sanitizer: removed %d orphaned tool result(s)",
-            len(orphaned_result_objects),
+            "Pre-call sanitizer: dropped %d tool result(s) with missing/empty tool_call_id",
+            _pre_id_filter_count - len(messages),
         )
 
-    # 2. Inject one stub per assistant call with no result on ANY alias.
-    surviving_result_variants = [
-        variants for _, variants in result_entries if variants
-    ]
-    missing_tool_calls = [
-        tc
-        for tc, variants in assistant_call_variants
-        if not any(variants & result_variants for result_variants in surviving_result_variants)
-    ]
-    if missing_tool_calls:
-        missing_tool_call_objects = {id(tc) for tc in missing_tool_calls}
-        patched: List[Dict[str, Any]] = []
-        for msg in messages:
-            patched.append(msg)
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    if id(tc) not in missing_tool_call_objects:
-                        continue
-                    cid = coalesce_tool_call_id(tc)
-                    if not cid:
-                        variants = tool_call_id_variants(tc)
-                        cid = sorted(variants)[0] if variants else ""
-                    if not cid:
-                        continue
-                    patched.append({
-                        "role": "tool",
-                        "name": _ra().AIAgent._get_tool_call_name_static(tc),
-                        "content": "[Result unavailable — see context summary above]",
-                        "tool_call_id": cid,
-                    })
-        messages = patched
+    # --- Positional tool_call <-> tool_result pairing ---
+    # Strict OpenAI-compatible providers (DeepSeek v4, Kimi) enforce the
+    # POSITIONAL invariant: an assistant message carrying tool_calls must
+    # be IMMEDIATELY followed by tool messages covering every
+    # tool_call_id. The previous implementation compared global id sets,
+    # which misses the failure mode where a result exists somewhere in
+    # the transcript but not in the run right after its call — an
+    # interrupted turn or a compression window can displace a result
+    # past a user turn. The id then survives in the global result set,
+    # so the call looks answered, no stub is injected, and the provider
+    # rejects the payload with HTTP 400 "An assistant message with
+    # 'tool_calls' must be followed by tool messages responding to each
+    # 'tool_call_id' (insufficient tool messages following tool_calls
+    # message)". Rewritten as a single rolling walk on the per-call
+    # copy (#94704):
+    #   (a) tool results that do not immediately follow an assistant
+    #       message declaring their id are dropped (positional orphans —
+    #       includes results appearing BEFORE their call, which strict
+    #       providers also reject);
+    #   (b) declared ids not covered by the immediately-following tool
+    #       run get a stub result injected at the end of that run, even
+    #       when a mispositioned result exists elsewhere.
+    # Matching is variant-aware (``tool_call_id_variants`` /
+    # ``tool_result_id_variants``): a result keyed on ANY alias spelling
+    # (``id`` / ``call_id`` / ``response_item_id`` / composite bridge)
+    # answers the call, preserving the unified alias policy from
+    # #55626/#63000/#93251.
+    paired: List[Dict[str, Any]] = []
+    declared_calls: Dict[str, tuple] = {}
+    dropped_positional_orphans = 0
+    added_stubs = 0
+
+    def _flush_unanswered_stubs() -> None:
+        nonlocal added_stubs
+        for key in sorted(declared_calls):
+            tc, _variants = declared_calls[key]
+            cid = coalesce_tool_call_id(tc) or key
+            paired.append({
+                "role": "tool",
+                "name": _ra().AIAgent._get_tool_call_name_static(tc),
+                "content": "[Result unavailable — see context summary above]",
+                "tool_call_id": cid,
+            })
+            added_stubs += 1
+        declared_calls.clear()
+
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant":
+            # A new assistant turn closes the previous tool-result run:
+            # anything still pending was never answered positionally.
+            _flush_unanswered_stubs()
+            declared_calls = {}
+            for tc in msg.get("tool_calls") or []:
+                variants = tool_call_id_variants(tc)
+                if variants:
+                    # Key on a stable representative of the alias group so
+                    # a result matching ANY spelling can consume the call.
+                    declared_calls[sorted(variants)[0]] = (tc, variants)
+            paired.append(msg)
+        elif role == "tool":
+            result_variants = tool_result_id_variants(msg.get("tool_call_id"))
+            matched = next(
+                (
+                    key
+                    for key, (_tc, variants) in declared_calls.items()
+                    if variants & result_variants
+                ),
+                None,
+            )
+            if matched is not None:
+                paired.append(msg)
+                # Consume so a duplicate result reusing the id falls into
+                # the drop branch (same semantics as the old global
+                # dedup; strict providers reject duplicate tool_call_id).
+                declared_calls.pop(matched, None)
+            else:
+                dropped_positional_orphans += 1
+        else:
+            if role == "user":
+                # A user turn closes the tool-result run; subsequent
+                # tool messages without a fresh declaring assistant
+                # turn are orphans.
+                _flush_unanswered_stubs()
+            paired.append(msg)
+    # The transcript may end right after an unanswered assistant turn.
+    _flush_unanswered_stubs()
+    if dropped_positional_orphans or added_stubs:
+        messages = paired
+    if dropped_positional_orphans:
         _ra().logger.debug(
-            "Pre-call sanitizer: added %d stub tool result(s)",
-            len(missing_tool_calls),
+            "Pre-call sanitizer: removed %d positionally orphaned tool result(s)",
+            dropped_positional_orphans,
+        )
+    if added_stubs:
+        _ra().logger.debug(
+            "Pre-call sanitizer: added %d stub tool result(s) for "
+            "positionally unanswered tool call(s)",
+            added_stubs,
         )
 
     # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a

@@ -66,8 +66,19 @@ class CommandCodeAnthropicProfile(CommandCodeProfile):
         m = (model or "").strip()
         if not m.lower().startswith("deepseek/") or len(m) <= len("deepseek/"):
             return {}, {}
-        from plugins.model_providers.deepseek import deepseek as _deepseek_profile
-
+        try:
+            from plugins.model_providers.deepseek import deepseek as _deepseek_profile
+        except ImportError:
+            # The bundled-plugin loader tolerates a plugin failing to load
+            # (it pops the half-registered module and continues), so the
+            # shim may be absent. Degrade to the pre-fix no-op instead of
+            # crashing every DeepSeek-routed CommandCode turn.
+            logger.warning(
+                "DeepSeek provider plugin unavailable; CommandCode cannot "
+                "forward reasoning controls (#95232)",
+                exc_info=True,
+            )
+            return {}, {}
         return _deepseek_profile.build_api_kwargs_extras(
             reasoning_config=reasoning_config,
             model=m.split("/", 1)[1],

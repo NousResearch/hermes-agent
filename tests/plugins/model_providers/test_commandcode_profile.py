@@ -145,6 +145,23 @@ class TestCommandCodeProfileNoThinkingInterference:
         assert extra_body == {}
         assert top_level == {}
 
+    def test_missing_deepseek_plugin_degrades_to_noop(
+        self, commandcode_profile, monkeypatch, caplog
+    ):
+        # The bundled-plugin loader pops half-registered modules when a
+        # plugin fails to load, so the deepseek shim can be absent at
+        # runtime; the delegation must degrade to the pre-fix no-op
+        # instead of crashing every DeepSeek-routed CommandCode turn.
+        import sys
+
+        monkeypatch.setitem(sys.modules, "plugins.model_providers.deepseek", None)
+        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="deepseek/deepseek-v4-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
 
 # ── Anthropic Messages profile ────────────────────────────────────────────────
 

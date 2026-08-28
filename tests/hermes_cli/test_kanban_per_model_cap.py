@@ -126,6 +126,49 @@ fallback_model:
     ]
 
 
+def test_profile_default_routes_share_model_capacity_without_local_first(
+    kanban_with_profiles,
+):
+    """live incident, 2026-08-28: several profiles with no persisted override
+    and no kanban.local_first opt-in still all resolve to the same
+    single-concurrency local model at spawn time. The per-model cap must
+    count that real capacity regardless of the local_first flag -- that
+    flag governs a different concern (whether local routes are preferred
+    at spawn), not whether concurrent usage is counted accurately."""
+    kb = kanban_with_profiles
+    from pathlib import Path
+
+    root = Path(__import__("os").environ["HERMES_HOME"])
+    # Deliberately no kanban.local_first write here -- this is the default,
+    # unset state most installs run with.
+    for profile in ("alpha", "beta"):
+        root.joinpath("profiles", profile, "config.yaml").write_text(
+            """
+model:
+  provider: ollama-launch
+  default: qwen3.5:4b
+""".lstrip(),
+            encoding="utf-8",
+        )
+
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        first = kb.create_task(conn, title="first", assignee="alpha")
+        second = kb.create_task(conn, title="second", assignee="beta")
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: os.getpid(),
+            dry_run=True,
+            max_in_progress_per_model=1,
+        )
+
+    assert [task_id for task_id, _who, _workspace in result.spawned] == [first]
+    assert result.skipped_per_model_capped == [
+        (second, "ollama-launch", "qwen3.5:4b", 1)
+    ]
+
+
 @pytest.mark.parametrize("release", ["completed", "reclaimed"])
 def test_terminal_or_reclaimed_task_releases_model_capacity(
     kanban_with_profiles, release

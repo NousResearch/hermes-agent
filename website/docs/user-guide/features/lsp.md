@@ -87,6 +87,7 @@ agent sees a syntax-clean file with semantic problems as
 | Kotlin | `kotlin-language-server` | manual |
 | Java | `jdtls` | manual |
 | PowerShell | `PowerShellEditorServices` (`pwsh` host) | manual (release zip) |
+| F# | `fsautocomplete` | `dotnet tool` |
 
 For "manual" entries, install the server through whatever toolchain
 manager makes sense for that language (rustup, ghcup, opam, brew,
@@ -114,6 +115,32 @@ host. Setup:
 `hermes lsp status` reports `installed` once `pwsh` is found; if the
 bundle is missing you'll see a one-time warning in the logs with the
 download link.
+
+### F#
+
+FsAutoComplete is a .NET global tool. Hermes looks for the
+`fsautocomplete` binary on PATH, in `<HERMES_HOME>/lsp/bin/`, and in
+the .NET global tools directory (`~/.dotnet/tools`, or
+`$DOTNET_CLI_HOME/tools` when that env var is set) — the last of
+those matters because `dotnet tool install -g` often leaves the
+tools directory off PATH.
+
+Install it yourself with:
+
+```
+dotnet tool install --global fsautocomplete
+```
+
+or let Hermes stage a copy:
+
+```
+hermes lsp install fsautocomplete
+```
+
+which runs `dotnet tool install --tool-path <HERMES_HOME>/lsp/bin fsautocomplete`
+(requires `dotnet` on PATH). Hermes starts the
+server with `AutomaticWorkspaceInit` so it loads `.sln` / `.fsproj`
+files without the custom Ionide workspace RPCs.
 
 A few servers are installed alongside a peer dependency that npm
 won't auto-pull. The current case is `typescript-language-server`,
@@ -202,7 +229,8 @@ When `install_strategy: auto`, Hermes installs binaries into
 `<HERMES_HOME>/lsp/bin/`. NPM packages land in
 `<HERMES_HOME>/lsp/node_modules/` with bin symlinks one level up.
 Go binaries come from `go install` with `GOBIN` pointed at the
-staging dir.
+staging dir. .NET global tools (fsautocomplete) come from
+`dotnet tool install --tool-path` pointed at the same staging dir.
 
 Nothing is ever installed to `/usr/local/`, `~/.local/`, or any other
 shared location — the staging dir is fully Hermes-owned and is

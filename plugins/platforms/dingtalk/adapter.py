@@ -569,13 +569,21 @@ class DingTalkAdapter(BasePlatformAdapter):
         file_name = Path(file_path).name
         content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
 
-        with open(file_path, "rb") as f:
-            files = {"media": (file_name, f, content_type)}
+        content = await asyncio.to_thread(Path(file_path).read_bytes)
+        files = {"media": (file_name, content, content_type)}
+
+        try:
             response = await self._http_client.post(
                 "https://oapi.dingtalk.com/media/upload",
                 params={"access_token": token, "type": media_type},
                 files=files,
                 timeout=60.0,
+            )
+        except httpx.TimeoutException:
+            raise RuntimeError("DingTalk media upload timed out after 60s")
+        except httpx.RequestError as e:
+            raise RuntimeError(
+                f"DingTalk media upload network error: {e.__class__.__name__}: {e}"
             )
 
         if response.status_code >= 400:
@@ -647,6 +655,11 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         endpoint, target = await self._resolve_outbound_endpoint(chat_id)
         robot_code = self._robot_code or self._client_id
+        if not robot_code:
+            return SendResult(
+                success=False,
+                error="DingTalk robot code not configured (set platforms.dingtalk client_id)",
+            )
 
         body: dict[str, Any] = {
             "robotCode": robot_code,
@@ -676,26 +689,22 @@ class DingTalkAdapter(BasePlatformAdapter):
                         or resp_data.get("errmsg")
                         or ""
                     )
-                    if resp_data.get("success") is False or business_error:
-                        error_msg = (
-                            f"{kind_label.title()} send failed: "
-                            f"{business_error or resp_data}"
-                        )
-                        logger.warning("[%s] %s", self.name, error_msg)
-                        return SendResult(success=False, error=error_msg)
+                    error_msg = (
+                        f"{kind_label.title()} send failed: "
+                        f"{business_error or resp_data.get('code') or str(resp_data)}"
+                    )
+                    logger.warning("[%s] %s", self.name, error_msg)
+                    return SendResult(success=False, error=error_msg)
 
                 logger.debug(
                     "[%s] %s message sent: processQueryKey=%s",
                     self.name,
                     kind_label.title(),
-                    resp_data.get("processQueryKey", ""),
+                    process_query_key,
                 )
                 return SendResult(
                     success=True,
-                    message_id=str(
-                        resp_data.get("processQueryKey")
-                        or uuid.uuid4().hex[:12]
-                    ),
+                    message_id=str(process_query_key),
                 )
 
             body_text = resp.text[:200]
@@ -815,8 +824,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         Uploads the local file to DingTalk's media storage, then sends it as
         a native ``sampleFile`` message through the robot OpenAPI.  If a
-        caption is provided, it is delivered natively inside the robot
-        message's ``text`` field -- sent once as a single combined message.
+        caption is provided, it is delivered as a separate companion text
+        message (sampleFile has no ``text`` field for native caption delivery).
         """
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
@@ -824,6 +833,14 @@ class DingTalkAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Not a file: {file_path}")
 
         display_name = file_name or Path(file_path).name
+
+        # Validate file extension BEFORE uploading
+        file_type = Path(display_name).suffix.lstrip(".").lower()
+        if not file_type:
+            return SendResult(
+                success=False,
+                error=f"Missing file extension for DingTalk file message: {display_name}",
+            )
 
         try:
             media_id = await self._upload_media(file_path, media_type="file")
@@ -838,6 +855,19 @@ class DingTalkAdapter(BasePlatformAdapter):
                 self.name, chat_id, display_name,
                 result.message_id or "-",
             )
+            # Deliver caption as a companion text message (sampleFile has no text field)
+            if caption:
+                caption_result = await self.send(
+                    chat_id=chat_id,
+                    content=caption,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if not caption_result.success:
+                    logger.warning(
+                        "[%s] Failed to send caption companion for file: %s",
+                        self.name, caption_result.error,
+                    )
         return result
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:

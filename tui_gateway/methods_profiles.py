@@ -125,7 +125,11 @@ def _(rid, params: dict) -> dict:
                 if not _resurrect_recoverable_canonical(db, profile_path, session_id):
                     return None
             try:
-                tip = db.resolve_resume_session_id(session_id) or session_id
+                # Canonical Bot Chat identity may advance only across a proven
+                # compression edge.  The generic resume resolver also carries
+                # a legacy unmarked-child fallback, which is intentionally too
+                # broad for this exact-title registry lookup.
+                tip = db.get_compression_tip(session_id) or session_id
             except Exception:
                 tip = session_id
             tip_row = db.get_session(tip) or row

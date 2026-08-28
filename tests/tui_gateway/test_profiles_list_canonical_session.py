@@ -161,6 +161,22 @@ def test_canonical_session_resolves_compression_tip(home):
     assert "post-compression content" in canonical["preview"]
 
 
+def test_canonical_session_ignores_unmarked_normal_child(home):
+    db = _db(home)
+    _add_session(db, "root1", title="Bot Chat", ts=1000,
+                 text="canonical bot content")
+    _add_session(db, "normal1", title="Friendly greeting", ts=3000,
+                 text="ordinary chat content", parent="root1")
+    db.close()
+
+    canonical = _row(_profiles({}), "default")["canonical_session"]
+
+    assert canonical["id"] == "root1"
+    assert canonical["resolved_id"] == "root1"
+    assert canonical["title"] == "Bot Chat"
+    assert "canonical bot content" in canonical["preview"]
+
+
 # ---------------------------------------------------------------------------
 # Recoverable-archive resurrection (#92687)
 # ---------------------------------------------------------------------------
@@ -301,6 +317,43 @@ def test_session_list_title_lookup_keeps_deliberate_archive_hidden(home, monkeyp
     envelope = srv._methods["session.list"](1, {"title": "Bot Chat"})
     assert envelope["result"]["sessions"] == []
     assert db.get_session("retired2")["archived"]
+    db.close()
+
+
+def test_session_list_title_lookup_ignores_unmarked_normal_child(home, monkeypatch):
+    db = _db(home)
+    _add_session(db, "root2", title="Bot Chat", ts=1000,
+                 text="canonical click target", hidden=True)
+    _add_session(db, "normal2", title="Friendly greeting", ts=3000,
+                 text="ordinary click target", parent="root2")
+    monkeypatch.setattr(srv, "_get_db", lambda: db)
+
+    envelope = srv._methods["session.list"](1, {"title": "Bot Chat"})
+    sessions = envelope["result"]["sessions"]
+
+    assert len(sessions) == 1
+    assert sessions[0]["id"] == "root2"
+    assert sessions[0]["resolved_id"] == "root2"
+    assert "canonical click target" in sessions[0]["preview"]
+    db.close()
+
+
+def test_session_list_title_lookup_resolves_compression_tip(home, monkeypatch):
+    db = _db(home)
+    _add_session(db, "root3", title="Bot Chat", ts=1000,
+                 text="pre-compression click target", hidden=True,
+                 end_reason="compression")
+    _add_session(db, "tip3", title="Bot Chat (continued)", ts=3000,
+                 text="post-compression click target", parent="root3")
+    monkeypatch.setattr(srv, "_get_db", lambda: db)
+
+    envelope = srv._methods["session.list"](1, {"title": "Bot Chat"})
+    sessions = envelope["result"]["sessions"]
+
+    assert len(sessions) == 1
+    assert sessions[0]["id"] == "root3"
+    assert sessions[0]["resolved_id"] == "tip3"
+    assert "post-compression click target" in sessions[0]["preview"]
     db.close()
 
 

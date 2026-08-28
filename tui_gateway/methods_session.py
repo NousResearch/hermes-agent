@@ -217,7 +217,12 @@ def _(rid, params: dict) -> dict:
                 ):
                     return _ok(rid, {"sessions": []})
                 try:
-                    tip = db.resolve_resume_session_id(row["id"]) or row["id"]
+                    # A named-session registry lookup must resolve only a real
+                    # compression continuation.  The generic resume resolver
+                    # retains a legacy unmarked-child fallback for historical
+                    # sessions; using it here can redirect the canonical Bot
+                    # Chat to an unrelated normal child.
+                    tip = db.get_compression_tip(row["id"]) or row["id"]
                 except Exception:
                     tip = row["id"]
                 tip_row = (db.get_session(tip) or row) if tip != row["id"] else row

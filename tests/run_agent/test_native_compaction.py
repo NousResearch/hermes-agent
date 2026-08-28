@@ -27,6 +27,7 @@ def _agent(
     compression_enabled=True,
     threshold: object = DEFAULT_COMPACT_THRESHOLD,
     compressor=None,
+    capabilities=None,
 ):
     return SimpleNamespace(
         model=model,
@@ -35,6 +36,7 @@ def _agent(
         compression_enabled=compression_enabled,
         codex_responses_compact_threshold=threshold,
         context_compressor=compressor,
+        capabilities=capabilities or {},
     )
 
 
@@ -87,6 +89,16 @@ class TestRequestGate:
         payload = native_compaction_context_management(
             _agent(base_url="https://chatgpt.com/backend-api/codex"),
             is_codex_backend=True,
+        )
+        assert payload is not None
+
+    def test_trusted_proxy_capability_gets_payload(self):
+        payload = native_compaction_context_management(
+            _agent(
+                base_url="https://trusted-proxy.example/v1",
+                capabilities={"openai_native_compaction": True},
+            ),
+            is_codex_backend=False,
         )
         assert payload is not None
 

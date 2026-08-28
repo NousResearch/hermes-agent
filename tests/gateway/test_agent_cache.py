@@ -69,6 +69,16 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", rt2, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    def test_capability_change_different_signature(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "sk-test12345678", "base_url": "https://proxy.example/v1", "provider": "custom"}
+        native = {**runtime, "capabilities": {"openai_native_compaction": True}}
+        plain = {**runtime, "capabilities": {"openai_native_compaction": False}}
+        assert GatewayRunner._agent_config_signature("gpt-5.6", native, [], "") != (
+            GatewayRunner._agent_config_signature("gpt-5.6", plain, [], "")
+        )
+
 
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)

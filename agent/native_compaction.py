@@ -203,7 +203,10 @@ def native_compaction_context_management(
         return None
     if not is_native_compaction_model(getattr(agent, "model", None)):
         return None
-    if not is_direct_openai_route(
+    trusted_proxy = bool(
+        getattr(agent, "capabilities", {}).get("openai_native_compaction", False)
+    )
+    if not trusted_proxy and not is_direct_openai_route(
         getattr(agent, "base_url", None), is_codex_backend=is_codex_backend
     ):
         return None

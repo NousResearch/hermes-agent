@@ -632,6 +632,8 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
                     "name": "Local",
                     "base_url": "http://1.2.3.4:1234/v1",
                     "api_key": "local-provider-key",
+                    "model": "gpt-5.6",
+                    "capabilities": {"openai_native_compaction": True},
                 }
             ]
         },
@@ -653,6 +655,7 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["base_url"] == "http://1.2.3.4:1234/v1"
     assert resolved["api_key"] == "local-provider-key"
     assert resolved["requested_provider"] == "local"
+    assert resolved["capabilities"] == {"openai_native_compaction": True}
     assert resolved["source"] == "custom_provider:Local"
 
 

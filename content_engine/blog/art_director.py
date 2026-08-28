@@ -597,15 +597,22 @@ def build_art_brief(
                     # The creative contract now asks for multiple fully grounded
                     # scenes. Reasoning providers need enough room for their
                     # private deliberation plus the complete nested JSON payload.
-                    body = _call_llm(system, user, cfg, timeout=180, max_tokens=16384)
-                    # A transport success is not enough: providers often return
-                    # prose or near-JSON that cannot drive the image pipeline.
-                    # Continue to the next provider unless this exact response
-                    # is both parseable and contract-valid for this article.
-                    parsed = _extract_json(body or "")
-                    if parsed and _validate(parsed, headings, draft=draft, recent_styles=recent_styles,
-                                            recent_concept_fingerprints=recent_concept_fingerprints):
-                        return body
+                    # Retry one contract-invalid transport success on the same
+                    # provider. Structured output is stochastic, while transport
+                    # failures are already retried inside _call_llm and should
+                    # advance to the next configured provider.
+                    for _contract_attempt in range(2):
+                        body = _call_llm(system, user, cfg, timeout=180, max_tokens=16384)
+                        if not body:
+                            break
+                        # A transport success is not enough: providers often return
+                        # prose or near-JSON that cannot drive the image pipeline.
+                        # Accept only responses that are both parseable and
+                        # contract-valid; otherwise consume the bounded retry.
+                        parsed = _extract_json(body)
+                        if parsed and _validate(parsed, headings, draft=draft, recent_styles=recent_styles,
+                                                recent_concept_fingerprints=recent_concept_fingerprints):
+                            return body
                 return None
 
             llm = default_llm

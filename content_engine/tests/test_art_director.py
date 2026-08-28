@@ -120,6 +120,54 @@ def test_build_art_brief_none_on_llm_exception():
     assert ad.build_art_brief(_DRAFT, _HEADINGS, llm=boom) is None
 
 
+def test_default_llm_retries_once_after_contract_invalid_response(monkeypatch):
+    import llm_generate
+
+    config = {
+        "base": "https://example.invalid/v1",
+        "model": "test-model",
+        "key": "test-key",
+    }
+    responses = iter(["not valid JSON", _good_brief_json()])
+    calls = []
+
+    monkeypatch.setattr(llm_generate, "_llm_configs", lambda longform: [config])
+
+    def fake_call(system, user, cfg, *, timeout, max_tokens):
+        calls.append(cfg)
+        return next(responses)
+
+    monkeypatch.setattr(llm_generate, "_call_llm", fake_call)
+
+    brief = ad.build_art_brief(_DRAFT, _HEADINGS)
+
+    assert brief is not None
+    assert brief["style"] == "technical-diorama"
+    assert calls == [config, config]
+
+
+def test_default_llm_stops_after_two_contract_invalid_responses(monkeypatch):
+    import llm_generate
+
+    config = {
+        "base": "https://example.invalid/v1",
+        "model": "test-model",
+        "key": "test-key",
+    }
+    calls = []
+
+    monkeypatch.setattr(llm_generate, "_llm_configs", lambda longform: [config])
+
+    def fake_call(system, user, cfg, *, timeout, max_tokens):
+        calls.append(cfg)
+        return "still not valid JSON"
+
+    monkeypatch.setattr(llm_generate, "_call_llm", fake_call)
+
+    assert ad.build_art_brief(_DRAFT, _HEADINGS) is None
+    assert calls == [config, config]
+
+
 def test_prompt_allows_article_fit_rendering_variation():
     captured = {}
     def spy(system, user):

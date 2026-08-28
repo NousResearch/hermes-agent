@@ -836,13 +836,14 @@ def authorize_agent_sdk_kwargs(
     # ValueError while typing, bypassing the firewall's content-free receipt
     # and triggering a provider fallback loop.
     protected_remote_context = protected_remote_marker or protected_provider_route
-    # Generated worker framing (system/developer messages and tool schema) is
+    # Generated framing (system/developer messages and tool schema) is
     # application-owned.  It can use the established non-secret path/base64
-    # redaction on every protected cloud route.  User content and unbound tool
-    # results do not become generated context and remain fail-closed.
+    # redaction on every protected cloud route, including ordinary chat and
+    # goal-judge calls.  User content and unbound tool results do not become
+    # generated context and remain fail-closed.
     redact_protected_generated_context = (
         str(route_provider or "").strip().lower() == "openai-codex"
-        or (protected_kanban_remote and protected_provider_route)
+        or protected_provider_route
     )
     typed_body = _typed_payload(
         body,

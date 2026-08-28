@@ -467,13 +467,16 @@ def test_protected_nous_keeps_unbound_kanban_output_blocked(tmp_path, monkeypatc
     assert "base64_payload" in exc_info.value.decision.reason_codes
 
 
-def test_protected_nous_redacts_generated_kanban_system_context(tmp_path, monkeypatch):
-    """Generated worker framing may be redacted, unlike user/source content."""
+def test_protected_nous_redacts_generated_cloud_system_context(tmp_path):
+    """Generated cloud framing may be redacted, unlike user/source content."""
 
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_safe_projection")
     agent = _agent(tmp_path)
     agent.provider = "nous"
     agent.base_url = "https://inference-api.nousresearch.com/v1"
+    generated = "Hermes framing.\n" * 3_000 + (
+        "Workspace: /Users/private/worktree\n"
+        "Protocol sample: c2VjcmV0LXBheWxvYWQ="
+    )
 
     authorized, receipt = authorize_agent_sdk_kwargs(
         agent,
@@ -482,25 +485,23 @@ def test_protected_nous_redacts_generated_kanban_system_context(tmp_path, monkey
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "Hermes framing /Users/private/worktree "
-                        "c2VjcmV0LXBheWxvYWQ="
-                    ),
+                    "content": generated,
                 }
             ],
         },
     )
 
     assert receipt.allowed
-    assert authorized["messages"][0]["content"] == (
-        "Hermes framing <private-path> <redacted-base64>"
-    )
+    assert "<private-path>" in authorized["messages"][0]["content"]
+    assert "<redacted-base64>" in authorized["messages"][0]["content"]
+    assert "/Users/private/worktree" not in authorized["messages"][0]["content"]
+    assert "c2VjcmV0LXBheWxvYWQ=" not in authorized["messages"][0]["content"]
+    assert len(receipt.payload_bytes) > 32_768
 
 
-def test_protected_nous_keeps_generated_kanban_secrets_blocked(tmp_path, monkeypatch):
+def test_protected_nous_keeps_generated_cloud_secrets_blocked(tmp_path):
     """Redaction never converts secrets into remote-safe text."""
 
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_safe_projection")
     agent = _agent(tmp_path)
     agent.provider = "nous"
     agent.base_url = "https://inference-api.nousresearch.com/v1"

@@ -8,10 +8,11 @@ model / API quota / browser pool from being overwhelmed by a fan-out.
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 
 import pytest
+
+from tests.conftest import fresh_hermes_modules
 
 
 @pytest.fixture()
@@ -21,11 +22,10 @@ def isolated_kanban_home_with_profiles(monkeypatch):
     for prof in ("alpha", "beta", "default"):
         os.makedirs(os.path.join(test_home, "profiles", prof), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    from hermes_cli import kanban_db
-    yield kanban_db
+    with fresh_hermes_modules():
+        from hermes_cli import kanban_db
+
+        yield kanban_db
 
 
 def _fake_spawn(*args, **kwargs):

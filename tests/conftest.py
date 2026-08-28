@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import atexit
+import contextlib
 import importlib
 import os
 import shutil
@@ -654,6 +655,50 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
 # allow-list because test-level fixtures legitimately move HERMES_HOME to
 # sibling directories — an allow-list captured at setup time would see the
 # stale autouse-set value and falsely reject hermetic tests (#69385 review).
+
+
+_REIMPORT_PREFIXES = ("hermes_cli", "hermes_state")
+_REIMPORT_EXACT = frozenset({"hermes_constants"})
+
+
+def _is_reimport_target(name: str) -> bool:
+    return name.startswith(_REIMPORT_PREFIXES) or name in _REIMPORT_EXACT
+
+
+@contextlib.contextmanager
+def fresh_hermes_modules():
+    """Drop the Hermes modules from ``sys.modules``, then put the ORIGINALS back.
+
+    A few kanban tests need a fresh ``HERMES_HOME`` to be read at *import*
+    time, which means re-importing ``hermes_cli``. Dropping the entries and
+    walking away leaves TWO copies of the same code alive for the rest of the
+    session: the one every already-imported test module is holding, and the one
+    ``sys.modules`` hands to the next importer.
+
+    That is not a tidiness problem. ``_kanban_write_guard`` below patches
+    ``connect`` on the copy it finds in ``sys.modules``, so a test module whose
+    global still points at the other copy calls an UNGUARDED ``connect`` -- the
+    deny-list that keeps the suite off the operator's real ``~/.hermes``
+    (#69283) stops working, and says nothing about it. The same split lets a
+    test observe a module-level registry (hooks, caches) on one copy while the
+    code under test mutates the other, which is what made a dozen hook and
+    lifecycle tests fail in a full run and pass one file at a time.
+
+    Restoring the originals keeps the re-import local to the test that asked
+    for it. Yield INSIDE the block: the fresh modules are only in place while
+    it is open.
+    """
+    saved = {n: m for n, m in sys.modules.items() if _is_reimport_target(n)}
+    for name in saved:
+        del sys.modules[name]
+    try:
+        yield
+    finally:
+        # Drop whatever the re-import created, then restore identity -- so the
+        # next importer gets the same object every earlier module is holding.
+        for name in [n for n in sys.modules if _is_reimport_target(n)]:
+            del sys.modules[name]
+        sys.modules.update(saved)
 
 
 def _capture_real_kanban_root() -> Path:

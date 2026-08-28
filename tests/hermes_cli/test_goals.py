@@ -83,6 +83,44 @@ class TestJudgeGoal:
         assert verdict == "continue"
         assert "judge error" in reason.lower()
 
+    def test_egress_denial_does_not_count_as_provider_outage(self):
+        from agent.llm_egress_firewall import (
+            DestinationClass,
+            EgressBlocked,
+            EgressDecision,
+        )
+        from hermes_cli import goals
+
+        blocked = EgressBlocked(
+            EgressDecision(
+                allowed=False,
+                destination_class=DestinationClass.REMOTE,
+                provider="nous",
+                model="free-judge",
+                payload_sha256="0" * 64,
+                serialized_bytes=1,
+                estimated_tokens=1,
+                source_grant_count=0,
+                source_segment_count=0,
+                session_id="session",
+                turn_id="turn",
+                request_id="request",
+                policy_digest="policy",
+                reason_codes=("base64_payload",),
+                base_url="https://example.test/v1",
+                api_mode="chat_completions",
+            )
+        )
+        with patch("agent.auxiliary_client.call_llm", side_effect=blocked):
+            verdict, reason, parse_failed, _wd, transport_failed = goals.judge_goal(
+                "goal", "response"
+            )
+
+        assert verdict == "continue"
+        assert "judge deferred" in reason
+        assert parse_failed is False
+        assert transport_failed is False
+
     def test_judge_says_done(self):
         from hermes_cli import goals
 

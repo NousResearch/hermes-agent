@@ -274,16 +274,18 @@ def test_compression_allows_many_bounded_sanitized_segments_but_vision_denies(
     assert "sanitized_bytes_exceeded" in exc_info.value.decision.reason_codes
 
 
-def test_compression_still_denies_one_sanitized_segment_over_32768_bytes(tmp_path):
+def test_compression_splits_one_large_sanitized_segment_without_relaxing_caps(tmp_path):
     compression_agent, compression_route = _bound_aux_agent("compression", tmp_path)
     oversized = "ordinary sentence. " * 2_000
 
-    with pytest.raises(ValueError, match="sanitized segment exceeds byte cap"):
-        authorize_agent_sdk_kwargs(
-            compression_agent,
-            {"model": "gpt-5.4", "messages": [{"role": "user", "content": oversized}]},
-            route=compression_route,
-        )
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        compression_agent,
+        {"model": "gpt-5.4", "messages": [{"role": "user", "content": oversized}]},
+        route=compression_route,
+    )
+
+    assert authorized["messages"][0]["content"] == oversized
+    assert json.loads(receipt.payload_bytes)["messages"][0]["content"] == oversized
 
 
 @pytest.mark.parametrize(

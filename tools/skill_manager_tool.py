@@ -855,17 +855,16 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
             other_profile, other_path = others[0]
             base += (
                 f" A skill by that name exists in profile "
-                f"'{other_profile}' ({other_path}). To edit a skill in "
-                f"another profile, switch profiles (`hermes -p "
-                f"{other_profile}`) or operate via explicit file tools "
-                f"with ``cross_profile=True``."
+                f"'{other_profile}' ({other_path}). To edit it, switch "
+                f"profiles (`hermes -p {other_profile}`) or edit the file "
+                f"directly (file tools / terminal)."
             )
         else:
             names = ", ".join(f"'{p}'" for p, _ in others)
             base += (
                 f" Skills by that name exist in other profiles: {names}. "
                 f"Switch profiles (`hermes -p <name>`) to edit there, or "
-                f"operate via explicit file tools with ``cross_profile=True``."
+                f"edit the files directly (file tools / terminal)."
             )
     else:
         base += " Use skills_list() to see available skills."

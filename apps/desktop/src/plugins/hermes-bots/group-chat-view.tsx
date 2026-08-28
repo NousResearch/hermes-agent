@@ -114,14 +114,17 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   const all = {
     ...$groupChats.get()
   }
+
   const prior = all[group] || {}
   const metaBefore = $botMeta.get()
   const cleanup = groupDisbandMetadataPlan(group, members, prior, $lastRoster.get(), metaBefore)
   let metadataPersistence: Promise<unknown> = Promise.resolve()
+
   if (cleanup.patches.size) {
     const nextMeta = {
       ...metaBefore
     }
+
     for (const [key, patch] of cleanup.patches) {
       nextMeta[key] = {
         ...(nextMeta[key] || {}),
@@ -138,7 +141,9 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
       botMetaV2Active || Object.keys(nextMeta).some(key => key.includes('::'))
     )
   }
+
   delete all[group]
+
   // Keep a runtime-only tombstone while a drive may still be mid-turn; it
   // carries no log and is flagged so persistence and name-dedup skip it —
   // updateGroupChat writes the WHOLE atom map, so an unflagged tombstone
@@ -154,16 +159,20 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
       tombstone: true
     }
   }
+
   $groupChats.set(all)
+
   if ($groupChatWorkspace.get() === group) {
     $groupChatWorkspace.set(null)
   }
 
   // Retire the room's MAIN-window tab too (host.openWorkspace path).
   closeGroupChatMainTab(group)
+
   const needs = {
     ...$groupNeedsYou.get()
   }
+
   delete needs[group]
   $groupNeedsYou.set(needs)
   clearGroupClarify(group)
@@ -172,6 +181,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   // on the next window load.
   try {
     const durable: Record<string, GroupChat> = {}
+
     for (const [name, room] of Object.entries($groupChats.get())) {
       if (name !== group && Array.isArray(room.log)) {
         durable[name] = {
@@ -186,10 +196,12 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
         }
       }
     }
+
     await Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durable))
   } catch {
     /* storage unavailable — the atom reset above still empties the room */
   }
+
   scheduleGroupChatServerSync($groupChats.get(), {
     allowEmpty: true,
     deletedRooms: [group]
@@ -201,6 +213,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   // flaky gateway cannot strand the local disband halfway.
   for (const [key, owner] of cleanup.owners) {
     const patch = cleanup.patches.get(key)
+
     if (patch) {
       await saveBotMeta(owner, patch)
     }
@@ -228,6 +241,7 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
   const next = String(newName || '')
     .trim()
     .slice(0, 64)
+
   if (!next || next === oldName) {
     return oldName
   }
@@ -236,17 +250,21 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
   // silently suffixing like creation does. Disband tombstones don't hold
   // their name — the room is gone, only its epoch survives briefly.
   const taken = new Set(liveGroupChatNames())
+
   for (const meta of Object.values($botMeta.get() || {})) {
     for (const existing of botGroups(meta)) {
       taken.add(existing)
     }
   }
+
   taken.delete(oldName)
+
   if (taken.has(next)) {
     host.notify({
       kind: 'error',
       message: `A group named “${next}” already exists.`
     })
+
     return null
   }
 
@@ -255,18 +273,25 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
   const all: Record<string, GroupChat> = {
     ...$groupChats.get()
   }
+
   const room = all[oldName]
+
   if (room) {
     migrateGroupComposerDraft(groupComposerDraftKey(oldName, room), groupComposerDraftKey(next, room))
   }
+
   delete all[oldName]
+
   if (room) {
     all[next] = room
   }
+
   $groupChats.set(all)
+
   const needs: Record<string, boolean> = {
     ...$groupNeedsYou.get()
   }
+
   if (oldName in needs) {
     needs[next] = needs[oldName]
     delete needs[oldName]
@@ -284,6 +309,7 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
     if (!member?.name) {
       continue
     }
+
     const meta = botRosterMeta(member, $botMeta.get()) || {}
     const groups = [...new Set(botGroups(meta).map(g => (g === oldName ? next : g)))]
     await saveBotMeta(member, {
@@ -308,6 +334,7 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
   if ($groupChatWorkspace.get() === oldName) {
     $groupChatWorkspace.set(next)
   }
+
   if (groupChatMainTabs.has(oldName)) {
     closeGroupChatMainTab(oldName)
     openGroupChat(next)
@@ -320,6 +347,7 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
       queryKey: ROSTER_KEY
     })
   }
+
   return next
 }
 
@@ -348,27 +376,33 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
+
   const save = async () => {
     const finalName = await renameGroupChat(group, name, members)
+
     if (finalName === null) {
       return // collision — dialog stays open for a different name
     }
+
     if (image !== current) {
       setGroupChatImage(finalName, image)
     }
+
     onClose()
+
     if (finalName !== group) {
       onRenamed?.(finalName)
     }
   }
+
   return (
     <Dialog
-      open={open}
       onOpenChange={value => {
         if (!value) {
           onClose()
         }
       }}
+      open={open}
     >
       <DialogContent className="max-w-sm">
         <DialogHeader>
@@ -378,8 +412,8 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
         <GroupImageControls
           image={image}
           onImage={setImage}
-          seedName={name.trim() || group}
           seedMembers={(members || []).map(member => member.name)}
+          seedName={name.trim() || group}
         />
         <form
           onSubmit={event => {
@@ -391,12 +425,12 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
             aria-label={b.group.nameLabel}
             autoFocus
             maxLength={64}
-            value={name}
             onChange={event => setName(event.target.value)}
+            value={name}
           />
         </form>
         <DialogFooter>
-          <Button variant="secondary" onClick={onClose}>
+          <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
           <Button disabled={!name.trim()} onClick={() => void save()}>
@@ -432,46 +466,57 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
+
   const room: GroupChatRoom = rooms[group] || {
     log: [],
     running: false
   }
+
   const composerKey = groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
   const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
+
   if (composerKeyRef.current !== composerKey) {
     migrateGroupComposerDraft(composerKeyRef.current, composerKey)
     composerKeyRef.current = composerKey
   }
+
   const updateComposerDraft = (mutate: (draft: GroupComposerDraft) => GroupComposerDraft) => {
     const next = updateGroupComposerDraft(composerKeyRef.current, mutate)
     setComposerDraft(next)
+
     return next
   }
+
   const draft = composerDraft.main || ''
   const replyDrafts = composerDraft.replies || {}
   const replyThread = composerDraft.activeReplyThread || null
   const pendingImages = composerDraft.pendingAttachments || {}
+
   const setDraft = (value: GroupDraftSetter<string>) =>
     updateComposerDraft(current => ({
       ...current,
       main: typeof value === 'function' ? value(current.main || '') : value
     }))
+
   const setReplyDrafts = (value: GroupDraftSetter<Record<string, string>>) =>
     updateComposerDraft(current => ({
       ...current,
       replies: typeof value === 'function' ? value(current.replies || {}) : value
     }))
+
   const setReplyThread = (value: GroupDraftSetter<null | string>) =>
     updateComposerDraft(current => ({
       ...current,
       activeReplyThread: typeof value === 'function' ? value(current.activeReplyThread || null) : value
     }))
+
   const setPendingImages = (value: GroupDraftSetter<Record<string, Attachment[]>>) =>
     updateComposerDraft(current => ({
       ...current,
       pendingAttachments: typeof value === 'function' ? value(current.pendingAttachments || {}) : value
     }))
+
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Click-to-disambiguate: which log entry is showing its speaker's full
@@ -494,19 +539,25 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // already near the bottom, so reading history is never yanked away.
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
   const stickToBottomRef = useRef(true)
+  // eslint-disable-next-line no-restricted-syntax -- tracks live scroll position from a DOM listener, not an atom
   useEffect(() => {
     const sentinel = bottomSentinelRef.current
+
     if (!sentinel) {
       return
     }
+
     const viewport = sentinel.closest('[data-slot="scroll-area-viewport"]')
+
     if (viewport) {
       const onScroll = () => {
         stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80
       }
+
       viewport.addEventListener('scroll', onScroll, {
         passive: true
       })
+
       return () => viewport.removeEventListener('scroll', onScroll)
     }
   }, [])
@@ -524,6 +575,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // hidden → visible edge — an explicit reopen, so it overrides a stale
   // read-position and mirrors what a fresh open does.
   const wasVisibleRef = useRef(visible)
+  // eslint-disable-next-line no-restricted-syntax -- previous-value tracker for the hidden → visible edge; lagging a render IS the contract
   useEffect(() => {
     if (visible && !wasVisibleRef.current) {
       stickToBottomRef.current = true
@@ -531,19 +583,23 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         block: 'end'
       })
     }
+
     wasVisibleRef.current = visible
   }, [visible])
   const imagesFor = (thread: null | string) => pendingImages[thread ?? 'main'] || []
+
   const addImages = (thread: null | string, picked: Attachment[]) => {
     if (!picked.length) {
       return
     }
+
     const key = thread ?? 'main'
     setPendingImages(prev => ({
       ...prev,
       [key]: [...(prev[key] || []), ...picked]
     }))
   }
+
   const removeImage = (thread: null | string, index: number) => {
     const key = thread ?? 'main'
     setPendingImages(prev => ({
@@ -555,9 +611,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // Ctrl/⌘-V a screenshot (or any file) into any composer in this room.
   const pasteImages = (thread: null | string, event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = [...(event.clipboardData?.files || [])]
+
     if (!files.length) {
       return
     }
+
     event.preventDefault()
     void filesToGroupAttachments(files).then(picked => addImages(thread, picked))
   }
@@ -566,12 +624,15 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // open reply box when one owns the composer, else the main (new-thread)
   // composer. Matches the 1:1 chat's drop affordance.
   const [dragOver, setDragOver] = useState(false)
+
   const dropFiles = (event: DragEvent<HTMLDivElement>) => {
     const files = [...(event.dataTransfer?.files || [])]
     setDragOver(false)
+
     if (!files.length) {
       return
     }
+
     event.preventDefault()
     void filesToGroupAttachments(files).then(picked => addImages(replyThread, picked))
   }
@@ -583,24 +644,28 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   useValue($groupActivity)
   // Pending member questions for THIS room (#90694), oldest first.
   const clarifyAll: Record<string, GroupRoomPrompt> = useValue($groupClarify)
+
   const roomClarifies = Object.values(clarifyAll || {})
     .filter(entry => entry?.group === group)
     .sort((a, b) => (a.at || 0) - (b.at || 0))
+
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
   const availabilityLabel = `${availableMembers} of ${members.length} available`
+
   const memberNames =
     members.map(b => displayName(b, botRosterMeta(b, allMeta))).join(', ') || 'No bots in this group chat'
+
   const header = (
     <div className="flex items-center gap-2 px-2.5 pt-2.5 pb-2">
-      <Button variant="ghost" size="sm" onClick={() => (onBack ? onBack() : $groupChatWorkspace.set(null))}>
+      <Button onClick={() => (onBack ? onBack() : $groupChatWorkspace.set(null))} size="sm" variant="ghost">
         Back
       </Button>
       {/* Room picture (set via Group settings) leads the title when present. */}
       {room.image ? (
         <img
-          src={room.image}
           alt=""
           className="size-6 shrink-0 rounded-md object-cover ring-1 ring-(--ui-stroke-secondary)"
+          src={room.image}
         />
       ) : (
         <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-(--chrome-action-hover) text-(--ui-text-tertiary)">
@@ -610,39 +675,40 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       <div className="min-w-0 flex-1 truncate text-sm font-semibold">{group}</div>
       <Tip label={memberNames}>
         <span
+          aria-label={availabilityLabel}
           className={cn(
             'shrink-0 text-[0.65rem] text-(--ui-text-quaternary)',
             members.length > 0 && availableMembers < members.length && 'text-amber-600 dark:text-amber-300'
           )}
-          aria-label={availabilityLabel}
         >
           {members.length > 0 && availableMembers < members.length ? availabilityLabel : `${members.length} bots`}
         </span>
       </Tip>
       <Tip label={`Group settings — rename ${group} or set a room picture`}>
         <Button
-          variant="ghost"
-          size="sm"
-          className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
           aria-label={`Group settings for ${group}`}
+          className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
           onClick={() => setSettingsOpen(true)}
+          size="sm"
+          variant="ghost"
         >
           <Codicon name="gear" />
         </Button>
       </Tip>
       <Tip label={`Disband the ${group} group chat`}>
         <Button
-          variant="ghost"
-          size="sm"
-          className="shrink-0 text-(--ui-text-tertiary) hover:text-destructive"
           aria-label={`Disband ${group}`}
+          className="shrink-0 text-(--ui-text-tertiary) hover:text-destructive"
           onClick={() => setConfirmDisband(true)}
+          size="sm"
+          variant="ghost"
         >
           <Codicon name="trash" />
         </Button>
       </Tip>
     </div>
   )
+
   const memberDescriptors = () =>
     members.map(b => ({
       ...b,
@@ -654,6 +720,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // Events are epoch-tagged, so a superseded run's history drops out of view.
   const activityEvents: GroupActivityEntry[] = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+
   // #94570 shell rewired onto the real primitive (#91868/#94569): the button
   // must stop the ROUND, not just spray per-member interrupts — without the
   // epoch bump + holds the loop marched on to the next member. Thread scope:
@@ -665,17 +732,18 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       message: `Stopped ${group} — remaining turns are held until you resume`
     })
   }
+
   const activityPanel = (
     <div className="border-b border-(--ui-stroke-secondary)">
       <div className="flex items-center gap-1">
         <RowButton
-          aria-expanded={activityOpen}
           aria-controls={`group-activity:${group}`}
-          title={activityOpen ? b.group.hideActivity : b.group.showActivity}
+          aria-expanded={activityOpen}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground"
           onClick={() => setActivityOpen(prev => !prev)}
+          title={activityOpen ? b.group.hideActivity : b.group.showActivity}
         >
-          <Codicon name={activityOpen ? 'chevron-down' : 'chevron-right'} className="shrink-0 text-[0.65rem]" />
+          <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
           {latestActivity ? (
             <span className="min-w-0 flex-1 truncate">{`${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`}</span>
@@ -696,13 +764,13 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         ) : null}
       </div>
       {activityOpen ? (
-        <div id={`group-activity:${group}`} className="grid gap-0.5 px-2.5 pb-1.5">
+        <div className="grid gap-0.5 px-2.5 pb-1.5" id={`group-activity:${group}`}>
           {activityEvents.length ? (
             [...activityEvents].reverse().map((event, i) => (
-              <div key={`${event.at}:${i}`} className="flex items-center gap-1.5 text-[0.7rem]">
+              <div className="flex items-center gap-1.5 text-[0.7rem]" key={`${event.at}:${i}`}>
                 <Codicon
-                  name={GROUP_ACTIVITY_GLYPHS[event.kind] || 'circle-outline'}
                   className={cn('shrink-0 text-[0.65rem]', groupActivityTone(event.kind))}
+                  name={GROUP_ACTIVITY_GLYPHS[event.kind] || 'circle-outline'}
                 />
                 <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(event.kind))}>
                   {groupActivityLabel(event)}
@@ -730,13 +798,17 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       ) : null}
     </div>
   )
+
   const submit = () => {
     const text = draft.trim()
     const images = imagesFor(null)
+
     if (!text && !images.length) {
       return
     }
+
     const before = groupComposerDraftSnapshot(composerKeyRef.current)
+
     const cleared = updateComposerDraft(current => ({
       ...current,
       main: '',
@@ -745,10 +817,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         main: []
       }
     }))
+
     // Main composer = START A NEW THREAD with the whole group (Slack shape).
     // Full descriptors ride into the turn loop: remote members keep their
     // connection fields so their turns route to their own machines.
     const minted = sendToGroupChat(group, memberDescriptors(), text, null, images)
+
     if (minted) {
       setOpenThreads(prev => ({
         ...prev,
@@ -756,18 +830,23 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       }))
     } else {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
+
       if (restored) {
         setComposerDraft(restored)
       }
     }
   }
+
   const submitReply = (thread: string) => {
     const text = (replyDrafts[thread] || '').trim()
     const images = imagesFor(thread)
+
     if (!text && !images.length) {
       return
     }
+
     const before = groupComposerDraftSnapshot(composerKeyRef.current)
+
     const cleared = updateComposerDraft(current => ({
       ...current,
       pendingAttachments: {
@@ -779,9 +858,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         [thread]: ''
       }
     }))
+
     // Reply box = CONTINUE this thread; the member turns it triggers are
     // scoped to it.
     const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images)
+
     if (sent) {
       setOpenThreads(prev => ({
         ...prev,
@@ -789,6 +870,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       }))
     } else {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
+
       if (restored) {
         setComposerDraft(restored)
       }
@@ -800,23 +882,25 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
    *  X removes it. */
   const attachmentRow = (thread: null | string) => {
     const images = imagesFor(thread)
+
     if (!images.length) {
       return null
     }
+
     return (
       <div className="flex flex-wrap items-center gap-1.5 px-1 pb-1">
         {images.map((img, index) => (
           <div
-            key={`${img.name || 'img'}:${index}`}
             className="flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) px-1 py-0.5"
+            key={`${img.name || 'img'}:${index}`}
           >
             {img.kind === 'pdf' || img.kind === 'file' ? (
               <Codicon
-                name={img.kind === 'pdf' ? 'file-pdf' : 'file'}
                 className="text-[0.9rem] text-(--ui-text-tertiary)"
+                name={img.kind === 'pdf' ? 'file-pdf' : 'file'}
               />
             ) : (
-              <img src={img.data} alt="" className="size-6 rounded object-cover" />
+              <img alt="" className="size-6 rounded object-cover" src={img.data} />
             )}
             <span className="max-w-32 truncate text-[0.65rem] text-(--ui-text-tertiary)">{img.name || 'image'}</span>
             <Tip label="Remove attachment">
@@ -834,14 +918,15 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       </div>
     )
   }
+
   const attachButton = (thread: null | string) => (
     <Button
+      className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+      onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
+      size="sm"
+      title={b.group.attachHint}
       type="button"
       variant="ghost"
-      size="sm"
-      className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
-      title={b.group.attachHint}
-      onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
     >
       <Codicon name="attach" />
     </Button>
@@ -851,6 +936,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
     const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
+
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
     // primary "default" profile renders as Hermes, remote dupes
@@ -862,6 +948,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             b.name === entry.from.name &&
             (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
         ) || null
+
     const display = isUser
       ? 'You'
       : displayName(
@@ -870,8 +957,10 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           },
           meta
         )
+
     const entryKey = `${entry.at}:${index}`
     const revealed = !isUser && revealedSpeaker === entryKey
+
     // Clicked: append the gateway name so same-named agents on
     // two connections are tellable apart on demand.
     const label = isUser
@@ -879,6 +968,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       : revealed
         ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
         : display
+
     // Speaker avatar: same appearance pipeline as the roster
     // (custom image/pet, else deterministic shape+color face).
     // Remote speakers have no local meta and get the
@@ -887,22 +977,23 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     const appearance = isUser ? null : botAppearance(entry.from.name, meta)
     const image = appearance?.image ?? null
     const photo = Boolean(image && !isBackfilledFacePng(image))
+
     return (
       <div
-        key={entryKey}
         className={cn(
           'group flex items-start gap-2',
           isUser ? 'rounded-md bg-(--chrome-action-hover) px-2 py-1.5' : 'px-2 py-1'
         )}
+        key={entryKey}
       >
         {appearance ? (
           <div className="mt-0.5 shrink-0">
             <BotFace
-              shape={appearance.shape}
               color={avatarColor(appearance.color, entry.from.name)}
               image={photo ? image : null}
-              size={24}
               name={entry.from.name}
+              shape={appearance.shape}
+              size={24}
             />
           </div>
         ) : null}
@@ -913,9 +1004,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             ) : (
               <Button
                 className="text-left text-[0.7rem] font-semibold text-(--ui-accent)"
-                title={revealed ? 'Hide full handle' : 'Show full handle'}
                 onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
                 size="inline"
+                title={revealed ? 'Hide full handle' : 'Show full handle'}
                 variant="text"
               >
                 {label}
@@ -943,20 +1034,20 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               {entry.images.map((img, imgIndex) =>
                 img.kind === 'pdf' || img.kind === 'file' ? (
                   <div
-                    key={`${entryKey}:img:${imgIndex}`}
                     className="flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
+                    key={`${entryKey}:img:${imgIndex}`}
                     title={img.name || 'attached file'}
                   >
-                    <Codicon name={img.kind === 'pdf' ? 'file-pdf' : 'file'} className="text-[0.8rem]" />
+                    <Codicon className="text-[0.8rem]" name={img.kind === 'pdf' ? 'file-pdf' : 'file'} />
                     <span className="max-w-48 truncate">{img.name || 'attached file'}</span>
                   </div>
                 ) : (
                   <img
+                    alt={img.name || 'attached image'}
+                    className="max-h-40 max-w-60 rounded-md border border-(--ui-stroke-secondary) object-contain"
                     key={`${entryKey}:img:${imgIndex}`}
                     src={img.data}
-                    alt={img.name || 'attached image'}
                     title={img.name || 'attached image'}
-                    className="max-h-40 max-w-60 rounded-md border border-(--ui-stroke-secondary) object-contain"
                   />
                 )
               )}
@@ -974,10 +1065,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // Slack-style summary row unless explicitly opened. Every open thread gets
   // its own reply box, which continues THAT thread.
   const threadsById = new Map<string, GroupThreadBucket>()
+
   for (let i = 0; i < room.log.length; i++) {
     const entry = room.log[i]
     const id = groupThreadOf(entry)
     let bucket = threadsById.get(id)
+
     if (!bucket) {
       bucket = {
         entries: [],
@@ -986,14 +1079,17 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       }
       threadsById.set(id, bucket)
     }
+
     bucket.entries.push({
       entry,
       index: i
     })
   }
+
   const threads = [...threadsById.values()].sort(
     (a, b) => (a.entries[a.entries.length - 1].entry.at || 0) - (b.entries[b.entries.length - 1].entry.at || 0)
   )
+
   const newestThread = threads.length ? threads[threads.length - 1].id : null
   const logChildren: ReactNode[] = []
   threads.forEach(threadBucket => {
@@ -1001,50 +1097,54 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     const head = entries.find(({ entry }) => entry.from.kind === 'user')?.entry || entries[0].entry
     const isNewest = id === newestThread
     const expanded = openThreads[id] ?? isNewest
+
     if (!expanded) {
       const replies = entries.length - 1
       const headText = stripPreviewMarkdown(head?.text || '').slice(0, 80)
       logChildren.push(
         <RowButton
-          key={`fold:${id}`}
           className="flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover)"
-          title={b.group.openThread}
+          key={`fold:${id}`}
           onClick={() =>
             setOpenThreads(prev => ({
               ...prev,
               [id]: true
             }))
           }
+          title={b.group.openThread}
         >
-          <Codicon name="chevron-right" className="shrink-0 text-[0.65rem]" />
+          <Codicon className="shrink-0 text-[0.65rem]" name="chevron-right" />
           <span className="min-w-0 flex-1 truncate">{headText || 'Thread'}</span>
           <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{`${replies} ${replies === 1 ? 'reply' : 'replies'} · ${relativeTime(entries[entries.length - 1].entry.at)}`}</span>
         </RowButton>
       )
+
       return
     }
 
     // Open thread: a rail-indented block — collapse affordance, its entries,
     // and its own reply box (Slack's "reply in thread").
     const threadRows: ReactNode[] = []
+
     if (!isNewest || openThreads[id] !== undefined) {
       threadRows.push(
         <RowButton
-          key={`unfold:${id}`}
           className="flex w-full items-center gap-1.5 px-2 pt-1 text-left text-[0.65rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground"
-          title={b.group.collapseThreadLabel}
+          key={`unfold:${id}`}
           onClick={() =>
             setOpenThreads(prev => ({
               ...prev,
               [id]: false
             }))
           }
+          title={b.group.collapseThreadLabel}
         >
-          <Codicon name="chevron-down" className="text-[0.6rem]" />
+          <Codicon className="text-[0.6rem]" name="chevron-down" />
           {b.group.collapseThread}
         </RowButton>
       )
     }
+
     for (const { entry, index } of entries) {
       threadRows.push(renderEntry(entry, index))
     }
@@ -1054,8 +1154,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     threadRows.push(
       replyThread === id ? (
         <form
-          key={`replybox:${id}`}
           className="grid gap-0 px-2 pb-1"
+          key={`replybox:${id}`}
           onSubmit={event => {
             event.preventDefault()
             submitReply(id)
@@ -1066,28 +1166,28 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             <GroupMentionInput
               aria-label={b.group.replyInThread}
               autoFocus
-              placeholder={b.group.replyInThreadPlaceholder}
               members={members}
-              value={replyDrafts[id] || ''}
               onChange={text =>
                 setReplyDrafts(prev => ({
                   ...prev,
                   [id]: text
                 }))
               }
-              onSubmitDraft={() => submitReply(id)}
               onPaste={event => pasteImages(id, event)}
+              onSubmitDraft={() => submitReply(id)}
+              placeholder={b.group.replyInThreadPlaceholder}
+              value={replyDrafts[id] || ''}
             />
             {attachButton(id)}
-            <Button type="submit" size="sm" disabled={!(replyDrafts[id] || '').trim() && !imagesFor(id).length}>
+            <Button disabled={!(replyDrafts[id] || '').trim() && !imagesFor(id).length} size="sm" type="submit">
               {b.group.reply}
             </Button>
           </div>
         </form>
       ) : (
         <Button
-          key={`replylink:${id}`}
           className="w-fit px-2 pb-1 text-left text-[0.65rem] text-(--ui-accent) transition-colors"
+          key={`replylink:${id}`}
           onClick={() => setReplyThread(id)}
           size="inline"
           variant="link"
@@ -1097,20 +1197,15 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       )
     )
     logChildren.push(
-      <div key={`thread:${id}`} className="grid gap-1.5 border-l-2 border-(--ui-stroke-secondary) pl-1.5">
+      <div className="grid gap-1.5 border-l-2 border-(--ui-stroke-secondary) pl-1.5" key={`thread:${id}`}>
         {threadRows}
       </div>
     )
   })
+
   return (
     <div
       className="relative flex h-full flex-col"
-      onDragOver={event => {
-        if ([...(event.dataTransfer?.types || [])].includes('Files')) {
-          event.preventDefault()
-          setDragOver(true)
-        }
-      }}
       onDragLeave={event => {
         // Only clear when leaving the room container itself, not when the
         // cursor moves between its children. React types relatedTarget as a
@@ -1119,12 +1214,18 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           setDragOver(false)
         }
       }}
+      onDragOver={event => {
+        if ([...(event.dataTransfer?.types || [])].includes('Files')) {
+          event.preventDefault()
+          setDragOver(true)
+        }
+      }}
       onDrop={dropFiles}
     >
       {dragOver ? (
         <div
-          key={'dropzone'}
           className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-2 border-dashed border-(--ui-accent) text-sm font-medium text-(--ui-accent)"
+          key={'dropzone'}
         >
           {replyThread ? 'Drop to attach to this thread reply' : 'Drop to attach — every responding bot sees it'}
         </div>
@@ -1136,15 +1237,15 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {room.log.length
             ? logChildren
             : [
-                <div key={'empty'} className="px-2 py-4 text-center text-xs text-(--ui-text-tertiary)">
+                <div className="px-2 py-4 text-center text-xs text-(--ui-text-tertiary)" key={'empty'}>
                   {b.group.composerPlaceholder}
                 </div>
               ]}
           {roomClarifies.map(entry => (
-            <GroupClarifyCard key={`clarify:${entry.memberKey}:${entry.requestId}`} entry={entry} members={members} />
+            <GroupClarifyCard entry={entry} key={`clarify:${entry.memberKey}:${entry.requestId}`} members={members} />
           ))}
           {room.running ? (
-            <div key={'working'} className="px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)">
+            <div className="px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)" key={'working'}>
               {roomClarifies.length
                 ? 'Waiting for your answer…'
                 : room.turn
@@ -1155,7 +1256,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {/* Scroll anchor (#89835): rooms opened at scroll position 0, mid- */
           /* history. The effect below scrolls this sentinel into view on */
           /* mount and on log growth — unless the user has scrolled up. */}
-          <div key={'bottom-sentinel'} ref={bottomSentinelRef} aria-hidden />
+          <div aria-hidden key={'bottom-sentinel'} ref={bottomSentinelRef} />
         </div>
       </div>
       <div className="border-t border-(--ui-stroke-secondary) p-2">
@@ -1170,15 +1271,15 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <div className="flex items-center gap-1.5">
             <GroupMentionInput
               aria-label={`Message ${group}`}
-              placeholder={`New thread in ${group}… (@name to direct, @everyone for all)`}
               members={members}
-              value={draft}
               onChange={setDraft}
-              onSubmitDraft={submit}
               onPaste={event => pasteImages(null, event)}
+              onSubmitDraft={submit}
+              placeholder={`New thread in ${group}… (@name to direct, @everyone for all)`}
+              value={draft}
             />
             {attachButton(null)}
-            <Button type="submit" size="sm" disabled={!draft.trim() && !imagesFor(null).length}>
+            <Button disabled={!draft.trim() && !imagesFor(null).length} size="sm" type="submit">
               {b.group.newThread}
             </Button>
           </div>
@@ -1187,12 +1288,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       <GroupChatSettingsDialog
         group={group}
         members={members}
-        open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        open={settingsOpen}
       />
       <ConfirmDialog
-        open={confirmDisband}
-        title={b.group.disbandTitle}
+        busyLabel="Disbanding…"
+        confirmLabel="Disband"
         description={
           <span>
             {'This removes the '}
@@ -1205,8 +1306,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           </span>
         }
         destructive
-        confirmLabel="Disband"
-        busyLabel="Disbanding…"
         doneLabel="Disbanded"
         onClose={() => setConfirmDisband(false)}
         onConfirm={async () => {
@@ -1217,6 +1316,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             message: `Disbanded “${group}”`
           })
         }}
+        open={confirmDisband}
+        title={b.group.disbandTitle}
       />
     </div>
   )
@@ -1231,12 +1332,14 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 interface GroupChatMainViewProps {
   group: string
 }
+
 function GroupChatMainView({ group }: GroupChatMainViewProps) {
   const allMeta = useValue($botMeta)
   // Subscribe: membership changes ride bot meta AND the room record.
   useValue($groupChats)
   const roster = useValue($lastRoster)
   const members = groupChatMemberBots(group, roster, allMeta)
+
   // Older SDKs have no paneVisibility: fall back to an always-visible atom so
   // the hook order stays stable and behavior matches the previous build.
   const $visible = useMemo(
@@ -1246,9 +1349,11 @@ function GroupChatMainView({ group }: GroupChatMainViewProps) {
         : atom(true),
     [group]
   )
+
   const visible = useValue($visible)
+
   return (
-    <GroupChatWorkspace group={group} members={members} visible={visible} onBack={() => closeGroupChatMainTab(group)} />
+    <GroupChatWorkspace group={group} members={members} onBack={() => closeGroupChatMainTab(group)} visible={visible} />
   )
 }
 
@@ -1273,6 +1378,7 @@ export function openGroupChat(group: string): void {
   })
   const ownerKey = groupWorkspaceOwnerKey(group)
   setBotsWorkspaceOwner(ownerKey, null, 'New group conversations start in the group composer.')
+
   if (typeof host.openWorkspace === 'function') {
     try {
       const close = host.openWorkspace(`${ID}:group:${slugify(group)}`, {
@@ -1281,15 +1387,18 @@ export function openGroupChat(group: string): void {
         render: () => <GroupChatMainView group={group} />,
         onClose: () => {
           dropGroupMainTab(group)
+
           if ($groupChatWorkspace.get() === group) {
             $groupChatWorkspace.set(null)
           }
         }
       })
+
       recordGroupMainTab(group, close)
       // Tab ownership is on record — the atom now only drives the roster
       // highlight; shouldRenderGroupChatInPane stays false throughout.
       $groupChatWorkspace.set(group)
+
       return
     } catch {
       // Fall through to the in-panel room below.

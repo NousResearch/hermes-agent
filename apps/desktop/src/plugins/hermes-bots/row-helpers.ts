@@ -26,21 +26,26 @@ export const A2A_PREFIX_RE = /^Message from (?:agent '[^']+'|🤖[^:]+):\s*/i
  *  bot's row should show WHO sent it, not present it as the human's chat. */
 export function previewKind(preview: null | string | undefined): { fromBot: null | string } {
   const text = (preview || '').trim()
+
   if (!text) {
     return {
       fromBot: null
     }
   }
+
   const match = text.match(A2A_RE)
+
   if (match) {
     // The captured name is whatever the delivery prefix carried — a raw
     // profile name. Map it the way every other surface does so the primary
     // profile reads @hermes, never @default (#89484).
     const sender = (match[1] || match[2] || '').trim().toLowerCase()
+
     return {
       fromBot: sender ? botHandle(sender) : null
     }
   }
+
   return {
     fromBot: null
   }
@@ -48,6 +53,7 @@ export function previewKind(preview: null | string | undefined): { fromBot: null
 
 /** Session titles the gateway auto-assigns that carry no information. */
 const GENERIC_TITLES = new Set(['', 'bot chat', 'new chat', 'new conversation', 'conversation', 'chat', 'untitled'])
+
 function isGenericTitle(title: null | string | undefined): boolean {
   return GENERIC_TITLES.has((title || '').trim().toLowerCase())
 }
@@ -58,21 +64,27 @@ function isGenericTitle(title: null | string | undefined): boolean {
  *  conversation is actually about. */
 export function generatedSessionTitle(session: CanonicalSession | null | undefined, preview: null | string | undefined) {
   const raw = (session?.title || '').trim()
+
   if (raw && !isGenericTitle(raw)) {
     return raw
   }
+
   const cleaned = (preview || '').trim().replace(A2A_PREFIX_RE, '').trim()
+
   if (!cleaned) {
     return raw || 'Conversation'
   }
+
   const words = cleaned
     .split(/\s+/)
     .slice(0, 5)
     .join(' ')
     .replace(/[,;:.]+$/, '')
+
   if (!words) {
     return raw || 'Conversation'
   }
+
   return words.length > 34 ? `${words.slice(0, 33)}…` : words
 }
 
@@ -105,6 +117,7 @@ const WORKER_ACTIVE_WINDOW_S = 150
  *  (hermes-agent#90268). Older gateways omit worker_session — always false. */
 export function workerActiveAt(bot: null | RosterRow | undefined, now = Date.now()): boolean {
   const ts = bot?.worker_session?.last_active || 0
+
   return Boolean(ts && now / 1000 - ts < WORKER_ACTIVE_WINDOW_S)
 }
 
@@ -123,15 +136,18 @@ export function activeBots(
     const busyTurn = !bot.remoteSource && bot.name === activeProfile && gatewayState === 'busy'
     const last = botActivitySession(bot)?.last_active || 0
     const inWindow = Boolean(last && now / 1000 - last < ACTIVE_WINDOW_S)
+
     return busyTurn || inWindow || workerActiveAt(bot, now)
   })
 }
+
 /** What the roster list wraps around a bot or group before filtering:
  *  `activity` is a millisecond stamp, `active` the live pulse. */
 interface RosterActivityRow {
   active?: boolean
   activity?: number
 }
+
 export function rosterActivityMatches(
   row: null | RosterActivityRow | undefined,
   filter: null | RosterActivityFilter | undefined,
@@ -140,13 +156,17 @@ export function rosterActivityMatches(
   if (!filter || filter === 'all') {
     return true
   }
+
   if (filter === 'active') {
     return Boolean(row?.active)
   }
+
   const activity = Number(row?.activity || 0)
   const recent = Boolean(activity && now - activity <= RECENT_ACTIVITY_WINDOW_S * 1000)
+
   return filter === 'recent' ? recent : !recent
 }
+
 export function botRowOwnsWorkspace(
   bot: RosterRow,
   activeGroup: null | string,
@@ -157,8 +177,10 @@ export function botRowOwnsWorkspace(
   if (activeGroup) {
     return false
   }
+
   if (!botChatFocused) {
     return selectedRosterKey === botRosterKey(bot)
   }
+
   return isActiveRosterBot(bot, focusedOwner)
 }

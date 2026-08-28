@@ -60,6 +60,7 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
   const [tab, setTab] = useState('bot')
   const [describe, setDescribe] = useState('')
   const [genBusy, setGenBusy] = useState(false)
+
   if (imagen === null) {
     void probeImagen()
   }
@@ -68,36 +69,46 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
   // tab — the gateway may have restarted with image.generate since.
   const goTab = (id: string) => {
     setTab(id)
+
     if (id === 'generate' && $imagenAvailable.get() === false) {
       $imagenAvailable.set(null)
       void probeImagen()
     }
   }
+
   const upload = async () => {
     const raw = await pickImageFromDevice()
+
     if (raw) {
       onImage(await normalizeAvatarImage(raw))
     }
   }
+
   const generate = async () => {
     if (genBusy) {
       return
     }
+
     setGenBusy(true)
+
     try {
       const custom = describe.trim()
+
       const img = custom
         ? await (async () => {
             const res = await host.request<GeneratedImage>('image.generate', {
               prompt: `${custom}. Avatar for an AI agent: centered, bold flat vector style, solid color background, no text.`,
               aspect_ratio: 'square'
             })
+
             if (!res?.success) {
               throw new Error(res?.error || 'generation failed')
             }
+
             return res.image_data || res.image
           })()
         : await generateAvatarImage(generateSeed?.name || 'agent', generateSeed?.title, generateSeed?.description)
+
       if (img) {
         onImage(await normalizeAvatarImage(img))
       }
@@ -107,10 +118,12 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
       setGenBusy(false)
     }
   }
+
   return (
     <div className="grid justify-items-center gap-3">
       {/* Tab pills: Bot | Generate | Upload | Pet */}
       <SegmentedControl
+        onChange={goTab}
         options={[
           { id: 'bot', label: 'Bot' },
           { id: 'generate', label: 'Generate' },
@@ -118,10 +131,9 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
           { id: 'pet', label: 'Pet' }
         ]}
         value={tab}
-        onChange={goTab}
       />
       {image && tab !== 'generate' ? (
-        <Button type="button" variant="ghost" size="sm" onClick={() => onImage(null)}>
+        <Button onClick={() => onImage(null)} size="sm" type="button" variant="ghost">
           {b.avatar.removeImage}
         </Button>
       ) : null}
@@ -130,29 +142,30 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
           (() => {
             const { seedPart, kind } = parseBlobShape(shape, pickerName)
             const locked = Boolean(seedPart)
+
             return (
               <div className="grid justify-items-center gap-3">
                 {/* Silhouette pins: Auto (name decides) + the six blob kinds. */}
                 <div className="grid grid-cols-4 justify-items-center gap-1.5">
                   {['', ...BLOB_KINDS].map(k => (
                     <RowButton
-                      key={k || 'auto'}
-                      title={k || 'Auto — the name decides'}
                       className={cn(
                         'flex items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)',
                         k === kind && !image && 'ring-1 ring-(--ui-accent)'
                       )}
-                      style={{
-                        width: 44,
-                        height: 44
-                      }}
+                      key={k || 'auto'}
                       onClick={() => {
                         onImage(null)
                         onShape(blobShapeString(seedPart, k))
                       }}
+                      style={{
+                        width: 44,
+                        height: 44
+                      }}
+                      title={k || 'Auto — the name decides'}
                     >
                       {k ? (
-                        <BotFace shape={blobShapeString(seedPart, k)} color={avatarColor(color, pickerName)} size={32} name={pickerName} />
+                        <BotFace color={avatarColor(color, pickerName)} name={pickerName} shape={blobShapeString(seedPart, k)} size={32} />
                       ) : (
                         <span className="text-[0.6rem] text-(--ui-text-tertiary)">Auto</span>
                       )}
@@ -161,27 +174,27 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
                 </div>
                 <div className="flex items-center gap-1">
                   <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
                     onClick={() => {
                       onImage(null)
                       onShape(blobShapeString(Math.random().toString(36).slice(2, 10), kind))
                     }}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
                   >
-                    <Codicon name="refresh" className="mr-1 text-[0.8rem]" />
+                    <Codicon className="mr-1 text-[0.8rem]" name="refresh" />
                     {b.avatar.randomize}
                   </Button>
                   <Button
-                    type="button"
-                    variant="ghost"
+                    onClick={() => onShape(blobShapeString(locked ? '' : pickerName, kind))}
                     size="sm"
                     title={
                       locked ? b.avatar.unlockFollowsName : 'Keep this exact face even if the name changes'
                     }
-                    onClick={() => onShape(blobShapeString(locked ? '' : pickerName, kind))}
+                    type="button"
+                    variant="ghost"
                   >
-                    <Codicon name={locked ? 'unlock' : 'lock'} className="mr-1 text-[0.8rem]" />
+                    <Codicon className="mr-1 text-[0.8rem]" name={locked ? 'unlock' : 'lock'} />
                     {locked ? 'Unlock' : 'Lock face'}
                   </Button>
                 </div>
@@ -189,11 +202,11 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
                   {locked ? 'Face locked — renaming won\u2019t change it.' : 'Face follows the name.'}
                 </div>
                 <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
                   className="text-(--ui-text-tertiary)"
                   onClick={() => onShape(defaultShapeFor(pickerName))}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
                 >
                   {b.avatar.classicShapes}
                 </Button>
@@ -205,22 +218,22 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
             <div className="grid grid-cols-4 justify-items-center gap-1.5">
               {(blobatarSvg ? ['blobatar', ...AVATAR_PICKER_SHAPES] : AVATAR_PICKER_SHAPES).map(s => (
                 <RowButton
-                  key={s}
-                  title={s === 'blobatar' ? b.avatar.blobFromName : undefined}
                   className={cn(
                     'flex items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)',
                     s === shape && !image && 'ring-1 ring-(--ui-accent)'
                   )}
-                  style={{
-                    width: 44,
-                    height: 44
-                  }}
+                  key={s}
                   onClick={() => {
                     onImage(null)
                     onShape(s)
                   }}
+                  style={{
+                    width: 44,
+                    height: 44
+                  }}
+                  title={s === 'blobatar' ? b.avatar.blobFromName : undefined}
                 >
-                  <BotFace shape={s} color={avatarColor(color, pickerName)} size={32} name={pickerName} />
+                  <BotFace color={avatarColor(color, pickerName)} name={pickerName} shape={s} size={32} />
                 </RowButton>
               ))}
             </div>
@@ -238,21 +251,21 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
           <div className="grid w-full gap-2">
             <Textarea
               className="min-h-16 text-xs"
+              onChange={event => setDescribe(event.target.value)}
               placeholder={b.avatar.describePlaceholder}
               value={describe}
-              onChange={event => setDescribe(event.target.value)}
             />
             <Button
-              type="button"
-              variant="secondary"
               className="w-full justify-center"
               disabled={genBusy}
               onClick={generate}
+              type="button"
+              variant="secondary"
             >
               {genBusy ? (
-                <GlyphSpinner spinner="breathe" className="mr-1 text-[0.8rem]" />
+                <GlyphSpinner className="mr-1 text-[0.8rem]" spinner="breathe" />
               ) : (
-                <Codicon name="sparkle" className="mr-1 text-[0.8rem]" />
+                <Codicon className="mr-1 text-[0.8rem]" name="sparkle" />
               )}
               {genBusy ? 'Generating…' : 'Generate'}
             </Button>
@@ -271,8 +284,8 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
         )
       ) : null}
       {tab === 'upload' ? (
-        <Button type="button" variant="secondary" className="w-full justify-center" onClick={upload}>
-          <Codicon name="device-camera" className="mr-1 text-[0.8rem]" />
+        <Button className="w-full justify-center" onClick={upload} type="button" variant="secondary">
+          <Codicon className="mr-1 text-[0.8rem]" name="device-camera" />
           Choose an image…
         </Button>
       ) : null}

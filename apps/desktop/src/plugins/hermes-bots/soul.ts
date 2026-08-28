@@ -19,6 +19,7 @@ import type { RosterRow } from './types'
 function messagingProtocolSection(name: string, roster: RosterRow[] | null | undefined): string {
   const teammates = (roster || []).filter(b => b.name !== name)
   const handle = botHandle(name)
+
   return [
     '## Messaging other agents',
     '',
@@ -81,10 +82,13 @@ export function ensureMessagingProtocol(
   roster: RosterRow[] | null | undefined
 ) {
   const text = (soul || '').trim()
-  if (serverInjectsProtocol || hasMessagingProtocol(text)) return text
+
+  if (serverInjectsProtocol || hasMessagingProtocol(text)) {return text}
   const section = messagingProtocolSection(name, roster)
+
   return text ? text + '\n\n' + section : section
 }
+
 const soulProtocolChecked = new Set<string>()
 const soulProtocolInflight = new Set<string>()
 
@@ -97,11 +101,14 @@ export function backfillMessagingProtocol(roster: RosterRow[] | null | undefined
   if (serverInjectsProtocol) {
     return
   }
+
   for (const bot of roster || []) {
     const name = bot && bot.name
+
     if (!name || soulProtocolChecked.has(name) || soulProtocolInflight.has(name)) {
       continue
     }
+
     soulProtocolInflight.add(name)
     host
       .request<{ soul?: string }>('profiles.describe', {
@@ -109,10 +116,13 @@ export function backfillMessagingProtocol(roster: RosterRow[] | null | undefined
       })
       .then(res => {
         const soul = (res && res.soul) || ''
+
         if (hasMessagingProtocol(soul)) {
           soulProtocolChecked.add(name)
+
           return null
         }
+
         return host
           .request('profiles.configure', {
             name,
@@ -143,10 +153,12 @@ interface ComposeSoulOptions {
   roster?: RosterRow[] | null
   title?: null | string
 }
+
 export function composeSoul({ name, title, description, roster, customSoul }: ComposeSoulOptions): string {
   if (customSoul && customSoul.trim()) {
     return ensureMessagingProtocol(customSoul, name, roster)
   }
+
   const lines = [
     `# ${displayName({
       name,
@@ -162,6 +174,8 @@ export function composeSoul({ name, title, description, roster, customSoul }: Co
     })}, a persistent named agent (profile \`${name}\`) on this machine.`,
     'You keep your own memory, skills, and conversation history across sessions.'
   ]
+
   const identity = lines.filter(line => line !== null).join('\n')
+
   return serverInjectsProtocol ? identity : identity + '\n\n' + messagingProtocolSection(name, roster)
 }

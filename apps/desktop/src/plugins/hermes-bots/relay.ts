@@ -89,10 +89,13 @@ function syncRelayRetention(connections: RelayConnection[]) {
   if (typeof host.retainProfileSocket !== 'function') {
     return
   }
+
   const live = new Set(connections.map(connection => connection.id))
+
   for (const [id, release] of [...relayRouteRetentions]) {
     if (!live.has(id)) {
       relayRouteRetentions.delete(id)
+
       try {
         release()
       } catch {
@@ -100,9 +103,11 @@ function syncRelayRetention(connections: RelayConnection[]) {
       }
     }
   }
+
   if (relayDisposed) {
     return
   }
+
   for (const connection of connections) {
     if (!relayRouteRetentions.has(connection.id)) {
       relayRouteRetentions.set(connection.id, host.retainProfileSocket(connection.route))
@@ -119,6 +124,7 @@ function releaseRelayRetention() {
       // Disposer from an older shell shape — never break teardown.
     }
   }
+
   relayRouteRetentions.clear()
 }
 
@@ -127,15 +133,19 @@ async function relayConnections(): Promise<RelayConnection[]> {
   if (typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
     return []
   }
+
   try {
     const routes = await host.profileRoutes()
     const byConnection = new Map<string, ProfileRoute>()
+
     for (const route of Array.isArray(routes) ? routes : []) {
       const id = String(route?.connectionId || '')
+
       if (id && !byConnection.has(id)) {
         byConnection.set(id, route)
       }
     }
+
     return [...byConnection.entries()].map(([id, route]) => ({
       id,
       route
@@ -156,12 +166,14 @@ async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow
     const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
       include_sessions: false
     })
+
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
     // TODO(bot-mode-types): neither `connectionLabel` nor `label` can exist on
     // a `host.profileRoutes()` route (connectionId / mode / profile /
     // targetProfile only), so this always falls through to the raw connection
     // id and peer gateways list agents by id instead of the human label.
     const label = String(connection.route?.connectionLabel || connection.route?.label || connection.id)
+
     return profiles
       .map(profile => ({
         profile: String(profile?.name || ''),
@@ -186,16 +198,21 @@ async function syncRelayRosters() {
   if (relayDisposed || relayRosterBusy) {
     return
   }
+
   relayRosterBusy = true
+
   try {
     const connections = await relayConnections()
+
     if (connections.length < 2) {
       return
     }
+
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
     await Promise.all(
       connections.map(async connection => {
         const agents = await relayAgentsOn(connection)
+
         if (agents === null) {
           // Transient fetch failure: reuse the last good rows for this
           // connection (or contribute nothing this cycle) so the pushed
@@ -212,19 +229,23 @@ async function syncRelayRosters() {
     // Connections gone from profileRoutes are genuinely disconnected — drop
     // their cache so a later reconnect starts from live data.
     const liveIds = new Set(connections.map(connection => connection.id))
+
     for (const id of [...relayAgentsCache.keys()]) {
       if (!liveIds.has(id)) {
         relayAgentsCache.delete(id)
       }
     }
+
     await Promise.all(
       connections.map(async connection => {
         const others: RelayAgentRow[] = []
+
         for (const [id, agents] of agentsByConnection) {
           if (id !== connection.id) {
             others.push(...agents)
           }
         }
+
         try {
           await host.requestProfile(connection.route, 'bot_relay.roster.sync', {
             agents: others
@@ -246,42 +267,54 @@ async function drainRelayOutboxes() {
   if (relayDisposed) {
     return
   }
+
   if (relayDrainBusy) {
     // A push signal raced an in-flight drain. The gateway never re-sends it
     // (monotone signature), so without this flag the envelope would wait out
     // the full poll interval — exactly the latency the push path removes.
     relayDrainRerun = true
+
     return
   }
+
   relayDrainBusy = true
+
   try {
     const connections = await relayConnections()
 
     // Retention follows the relay-eligible set: with fewer than two
     // connections there is nothing to relay, so nothing stays pinned.
     syncRelayRetention(connections.length >= 2 ? connections : [])
+
     if (connections.length < 2) {
       return
     }
+
     const byId = new Map(connections.map(connection => [connection.id, connection]))
+
     for (const sender of connections) {
       let envelopes: RelayEnvelope[] = []
+
       try {
         const res = await host.requestProfile<{ envelopes?: RelayEnvelope[] }>(
           sender.route,
           'bot_relay.outbox.drain',
           {}
         )
+
         envelopes = Array.isArray(res?.envelopes) ? res.envelopes : []
       } catch {
         continue
       }
+
       for (const envelope of envelopes) {
         if (relayDisposed) {
           return
         }
+
         const envelopeId = String(envelope?.id || '')
         const target = byId.get(String(envelope?.target_connection || ''))
+
         const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
           try {
             await host.requestProfile(sender.route, 'bot_relay.reply', {
@@ -292,24 +325,29 @@ async function drainRelayOutboxes() {
             // Sender gateway unreachable — its waiter times out with guidance.
           }
         }
+
         if (!envelopeId) {
           continue
         }
+
         if (!target) {
           await postReply({
             error: `connection '${envelope?.target_connection}' is not connected to this Desktop right now`
           })
+
           continue
         }
 
         // Needs-attention hook (#93091 item 3): a delivered background DM is
         // this bot's "good turn"; a classified delivery failure badges it.
         const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
+
         try {
           const res = await host.requestProfile<{ reply?: string }>(target.route, 'bot_relay.deliver', {
             profile: String(envelope?.target_profile || ''),
             message: String(envelope?.message || '')
           })
+
           clearBotAttention(attentionKey)
           await postReply({
             reply: String(res?.reply || '')
@@ -335,6 +373,7 @@ async function drainRelayOutboxes() {
     }
   } finally {
     relayDrainBusy = false
+
     if (relayDrainRerun && !relayDisposed) {
       // Envelopes signaled mid-drain: schedule one follow-up pass (debounced)
       // instead of leaving them to the interval poll.
@@ -350,14 +389,17 @@ function scheduleRelayPushDrain() {
   if (relayDisposed || typeof setTimeout !== 'function') {
     return
   }
+
   if (relayPushDebounceTimer !== null) {
     return
   }
+
   relayPushDebounceTimer = setTimeout(() => {
     relayPushDebounceTimer = null
     void drainRelayOutboxes()
   }, RELAY_PUSH_DEBOUNCE_MS)
 }
+
 export function startBotRelay() {
   relayDisposed = false
 
@@ -366,10 +408,12 @@ export function startBotRelay() {
   if (typeof setInterval !== 'function' || typeof clearInterval !== 'function') {
     return
   }
+
   if (relayRosterTimer === null) {
     relayRosterTimer = setInterval(() => void syncRelayRosters(), RELAY_ROSTER_INTERVAL_MS)
     void syncRelayRosters()
   }
+
   if (relayDrainTimer === null) {
     relayDrainTimer = setInterval(() => void drainRelayOutboxes(), RELAY_DRAIN_INTERVAL_MS)
   }
@@ -382,6 +426,7 @@ export function startBotRelay() {
     relayPushUnsub = host.onEvent('bot_relay.outbox.pending', () => scheduleRelayPushDrain())
   }
 }
+
 export function stopBotRelay() {
   relayDisposed = true
   // A rerun remembered mid-drain must not leak into the next start —
@@ -390,24 +435,29 @@ export function stopBotRelay() {
   // Unpin every relay-retained socket (#93594): with the relay stopped the
   // pooled entries return to dispose-at-refcount-0 semantics.
   releaseRelayRetention()
+
   if (relayRosterTimer !== null) {
     clearInterval(relayRosterTimer)
     relayRosterTimer = null
   }
+
   if (relayDrainTimer !== null) {
     clearInterval(relayDrainTimer)
     relayDrainTimer = null
   }
+
   if (relayPushDebounceTimer !== null) {
     clearTimeout(relayPushDebounceTimer)
     relayPushDebounceTimer = null
   }
+
   if (relayPushUnsub !== null) {
     try {
       relayPushUnsub()
     } catch {
       // Disposer from an older shell shape — never break teardown.
     }
+
     relayPushUnsub = null
   }
 }

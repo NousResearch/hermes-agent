@@ -57,6 +57,7 @@ function showsHandle(name: string, meta: BotMeta | null | undefined, bot?: Roste
     },
     meta
   )
+
   return Boolean(name && display.toLowerCase() !== botHandle(name, bot).toLowerCase())
 }
 
@@ -79,25 +80,33 @@ interface RoutineListResult {
   jobs?: RoutineJob[]
   scoped?: string
 }
+
 function routineBot(job: RoutineJob | null | undefined): null | string {
   const match = BOT_TAG_RE.exec(job?.name || '')
+
   return match ? match[1].toLowerCase() : null
 }
+
 function routineTitle(job: RoutineJob | null | undefined): string {
   return (job?.name || '').replace(BOT_TAG_RE, '') || 'Untitled job'
 }
-function isLegacyDelegatedRoutine(job: RoutineJob | null | undefined): boolean {
+
+export function isLegacyDelegatedRoutine(job: RoutineJob | null | undefined): boolean {
   const preview = typeof job?.prompt_preview === 'string' ? job.prompt_preview : job?.prompt
+
   return Boolean(routineBot(job) && typeof preview === 'string' && preview.startsWith(LEGACY_DELEGATED_ROUTINE_PREFIX))
 }
-async function loadRoutines(owner: RoutineOwner): Promise<RoutineListResult> {
+
+export async function loadRoutines(owner: RoutineOwner): Promise<RoutineListResult> {
   const bot =
     typeof owner === 'string'
       ? {
           name: owner
         }
       : owner
+
   const profile = String(bot?.name || '').trim()
+
   // profile scopes cron.manage to that bot's own cron store (core RPC gained an
   // optional `profile` param). Older gateways ignore the unknown param and
   // return the launch-profile store — the [bot:] tag filter in selectRoutineJobs
@@ -107,12 +116,15 @@ async function loadRoutines(owner: RoutineOwner): Promise<RoutineListResult> {
         profile
       }
     : {}
+
   const data = (await requestForBot(bot, 'cron.manage', {
     action: 'list',
     include_disabled: true,
     ...scope
   })) as RoutineListResult
+
   const jobs = Array.isArray(data?.jobs) ? data.jobs : []
+
   const activeLegacyJobs = jobs.filter(
     job => isLegacyDelegatedRoutine(job) && job.enabled !== false && job.state !== 'paused'
   )
@@ -133,10 +145,13 @@ async function loadRoutines(owner: RoutineOwner): Promise<RoutineListResult> {
         .catch(() => false)
     )
   )
+
   if (!activeLegacyJobs.length) {
     return data
   }
+
   const pausedIds = new Set(activeLegacyJobs.filter((job, index) => pauses[index]).map(job => job.job_id))
+
   return {
     ...data,
     jobs: jobs.map(job =>
@@ -150,6 +165,7 @@ async function loadRoutines(owner: RoutineOwner): Promise<RoutineListResult> {
     )
   }
 }
+
 function useRoutines(owner: RoutineOwner) {
   const bot =
     typeof owner === 'string'
@@ -157,8 +173,10 @@ function useRoutines(owner: RoutineOwner) {
           name: owner
         }
       : owner
+
   const route = botConnectionRoute(bot)
   const key = route ? botRosterKey(bot) : bot?.name || ''
+
   return useQuery({
     queryKey: [...ROUTINES_KEY, key],
     queryFn: () => loadRoutines(bot),
@@ -167,18 +185,21 @@ function useRoutines(owner: RoutineOwner) {
     staleTime: 8000
   })
 }
+
 /** `activeBot` is always a non-empty profile name, so the result is never
  *  nullish even when no create-owner has been captured yet. */
-function routineCreateTarget(owner: RoutineOwner, activeBot: string): RosterRow | string {
+export function routineCreateTarget(owner: RoutineOwner, activeBot: string): RosterRow | string {
   return owner || activeBot
 }
-async function invalidateRoutineOwner(owner: RoutineOwner) {
+
+export async function invalidateRoutineOwner(owner: RoutineOwner) {
   const bot =
     typeof owner === 'string'
       ? {
           name: owner
         }
       : owner
+
   const route = botConnectionRoute(bot)
   const key = route ? botRosterKey(bot) : bot?.name || ''
   await queryClient.invalidateQueries({
@@ -188,10 +209,16 @@ async function invalidateRoutineOwner(owner: RoutineOwner) {
 }
 
 /** Pick which cron jobs to show. A failed refresh keeps the last good list. */
-function selectRoutineJobs(data: RoutineListResult | undefined, error: unknown, lastJobs: RoutineJob[], bot: string) {
+export function selectRoutineJobs(
+  data: RoutineListResult | undefined,
+  error: unknown,
+  lastJobs: RoutineJob[],
+  bot: string
+) {
   const live = Array.isArray(data?.jobs) ? data.jobs : null
   const all = live ?? (error ? lastJobs : [])
   const scopedToBot = normalizedProfileName(data?.scoped) === normalizedProfileName(bot)
+
   return {
     live,
     all,
@@ -209,34 +236,47 @@ function selectRoutineJobs(data: RoutineListResult | undefined, error: unknown, 
  * Return a short explanation string in that case, or null when the store is
  * genuinely empty (or the active bot's jobs are already shown).
  */
-function routineFilterHint(all: RoutineJob[], jobs: RoutineJob[]): null | string {
+export function routineFilterHint(all: RoutineJob[], jobs: RoutineJob[]): null | string {
   if (jobs.length !== 0 || !Array.isArray(all) || all.length === 0) {
     return null
   }
+
   return (
     'Scheduled jobs exist in this profile but none are tagged for this bot. ' +
     'Name a job "[bot:<name>] …" to show it here, or see them in Cron below.'
   )
 }
-function normalizedProfileName(profile: unknown): string {
+
+export function normalizedProfileName(profile: unknown): string {
   return typeof profile === 'string' ? profile.trim().toLowerCase() : ''
 }
+
 function shellQuote(value: unknown): string {
   return `'${String(value).replaceAll("'", "'\"'\"'")}'`
 }
-function routineInputError(title: string, instruction: string): null | string {
+
+export function routineInputError(title: string, instruction: string): null | string {
   if (String(title).includes('\0')) {
     return 'Job name cannot contain NUL (U+0000).'
   }
+
   if (String(instruction).includes('\0')) {
     return 'Job instruction cannot contain NUL (U+0000).'
   }
+
   return null
 }
-function routinePrompt(bot: string | undefined, title: string, instruction: string, activeProfile: string): string {
+
+export function routinePrompt(
+  bot: string | undefined,
+  title: string,
+  instruction: string,
+  activeProfile: string
+): string {
   if (normalizedProfileName(bot) && normalizedProfileName(bot) === normalizedProfileName(activeProfile)) {
     return instruction
   }
+
   return (
     `${SAFE_ROUTINE_MARKER}You are running the scheduled routine "${title}" for agent '${bot}'. ` +
     `Execute it AS that agent so the run lands in its own history: run this in the terminal and relay the output:\n\n` +
@@ -244,28 +284,40 @@ function routinePrompt(bot: string | undefined, title: string, instruction: stri
     `If the command fails, report the error instead.`
   )
 }
+
 function scheduleLabel(schedule: string | undefined): string {
   const once = /^once in (.+)$/.exec(schedule || '')
+
   if (once) {
     return `Once (${once[1]})`
   }
+
   const bare = /^(\d+)([mhd])$/.exec(schedule || '')
+
   if (bare) {
     return `Once (${bare[1]}${bare[2]})`
   }
+
   const match = /^every (\d+)m$/.exec(schedule || '')
+
   if (match) {
     const minutes = Number(match[1])
+
     if (minutes % 1440 === 0) {
       const d = minutes / 1440
+
       return d === 1 ? 'Daily' : `Every ${d} days`
     }
+
     if (minutes % 60 === 0) {
       const h = minutes / 60
+
       return h === 1 ? 'Hourly' : `Every ${h}h`
     }
+
     return `Every ${minutes}m`
   }
+
   return schedule || ''
 }
 
@@ -273,6 +325,7 @@ function scheduleLabel(schedule: string | undefined): string {
  *  has never carried one (a job that has not run yet has no `last_run_at`). */
 function routineTimestamp(value: string | undefined): null | string {
   const ms = value ? new Date(value).getTime() : Number.NaN
+
   return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString()}` : null
 }
 
@@ -280,10 +333,11 @@ function routineTimestamp(value: string | undefined): null | string {
  *  rows. Pure so the detail contract is testable without a renderer, and so
  *  the dialog cannot invent a field the gateway never sent: an absent value
  *  drops its row instead of rendering "undefined". */
-function routineDetailRows(job: RoutineJob | null | undefined): Array<{ label: string; value: string }> {
+export function routineDetailRows(job: RoutineJob | null | undefined): Array<{ label: string; value: string }> {
   const paused = job?.enabled === false || job?.state === 'paused'
   const label = scheduleLabel(job?.schedule)
   const raw = String(job?.schedule || '').trim()
+
   // Cells are `number | string | null | undefined` until the filter below
   // drops the non-strings; a destructured, non-predicate callback can't carry
   // that narrowing into the map, so the rows are typed as filtered.
@@ -313,9 +367,10 @@ function routineDetailRows(job: RoutineJob | null | undefined): Array<{ label: s
 /** Why a job is not doing what the user expects. The row only ever showed
  *  "paused"; the scheduler's own reason and the last fire/delivery failures
  *  had no surface in Bot Mode at all. */
-function routineDetailIssue(job: RoutineJob | null | undefined): null | string {
+export function routineDetailIssue(job: RoutineJob | null | undefined): null | string {
   const reasons = [job?.last_fire_error, job?.last_delivery_error, job?.paused_reason]
   const first = reasons.find(value => typeof value === 'string' && value.trim())
+
   return first ? first.trim() : null
 }
 
@@ -328,19 +383,20 @@ interface RoutineDetailDialogProps {
 /** Read-only inspector for one cronjob, rendered from the list payload the
  *  pane already holds — no extra RPC, and no second mutation path beside the
  *  row's own switch and delete. */
-function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
+export function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
   const { t } = useI18n()
   const rows = job ? routineDetailRows(job) : []
   const issue = job ? routineDetailIssue(job) : null
   const instruction = String(job?.prompt_preview || '').trim()
+
   return (
     <Dialog
-      open={Boolean(open && job)}
       onOpenChange={value => {
         if (!value) {
           onClose()
         }
       }}
+      open={Boolean(open && job)}
     >
       <DialogContent className="max-w-md">
         <DialogHeader>
@@ -355,7 +411,7 @@ function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
           ) : null}
           <div className="grid gap-1.5">
             {rows.map(row => (
-              <div key={row.label} className="flex items-baseline justify-between gap-3 text-xs">
+              <div className="flex items-baseline justify-between gap-3 text-xs" key={row.label}>
                 <span className="shrink-0 text-(--ui-text-tertiary)">{row.label}</span>
                 <span className="min-w-0 truncate text-right">{row.value}</span>
               </div>
@@ -371,7 +427,7 @@ function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
             : null}
         </div>
         <DialogFooter>
-          <Button variant="secondary" onClick={onClose}>
+          <Button onClick={onClose} variant="secondary">
             {t.common.close}
           </Button>
         </DialogFooter>
@@ -379,6 +435,7 @@ function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
     </Dialog>
   )
 }
+
 interface RoutineRowProps {
   job: RoutineJob
   onOpen?: (job: RoutineJob) => void
@@ -386,7 +443,8 @@ interface RoutineRowProps {
    *  this never sees the bare-name arm of RoutineOwner. */
   owner: RosterRow
 }
-function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
+
+export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
   const { t } = useI18n()
   const c = t.cron
   const profile = typeof owner === 'string' ? owner : owner?.name
@@ -397,17 +455,22 @@ function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
   const legacyUnsafe = isLegacyDelegatedRoutine(job)
   const serverActive = !legacyUnsafe && job.enabled !== false && job.state !== 'paused'
   const active = pendingActive === null ? serverActive : pendingActive
+
   if (pendingActive !== null && pendingActive === serverActive) {
     setPendingActive(null) // server caught up
   }
+
   const act = async (action: 'pause' | 'remove' | 'resume') => {
     if (busy) {
       return
     }
+
     setBusy(true)
+
     if (action === 'pause' || action === 'resume') {
       setPendingActive(action === 'resume')
     }
+
     try {
       await requestForBot(owner, 'cron.manage', {
         action,
@@ -426,6 +489,7 @@ function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
       setBusy(false)
     }
   }
+
   return (
     <div
       className={cn(
@@ -438,9 +502,9 @@ function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
         /* and delete control are siblings, so opening the details can never */
         /* swallow a toggle (and a nested button would be invalid markup). */}
         <RowButton
-          title={c.manage}
           className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground"
           onClick={() => onOpen?.(job)}
+          title={c.manage}
         >
           {/* `--ui-success` rather than a literal emerald: the token is rotated
               toward the accent, so a column of active dots can't fight the
@@ -473,7 +537,7 @@ function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
       </div>
       <div className="flex items-center justify-between gap-2 pl-3.5">
         <span className="inline-flex items-center gap-1 rounded-full border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
-          <Codicon name="calendar" className="text-[0.7rem]" />
+          <Codicon className="text-[0.7rem]" name="calendar" />
           {scheduleLabel(job.schedule)}
         </span>
         <span className="truncate text-[0.65rem] text-(--ui-text-quaternary)">
@@ -510,6 +574,7 @@ interface ScheduleState {
   time: string
   weekday: string
 }
+
 const FREQUENCIES: Array<{ id: ScheduleFreq; label: string }> = [
   {
     id: 'once',
@@ -544,6 +609,7 @@ const FREQUENCIES: Array<{ id: ScheduleFreq; label: string }> = [
     label: 'Advanced\u2026'
   }
 ]
+
 const WEEKDAYS = [
   {
     id: '1',
@@ -574,8 +640,10 @@ const WEEKDAYS = [
     label: 'Sunday'
   }
 ]
+
 const TIMES = (() => {
   const out = []
+
   for (let h = 0; h < 24; h++) {
     for (const m of [0, 30]) {
       const ampm = h < 12 ? 'AM' : 'PM'
@@ -588,69 +656,90 @@ const TIMES = (() => {
       })
     }
   }
+
   return out
 })()
 
 /** Compose the Hermes schedule string from picker state. */
 function composeSchedule(state: ScheduleState): string {
   const [h, m] = (state.time || '9:0').split(':').map(Number)
+
   switch (state.freq) {
     case 'once': {
       const n = Math.max(1, parseInt(state.onceN, 10) || 1)
+
       return `${n}${state.onceUnit || 'h'}`
     }
+
     case 'hourly':
       return 'every 1h'
+
     case 'daily':
       return `${m} ${h} * * *`
+
     case 'weekdays':
       return `${m} ${h} * * 1-5`
+
     case 'weekly':
       return `${m} ${h} * * ${state.weekday || '1'}`
+
     case 'monthly':
       return `${m} ${h} ${state.monthday || '1'} * *`
     case 'interval': {
       const n = Math.max(1, parseInt(state.intervalN, 10) || 1)
+
       return `every ${n}${state.intervalUnit || 'h'}`
     }
+
     default:
       return state.raw || ''
   }
 }
+
 function scheduleSummary(state: ScheduleState): string {
   const t = TIMES.find(x => x.id === state.time)
   const tl = t ? t.label : '9:00 AM'
   const unitWord = (u: string) => (u === 'm' ? 'minute(s)' : u === 'd' ? 'day(s)' : 'hour(s)')
+
   const cap =
     state.freq !== 'once' && String(state.repeatN || '').trim()
       ? `, ${Math.max(1, parseInt(state.repeatN, 10) || 1)} time(s) total`
       : ''
+
   switch (state.freq) {
     case 'once':
       return `Runs once, ${Math.max(1, parseInt(state.onceN, 10) || 1)} ${unitWord(state.onceUnit)} from now`
+
     case 'hourly':
       return 'Runs at the top of every hour' + cap
+
     case 'daily':
       return `Runs every day at ${tl}` + cap
+
     case 'weekdays':
       return `Runs Monday\u2013Friday at ${tl}` + cap
+
     case 'weekly':
       return `Runs every ${(WEEKDAYS.find(w => w.id === state.weekday) || WEEKDAYS[0]).label} at ${tl}` + cap
+
     case 'monthly':
       return `Runs on day ${state.monthday || '1'} of each month at ${tl}` + cap
+
     case 'interval':
       return `Runs every ${Math.max(1, parseInt(state.intervalN, 10) || 1)} ${unitWord(state.intervalUnit)}` + cap
+
     default:
       return 'Raw schedule \u2014 every Nm/Nh/Nd or 5-field cron'
   }
 }
+
 function pickerSelect<T extends string>(
   value: T,
   onChange: (value: T) => void,
   options: Array<{ id: T; label: string }>
 ) {
   return (
-    <Select value={value} onValueChange={onChange}>
+    <Select onValueChange={onChange} value={value}>
       <SelectTrigger className="h-8 rounded-md">
         <SelectValue />
       </SelectTrigger>
@@ -664,17 +753,21 @@ function pickerSelect<T extends string>(
     </Select>
   )
 }
+
 interface SchedulePickerProps {
   setState: React.Dispatch<React.SetStateAction<ScheduleState>>
   state: ScheduleState
 }
+
 function SchedulePicker({ state, setState }: SchedulePickerProps) {
   const upd = (patch: Partial<ScheduleState>) =>
     setState(prev => ({
       ...prev,
       ...patch
     }))
+
   const needsTime = ['daily', 'weekdays', 'weekly', 'monthly'].includes(state.freq)
+
   return (
     <div className="grid gap-2">
       <div className={cn('grid gap-2', needsTime ? 'grid-cols-2' : 'grid-cols-1')}>
@@ -701,13 +794,13 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
         <div className="grid grid-cols-2 gap-2">
           <Input
             className="h-8"
-            placeholder="30"
-            value={state.onceN}
             onChange={event =>
               upd({
                 onceN: event.target.value.replace(/[^0-9]/g, '').slice(0, 4)
               })
             }
+            placeholder="30"
+            value={state.onceN}
           />
           {pickerSelect(
             state.onceUnit,
@@ -747,13 +840,13 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             'Day of month',
             <Input
               className="h-8"
-              placeholder="1"
-              value={state.monthday}
               onChange={event =>
                 upd({
                   monthday: event.target.value.replace(/[^0-9]/g, '').slice(0, 2)
                 })
               }
+              placeholder="1"
+              value={state.monthday}
             />
           )
         : null}
@@ -761,13 +854,13 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
         <div className="grid grid-cols-2 gap-2">
           <Input
             className="h-8"
-            placeholder="2"
-            value={state.intervalN}
             onChange={event =>
               upd({
                 intervalN: event.target.value.replace(/[^0-9]/g, '').slice(0, 4)
               })
             }
+            placeholder="2"
+            value={state.intervalN}
           />
           {pickerSelect(
             state.intervalUnit,
@@ -795,13 +888,13 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
       {state.freq === 'advanced' ? (
         <Input
           className="h-8 font-mono text-xs"
-          placeholder="every 1d · every 2h · 0 9 * * * (cron)"
-          value={state.raw}
           onChange={event =>
             upd({
               raw: event.target.value
             })
           }
+          placeholder="every 1d · every 2h · 0 9 * * * (cron)"
+          value={state.raw}
         />
       ) : null}
       {state.freq !== 'once' && state.freq !== 'advanced' ? (
@@ -809,13 +902,13 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
           <span className="text-xs text-(--ui-text-tertiary)">Stop after</span>
           <Input
             className="h-7 w-16 text-xs"
-            placeholder="∞"
-            value={state.repeatN}
             onChange={event =>
               upd({
                 repeatN: event.target.value.replace(/[^0-9]/g, '').slice(0, 4)
               })
             }
+            placeholder="∞"
+            value={state.repeatN}
           />
           <span className="text-xs text-(--ui-text-tertiary)">runs (blank = forever)</span>
         </div>
@@ -824,6 +917,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
     </div>
   )
 }
+
 function defaultScheduleState(): ScheduleState {
   return {
     freq: 'daily',
@@ -838,6 +932,7 @@ function defaultScheduleState(): ScheduleState {
     raw: ''
   }
 }
+
 interface CreateRoutineDialogProps {
   /** Never nullish: the pane early-returns its empty state before it renders
    *  this dialog, so `createTarget` has already fallen back to the active
@@ -846,7 +941,8 @@ interface CreateRoutineDialogProps {
   onClose: () => void
   open: boolean
 }
-function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogProps) {
+
+export function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogProps) {
   const { t } = useI18n()
   const c = t.cron
   const [name, setName] = useState('')
@@ -868,6 +964,7 @@ function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogProps) {
   const owner: RosterRow = typeof bot === 'string' ? { name: bot } : bot
   const profile = owner.name
   const schedule = composeSchedule(sched)
+
   const reset = () => {
     setName('')
     setInstruction('')
@@ -877,24 +974,31 @@ function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogProps) {
     setBusy(false)
     setError(null)
   }
+
   const submit = async () => {
     const title = name.trim()
     const task = instruction.trim()
     const inputError = routineInputError(title, task)
+
     if (inputError) {
       setError(inputError)
+
       return
     }
+
     if (!title || !task || !schedule.trim() || busy) {
       return
     }
+
     setBusy(true)
     setError(null)
+
     try {
       const repeatN =
         sched.freq !== 'once' && sched.freq !== 'advanced' && String(sched.repeatN || '').trim()
           ? Math.max(1, parseInt(sched.repeatN, 10) || 1)
           : null
+
       await requestForBot(owner, 'cron.manage', {
         action: 'add',
         name: `[bot:${profile}] ${title}`,
@@ -936,17 +1040,18 @@ function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogProps) {
       setError(err instanceof Error ? err.message : String(err))
     }
   }
+
   const ownerLabel = displayName(owner, botRosterMeta(owner, $botMeta.get()))
 
   return (
     <Dialog
-      open={open}
       onOpenChange={value => {
         if (!value && !busy) {
           reset()
           onClose()
         }
       }}
+      open={open}
     >
       <DialogContent className="max-w-md">
         <DialogHeader>
@@ -958,21 +1063,21 @@ function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogProps) {
             c.nameLabel,
             <Input
               autoFocus
+              onChange={event => setName(event.target.value)}
               placeholder={c.namePlaceholder}
               value={name}
-              onChange={event => setName(event.target.value)}
             />
           )}
           {labeled(
             c.promptLabel,
             <Textarea
               className="min-h-20"
+              onChange={event => setInstruction(event.target.value)}
               placeholder={c.promptPlaceholder}
               value={instruction}
-              onChange={event => setInstruction(event.target.value)}
             />
           )}
-          {labeled('When to run', <SchedulePicker state={sched} setState={setSched} />)}
+          {labeled('When to run', <SchedulePicker setState={setSched} state={sched} />)}
           {labeled(
             'Send results to',
             pickerSelect(target, setTarget, [
@@ -988,10 +1093,10 @@ function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogProps) {
           )}
           <label className="flex items-center gap-2 text-xs text-(--ui-text-tertiary) cursor-pointer select-none">
             <input
-              type="checkbox"
-              className="accent-(--ui-accent)"
               checked={continuity}
+              className="accent-(--ui-accent)"
               onChange={event => setContinuity(event.target.checked)}
+              type="checkbox"
             />
             Continuity: each run sees the previous run’s output (dedupe, continue where it left off)
           </label>
@@ -1003,12 +1108,12 @@ function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogProps) {
         </div>
         <DialogFooter>
           <Button
-            variant="ghost"
             disabled={busy}
             onClick={() => {
               reset()
               onClose()
             }}
+            variant="ghost"
           >
             {t.common.cancel}
           </Button>
@@ -1043,16 +1148,21 @@ interface ProfileSyncStore {
 export function bindProfileSync(ownerStore: ProfileSyncStore) {
   const sync = (owner: ProfileSyncOwnerRow | null | string | undefined) => {
     const profile = typeof owner === 'string' ? owner : owner?.profile
+
     if (!profile || typeof profile !== 'string') {
       return
     }
+
     const connectionId = String(typeof owner === 'object' ? owner?.connectionId || '' : '').trim()
     $selectedBot.set(connectionId ? `${connectionId}::${profile}` : profile)
   }
+
   sync(ownerStore.get?.())
+
   return ownerStore.listen(sync)
 }
-function resolveRoutineOwner(
+
+export function resolveRoutineOwner(
   roster: RosterRow[],
   focusedOwner: { authoritative?: boolean; connectionId?: string; name: string } | null,
   selected: string
@@ -1065,12 +1175,14 @@ function resolveRoutineOwner(
   // placeholder for every agent (#94516).
   const selectedBot = roster.find(bot => botSelectionKey(bot) === selected)
   const focusedBot = focusedOwner ? roster.find(bot => isActiveRosterBot(bot, focusedOwner)) : null
+
   if (focusedOwner?.authoritative) {
     // An authoritative focused owner wins, but only through its exact roster
     // row. If that row is absent, fail closed instead of routing cron
     // reads/mutations through a stale selection or an unscoped profile name.
     return focusedBot || null
   }
+
   return (
     focusedBot ||
     selectedBot ||
@@ -1081,6 +1193,7 @@ function resolveRoutineOwner(
       : null)
   )
 }
+
 export function RoutinesPane() {
   const selected = useValue($selectedBot)
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
@@ -1106,29 +1219,38 @@ export function RoutinesPane() {
   // instead of freezing the snapshot that was on screen when it opened.
   const [detailJobId, setDetailJobId] = useState<null | string>(null)
   const createTarget = owner ? routineCreateTarget(createOwner, bot) : null
+
   const openCreate = () => {
     if (!owner) {
       return
     }
+
     setCreateOwner(owner)
     setCreateOpen(true)
   }
+
   if (!owner) {
     return <PanelEmpty description="This agent has to appear in the roster first." icon="hubot" title={c.title} />
   }
+
   const view = selectRoutineJobs(data, error, $lastJobs.get(), bot)
+
   if (view.live) {
     $lastJobs.set(view.live)
   }
+
   const jobs = view.jobs
   const detailJob = detailJobId ? jobs.find(job => job.job_id === detailJobId) || null : null
+
   const staleNotice =
     error && !view.live && view.all.length ? 'Could not refresh scheduled jobs. Showing the last list we had.' : null
+
   const filterHint = routineFilterHint(view.all, jobs)
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
-        <BotFace shape={shape} color={avatarColor(color, bot)} image={image} size={22} name={bot} />
+        <BotFace color={avatarColor(color, bot)} image={image} name={bot} shape={shape} size={22} />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-1.5 truncate">
             <div className="truncate text-xs font-semibold">
@@ -1159,7 +1281,7 @@ export function RoutinesPane() {
       ) : null}
       {isLoading && !view.all.length ? (
         <div className="flex flex-1 items-center justify-center">
-          <GlyphSpinner spinner="breathe" className="text-(--ui-text-tertiary)" />
+          <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
         </div>
       ) : error && !view.all.length ? (
         <PanelEmpty
@@ -1189,25 +1311,25 @@ export function RoutinesPane() {
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <div className="grid gap-1.5 px-2.5 py-2">
             {jobs.map(job => (
-              <RoutineRow key={job.job_id} job={job} onOpen={opened => setDetailJobId(opened.job_id)} owner={owner} />
+              <RoutineRow job={job} key={job.job_id} onOpen={opened => setDetailJobId(opened.job_id)} owner={owner} />
             ))}
           </div>
         </div>
       )}
-      <RoutineDetailDialog job={detailJob} open={Boolean(detailJob)} onClose={() => setDetailJobId(null)} />
+      <RoutineDetailDialog job={detailJob} onClose={() => setDetailJobId(null)} open={Boolean(detailJob)} />
       <CreateRoutineDialog
+        // Non-null past the `!owner` early return above: `routineCreateTarget`
+        // falls back to the active profile name.
+        bot={createTarget!}
         // TODO(bot-mode-types): `createTarget` is a roster row whenever a create
         // owner is set, so this key stringifies to "[object Object]" instead of
         // identifying the target bot. Cast to keep the as-written behavior.
         key={createTarget as string}
-        // Non-null past the `!owner` early return above: `routineCreateTarget`
-        // falls back to the active profile name.
-        bot={createTarget!}
-        open={createOpen}
         onClose={() => {
           setCreateOpen(false)
           setCreateOwner(null)
         }}
+        open={createOpen}
       />
     </div>
   )

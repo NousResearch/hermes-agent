@@ -82,6 +82,7 @@ interface BotRowProps {
   onGroup: (bot: RosterRow) => void
   showHandle?: boolean
 }
+
 export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
@@ -109,6 +110,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
   // source-qualified selection is the owner — and it is the only rule that
   // can highlight a remote row, which has no focusable local chat.
   const isActive = botRowOwnsWorkspace(bot, activeGroup, botChatFocused, focusedOwner, selectedRosterKey)
+
   // Turn-busy is a SOCKET fact: only the gateway-home profile can be mid-turn.
   const isGatewayHome =
     !bot.remoteSource &&
@@ -117,6 +119,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
       name: activeProfile,
       connectionId: activeConnectionId
     })
+
   const { shape, color, image } = botAppearance(bot.name, meta)
   // Keep user photos/pets. Drop the 160px SVG backfill so the math face can move.
   const photo = Boolean(image && !isBackfilledFacePng(image))
@@ -132,9 +135,11 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
   // A live kanban/tool worker counts as activity (#90268): fresh age while it
   // runs, falling back to chat activity when it ends.
   const workerActive = workerActiveAt(bot)
+
   const rowAgeTs = workerActive
     ? Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
     : activitySession?.last_active || 0
+
   const botMood = workerActive || (isGatewayHome && gatewayState === 'busy') ? 'work' : 'idle'
   // Status keys off the canonical Bot Chat — the very session this row opens,
   // so the dot and the click can never describe different conversations.
@@ -146,11 +151,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
   // too or active-gateway bots never badge. Hidden bots keep their entry;
   // hiding is display-only.
   const attentionByKey = useValue($botAttention)
+
   const attention =
     attentionByKey[botSelectionKey(bot)] ||
     attentionByKey[botRosterKey(bot)] ||
     attentionByKey[`${bot?.connectionId || activeConnectionId}::${bot?.name || 'default'}`] ||
     null
+
   // WHO sent the last message (bot-to-bot DM vs human) — the full stored
   // history lives in the canonical chat, not inline.
   // Preview identity must match click identity (#88200): when the backend
@@ -158,16 +165,20 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
   // profile's most recent (but unrelated) activity. Liveness checks above
   // keep last_session semantics: any recent activity means the bot is alive.
   const { fromBot } = previewKind(previewSession?.preview)
+
   // DM previews read like DMs: strip the delivery prefix, keep the message.
   const displayPreview = stripPreviewMarkdown(
     fromBot ? (previewSession?.preview || '').replace(A2A_PREFIX_RE, '').trim() || '…' : previewSession?.preview || ''
   )
+
   const handle = botHandle(bot.name, bot)
   const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? 'This device' : '')
   const showDetailsRow = Boolean(showHandle || displayPreview || fromBot)
+
   const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
     .filter(Boolean)
     .join(' · ')
+
   const warm = () => {
     // Multi-source row: pre-dial the agent's OWN source (feature-detected).
     if (bot.sourceScoped && typeof host.warmAgent === 'function') {
@@ -176,11 +187,14 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
       } catch {
         /* warm is best-effort */
       }
+
       return
     }
+
     if (typeof host.warmProfile !== 'function') {
       return
     }
+
     try {
       host.warmProfile(bot.name)
     } catch {
@@ -191,19 +205,20 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
   // Rows and Active Now share the exact-owner open path; only that path may
   // activate a source and resolve the canonical Bot Chat.
   const open = () => void openRosterBot(bot)
+
   const row = (
     <RowButton
-      onPointerEnter={warm}
-      onClick={open}
+      aria-label={rowTooltip}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
         isActive && 'bg-(--ui-row-active-background)'
       )}
-      aria-label={rowTooltip}
+      onClick={open}
+      onPointerEnter={warm}
     >
       <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
-        <BotFace shape={shape} color={avatarColor(color, bot.name)} image={photo ? image : null} size={34} name={bot.name} mood={botMood} />
+        <BotFace color={avatarColor(color, bot.name)} image={photo ? image : null} mood={botMood} name={bot.name} shape={shape} size={34} />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
@@ -215,12 +230,12 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
             </span>
             {pinned ? (
               <Tip label={b.roster.pinned}>
-                <Codicon name="pinned" className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" />
+                <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="pinned" />
               </Tip>
             ) : null}
             {hidden ? (
               <Tip label={b.roster.hiddenFromRoster}>
-                <Codicon name="eye-closed" className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" />
+                <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="eye-closed" />
               </Tip>
             ) : null}
             <Tip label={rowTooltip}>
@@ -230,9 +245,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
           {attention ? (
             <Tip label={BOT_ATTENTION_HINTS[attention.reason] || 'Needs attention'}>
               <Codicon
-                name="warning"
-                className="shrink-0 text-[0.6875rem] text-amber-600 dark:text-amber-300"
                 aria-label={b.roster.needsAttention}
+                className="shrink-0 text-[0.6875rem] text-amber-600 dark:text-amber-300"
+                name="warning"
               />
             </Tip>
           ) : null}
@@ -256,6 +271,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
       </div>
     </RowButton>
   )
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
@@ -286,9 +302,11 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
                 void saveBotMeta(bot, {
                   hidden: !hidden
                 })
+
                 if (!hidden) {
                   fallbackSelectionAfterHide(botSelectionKey(bot))
                 }
+
                 host.notify({
                   kind: 'info',
                   message: hidden
@@ -373,50 +391,57 @@ interface GroupRowProps {
   onDisband: (room: { members: GroupMember[]; name: string }) => void
   onOpen: (group: string) => void
 }
+
 export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }: GroupRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms = useValue($groupChats)
+
   const room = rooms[group] || {
     log: []
   }
+
   const log = Array.isArray(room.log) ? room.log : []
   const last = log.length ? log[log.length - 1] : null
   const lastAt = groupLastActivity(room)
   // Room previews speak the same handle vocabulary as the roster, mentions
   // and the group prompt: the primary profile is @hermes, not @default.
   const lastFrom = last?.from?.name || ''
+
   const lastHandle = botHandle(
     lastFrom || 'bot',
     members.find(member => member?.name === lastFrom)
   )
+
   const preview = last
     ? `${last.from?.kind === 'user' ? 'You' : `@${lastHandle}`}: ${stripPreviewMarkdown(last.text) || '…'}`
     : `${members.length} bots`
+
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
   const availabilityLabel = `${availableMembers} of ${members.length} available`
+
   const row = (
     <RowButton
-      onClick={() => {
-        haptic('tap')
-        onOpen(group)
-      }}
+      aria-label={`${group}, ${members.length} bots, ${availabilityLabel}`}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
         active && 'bg-(--ui-row-active-background)'
       )}
-      aria-label={`${group}, ${members.length} bots, ${availabilityLabel}`}
+      onClick={() => {
+        haptic('tap')
+        onOpen(group)
+      }}
     >
       <div className="relative flex w-[34px] shrink-0 items-center justify-center">
         {room.image ? (
           <img
-            src={room.image}
             alt=""
             className={cn(
               'size-8 rounded-md object-cover ring-1 ring-(--ui-stroke-tertiary)',
               availableMembers === 0 && 'grayscale opacity-60'
             )}
+            src={room.image}
           />
         ) : (
           <span
@@ -431,8 +456,8 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
         {members.length > 0 && availableMembers < members.length ? (
           <Tip label={availabilityLabel}>
             <span
-              className="absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-tertiary) dark:text-amber-300"
               aria-label={availabilityLabel}
+              className="absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-(--ui-bg-primary) text-[0.625rem] text-amber-600 ring-1 ring-(--ui-stroke-tertiary) dark:text-amber-300"
             >
               <Codicon name="debug-disconnect" />
             </span>
@@ -444,7 +469,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">{group}</span>
           {needsYou ? (
             <Tip label={b.group.needsYourInput}>
-              <Codicon name="question" className="shrink-0 text-(--ui-accent)" aria-label={b.roster.needsInput} />
+              <Codicon aria-label={b.roster.needsInput} className="shrink-0 text-(--ui-accent)" name="question" />
             </Tip>
           ) : null}
           {lastAt ? (
@@ -457,6 +482,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
       </div>
     </RowButton>
   )
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>

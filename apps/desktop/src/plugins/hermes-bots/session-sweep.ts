@@ -36,57 +36,72 @@ export function startHideSweepScheduler(ctx: HideSweepContext) {
   let inflight: Promise<unknown> | null = null
   let pending = false
   let disposed = false
+
   const run = () => {
     timer = null
+
     if (disposed) {
       return
     }
+
     if (inflight) {
       pending = true
+
       return
     }
+
     inflight = Promise.resolve()
       .then(() => hideOwnedBotSessions())
       .catch(() => undefined)
       .finally(() => {
         inflight = null
+
         if (pending && !disposed) {
           pending = false
           schedule()
         }
       })
   }
+
   const schedule = () => {
     if (disposed) {
       return
     }
+
     try {
       if (timer !== null) {
         clearTimeout(timer)
       }
+
       timer = setTimeout(run, 0)
     } catch {
       run()
     }
   }
+
   const stopGatewayListener = host.state.gateway.listen(state => {
     if (state === 'open') {
       schedule()
     }
   })
+
   const teardown = () => {
     disposed = true
     stopGatewayListener()
+
     if (timer !== null) {
       clearTimeout(timer)
       timer = null
     }
   }
+
   if (typeof ctx.onDispose === 'function') {
     ctx.onDispose(teardown)
   }
+
   schedule()
 }
+
 /** One (owner, session id) pair the sweep will hide, plus the key it dedupes
  *  on when the same member session is seated in several rooms. */
 interface RoomSessionEntry {
@@ -94,6 +109,7 @@ interface RoomSessionEntry {
   id: string
   owner: RosterRow
 }
+
 function hideOwnedBotSessions() {
   // `.filter(Boolean)` doesn't narrow away the nulls the map returns, so the
   // element type is restated here rather than at every read below.
@@ -103,8 +119,10 @@ function hideOwnedBotSessions() {
         if (!id || id === true) {
           return null
         }
+
         const persisted = room?.sessionOwners?.[key]
         const derived = (room?.members || []).find((member: GroupMember) => groupMemberKey(member) === key)
+
         // Bare keys are legacy local rooms. A source-qualified key without its
         // immutable owner is unsafe: never let it fall through ambient routing.
         const owner =
@@ -115,14 +133,17 @@ function hideOwnedBotSessions() {
                 name: key
               }
             : null)
+
         if (key.includes('::')) {
           const route = owner?.route
           const sourceMarked = owner?.sourceScoped || owner?.remoteSource
           const routeKey = route?.connectionId && route?.profile ? `${route.connectionId}::${route.profile}` : ''
+
           if (!sourceMarked || !route?.targetProfile || routeKey !== key) {
             return null
           }
         }
+
         return owner
           ? {
               owner,
@@ -138,6 +159,7 @@ function hideOwnedBotSessions() {
   // share ids) — hide each (owner, id) pair exactly once.
   const rooms = [...new Map(roomEntries.map(entry => [entry.dedupe, entry])).values()]
   const known = Promise.all(rooms.map(({ owner, id }) => hidePersistedBotSession(owner, id).catch(() => undefined)))
+
   return Promise.all([known, sweepBotProfileSessions().catch(() => undefined)])
 }
 
@@ -148,9 +170,11 @@ function hidePersistedBotSession(bot: RosterRow, sessionId: string, profileOverr
   if (typeof host.setPersistedSessionHidden !== 'function') {
     return Promise.resolve()
   }
+
   const route = botConnectionRoute(bot)
   const fallback = String(bot?.name || '').trim() || 'default'
   const profile = profileOverride || backendTargetProfile(route, fallback)
+
   return Promise.resolve(
     host.setPersistedSessionHidden(route, {
       sessionId,
@@ -169,8 +193,10 @@ function hidePersistedBotSession(bot: RosterRow, sessionId: string, profileOverr
 // user gave it and is never touched.
 const BOT_MODE_SWEEP_TITLES = new Set(['Bot Chat', 'Agent Inbox'])
 const BOT_MODE_SWEEP_MIN_AGE_SECONDS = 5 * 60
+
 function isBotModeSweepTitle(title: null | string | undefined) {
   const t = String(title || '').trim()
+
   return BOT_MODE_SWEEP_TITLES.has(t) || t.startsWith('Group: ')
 }
 
@@ -182,8 +208,10 @@ interface SweepSessionRow {
   started_at?: number
   title?: null | string
 }
+
 function isBotModeSweepCandidate(row: SweepSessionRow | null | undefined, nowSeconds = Date.now() / 1000) {
   const startedAt = Number(row?.started_at)
+
   return (
     row &&
     row.id &&
@@ -220,8 +248,10 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
   if (typeof host.listPersistedSessions !== 'function' || typeof host.setPersistedSessionHidden !== 'function') {
     return
   }
+
   const cached = $lastRoster.get()
   let roster: RosterRow[] | null = Array.isArray(cached) && cached.length ? cached : null
+
   if (!roster) {
     // Plugin load can run before the Bots pane hydrates $lastRoster — fall
     // back to the active gateway's own profile list (local bots; remote
@@ -230,25 +260,31 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
       const activeBot = {
         name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
       }
+
       const res = (await requestForBot(activeBot, 'profiles.list', {})) as ProfilesListResult
       roster = Array.isArray(res?.profiles) ? res.profiles : []
     } catch {
       return
     }
   }
+
   await Promise.all(
     roster.map(async (bot: RosterRow) => {
       const name = String(bot?.name || '').trim()
+
       if (!name) {
         return
       }
+
       try {
         const route = botConnectionRoute(bot)
         const profile = backendTargetProfile(route, name)
+
         const res = await host.listPersistedSessions(route, {
           profile,
           limit: PROFILE_SESSION_LIST_LIMIT
         })
+
         const rows = Array.isArray(res?.sessions) ? res.sessions : []
         await Promise.all(
           rows

@@ -73,12 +73,15 @@ export const BOT_ATTENTION_HINTS: Record<string, string> = {
  *  timeout) — transient classes must NEVER badge. Pure; tested directly. */
 function attentionReasonFromError(errorTextOrReason: unknown) {
   const raw = String(errorTextOrReason || '').trim()
+
   if (!raw) {
     return null
   }
+
   if (BOT_ATTENTION_CLASSES.has(raw)) {
     return raw
   }
+
   const text = raw.toLowerCase()
 
   // Transient failures first, so a retryable error never sticks a badge.
@@ -87,9 +90,11 @@ function attentionReasonFromError(errorTextOrReason: unknown) {
   ) {
     return null
   }
+
   if (/no llm provider|no access token|not configured|no api key|missing api key/.test(text)) {
     return 'missing_config'
   }
+
   if (
     /\b401\b|\b403\b|unauthorized|forbidden|authentication|invalid.?api.?key|credentials? (are )?(invalid|expired)/.test(
       text
@@ -97,12 +102,15 @@ function attentionReasonFromError(errorTextOrReason: unknown) {
   ) {
     return 'provider_auth_or_access'
   }
+
   if (/quota|out of funds|insufficient (credits?|funds|balance)|payment required|\b402\b|billing/.test(text)) {
     return 'provider_quota_limit'
   }
+
   if (/\bblocked\b/.test(text)) {
     return 'agent_blocked'
   }
+
   return null
 }
 
@@ -116,9 +124,11 @@ export const $botAttention = atom<Record<string, { at: number; message: string; 
  *  classify to null and set nothing. Latest failure wins. */
 export function noteBotAttention(key: string, errorTextOrReason: unknown) {
   const reason = attentionReasonFromError(errorTextOrReason)
+
   if (!key || !reason) {
     return
   }
+
   $botAttention.set({
     ...$botAttention.get(),
     [key]: {
@@ -136,9 +146,11 @@ export function clearBotAttention(key: string) {
   if (!key || !$botAttention.get()[key]) {
     return
   }
+
   const next = {
     ...$botAttention.get()
   }
+
   delete next[key]
   $botAttention.set(next)
 }
@@ -168,20 +180,24 @@ interface BotMetaStorage {
 /** Per-bot appearance + display meta, persisted via ctx.storage:
  *  { [botName]: { shape, color, title } } */
 export const $botMeta = atom<BotMetaSnapshot>({})
+
 export function commitBotMetaV2(storage: BotMetaStorage | undefined, snapshot: BotMetaSnapshot) {
   const commit = botMetaV2Commit.then(async () => {
     if (typeof storage?.remove !== 'function' || typeof storage?.set !== 'function') {
       throw new Error('bot metadata v2 storage is unavailable')
     }
+
     const [previousSnapshot, previousMarker] =
       typeof storage.get === 'function'
         ? await Promise.all([storage.get(BOT_META_V2_KEY), storage.get(BOT_META_MIGRATION_KEY)])
         : [null, null]
+
     const hasCommittedPrevious =
       previousMarker === true &&
       previousSnapshot &&
       typeof previousSnapshot === 'object' &&
       !Array.isArray(previousSnapshot)
+
     try {
       await storage.remove(BOT_META_MIGRATION_KEY)
       await storage.set(BOT_META_V2_KEY, snapshot)
@@ -197,12 +213,16 @@ export function commitBotMetaV2(storage: BotMetaStorage | undefined, snapshot: B
       } else {
         await Promise.allSettled([BOT_META_MIGRATION_KEY, BOT_META_V2_KEY].map(key => storage.remove(key)))
       }
+
       throw error
     }
   })
+
   botMetaV2Commit = commit.catch(() => undefined)
+
   return commit
 }
+
 /** A save target resolved into the four things every write site needs. */
 interface BotOwner {
   bot: RosterRow
@@ -210,10 +230,12 @@ interface BotOwner {
   name: string
   route: null | ProfileRoute
 }
+
 export function botOwner(owner: RosterRow | string): BotOwner {
   if (typeof owner === 'string') {
     const name = owner.trim()
     const route = migratedLocalRoutes.get(name)
+
     return {
       bot: route
         ? {
@@ -229,8 +251,10 @@ export function botOwner(owner: RosterRow | string): BotOwner {
       route: route || null
     }
   }
+
   const name = String(owner?.name || '').trim()
   const route = botConnectionRoute(owner)
+
   return {
     bot: owner,
     name,
@@ -242,6 +266,7 @@ export function botOwner(owner: RosterRow | string): BotOwner {
 /** Freshness fence for the server-meta overlay: a roster snapshot fetched
  * before the latest local/server metadata write must not overwrite it. */
 export const botMetaWriteAt = new Map<string, number>()
+
 export function noteBotMetaWrite(key: string) {
   botMetaWriteAt.set(key, Date.now())
 }
@@ -260,9 +285,11 @@ interface BotMetaSaveResult {
 interface ProfilesConfigureResult {
   applied?: { ui_meta?: boolean }
 }
+
 export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
   const { bot, key, name, route } = botOwner(owner)
   const prevMeta = $botMeta.get()[key] || {}
+
   const next = {
     ...$botMeta.get(),
     [key]: {
@@ -270,16 +297,19 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
       ...patch
     }
   }
+
   noteBotMetaWrite(key)
   $botMeta.set(next)
 
   // Local plugin storage: instant, and the fallback for older gateways.
   let localPersistence = Promise.resolve()
+
   try {
     const persisted =
       route || botMetaV2Active
         ? commitBotMetaV2(getPluginCtx()?.storage, next)
         : Promise.resolve(getPluginCtx()?.storage?.set?.(BOT_META_V1_KEY, next))
+
     localPersistence = persisted.catch(() => undefined)
   } catch {
     /* storage unavailable — look persists for this window only */
@@ -294,8 +324,10 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   // store instead (profiles.set_asset), which is server-side and uncapped by
   // the list call — so pfps follow the profile across machines too.
   let serverRequest: null | Promise<ProfilesConfigureResult> = null
+
   try {
     const { image, pet, ...rest } = next[key] || {}
+
     const request = route
       ? requestForBot(bot, 'profiles.configure', {
           name,
@@ -309,6 +341,7 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
             'hermes-bots': rest
           }
         })
+
     serverRequest = Promise.resolve(request) as Promise<ProfilesConfigureResult>
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
@@ -345,6 +378,7 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
               asset: 'avatar',
               clear: true
             })
+
       req.catch(() => undefined)
     } catch {
       /* older gateway */
@@ -361,9 +395,11 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   //   'failed'      — gateway speaks the contract and explicitly reported
   //                   the ui_meta write did NOT apply.
   let serverOutcome: BotMetaServerOutcome = 'unsupported'
+
   if (serverRequest) {
     try {
       const result = await serverRequest
+
       if (result?.applied?.ui_meta === true) {
         serverOutcome = 'persisted'
       } else if (result && typeof result === 'object' && result.applied && typeof result.applied === 'object') {
@@ -372,12 +408,15 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
     } catch {
       /* older/unavailable gateway — the local fallback remains saved */
     }
+
     // Re-stamp now that the server write settled: a roster snapshot fetched
     // while profiles.configure was still in flight predates the new ui_meta
     // just as surely as one fetched before the local write.
     noteBotMetaWrite(key)
   }
+
   await localPersistence
+
   return {
     serverPersisted: serverOutcome === 'persisted',
     serverOutcome
@@ -392,6 +431,7 @@ function hydrateBotMeta(snapshot: BotMetaSnapshot, remap: Map<string, string> | 
   const next = {
     ...snapshot
   }
+
   for (const [key, meta] of Object.entries($botMeta.get())) {
     const target = remap?.get(key) || key
     next[target] = {
@@ -399,13 +439,17 @@ function hydrateBotMeta(snapshot: BotMetaSnapshot, remap: Map<string, string> | 
       ...meta
     }
   }
+
   $botMeta.set(next)
+
   return next
 }
+
 export async function migrateBotMeta(storage: BotMetaStorage | undefined = getPluginCtx()?.storage) {
   let v1: BotMetaSnapshot | null = null
   let v2: BotMetaSnapshot | null = null
   let v2Committed = false
+
   try {
     ;[v1, v2, v2Committed] = await Promise.all([
       storage?.get?.(BOT_META_V1_KEY),
@@ -415,45 +459,59 @@ export async function migrateBotMeta(storage: BotMetaStorage | undefined = getPl
   } catch {
     return false
   }
+
   if (v2Committed === true && v2 && typeof v2 === 'object' && !Array.isArray(v2)) {
     hydrateBotMeta(v2)
     botMetaV2Active = true
+
     return true
   }
+
   if (!v1 || typeof v1 !== 'object' || Array.isArray(v1) || typeof host.agents !== 'function') {
     if (v1 && typeof v1 === 'object' && !Array.isArray(v1)) {
       hydrateBotMeta(v1)
     }
+
     return false
   }
+
   let union
   let routes
+
   try {
     union = await host.agents()
     routes = typeof host.profileRoutes === 'function' ? await host.profileRoutes() : []
   } catch {
     hydrateBotMeta(v1)
+
     return false
   }
+
   const sources = Array.isArray(union?.sources) ? union.sources : []
   const localAgents = (union?.agents || []).filter(agent => agent?.connectionKind === 'local')
+
   const soleLocal =
     sources.length === 1
       ? sources[0]?.kind === 'local'
       : sources.length === 0 &&
         localAgents.length > 0 &&
         (union?.agents || []).every(agent => agent?.connectionKind === 'local')
+
   if (!soleLocal) {
     hydrateBotMeta(v1)
+
     return false
   }
+
   const migrated: BotMetaSnapshot = {}
   const pendingLocalRoutes = new Map<string, ProfileRoute>()
+
   for (const [name, meta] of Object.entries(v1)) {
     const route =
       (routes || []).find(candidate => candidate?.mode === 'local' && candidate?.profile === name) ||
       (() => {
         const agent = localAgents.find(candidate => candidate.profile === name)
+
         return agent
           ? {
               connectionId: agent.connectionId,
@@ -463,25 +521,32 @@ export async function migrateBotMeta(storage: BotMetaStorage | undefined = getPl
             }
           : null
       })()
+
     if (!route?.connectionId) {
       // A missing route makes the topology proof unusable for this key. Keep
       // the v1 record intact rather than guessing a local/remote projection.
       hydrateBotMeta(v1)
+
       return false
     }
+
     const captured: ProfileRoute = {
       connectionId: route.connectionId,
       mode: 'local',
       profile: name,
       targetProfile: route.targetProfile || name
     }
+
     migrated[botRouteKey(captured)] = meta
     pendingLocalRoutes.set(name, captured)
   }
+
   const remap = new Map([...pendingLocalRoutes].map(([name, route]) => [name, botRouteKey(route)]))
+
   const hydrated = {
     ...migrated
   }
+
   for (const [key, meta] of Object.entries($botMeta.get())) {
     const target = remap.get(key) || key
     hydrated[target] = {
@@ -489,19 +554,25 @@ export async function migrateBotMeta(storage: BotMetaStorage | undefined = getPl
       ...meta
     }
   }
+
   try {
     await commitBotMetaV2(storage, hydrated)
   } catch {
     botMetaV2Active = false
     hydrateBotMeta(v1)
+
     return false
   }
+
   migratedLocalRoutes.clear()
+
   for (const [name, route] of pendingLocalRoutes) {
     migratedLocalRoutes.set(name, route)
   }
+
   hydrateBotMeta(hydrated)
   botMetaV2Active = true
+
   return true
 }
 
@@ -546,6 +617,7 @@ interface UnionRoster {
 
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
+
   return useQuery({
     queryKey: [...ROSTER_KEY, activeConnectionId],
     queryFn: async () => {
@@ -554,6 +626,7 @@ export function useRoster() {
       // a write can only carry pre-write ui_meta. (Issue time is the
       // conservative bound — the server answered no earlier than this.)
       const issuedAt = Date.now()
+
       // Rich rows (last_session, canonical_session, ui_meta, has_avatar)
       // come from the ACTIVE gateway's profiles.list — the canonical Bot
       // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
@@ -570,11 +643,13 @@ export function useRoster() {
           /* keep the previous alias index */
         }
       }
+
       // Owner routing is ambient in the SDK now (post-#92731): requestForBot
       // resolves the active owner itself, no captured route needed here.
       const activeBot = {
         name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
       }
+
       const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
       // Newer backends inject the teammate-messaging protocol into every
       // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
@@ -592,6 +667,7 @@ export function useRoster() {
           const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
           const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
           const sources = Array.isArray(union?.sources) ? union.sources : []
+
           return {
             ...merged,
             profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
@@ -602,6 +678,7 @@ export function useRoster() {
           /* older build or roster failure — single-source list stands */
         }
       }
+
       return {
         ...(local && typeof local === 'object' ? local : {}),
         fetchedAt: issuedAt
@@ -626,12 +703,15 @@ export function cachedUnionRoster(): RosterSnapshot | null {
   if (typeof queryClient === 'undefined' || !queryClient || typeof queryClient.getQueryData !== 'function') {
     return null
   }
+
   try {
     const connectionId = String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
     const exact = queryClient.getQueryData<RosterSnapshot>([...ROSTER_KEY, connectionId])
+
     if (Array.isArray(exact?.profiles)) {
       return exact
     }
+
     if (typeof queryClient.getQueriesData === 'function') {
       let best: RosterSnapshot | null = null
 
@@ -644,11 +724,13 @@ export function cachedUnionRoster(): RosterSnapshot | null {
           best = data
         }
       }
+
       return best
     }
   } catch {
     /* cache hiccup — caller falls back (middleware refetches) */
   }
+
   return null
 }
 
@@ -689,17 +771,21 @@ function mergeMultiSourceRoster(
   if (!activeId && liveProvided) {
     const primaryId = String(union?.primaryConnectionId || '').trim()
     const richNames = new Set(localProfiles.map(profile => String(profile?.name || '').trim()).filter(Boolean))
+
     const localMatches = agents.some(
       agent => agent?.connectionKind === 'local' && richNames.has(String(agent?.profile || '').trim())
     )
+
     const primaryMatches = agents.some(
       agent =>
         String(agent?.connectionId || '').trim() === primaryId && richNames.has(String(agent?.profile || '').trim())
     )
+
     if (!localMatches && primaryId && primaryMatches) {
       activeId = primaryId
     }
   }
+
   const activeByName = new Map<string, RosterRow>()
 
   // Treat the rich list as one row per active-source profile. Clone every
@@ -708,12 +794,15 @@ function mergeMultiSourceRoster(
   // next merge, growing duplicate source rows indefinitely.
   for (const profile of localProfiles) {
     const name = String(profile?.name || '').trim()
+
     if (!name || profile?.remoteSource) {
       continue
     }
+
     if (profile?.sourceScoped && activeId && profile.connectionId !== activeId) {
       continue
     }
+
     if (!activeByName.has(name)) {
       activeByName.set(name, {
         ...profile,
@@ -721,19 +810,23 @@ function mergeMultiSourceRoster(
       })
     }
   }
+
   const profiles = [...activeByName.values()]
 
   // host.agents is an Electron/main-process capability. Defend the plugin
   // boundary too: older shells or reconnect races can still hand us repeated
   // identities even after the core roster deduplicates them.
   const seenSources = new Set<string>()
+
   for (const agent of agents) {
     const profile = String(agent?.profile || '').trim()
     const connectionId = String(agent?.connectionId || '').trim()
     const sourceKey = `${connectionId}::${profile || 'default'}`
+
     if (!profile || seenSources.has(sourceKey)) {
       continue
     }
+
     seenSources.add(sourceKey)
 
     // The union enumerates EVERY registered connection, including the active
@@ -744,6 +837,7 @@ function mergeMultiSourceRoster(
     // the legacy local-source rule so single-source behavior stays intact.
     const isActiveSource = activeId ? connectionId === activeId : agent.connectionKind === 'local'
     const row = isActiveSource ? activeByName.get(profile) : null
+
     if (row) {
       // Annotate in place: the @name-device handle only differs from the
       // bare name when the profile exists on several sources.
@@ -759,13 +853,16 @@ function mergeMultiSourceRoster(
         targetProfile: agent.targetProfile || profile
       }
       row.sourceScoped = true
+
       continue
     }
+
     if (isActiveSource) {
       // Union saw an active-source profile profiles.list didn't return (older
       // backend mid-refresh) — skip rather than invent a thin row.
       continue
     }
+
     profiles.push({
       name: profile,
       handle: agent.handle,
@@ -790,27 +887,33 @@ function mergeMultiSourceRoster(
   if (Array.isArray(previous) && previous.length > 0) {
     const present = new Set(profiles.map(row => `${row.connectionId || ''}::${row.name}`))
     const unionSourceIds = new Set(agents.map(agent => String(agent?.connectionId || '').trim()).filter(Boolean))
+
     const omitted = new Set(
       (Array.isArray(union?.sources) ? union.sources : [])
         .filter(source => source?.error === 'connect-on-demand' || source?.reachable === false)
         .map(source => String(source.connectionId || '').trim())
         .filter(Boolean)
     )
+
     const registered = new Set(
       (Array.isArray(union?.sources) ? union.sources : [])
         .map(source => String(source?.connectionId || '').trim())
         .filter(Boolean)
     )
+
     for (const row of previous) {
       const connectionId = String(row?.connectionId || '').trim()
       const name = String(row?.name || '').trim()
       const key = `${connectionId}::${name || 'default'}`
+
       if (!row?.remoteSource || !connectionId || !name || present.has(key)) {
         continue
       }
+
       if (registered.size > 0 && !registered.has(connectionId)) {
         continue
       }
+
       if (omitted.has(connectionId) || !unionSourceIds.has(connectionId)) {
         profiles.push({
           ...row,
@@ -821,6 +924,7 @@ function mergeMultiSourceRoster(
       }
     }
   }
+
   return {
     ...local,
     profiles
@@ -836,6 +940,7 @@ export function botHandle(name: string, bot?: Partial<RosterRow> | null): string
   if (bot?.handle && bot.handle !== name) {
     return bot.handle
   }
+
   return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
 }
 
@@ -849,11 +954,14 @@ export function mentionNameForms(value: null | string | undefined): string[] {
   const name = String(value || '')
     .trim()
     .toLowerCase()
+
   if (!name) {
     return []
   }
+
   const slug = name.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
   const collapsed = name.replace(/[^a-z0-9_-]+/g, '')
+
   return [...new Set([slug, collapsed])].filter(
     form => /^[a-z0-9][a-z0-9_-]*$/.test(form) && !['all', 'everyone', 'user', 'default', 'hermes'].includes(form)
   )
@@ -870,10 +978,12 @@ export function botFriendlyNames(bot: Partial<RosterRow> | null | undefined): Ar
   const metaByName: Record<string, BotMeta | undefined> | null = typeof $botMeta !== 'undefined' ? $botMeta.get() : null
   const localTitle = !bot?.remoteSource ? metaByName?.[bot?.name!]?.title : null
   const alias = aliasIdentityFor(bot)
+
   const aliasTitle = alias
     ? alias.metaKeys.map(key => metaByName?.[key]?.title).find(title => typeof title === 'string' && title.trim()) ||
       alias.name
     : null
+
   return [bot?.ui_meta?.['hermes-bots']?.title, localTitle, aliasTitle, bot?.title, bot?.display_name]
 }
 
@@ -883,10 +993,12 @@ export function botFriendlyNames(bot: Partial<RosterRow> | null | undefined): Ar
 export function botMentionTag(bot: GroupMember | RosterRow): string {
   for (const friendly of botFriendlyNames(bot)) {
     const forms = mentionNameForms(friendly)
+
     if (forms.length) {
       return forms[0]
     }
   }
+
   return botHandle(bot?.name, bot)
 }
 
@@ -902,51 +1014,65 @@ export function isActiveRosterBot(bot: Partial<RosterRow> | null | undefined, ac
   if (!active) {
     return false
   }
+
   const activeName = String(active.name || 'default').trim() || 'default'
   const activeId = String(active?.connectionId || '').trim()
   const botId = String(bot?.connectionId || '').trim()
   const botName = String(bot?.name || '').trim() || 'default'
+
   if (bot?.remoteSource) {
     return Boolean(activeId) && activeId === botId && botName === activeName
   }
+
   if (activeId && activeId !== 'local' && botId && activeId !== botId) {
     return false
   }
+
   return botName === activeName
 }
+
 /** The key a bot is selected/badged/watermarked under. `undefined` is
  *  load-bearing on the nullable overload — callers use it to CLEAR a
  *  selection, so it must never be coerced to a 'default' fallback the way
  *  botRosterKey does. A real row always yields a key (`name` is required). */
 export function botSelectionKey(bot: RosterRow): string
 export function botSelectionKey(bot: Partial<RosterRow> | null | undefined): string | undefined
+
 export function botSelectionKey(bot: Partial<RosterRow> | null | undefined): string | undefined {
   return bot?.sourceScoped || bot?.remoteSource ? botRosterKey(bot) : bot?.name
 }
+
 export function isDefaultBot(bot: Partial<RosterRow> | null | undefined): boolean {
   const route = botConnectionRoute(bot)
+
   return (
     String(route?.profile || bot?.name || '')
       .trim()
       .toLowerCase() === 'default'
   )
 }
+
 export function newBotChat(bot: RosterRow) {
   if (typeof host.newChat !== 'function') {
     host.notify?.({
       kind: 'error',
       message: getPluginCtx()?.i18n.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
     })
+
     return
   }
+
   const route = botConnectionRoute(bot)
+
   if (!route) {
     host.notify?.({
       kind: 'error',
       message: getPluginCtx()?.i18n.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
     })
+
     return
   }
+
   const ownerKey = botWorkspaceOwnerKey(bot)
   setBotsWorkspaceOwner(ownerKey, bot)
   host.newChat(route, {
@@ -964,17 +1090,22 @@ export function resolveRosterMentions(
   active: RosterOwnerRef = {}
 ): RosterRow[] {
   const members = Array.isArray(roster) ? roster : []
+
   const prose = String(text || '')
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`[^`\n]*`/g, ' ')
+
   const byForm = new Map<string, RosterRow | null>()
+
   for (const bot of members) {
     if (!bot?.name || isActiveRosterBot(bot, active)) {
       continue
     }
+
     const handle = String(botHandle(bot.name, bot) || '').toLowerCase()
     const name = String(bot.name || '').toLowerCase()
     const forms = new Set([handle, name])
+
     if (bot.handle) {
       forms.add(String(bot.handle).toLowerCase())
     }
@@ -987,38 +1118,52 @@ export function resolveRosterMentions(
         forms.add(form)
       }
     }
+
     for (const form of forms) {
       if (!form) {
         continue
       }
+
       const existing = byForm.get(form)
+
       if (existing && existing !== bot) {
         byForm.set(form, null)
+
         continue
       }
+
       if (!existing) {
         byForm.set(form, bot)
       }
     }
   }
+
   const mentioned: RosterRow[] = []
   const seen = new Set<string>()
+
   for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
     let token = match[2].toLowerCase()
+
     if (token === 'hermes') {
       token = byForm.has('hermes') ? 'hermes' : token
     }
+
     const bot = byForm.get(token)
+
     if (!bot) {
       continue
     }
+
     const key = botRosterKey(bot)
+
     if (seen.has(key)) {
       continue
     }
+
     seen.add(key)
     mentioned.push(bot)
   }
+
   return mentioned
 }
 
@@ -1030,25 +1175,31 @@ export function resolveRosterMentions(
 export function botRosterKey(bot: Partial<RosterRow> | null | undefined): string {
   return `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`
 }
+
 /** The key a bot's persisted appearance/meta lives under. Same nullable
  *  contract as botSelectionKey: a real row always resolves to a key, a
  *  partial/absent one may not. */
 export function botMetaKey(bot: RosterRow): string
 export function botMetaKey(bot: Partial<RosterRow> | null | undefined): string | undefined
+
 export function botMetaKey(bot: Partial<RosterRow> | null | undefined): string | undefined {
   const route = botConnectionRoute(bot)
+
   return route ? botRouteKey(route) : bot?.name
 }
+
 export function persistBotMetaSnapshot(value: Record<string, BotMeta>, scoped = false): Promise<void> {
   try {
     const persisted = scoped
       ? commitBotMetaV2(getPluginCtx()?.storage, value)
       : Promise.resolve(getPluginCtx()?.storage?.set?.(BOT_META_V1_KEY, value))
+
     return persisted.catch(() => undefined)
   } catch {
     return Promise.resolve()
   }
 }
+
 export function sourceByConnection(sources: GatewaySource[] | null | undefined): Map<string, GatewaySource> {
   return new Map(
     (Array.isArray(sources) ? sources : [])
@@ -1060,11 +1211,14 @@ export function sourceByConnection(sources: GatewaySource[] | null | undefined):
 /** Copy current source health onto a row without changing its owner. */
 export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | null | undefined): RosterRow {
   const id = String(bot?.connectionId || '').trim()
+
   if (!id) {
     return bot
   }
+
   const list = Array.isArray(sources) ? sources : []
   const source = sourceByConnection(list).get(id)
+
   if (!source) {
     return list.length && bot?.sourceScoped
       ? {
@@ -1074,6 +1228,7 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
         }
       : bot
   }
+
   return {
     ...bot,
     connectionKind: bot.connectionKind || source.kind,
@@ -1105,6 +1260,7 @@ interface BotSourceStatus {
 
 export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSourceStatus {
   const error = String(bot?.sourceError || '').trim()
+
   if (bot?.sourceMissing) {
     return {
       available: false,
@@ -1113,6 +1269,7 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
       tone: 'bad'
     }
   }
+
   if (error === 'connect-on-demand') {
     return {
       available: true,
@@ -1121,6 +1278,7 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
       tone: 'muted'
     }
   }
+
   if (error || bot?.sourceReachable === false) {
     return {
       available: false,
@@ -1129,6 +1287,7 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
       tone: 'warn'
     }
   }
+
   if (bot?.sourceReachable === true) {
     return {
       available: true,
@@ -1137,6 +1296,7 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
       tone: 'good'
     }
   }
+
   return {
     available: true,
     key: 'unknown',
@@ -1160,11 +1320,13 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
 export function preferReachableSameNameRows(bots: RosterRow[] | null | undefined): RosterRow[] {
   const rows = Array.isArray(bots) ? bots : []
   const reachableNames = new Set<string>()
+
   for (const bot of rows) {
     if (botSourceStatus(bot).available) {
       reachableNames.add(bot?.name)
     }
   }
+
   return rows.filter(bot => botSourceStatus(bot).available || bot?.ghost || !reachableNames.has(bot?.name))
 }
 
@@ -1173,9 +1335,11 @@ export function preferReachableSameNameRows(bots: RosterRow[] | null | undefined
  * activity order — search narrows the roster, it never re-ranks it. */
 export function filterBots(roster: RosterRow[], metaByName: Record<string, BotMeta>, query: string) {
   const needle = query.trim().toLowerCase().replace(/^@/, '')
+
   if (!needle) {
     return roster
   }
+
   return roster.filter(bot => {
     const meta = botRosterMeta(bot, metaByName)
     const display = displayName(bot, meta).toLowerCase()
@@ -1186,6 +1350,7 @@ export function filterBots(roster: RosterRow[], metaByName: Record<string, BotMe
     const sourceLabel = (bot.connectionLabel || '').toLowerCase()
     const role = `${meta?.description || ''} ${bot.description || ''}`.toLowerCase()
     const preview = String(botActivitySession(bot)?.preview || '').toLowerCase()
+
     return (
       display.includes(needle) ||
       profile.includes(needle) ||
@@ -1211,8 +1376,10 @@ export function filterBots(roster: RosterRow[], metaByName: Record<string, BotMe
 export function botActivitySession(bot: null | RosterRow | undefined): CanonicalSession | SessionPreview | null {
   const preferred = bot?.canonical_session
   const last = bot?.last_session
+
   if (!preferred || !last) {
     return preferred || last || null
   }
+
   return (preferred.last_active || 0) >= (last.last_active || 0) ? preferred : last
 }

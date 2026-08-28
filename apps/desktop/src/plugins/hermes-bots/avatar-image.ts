@@ -14,6 +14,7 @@ import { getPluginCtx } from './shared'
 export function normalizeAvatarImage(dataUrl: string, edge = 256): Promise<string> {
   return new Promise(resolve => {
     const img = new Image()
+
     img.onload = () => {
       try {
         const canvas = document.createElement('canvas')
@@ -27,32 +28,40 @@ export function normalizeAvatarImage(dataUrl: string, edge = 256): Promise<strin
         resolve(dataUrl)
       }
     }
+
     img.onerror = () => resolve(dataUrl)
     img.src = dataUrl
   })
 }
+
 export function pickImageFromDevice(): Promise<null | string> {
   return new Promise(resolve => {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = 'image/png,image/jpeg,image/webp,image/gif'
+
     input.onchange = () => {
       const file = input.files?.[0]
+
       if (!file) {
         return resolve(null)
       }
+
       if (file.size > 15_000_000) {
         host.notify({
           kind: 'error',
           message: getPluginCtx()?.i18n.t('avatar.imageTooLarge') ?? 'Image too large (max 15MB).'
         })
+
         return resolve(null)
       }
+
       const reader = new FileReader()
       reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null)
       reader.onerror = () => resolve(null)
       reader.readAsDataURL(file)
     }
+
     input.click()
   })
 }
@@ -63,10 +72,12 @@ export function pickImageFromDevice(): Promise<null | string> {
  *  Only `true` is sticky. */
 export const $imagenAvailable = atom<boolean | null>(null)
 let imagenProbeInflight: Promise<void> | null = null
+
 export function probeImagen() {
   if (imagenProbeInflight) {
     return imagenProbeInflight
   }
+
   imagenProbeInflight = host
     .request<{ available?: boolean }>('image.generate', {
       probe: true
@@ -76,8 +87,10 @@ export function probeImagen() {
     .finally(() => {
       imagenProbeInflight = null
     })
+
   return imagenProbeInflight
 }
+
 /** `image.generate`'s reply. `image_data` is a data URL (works over remote
  *  gateways); `image` is the raw backend URL fallback. */
 export interface GeneratedImage {
@@ -89,12 +102,14 @@ export interface GeneratedImage {
 
 export async function generateAvatarImage(bot: string, title?: string, description?: string): Promise<string | undefined> {
   const who = [title || bot, description].filter(Boolean).join(' — ')
+
   const res = await host.request<GeneratedImage>('image.generate', {
     prompt:
       `Cute minimal robot avatar for an AI agent named "${who}". ` +
       'Friendly simple mascot face, bold flat vector style, solid color background, centered, no text.',
     aspect_ratio: 'square'
   })
+
   if (!res?.success) {
     throw new Error(res?.error || 'generation failed')
   }
@@ -110,13 +125,17 @@ export function isBackfilledFacePng(dataUrl: null | string | undefined) {
   if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) {
     return false
   }
+
   try {
     const bin = atob(dataUrl.slice('data:image/png;base64,'.length).slice(0, 48))
+
     if (bin.length < 24) {
       return false
     }
+
     const w = (bin.charCodeAt(16) << 24) | (bin.charCodeAt(17) << 16) | (bin.charCodeAt(18) << 8) | bin.charCodeAt(19)
     const h = (bin.charCodeAt(20) << 24) | (bin.charCodeAt(21) << 16) | (bin.charCodeAt(22) << 8) | bin.charCodeAt(23)
+
     return w === 160 && h === 160
   } catch {
     return false

@@ -18,9 +18,11 @@ import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, Profile
 /** "(pass)" (loosely: pass / (pass) / pass.) or empty = the member stayed silent. */
 export function isGroupPassText(text: unknown) {
   const trimmed = String(text || '').trim()
+
   if (!trimmed) {
     return true
   }
+
   return /^\(?\s*pass\s*\)?\.?$/i.test(trimmed)
 }
 
@@ -43,26 +45,34 @@ interface GroupTurnTranscriptMessage {
  *  assistant message appears in that range. */
 function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: number): null | string {
   let passText: null | string = null
+
   for (let i = messages.length - 1; i >= before; i--) {
     const msg = messages[i]
+
     if (msg?.role !== 'assistant') {
       continue
     }
+
     const text =
       typeof msg.content === 'string'
         ? msg.content
         : Array.isArray(msg.content)
           ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
           : msg?.text || ''
+
     const replyText = String(text).trim()
+
     if (isGroupPassText(replyText)) {
       if (passText === null) {
         passText = replyText
       }
+
       continue
     }
+
     return replyText
   }
+
   return passText
 }
 
@@ -112,7 +122,7 @@ interface GroupMemberSessionHandle {
  *  title, which also covers rehydrated rooms whose sid was lost — reopens
  *  it after restarts. Cross-connection members route to their OWN source
  *  via requestForBot; the window's gateway never switches. */
-async function ensureGroupChatSession(group: string, member: GroupMember): Promise<GroupMemberSessionHandle> {
+export async function ensureGroupChatSession(group: string, member: GroupMember): Promise<GroupMemberSessionHandle> {
   const room = $groupChats.get()[group] || {}
   // New rooms title member sessions by their immutable roomId so a
   // same-name recreate never resumes the old room's sessions by title;
@@ -137,12 +147,14 @@ async function ensureGroupChatSession(group: string, member: GroupMember): Promi
     if (!target || target === true) {
       continue
     }
+
     try {
       const res = (await requestForBot(member, 'session.resume', {
         session_id: target,
         profile: member.name,
         omit_messages: true
       })) as GroupSessionSnapshot
+
       if (res?.session_id) {
         // TODO(bot-mode-types): `known` is `room.sessions[key]`, which the
         // domain model types `string | true` — and the `target === true` skip
@@ -152,6 +164,7 @@ async function ensureGroupChatSession(group: string, member: GroupMember): Promi
         // durable id, which later rides into `session_id` on the recovery
         // resume and on session.interrupt. Typed as-written.
         const stored = res.session_key || known
+
         if (stored) {
           updateGroupChat(group, (current: GroupChatRoom) => {
             current.sessions = {
@@ -162,9 +175,11 @@ async function ensureGroupChatSession(group: string, member: GroupMember): Promi
               ...(current.sessionOwners || {}),
               [key]: groupSessionOwner(member)
             }
+
             return current
           })
         }
+
         return {
           runtime: res.session_id,
           stored
@@ -178,13 +193,16 @@ async function ensureGroupChatSession(group: string, member: GroupMember): Promi
       /* genuinely doesn't exist (4007) — try the next target / fall through to create */
     }
   }
+
   const created = (await requestForBot(member, 'session.create', {
     profile: member.name,
     title,
     // Room member sessions are plumbing — always hidden from the sidebar.
     hidden: true
   })) as { session_id?: string; stored_session_id?: string }
+
   const stored = created?.stored_session_id || null
+
   if (stored) {
     updateGroupChat(group, (r: GroupChatRoom) => {
       r.sessions = {
@@ -195,14 +213,17 @@ async function ensureGroupChatSession(group: string, member: GroupMember): Promi
         ...(r.sessionOwners || {}),
         [key]: groupSessionOwner(member)
       }
+
       return r
     })
   }
+
   return {
     runtime: created?.session_id || null,
     stored
   }
 }
+
 const GROUP_TURN_TIMEOUT_MS = 180000
 const GROUP_TURN_POLL_MS = 2000
 
@@ -225,16 +246,18 @@ interface GatewayErrorLike {
 
 /** 4001-class "the runtime session was reaped" failure. Distinct from 4007
  *  ("genuinely never existed"), which must keep flowing to session.create. */
-function isSessionGoneError(error: GatewayErrorLike | null | undefined): boolean {
+export function isSessionGoneError(error: GatewayErrorLike | null | undefined): boolean {
   if (!error || error.code === 4007) {
     return false
   }
+
   if (error.code === 4001) {
     return true
   }
 
   // Duck-typed (not instanceof): gateway errors can cross realm boundaries.
   const message = typeof error?.message === 'string' ? error.message : typeof error === 'string' ? error : ''
+
   return message.includes('not in memory') || /session not found/i.test(message)
 }
 // --- end group-turn session-lease helpers ---
@@ -246,16 +269,20 @@ function isSessionGoneError(error: GatewayErrorLike | null | undefined): boolean
 async function retainGroupTurnRoute(member: GroupMember): Promise<() => void> {
   const noop = () => undefined
   let route: ProfileRoute | null = null
+
   try {
     route = botConnectionRoute(member)
   } catch {
     return noop
   }
+
   if (!route || typeof host.retainProfile !== 'function') {
     return noop
   }
+
   try {
     const release = await host.retainProfile(route)
+
     return typeof release === 'function' ? release : noop
   } catch {
     return noop
@@ -278,24 +305,30 @@ async function submitGroupTurnPrompt(
       session_id: runtime,
       text
     })
+
     return runtime
   } catch (error: any) {
     if (!isSessionGoneError(error) || !stored) {
       throw error
     }
+
     const res = (await requestForBot(member, 'session.resume', {
       session_id: stored,
       profile: member.name,
       omit_messages: true
     })) as GroupSessionSnapshot
+
     const fresh = res?.session_id
+
     if (!fresh) {
       throw error
     }
+
     await requestForBot(member, 'prompt.submit', {
       session_id: fresh,
       text
     })
+
     return fresh
   }
 }
@@ -316,27 +349,32 @@ const GROUP_TURN_HARD_CAP_MS = 20 * 60000
  *  payload always sync to "no prompt". Clarify wins when both are somehow
  *  present (approvals resolve inside tool batches; clarify is the outer
  *  blocker). */
-function syncGroupClarify(group: string, member: GroupMember, state: GroupSessionSnapshot | null): boolean {
+export function syncGroupClarify(group: string, member: GroupMember, state: GroupSessionSnapshot | null): boolean {
   const key = `${group}::${groupMemberKey(member)}`
   const clarify = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
+
   // The `!requestId` bail below is what makes the approval branch reachable,
   // so an approval read there is never the null arm of this ternary — a fact
   // control-flow analysis can't carry across the two separate locals.
   const approval = (
     state && typeof state.pending_approval === 'object' ? state.pending_approval : null
   ) as GroupPendingApproval
+
   const pending = clarify || approval
   const requestId = pending?.request_id || null
   const all = $groupClarify.get()
   const current = all[key]
+
   if (!requestId) {
     if (current) {
       const next = {
         ...all
       }
+
       delete next[key]
       $groupClarify.set(next)
     }
+
     return false
   }
 
@@ -345,6 +383,7 @@ function syncGroupClarify(group: string, member: GroupMember, state: GroupSessio
   if (current?.requestId === requestId) {
     return true
   }
+
   const base = {
     requestId,
     group,
@@ -355,6 +394,7 @@ function syncGroupClarify(group: string, member: GroupMember, state: GroupSessio
     sessionId: state?.session_id || null,
     at: Date.now()
   }
+
   $groupClarify.set({
     ...all,
     [key]: clarify
@@ -388,6 +428,7 @@ function syncGroupClarify(group: string, member: GroupMember, state: GroupSessio
     ...$groupNeedsYou.get(),
     [group]: true
   })
+
   return true
 }
 
@@ -396,6 +437,7 @@ export function clearGroupClarify(group: string) {
   const all = $groupClarify.get()
   const next: Record<string, GroupPrompt> = {}
   let changed = false
+
   for (const [key, value] of Object.entries<GroupPrompt>(all)) {
     if (value?.group === group) {
       changed = true
@@ -403,6 +445,7 @@ export function clearGroupClarify(group: string) {
       next[key] = value
     }
   }
+
   if (changed) {
     $groupClarify.set(next)
   }
@@ -445,12 +488,15 @@ export async function answerGroupClarify(
       answer: typeof answers === 'string' ? answers : ''
     })
   }
+
   const all = $groupClarify.get()
   const key = `${entry.group}::${entry.memberKey}`
+
   if (all[key]?.requestId === entry.requestId) {
     const next = {
       ...all
     }
+
     delete next[key]
     $groupClarify.set(next)
   }
@@ -475,12 +521,14 @@ export async function runGroupChatMemberTurn(
   // socket that minted `runtime` can close between RPCs, the gateway reaps
   // the runtime session, and prompt.submit dies 4001 — the bot goes silent.
   const releaseTurnLease = await retainGroupTurnRoute(member)
+
   try {
     return await runGroupChatMemberTurnLeased(group, member, prompt, thread, images)
   } finally {
     releaseTurnLease()
   }
 }
+
 async function runGroupChatMemberTurnLeased(
   group: string,
   member: GroupMember,
@@ -489,6 +537,7 @@ async function runGroupChatMemberTurnLeased(
   images?: Attachment[]
 ): Promise<null | string> {
   const { runtime, stored } = await ensureGroupChatSession(group, member)
+
   if (!runtime) {
     return null
   }
@@ -505,11 +554,13 @@ async function runGroupChatMemberTurnLeased(
 
   // Baseline: how many messages exist before our submit.
   let before = 0
+
   try {
     const pre = (await requestForBot(member, 'session.resume', {
       session_id: stored || runtime,
       profile: member.name
     })) as GroupSessionSnapshot
+
     before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
   } catch {
     /* lazy session — zero messages */
@@ -525,10 +576,12 @@ async function runGroupChatMemberTurnLeased(
   // member to text-only; the transcript line still names the attachment so
   // the member knows something was shared.
   const fileRefs: string[] = []
+
   for (const img of Array.isArray(images) ? images : []) {
     if (!img || typeof img.data !== 'string' || !img.data) {
       continue
     }
+
     try {
       if (img.kind === 'pdf') {
         await requestForBot(member, 'pdf.attach', {
@@ -542,6 +595,7 @@ async function runGroupChatMemberTurnLeased(
           data_url: img.data,
           name: img.name || 'attachment'
         })) as { ref_text?: string }
+
         if (res?.ref_text) {
           fileRefs.push(`${img.name || 'attachment'} → ${res.ref_text}`)
         }
@@ -556,6 +610,7 @@ async function runGroupChatMemberTurnLeased(
       /* text-only fallback for this member */
     }
   }
+
   const turnText = fileRefs.length
     ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
     : prompt
@@ -566,6 +621,7 @@ async function runGroupChatMemberTurnLeased(
   const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText)
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
+
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, GROUP_TURN_POLL_MS))
 
@@ -576,10 +632,13 @@ async function runGroupChatMemberTurnLeased(
     // a hold, and that turn must keep polling so finished work can still be
     // delivered (the #93127 commit check decides its fate, not this loop).
     const roomDuringPoll = $groupChats.get()[group] || {}
+
     if ((roomDuringPoll.epoch || 0) !== dispatchEpoch && (roomDuringPoll.holds || {})[memberKey]) {
       return null
     }
+
     let state: GroupSessionSnapshot | null = null
+
     try {
       state = (await requestForBot(member, 'session.resume', {
         session_id: stored || liveRuntime,
@@ -588,6 +647,7 @@ async function runGroupChatMemberTurnLeased(
     } catch {
       continue
     }
+
     const messages = Array.isArray(state?.messages) ? state.messages : []
     const busy = Boolean(state?.inflight || state?.running)
     // A clarify blocking inside the member's session is a question for the
@@ -595,21 +655,26 @@ async function runGroupChatMemberTurnLeased(
     // hold the turn open: the member isn't stalling, it's waiting on us.
     const awaitingUser = syncGroupClarify(group, member, state)
     const done = !busy && !awaitingUser
+
     if (messages.length > before && done) {
       const replyText = pickGroupTurnReply(messages, before)
+
       if (replyText !== null) {
         recordGroupActivity(group, {
           kind: isGroupPassText(replyText) ? 'passed' : 'replied',
           member: member.name,
           thread
         })
+
         return replyText
       }
+
       recordGroupActivity(group, {
         kind: 'passed',
         member: member.name,
         thread
       })
+
       return null
     }
 
@@ -639,8 +704,10 @@ async function runGroupChatMemberTurnLeased(
         thread
       }
     }
+
     return r
   })
+
   return null
 }
 
@@ -654,10 +721,13 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
   // Markers were a bare number before threads; normalize both shapes.
   const strandedBefore = typeof marker === 'number' ? marker : marker?.before
   const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
+
   if (typeof strandedBefore !== 'number') {
     return
   }
+
   let state: GroupSessionSnapshot | null = null
+
   try {
     const stored = room.sessions?.[memberKey]
     state = (await requestForBot(member, 'session.resume', {
@@ -667,6 +737,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
   } catch {
     return // source unreachable — leave the marker for the next boundary
   }
+
   if (state?.inflight || state?.running) {
     return // still grinding — keep waiting
   }
@@ -682,15 +753,20 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const next = {
       ...(r.stranded || {})
     }
+
     delete next[memberKey]
     r.stranded = next
+
     return r
   })
   const messages = Array.isArray(state?.messages) ? state.messages : []
+
   if (messages.length <= strandedBefore) {
     return
   }
+
   const reply = pickGroupTurnReply(messages, strandedBefore)
+
   if (reply && !isGroupPassText(reply)) {
     recordGroupActivity(group, {
       kind: 'delivered',
@@ -713,6 +789,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     )
     updateGroupChat(group, (r: GroupChatRoom) => {
       r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+
       return r
     })
   }

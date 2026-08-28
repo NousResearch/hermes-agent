@@ -41,15 +41,18 @@ export function resolveBotConnectionRoute(bot: Partial<RosterRow> | null | undef
       route: null
     }
   }
+
   const candidate = bot.route || {
     connectionId: bot.connectionId,
     mode: bot.connectionKind === 'local' ? 'local' : 'remote',
     profile: bot.name,
     targetProfile: bot.targetProfile || bot.name
   }
+
   const connectionId = String(candidate?.connectionId || '').trim()
   const profile = String(candidate?.profile || bot?.name || '').trim() || 'default'
   const targetProfile = String(candidate?.targetProfile || profile).trim() || profile
+
   if (!connectionId) {
     return {
       status: 'owner_removed',
@@ -57,6 +60,7 @@ export function resolveBotConnectionRoute(bot: Partial<RosterRow> | null | undef
       profile
     }
   }
+
   return {
     status: 'resolved',
     route: Object.freeze({
@@ -76,17 +80,22 @@ export function resolveBotConnectionRoute(bot: Partial<RosterRow> | null | undef
  *  resolveBotConnectionRoute() directly instead of catching this throw. */
 export function botConnectionRoute(bot: Partial<RosterRow> | null | undefined): null | ProfileRoute {
   const resolved = resolveBotConnectionRoute(bot)
+
   if (resolved.status === 'owner_removed') {
     throw new Error(`Bot ${resolved.profile} has no connection owner`)
   }
+
   return resolved.route
 }
+
 export function botWorkspaceOwnerKey(bot: RosterRow) {
   // Render-reachable (sidebar sync, context menus): an orphaned row must
   // yield a stable degraded key, never the dispatch throw.
   const route = resolveBotConnectionRoute(bot).route
+
   return `bot:${route ? botRouteKey(route) : String(bot?.name || 'default')}`
 }
+
 export function setBotsWorkspaceOwner(
   ownerKey: string,
   bot: null | RosterRow = null,
@@ -95,6 +104,7 @@ export function setBotsWorkspaceOwner(
   // Render-reachable (sidebar listener fires on visibility flips). An
   // orphaned row degrades to the blocked target instead of throwing.
   const route = bot ? resolveBotConnectionRoute(bot).route : null
+
   const target: { kind: 'blocked'; message: string } | { kind: 'route'; route: ProfileRoute } = route
     ? {
         kind: 'route',
@@ -104,16 +114,21 @@ export function setBotsWorkspaceOwner(
         kind: 'blocked',
         message: blockedMessage
       }
+
   host.setWorkspaceScope?.('bots', ownerKey, target)
 }
+
 export function backendTargetProfile(route: null | ProfileRoute | undefined, fallbackProfile = 'default') {
   if (!route) {
     return fallbackProfile
   }
+
   return route.targetProfile || route.profile
 }
+
 function rewriteCliProfileOperands(argv: string[], logical: string, target: string) {
   const next = [...argv]
+
   for (let index = 0; index < next.length; index += 1) {
     if (next[index] === '--profile' && next[index + 1] === logical) {
       next[index + 1] = target
@@ -122,47 +137,58 @@ function rewriteCliProfileOperands(argv: string[], logical: string, target: stri
       next[index] = `--profile=${target}`
     }
   }
+
   const profileCommand = next.indexOf('profile')
   const operand = profileCommand >= 0 ? profileCommand + 2 : -1
+
   if (operand < next.length && next[operand] === logical) {
     next[operand] = target
   }
+
   return next
 }
+
 function scopedBotParams(route: ProfileRoute, method: string, params: Record<string, unknown>) {
   const logical = route.profile
   const target = backendTargetProfile(route, logical)
   let next = params
+
   if (Object.prototype.hasOwnProperty.call(params, 'profile')) {
     next = {
       ...next,
       profile: target
     }
   }
+
   if (method.startsWith('profiles.') && method !== 'profiles.create' && params.name === logical) {
     next = {
       ...next,
       name: target
     }
   }
+
   if (params.clone_from === logical) {
     next = {
       ...next,
       clone_from: target
     }
   }
+
   if (method === 'cli.exec' && Array.isArray(params.argv)) {
     next = {
       ...next,
       argv: rewriteCliProfileOperands(params.argv, logical, target)
     }
   }
+
   return next
 }
+
 export function botBackendProfileScope(route: null | ProfileRoute | undefined, fallbackProfile = 'default') {
   if (!route) {
     return fallbackProfile
   }
+
   return {
     connectionId: route.connectionId,
     profile: backendTargetProfile(route, fallbackProfile)
@@ -177,10 +203,12 @@ export async function requestForBot<T = unknown>(
   params: Record<string, unknown> = {}
 ): Promise<T> {
   const route = botConnectionRoute(bot)
+
   if (route) {
     if (typeof host.requestProfile !== 'function') {
       throw new Error(`Cannot route ${method} for ${route.connectionId}::${route.profile}`)
     }
+
     try {
       return await host.requestProfile(route, method, scopedBotParams(route, method, params))
     } catch (error) {
@@ -190,6 +218,7 @@ export async function requestForBot<T = unknown>(
       throw asRpcError(error, `Gateway request ${method} failed`)
     }
   }
+
   try {
     return await host.request(method, params)
   } catch (error) {
@@ -224,15 +253,19 @@ function asRpcError(value: unknown, fallback: string): unknown {
   const hasStringName = typeof name === 'string'
   const hasStringMessage = typeof message === 'string'
   const hasStack = isObject && typeof (value as RpcErrorLike).stack === 'string'
+
   if (isObject && hasStringName && (hasStack || hasStringMessage)) {
     return value
   }
+
   if (isObject) {
     const text = hasStringMessage && String(message).trim() ? String(message) : fallback
     const error = new Error(text)
     error.cause = value
+
     return error
   }
+
   return new Error(value == null || value === '' ? fallback : String(value))
 }
 
@@ -266,13 +299,16 @@ let aliasRouteIndex = new Map<string, AliasIdentity | null>()
  *  genuine aliases (route.profile !== route.targetProfile) participate. */
 export function indexAliasRoutes(routes: ProfileRoute[]) {
   const next = new Map<string, AliasIdentity | null>()
+
   for (const route of Array.isArray(routes) ? routes : []) {
     const connectionId = String(route?.connectionId || '').trim()
     const profile = String(route?.profile || '').trim()
     const target = String(route?.targetProfile || '').trim()
+
     if (!connectionId || !profile || !target || profile === target) {
       continue
     }
+
     const key = `${connectionId}::${target}`
 
     // Two aliases pointing at the same backend row are ambiguous — neither
@@ -289,6 +325,7 @@ export function indexAliasRoutes(routes: ProfileRoute[]) {
           }
     )
   }
+
   aliasRouteIndex = next
 }
 
@@ -299,6 +336,7 @@ export function aliasIdentityFor(bot: Partial<RosterRow> | null | undefined): Al
   if (!aliasRouteIndex.size) {
     return null
   }
+
   const connectionId = String(
     bot?.connectionId ||
       bot?.route?.connectionId ||
@@ -306,11 +344,14 @@ export function aliasIdentityFor(bot: Partial<RosterRow> | null | undefined): Al
       // the ACTIVE gateway — Cloud-only mode must resolve the alias too.
       (!bot?.remoteSource && !bot?.sourceScoped ? host.state.connectionId?.get?.() || '' : '')
   ).trim()
+
   if (!connectionId) {
     return null
   }
+
   const target = String(bot?.targetProfile || bot?.route?.targetProfile || bot?.name || '').trim() || 'default'
   const entry = aliasRouteIndex.get(`${connectionId}::${target}`) || null
+
   return entry && entry.name !== String(bot?.name || '').trim() ? entry : null
 }
 
@@ -329,10 +370,13 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
     const resolved = resolveBotConnectionRoute(bot)
     const route = resolved.status === 'resolved' ? resolved.route : null
     const direct = route ? metaByName?.[botRouteKey(route)] : null
+
     if (direct) {
       return direct
     }
+
     const alias = aliasIdentityFor(bot)
+
     if (alias) {
       for (const key of alias.metaKeys) {
         if (metaByName?.[key]) {
@@ -340,13 +384,18 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
         }
       }
     }
+
     return direct
   }
+
   const own = metaByName?.[bot?.name]
+
   if (own) {
     return own
   }
+
   const alias = aliasIdentityFor(bot)
+
   if (alias) {
     for (const key of alias.metaKeys) {
       if (metaByName?.[key]) {
@@ -354,5 +403,6 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
       }
     }
   }
+
   return own
 }

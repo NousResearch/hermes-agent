@@ -47,16 +47,19 @@ export const $openBotChat = atom<{ key: string; openedRegistryId: string; opened
  *  lifecycle both key off this rather than reading host.state conditionally
  *  from render. */
 export const $botChatFocused = atom(false)
+
 export function saveSelectedRosterBot(bot: RosterRow) {
   const key = botRosterKey(bot)
   $selectedBot.set(botSelectionKey(bot))
   $selectedRosterKey.set(key)
+
   try {
     Promise.resolve(getPluginCtx()?.storage?.set?.('selected-roster-bot-v1', key)).catch(() => undefined)
   } catch {
     /* storage unavailable — selection lasts for this window */
   }
 }
+
 export function clearSelectedRosterBot(bot: RosterRow) {
   clearSelectedRosterKey(botRosterKey(bot))
 }
@@ -68,7 +71,9 @@ export function clearSelectedRosterKey(key: string) {
   if ($selectedRosterKey.get() !== key) {
     return
   }
+
   $selectedRosterKey.set('')
+
   try {
     Promise.resolve(getPluginCtx()?.storage?.set?.('selected-roster-bot-v1', '')).catch(() => undefined)
   } catch {
@@ -81,17 +86,20 @@ export function clearSelectedRosterKey(key: string) {
 export function parseRosterKey(key: null | string | undefined) {
   const raw = String(key || '')
   const at = raw.indexOf('::')
+
   if (at < 0) {
     return {
       connectionId: '',
       name: ''
     }
   }
+
   return {
     connectionId: raw.slice(0, at),
     name: raw.slice(at + 2)
   }
 }
+
 const $focusedBotProfile = host.state.focusedSessionProfile || host.state.profile
 
 /** Profile that owns the chat currently on screen. Bot Mode opens another
@@ -100,6 +108,7 @@ const $focusedBotProfile = host.state.focusedSessionProfile || host.state.profil
 export function focusedMentionProfile() {
   return String($focusedBotProfile.get?.() || '').trim() || 'default'
 }
+
 function fallbackFocusedBotOwner(profile: string = $focusedBotProfile.get?.()) {
   const focusedProfile = String(profile || 'default').trim() || 'default'
   const activeProfile = String(host.state.profile?.get?.() || 'default').trim() || 'default'
@@ -111,29 +120,34 @@ function fallbackFocusedBotOwner(profile: string = $focusedBotProfile.get?.()) {
   if (host.state.focusedSessionProfile && focusedProfile !== activeProfile) {
     return null
   }
+
   const connectionId = String(
     host.state.connectionId?.get?.() ||
       (typeof host.activeConnectionId === 'function' ? host.activeConnectionId() : '') ||
       ''
   ).trim()
+
   return {
     authoritative: false,
     connectionId,
     profile: focusedProfile
   }
 }
+
 export const $focusedBotOwner = host.state.focusedSessionOwner || {
   get: () => fallbackFocusedBotOwner(),
   listen: (listener: (value: ReturnType<typeof fallbackFocusedBotOwner>) => void) => {
     const emit = (profile: string) => listener(fallbackFocusedBotOwner(profile))
     const unbindProfile = $focusedBotProfile.listen(emit)
     const unbindConnection = host.state.connectionId?.listen?.(() => emit($focusedBotProfile.get?.()))
+
     return () => {
       unbindProfile?.()
       unbindConnection?.()
     }
   }
 }
+
 export function focusedRosterOwner(
   owner: {
     authoritative?: boolean
@@ -147,9 +161,11 @@ export function focusedRosterOwner(
   // fallbackFocusedBotOwner) both key the profile as `profile`, so the
   // `owner?.name` arm is unreachable and a name-only owner would be dropped.
   const name = String(owner?.profile || owner?.name || '').trim()
+
   if (!owner || !name) {
     return null
   }
+
   return {
     authoritative: owner.authoritative !== false,
     connectionId: String(owner.connectionId || '').trim(),

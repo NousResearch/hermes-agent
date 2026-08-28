@@ -31,19 +31,24 @@ export interface GroupActivityEntry extends Omit<GroupActivityEvent, 'group' | '
   thread?: null | string
 }
 export const $groupActivity = atom<Record<string, { events: GroupActivityEntry[] }>>({})
+
 export function recordGroupActivity(group: string, event: Omit<GroupActivityEntry, 'at' | 'epoch'>) {
   const room = $groupChats.get()[group]
+
   if (!room) {
     return null
   }
+
   const current = $groupActivity.get()[group] || {
     events: []
   }
+
   const entry = {
     at: Date.now(),
     epoch: room.epoch || 0,
     ...event
   }
+
   const events = [...current.events, entry].slice(-GROUP_ACTIVITY_LIMIT)
   $groupActivity.set({
     ...$groupActivity.get(),
@@ -52,6 +57,7 @@ export function recordGroupActivity(group: string, event: Omit<GroupActivityEntr
       events
     }
   })
+
   return entry
 }
 
@@ -59,6 +65,7 @@ export function recordGroupActivity(group: string, event: Omit<GroupActivityEntr
  *  are dropped from view instead of describing work that already ended. */
 export function currentGroupActivity(group: string) {
   const epoch = ($groupChats.get()[group] || {}).epoch || 0
+
   return ($groupActivity.get()[group] || {}).events?.filter(event => (event.epoch || 0) === epoch) || []
 }
 
@@ -67,12 +74,16 @@ export function currentGroupActivity(group: string) {
 export function groupActivityLabel(event: GroupActivityEntry) {
   const kind = event?.kind
   const base = GROUP_ACTIVITY_LABELS[kind] || kind || 'did something'
+
   if (kind === 'cancelled' || kind === 'settled' || kind === 'capped') {
     return base
   }
+
   const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot')
+
   return `${who} ${base}`
 }
+
 const GROUP_ACTIVITY_LABELS: Record<GroupActivityKind, string> = {
   queued: 'sent a message',
   working: 'is working…',
@@ -87,6 +98,7 @@ const GROUP_ACTIVITY_LABELS: Record<GroupActivityKind, string> = {
   held: 'is held (stopped by you) — @mention it or say resume to release',
   stopped: 'stopped the room — remaining turns are held until resumed'
 }
+
 export const GROUP_ACTIVITY_GLYPHS: Record<GroupActivityKind, string> = {
   queued: 'comment',
   working: 'sync',
@@ -108,8 +120,10 @@ export function groupActivityTone(kind: GroupActivityKind) {
   if (kind === 'failed' || kind === 'timed-out') {
     return 'text-destructive'
   }
+
   if (kind === 'working' || kind === 'replied' || kind === 'delivered') {
     return 'text-(--ui-accent)'
   }
+
   return 'text-(--ui-text-tertiary)'
 }

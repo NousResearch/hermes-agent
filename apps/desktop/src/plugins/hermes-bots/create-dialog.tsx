@@ -76,22 +76,26 @@ const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
 /** Share one in-flight async operation across concurrent callers. Failures
  * clear the slot so a later attempt can retry. */
-function singleFlight<T>(ref: { current: null | Promise<T> }, start: () => Promise<T> | T): Promise<T> {
+export function singleFlight<T>(ref: { current: null | Promise<T> }, start: () => Promise<T> | T): Promise<T> {
   if (ref.current) {
     return ref.current
   }
+
   let flight: Promise<T>
+
   try {
     flight = Promise.resolve(start())
   } catch (err) {
     flight = Promise.reject(err)
   }
+
   ref.current = flight
   flight.catch(() => {
     if (ref.current === flight) {
       ref.current = null
     }
   })
+
   return flight
 }
 
@@ -109,6 +113,7 @@ interface CreateAgentDialogProps {
   open: boolean
   roster: RosterRow[]
 }
+
 export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogProps) {
   const { t } = useI18n()
   const b = useBots()
@@ -152,6 +157,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
     ) {
       return
     }
+
     host
       .connections()
       // host.connections() returns the registry ROWS on current SDKs, but the
@@ -166,6 +172,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   // Remote target = an explicitly picked registry connection that is not the
   // one this window is already on.
   const remoteTarget = Boolean(targetConnection) && targetConnection !== (activeConnectionId || 'local')
+
   const targetLabel = remoteTarget
     ? (connections || []).find(c => c.id === targetConnection)?.label || targetConnection
     : ''
@@ -192,16 +199,19 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const [createdForCaps, setCreatedForCaps] = useState<null | string>(null)
   const [caps, setCaps] = useState<CapabilityCatalog | null>(null)
   const [capsFailed, setCapsFailed] = useState(false)
+
   const [dirtyCaps, setDirtyCaps] = useState({
     skills: false,
     toolsets: false,
     mcp: false
   })
+
   const [capFilter, setCapFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
   const slug = slugify(name)
   const valid = slug.length > 0 && NAME_RE.test(slug)
+
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
   // shows up in the roster — its OWN slug must not read as "taken".
   // A remote-target create is gated by the TARGET machine's roster: a local
@@ -221,11 +231,14 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   // fire-and-forget: a failed cleanup surfaces a toast, never blocks close.
   const discardDraft = () => {
     const draft = createdRef.current
+
     if (!draft) {
       return
     }
+
     createdRef.current = null
     flightRef.current = null
+
     const discard = remoteTarget
       ? requestForTarget('cli.exec', {
           argv: ['profile', 'delete', draft, '--yes']
@@ -233,6 +246,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       : deleteBot({
           name: draft
         })
+
     void Promise.resolve(discard)
       .then(() =>
         host.notify({
@@ -242,6 +256,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       )
       .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
   }
+
   const reset = () => {
     setName('')
     setTitle('')
@@ -279,10 +294,12 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
   // what it WILL have — the clone source's catalog, else the main profile's.
   const capSource = cloneFrom === '__none__' ? 'default' : cloneFrom
+
   const ensureCaps = () => {
     if ((caps && caps.source === capSource) || capsFailed) {
       return
     }
+
     Promise.all([
       requestForTarget<ProfileDescribeResponse>('profiles.describe', {
         name: remoteTarget ? 'default' : capSource
@@ -315,6 +332,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       })
       .catch(() => setCapsFailed(true))
   }
+
   const toggleCap = (kind: 'mcp' | 'skills' | 'toolsets', name: string, enabled: boolean) => {
     setDirtyCaps(prev => ({
       ...prev,
@@ -350,13 +368,16 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       discardDraft()
       setCreatedForCaps(null)
     }
+
     if (createdRef.current) {
       return Promise.resolve(createdRef.current)
     }
+
     const flight = singleFlight(flightRef, async () => {
       if (!valid || taken) {
         return null
       }
+
       const descriptionText = [title, description].filter(Boolean).join(' — ')
       await requestForTarget('profiles.create', {
         name: slug,
@@ -394,16 +415,20 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           ProfileConfigurePayload,
           'disabled_skills' | 'enabled_mcp_servers' | 'enabled_toolsets'
         > = {}
+
         if (dirtyCaps.skills && caps) {
           capPayload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
         }
+
         if (dirtyCaps.toolsets && caps) {
           const en = caps.toolsets.filter(t => t.enabled)
           capPayload.enabled_toolsets = en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
         }
+
         if (dirtyCaps.mcp && caps) {
           capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
         }
+
         if (Object.keys(capPayload).length) {
           await requestForTarget('profiles.configure', {
             name: slug,
@@ -413,6 +438,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       } catch {
         /* capability application is best-effort */
       }
+
       if (remoteTarget) {
         // The bot lives on ANOTHER machine — local bot-meta is scoped to the
         // active gateway, so write appearance/title into the remote
@@ -426,6 +452,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           title: title.trim(),
           created: Date.now()
         }
+
         try {
           void requestForTarget('profiles.configure', {
             name: slug,
@@ -433,6 +460,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
               'hermes-bots': look
             }
           }).catch(() => undefined)
+
           if (avatarImage) {
             void requestForTarget('profiles.set_asset', {
               name: slug,
@@ -453,26 +481,35 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           created: Date.now()
         })
       }
+
       queryClient.invalidateQueries({
         queryKey: ROSTER_KEY
       })
+
       return slug
     })
+
     return flight
   }
+
   const submit = async () => {
     if (!valid || taken || busy) {
       return
     }
+
     setBusy(true)
     setError(null)
+
     try {
       const slugCreated = await ensureAgentCreated()
+
       if (!slugCreated) {
         setBusy(false)
         setError('Could not create the bot.')
+
         return
       }
+
       host.notify({
         kind: 'success',
         message: remoteTarget
@@ -488,6 +525,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       const wasRemote = remoteTarget
       reset()
       onClose()
+
       if (wasRemote) {
         // The bot lives on another machine: it appears in the roster via the
         // union enumeration; chat routes through its own source. No local
@@ -495,8 +533,10 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         queryClient.invalidateQueries({
           queryKey: ROSTER_KEY
         })
+
         return
       }
+
       $selectedBot.set(slug)
 
       // Birth the bot's forever chat right away: it introduces itself as
@@ -509,6 +549,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         const sid = await createCanonicalChat(slug, {
           kickoff: true
         })
+
         if (!sid && typeof host.newChat === 'function') {
           host.newChat(slug)
         }
@@ -522,9 +563,9 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       setError(err instanceof Error ? err.message : String(err))
     }
   }
+
   return (
     <Dialog
-      open={open}
       onOpenChange={value => {
         if (!value && !busy) {
           // Cancel path (esc / overlay click): a materialized draft profile is
@@ -534,6 +575,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           onClose()
         }
       }}
+      open={open}
     >
       <DialogContent
         className={advanced ? 'max-w-3xl' : 'max-w-md'} // Native resize handle (bottom-right corner): the dialog becomes a
@@ -560,24 +602,24 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         </DialogHeader>
         <div className="grid gap-3.5">
           <div className="flex justify-center py-1">
-            <BotFace shape={shape} color={avatarColor(color, slug || 'agent')} image={image} size={56} name={slug || 'agent'} />
+            <BotFace color={avatarColor(color, slug || 'agent')} image={image} name={slug || 'agent'} shape={shape} size={56} />
           </div>
           <AvatarPicker
-            shape={shape}
             color={color}
-            image={image}
-            onShape={setShape}
-            onColor={setColor}
-            onImage={setImage}
             generateSeed={{
               name: slug || 'agent',
               title,
               description
             }}
+            image={image}
+            onColor={setColor}
+            onImage={setImage}
+            onShape={setShape}
+            shape={shape}
           />
           {labeled(
             'Name',
-            <Input autoFocus placeholder="inbox-triage" value={name} onChange={event => setName(event.target.value)} />
+            <Input autoFocus onChange={event => setName(event.target.value)} placeholder="inbox-triage" value={name} />
           )}
           {taken ? (
             <div className="text-xs text-(--ui-accent)">
@@ -593,7 +635,6 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
             ? labeled(
                 'Create on',
                 <Select
-                  value={targetConnection || activeConnectionId || 'local'}
                   onValueChange={value => {
                     setTargetConnection(value === (activeConnectionId || 'local') ? '' : value)
                     // The capability catalog and clone list belong to the
@@ -604,6 +645,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     setCapsFailed(false)
                     setAdvTab('general')
                   }}
+                  value={targetConnection || activeConnectionId || 'local'}
                 >
                   <SelectTrigger className="h-8 rounded-md">
                     <SelectValue />
@@ -625,15 +667,15 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           ) : null}
           {labeled(
             'Title',
-            <Input placeholder="Inbox Triage" value={title} onChange={event => setTitle(event.target.value)} />
+            <Input onChange={event => setTitle(event.target.value)} placeholder="Inbox Triage" value={title} />
           )}
           {labeled(
             'Description',
             <Textarea
               className="min-h-16"
+              onChange={event => setDescription(event.target.value)}
               placeholder={b.bot.helpPromptPlaceholder}
               value={description}
-              onChange={event => setDescription(event.target.value)}
             />
           )}
           <Button
@@ -643,6 +685,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                 if (!v) {
                   ensureCaps()
                 }
+
                 return !v
               })
             }}
@@ -655,6 +698,21 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           {advanced ? (
             <div className="grid gap-3 rounded-md border border-(--ui-stroke-secondary) p-3">
               <SegmentedControl
+                onChange={id => {
+                  setAdvTab(id)
+                  setCapFilter('')
+
+                  if (id === 'capabilities') {
+                    // The live surface needs a real profile —
+                    // materialize it now (same lazy-create door
+                    // the MCP setup buttons use).
+                    void ensureAgentCreated()
+                      .then(created => created && setCreatedForCaps(created))
+                      .catch(err => host.notifyError(err, b.bot.createFailed))
+                  } else if (id !== 'general') {
+                    ensureCaps()
+                  }
+                }}
                 options={
                   SkillsView && (!remoteTarget || skillsViewRoutesConnections)
                     ? [
@@ -669,20 +727,6 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                       ]
                 }
                 value={advTab}
-                onChange={id => {
-                  setAdvTab(id)
-                  setCapFilter('')
-                  if (id === 'capabilities') {
-                    // The live surface needs a real profile —
-                    // materialize it now (same lazy-create door
-                    // the MCP setup buttons use).
-                    void ensureAgentCreated()
-                      .then(created => created && setCreatedForCaps(created))
-                      .catch(err => host.notifyError(err, b.bot.createFailed))
-                  } else if (id !== 'general') {
-                    ensureCaps()
-                  }
-                }}
               />
               {advTab === 'general' ? (
                 <div className="grid gap-3.5">
@@ -690,12 +734,12 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     remoteTarget ? `Clone from profile (on ${targetLabel})` : 'Clone from profile',
                     <Select
                       disabled={remoteTarget}
-                      value={remoteTarget ? 'default' : cloneFrom}
                       onValueChange={value => {
                         setCloneFrom(value)
                         setCaps(null)
                         setCapsFailed(false)
                       }}
+                      value={remoteTarget ? 'default' : cloneFrom}
                     >
                       <SelectTrigger className="h-8 rounded-md">
                         <SelectValue />
@@ -711,27 +755,28 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     </Select>
                   )}
                   <ModelPicker
-                    value={{
-                      provider,
-                      model
-                    }}
                     onChange={patch => {
                       if ('provider' in patch) {
                         setProvider(patch.provider)
                       }
+
                       if ('model' in patch) {
                         setModel(patch.model)
                       }
                     }}
                     placeholderModel="inherited from launch profile"
+                    value={{
+                      provider,
+                      model
+                    }}
                   />
                   {labeled(
                     'SOUL.md (optional — replaces the generated persona)',
                     <Textarea
                       className="min-h-24 font-mono text-xs leading-5"
+                      onChange={event => setSoul(event.target.value)}
                       placeholder={b.avatar.describeHint}
                       value={soul}
-                      onChange={event => setSoul(event.target.value)}
                     />
                   )}
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
@@ -756,7 +801,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   </div>
                 ) : !createdForCaps ? (
                   <div className="flex justify-center py-4">
-                    <GlyphSpinner spinner="breathe" className="text-(--ui-text-tertiary)" />
+                    <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
                   </div>
                 ) : SkillsView ? (
                   <div
@@ -793,7 +838,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                 </div>
               ) : !caps ? (
                 <div className="flex justify-center py-4">
-                  <GlyphSpinner spinner="breathe" className="text-(--ui-text-tertiary)" />
+                  <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
                 </div>
               ) : advTab === 'skills' ? (
                 noSkills ? (
@@ -804,9 +849,9 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   <div className="grid gap-1.5">
                     <Input
                       className="h-7 text-xs"
+                      onChange={event => setCapFilter(event.target.value)}
                       placeholder={b.tools.filterSkills}
                       value={capFilter}
-                      onChange={event => setCapFilter(event.target.value)}
                     />
                     <div
                       className="overflow-y-auto overscroll-contain"
@@ -815,13 +860,13 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                       }}
                     >
                       <CheckList
+                        columns={2}
                         items={
                           capFilter.trim()
                             ? caps.skills.filter(s => s.name.toLowerCase().includes(capFilter.trim().toLowerCase()))
                             : caps.skills
                         }
                         onToggle={(name, enabled) => toggleCap('skills', name, enabled)}
-                        columns={2}
                       />
                     </div>
                     <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">{`Catalog from ${caps.source} — unchecked skills are disabled after creation.`}</div>
@@ -855,9 +900,9 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     }}
                   >
                     <CheckList
+                      columns={2}
                       items={caps.toolsets}
                       onToggle={(name, enabled) => toggleCap('toolsets', name, enabled)}
-                      columns={2}
                     />
                   </div>
                   <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
@@ -880,8 +925,9 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                           m.fromCatalog &&
                           !m.installed &&
                           ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
+
                         return (
-                          <label key={m.name} className="flex items-start gap-2 text-xs text-(--ui-text-secondary)">
+                          <label className="flex items-start gap-2 text-xs text-(--ui-text-secondary)" key={m.name}>
                             <Checkbox
                               checked={!!m.enabled}
                               disabled={needsSetup}
@@ -896,9 +942,8 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                               ) : null}
                               {needsSetup ? (
                                 <McpSetupButton
-                                  profile={createdRef.current}
-                                  entry={m}
                                   ensureProfile={ensureAgentCreated}
+                                  entry={m}
                                   onDone={() => {
                                     // Setup done: mark installed so the row's
                                     // checkbox un-disables, and enable it.
@@ -923,6 +968,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                                       mcp: true
                                     }))
                                   }}
+                                  profile={createdRef.current}
                                 />
                               ) : null}
                               {m.description ? (
@@ -952,13 +998,13 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         </div>
         <DialogFooter>
           <Button
-            variant="ghost"
             disabled={busy}
             onClick={() => {
               discardDraft()
               reset()
               onClose()
             }}
+            variant="ghost"
           >
             {t.common.cancel}
           </Button>
@@ -985,6 +1031,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const [name, setName] = useState('')
   const current = botGroups(botRosterMeta(bot, meta))
   const groups = knownGroups(meta)
+
   const setMembership = (group: string, enabled: boolean) => {
     void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
     host.notify({
@@ -994,14 +1041,15 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
         : `${displayName(bot, botRosterMeta(bot, meta))} removed from “${group}”`
     })
   }
+
   return (
     <Dialog
-      open={Boolean(bot)}
       onOpenChange={value => {
         if (!value) {
           onClose()
         }
       }}
+      open={Boolean(bot)}
     >
       <DialogContent className="max-w-sm">
         <DialogHeader>
@@ -1012,10 +1060,11 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
           <div className="grid gap-1.5">
             {groups.map(group => {
               const enabled = current.includes(group)
+
               return (
                 <label
-                  key={group}
                   className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-(--chrome-action-hover)"
+                  key={group}
                 >
                   <Checkbox checked={enabled} onCheckedChange={checked => setMembership(group, checked === true)} />
                   <span>{group}</span>
@@ -1029,6 +1078,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
           onSubmit={event => {
             event.preventDefault()
             const trimmed = name.trim()
+
             if (trimmed) {
               setMembership(trimmed, true)
               setName('')
@@ -1037,18 +1087,16 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
         >
           <Input
             autoFocus
+            onChange={event => setName(event.target.value)}
             placeholder={groups.length ? 'New group…' : 'Group name (e.g. Research)'}
             value={name}
-            onChange={event => setName(event.target.value)}
           />
-          <Button type="submit" size="sm" disabled={!name.trim()}>
+          <Button disabled={!name.trim()} size="sm" type="submit">
             Create & join
           </Button>
         </form>
         {current.length ? (
           <Button
-            variant="ghost"
-            size="sm"
             className="justify-self-start"
             onClick={() =>
               void saveBotMeta(bot, {
@@ -1056,6 +1104,8 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
                 group: null
               })
             }
+            size="sm"
+            variant="ghost"
           >
             {b.bot.removeFromAllGroups}
           </Button>
@@ -1101,12 +1151,16 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
+
   const placeholder = selected.length
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : b.group.nameLabel
+
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
+
   const create = () => {
     const base = (name.trim() || placeholder).slice(0, 64)
+
     if (selected.length < 2 || !base) {
       return
     }
@@ -1120,13 +1174,16 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     // disbanded-and-recreated group with the SAME display name still gets
     // new sessions instead of resuming the old room's by title.
     const taken = new Set(liveGroupChatNames())
+
     for (const meta of Object.values($botMeta.get() || {})) {
       for (const existing of botGroups(meta)) {
         taken.add(existing)
       }
     }
+
     const groupName = uniqueGroupChatName(base, taken)
     const roomId = mintGroupRoomId()
+
     for (const bot of selected) {
       void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
     }
@@ -1138,9 +1195,11 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     updateGroupChat(groupName, (room: GroupChatRoom) => {
       room.members = roomMembers
       room.roomId = roomId
+
       if (image) {
         room.image = image
       }
+
       return room
     })
     host.notify({
@@ -1150,14 +1209,15 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     onClose()
     onCreated?.(groupName)
   }
+
   return (
     <Dialog
-      open={open}
       onOpenChange={value => {
         if (!value) {
           onClose()
         }
       }}
+      open={open}
     >
       <DialogContent className="max-w-md">
         <DialogHeader>
@@ -1171,30 +1231,30 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           aria-label={b.group.searchToAdd}
           containerClassName="w-full"
           inputClassName="w-full"
+          onChange={setQuery}
           placeholder={b.group.searchToAddPlaceholder}
           value={query}
-          onChange={setQuery}
         />
         {selected.length ? (
           <div className="flex flex-wrap gap-1">
             {selected.map(bot => (
               <Badge
-                key={botRosterKey(bot)}
                 asChild
                 className="rounded-full bg-(--chrome-action-hover) pl-2 pr-1.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:text-foreground"
+                key={botRosterKey(bot)}
                 variant="muted"
               >
                 <RowButton
-                  title={b.group.removeFromSelection}
                   onClick={() =>
                     setChecked(prev => ({
                       ...prev,
                       [botRosterKey(bot)]: false
                     }))
                   }
+                  title={b.group.removeFromSelection}
                 >
                   {displayName(bot, botRosterMeta(bot, allMeta))}
-                  <Codicon name="close" className="text-[0.6rem]" />
+                  <Codicon className="text-[0.6rem]" name="close" />
                 </RowButton>
               </Badge>
             ))}
@@ -1209,20 +1269,21 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                 const isChecked = Boolean(checked[botRosterKey(bot)])
                 const disabled = !isChecked && atCap
                 const currentGroups = botGroups(meta)
+
                 return (
                   <label
-                    key={botRosterKey(bot)}
                     className={cn(
                       'flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-(--chrome-action-hover)',
                       disabled && 'cursor-not-allowed opacity-50'
                     )}
+                    key={botRosterKey(bot)}
                   >
                     <BotFace
-                      shape={shape}
                       color={avatarColor(color, bot.name)}
                       image={image && !isBackfilledFacePng(image) ? image : null}
-                      size={24}
                       name={bot.name}
+                      shape={shape}
+                      size={24}
                     />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-xs text-foreground">{displayName(bot, meta)}</div>
@@ -1259,8 +1320,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <GroupImageControls
             image={image}
             onImage={setImage}
-            seedName={name.trim() || (selected.length ? placeholder : '')}
             seedMembers={selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta)))}
+            seedName={name.trim() || (selected.length ? placeholder : '')}
           />
           <form
             onSubmit={event => {
@@ -1271,20 +1332,20 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
             <Input
               aria-label={b.group.nameLabel}
               maxLength={64}
+              onChange={event => setName(event.target.value)}
               placeholder={placeholder}
               value={name}
-              onChange={event => setName(event.target.value)}
             />
           </form>
         </div>
         <DialogFooter>
-          <Button variant="secondary" onClick={onClose}>
+          <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
           <Button
             disabled={!canCreate}
-            title={selected.length < 2 ? 'Pick at least 2 bots' : undefined}
             onClick={create}
+            title={selected.length < 2 ? 'Pick at least 2 bots' : undefined}
           >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>
       </DialogContent>

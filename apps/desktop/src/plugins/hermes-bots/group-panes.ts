@@ -27,6 +27,7 @@ export interface GroupComposerDraft {
   revision: number
 }
 const groupComposerDrafts = new Map<string, GroupComposerDraft | undefined>()
+
 function emptyGroupComposerDraft(): GroupComposerDraft {
   return {
     activeReplyThread: null,
@@ -36,14 +37,18 @@ function emptyGroupComposerDraft(): GroupComposerDraft {
     revision: 0
   }
 }
+
 export function groupComposerDraftKey(group: string, room: GroupChatRoom): string {
   return groupChatRoomKey(group, room)
 }
+
 export function groupComposerDraftSnapshot(key: string): GroupComposerDraft {
   return groupComposerDrafts.get(key) || emptyGroupComposerDraft()
 }
+
 export function updateGroupComposerDraft(key: string, mutate: (draft: GroupComposerDraft) => GroupComposerDraft) {
   const current = groupComposerDraftSnapshot(key)
+
   const next = mutate({
     ...current,
     pendingAttachments: Object.fromEntries(
@@ -56,16 +61,21 @@ export function updateGroupComposerDraft(key: string, mutate: (draft: GroupCompo
       ...(current.replies || {})
     }
   })
+
   next.revision = current.revision + 1
   groupComposerDrafts.delete(key)
   groupComposerDrafts.set(key, next)
+
   return next
 }
+
 export function restoreGroupComposerDraft(key: string, expectedRevision: number, snapshot: GroupComposerDraft) {
   const current = groupComposerDraftSnapshot(key)
+
   if (current.revision !== expectedRevision) {
     return null
   }
+
   const restored = {
     ...snapshot,
     pendingAttachments: Object.fromEntries(
@@ -79,21 +89,28 @@ export function restoreGroupComposerDraft(key: string, expectedRevision: number,
     },
     revision: current.revision + 1
   }
+
   groupComposerDrafts.set(key, restored)
+
   return restored
 }
+
 export function clearGroupComposerDraft(key: string) {
   groupComposerDrafts.delete(key)
 }
+
 export function migrateGroupComposerDraft(oldKey: string, newKey: string) {
   if (oldKey === newKey || !groupComposerDrafts.has(oldKey)) {
     return
   }
+
   if (!groupComposerDrafts.has(newKey)) {
     groupComposerDrafts.set(newKey, groupComposerDrafts.get(oldKey))
   }
+
   groupComposerDrafts.delete(oldKey)
 }
+
 /** React-style setter argument — the next value, or a function of the current. */
 export type GroupDraftSetter<T> = T | ((current: T) => T)
 
@@ -108,10 +125,12 @@ export const groupChatMainTabs = new Map<string, () => void>()
  *  nothing). Every map mutation goes through the two helpers below so the
  *  rev bump re-evaluates the gate. */
 export const $groupMainTabsRev = atom(0)
+
 export function recordGroupMainTab(group: string, close: () => void) {
   groupChatMainTabs.set(group, close)
   $groupMainTabsRev.set($groupMainTabsRev.get() + 1)
 }
+
 export function dropGroupMainTab(group: string) {
   if (groupChatMainTabs.delete(group)) {
     $groupMainTabsRev.set($groupMainTabsRev.get() + 1)
@@ -128,12 +147,15 @@ export function dropGroupMainTab(group: string) {
 export function shouldRenderGroupChatInPane(group: null | string): group is string {
   return Boolean(group && !groupChatMainTabs.has(group))
 }
+
 export function closeGroupChatMainTab(group: string) {
   const close = groupChatMainTabs.get(group)
   dropGroupMainTab(group)
+
   if ($groupChatWorkspace.get() === group) {
     $groupChatWorkspace.set(null)
   }
+
   if (typeof close === 'function') {
     try {
       close()

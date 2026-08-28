@@ -42,17 +42,19 @@ import type { Attachment, GroupMember, GroupMessage } from './types'
 /** Deterministic @mention parse. Handles @name, @"two words" via display
  *  titles, and @everyone/@all. Names match case-insensitively against member
  *  profile names, display titles, and collapsed no-space forms. */
-function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
+export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
   const source = String(text || '')
   const mentioned = new Set<string>()
   let everyone = false
   const handles = new Map<string, string>()
+
   for (const member of members) {
     const title = String(member.title || '').trim()
     // Cross-connection members are also addressable by their @name-device
     // handle (the roster's disambiguated form) — same-named agents on two
     // machines resolve to the right one.
     const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+
     const forms = new Set([
       member.name.toLowerCase(),
       member.name.toLowerCase().replace(/[\s_-]+/g, ''),
@@ -70,26 +72,34 @@ function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
         forms.add(form)
       }
     }
+
     for (const form of forms) {
       if (form) {
         handles.set(form, groupMemberKey(member))
       }
     }
   }
+
   for (const match of source.matchAll(/@([a-z0-9][a-z0-9._-]*)/gi)) {
     const handle = match[1].toLowerCase()
+
     if (handle === 'everyone' || handle === 'all') {
       everyone = true
+
       continue
     }
+
     if (handle === 'user') {
       continue
     }
+
     const resolved = handles.get(handle) || handles.get(handle.replace(/[._-]+/g, ''))
+
     if (resolved) {
       mentioned.add(resolved)
     }
   }
+
   return {
     everyone,
     mentioned
@@ -100,43 +110,53 @@ function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
  *  @-mentioned in messages since the last user entry (or @everyone appears),
  *  otherwise only the mentioned members. Recomputed every round so a member
  *  pulled in mid-conversation joins the next round. */
-function resolveGroupResponders(log: GroupMessage[], members: GroupMember[]) {
+export function resolveGroupResponders(log: GroupMessage[], members: GroupMember[]) {
   let sinceLastUser: GroupMessage[] = []
+
   for (let i = log.length - 1; i >= 0; i--) {
     if (log[i].from.kind === 'user') {
       sinceLastUser = log.slice(i)
+
       break
     }
   }
+
   const mentioned = new Set<string>()
   let everyone = false
+
   for (const entry of sinceLastUser) {
     const parsed = parseGroupChatMentions(entry.text, members)
+
     if (parsed.everyone) {
       everyone = true
     }
+
     for (const name of parsed.mentioned) {
       mentioned.add(name)
     }
   }
+
   if (everyone || mentioned.size === 0) {
     return members
   }
+
   return members.filter(member => mentioned.has(groupMemberKey(member)))
 }
 
 /** Rotate the roster so a different member leads each round. */
-function rotateGroupSpeakers(members: GroupMember[], round: number) {
+export function rotateGroupSpeakers(members: GroupMember[], round: number) {
   if (members.length < 2) {
     return members
   }
+
   const shift = round % members.length
+
   return [...members.slice(shift), ...members.slice(0, shift)]
 }
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
-function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
+export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
   // Attachments are staged into each member's session as real payloads; the
   // transcript line names them so the delta text and the bytes line up.
   const attached =
@@ -144,17 +164,21 @@ function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
       ? ` ${entry.images
           .map(img => {
             const label = img.kind === 'pdf' ? 'attached PDF' : img.kind === 'file' ? 'attached file' : 'attached image'
+
             return `[${label}: ${img.name || 'image'}]`
           })
           .join(' ')}`
       : ''
+
   if (entry.from.kind === 'user') {
     return `${entry.from.name || 'User'} (user): ${entry.text}${attached}`
   }
+
   const suffix = entry.from.name === viewerName ? ' (you)' : ''
   // Cross-connection speakers carry their device so same-named agents on
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
+
   return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
 }
 
@@ -168,15 +192,18 @@ interface GroupChatTurnPromptInput {
 /** The full per-turn payload for one member: participation rules + the room
  *  delta. Rules travel in the turn payload (not SOUL) so every existing bot
  *  can join a group chat without a profile migration. */
-function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }: GroupChatTurnPromptInput) {
+export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }: GroupChatTurnPromptInput) {
   const viewerKey = groupMemberKey(viewer)
   const peers = members.filter(m => groupMemberKey(m) !== viewerKey)
+
   const peerNames = peers
     .map(m => {
       const handle = m.title ? `${m.title} (@${botHandle(m.name, m)})` : `@${botHandle(m.name, m)}`
+
       return m.remoteSource ? `${handle} [on ${m.connectionLabel || m.connectionId}]` : handle
     })
     .join(', ')
+
   return [
     `[Group chat: "${groupName}"] You are @${botHandle(viewer.name, viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
     '',
@@ -191,7 +218,7 @@ function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }: Gr
   ].join('\n')
 }
 
-// --- member-hold helpers (#93129) — pure, vm-sliced by tests ---
+// --- member-hold helpers (#93129) — pure, unit-tested ---
 
 /** #93129: classify a USER room message's effect on member holds. Only user
  *  sends ever reach this (bot replies are appended by the round loop, never
@@ -203,7 +230,7 @@ function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }: Gr
  *  one keeps doing work it was told to stop). A non-stop direct mention
  *  releases the mentioned members — the user addressing a bot directly
  *  overrides its hold. */
-function classifyGroupHoldDirective(
+export function classifyGroupHoldDirective(
   text: string,
   mentionedKeys: Iterable<string> | null | undefined,
   everyone: boolean
@@ -212,6 +239,7 @@ function classifyGroupHoldDirective(
   const mentioned = [...(mentionedKeys || [])]
   const stop = /\b(stop|halt|pause)\b/i.test(value)
   const resume = /\b(resume|continue|go|proceed)\b/i.test(value)
+
   if (stop) {
     // "@all stop" holds every member — symmetric with "@all resume".
     return {
@@ -221,6 +249,7 @@ function classifyGroupHoldDirective(
       releaseAll: false
     }
   }
+
   if (resume) {
     return {
       hold: [],
@@ -229,6 +258,7 @@ function classifyGroupHoldDirective(
       releaseAll: Boolean(everyone)
     }
   }
+
   return {
     hold: [],
     holdAll: false,
@@ -248,7 +278,7 @@ interface GroupMentionParse {
  *  mints a NEW thread, so a thread-scoped hold would never block the next
  *  send's turns and the stop would not stick. Returns the same object when
  *  nothing changed. */
-function applyGroupHoldDirective(
+export function applyGroupHoldDirective(
   holds: Record<string, GroupHoldStamp> | null | undefined,
   mentions: GroupMentionParse | null | undefined,
   text: string,
@@ -257,6 +287,7 @@ function applyGroupHoldDirective(
 ): Record<string, GroupHoldStamp> {
   const prior: Record<string, GroupHoldStamp> = holds && typeof holds === 'object' ? holds : {}
   const action = classifyGroupHoldDirective(text, mentions?.mentioned || [], Boolean(mentions?.everyone))
+
   if (action.releaseAll) {
     return Object.keys(prior).length ? {} : prior
   }
@@ -264,18 +295,21 @@ function applyGroupHoldDirective(
   // "@all stop": expand to every member key the caller knows about.
   const toHold = action.holdAll ? [...allMemberKeys] : action.hold
   let next = prior
+
   for (const key of toHold) {
     if (next === prior) {
       next = {
         ...prior
       }
     }
+
     next[key] = {
       at: stamp?.at || Date.now(),
       byMessageId: stamp?.byMessageId || null,
       thread: stamp?.thread || null
     }
   }
+
   for (const key of action.release) {
     if (Object.prototype.hasOwnProperty.call(next, key)) {
       if (next === prior) {
@@ -283,16 +317,18 @@ function applyGroupHoldDirective(
           ...prior
         }
       }
+
       delete next[key]
     }
   }
+
   return next
 }
 
 /** #93129: a held member's skip must consume its delta exactly once —
  *  advance the watermark past the current log so the same entries never
  *  re-trigger the skip. Null = nothing to consume (no write, no spin). */
-function heldMemberWatermarkAdvance(seen: number | undefined, logLength: number): null | number {
+export function heldMemberWatermarkAdvance(seen: number | undefined, logLength: number): null | number {
   return logLength > (seen || 0) ? logLength : null
 }
 
@@ -304,10 +340,11 @@ function heldMemberWatermarkAdvance(seen: number | undefined, logLength: number)
  *  but the round loop exits first when nobody has new delta to read
  *  (`spokeThisRound === 0`) or a cap lands, so the room settles while a
  *  called bot never answers. Returns member keys still owed a turn. */
-function unaddressedGroupMentions(group: string, members: GroupMember[], thread: string) {
+export function unaddressedGroupMentions(group: string, members: GroupMember[], thread: string) {
   const room = $groupChats.get()[group] || {
     log: []
   }
+
   const log = (room.log || []).filter((e: GroupMessage) => groupThreadOf(e) === thread)
 
   // key → log INDEX of the entry that most recently cited this member.
@@ -315,6 +352,7 @@ function unaddressedGroupMentions(group: string, members: GroupMember[], thread:
   // the only guaranteed ordering, and it is what "answered after the citing
   // entry" actually means. (#94478 review)
   const citedAt = new Map()
+
   for (const entry of log) {
     const parsed = parseGroupChatMentions(entry.text || '', members)
 
@@ -323,9 +361,11 @@ function unaddressedGroupMentions(group: string, members: GroupMember[], thread:
     if (entry.from.kind !== 'member') {
       continue
     }
+
     for (const key of parsed.mentioned) {
       const citingMemberKey = (() => {
         const m = members.find((mm: GroupMember) => mm.name === entry.from?.name)
+
         return m ? groupMemberKey(m) : null
       })()
 
@@ -339,21 +379,27 @@ function unaddressedGroupMentions(group: string, members: GroupMember[], thread:
   // A citation is answered when the cited member posts any entry after the
   // citing one (its turn, whatever the content).
   const lastPostAt = new Map()
+
   for (const entry of log) {
     if (entry.from.kind !== 'member') {
       continue
     }
+
     const speakerKey = (() => {
       const m = members.find((mm: GroupMember) => mm.name === entry.from?.name)
+
       return m ? groupMemberKey(m) : null
     })()
+
     if (speakerKey) {
       lastPostAt.set(speakerKey, log.indexOf(entry))
     }
   }
+
   return [...citedAt.keys()].filter(key => {
     const citedIdx = citedAt.get(key)
     const answeredIdx = lastPostAt.get(key)
+
     return answeredIdx === undefined || answeredIdx <= citedIdx
   })
 }
@@ -381,11 +427,13 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   const room = $groupChats.get()[group] || {}
   const roster = Array.isArray(members) && members.length ? members : room.members || []
   const turnName = room.turn || null
+
   const stamp: GroupHoldStamp = {
     at: Date.now(),
     byMessageId: null,
     thread: thread || null
   }
+
   updateGroupChat(group, (r: GroupChatRoom) => {
     r.epoch = (r.epoch || 0) + 1
     r.running = false
@@ -397,15 +445,19 @@ export async function stopGroupThread(group: string, thread: null | string, memb
     const holds: Record<string, GroupHoldStamp> = {
       ...(r.holds || {})
     }
+
     for (const member of roster) {
       const key = groupMemberKey(member)
+
       if (key && !holds[key]) {
         holds[key] = {
           ...stamp
         }
       }
     }
+
     r.holds = holds
+
     return r
   })
 
@@ -422,6 +474,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   // names exactly one member (the loop is serial); a settled room has none.
   const onTurn = turnName ? roster.find((member: GroupMember) => member?.name === turnName) : null
   const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+
   if (onTurn && sessionId) {
     try {
       await requestForBot(onTurn, 'session.interrupt', {
@@ -439,7 +492,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  next member boundary, bails, and the newest send's own loop takes over.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
+export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
@@ -448,6 +501,7 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
   // passed with nothing pending); 'capped' means a round/message/continuation
   // cap forced the exit — the activity feed must tell those apart.
   let exitKind: 'capped' | 'settled' = 'settled'
+
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
       // Deliver any replies that finished after their turn timed out —
@@ -460,13 +514,17 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
             member: null,
             thread
           })
+
           return
         }
+
         await harvestStrandedGroupReply(group, member)
       }
+
       const roomLog = (($groupChats.get()[group] || {}).log || []).filter(
         (e: GroupMessage) => groupThreadOf(e) === thread
       )
+
       // Exclude members the harvest pass just above confirmed are STILL
       // running (their stranded marker survived harvest because
       // state.inflight/running was true). Re-selecting one here would
@@ -480,10 +538,13 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
       // value shape, since markers are a bare number pre-thread or
       // {before, thread} post-thread.
       const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
+
       const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round).filter(
         (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
       )
+
       let spokeThisRound = 0
+
       for (const member of responders) {
         if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
           if (!isCurrent()) {
@@ -495,18 +556,22 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
           } else {
             exitKind = 'capped' // message cap, not consensus (#94478)
           }
+
           return
         }
+
         const room = $groupChats.get()[group] || {
           log: [],
           watermarks: {}
         }
+
         const memberKey = groupMemberKey(member)
         const markKey = `${thread}::${memberKey}`
         const seen = room.watermarks[markKey] || 0
         // Delta: NEW room entries, narrowed to this thread — the member's
         // turn sees only the conversation it's part of.
         const delta = room.log.slice(seen).filter((e: GroupMessage) => groupThreadOf(e) === thread)
+
         if (!delta.length) {
           continue
         }
@@ -517,12 +582,14 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
         // current log) so the same entries never re-trigger this skip, and
         // surface WHY the bot is silent in the activity feed the first time.
         const heldEntry = (room.holds || {})[memberKey]
+
         if (heldEntry) {
           const advance = heldMemberWatermarkAdvance(seen, room.log.length)
           updateGroupChat(group, (r: GroupChatRoom) => {
             if (advance !== null) {
               r.watermarks[markKey] = advance
             }
+
             if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
               r.holds = {
                 ...r.holds,
@@ -532,8 +599,10 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
                 }
               }
             }
+
             return r
           })
+
           if (!heldEntry.noted) {
             recordGroupActivity(group, {
               kind: 'held',
@@ -541,8 +610,10 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
               thread
             })
           }
+
           continue
         }
+
         const prompt = buildGroupChatTurnPrompt({
           groupName: group,
           members,
@@ -563,9 +634,11 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
         // long model turns otherwise read as the room being stuck.
         updateGroupChat(group, (r: GroupChatRoom) => {
           r.turn = member.name
+
           return r
         })
         let reply: null | string = null
+
         try {
           reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
 
@@ -606,29 +679,35 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
         const roomNow = $groupChats.get()[group] || {
           log: []
         }
+
         const epochNow = roomNow.epoch || 0
         const anchorId = room.log.length ? room.log[room.log.length - 1].id : null
         const anchorIdx = anchorId === null ? -1 : roomNow.log.findIndex((e: GroupMessage) => e.id === anchorId)
         // Anchor trimmed away ⇒ every pre-turn entry was dropped, so every
         // surviving entry is newer — scanning the whole log stays exact.
         const turnTail = anchorIdx >= 0 ? roomNow.log.slice(anchorIdx + 1) : roomNow.log
+
         const newerUserEntryInThread = turnTail.some(
           (e: GroupMessage) => e.from?.kind === 'user' && groupThreadOf(e) === thread
         )
+
         if (!shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)) {
           recordGroupActivity(group, {
             kind: 'cancelled',
             member: member.name,
             thread
           })
+
           return
         }
 
         // The member has now seen everything up to the pre-reply log length.
         updateGroupChat(group, (r: GroupChatRoom) => {
           r.watermarks[markKey] = r.log.length
+
           return r
         })
+
         if (reply !== null && !isGroupPassText(reply)) {
           appendGroupChatEntry(
             group,
@@ -647,12 +726,14 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
           // Its own message counts as seen too.
           updateGroupChat(group, (r: GroupChatRoom) => {
             r.watermarks[markKey] = r.log.length
+
             return r
           })
           posted += 1
           spokeThisRound += 1
         }
       }
+
       if (spokeThisRound === 0) {
         // #94478: "everyone passed" is NOT the only way a round can go quiet —
         // responders can be narrowed to members with no new delta while the
@@ -667,21 +748,27 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
         // message cap so a pathological mention chain can't consume the
         // room's entire budget on back-and-forth handoffs.
         continuations += 1
+
         if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
           const citedMembers = members.filter((member: GroupMember) => pendingKeys.includes(groupMemberKey(member)))
+
           if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
             const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
+
             const continuationResponders = citedMembers.filter(
               (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
             )
+
             for (const member of continuationResponders) {
               if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) {
                 break
               }
+
               const room = $groupChats.get()[group] || {
                 log: [],
                 watermarks: {}
               }
+
               const memberKey = groupMemberKey(member)
               const markKey = `${thread}::${memberKey}`
               const seen = room.watermarks[markKey] || 0
@@ -693,10 +780,13 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
               if (!delta.length) {
                 continue
               }
+
               const heldEntry = (room.holds || {})[memberKey]
+
               if (heldEntry) {
                 continue // holds still apply to continuation turns (#93129)
               }
+
               const prompt = buildGroupChatTurnPrompt({
                 groupName: group,
                 members,
@@ -708,13 +798,17 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
                   .slice(-GROUP_CHAT_HISTORY_LIMIT)
                   .map((e: GroupMessage) => formatGroupChatLine(e, member.name))
               })
+
               updateGroupChat(group, (r: GroupChatRoom) => {
                 r.turn = member.name
+
                 return r
               })
               let continuationReply: null | string = null
+
               try {
                 continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread)
+
                 if (continuationReply !== null) {
                   clearBotAttention(memberKey)
                 }
@@ -727,13 +821,17 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
                 noteBotAttention(memberKey, error?.message || error)
                 continuationReply = null
               }
+
               if (!isCurrent()) {
                 return
               }
+
               updateGroupChat(group, (r: GroupChatRoom) => {
                 r.watermarks[markKey] = r.log.length
+
                 return r
               })
+
               if (continuationReply !== null && !isGroupPassText(continuationReply)) {
                 appendGroupChatEntry(
                   group,
@@ -751,6 +849,7 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
                 )
                 updateGroupChat(group, (r: GroupChatRoom) => {
                   r.watermarks[markKey] = r.log.length
+
                   return r
                 })
                 posted += 1
@@ -765,6 +864,7 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
             }
           }
         }
+
         if (spokeThisRound === 0) {
           // Genuinely nothing left to say — including after the continuation
           // attempt above produced no spoken turns. Settle honestly, but if
@@ -777,6 +877,7 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
           ) {
             exitKind = 'capped'
           }
+
           return
         }
       }
@@ -795,6 +896,7 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
       updateGroupChat(group, (r: GroupChatRoom) => {
         r.running = false
         r.turn = null
+
         return r
       })
 
@@ -804,6 +906,7 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
       // in the background (bounded) so long work is late, never lost.
       // (window feature-detect: the engine also runs under node in tests.)
       const strandedLeft = Object.keys(($groupChats.get()[group] || {}).stranded || {})
+
       if (strandedLeft.length && typeof window !== 'undefined') {
         void harvestStrandedUntilSettled(group, members, thread)
       }
@@ -818,16 +921,21 @@ async function runGroupChatRounds(group: string, members: GroupMember[], thread:
 async function harvestStrandedUntilSettled(group: string, members: GroupMember[], thread: string) {
   const HARVEST_INTERVAL_MS = 5000
   const HARVEST_MAX_TRIES = 60
+
   for (let attempt = 0; attempt < HARVEST_MAX_TRIES; attempt++) {
     await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))
     const room = $groupChats.get()[group]
+
     if (!room || room.running) {
       return
     }
+
     const stranded = room.stranded || {}
+
     if (!Object.keys(stranded).length) {
       return
     }
+
     for (const member of members) {
       if (Object.prototype.hasOwnProperty.call(stranded, groupMemberKey(member))) {
         try {
@@ -838,6 +946,7 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
       }
     }
   }
+
   recordGroupActivity(group, {
     kind: 'failed',
     member: null,
@@ -859,9 +968,11 @@ export function sendToGroupChat(
 ): null | string {
   const trimmed = String(text || '').trim()
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
+
   if ((!trimmed && !attached.length) || !members.length) {
     return null
   }
+
   const target = thread || mintGroupThreadId()
   $groupNeedsYou.set({
     ...$groupNeedsYou.get(),
@@ -872,8 +983,10 @@ export function sendToGroupChat(
   // members overlap across multiple groups.
   updateGroupChat(group, (room: GroupChatRoom) => {
     room.members = durableGroupChatMembers(members)
+
     return room
   })
+
   const sent = appendGroupChatEntry(
     group,
     {
@@ -884,6 +997,7 @@ export function sendToGroupChat(
     target,
     attached
   )
+
   const wasRunning = ($groupChats.get()[group] || {}).running === true
   updateGroupChat(group, (room: GroupChatRoom) => {
     room.epoch = (room.epoch || 0) + 1
@@ -903,6 +1017,7 @@ export function sendToGroupChat(
       },
       members.map((member: GroupMember) => groupMemberKey(member))
     )
+
     return room
   })
   recordGroupActivity(group, {
@@ -910,10 +1025,12 @@ export function sendToGroupChat(
     member: 'You',
     thread: target
   })
+
   if (!wasRunning) {
     void runGroupChatRounds(group, members, target).catch(() => {
       updateGroupChat(group, (r: GroupChatRoom) => {
         r.running = false
+
         return r
       })
     })
@@ -924,10 +1041,12 @@ export function sendToGroupChat(
       void runGroupChatRounds(group, members, target).catch(() => {
         updateGroupChat(group, (r: GroupChatRoom) => {
           r.running = false
+
           return r
         })
       })
     }, 250)
   }
+
   return target
 }

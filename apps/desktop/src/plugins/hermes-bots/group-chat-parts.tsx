@@ -46,34 +46,44 @@ export function GroupImageControls({ image, onImage, seedName, seedMembers }: Gr
   const b = useBots()
   const imagen = useValue($imagenAvailable)
   const [busy, setBusy] = useState(false)
+
   if (imagen === null) {
     void probeImagen()
   }
+
   const upload = async () => {
     const raw = await pickImageFromDevice()
+
     if (raw) {
       onImage(await normalizeAvatarImage(raw))
     }
   }
+
   const generate = async () => {
     if (busy) {
       return
     }
+
     setBusy(true)
+
     try {
       const who = [seedName, seedMembers?.length ? `a team of ${seedMembers.join(', ')}` : '']
         .filter(Boolean)
         .join(' — ')
+
       const res = await host.request<ImageGenerateResponse>('image.generate', {
         prompt:
           `Group chat icon for an AI agent team called "${who || 'a bot team'}". ` +
           'Friendly minimal emblem, bold flat vector style, solid color background, centered, no text.',
         aspect_ratio: 'square'
       })
+
       if (!res?.success) {
         throw new Error(res?.error || 'generation failed')
       }
+
       const img = res.image_data || res.image
+
       if (img) {
         onImage(await normalizeAvatarImage(img))
       }
@@ -83,31 +93,33 @@ export function GroupImageControls({ image, onImage, seedName, seedMembers }: Gr
       setBusy(false)
     }
   }
+
   return (
     <div className="flex items-center gap-2">
       <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-(--chrome-action-hover)">
         {image ? (
-          <img src={image} alt="" className="size-full object-cover" />
+          <img alt="" className="size-full object-cover" src={image} />
         ) : (
-          <Codicon name="organization" className="text-(--ui-text-tertiary)" />
+          <Codicon className="text-(--ui-text-tertiary)" name="organization" />
         )}
       </div>
-      <Button type="button" variant="secondary" size="sm" onClick={upload}>
+      <Button onClick={upload} size="sm" type="button" variant="secondary">
         {b.avatar.upload}
       </Button>
       {imagen ? (
-        <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={generate}>
+        <Button disabled={busy} onClick={generate} size="sm" type="button" variant="secondary">
           {busy ? 'Generating…' : 'Generate'}
         </Button>
       ) : null}
       {image ? (
-        <Button type="button" variant="ghost" size="sm" onClick={() => onImage(null)}>
+        <Button onClick={() => onImage(null)} size="sm" type="button" variant="ghost">
           Remove
         </Button>
       ) : null}
     </div>
   )
 }
+
 interface MentionToken {
   query: string
   /** Index of the '@' the token starts at. */
@@ -125,9 +137,11 @@ interface MentionToken {
 function mentionTokenAt(text: string, caret: number): MentionToken | null {
   const upto = String(text || '').slice(0, caret)
   const match = /(^|\s)@([a-z0-9._-]*)$/i.exec(upto)
+
   if (!match) {
     return null
   }
+
   return {
     query: match[2].toLowerCase(),
     start: caret - match[2].length - 1
@@ -165,6 +179,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
   const [token, setToken] = useState<MentionToken | null>(null)
   const [selected, setSelected] = useState(0)
   const options: MentionOption[] = []
+
   if (token) {
     for (const pick of ['everyone', 'all']) {
       if (pick.startsWith(token.query)) {
@@ -174,14 +189,17 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
         })
       }
     }
+
     for (const member of members) {
       const handle = String(member.handle || botHandle(member.name, member) || '').trim()
       const display = displayName(member, botRosterMeta(member, allMeta))
       // Renamed members complete on their friendly tag; parser resolves both.
       const tag = String(botMentionTag(member) || handle).trim()
+
       if (!tag) {
         continue
       }
+
       if (
         token.query &&
         !tag.toLowerCase().startsWith(token.query) &&
@@ -190,24 +208,29 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
       ) {
         continue
       }
+
       options.push({
         handle: tag,
         meta: display
       })
     }
   }
+
   const open = Boolean(token) && options.length > 0
   const active = open ? Math.min(selected, options.length - 1) : 0
+
   // The onClick below passes `event.target`, which React types as a bare
   // EventTarget even though a click on this textarea always targets it.
   const refreshToken = (target: HTMLTextAreaElement) => {
     setToken(mentionTokenAt(target.value, target.selectionStart ?? target.value.length))
     setSelected(0)
   }
+
   const insert = (handle: string) => {
     if (!token) {
       return
     }
+
     const caret = inputRef.current?.selectionStart ?? value.length
     const next = `${value.slice(0, token.start)}@${handle} ${value.slice(caret)}`
     onChange(next)
@@ -217,8 +240,10 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
     const pos = token.start + handle.length + 2
     requestAnimationFrame(() => {
       const el = inputRef.current
+
       if (el) {
         el.focus()
+
         try {
           el.setSelectionRange(pos, pos)
         } catch {
@@ -227,17 +252,18 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
       }
     })
   }
+
   return (
     <div className="relative min-w-0 flex-1">
       {open ? (
         <div className="absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) py-1 shadow-lg">
           {options.map((option, index) => (
             <RowButton
-              key={option.handle}
               className={cn(
                 'flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs',
                 index === active ? 'bg-(--ui-control-hover-background) text-foreground' : 'text-(--ui-text-secondary)'
               )} // preventDefault on mousedown so the input keeps focus.
+              key={option.handle}
               onMouseDown={event => {
                 event.preventDefault()
                 insert(option.handle)
@@ -252,13 +278,11 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
       ) : null}
       <Textarea
         {...inputProps}
-        ref={inputRef}
-        value={value}
-        rows={1} // Multi-line room prompts (#89884): the composer was a single-line
         // Input whose form submitted on every Enter — newlines were
         // impossible. Enter (no Shift) still submits via onSubmitDraft;
         // Shift+Enter falls through to the textarea's native newline.
         className={cn('max-h-40 min-h-9 resize-none', inputProps.className)}
+        onBlur={() => setToken(null)}
         onChange={event => {
           onChange(event.target.value)
           refreshToken(event.target)
@@ -273,34 +297,45 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
           if (event.nativeEvent?.isComposing || event.keyCode === 229) {
             return
           }
+
           if (open) {
             if (event.key === 'ArrowDown') {
               event.preventDefault()
               setSelected((active + 1) % options.length)
+
               return
             }
+
             if (event.key === 'ArrowUp') {
               event.preventDefault()
               setSelected((active - 1 + options.length) % options.length)
+
               return
             }
+
             if (event.key === 'Enter' || event.key === 'Tab') {
               event.preventDefault()
               insert(options[active].handle)
+
               return
             }
+
             if (event.key === 'Escape') {
               event.preventDefault()
               setToken(null)
+
               return
             }
           }
+
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault()
             onSubmitDraft?.()
           }
         }}
-        onBlur={() => setToken(null)}
+        ref={inputRef}
+        rows={1} // Multi-line room prompts (#89884): the composer was a single-line
+        value={value}
       />
     </div>
   )
@@ -342,6 +377,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [picked, setPicked] = useState<Record<string, string[]>>({})
   const [sending, setSending] = useState(false)
+
   const questions: GroupClarifyQuestion[] =
     entry.questions && entry.questions.length
       ? entry.questions.map((q, i) => ({
@@ -358,27 +394,36 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
             multiSelect: entry.multiSelect
           }
         ]
+
   const answerFor = (q: GroupClarifyQuestion) => {
     const chosen = picked[q.qid] || []
+
     if (chosen.length) {
       return q.multiSelect ? JSON.stringify(chosen) : chosen[0]
     }
+
     return isApproval ? '' : (drafts[q.qid] || '').trim()
   }
+
   const allAnswered = questions.every(q => answerFor(q))
+
   const submit = async () => {
     if (!member || sending || !allAnswered) {
       return
     }
+
     setSending(true)
+
     try {
       if (isApproval || !(entry.questions && entry.questions.length)) {
         await answerGroupClarify(entry, member, answerFor(questions[0]))
       } else {
         const answers: Record<string, string> = {}
+
         for (const q of questions) {
           answers[q.qid] = answerFor(q)
         }
+
         await answerGroupClarify(entry, member, answers)
       }
 
@@ -386,6 +431,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
       const summary = isApproval
         ? `${answerFor(questions[0])} — ${entry.command || entry.question || 'command approval'}`
         : questions.map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q))).join('\n')
+
       appendGroupChatEntry(
         group,
         {
@@ -404,10 +450,11 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
       setSending(false)
     }
   }
+
   return (
     <div className="grid gap-1.5 rounded-md border border-(--ui-accent)/50 bg-(--ui-accent)/5 px-2.5 py-2">
       <div className="flex items-center gap-1.5 text-xs font-medium">
-        <Codicon name={isApproval ? 'shield' : 'question'} className="shrink-0 text-(--ui-accent)" />
+        <Codicon className="shrink-0 text-(--ui-accent)" name={isApproval ? 'shield' : 'question'} />
         {isApproval
           ? `@${botHandle(entry.member, member)} wants to run a command:`
           : `@${botHandle(entry.member, member)} asks:`}
@@ -418,21 +465,20 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
         </code>
       ) : null}
       {questions.map(q => (
-        <div key={`q:${q.qid}`} className="grid gap-1">
+        <div className="grid gap-1" key={`q:${q.qid}`}>
           {q.question ? <div className="text-xs whitespace-pre-wrap">{q.question}</div> : null}
           {q.choices.length ? (
             <div className="flex flex-wrap gap-1">
               {q.choices.map(choice => {
                 const chosen = (picked[q.qid] || []).includes(choice)
+
                 return (
                   <Button
-                    key={`choice:${q.qid}:${choice}`}
-                    size="sm"
-                    variant={chosen ? 'default' : 'secondary'}
                     className={cn(
                       'h-6 px-2 text-[0.7rem]',
                       isApproval && choice === 'deny' && !chosen && 'text-destructive'
                     )}
+                    key={`choice:${q.qid}:${choice}`}
                     onClick={() => {
                       setDrafts(prev => ({
                         ...prev,
@@ -440,6 +486,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
                       }))
                       setPicked(prev => {
                         const current = prev[q.qid] || []
+
                         const next = q.multiSelect
                           ? chosen
                             ? current.filter(c => c !== choice)
@@ -447,12 +494,15 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
                           : chosen
                             ? []
                             : [choice]
+
                         return {
                           ...prev,
                           [q.qid]: next
                         }
                       })
                     }}
+                    size="sm"
+                    variant={chosen ? 'default' : 'secondary'}
                   >
                     {choice}
                   </Button>
@@ -463,10 +513,9 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
           {/* Approvals are a closed choice set — no free-text input. */}
           {isApproval ? null : (
             <Input
-              key={`input:${q.qid}`}
               aria-label={`Answer @${entry.member}`}
-              placeholder={q.choices.length ? 'Or type your own answer…' : 'Type your answer…'}
-              value={drafts[q.qid] || ''}
+              className="h-7 text-xs"
+              key={`input:${q.qid}`}
               onChange={event => {
                 const value = event.target.value
                 setPicked(prev => ({
@@ -483,18 +532,20 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
                 if (event.nativeEvent?.isComposing || event.keyCode === 229) {
                   return
                 }
+
                 if (event.key === 'Enter' && questions.length === 1) {
                   event.preventDefault()
                   void submit()
                 }
               }}
-              className="h-7 text-xs"
+              placeholder={q.choices.length ? 'Or type your own answer…' : 'Type your answer…'}
+              value={drafts[q.qid] || ''}
             />
           )}
         </div>
       ))}
       <div className="flex justify-end">
-        <Button size="sm" disabled={sending || !allAnswered || !member} onClick={() => void submit()}>
+        <Button disabled={sending || !allAnswered || !member} onClick={() => void submit()} size="sm">
           {sending ? 'Sending…' : isApproval ? 'Respond' : 'Answer'}
         </Button>
       </div>

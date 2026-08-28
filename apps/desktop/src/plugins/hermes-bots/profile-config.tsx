@@ -66,6 +66,7 @@ interface CheckListProps {
   items: CapabilityEntry[]
   onToggle: (name: string, enabled: boolean) => void
 }
+
 export function CheckList({ items, onToggle, columns = 2 }: CheckListProps) {
   return (
     <div
@@ -77,8 +78,8 @@ export function CheckList({ items, onToggle, columns = 2 }: CheckListProps) {
     >
       {items.map(item => (
         <label
-          key={item.name}
           className="flex min-w-0 cursor-pointer items-center gap-1.5 py-0.5 text-xs text-(--ui-text-secondary)"
+          key={item.name}
           title={item.description || item.name}
         >
           <Checkbox checked={item.enabled} onCheckedChange={value => onToggle(item.name, Boolean(value))} />
@@ -91,6 +92,7 @@ export function CheckList({ items, onToggle, columns = 2 }: CheckListProps) {
     </div>
   )
 }
+
 /** `profiles.describe` as the advanced editor reads it. */
 export interface ProfileDescribeResponse {
   mcp_servers?: CapabilityEntry[]
@@ -124,6 +126,7 @@ interface AdvancedProfileConfigProps {
   setState: (update: (prev: AdvancedConfigState) => AdvancedConfigState) => void
   state: AdvancedConfigState
 }
+
 export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileConfigProps) {
   const b = useBots()
   const [loaded, setLoaded] = useState(false)
@@ -134,6 +137,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
   const botRoute = resolveBotConnectionRoute(bot).route
   const backendProfile = botRoute?.targetProfile || botRoute?.profile || bot.name
   const backendScope = botBackendProfileScope(botRoute, bot.name)
+
   if (!loaded) {
     setLoaded(true)
     Promise.all([
@@ -177,6 +181,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
       })
       .catch(() => setUnsupported(true))
   }
+
   if (unsupported) {
     return (
       <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">
@@ -184,16 +189,19 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
       </div>
     )
   }
+
   if (!state.loaded) {
     return (
       <div className="flex justify-center py-4">
-        <GlyphSpinner spinner="breathe" className="text-(--ui-text-tertiary)" />
+        <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
       </div>
     )
   }
+
   const visibleSkills = skillFilter.trim()
     ? state.skills.filter(s => s.name.toLowerCase().includes(skillFilter.trim().toLowerCase()))
     : state.skills
+
   const toggleSkill = (name: string, enabled: boolean) =>
     setState(prev => ({
       ...prev,
@@ -207,6 +215,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           : s
       )
     }))
+
   const toggleToolset = (name: string, enabled: boolean) =>
     setState(prev => ({
       ...prev,
@@ -220,6 +229,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           : t
       )
     }))
+
   const toggleMcp = (name: string, enabled: boolean) =>
     setState(prev => ({
       ...prev,
@@ -233,6 +243,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           : m
       )
     }))
+
   const enabledSkills = state.skills.filter(s => s.enabled).length
   const enabledToolsets = state.toolsets.filter(t => t.enabled).length
   const mcpList = state.mcp || []
@@ -250,10 +261,6 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
       <div className="grid gap-4">
         <ModelPicker
           bot={bot}
-          value={{
-            provider: state.provider,
-            model: state.model
-          }}
           onChange={patch =>
             setState(prev => ({
               ...prev,
@@ -261,6 +268,10 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
               ...patch
             }))
           }
+          value={{
+            provider: state.provider,
+            model: state.model
+          }}
         />
         {labeled(
           'Capabilities (applies immediately — skills, tools, MCP)',
@@ -288,7 +299,6 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           'SOUL.md (persona + agent-messaging protocol)',
           <Textarea
             className="min-h-28 font-mono text-xs leading-5"
-            value={state.soul}
             onChange={event =>
               setState(prev => ({
                 ...prev,
@@ -296,20 +306,18 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                 soul: event.target.value
               }))
             }
+            value={state.soul}
           />
         )}
       </div>
     )
   }
+
   if (bot?.sourceScoped && botRoute?.mode === 'remote' && !skillsViewRoutesConnections) {
     return (
       <div className="grid gap-4">
         <ModelPicker
           bot={bot}
-          value={{
-            provider: state.provider,
-            model: state.model
-          }}
           onChange={patch =>
             setState(prev => ({
               ...prev,
@@ -317,6 +325,10 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
               ...patch
             }))
           }
+          value={{
+            provider: state.provider,
+            model: state.model
+          }}
         />
         <div className="rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-text-tertiary)">
           Remote capabilities require a newer desktop. Model and SOUL changes remain staged until you save.
@@ -325,7 +337,6 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           'SOUL.md (persona + agent-messaging protocol)',
           <Textarea
             className="min-h-28 font-mono text-xs leading-5"
-            value={state.soul}
             onChange={event =>
               setState(prev => ({
                 ...prev,
@@ -333,19 +344,17 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                 soul: event.target.value
               }))
             }
+            value={state.soul}
           />
         )}
       </div>
     )
   }
+
   return (
     <div className="grid gap-4">
       <ModelPicker
         bot={bot}
-        value={{
-          provider: state.provider,
-          model: state.model
-        }}
         onChange={patch =>
           setState(prev => ({
             ...prev,
@@ -353,15 +362,19 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
             ...patch
           }))
         }
+        value={{
+          provider: state.provider,
+          model: state.model
+        }}
       />
       {labeled(
         `Skills (${enabledSkills}/${state.skills.length} enabled)`,
         <div className="grid gap-1.5 rounded-md border border-(--ui-stroke-secondary) p-2">
           <Input
             className="h-7 text-xs"
+            onChange={event => setSkillFilter(event.target.value)}
             placeholder={b.tools.filterSkills}
             value={skillFilter}
-            onChange={event => setSkillFilter(event.target.value)}
           />
           <div
             className="overflow-y-auto overscroll-contain"
@@ -369,7 +382,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
               maxHeight: 180
             }}
           >
-            <CheckList items={visibleSkills} onToggle={toggleSkill} columns={2} />
+            <CheckList columns={2} items={visibleSkills} onToggle={toggleSkill} />
           </div>
           <HubSkillsSection
             forProfile={backendScope}
@@ -403,7 +416,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           >
             <div className="grid gap-1.5">
               {state.toolsets.map(tset => (
-                <div key={tset.name} className="rounded-md border border-(--ui-stroke-secondary) p-2">
+                <div className="rounded-md border border-(--ui-stroke-secondary) p-2" key={tset.name}>
                   <label className="flex items-center gap-2 text-xs font-medium text-(--ui-text-secondary)">
                     <Checkbox
                       checked={!!tset.enabled}
@@ -416,7 +429,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                   /* the desktop build exposes it. Older builds: just the toggle. */}
                   {ToolsetConfigPanel ? (
                     <div className="mt-1.5 border-t border-(--ui-stroke-secondary) pt-1.5">
-                      <ToolsetConfigPanel toolset={tset.name} profile={backendScope} />
+                      <ToolsetConfigPanel profile={backendScope} toolset={tset.name} />
                     </div>
                   ) : null}
                 </div>
@@ -452,8 +465,9 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                     m.fromCatalog &&
                     !m.installed &&
                     ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
+
                   return (
-                    <label key={m.name} className="flex items-start gap-2 text-xs text-(--ui-text-secondary)">
+                    <label className="flex items-start gap-2 text-xs text-(--ui-text-secondary)" key={m.name}>
                       <Checkbox
                         checked={!!m.enabled}
                         disabled={needsSetup}
@@ -467,7 +481,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                           </span>
                         ) : null}
                         {needsSetup ? (
-                          <McpSetupButton profile={backendScope} entry={m} onDone={() => toggleMcp(m.name, true)} />
+                          <McpSetupButton entry={m} onDone={() => toggleMcp(m.name, true)} profile={backendScope} />
                         ) : null}
                         {m.description ? (
                           <div className="truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
@@ -487,7 +501,6 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
         'SOUL.md (persona + agent-messaging protocol)',
         <Textarea
           className="min-h-28 font-mono text-xs leading-5"
-          value={state.soul}
           onChange={event =>
             setState(prev => ({
               ...prev,
@@ -495,11 +508,13 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
               soul: event.target.value
             }))
           }
+          value={state.soul}
         />
       )}
     </div>
   )
 }
+
 export function emptyAdvancedState(): AdvancedConfigState {
   return {
     loaded: false,
@@ -543,13 +558,17 @@ export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigS
   const payload: ProfileConfigurePayload = {
     name: bot.name
   }
+
   const applied: Record<string, boolean> = {}
+
   if (state.dirtySoul) {
     payload.soul = ensureMessagingProtocol(state.soul, bot.name, $lastRoster.get())
   }
+
   if (state.dirtyModel) {
     const model = state.model.trim()
     const provider = state.provider.trim()
+
     if (model && provider) {
       payload.model = model
       payload.provider = provider
@@ -558,6 +577,7 @@ export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigS
         const result = (await requestForBot(bot, 'cli.exec', {
           argv: ['--profile', bot.name, 'config', 'unset', 'model']
         })) as { blocked?: boolean; code?: number }
+
         applied.model = result?.blocked !== true && result?.code === 0
       } catch {
         applied.model = false
@@ -566,25 +586,31 @@ export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigS
       applied.model = false
     }
   }
+
   if (state.dirtySkills) {
     payload.disabled_skills = state.skills.filter(s => !s.enabled).map(s => s.name)
   }
+
   if (state.dirtyToolsets) {
     const all = state.toolsets.length
     const enabled = state.toolsets.filter(t => t.enabled)
     // All enabled (or none) = clear the pin; otherwise pin the checked set.
     payload.enabled_toolsets = enabled.length === all || enabled.length === 0 ? [] : enabled.map(t => t.name)
   }
+
   if (state.dirtyMcp) {
     payload.enabled_mcp_servers = (state.mcp || []).filter(m => m.enabled).map(m => m.name)
   }
+
   if (Object.keys(payload).length === 1) {
     return {
       ok: Object.values(applied).every(Boolean),
       applied
     }
   }
+
   const result = (await requestForBot(bot, 'profiles.configure', payload)) as ProfileConfigureResult
+
   const merged = {
     ...applied,
     ...(result?.applied || {})
@@ -615,6 +641,7 @@ export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigS
         }) as Promise<ProfileConfigureResult>
     })
   }
+
   return {
     ...result,
     ok: Object.values(merged).every(Boolean),

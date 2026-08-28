@@ -48,12 +48,16 @@ const avatarPushInflight = new Set<string>()
 function pushLocalAvatars(roster: RosterRow[]) {
   for (const bot of roster) {
     const key = botMetaKey(bot)
+
     if (bot.has_avatar || avatarPushInflight.has(key)) {
       continue
     }
+
     const image = $botMeta.get()[key]?.image
+
     if (image && typeof image === 'string' && image.startsWith('data:')) {
       avatarPushInflight.add(key)
+
       const request = bot.sourceScoped
         ? requestForBot(bot, 'profiles.set_asset', {
             name: bot.name,
@@ -65,6 +69,7 @@ function pushLocalAvatars(roster: RosterRow[]) {
             asset: 'avatar',
             data: image
           })
+
       Promise.resolve(request)
         .then(() =>
           queryClient.invalidateQueries({
@@ -72,6 +77,7 @@ function pushLocalAvatars(roster: RosterRow[]) {
           })
         )
         .catch(() => avatarPushInflight.delete(key))
+
       continue
     }
 
@@ -79,9 +85,11 @@ function pushLocalAvatars(roster: RosterRow[]) {
     // live SVG (tagged data-bot-face) to a PNG and push that, so the
     // inter-agent notices (core #85855/#85888) can show the real pfp.
     const svg = document.querySelector('svg[data-bot-face=' + JSON.stringify(bot.name) + ']')
+
     if (!svg) {
       continue
     }
+
     avatarPushInflight.add(key)
     rasterizeSvgToPng(svg, 160)
       .then(png =>
@@ -121,6 +129,7 @@ function rasterizeSvgToPng(svgEl: Element, size: number): Promise<null | string>
       const markup = new XMLSerializer().serializeToString(clone)
       const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(markup)
       const img = new Image()
+
       img.onload = () => {
         try {
           const canvas = document.createElement('canvas')
@@ -134,6 +143,7 @@ function rasterizeSvgToPng(svgEl: Element, size: number): Promise<null | string>
           resolve(null)
         }
       }
+
       img.onerror = () => resolve(null)
       img.src = url
     } catch {
@@ -141,23 +151,30 @@ function rasterizeSvgToPng(svgEl: Element, size: number): Promise<null | string>
     }
   })
 }
+
 /** `profiles.get_asset` reply for the `avatar` asset. */
 interface ProfilesGetAssetResult {
   /** Data URL. */
   data?: string
   found?: boolean
 }
+
 export function pullServerAvatars(roster: RosterRow[]) {
   pushLocalAvatars(roster)
+
   for (const bot of roster) {
     const key = botMetaKey(bot)
+
     if (!bot.has_avatar || avatarFetchInflight.has(key)) {
       continue
     }
+
     if ($botMeta.get()[key]?.image) {
       continue
     }
+
     avatarFetchInflight.add(key)
+
     const assetRequest = bot.sourceScoped
       ? requestForBot(bot, 'profiles.get_asset', {
           name: bot.name,
@@ -167,16 +184,19 @@ export function pullServerAvatars(roster: RosterRow[]) {
           name: bot.name,
           asset: 'avatar'
         })
+
     Promise.resolve(assetRequest as Promise<ProfilesGetAssetResult>)
       .then(res => {
         if (res?.found && res.data) {
           const current = $botMeta.get()
           const mine = current[key] || {}
+
           // A 160px raster of the vector face is only for inter-agent
           // notices. Do not park it on the roster or the live face dies.
           if (isBackfilledFacePng(res.data) && mine.imageKind !== 'photo' && !mine.pet) {
             return
           }
+
           $botMeta.set({
             ...current,
             [key]: {
@@ -209,17 +229,23 @@ export function pullServerAvatars(roster: RosterRow[]) {
 export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
   const local = $botMeta.get()
   let changed = false
+
   const next = {
     ...local
   }
+
   for (const bot of roster) {
     const server = bot.ui_meta?.['hermes-bots']
+
     if (server && typeof server === 'object') {
       const key = botMetaKey(bot)
+
       if (fetchedAt && fetchedAt < (botMetaWriteAt.get(key) || 0)) {
         continue
       }
+
       const mine = next[key] || {}
+
       const merged = {
         ...mine,
         ...server
@@ -246,12 +272,14 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
       ) {
         delete merged.group
       }
+
       if (JSON.stringify(next[key] || null) !== JSON.stringify(merged)) {
         next[key] = merged
         changed = true
       }
     }
   }
+
   if (changed) {
     $botMeta.set(next)
 
@@ -276,12 +304,14 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
   const ownerRoute = botConnectionRoute(bot)
   const ownerKey = ownerRoute ? botRouteKey(ownerRoute) : null
   let name = null
+
   for (let n = 2; n < 100; n++) {
     // Truncate the BASE, never the suffix — slicing the joined string chops
     // the "-2" off a max-length name and the candidate collides with the
     // base forever (#19).
     const suffix = `-${n}`
     const candidate = base.slice(0, 64 - suffix.length) + suffix
+
     if (
       !roster.some(
         // A truthy ownerKey is minted from ownerRoute, so the route is present
@@ -290,12 +320,15 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
       )
     ) {
       name = candidate
+
       break
     }
   }
+
   if (!name) {
     throw new Error('No free name for the duplicate.')
   }
+
   await requestForBot(bot, 'profiles.create', {
     name,
     clone_from: base,
@@ -306,6 +339,7 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
   // are tellable apart in the roster until the user renames. Do not copy
   // chat or created. Those belong to the original bot.
   const meta = $botMeta.get()[botMetaKey(bot)]
+
   if (meta) {
     const { chat, created, ...look } = meta
     await saveBotMeta(
@@ -325,6 +359,7 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
       }
     )
   }
+
   return name
 }
 
@@ -349,9 +384,11 @@ interface CliExecResult {
  * directory (hermes-agent#52279). That is the "can't delete a bot" error. */
 export async function deleteBot(bot: RosterRow) {
   const route = botConnectionRoute(bot)
+
   if (isDefaultBot(bot) || String(route?.targetProfile || '').toLowerCase() === 'default') {
     throw new Error('The default profile cannot be deleted.')
   }
+
   if (typeof host.deleteProfile === 'function') {
     if (route) {
       await host.deleteProfile(route)
@@ -363,18 +400,23 @@ export async function deleteBot(bot: RosterRow) {
     if (route) {
       throw new Error('Source-scoped profile deletion requires host.deleteProfile.')
     }
+
     const result: CliExecResult = await host.request('cli.exec', {
       argv: ['profile', 'delete', bot.name, '--yes']
     })
+
     if (result?.blocked || result?.code !== 0) {
       throw new Error(result?.hint || result?.output || `Could not delete profile ${bot.name}.`)
     }
   }
+
   const meta = {
     ...$botMeta.get()
   }
+
   delete meta[botMetaKey(bot)]
   $botMeta.set(meta)
+
   try {
     if (route) {
       await commitBotMetaV2(getPluginCtx()?.storage, meta)
@@ -384,26 +426,33 @@ export async function deleteBot(bot: RosterRow) {
   } catch {
     /* profile is deleted; stale local appearance is harmless if storage fails */
   }
+
   // Both ids: the marker may have been filed under either tip of the chat's
   // compression lineage.
   forgetSessionUnread([bot.canonical_session?.id, bot.canonical_session?.resolved_id], bot.name)
   rosterWatermarks.delete(botSelectionKey(bot))
   avatarFetchInflight.delete(botMetaKey(bot))
   avatarPushInflight.delete(botMetaKey(bot))
+
   if ($selectedBot.get() === botSelectionKey(bot)) {
     $selectedBot.set('default')
   }
+
   clearSelectedRosterBot(bot)
+
   if ($openBotChat.get()?.key === botRosterKey(bot)) {
     $openBotChat.set(null)
   }
+
   queryClient.invalidateQueries({
     queryKey: ROSTER_KEY
   })
   const activeOwner = focusedRosterOwner($focusedBotOwner.get?.())
+
   const deletedOwnerIsActive = route
     ? activeOwner?.connectionId === route.connectionId && activeOwner?.name === route.profile
     : activeOwner?.name === bot.name
+
   if (deletedOwnerIsActive && typeof host.newChat === 'function') {
     host.newChat('default')
   }

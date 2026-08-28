@@ -19,11 +19,14 @@ export function filterBotsByGateway(roster: RosterRow[], connectionId: string) {
   if (!connectionId || connectionId === 'all') {
     return roster
   }
+
   return (roster || []).filter(bot => String(bot?.connectionId || '') === connectionId)
 }
+
 export function botNeedsHandleLabel(bot: RosterRow, roster: RosterRow[], metaByName: Record<string, BotMeta>) {
   const identity = displayName(bot, botRosterMeta(bot, metaByName)).trim().toLowerCase()
   const connectionId = String(bot?.connectionId || '')
+
   return (roster || []).some(
     candidate =>
       botRosterKey(candidate) !== botRosterKey(bot) &&
@@ -32,6 +35,7 @@ export function botNeedsHandleLabel(bot: RosterRow, roster: RosterRow[], metaByN
       botHandle(candidate.name, candidate) !== botHandle(bot.name, bot)
   )
 }
+
 export function groupMatchesRosterFilters(
   name: string,
   members: RosterRow[],
@@ -40,13 +44,16 @@ export function groupMatchesRosterFilters(
   connectionId: string
 ) {
   const inGateway = filterBotsByGateway(members, connectionId)
+
   if (connectionId && connectionId !== 'all' && inGateway.length === 0) {
     return false
   }
+
   const needle = String(query || '')
     .trim()
     .toLowerCase()
     .replace(/^@/, '')
+
   return (
     !needle ||
     String(name || '')
@@ -78,10 +85,13 @@ interface RosterGatewaySection<TRow extends RosterGatewayRow = RosterGatewayRow>
 
 /** Sections built from rows that always carry their resolved roster row. */
 export type ResolvedRosterGatewaySection = RosterGatewaySection<RosterGatewayRow & { bot: RosterRow }>
+
 export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow[]) {
   const byId = new Map<string, RosterGatewayOption & { count: number }>()
+
   for (const source of Array.isArray(sources) ? sources : []) {
     const id = String(source?.connectionId || '').trim()
+
     if (id) {
       byId.set(id, {
         ...source,
@@ -90,11 +100,14 @@ export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow
       })
     }
   }
+
   for (const bot of roster || []) {
     const id = String(bot?.connectionId || '').trim()
+
     if (!id) {
       continue
     }
+
     const source = byId.get(id) || {
       connectionId: id,
       kind: bot.connectionKind,
@@ -103,15 +116,18 @@ export function rosterGatewayOptions(sources: GatewaySource[], roster: RosterRow
       error: bot.sourceError,
       count: 0
     }
+
     source.count += 1
     byId.set(id, source)
   }
+
   return [...byId.values()].sort((a, b) =>
     String(a.label || a.connectionId).localeCompare(String(b.label || b.connectionId), undefined, {
       sensitivity: 'base'
     })
   )
 }
+
 export function rosterGatewaySections<TRow extends RosterGatewayRow>(
   botRows: TRow[],
   gatewayOptions: RosterGatewayOption[],
@@ -119,6 +135,7 @@ export function rosterGatewaySections<TRow extends RosterGatewayRow>(
 ): { sectioned: boolean; sections: RosterGatewaySection<TRow>[] } {
   const rows = Array.isArray(botRows) ? botRows : []
   const options = Array.isArray(gatewayOptions) ? gatewayOptions : []
+
   if (gatewayFilter !== 'all' || options.length <= 1) {
     return {
       sectioned: false,
@@ -131,7 +148,9 @@ export function rosterGatewaySections<TRow extends RosterGatewayRow>(
       ]
     }
   }
+
   const byId = new Map<string, TRow[]>()
+
   for (const row of rows) {
     const bot = row?.bot || row
     const id = String(bot?.connectionId || 'legacy').trim() || 'legacy'
@@ -139,14 +158,18 @@ export function rosterGatewaySections<TRow extends RosterGatewayRow>(
     bucket.push(row)
     byId.set(id, bucket)
   }
+
   const known = new Set<string>()
   const sections: RosterGatewaySection<TRow>[] = []
+
   for (const option of options) {
     const id = String(option?.connectionId || '').trim()
     const sectionRows = byId.get(id)
+
     if (!id || !sectionRows?.length) {
       continue
     }
+
     known.add(id)
     sections.push({
       id,
@@ -154,10 +177,12 @@ export function rosterGatewaySections<TRow extends RosterGatewayRow>(
       rows: sectionRows
     })
   }
+
   for (const [id, sectionRows] of byId) {
     if (known.has(id)) {
       continue
     }
+
     const bot = sectionRows[0]?.bot || sectionRows[0]
     sections.push({
       id,
@@ -171,22 +196,32 @@ export function rosterGatewaySections<TRow extends RosterGatewayRow>(
       rows: sectionRows
     })
   }
+
   return {
     sectioned: true,
     sections
   }
 }
+
 function gatewayKindIcon(kind?: string) {
   const icons: Partial<typeof sdk.icons> = (typeof sdk === 'undefined' ? null : sdk.icons) || {}
-  if (kind === 'local') return icons.Monitor
-  if (kind === 'cloud') return icons.Cloud
-  if (kind === 'ssh') return icons.Terminal
+
+  if (kind === 'local') {return icons.Monitor}
+
+  if (kind === 'cloud') {return icons.Cloud}
+
+  if (kind === 'ssh') {return icons.Terminal}
+
   return icons.Network
 }
+
 function gatewayKindCodicon(kind?: string) {
-  if (kind === 'local') return 'device-desktop'
-  if (kind === 'cloud') return 'cloud'
-  if (kind === 'ssh') return 'terminal'
+  if (kind === 'local') {return 'device-desktop'}
+
+  if (kind === 'cloud') {return 'cloud'}
+
+  if (kind === 'ssh') {return 'terminal'}
+
   return 'remote-explorer'
 }
 
@@ -199,6 +234,7 @@ interface GatewayKindGlyphProps {
  * usable until they expose the shared icon namespace. */
 export function GatewayKindGlyph({ className, kind }: GatewayKindGlyphProps) {
   const Icon = gatewayKindIcon(kind)
+
   return (
     <span
       aria-hidden
@@ -206,7 +242,7 @@ export function GatewayKindGlyph({ className, kind }: GatewayKindGlyphProps) {
       data-connection-kind={kind || 'remote'}
       data-slot="connection-glyph"
     >
-      {Icon ? <Icon className="size-3" /> : <Codicon name={gatewayKindCodicon(kind)} className="text-[0.75rem]" />}
+      {Icon ? <Icon className="size-3" /> : <Codicon className="text-[0.75rem]" name={gatewayKindCodicon(kind)} />}
     </span>
   )
 }
@@ -223,6 +259,7 @@ interface RosterSectionHeaderProps {
   status?: { available: boolean; label: string }
   tip?: string
 }
+
 export function RosterSectionHeader({
   collapsed,
   count,
@@ -246,34 +283,39 @@ export function RosterSectionHeader({
         // TODO(bot-mode-types): neither `gatewayKind` nor `icon` is required, so a header
         // given neither renders `codicon-undefined`. Both current callers pass exactly one.
         // @ts-expect-error `icon` is optional here; Codicon's `name` is required.
-        <Codicon name={icon} className="shrink-0" />
+        <Codicon className="shrink-0" name={icon} />
       )}
       <span className="flex min-w-0 items-center gap-1">
         <span className="min-w-0 truncate">{label}</span>
         {status && !status.available ? <span className="sr-only">{status.label}</span> : null}
       </span>
-      <span className="min-w-0 flex-1" aria-hidden />
+      <span aria-hidden className="min-w-0 flex-1" />
       <span className="shrink-0 font-normal tabular-nums text-(--ui-text-quaternary)">{count}</span>
       {status && !status.available ? (
-        <Codicon name="debug-disconnect" className="shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
+        <Codicon aria-hidden className="shrink-0 text-amber-600 dark:text-amber-300" name="debug-disconnect" />
       ) : null}
     </RowButton>
   )
+
   return tip ? <Tip label={tip}>{button}</Tip> : button
 }
+
 interface GatewaySectionHeadingProps {
   collapsed: boolean
   count: number
   onToggle: () => void
   option?: RosterGatewayOption | null
 }
+
 export function GatewaySectionHeading({ collapsed, count, onToggle, option }: GatewaySectionHeadingProps) {
   const status = botSourceStatus({
     sourceError: option?.error,
     sourceReachable: option?.reachable
   })
+
   const label = option?.label || option?.connectionId || 'Current gateway'
   const kind = option?.kind || 'remote'
+
   return (
     <RosterSectionHeader
       collapsed={collapsed}

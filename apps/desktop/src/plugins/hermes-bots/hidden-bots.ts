@@ -21,9 +21,11 @@ import type { RosterRow } from './types'
 
 /** Session-only view toggle: reveal hidden bots (dimmed) in the roster. */
 export const $showHiddenBots = atom(false)
+
 export function isBotHidden(bot: RosterRow, metaByName: BotMetaSnapshot) {
   return Boolean(botRosterMeta(bot, metaByName)?.hidden)
 }
+
 export function isBotPinned(bot: RosterRow, metaByName: BotMetaSnapshot) {
   return Boolean(botRosterMeta(bot, metaByName)?.pinned)
 }
@@ -33,13 +35,18 @@ export function fallbackSelectionAfterHide(name: string) {
   if ($selectedBot.get() !== name) {
     return
   }
+
   const meta = $botMeta.get()
   const visible = $lastRoster.get().filter(bot => botSelectionKey(bot) !== name && !botRosterMeta(bot, meta)?.hidden)
+
   if (visible.length) {
     $selectedBot.set(botSelectionKey(visible[0]))
+
     return
   }
+
   const defaultBot = $lastRoster.get().find(bot => isDefaultBot(bot) && !botRosterMeta(bot, meta)?.hidden)
+
   if (defaultBot && botSelectionKey(defaultBot) !== name) {
     $selectedBot.set(botSelectionKey(defaultBot))
   } else if (!$lastRoster.get().some(isDefaultBot)) {

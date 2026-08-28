@@ -28,11 +28,14 @@ export function markOrphanedGroupMemberDescriptor(member: GroupMember): GroupMem
     sourceReachable: false
   }
 }
+
 export function groupMemberReferencesConnection(member: GroupMember, connectionId: string) {
   const id = String(connectionId || '').trim()
+
   if (!id) {
     return false
   }
+
   return String(member?.connectionId || '').trim() === id || String(member?.route?.connectionId || '').trim() === id
 }
 
@@ -54,32 +57,42 @@ export function annotateOrphanedGroupChatMembers(
   const live = liveConnectionIds && typeof liveConnectionIds.has === 'function' ? liveConnectionIds : null
   const next: Record<string, GroupChat> = {}
   let changed = false
+
   for (const [name, room] of Object.entries(rooms || {})) {
     const members = Array.isArray(room?.members) ? room.members : []
+
     const orphaned = (member: GroupMember) => {
       if (!member || member.sourceMissing) {
         return false
       }
+
       if (!member.sourceScoped && !member.remoteSource) {
         return false
       }
+
       const id = String(member.route?.connectionId || member.connectionId || '').trim()
+
       if (!id) {
         // Route unresolvable: this is the row shape that threw on render.
         return true
       }
+
       return live ? !live.has(id) : false
     }
+
     if (!members.some(orphaned)) {
       next[name] = room
+
       continue
     }
+
     changed = true
     next[name] = {
       ...room,
       members: members.map(member => (orphaned(member) ? markOrphanedGroupMemberDescriptor(member) : member))
     }
   }
+
   return {
     rooms: next,
     changed

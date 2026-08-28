@@ -31,6 +31,7 @@ interface HubSkillsSectionProps {
   forProfile: null | string | { connectionId?: null | string; profile?: null | string }
   onInstalled?: (name: string) => void
 }
+
 export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionProps) {
   const b = useBots()
   const [query, setQuery] = useState('')
@@ -50,17 +51,22 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
     if (!browseHub) {
       return undefined
     }
+
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== HUB_ORIGIN) {
         return
       }
+
       if (!frameRef.current || event.source !== frameRef.current.contentWindow) {
         return
       }
+
       const data = event.data
+
       if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
         return
       }
+
       const target = String(data.identifier || data.name)
 
       // Skill identifiers are slugs / owner-name paths — keep anything
@@ -68,25 +74,33 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
       if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(target)) {
         return
       }
+
       if (installRef.current) {
         void installRef.current(target, String(data.name))
       }
     }
+
     window.addEventListener('message', onMessage)
+
     return () => window.removeEventListener('message', onMessage)
   }, [browseHub])
+
   const search = async () => {
     const q = query.trim()
+
     if (!q || searching) {
       return
     }
+
     setSearching(true)
     setResults(null)
+
     try {
       const res: { results?: HubSkillResult[] } = await host.request('skills.manage', {
         action: 'search',
         query: q
       })
+
       setResults(res.results || [])
     } catch {
       setResults([])
@@ -94,12 +108,16 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
       setSearching(false)
     }
   }
+
   const install = async (name: string, displayName?: string) => {
     const label = displayName || name
+
     if (installing) {
       return
     }
+
     setInstalling(label)
+
     try {
       // With forProfile the install lands in that bot's skills dir
       // (gateway skills.manage profile scoping); null = launch profile,
@@ -121,6 +139,7 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
         kind: 'success',
         message: `Skill "${label}" installed`
       })
+
       if (typeof onInstalled === 'function') {
         onInstalled(label)
       }
@@ -130,7 +149,9 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
       setInstalling(null)
     }
   }
+
   installRef.current = install
+
   return (
     <div className="grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2">
       <div className="flex items-baseline justify-between gap-2">
@@ -166,9 +187,9 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
             }}
           >
             <iframe
-              src={HUB_PICKER_URL}
-              title={b.tools.skillsHub}
               ref={frameRef}
+              sandbox="allow-scripts allow-same-origin"
+              src={HUB_PICKER_URL}
               style={{
                 width: '133.34%',
                 height: '133.34%',
@@ -177,7 +198,7 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
                 transform: 'scale(0.75)',
                 transformOrigin: 'top left'
               }}
-              sandbox="allow-scripts allow-same-origin"
+              title={b.tools.skillsHub}
             />
           </div>
           <div className="px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
@@ -190,21 +211,22 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
       <div className="flex gap-1.5">
         <Input
           className="h-7 flex-1 text-xs"
-          placeholder={b.tools.searchHub}
-          value={query}
           onChange={event => setQuery(event.target.value)}
           onKeyDown={event => {
             // IME guard: Enter confirming a composed word must not search.
             if (event.nativeEvent?.isComposing || event.keyCode === 229) {
               return
             }
+
             if (event.key === 'Enter') {
               event.preventDefault()
               void search()
             }
           }}
+          placeholder={b.tools.searchHub}
+          value={query}
         />
-        <Button size="sm" variant="secondary" disabled={searching || !query.trim()} onClick={() => void search()}>
+        <Button disabled={searching || !query.trim()} onClick={() => void search()} size="sm" variant="secondary">
           {searching ? 'Searching…' : 'Search'}
         </Button>
       </div>
@@ -224,7 +246,7 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
         >
           <div className="grid gap-1">
             {results.map(r => (
-              <div key={r.name} className="flex items-center gap-2 text-xs">
+              <div className="flex items-center gap-2 text-xs" key={r.name}>
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-medium">{r.name}</div>
                   {r.description ? (
@@ -235,12 +257,12 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
                   <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">✓ added</span>
                 ) : (
                   <Button
-                    size="sm"
-                    variant="ghost"
                     className="shrink-0 px-2 font-semibold"
                     disabled={installing !== null}
-                    title={`Install "${r.name}" and add it to the list above`}
                     onClick={() => void install(r.name)}
+                    size="sm"
+                    title={`Install "${r.name}" and add it to the list above`}
+                    variant="ghost"
                   >
                     {installing === r.name ? '…' : '+'}
                   </Button>

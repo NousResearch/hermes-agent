@@ -29,16 +29,20 @@ export const AVATAR_PICKER_SHAPES = ['circle', 'blob', 'squircle', 'pill', 'tria
 /** xorshift PRNG seeded from a string — stable across sessions/platforms. */
 function sigilRng(text: string) {
   let h = 2166136261
+
   for (const ch of text) {
     h ^= ch.charCodeAt(0)
     h = Math.imul(h, 16777619)
   }
+
   let state = h >>> 0 || 88675123
+
   return () => {
     state ^= state << 13
     state ^= state >>> 17
     state ^= state << 5
     state >>>= 0
+
     return state / 4294967296
   }
 }
@@ -60,6 +64,7 @@ function sigilGeometry(name: string, seed: number): SigilGeometry {
   const gy = (j: number) => 8 + j * 6 // 5 rows: 8..32
   const strokes: string[] = []
   const segments = 4 + Math.floor(rng() * 3)
+
   for (let k = 0; k < segments; k++) {
     const x1 = Math.floor(rng() * 3) // left half incl. center
     const y1 = Math.floor(rng() * 5)
@@ -78,11 +83,13 @@ function sigilGeometry(name: string, seed: number): SigilGeometry {
   // spine down the axis grounds every variant
   strokes.push(`M20 ${gy(0)} L20 ${gy(4)}`)
   const ring = rng() > 0.45 ? 'M20 4 L36 20 L20 36 L4 20 Z' : null
+
   return {
     strokes: strokes.join(' '),
     ring
   }
 }
+
 /** Perceptual luminance — eyes/pupils flip light on dark bodies (ink, oxblood). */
 function isDarkColor(hex: string) {
   try {
@@ -90,16 +97,20 @@ function isDarkColor(hex: string) {
     const r = (n >> 16) & 255
     const g = (n >> 8) & 255
     const b = n & 255
+
     return 0.2126 * r + 0.7152 * g + 0.0722 * b < 110
   } catch {
     return false
   }
 }
+
 export function defaultShapeFor(name: string): AvatarShape {
   let hash = 0
+
   for (const ch of name) {
     hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
   }
+
   return AVATAR_SHAPES[hash % AVATAR_SHAPES.length]
 }
 
@@ -133,6 +144,7 @@ const BLOB_KIND_TRAIT: Record<string, number> = {
   sun: 0.965,
   triangle: 0.99
 }
+
 export function isBlobShape(shape: null | string | undefined) {
   return shape === 'blobatar' || (typeof shape === 'string' && shape.startsWith('blobatar:'))
 }
@@ -145,20 +157,24 @@ interface ParsedBlobShape {
   /** The pinned seed alone, empty when the face follows the name. */
   seedPart: string
 }
+
 export function parseBlobShape(shape: null | string | undefined, name: string | undefined): ParsedBlobShape {
   const parts = typeof shape === 'string' ? shape.split(':') : []
   const seedPart = parts[1] || ''
   const kind = BLOB_KINDS.includes(parts[2]) ? parts[2] : ''
+
   return {
     seed: seedPart || name || 'agent',
     seedPart,
     kind
   }
 }
+
 export function blobShapeString(seedPart: string, kind: string) {
   if (kind) {
     return `blobatar:${seedPart}:${kind}`
   }
+
   return seedPart ? `blobatar:${seedPart}` : 'blobatar'
 }
 
@@ -168,15 +184,19 @@ function blobMarkup(shape: null | string | undefined, name: string, size: number
   if (!blobatarSvg) {
     return null
   }
+
   const { seed, kind } = parseBlobShape(shape, name)
+
   const opts: { size: number; traits?: Record<string, number> } = {
     size
   }
+
   if (kind) {
     opts.traits = {
       shape: BLOB_KIND_TRAIT[kind]
     }
   }
+
   try {
     return blobatarSvg(seed, opts).replace('<svg ', '<svg data-bot-face=' + JSON.stringify(name) + ' ')
   } catch {
@@ -201,6 +221,7 @@ function shapeNode(shape: string, color: string, botName = 'agent') {
   if (shape.startsWith('sigil-')) {
     const seed = Number(shape.slice(6)) || 0
     const { strokes, ring } = sigilGeometry(botName, seed)
+
     const sw: FacePathProps = {
       fill: 'none',
       stroke: color,
@@ -208,19 +229,22 @@ function shapeNode(shape: string, color: string, botName = 'agent') {
       strokeLinecap: 'round',
       strokeLinejoin: 'round'
     }
+
     return (
       <g>
-        {ring ? <path d={ring} fill="none" stroke={color} strokeWidth={1.2} opacity={0.5} /> : null}
+        {ring ? <path d={ring} fill="none" opacity={0.5} stroke={color} strokeWidth={1.2} /> : null}
         <path d={strokes} {...sw} />
       </g>
     )
   }
+
   const stroke: FacePathProps = {
     fill: color,
     stroke: color,
     strokeWidth: 7,
     strokeLinejoin: 'round'
   }
+
   const edge: FacePathProps = {
     fill: 'none',
     stroke: 'rgba(0,0,0,0.4)',
@@ -228,12 +252,14 @@ function shapeNode(shape: string, color: string, botName = 'agent') {
     strokeLinejoin: 'round',
     strokeLinecap: 'round'
   }
+
   const face: FacePathProps = {
     fill: color,
     stroke: 'rgba(0,0,0,0.4)',
     strokeWidth: 1.4,
     strokeLinejoin: 'round'
   }
+
   switch (shape) {
     // ── platonic solids ──
     case 'tetrahedron':
@@ -243,6 +269,7 @@ function shapeNode(shape: string, color: string, botName = 'agent') {
           <path d="M20 5 L20 25 M4 33 L20 25 M36 33 L20 25" {...edge} />
         </g>
       )
+
     case 'cube':
       return (
         <g>
@@ -250,6 +277,7 @@ function shapeNode(shape: string, color: string, botName = 'agent') {
           <path d="M7 11 L20 18 L33 11 M20 18 L20 36" {...edge} />
         </g>
       )
+
     case 'octahedron':
       return (
         <g>
@@ -257,6 +285,7 @@ function shapeNode(shape: string, color: string, botName = 'agent') {
           <path d="M4 20 L36 20 M20 3 L20 37" {...edge} />
         </g>
       )
+
     case 'dodecahedron':
       return (
         <g>
@@ -273,6 +302,7 @@ function shapeNode(shape: string, color: string, botName = 'agent') {
           />
         </g>
       )
+
     case 'icosahedron':
       return (
         <g>
@@ -291,21 +321,28 @@ function shapeNode(shape: string, color: string, botName = 'agent') {
 
     // ── legacy flat shapes (stored picks from earlier versions) ──
     case 'squircle':
-      return <rect x={3} y={3} width={34} height={34} rx={11} fill={color} />
+      return <rect fill={color} height={34} rx={11} width={34} x={3} y={3} />
+
     case 'pill':
-      return <rect x={2} y={7} width={36} height={26} rx={13} fill={color} />
+      return <rect fill={color} height={26} rx={13} width={36} x={2} y={7} />
+
     case 'triangle':
       return <path d="M20 5.5 L36 33.5 L4 33.5 Z" {...stroke} />
+
     case 'hexagon':
       return <path d="M20 3.5 L34.5 11.75 L34.5 28.25 L20 36.5 L5.5 28.25 L5.5 11.75 Z" {...stroke} />
+
     case 'cloud':
       return <path d="M11 32 a7.5 7.5 0 0 1 -1 -14.9 A9.5 9.5 0 0 1 29 12.5 A7 7 0 0 1 30 32 Z" fill={color} />
+
     case 'drop':
       return <path d="M20 3 C20 3 6 20 6 27 a14 13.5 0 0 0 28 0 C34 20 20 3 20 3 Z" fill={color} />
+
     default:
-      return <circle cx={20} cy={20} r={17.5} fill={color} />
+      return <circle cx={20} cy={20} fill={color} r={17.5} />
   }
 }
+
 const EYE_Y = {
   // solids: eyes sit on the upper face region, clear of the busiest edges
   tetrahedron: 26,
@@ -331,10 +368,13 @@ const EYE_X = {
   dodecahedron: [16.5, 23.5],
   icosahedron: [16.5, 23.5]
 }
+
 /** One point in the 40x40 face box. */
 type FacePoint = [number, number]
+
 function cubicAt(p0: FacePoint, p1: FacePoint, p2: FacePoint, p3: FacePoint, t: number): FacePoint {
   const u = 1 - t
+
   return [
     u * u * u * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t * t * t * p3[0],
     u * u * u * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t * t * t * p3[1]
@@ -345,18 +385,23 @@ function cubicAt(p0: FacePoint, p1: FacePoint, p2: FacePoint, p3: FacePoint, t: 
 function sampleDropRing(steps: number): FacePoint[] {
   const pts: FacePoint[] = []
   const n = Math.max(8, Math.floor(steps / 3))
+
   for (let i = 0; i < n; i++) {
     pts.push(cubicAt([20, 3], [20, 3], [6, 20], [6, 27], i / n))
   }
+
   for (let i = 0; i <= n; i++) {
     const t = (i / n) * Math.PI
     pts.push([20 - 14 * Math.cos(t), 27 + 13.5 * Math.sin(t)])
   }
+
   for (let i = 1; i <= n; i++) {
     pts.push(cubicAt([34, 27], [34, 20], [20, 3], [20, 3], i / n))
   }
+
   return pts
 }
+
 /** A center-parameterized elliptical arc, as sampleArc walks it. */
 interface FaceArc {
   cx: number
@@ -366,6 +411,7 @@ interface FaceArc {
   ry: number
   theta1: number
 }
+
 function svgArc(
   x1: number,
   y1: number,
@@ -381,6 +427,7 @@ function svgArc(
   let rx2 = rx * rx
   let ry2 = ry * ry
   const lam = (dx * dx) / rx2 + (dy * dy) / ry2
+
   if (lam > 1) {
     const s = Math.sqrt(lam)
     rx *= s
@@ -388,30 +435,40 @@ function svgArc(
     rx2 = rx * rx
     ry2 = ry * ry
   }
+
   const num = rx2 * ry2 - rx2 * dy * dy - ry2 * dx * dx
   const den = rx2 * dy * dy + ry2 * dx * dx
   let sq = Math.sqrt(Math.max(0, num / den))
+
   if (fa === fs) {
     sq = -sq
   }
+
   const cx = sq * ((rx * dy) / ry) + (x1 + x2) / 2
   const cy = sq * ((-ry * dx) / rx) + (y1 + y2) / 2
+
   const ang = (ux: number, uy: number, vx: number, vy: number) => {
     const n = Math.hypot(ux, uy) * Math.hypot(vx, vy) || 1
     let a = Math.acos(Math.max(-1, Math.min(1, (ux * vx + uy * vy) / n)))
+
     if (ux * vy - uy * vx < 0) {
       a = -a
     }
+
     return a
   }
+
   const theta1 = ang(1, 0, (x1 - cx) / rx, (y1 - cy) / ry)
   let dtheta = ang((x1 - cx) / rx, (y1 - cy) / ry, (x2 - cx) / rx, (y2 - cy) / ry)
+
   if (!fs && dtheta > 0) {
     dtheta -= Math.PI * 2
   }
+
   if (fs && dtheta < 0) {
     dtheta += Math.PI * 2
   }
+
   return {
     cx,
     cy,
@@ -421,12 +478,15 @@ function svgArc(
     dtheta
   }
 }
+
 function sampleArc(arc: FaceArc, n: number): FacePoint[] {
   const pts: FacePoint[] = []
+
   for (let i = 0; i < n; i++) {
     const th = arc.theta1 + arc.dtheta * (i / n)
     pts.push([arc.cx + arc.rx * Math.cos(th), arc.cy + arc.ry * Math.sin(th)])
   }
+
   return pts
 }
 
@@ -449,9 +509,11 @@ function sampleCloudRing(steps: number): FacePoint[] {
   pts.push(...sampleArc(a1, n1))
   pts.push(...sampleArc(a2, n2))
   pts.push(...sampleArc(a3, n3))
+
   for (let i = 0; i < n4; i++) {
     pts.push([30 + (11 - 30) * (i / n4), 32])
   }
+
   return pts
 }
 
@@ -460,19 +522,24 @@ function sampleCloudRing(steps: number): FacePoint[] {
  *  a dumped point cloud. */
 function sampleFaceRing(shape: null | string | undefined, steps = 52): FacePoint[] {
   const kind = (shape || '').startsWith('sigil-') ? 'circle' : shape
+
   if (kind === 'drop' || kind === 'teardrop') {
     return sampleDropRing(steps)
   }
+
   if (kind === 'cloud') {
     return sampleCloudRing(steps)
   }
+
   const pts: FacePoint[] = []
+
   for (let i = 0; i < steps; i++) {
     const a = (i / steps) * Math.PI * 2 - Math.PI / 2
     const c = Math.cos(a)
     const s = Math.sin(a)
     let rx = 16
     let ry = 16
+
     if (kind === 'circle') {
       rx = ry = 16.2
     } else if (kind === 'blob') {
@@ -502,10 +569,13 @@ function sampleFaceRing(shape: null | string | undefined, steps = 52): FacePoint
     } else {
       rx = ry = 16.2
     }
+
     pts.push([20 + rx * c, 20 + ry * s])
   }
+
   return pts
 }
+
 function projectFacePoint(x: number, y: number, turn: number, tilt: number, roll: number): FacePoint {
   const dx = x - 20
   const dy = y - 20
@@ -514,16 +584,21 @@ function projectFacePoint(x: number, y: number, turn: number, tilt: number, roll
   const yr = dx * Math.sin(r) + dy * Math.cos(r)
   const sx = 0.74 + 0.26 * Math.abs(Math.cos((turn * Math.PI) / 180))
   const sy = 0.8 + 0.2 * Math.abs(Math.cos((tilt * Math.PI) / 180))
+
   return [20 + xr * sx, 20 + yr * sy]
 }
+
 function ringToPath(pts: FacePoint[]) {
   if (!pts.length) {
     return ''
   }
+
   let d = `M${pts[0][0].toFixed(2)} ${pts[0][1].toFixed(2)}`
+
   for (let i = 1; i < pts.length; i++) {
     d += `L${pts[i][0].toFixed(2)} ${pts[i][1].toFixed(2)}`
   }
+
   return d + 'Z'
 }
 
@@ -556,6 +631,7 @@ function facePose(mood: FaceMood | string, t: number): FacePose {
       d2: 0.2 + 0.8 * Math.max(0, Math.sin(t * 2.6 - 1.4))
     }
   }
+
   return {
     turn: Math.sin(t * 0.5) * 1.5,
     tilt: Math.sin(t * 0.27),
@@ -568,12 +644,14 @@ function facePose(mood: FaceMood | string, t: number): FacePose {
     d2: 0
   }
 }
+
 /** The eyes and catchlights are positioned with raw numbers.
  *  `Element.setAttribute` declares a string value and the DOM coerces —
  *  stringifying at each call site would be a behavior change. */
 interface NumericAttrNode {
   setAttribute(name: string, value: number | string): void
 }
+
 function paintMathFace(svg: SVGSVGElement, t: number) {
   const mood = svg.getAttribute('data-hb-mood') || 'idle'
   const shape = svg.getAttribute('data-hb-shape') || 'circle'
@@ -584,6 +662,7 @@ function paintMathFace(svg: SVGSVGElement, t: number) {
   const el: NumericAttrNode | null = svg.querySelector('[data-hb-el]')
   const er: NumericAttrNode | null = svg.querySelector('[data-hb-er]')
   const dots = svg.querySelectorAll('[data-hb-dot]')
+
   if (body) {
     if (shape === 'cloud') {
       body.setAttribute('d', 'M11 32 a7.5 7.5 0 0 1 -1 -14.9 A9.5 9.5 0 0 1 29 12.5 A7 7 0 0 1 30 32 Z')
@@ -592,13 +671,16 @@ function paintMathFace(svg: SVGSVGElement, t: number) {
       body.setAttribute('d', ringToPath(ring))
     }
   }
+
   const eyeY = (shape === 'cloud' ? 22 : 17.2) + pose.gazeY
   const eyeL = 15.4 + pose.gazeX
   const eyeR = 24.6 + pose.gazeX
+
   if (el) {
     el.setAttribute('cx', eyeL)
     el.setAttribute('cy', eyeY)
   }
+
   if (er) {
     er.setAttribute('cx', eyeR)
     er.setAttribute('cy', eyeY)
@@ -609,17 +691,21 @@ function paintMathFace(svg: SVGSVGElement, t: number) {
   // lower-set eyes.
   const hl: NumericAttrNode | null = svg.querySelector('[data-hb-hl-l]')
   const hr: NumericAttrNode | null = svg.querySelector('[data-hb-hl-r]')
+
   if (hl) {
     hl.setAttribute('cx', eyeL - 0.6)
     hl.setAttribute('cy', eyeY - 0.7)
   }
+
   if (hr) {
     hr.setAttribute('cx', eyeR - 0.6)
     hr.setAttribute('cy', eyeY - 0.7)
   }
+
   if (open) {
     open.setAttribute('opacity', pose.blink ? '0' : '1')
   }
+
   if (shut) {
     shut.setAttribute(
       'd',
@@ -627,6 +713,7 @@ function paintMathFace(svg: SVGSVGElement, t: number) {
     )
     shut.setAttribute('opacity', pose.blink ? '1' : '0')
   }
+
   dots.forEach((dot, i) => {
     const o = i === 0 ? pose.d0 : i === 1 ? pose.d1 : pose.d2
     dot.setAttribute('opacity', String(o))
@@ -634,18 +721,22 @@ function paintMathFace(svg: SVGSVGElement, t: number) {
   svg.style.transform = `rotate(${pose.tilt}deg)`
   svg.style.transformOrigin = '50% 70%'
 }
+
 function walkMathFaces(root: Document | ShadowRoot | null, acc: SVGSVGElement[]): SVGSVGElement[] {
   if (!root || !root.querySelectorAll) {
     return acc
   }
+
   root.querySelectorAll<SVGSVGElement>('svg[data-hb-math]').forEach(node => acc.push(node))
   root.querySelectorAll('*').forEach(el => {
     if (el.shadowRoot) {
       walkMathFaces(el.shadowRoot, acc)
     }
   })
+
   return acc
 }
+
 /** The single shared face clock, parked on `window` so a second plugin load
  *  adopts the running one instead of starting a rival rAF loop. */
 interface FaceClock {
@@ -658,16 +749,20 @@ declare global {
     __hbFaceClock?: FaceClock
   }
 }
+
 export function startFaceClock() {
   if (typeof window === 'undefined') {
     return
   }
+
   if (window.__hbFaceClock) {
     // Already initialized (possibly parked) — make sure it's awake. BotFace
     // renders route here, so a face mounting is what wakes a dormant clock.
     window.__hbFaceClock.wake()
+
     return
   }
+
   const t0 = performance.now()
   // A large roster can mount hundreds of faces. Observe the cached nodes so
   // off-screen cards do not consume a full animation frame by themselves.
@@ -676,10 +771,12 @@ export function startFaceClock() {
   // Fed from IntersectionObserver entries, whose `target` is a plain Element.
   const visibleFaces = new Set<Element>()
   const observedFaces = new Set<SVGSVGElement>()
+
   const observer =
     typeof IntersectionObserver === 'function'
       ? new IntersectionObserver(entries => {
           let becameVisible = false
+
           for (const entry of entries) {
             if (entry.isIntersecting) {
               visibleFaces.add(entry.target)
@@ -695,12 +792,16 @@ export function startFaceClock() {
           }
         })
       : null
+
   const scanFaces = () => {
     faces = walkMathFaces(document, [])
+
     if (!observer) {
       return
     }
+
     const currentFaces = new Set(faces)
+
     for (const svg of observedFaces) {
       if (!currentFaces.has(svg)) {
         observer.unobserve(svg)
@@ -708,6 +809,7 @@ export function startFaceClock() {
         visibleFaces.delete(svg)
       }
     }
+
     for (const svg of faces) {
       if (!observedFaces.has(svg)) {
         observedFaces.add(svg)
@@ -723,8 +825,10 @@ export function startFaceClock() {
       scanFaces()
       lastScan = now
     }
+
     const t = (now - t0) / 1000
     const facesToPaint = observer ? visibleFaces : faces
+
     for (const svg of facesToPaint) {
       if (svg.isConnected) {
         // Both caches only ever hold nodes matched by `svg[data-hb-math]`.
@@ -741,10 +845,12 @@ export function startFaceClock() {
   // idleWhen as `() => boolean`; null is falsy so the loop keeps running as
   // intended today. Hence the assertion at the idleWhen call below.
   const idle = () => faces.length === 0 || (observer && visibleFaces.size === 0)
+
   const teardownCaches = () => {
     if (observer) {
       observer.disconnect()
     }
+
     visibleFaces.clear()
     observedFaces.clear()
     faces = []
@@ -759,6 +865,7 @@ export function startFaceClock() {
       fps: 15,
       idleWhen: idle as () => boolean
     })
+
     window.__hbFaceClock = {
       stop: () => {
         loop.dispose()
@@ -770,6 +877,7 @@ export function startFaceClock() {
         loop.wake()
       }
     }
+
     return
   }
 
@@ -778,11 +886,14 @@ export function startFaceClock() {
   let rafId = 0
   let dormant = false
   let stopped = false
+
   const tick = (now: number) => {
     if (stopped) {
       return
     }
+
     rafId = 0
+
     // 15fps is smooth at avatar scale and bounds SVG/DOM churn. The clock
     // still uses rAF so Chromium can pause it when the window is occluded.
     if (!document.hidden && now - lastPaint >= 1000 / 15) {
@@ -793,27 +904,35 @@ export function startFaceClock() {
     // Park instead of burning frames + 1Hz whole-document shadow walks.
     if (idle()) {
       dormant = true
+
       return
     }
+
     rafId = window.requestAnimationFrame(tick)
   }
+
   const wake = () => {
     if (stopped || !dormant) {
       return
     }
+
     dormant = false
     // Faces may have mounted/unmounted while parked — rescan on first tick.
     lastScan = -Infinity
     rafId = window.requestAnimationFrame(tick)
   }
+
   const stop = () => {
     stopped = true
+
     if (rafId) {
       window.cancelAnimationFrame(rafId)
       rafId = 0
     }
+
     teardownCaches()
   }
+
   window.__hbFaceClock = {
     stop,
     wake
@@ -846,12 +965,13 @@ interface BotFaceProps {
  */
 export function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle' }: BotFaceProps) {
   startFaceClock()
+
   if (image) {
     return (
       <img
-        src={image}
         alt=""
         aria-hidden
+        src={image}
         style={{
           width: size,
           height: size,
@@ -870,18 +990,19 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
   // SDK predates the export.
   if (isBlobShape(shape)) {
     const markup = blobMarkup(shape, name, size)
+
     if (markup) {
       return (
         <span
           aria-hidden
+          dangerouslySetInnerHTML={{
+            __html: markup
+          }}
           style={{
             width: size,
             height: size,
             display: 'block',
             lineHeight: 0
-          }}
-          dangerouslySetInnerHTML={{
-            __html: markup
           }}
         />
       )
@@ -897,17 +1018,19 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
   if (shape.startsWith('sigil-')) {
     const eyes = (
       <g>
-        <circle cx={16} cy={14} r={2.4} fill={color} />
-        <circle cx={24} cy={14} r={2.4} fill={color} />
+        <circle cx={16} cy={14} fill={color} r={2.4} />
+        <circle cx={24} cy={14} fill={color} r={2.4} />
       </g>
     )
+
     return (
-      <svg data-bot-face={name} viewBox="0 0 40 40" width={size} height={size} aria-hidden>
+      <svg aria-hidden data-bot-face={name} height={size} viewBox="0 0 40 40" width={size}>
         {shapeNode(shape, color, name)}
         {eyes}
       </svg>
     )
   }
+
   const working = mood === 'work'
   const eyeFill = isDarkColor(color) ? 'rgba(232,220,195,0.95)' : 'rgba(0,0,0,0.85)'
   // Catchlight contrast follows the pupil, not the body: dark pupils get the
@@ -921,50 +1044,51 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
   // (and their catchlights) start at the cloud position instead of jumping
   // there on the first clock paint.
   const eyeY0 = shape === 'cloud' ? 22 : 17.2
+
   return (
     <svg
+      aria-hidden
       data-bot-face={name}
       data-hb-math="1"
       data-hb-mood={working ? 'work' : 'idle'}
       data-hb-shape={shape || 'circle'}
-      viewBox="0 0 40 44"
-      width={size}
       height={size}
-      aria-hidden
       style={{
         overflow: 'visible',
         display: 'block'
       }}
+      viewBox="0 0 40 44"
+      width={size}
     >
       <path
-        data-hb-body="1"
         d={
           shape === 'cloud'
             ? 'M11 32 a7.5 7.5 0 0 1 -1 -14.9 A9.5 9.5 0 0 1 29 12.5 A7 7 0 0 1 30 32 Z'
             : ringToPath(ring)
         }
+        data-hb-body="1"
         fill={color}
       />
       <g data-hb-open="1">
-        <ellipse data-hb-el="1" cx={15.4} cy={eyeY0} rx={2.2} ry={working ? 2.6 : 2.3} fill={eyeFill} />
-        <ellipse data-hb-er="1" cx={24.6} cy={eyeY0} rx={2.2} ry={working ? 2.6 : 2.3} fill={eyeFill} />
-        <circle data-hb-hl-l="1" cx={14.8} cy={eyeY0 - 0.7} r={0.65} fill={hlFill} />
-        <circle data-hb-hl-r="1" cx={24} cy={eyeY0 - 0.7} r={0.65} fill={hlFill} />
+        <ellipse cx={15.4} cy={eyeY0} data-hb-el="1" fill={eyeFill} rx={2.2} ry={working ? 2.6 : 2.3} />
+        <ellipse cx={24.6} cy={eyeY0} data-hb-er="1" fill={eyeFill} rx={2.2} ry={working ? 2.6 : 2.3} />
+        <circle cx={14.8} cy={eyeY0 - 0.7} data-hb-hl-l="1" fill={hlFill} r={0.65} />
+        <circle cx={24} cy={eyeY0 - 0.7} data-hb-hl-r="1" fill={hlFill} r={0.65} />
       </g>
       <path
-        data-hb-shut="1"
         d={`M12.8 ${eyeY0} L18 ${eyeY0} M22 ${eyeY0} L27.2 ${eyeY0}`}
-        stroke={eyeFill}
-        strokeWidth={2}
-        strokeLinecap="round"
+        data-hb-shut="1"
         fill="none"
         opacity={0}
+        stroke={eyeFill}
+        strokeLinecap="round"
+        strokeWidth={2}
       />
       {working ? (
         <g>
-          <circle data-hb-dot="1" cx={16.4} cy={41.2} r={1.15} fill={color} opacity={rest.d0} />
-          <circle data-hb-dot="1" cx={20} cy={41.2} r={1.15} fill={color} opacity={rest.d1} />
-          <circle data-hb-dot="1" cx={23.6} cy={41.2} r={1.15} fill={color} opacity={rest.d2} />
+          <circle cx={16.4} cy={41.2} data-hb-dot="1" fill={color} opacity={rest.d0} r={1.15} />
+          <circle cx={20} cy={41.2} data-hb-dot="1" fill={color} opacity={rest.d1} r={1.15} />
+          <circle cx={23.6} cy={41.2} data-hb-dot="1" fill={color} opacity={rest.d2} r={1.15} />
         </g>
       ) : null}
     </svg>
@@ -991,6 +1115,7 @@ export function botAppearance(name: string, meta: BotMeta | null | undefined): A
   // shape/color they set via the editor (tracked by meta.custom === true).
   const isPrimary = (name || '').trim().toLowerCase() === 'default'
   const userCustomized = Boolean(meta?.custom)
+
   if (isPrimary && !userCustomized) {
     return {
       shape: 'squircle',
@@ -998,6 +1123,7 @@ export function botAppearance(name: string, meta: BotMeta | null | undefined): A
       image: meta?.image || null
     }
   }
+
   return {
     shape: meta?.shape || defaultShapeFor(name),
     color: meta?.color || profileColor(name),

@@ -17,9 +17,11 @@ function groupAttachmentKind(file: File): AttachmentKind {
   if (/^image\//.test(file.type || '')) {
     return 'image'
   }
+
   if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')) {
     return 'pdf'
   }
+
   return 'file'
 }
 
@@ -29,26 +31,32 @@ function groupAttachmentKind(file: File): AttachmentKind {
  *  picker button, the composer paste handler, and room drag & drop. */
 export async function filesToGroupAttachments(files: File[] | FileList | null | undefined): Promise<Attachment[]> {
   const picked: Attachment[] = []
+
   for (const file of [...(files || [])]) {
     if (!file) {
       continue
     }
+
     if (file.size > 15_000_000) {
       host.notify({
         kind: 'error',
         message: `${file.name || 'attachment'}: too large (max 15MB).`
       })
+
       continue
     }
+
     const data = await new Promise<null | string>(done => {
       const reader = new FileReader()
       reader.onload = () => done(typeof reader.result === 'string' ? reader.result : null)
       reader.onerror = () => done(null)
       reader.readAsDataURL(file)
     })
+
     if (!data) {
       continue
     }
+
     const kind = groupAttachmentKind(file)
     picked.push({
       name: file.name || (kind === 'image' ? 'pasted image' : 'attachment'),
@@ -56,6 +64,7 @@ export async function filesToGroupAttachments(files: File[] | FileList | null | 
       kind
     })
   }
+
   return picked
 }
 
@@ -78,12 +87,15 @@ export function pickGroupAttachments(): Promise<Attachment[]> {
 function normalizeGroupAttachment(dataUrl: string, maxEdge = 1568): Promise<string> {
   return new Promise(resolve => {
     const img = new Image()
+
     img.onload = () => {
       try {
         const long = Math.max(img.width, img.height)
+
         if (!long || long <= maxEdge) {
           return resolve(dataUrl)
         }
+
         const scale = maxEdge / long
         const canvas = document.createElement('canvas')
         canvas.width = Math.max(1, Math.round(img.width * scale))
@@ -94,6 +106,7 @@ function normalizeGroupAttachment(dataUrl: string, maxEdge = 1568): Promise<stri
         resolve(dataUrl)
       }
     }
+
     img.onerror = () => resolve(dataUrl)
     img.src = dataUrl
   })

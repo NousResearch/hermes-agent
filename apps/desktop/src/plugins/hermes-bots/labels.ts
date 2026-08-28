@@ -31,6 +31,7 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
   ) {
     return bot.connectionLabel
   }
+
   if (meta?.title?.trim()) {
     return meta.title.trim()
   }
@@ -46,6 +47,7 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
   // never generic "Hermes" or a hostname-derived label.
   if (alias) {
     const raw = alias.name.replace(/[-_]+/g, ' ').trim()
+
     return raw.replace(/\b\w/g, ch => ch.toUpperCase())
   }
 
@@ -55,9 +57,12 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
   if ((bot.name || '').trim().toLowerCase() === 'default' && !bot.title) {
     return 'Hermes'
   }
+
   const raw = (bot.title || bot.name || '').replace(/[-_]+/g, ' ').trim()
+
   return raw.replace(/\b\w/g, ch => ch.toUpperCase())
 }
+
 export function slugify(value: string) {
   return value
     .toLowerCase()

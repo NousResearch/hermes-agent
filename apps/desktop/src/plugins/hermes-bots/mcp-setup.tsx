@@ -42,18 +42,21 @@ async function mcpRpc(method: string, params: Record<string, unknown>): Promise<
   // doesn't know the method (older backend) vs a real error.
   try {
     const res = await host.request<McpServerPayload>(method, params)
+
     return {
       ok: true,
       result: res
     }
   } catch (err: any) {
     const msg = String((err && err.message) || err || '')
+
     if (/unknown method/i.test(msg)) {
       return {
         ok: false,
         unsupported: true
       }
     }
+
     return {
       ok: false,
       error: msg
@@ -63,12 +66,15 @@ async function mcpRpc(method: string, params: Record<string, unknown>): Promise<
 
 // Probe whether the new lifecycle RPCs exist on this gateway (cached per session).
 let _mcpRpcSupported: boolean | null = null
+
 async function mcpSetupSupported(): Promise<boolean> {
   if (_mcpRpcSupported !== null) {
     return _mcpRpcSupported
   }
+
   const r = await mcpRpc('mcp.servers.list', {})
   _mcpRpcSupported = !(r.ok === false && r.unsupported)
+
   return _mcpRpcSupported
 }
 
@@ -110,34 +116,42 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   const [keyValues, setKeyValues] = useState<Record<string, string>>({})
   const [message, setMessage] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const profileRef = useRef<McpSetupScope>(profile || null)
-  useEffect(() => {
-    if (profile) {
-      profileRef.current = profile
-    }
-  }, [profile])
+  // Holds ONLY the profile this component created on demand. The live prop
+  // wins wherever both exist, so there is nothing to mirror into the ref and
+  // no render of lag between the parent supplying a profile and us using it.
+  const createdProfileRef = useRef<McpSetupScope>(null)
 
   // Resolve the target profile, creating it on demand for the New Bot flow.
   const resolveProfile = async () => {
-    if (profileRef.current) {
-      return profileRef.current
+    const known = profile || createdProfileRef.current
+
+    if (known) {
+      return known
     }
+
     if (ensureProfile) {
       const created = await ensureProfile()
+
       if (created) {
-        profileRef.current = created
+        createdProfileRef.current = created
       }
+
       return created
     }
+
     return null
   }
+
+  // eslint-disable-next-line no-restricted-syntax -- clears a timer handle on unmount, not an atom mirror
   useEffect(() => {
     let alive = true
     mcpSetupSupported().then(ok => {
-      if (alive) setSupported(ok)
+      if (alive) {setSupported(ok)}
     })
+
     return () => {
       alive = false
+
       if (pollRef.current) {
         clearInterval(pollRef.current)
         pollRef.current = null
@@ -146,59 +160,76 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   }, [])
   const isOAuth = (entry.auth || '').toLowerCase() === 'oauth'
   const requires = entry.requires || []
+
   const beginKeys = async () => {
     // Ensure the server exists in the target profile first (add from catalog).
     setPhase('busy')
     setMessage('')
     const profile = await resolveProfile()
+
     if (!profile) {
       setPhase('idle')
+
       return
     }
+
     if (entry.fromCatalog && !entry.installed) {
       const add = await mcpRpc('mcp.servers.add', {
         profile,
         name: entry.name,
         preset: entry.name
       })
+
       if (!add.ok) {
         setPhase('error')
         setMessage(add.error || 'Could not add server')
+
         return
       }
     }
+
     setPhase(isOAuth ? 'oauth' : 'keys')
   }
+
   const submitKeys = async () => {
     setPhase('busy')
-    const profile = profileRef.current
-    if (!profile) {
+    const target = profile || createdProfileRef.current
+
+    if (!target) {
       setPhase('error')
       setMessage('No target profile')
+
       return
     }
+
     for (const k of requires) {
       const val = (keyValues[k] || '').trim()
+
       if (!val) {
         continue
       }
+
       const r = await mcpRpc('mcp.servers.set_api_key', {
-        profile,
+        profile: target,
         name: entry.name,
         env_var: k,
         value: val
       })
+
       if (!r.ok) {
         setPhase('error')
         setMessage(r.error || 'Failed to set ' + k)
+
         return
       }
     }
+
     // Verify via test.
     const t = await mcpRpc('mcp.servers.test', {
-      profile,
+      profile: target,
       name: entry.name
     })
+
     if (t.ok && t.result && (t.result.ok || (t.result.result && t.result.result.ok))) {
       setPhase('done')
       host.notify({
@@ -213,6 +244,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       )
     }
   }
+
   const beginOAuth = async () => {
     // A second click (retry, impatient double-click) must not orphan the
     // previous poll interval — an overwritten pollRef leaks a 2s poller that
@@ -221,37 +253,48 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       clearInterval(pollRef.current)
       pollRef.current = null
     }
+
     setPhase('busy')
     setMessage('')
     const profile = await resolveProfile()
+
     if (!profile) {
       setPhase('idle')
+
       return
     }
+
     if (entry.fromCatalog && !entry.installed) {
       const add = await mcpRpc('mcp.servers.add', {
         profile,
         name: entry.name,
         preset: entry.name
       })
+
       if (!add.ok) {
         setPhase('error')
         setMessage(add.error || 'Could not add server')
+
         return
       }
     }
+
     const start = await mcpRpc('mcp.servers.oauth.start', {
       profile,
       name: entry.name
     })
+
     const payload = start.result && (start.result.result || start.result)
     const authUrl = payload && (payload.auth_url || payload.verification_url)
     const sessionId = payload && payload.session_id
+
     if (!start.ok || !authUrl || !sessionId) {
       setPhase('error')
       setMessage(start.error || 'Could not start OAuth')
+
       return
     }
+
     // Open the auth URL in the native browser, same as provider OAuth.
     // TODO(bot-mode-types): the plugin SDK's `host` has no `openExternal`, so this
     // branch is dead and the window bridge / window.open fallbacks are the only
@@ -270,6 +313,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
     } catch {
       /* fall through to poll; user can open the URL from the toast */
     }
+
     setPhase('oauth')
     setMessage('Complete sign-in in your browser...')
     pollRef.current = setInterval(async () => {
@@ -278,8 +322,10 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
         name: entry.name,
         session_id: sessionId
       })
+
       const pd = poll.result && (poll.result.result || poll.result)
       const status = pd && pd.status
+
       if (status === 'approved') {
         clearInterval(pollRef.current!)
         pollRef.current = null
@@ -297,6 +343,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       }
     }, 2000)
   }
+
   if (supported === false) {
     return (
       <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
@@ -304,44 +351,49 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       </span>
     )
   }
+
   if (phase === 'done') {
     return <span className="ml-1.5 text-[0.65rem] text-(--ui-success)">set up ✓</span>
   }
+
   if (phase === 'keys') {
     return (
       <div className="mt-1 grid gap-1">
         {requires.map(k => (
           <Input
-            key={k}
-            type="password"
             className="h-6 text-[0.7rem]"
-            placeholder={k}
-            value={keyValues[k] || ''}
+            key={k}
             onChange={e =>
               setKeyValues(prev => ({
                 ...prev,
                 [k]: e.target.value
               }))
             }
+            placeholder={k}
+            type="password"
+            value={keyValues[k] || ''}
           />
         ))}
         <div className="flex gap-1">
-          <Button size="xs" variant="secondary" onClick={() => void submitKeys()}>
+          <Button onClick={() => void submitKeys()} size="xs" variant="secondary">
             Save & test
           </Button>
-          <Button size="xs" variant="ghost" onClick={() => setPhase('idle')}>
+          <Button onClick={() => setPhase('idle')} size="xs" variant="ghost">
             {t.common.cancel}
           </Button>
         </div>
       </div>
     )
   }
+
   if (phase === 'oauth') {
     return <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">{message || 'Authorizing\u2026'}</span>
   }
+
   if (phase === 'busy') {
     return <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">Working…</span>
   }
+
   if (phase === 'error') {
     return (
       <span className="ml-1.5 text-[0.65rem] text-(--ui-danger,#f87171)">
@@ -352,6 +404,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       </span>
     )
   }
+
   // idle
   return (
     <Button

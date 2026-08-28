@@ -35,6 +35,7 @@ export const $activityToasts = atom(false)
 /** Flip the activity-toast pref and persist it. */
 export function setActivityToasts(enabled: boolean) {
   $activityToasts.set(enabled)
+
   try {
     Promise.resolve(getPluginCtx()?.storage?.set?.('activity-toasts', enabled)).catch(() => undefined)
   } catch {
@@ -55,12 +56,14 @@ export function setActivityToasts(enabled: boolean) {
 export function trackInboundActivity(roster: RosterRow[]) {
   const seeding = !watermarksSeeded
   watermarksSeeded = true
+
   for (const bot of roster) {
     const key = botSelectionKey(bot)
     const activity = botActivitySession(bot)
     const ts = activity?.last_active || 0
     const prev = rosterWatermarks.get(key) || 0
     rosterWatermarks.set(key, Math.max(prev, ts))
+
     if (seeding || ts <= prev) {
       continue
     }
@@ -75,6 +78,7 @@ export function trackInboundActivity(roster: RosterRow[]) {
     // row's SessionStatusDot reads — a parallel map here would be a second
     // badge that drifts from the dot.
     const canonicalSessionId = botCanonicalSessionId(bot)
+
     if (canonicalSessionId) {
       markSessionUnreadFinished(canonicalSessionId, bot.name)
     }
@@ -113,25 +117,31 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   // has actually fronted a new owner; a failed open must not steal the center
   // from a group the user was reading.
   const previousGroup = $groupChatWorkspace.get()
+
   const previousGroupRef = previousGroup
     ? {
         group: previousGroup,
         roomId: String($groupChats.get()[previousGroup]?.roomId || '')
       }
     : null
+
   haptic('tap')
   saveSelectedRosterBot(bot)
   setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
   const dismissedGroup = bot.remoteSource ? null : dismissGroupChatForLocalBotOpen()
+
   if (!dismissedGroup) {
     $groupChatWorkspace.set(null)
   }
+
   const restorePreviousGroup = () => {
     if (!previousGroupRef || $groupChatWorkspace.get()) {
       return
     }
+
     const restoreRef = dismissedGroup || previousGroupRef
     const rooms = $groupChats.get()
+
     const currentGroup = restoreRef.roomId
       ? Object.keys(rooms).find(
           name => !rooms[name]?.tombstone && String(rooms[name]?.roomId || '') === restoreRef.roomId
@@ -139,16 +149,20 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       : liveGroupChatNames().includes(restoreRef.group)
         ? restoreRef.group
         : null
+
     if (!currentGroup) {
       return
     }
+
     openGroupChat(currentGroup)
   }
+
   // The persisted half of clear-on-open. The transient dot is retired by
   // core's own selection path once the chat lands; this retires the marker,
   // which the selection listener alone would file against the wrong profile —
   // a bot open deliberately leaves the gateway on the launch profile.
   ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
+
   try {
     // Activation selects this row's source only. Canonical identity is resolved
     // after that by the owner profile's "Bot Chat" title registry.
@@ -159,16 +173,21 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       restorePreviousGroup()
       notifyBotOpenFailure(error, bot, `Could not reach ${bot.connectionLabel || 'the gateway'}`)
     }
+
     return false
   }
+
   if (generation !== getBotOpenGeneration()) {
     return false
   }
+
   try {
     const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration())
+
     if (generation !== getBotOpenGeneration()) {
       return false
     }
+
     if (opened) {
       // This is not an identity preference: opening already completed through
       // the name registry. Keep only enough ephemeral state to release the
@@ -182,6 +201,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
         openedRegistryId: opened.registryId,
         openedSessionId: opened.openedId
       })
+
       return true
     }
   } catch (error) {
@@ -190,6 +210,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       restorePreviousGroup()
       notifyBotOpenFailure(error, bot, `Could not open ${displayName(bot, meta)}'s chat — try again`)
     }
+
     return false
   }
 
@@ -198,13 +219,16 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   if (typeof host.newChat !== 'function') {
     $openBotChat.set(null)
     restorePreviousGroup()
+
     return false
   }
+
   $openBotChat.set({
     key,
     openedRegistryId: ''
   })
   newBotChat(bot)
+
   return true
 }
 
@@ -213,11 +237,14 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
  * canonical open. */
 function dismissGroupChatForLocalBotOpen(): null | { group: string; roomId: string } {
   const group = $groupChatWorkspace.get()
+
   if (!group) {
     return null
   }
+
   const roomId = String($groupChats.get()[group]?.roomId || '')
   closeGroupChatMainTab(group)
+
   return {
     group,
     roomId

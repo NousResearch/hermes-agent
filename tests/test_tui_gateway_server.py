@@ -22268,3 +22268,37 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_profile_home_isolated_default_resolves_to_launch_profile(monkeypatch, tmp_path):
+    """#88897: profile=default means the launch profile in a process that
+    was itself launched under a named profile, not the machine root."""
+    from hermes_cli import profiles as profiles_mod
+
+    machine_root = tmp_path / "machine-root"
+    isolated_home = tmp_path / "profiles" / "testuser"
+    machine_root.mkdir(parents=True)
+    isolated_home.mkdir(parents=True)
+
+    monkeypatch.setattr(server, "_hermes_home", str(isolated_home))
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda _name: str(machine_root))
+    monkeypatch.setattr(server, "_process_is_profile_scoped", lambda: True)
+
+    assert server._profile_home("default") is None
+
+    monkeypatch.setattr(server, "_process_is_profile_scoped", lambda: False)
+    assert server._profile_home("default") == machine_root
+
+
+def test_process_is_profile_scoped_detects_scoped_home(monkeypatch, tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+
+    monkeypatch.setattr(server, "_hermes_home", str(root))
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    assert server._process_is_profile_scoped() is False
+
+    scoped = root / "profiles" / "coder"
+    scoped.mkdir(parents=True)
+    monkeypatch.setattr(server, "_hermes_home", str(scoped))
+    assert server._process_is_profile_scoped() is True

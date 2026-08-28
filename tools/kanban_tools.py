@@ -640,6 +640,15 @@ def _handle_request_review(args: dict, **kw) -> str:
     metadata = _stamp_worker_session_metadata(tid, metadata)
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
+    if reviewer:
+        from hermes_cli.profiles import list_profile_names, profile_exists
+
+        if not profile_exists(reviewer):
+            alternatives = ", ".join(list_profile_names()) or "none"
+            return tool_error(
+                f"reviewer profile {reviewer!r} is not installed. "
+                f"Installed profiles: {alternatives}"
+            )
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(

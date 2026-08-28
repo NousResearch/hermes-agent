@@ -33,7 +33,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
+import { NEW_SESSION_TITLE } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -60,6 +60,7 @@ import {
 } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
+import { canonicalSessionTabCaption } from './canonical-tab-title'
 import type { SessionDragPayload } from './composer/inline-refs'
 import { type ComposerScope, ComposerScopeProvider } from './composer/scope'
 import { useComposerActions } from './hooks/use-composer-actions'
@@ -448,11 +449,17 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
  *  per keystroke would re-render the strip, and holding the draft's text here
  *  would let the registered name already match the row that lands on send —
  *  skipping the re-register that hands the tab back to this string. */
-function tileTitle(storedSessionId: string): string {
+export function tileTitle(storedSessionId: string): string {
   const stored = tileStoredRow(storedSessionId)
   const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
 
-  return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
+  return canonicalSessionTabCaption({
+    preview: stored?.preview,
+    rootTitle: stored?.root_title,
+    title: stored?.title,
+    untitledFallback: stored ? 'Untitled session' : NEW_SESSION_TITLE,
+    workspaceTabTitle: explicit
+  })
 }
 
 /** The `@session` link payload for a tile tab drag — id + owning profile + title.
@@ -460,7 +467,14 @@ function tileTitle(storedSessionId: string): string {
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
   const stored = tileStoredRow(storedSessionId)
   const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
-  const title = stored ? sessionTitle(stored) : explicit || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
+
+  const title = canonicalSessionTabCaption({
+    preview: stored?.preview,
+    rootTitle: stored?.root_title,
+    title: stored?.title,
+    untitledFallback: draftTitleFor(storedSessionId) || NEW_SESSION_TITLE,
+    workspaceTabTitle: explicit
+  })
 
   return { id: storedSessionId, profile: stored?.profile ?? '', title }
 }

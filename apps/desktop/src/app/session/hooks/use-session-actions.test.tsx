@@ -1996,6 +1996,39 @@ describe('resumeSession drops a redundant tile when the session loads into main'
     // Only the resumed session's tile closes; the sibling tile stays put.
     expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['stored-2'])
   })
+
+  it('does not close a canonical Bot Chat tile when the session loads into main', async () => {
+    $sessionTiles.set([
+      {
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceTabTitle: 'Bot Chat',
+        workspaceOwnerKey: 'bot:local::ops'
+      }
+    ])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-bot', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    await resume!('bot-chat', true)
+
+    expect($sessionTiles.get().some(t => t.storedSessionId === 'bot-chat')).toBe(true)
+    expect($sessionTiles.get()[0]).toMatchObject({
+      storedSessionId: 'bot-chat',
+      workspaceTabTitle: 'Bot Chat'
+    })
+  })
 })
 
 // ── Warm-cache mapping integrity (the "open chat A, chat B loads" bug) ─────────

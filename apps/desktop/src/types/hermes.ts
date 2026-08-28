@@ -520,6 +520,10 @@ export interface SessionInfo {
    *  Undefined against a backend predating the flag; treat as read. */
   unread?: boolean
   preview: null | string
+  /** Durable lineage-root title when this row is a compression-chain tip.
+   *  Exact-lookup gateways report it so a compacted Bot Chat is still
+   *  recognized by name. Absent on older listings. */
+  root_title?: null | string
   source: null | string
   started_at: number
   title: null | string

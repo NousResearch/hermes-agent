@@ -108,6 +108,7 @@ import {
   closeSessionTile,
   dropSessionState,
   holdSessionOwnerUntilForeground,
+  isCanonicalBotChatSession,
   openSessionTile,
   patchSessionTile,
   publishSessionState,
@@ -840,7 +841,13 @@ export function useSessionActions({
       // now-redundant tile so main owns it. Runs before the async awaits below (and
       // before the selection listener homes focus) so the tile is gone the same tick
       // the route takes over; the warm cache/runtime binding survives for main to reuse.
-      if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
+      // Canonical Bot Chat tiles are the exception: a backend restart can 404 the
+      // main resume while the DB row is intact, and closing the tile dumps Bot Mode
+      // to the home screen. Those tabs re-bind in place.
+      if (
+        $sessionTiles.get().some(t => t.storedSessionId === storedSessionId) &&
+        !isCanonicalBotChatSession(storedSessionId)
+      ) {
         closeSessionTile(storedSessionId)
       }
 
@@ -1867,7 +1874,7 @@ export function useSessionActions({
 
           const verdict = goneSessionVerdict({
             createdThisRun: createdThisRun.has(storedSessionId),
-            stillListed,
+            stillListed: stillListed || isCanonicalBotChatSession(storedSessionId),
             switchInFlight:
               $gatewaySwitching.get() ||
               Boolean($gatewaySwapTarget.get()) ||

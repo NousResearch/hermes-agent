@@ -16,6 +16,7 @@ import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
 import {
+  $canonicalBotChatSessionIds,
   $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
@@ -26,6 +27,7 @@ import {
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
   foregroundSessionScopes,
+  isCanonicalBotChatSession,
   isSessionRemote,
   knownOwnerForSession,
   markSelectionRestore,
@@ -106,6 +108,8 @@ describe('foregroundSessionScopes', () => {
 describe('resetTileRuntimeBindings', () => {
   afterEach(() => {
     $sessionTiles.set([])
+    $canonicalBotChatSessionIds.set(new Set())
+    setSessions([])
   })
 
   it('invalidates the delegate wiring cache AND drops tile runtime ids (sleep/wake reconnect)', () => {
@@ -233,6 +237,82 @@ describe('resetTileRuntimeBindings', () => {
     expect(workBot).toMatchObject({ runtimeId: 'runtime-work-live', storedSessionId: 'stored-work-bot' })
     expect(ordinarySession).not.toHaveProperty('runtimeId')
     expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-work-bot']))
+  })
+
+  it('re-applies the Bot Chat tab title when a canonical tile rebinds after disconnect', () => {
+    setSessions([
+      {
+        ended_at: null,
+        id: 'bot-chat',
+        input_tokens: 0,
+        is_active: false,
+        last_active: 1,
+        message_count: 2,
+        model: null,
+        output_tokens: 0,
+        preview: 'what is the weather in oslo',
+        source: 'desktop',
+        started_at: 1,
+        title: 'Bot Chat',
+        tool_call_count: 0
+      }
+    ])
+    $sessionTiles.set([
+      {
+        runtimeId: 'runtime-dead',
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:local::ops'
+      }
+    ])
+
+    resetTileRuntimeBindings()
+
+    const rebound = $sessionTiles.get()[0]
+
+    expect(rebound.storedSessionId).toBe('bot-chat')
+    expect(rebound.runtimeId).toBeUndefined()
+    expect(rebound.workspaceTabTitle).toBe('Bot Chat')
+    expect(rebound.workspaceMode).toBe('bots')
+    expect($sessionTiles.get()).toHaveLength(1)
+  })
+
+  it('does not remove a canonical Bot Chat tile on backend reconnect', () => {
+    $sessionTiles.set([
+      {
+        runtimeId: 'runtime-dead',
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceTabTitle: 'Bot Chat',
+        workspaceOwnerKey: 'bot:local::ops'
+      }
+    ])
+
+    resetTileRuntimeBindings()
+
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceTabTitle: 'Bot Chat'
+      })
+    ])
+    expect($sessionTiles.get()[0]).not.toHaveProperty('runtimeId')
+  })
+})
+
+describe('isCanonicalBotChatSession', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+    $canonicalBotChatSessionIds.set(new Set())
+    setSessions([])
+  })
+
+  it('recognizes a tile that already carries the canonical tab title', () => {
+    $sessionTiles.set([{ storedSessionId: 'bot-chat', workspaceTabTitle: 'Bot Chat' }])
+
+    expect(isCanonicalBotChatSession('bot-chat')).toBe(true)
+    expect(isCanonicalBotChatSession('other')).toBe(false)
   })
 })
 

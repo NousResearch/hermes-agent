@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
+import { CANONICAL_BOT_CHAT_TITLE, canonicalSessionTabCaption } from '@/app/chat/canonical-tab-title'
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
@@ -70,6 +71,7 @@ import {
 } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
+import { $sessionTiles, isCanonicalBotChatSession } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
@@ -484,12 +486,27 @@ const syncWorkspaceTitle = () => {
   const selected = $selectedStoredSessionId.get()
   const stored = selected ? $sessions.get().find(s => sessionMatchesStoredId(s, selected)) : null
 
+  const explicit = selected
+    ? $sessionTiles.get().find(tile => tile.storedSessionId === selected)?.workspaceTabTitle
+    : undefined
+
+  const title =
+    selected && isCanonicalBotChatSession(selected)
+      ? CANONICAL_BOT_CHAT_TITLE
+      : canonicalSessionTabCaption({
+          preview: stored?.preview,
+          rootTitle: stored?.root_title,
+          title: stored?.title,
+          untitledFallback: stored ? 'Untitled session' : NEW_SESSION_TITLE,
+          workspaceTabTitle: explicit
+        })
+
   registry.register({
     id: 'workspace',
     area: 'panes',
     // The placeholder, not the draft's live name — `tabTitle` below renders
     // that. Keeping it here would re-register the pane on every keystroke.
-    title: stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
+    title,
     data: {
       // The tab's status dot — the SAME primitive the sidebar row and session
       // tiles render, so the main tab never disagrees with its sidebar row. A

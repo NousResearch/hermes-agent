@@ -19,6 +19,7 @@
 import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { CANONICAL_BOT_CHAT_TITLE, isCanonicalBotChatTitle } from '@/app/chat/canonical-tab-title'
 import type { ClientSessionState } from '@/app/types'
 import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
@@ -1087,23 +1088,74 @@ export const $botChatSessionIds = atom<ReadonlySet<string>>(
   new Set((readJson<unknown>(BOT_CHAT_SCOPE_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? [])
 )
 
-function rememberBotChatScope(storedSessionId: string, isBotChat: boolean): void {
-  const current = $botChatSessionIds.get()
+const CANONICAL_BOT_CHAT_IDS_KEY = 'hermes.desktop.canonicalBotChatSessions.v1'
 
-  if (current.has(storedSessionId) === isBotChat) {
+/** Stored ids last opened as the profile's canonical "Bot Chat". Survives a
+ *  renderer relaunch the way `$botChatSessionIds` does, so a hidden forever-
+ *  chat (absent from `$sessions`) still re-applies its tab title on re-bind. */
+export const $canonicalBotChatSessionIds = atom<ReadonlySet<string>>(
+  new Set(
+    (readJson<unknown>(CANONICAL_BOT_CHAT_IDS_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? []
+  )
+)
+
+function persistIdSet(store: typeof $botChatSessionIds, key: string, storedSessionId: string, present: boolean): void {
+  const current = store.get()
+
+  if (current.has(storedSessionId) === present) {
     return
   }
 
   const next = new Set(current)
 
-  if (isBotChat) {
+  if (present) {
     next.add(storedSessionId)
   } else {
     next.delete(storedSessionId)
   }
 
-  $botChatSessionIds.set(next)
-  writeJson(BOT_CHAT_SCOPE_KEY, next.size ? [...next] : null)
+  store.set(next)
+  writeJson(key, next.size ? [...next] : null)
+}
+
+function rememberBotChatScope(storedSessionId: string, isBotChat: boolean): void {
+  persistIdSet($botChatSessionIds, BOT_CHAT_SCOPE_KEY, storedSessionId, isBotChat)
+}
+
+function rememberCanonicalBotChat(storedSessionId: string, isCanonical: boolean): void {
+  persistIdSet($canonicalBotChatSessionIds, CANONICAL_BOT_CHAT_IDS_KEY, storedSessionId, isCanonical)
+}
+
+/** True when this stored session is the profile's forever-chat titled
+ *  "Bot Chat" — tile tabTitle, persisted canonical set, or listing row. */
+export function isCanonicalBotChatSession(storedSessionId: string): boolean {
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+  if (String(tile?.workspaceTabTitle || '').trim() === CANONICAL_BOT_CHAT_TITLE) {
+    return true
+  }
+
+  if ($canonicalBotChatSessionIds.get().has(storedSessionId)) {
+    return true
+  }
+
+  const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
+  return isCanonicalBotChatTitle(stored?.title, stored?.root_title)
+}
+
+function reapplyCanonicalTabTitle<T extends SessionTile>(tile: T): T {
+  if (!isCanonicalBotChatSession(tile.storedSessionId)) {
+    return tile
+  }
+
+  rememberCanonicalBotChat(tile.storedSessionId, true)
+
+  if (tile.workspaceTabTitle === CANONICAL_BOT_CHAT_TITLE) {
+    return tile
+  }
+
+  return { ...tile, workspaceTabTitle: CANONICAL_BOT_CHAT_TITLE }
 }
 
 /** True while this live session is a bot's chat rather than a working session.
@@ -1119,6 +1171,12 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
   // Before the tile lookup: openSession routes every open through here, and a
   // bot chat usually has no tile to record the scope on.
   rememberBotChatScope(storedSessionId, scope.workspaceMode === 'bots')
+
+  if (scope.workspaceMode === 'bots' && String(scope.workspaceTabTitle || '').trim() === CANONICAL_BOT_CHAT_TITLE) {
+    rememberCanonicalBotChat(storedSessionId, true)
+  } else if (scope.workspaceMode !== 'bots') {
+    rememberCanonicalBotChat(storedSessionId, false)
+  }
 
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
@@ -1217,7 +1275,15 @@ export function resetTileRuntimeBindings(
   sessionTileDelegate()?.invalidateRuntimeBindings?.(preservedStoredIds)
 
   if (tiles.some(tile => tile.runtimeId && !preservedStoredIds.has(tile.storedSessionId))) {
-    $sessionTiles.set(tiles.map(tile => (preservedStoredIds.has(tile.storedSessionId) ? tile : toStored(tile))))
+    $sessionTiles.set(
+      tiles.map(tile => reapplyCanonicalTabTitle(preservedStoredIds.has(tile.storedSessionId) ? tile : toStored(tile)))
+    )
+  } else {
+    const next = tiles.map(reapplyCanonicalTabTitle)
+
+    if (next.some((tile, i) => tile !== tiles[i])) {
+      $sessionTiles.set(next)
+    }
   }
 }
 
@@ -1753,8 +1819,10 @@ export function reopenLastClosedTile(): void {
 
     if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
       openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, {
+        ownerRoute: tile.ownerRoute,
         workspaceMode: tile.workspaceMode ?? 'sessions',
-        workspaceOwnerKey: tile.workspaceOwnerKey
+        workspaceOwnerKey: tile.workspaceOwnerKey,
+        workspaceTabTitle: tile.workspaceTabTitle
       })
       focusOpenSession(storedSessionId)
 

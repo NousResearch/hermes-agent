@@ -12,6 +12,11 @@ import type { ReactNode } from 'react'
  * So the slot is contributed. A plugin claims the sessions it owns by
  * returning an element for them and `null` for everything else, which is also
  * how it stands down while the transcript is still hydrating.
+ *
+ * Ownership is per session, so EVERY registration is mounted and each answers
+ * for itself. Declining is free; two plugins claiming one session render both,
+ * which is the visible cost of never letting registration order silently
+ * suppress the plugin that actually owns the chat.
  */
 
 export const CHAT_EMPTY_AREA = 'chat.empty'

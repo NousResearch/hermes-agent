@@ -20,6 +20,7 @@ import {
   queryClient,
   RowButton,
   SessionStatusDot,
+  SidebarRowLead,
   Tip,
   useI18n,
   useValue
@@ -218,16 +219,23 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }: BotRowPro
       onPointerEnter={warm}
     >
       <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
-        <BotFace color={avatarColor(color, bot.name)} image={photo ? image : null} mood={botMood} name={bot.name} shape={shape} size={34} />
+        <BotFace
+          color={avatarColor(color, bot.name)}
+          image={photo ? image : null}
+          mood={botMood}
+          name={bot.name}
+          shape={shape}
+          size={34}
+        />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">
-            {/* Lead slot, same geometry as the session row's: a 3.5 grid cell
-                ahead of the title so every row's name shares one left edge. */}
-            <span className="grid size-3.5 shrink-0 place-items-center">
+            {/* The session row's own lead cell, so a bot's name sits on the
+                same left edge as every session name above it in the rail. */}
+            <SidebarRowLead>
               <SessionStatusDot storedSessionId={canonicalSessionId} />
-            </span>
+            </SidebarRowLead>
             {pinned ? (
               <Tip label={b.roster.pinned}>
                 <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="pinned" />

@@ -7,8 +7,7 @@
  * without either half knowing about a bot row.
  */
 
-import * as sdk from '@hermes/plugin-sdk'
-import { cn, Codicon, DisclosureCaret, RowButton, Tip } from '@hermes/plugin-sdk'
+import { Codicon, ConnectionGlyph, DisclosureCaret, RowButton, Tip } from '@hermes/plugin-sdk'
 
 import { botHandle, botRosterKey, botSourceStatus, filterBots } from './data'
 import { displayName } from './labels'
@@ -203,26 +202,10 @@ export function rosterGatewaySections<TRow extends RosterGatewayRow>(
   }
 }
 
-function gatewayKindIcon(kind?: string) {
-  const icons: Partial<typeof sdk.icons> = (typeof sdk === 'undefined' ? null : sdk.icons) || {}
-
-  if (kind === 'local') {return icons.Monitor}
-
-  if (kind === 'cloud') {return icons.Cloud}
-
-  if (kind === 'ssh') {return icons.Terminal}
-
-  return icons.Network
-}
-
-function gatewayKindCodicon(kind?: string) {
-  if (kind === 'local') {return 'device-desktop'}
-
-  if (kind === 'cloud') {return 'cloud'}
-
-  if (kind === 'ssh') {return 'terminal'}
-
-  return 'remote-explorer'
+/** Roster rows carry the kind as a loose string (it arrives off the wire).
+ *  Anything the glyph doesn't recognise is a remote gateway. */
+function connectionKind(kind?: string) {
+  return kind === 'cloud' || kind === 'local' || kind === 'ssh' ? kind : ('remote' as const)
 }
 
 interface GatewayKindGlyphProps {
@@ -230,21 +213,10 @@ interface GatewayKindGlyphProps {
   kind?: string
 }
 
-/** Match the gateway switcher's Tabler glyphs while keeping older SDK shells
- * usable until they expose the shared icon namespace. */
+/** The gateway switcher's glyph, keyed by kind rather than by a whole
+ *  connection record — the roster only ever knows the kind. */
 export function GatewayKindGlyph({ className, kind }: GatewayKindGlyphProps) {
-  const Icon = gatewayKindIcon(kind)
-
-  return (
-    <span
-      aria-hidden
-      className={cn('grid size-3.5 shrink-0 place-items-center', className)}
-      data-connection-kind={kind || 'remote'}
-      data-slot="connection-glyph"
-    >
-      {Icon ? <Icon className="size-3" /> : <Codicon className="text-[0.75rem]" name={gatewayKindCodicon(kind)} />}
-    </span>
-  )
+  return <ConnectionGlyph className={className} connection={{ kind: connectionKind(kind) }} />
 }
 
 /** Foldable roster heading. It organizes rows visually but never supplies or

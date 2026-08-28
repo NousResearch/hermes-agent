@@ -1794,11 +1794,11 @@ display:
 # When sending is on:
 #   * only packages whose period starts on or after the day you opted in are
 #     ever transmitted, so data collected beforehand stays on this machine;
-#   * the profile-scoped ID is NOT sent. Each package carries an HMAC of it,
-#     keyed by a local-only salt that rotates every 30 days, so installs stay
-#     countable without shipping a durable identifier.
+#   * each package carries the profile-scoped ID as-is. It is a random UUID
+#     with no hardware, account, or host-derived content, and deleting the
+#     shared-metrics directory resets it.
 # See docs/observability/relay-shared-metrics.md (Appendix A) for the full
-# consent, identity, rotation, retention, and deletion decisions.
+# consent, identity, retention, and deletion decisions.
 telemetry:
   shared_metrics:
     enabled: false

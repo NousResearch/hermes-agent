@@ -1,5 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -634,3 +635,386 @@ class TestCardLifecycle:
 # ---------------------------------------------------------------------------
 # AI Card Tests
 # ---------------------------------------------------------------------------
+# ===========================================================================
+# Outbound media — endpoint selection
+# ===========================================================================
+
+
+class TestResolveOutboundEndpoint:
+
+    @pytest.mark.asyncio
+    async def test_group(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        endpoint, target = await adapter._resolve_outbound_endpoint(
+            "group-chat-123"
+        )
+        assert "groupMessages/send" in endpoint
+        assert target == {"openConversationId": "group-chat-123"}
+
+    @pytest.mark.asyncio
+    async def test_dm_falls_back_to_group(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        endpoint, target = await adapter._resolve_outbound_endpoint(
+            "user-abc"
+        )
+        assert "groupMessages/send" in endpoint
+        assert target == {"openConversationId": "user-abc"}
+
+
+# ===========================================================================
+# Outbound media — upload
+# ===========================================================================
+
+
+class TestUploadMedia:
+
+    @pytest.mark.asyncio
+    async def test_success(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        img = tmp_path / "test.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"media_id": "mid-123"}
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(return_value=mock_resp)
+        adapter._get_access_token = AsyncMock(return_value="token")
+
+        media_id = await adapter._upload_media(str(img), media_type="image")
+        assert media_id == "mid-123"
+
+    @pytest.mark.asyncio
+    async def test_file_not_found(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        with pytest.raises(RuntimeError, match="File not found"):
+            await adapter._upload_media("/nonexistent/file.jpg")
+
+    @pytest.mark.asyncio
+    async def test_http_error(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        img = tmp_path / "test.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(return_value=mock_resp)
+        adapter._get_access_token = AsyncMock(return_value="token")
+
+        with pytest.raises(RuntimeError, match="DingTalk media upload failed"):
+            await adapter._upload_media(str(img))
+
+    @pytest.mark.asyncio
+    async def test_missing_media_id(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        img = tmp_path / "test.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"errcode": 0}
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(return_value=mock_resp)
+        adapter._get_access_token = AsyncMock(return_value="token")
+
+        with pytest.raises(RuntimeError, match="missing media_id"):
+            await adapter._upload_media(str(img))
+
+
+# ===========================================================================
+# send_image_file
+# ===========================================================================
+
+
+class TestSendImageFile:
+
+    @pytest.mark.asyncio
+    async def test_success(self, tmp_path, caplog):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG" + b"\x00" * 100)
+
+        adapter._upload_media = AsyncMock(return_value="mid-img")
+        adapter._send_image_message = AsyncMock(
+            return_value=MagicMock(success=True, message_id="img-msg-1")
+        )
+        adapter._get_valid_webhook = MagicMock(return_value=None)
+
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.dingtalk.adapter"):
+            result = await adapter.send_image_file(
+                "group-1", str(img), caption="Look!"
+            )
+        assert result.success is True
+        adapter._upload_media.assert_called_once_with(str(img), media_type="image")
+        assert "Image sent to DingTalk" in caplog.text
+        assert "photo.png" in caplog.text
+        assert "img-msg-1" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_missing_file(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        result = await adapter.send_image_file("chat-1", "/no/such/file.jpg")
+        assert result.success is False
+        assert result.error == "File not found: /no/such/file.jpg"
+
+    @pytest.mark.asyncio
+    async def test_directory_path(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        result = await adapter.send_image_file("chat-1", str(tmp_path))
+        assert result.success is False
+        assert "Not a file" in result.error
+
+    @pytest.mark.asyncio
+    async def test_upload_error(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG" + b"\x00" * 100)
+
+        adapter._upload_media = AsyncMock(
+            side_effect=RuntimeError("Upload timeout")
+        )
+        result = await adapter.send_image_file("chat-1", str(img))
+        assert result.success is False
+        assert "Upload timeout" in result.error
+
+
+# ===========================================================================
+# send_document
+# ===========================================================================
+
+
+class TestSendDocument:
+
+    @pytest.mark.asyncio
+    async def test_success(self, tmp_path, caplog):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF" + b"\x00" * 100)
+
+        adapter._upload_media = AsyncMock(return_value="mid-doc")
+        adapter._send_file_message = AsyncMock(
+            return_value=MagicMock(success=True, message_id="file-msg-1")
+        )
+        adapter._get_valid_webhook = MagicMock(return_value=None)
+
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.dingtalk.adapter"):
+            result = await adapter.send_document("group-1", str(doc))
+        assert result.success is True
+        adapter._upload_media.assert_called_once_with(str(doc), media_type="file")
+        assert "File sent to DingTalk" in caplog.text
+        assert "report.pdf" in caplog.text
+        assert "file-msg-1" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_with_custom_filename(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        doc = tmp_path / "report_v2.pdf"
+        doc.write_bytes(b"%PDF" + b"\x00" * 100)
+
+        adapter._upload_media = AsyncMock(return_value="mid")
+        adapter._send_file_message = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+        adapter._get_valid_webhook = MagicMock(return_value=None)
+
+        result = await adapter.send_document(
+            "group-1", str(doc), file_name="quarterly.pdf"
+        )
+        assert result.success is True
+        adapter._send_file_message.assert_called_once_with(
+            "group-1", "mid", "quarterly.pdf"
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_file(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        result = await adapter.send_document(
+            "chat-1", "/no/such/file.pdf"
+        )
+        assert result.success is False
+        assert result.error == "File not found: /no/such/file.pdf"
+
+    @pytest.mark.asyncio
+    async def test_upload_error(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        doc = tmp_path / "doc.pdf"
+        doc.write_bytes(b"%PDF" + b"\x00" * 100)
+
+        adapter._upload_media = AsyncMock(
+            side_effect=RuntimeError("Upload failed")
+        )
+        result = await adapter.send_document("chat-1", str(doc))
+        assert result.success is False
+
+
+# ===========================================================================
+# _send_robot_media_message
+# ===========================================================================
+
+
+class TestSendRobotMediaMessage:
+
+    @pytest.mark.asyncio
+    async def test_success(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"processQueryKey": "pqk-123"}
+        adapter._http_client.post = AsyncMock(return_value=mock_resp)
+
+        result = await adapter._send_robot_media_message(
+            "group-1",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "mid-1"},
+            kind_label="image",
+        )
+        assert result.success is True
+        assert result.message_id == "pqk-123"
+
+    @pytest.mark.asyncio
+    async def test_no_http_client(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        result = await adapter._send_robot_media_message(
+            "group-1",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "mid-1"},
+            kind_label="image",
+        )
+        assert result.success is False
+        assert "HTTP client not initialized" in result.error
+
+    @pytest.mark.asyncio
+    async def test_token_failure(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value=None)
+
+        result = await adapter._send_robot_media_message(
+            "group-1",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "mid-1"},
+            kind_label="image",
+        )
+        assert result.success is False
+        assert "access token" in result.error
+
+    @pytest.mark.asyncio
+    async def test_http_error(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.text = "Internal Server Error"
+        adapter._http_client.post = AsyncMock(return_value=mock_resp)
+
+        result = await adapter._send_robot_media_message(
+            "group-1",
+            msg_key="sampleFile",
+            msg_param={
+                "mediaId": "mid-1",
+                "fileName": "test.pdf",
+                "fileType": "pdf",
+            },
+            kind_label="file",
+        )
+        assert result.success is False
+        assert "HTTP 500" in result.error
+
+
+# ===========================================================================
+# _send_image_message
+# ===========================================================================
+
+
+class TestSendImageMessage:
+
+    @pytest.mark.asyncio
+    async def test_without_caption(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._send_robot_media_message = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+
+        result = await adapter._send_image_message("group-1", "mid-1")
+        assert result.success is True
+        call_kwargs = adapter._send_robot_media_message.call_args.kwargs
+        assert call_kwargs["msg_key"] == "sampleImageMsg"
+        assert call_kwargs["msg_param"] == {"photoURL": "mid-1"}
+
+    @pytest.mark.asyncio
+    async def test_with_caption(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._send_robot_media_message = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+
+        result = await adapter._send_image_message(
+            "group-1", "mid-1", caption="Hello"
+        )
+        assert result.success is True
+        call_kwargs = adapter._send_robot_media_message.call_args.kwargs
+        assert call_kwargs["msg_param"] == {"photoURL": "mid-1", "text": "Hello"}
+
+
+# ===========================================================================
+# _send_file_message
+# ===========================================================================
+
+
+class TestSendFileMessage:
+
+    @pytest.mark.asyncio
+    async def test_success(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._send_robot_media_message = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+
+        result = await adapter._send_file_message(
+            "group-1", "mid-1", "report.pdf"
+        )
+        assert result.success is True
+        call_kwargs = adapter._send_robot_media_message.call_args.kwargs
+        assert call_kwargs["msg_key"] == "sampleFile"
+        assert call_kwargs["msg_param"] == {
+            "mediaId": "mid-1",
+            "fileName": "report.pdf",
+            "fileType": "pdf",
+        }
+
+    @pytest.mark.asyncio
+    async def test_missing_extension(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        result = await adapter._send_file_message("group-1", "mid-1", "noext")
+        assert result.success is False
+        assert "Missing file extension" in result.error

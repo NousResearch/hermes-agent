@@ -1807,15 +1807,16 @@ from tools.registry import registry, tool_error
 
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
+    # Dieted (#95681): routing mechanics (native attach vs aux-model text
+    # fallback) removed — the route is automatic and the native path's own
+    # tool result says "you can see it natively now"; the schema doesn't
+    # need to predict plumbing. Region keeps its flow teaching: it's
+    # pre-effect guidance (a model that doesn't know crops keep full
+    # resolution never zooms).
     "description": (
-        "Load an image into the conversation so you can see it. Accepts a "
-        "URL, local file path, or data URL. When your active model has "
-        "native vision, the image is attached to your context directly "
-        "and you read the pixels yourself on the next turn — call this "
-        "any time the user references an image (filepath in their message, "
-        "URL in tool output, screenshot from the browser, etc.). For "
-        "non-vision models, falls back to an auxiliary vision model that "
-        "returns a text description."
+        "Load an image into the conversation so you can see it. Call it "
+        "any time the user references an image — then answer from what "
+        "you see."
     ),
     "parameters": {
         "type": "object",
@@ -1826,7 +1827,7 @@ VISION_ANALYZE_SCHEMA = {
             },
             "question": {
                 "type": "string",
-                "description": "Your specific question or request about the image. Optional context the model uses on the next turn after seeing the image."
+                "description": "Your question or request about the image."
             },
             "region": {
                 "type": "array",
@@ -1834,12 +1835,11 @@ VISION_ANALYZE_SCHEMA = {
                 "minItems": 4,
                 "maxItems": 4,
                 "description": (
-                    "Optional [x1, y1, x2, y2] crop region in pixel coordinates "
-                    "of the ORIGINAL image, applied before any downscaling so "
-                    "the region keeps full resolution. Intended flow: load the "
-                    "full image first, then call again with a region to zoom "
-                    "into a detail (small text, UI element, fine print). "
-                    "Coordinates are clamped to the image bounds."
+                    "Optional [x1, y1, x2, y2] crop in ORIGINAL-image pixel "
+                    "coordinates, applied before any downscaling — the crop "
+                    "keeps full resolution. Load the full image first, then "
+                    "re-call with a region to zoom into small text or fine "
+                    "detail."
                 )
             }
         },

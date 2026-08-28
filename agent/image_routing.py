@@ -17,17 +17,18 @@ It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
 | ``text``, default ``auto``) and the active model's capability metadata.
 
 In ``auto`` mode:
-  - If the active model reports ``supports_vision=True`` (via config
-    override or models.dev metadata), we attach natively — vision-capable
-    main models should always see the original pixels, even when an
-    auxiliary vision backend is configured. That auxiliary backend then
-    acts as a *fallback* for sessions whose main model can't take images.
-  - Otherwise, if the user has explicitly configured ``auxiliary.vision``
-    (provider/model/base_url not ``auto``/empty), we route through the
-    text pipeline so the auxiliary vision backend can describe the image
-    for the text-only main model.
-  - Otherwise (non-vision model, no explicit override), we fall back to
-    text via the default vision_analyze flow.
+  - If the user has explicitly configured ``auxiliary.vision``
+    (provider/model/base_url not ``auto``/empty), images route through
+    that backend — the DE-FACTO choice: a user who named a dedicated
+    vision model wants it used, even when the main model has native
+    vision (maintainer decision 2026-08-28, reversing #29135's
+    fallback-only posture).
+  - Otherwise, if the active model reports ``supports_vision=True`` (via
+    config override or models.dev metadata), we attach natively.
+  - Otherwise (non-vision model, no aux backend), text via the default
+    vision_analyze flow.
+  ``agent.image_input_mode: native`` remains the absolute override for
+  users who want native attach despite a configured aux backend.
 
 This keeps ``vision_analyze`` surfaced as a tool in every session — skills
 and agent flows that chain it (browser screenshots, deeper inspection of
@@ -448,10 +449,11 @@ def _coerce_mode(raw: Any) -> str:
 def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     """True when the user configured a specific auxiliary vision backend.
 
-    An explicit override means the user has a dedicated vision backend
-    available; it's used as a *fallback* when the main model can't take
-    images natively. In ``auto`` mode, native vision on a vision-capable
-    main model still wins over this fallback — see issue #29135.
+    An explicit backend is the DE-FACTO image route in ``auto`` mode —
+    the user named a dedicated vision model, so images go through it even
+    when the main model could take them natively (maintainer decision,
+    reversing #29135). ``agent.image_input_mode: native`` still forces
+    native; unset/auto aux config leaves native as the default.
     """
     if not isinstance(cfg, dict):
         return False
@@ -586,10 +588,16 @@ def decide_image_input_mode(
     if mode_cfg == "text":
         return "text"
 
-    # auto: prefer native vision when the main model supports it. An
-    # explicit auxiliary.vision config acts as a *fallback* for text-only
-    # main models — it should not preempt native vision on a model that
-    # can natively inspect the pixels (issue #29135).
+    # auto: an explicitly configured auxiliary.vision backend is the
+    # DE-FACTO choice — the user named a dedicated vision model, so that's
+    # what they want images to go through, even when the main model has
+    # native vision (maintainer decision, 2026-08-28, reversing #29135's
+    # fallback-only posture: config that only takes effect when the main
+    # model gets worse is a trap, not a setting). Native vision remains
+    # the default for unconfigured installs, and the fallback when the
+    # aux backend is unset.
+    if _explicit_aux_vision_override(cfg):
+        return "text"
     if requested_provider:
         supports = _lookup_supports_vision(
             provider,
@@ -603,8 +611,6 @@ def decide_image_input_mode(
         supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
-    if _explicit_aux_vision_override(cfg):
-        return "text"
     return "text"
 
 

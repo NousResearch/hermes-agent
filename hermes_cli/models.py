@@ -2259,16 +2259,6 @@ def _cache_catalog(
 _PRICING_AUTH_KEY_SUFFIX = "\x00auth"
 
 
-def _pricing_cache_key(url_root: str, api_key: str | None) -> str:
-    """Cache key for a read of *url_root*.
-
-    A governed endpoint answers an authenticated read with a policy-filtered
-    catalog and an anonymous one with the full catalog, so the two cannot share
-    an entry. Only whether a key was supplied participates, never its value.
-    """
-    return url_root + _PRICING_AUTH_KEY_SUFFIX if api_key else url_root
-
-
 def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:
     """Pricing already cached for *base_url*, or ``{}``. Never fetches.
 
@@ -2434,7 +2424,11 @@ def fetch_models_with_pricing(
     ``original``.
     """
     url_root = (base_url or "").rstrip("/")
-    cache_key = _pricing_cache_key(url_root, api_key)
+    # A governed endpoint answers an authenticated read with a policy-filtered
+    # catalog and an anonymous one with the full catalog, so the two cannot
+    # share an entry. Only whether a key was supplied participates, never its
+    # value.
+    cache_key = url_root + _PRICING_AUTH_KEY_SUFFIX if api_key else url_root
     if not force_refresh:
         cached = _cached_catalog(cache_key)
         if cached is not None:

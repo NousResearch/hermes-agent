@@ -630,3 +630,33 @@ def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
                 if isinstance(val, int) and val >= 2000:
                     offenders.append((name, key, val))
     assert not offenders, offenders
+
+
+def test_freeform_object_param_stays_open_for_the_model():
+    """#153097 / #96734: a free-form object parameter keeps ``properties: {}`` for llama.cpp
+    and gains ``additionalProperties: true``, so models don't read it as "no fields" and
+    send ``{}``. An explicit ``additionalProperties`` (closed or typed) is left alone."""
+    params = sanitize_tool_schemas([_tool("t", {"type": "object", "properties": {
+        "findings": {"type": "object", "description": "keys: title, tags"},
+        "maybe": {"type": ["object", "null"]},
+        "sealed": {"type": "object", "additionalProperties": False},
+        "typed": {"type": "object", "additionalProperties": {"type": "string"}},
+    }})])[0]["function"]["parameters"]["properties"]
+    for name in ("findings", "maybe"):
+        assert params[name]["properties"] == {}
+        assert params[name]["additionalProperties"] is True, name
+    assert params["sealed"]["additionalProperties"] is False
+    assert params["typed"]["additionalProperties"] == {"type": "string"}
+
+
+def test_declared_properties_are_not_reopened():
+    """Only objects the author left free-form are opened; a declared (even empty)
+    property map keeps its shape, renamed keys included."""
+    params = sanitize_tool_schemas([_tool("t", {"type": "object", "properties": {
+        "none": {"type": "object", "properties": {}},
+        "some": {"type": "object", "properties": {"a": {"type": "string"}}},
+        "bad~key": {"type": "object"},
+    }})])[0]["function"]["parameters"]["properties"]
+    assert "additionalProperties" not in params["none"]
+    assert "additionalProperties" not in params["some"]
+    assert params["bad_key"]["additionalProperties"] is True

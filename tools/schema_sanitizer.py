@@ -294,6 +294,18 @@ def _normalize_type_array(value: list, out: dict) -> None:
         out.setdefault("nullable", True)
 
 
+def _keep_freeform_open(source: Any, sanitized: Any) -> None:
+    """Mark a free-form object *parameter* ``additionalProperties: true`` (#153097, #96734).
+
+    ``_sanitize_node`` gives it ``properties: {}`` for llama.cpp, which some models read as
+    "no fields" and answer with ``{}`` on every call. The marker keeps "any keys allowed"
+    while the empty map stays for llama.cpp. An explicit ``additionalProperties`` wins."""
+    declared = isinstance(source, dict) and isinstance(source.get("properties"), dict)
+    if (not declared and isinstance(sanitized, dict) and sanitized.get("type") == "object"
+            and "additionalProperties" not in sanitized):
+        sanitized["additionalProperties"] = True
+
+
 def _sanitize_node(node: Any, path: str) -> Any:
     """Recursively sanitize a JSON-Schema fragment: bare-string schemas → ``{"type": <value>}``
     (unknown strings → permissive object); object nodes gain ``properties: {}``; ``type`` arrays
@@ -340,6 +352,9 @@ def _sanitize_node(node: Any, path: str) -> Any:
             out[key] = {
                 renames.get(k, k): _sanitize_node(v, f"{path}.{key}.{renames.get(k, k)}")
                 for k, v in value.items()}
+            if key == "properties":
+                for k, v in value.items():
+                    _keep_freeform_open(v, out[key][renames.get(k, k)])
         elif key == "dependencies" and isinstance(value, dict):
             out[key] = {k: _sanitize_node(v, f"{path}.{key}.{k}") if isinstance(v, dict)
                         else copy.deepcopy(v) for k, v in value.items()}

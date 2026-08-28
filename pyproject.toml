@@ -48,6 +48,15 @@ dependencies = [
   "ruamel.yaml==0.18.17",
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",
+  # Document-to-Markdown extraction for read_file (PDF, legacy Office,
+  # OpenDocument, RTF, EPUB) + typed NeedsOcrError for scanned pages.
+  # Bundled in core by maintainer decision (read_file is a core tool and
+  # PDF reads are a common first-session action; the previous lazy-only
+  # arrangement dated to the package's uv exclude-newer quarantine, which
+  # has long expired). tools/lazy_deps.py `tool.doc_extract` remains the
+  # self-heal path for lean/broken installs — keep the pin below and the
+  # lazy pin in lockstep.
+  "firecrawl-anydoc==0.2.4",
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
   # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's
   # Responses API resource is exercised from a non-main thread, which is the
@@ -420,7 +429,11 @@ exclude-newer = "14 days"
 # cutoff can still brick installs. Exempting exact pins is pure brick-risk
 # removal at no supply-chain cost. Guarded by
 # tests/test_packaging_metadata.py::test_build_system_requires_exempt_from_exclude_newer.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false }
+#
+# firecrawl-anydoc: same exact-pin shape (==0.2.4, hosted-OCR wiring PR).
+# The pin bump WAS the review; exclude-newer adds zero float protection to
+# an exact pin and would only delay the reviewed version 14 days.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's

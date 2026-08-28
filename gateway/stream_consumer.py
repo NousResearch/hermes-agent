@@ -462,11 +462,11 @@ class GatewayStreamConsumer:
         # Ticks every 1s updating spinner + elapsed time in the bubble.
         self._tool_timer_handle: Optional[asyncio.TimerHandle] = None
         self._tool_timer_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._tool_start_times: dict[str, float] = {}  # tool_name -> monotonic start
-        self._tool_timer_labels: dict[str, str] = {}  # tool_name -> original progress line
+        self._tool_start_times: dict[str, float] = {}  # key -> monotonic start
+        self._tool_timer_labels: dict[str, str] = {}  # key -> original progress line
         self._tool_timer_tick_count: int = 0  # for spinner rotation
-        self._timer_lock = threading.Lock()  # guards _tool_start_times & _tool_timer_labels
-        self._tool_completed_lines: list[str] = []  # completed tool history (max 3)
+        self._timer_lock = threading.Lock()  # guards ALL timer mutable state
+        self._tool_completed_lines: list[str] = []  # completed tool history (max 5)
 
 
     def _stream_is_message(self) -> bool:
@@ -499,7 +499,7 @@ class GatewayStreamConsumer:
             return False
         return bool(getattr(self.adapter, "SUPPORTS_TOOL_TIMER", True))
 
-    def on_tool_progress(self, line: str) -> None:
+    def on_tool_progress(self, line: str, tool_call_id: str | None = None) -> None:
         """Inject a tool-progress status line into the native stream bubble.
 
         Thread-safe (called from agent worker thread via queue.Queue). Only
@@ -511,18 +511,23 @@ class GatewayStreamConsumer:
 
         Also starts the tool-timer animation (1s ticks with spinner + elapsed)
         if not already running.
+
+        ``tool_call_id``, when provided, is used as the dict key instead of
+        the parsed tool name.  This allows two concurrent calls to the same
+        tool (e.g. two ``terminal`` invocations) to track independently.
         """
         if line:
             self._queue.put((_TOOL_PROGRESS, line))
             # Start/join the timer for this tool, preserving the original
             # progress line as the display label for animated ticks.
             tool_name = _parse_tool_name(line)
+            key = tool_call_id if tool_call_id is not None else tool_name
             # Don't clear other running tools — they may be parallel.
             # on_tool_completed() handles moving finished tools to
             # _tool_completed_lines when tool.completed fires.
             with self._timer_lock:
-                self._tool_timer_labels[tool_name] = line
-            self._start_tool_timer(tool_name)
+                self._tool_timer_labels[key] = line
+            self._start_tool_timer(key)
 
     def _compose_frame_content(self) -> str:
         """Compose the current frame content for native streaming.
@@ -561,43 +566,50 @@ class GatewayStreamConsumer:
         """
         if not self._use_native_streaming:
             return
-        if tool_name not in self._tool_start_times:
-            self._tool_start_times[tool_name] = time.monotonic()
-        # Arm the periodic tick if not already running.
-        # Use call_soon_threadsafe because this method is called from the
-        # agent worker thread, not the event loop thread.
-        if self._tool_timer_handle is None and self._tool_timer_loop is not None:
+        with self._timer_lock:
+            if tool_name not in self._tool_start_times:
+                self._tool_start_times[tool_name] = time.monotonic()
+            # Arm the periodic tick if not already running.
+            # Use call_soon_threadsafe because this method is called from the
+            # agent worker thread, not the event loop thread.
+            need_arm = self._tool_timer_handle is None and self._tool_timer_loop is not None
+        if need_arm:
             self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
 
     def _arm_tool_timer(self) -> None:
         """Arm the 1s periodic tick.  Must run on the event loop thread."""
-        if self._tool_timer_handle is None:
-            self._tool_timer_handle = self._tool_timer_loop.call_later(
-                1.0, self._tool_timer_tick,
-            )
-            logger.info("[timer] armed")
+        with self._timer_lock:
+            if self._tool_timer_handle is None:
+                self._tool_timer_handle = self._tool_timer_loop.call_later(
+                    1.0, self._tool_timer_tick,
+                )
+                logger.debug("[timer] armed")
 
     def _stop_tool_timer(self) -> None:
         """Cancel the tool-timer animation and clear associated state."""
-        was_running = self._tool_timer_handle is not None
-        if self._tool_timer_handle is not None:
-            self._tool_timer_handle.cancel()
-            self._tool_timer_handle = None
         with self._timer_lock:
+            was_running = self._tool_timer_handle is not None
+            if self._tool_timer_handle is not None:
+                self._tool_timer_handle.cancel()
+                self._tool_timer_handle = None
             self._tool_start_times.clear()
             self._tool_timer_labels.clear()
             self._tool_completed_lines.clear()
         self._tool_timer_tick_count = 0
-        logger.info("[timer] stopped (was_running=%s)", was_running)
+        logger.debug("[timer] stopped (was_running=%s)", was_running)
 
-    def on_tool_completed(self, tool_name: str, duration: float) -> None:
+    def on_tool_completed(self, tool_name: str, duration: float, tool_call_id: str | None = None) -> None:
         """Record a completed tool in the history overlay.
 
         Thread-safe: called from the agent worker thread.
+
+        ``tool_call_id``, when provided, is used as the dict key for looking
+        up the matching timer entry.  Falls back to *tool_name* when absent.
         """
+        key = tool_call_id if tool_call_id is not None else tool_name
         with self._timer_lock:
-            label = self._tool_timer_labels.pop(tool_name, tool_name)
-            self._tool_start_times.pop(tool_name, None)
+            label = self._tool_timer_labels.pop(key, tool_name)
+            self._tool_start_times.pop(key, None)
             completion_line = f"✓ {label} ({int(duration)}s)"
             self._tool_completed_lines.append(completion_line)
             # Keep max 5 entries
@@ -639,7 +651,9 @@ class GatewayStreamConsumer:
             if label:
                 self._tool_timer_labels["_thinking"] = label
         # Arm the timer if not already running
-        if self._tool_timer_handle is None and self._tool_timer_loop is not None:
+        with self._timer_lock:
+            need_arm = self._tool_timer_handle is None and self._tool_timer_loop is not None
+        if need_arm:
             self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
 
     def _tool_timer_tick(self) -> None:
@@ -654,7 +668,7 @@ class GatewayStreamConsumer:
                 return
 
             self._tool_timer_tick_count += 1
-            logger.info("[timer] tick #%d, entries=%d", self._tool_timer_tick_count, len(self._tool_start_times))
+            logger.debug("[timer] tick #%d, entries=%d", self._tool_timer_tick_count, len(self._tool_start_times))
             now = time.monotonic()
             lines: list[str] = list(self._tool_completed_lines)  # completed history first
             for tool_name, start in self._tool_start_times.items():
@@ -678,10 +692,11 @@ class GatewayStreamConsumer:
         self._queue.put(_TIMER_TICK)
 
         # Re-arm for the next tick
-        if self._tool_timer_loop is not None:
-            self._tool_timer_handle = self._tool_timer_loop.call_later(
-                1.0, self._tool_timer_tick,
-            )
+        with self._timer_lock:
+            if self._tool_timer_loop is not None:
+                self._tool_timer_handle = self._tool_timer_loop.call_later(
+                    1.0, self._tool_timer_tick,
+                )
 
     def _metadata_for_send(
         self,
@@ -1618,7 +1633,7 @@ class GatewayStreamConsumer:
                             # No-op wake-up from the tool-timer tick — the tick
                             # already updated _tool_progress_lines and set
                             # _tool_progress_active. Just drain it.
-                            logger.info("[timer] drain-loop received TIMER_TICK, tool_progress_active=%s", self._tool_progress_active)
+                            logger.debug("[timer] drain-loop received TIMER_TICK, tool_progress_active=%s", self._tool_progress_active)
                             continue
                         self._filter_and_accumulate(item)
                     except queue.Empty:
@@ -3409,7 +3424,7 @@ class GatewayStreamConsumer:
             # update is pushed as soon as it arrives.
             if not finalize and text == self._last_sent_text:
                 if self._tool_progress_active:
-                    logger.info("[timer] frame suppressed by dedup (len=%d)", len(text))
+                    logger.debug("[timer] frame suppressed by dedup (len=%d)", len(text))
                 return True  # unchanged — skip
 
             # B2 — timeout-inversion race fix. For a finalize frame, mark

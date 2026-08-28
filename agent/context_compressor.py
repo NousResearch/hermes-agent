@@ -77,13 +77,21 @@ def _safe_int(value: Any) -> int | None:
 # per compression run (its only non-recursive call site is the compress path;
 # the two recursive calls are the deliberate main-model retry that must NOT
 # re-issue the pin). Lean ``tail_mode`` additionally runs
-# ``_build_chunk_digests``, which issues its own ``call_llm`` calls directly
-# and never consults the pin — during a stall-fallback retry those digests
-# still target the stalled primary and degrade to per-segment placeholders.
-# Deliberate: the digest path is a best-effort augmentation, not the summary,
-# and pinning it would require weakening the single-use contract below.
+# ``_build_chunk_digests``, which issues its own ``call_llm`` calls directly.
+# Those digests consult ``attempt_summary_route_kwargs()`` (non-consuming):
+# during a stall-fallback retry they follow the summary onto the healthy
+# fallback backend instead of returning to the stalled primary. The consumed
+# echo below preserves the pin's single-use contract for the SUMMARY call —
+# the main-model retry still never re-issues the pinned route.
 _SUMMARY_ROUTE_PIN: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("hermes_summary_route_pin", default=None)
+)
+
+# Echo of the route the summary call consumed, for SIBLING aux calls of the
+# same attempt (lean digests). Context-local like the pin itself, so it can
+# never leak across threads or into an unrelated compression attempt.
+_SUMMARY_ROUTE_CONSUMED: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+    contextvars.ContextVar("hermes_summary_route_consumed", default=None)
 )
 
 # call_llm kwargs a pinned route may set. ``timeout`` lets a fallback entry
@@ -120,12 +128,36 @@ def take_pinned_summary_route() -> Optional[Dict[str, Any]]:
     Single use by design. ``_generate_summary`` retries itself on the main
     model when the summary route fails; re-issuing the pinned route there
     would spend a second full deadline on the backend that just failed.
+
+    The consumed route is echoed into ``_SUMMARY_ROUTE_CONSUMED`` so that
+    SIBLING auxiliary calls in the same attempt (the lean chunk digests,
+    which run after the summary) can keep addressing the healthy fallback
+    backend instead of silently returning to the stalled task route
+    (#96634 post-merge review, secondary item).
     """
     route = _SUMMARY_ROUTE_PIN.get()
     if route is None:
         return None
     _SUMMARY_ROUTE_PIN.set(None)
+    _SUMMARY_ROUTE_CONSUMED.set(route)
     return route
+
+
+def attempt_summary_route_kwargs() -> Dict[str, Any]:
+    """Route kwargs for sibling aux calls of the CURRENT summary attempt.
+
+    Non-consuming. Prefers a still-pending pin (digest paths that run before
+    the summary), else the route the summary call just consumed. Empty when
+    no stall-fallback pin is active — normal task routing applies.
+    """
+    route = _SUMMARY_ROUTE_PIN.get() or _SUMMARY_ROUTE_CONSUMED.get()
+    if not route:
+        return {}
+    return {
+        field: route[field]
+        for field in _PINNED_ROUTE_FIELDS
+        if route.get(field) not in (None, "")
+    }
 
 
 def _pinned_summary_call_kwargs() -> Dict[str, Any]:
@@ -4646,6 +4678,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             try:
                 from agent.auxiliary_client import call_llm
 
+                # During a stall-fallback retry, follow the summary onto the
+                # pinned healthy route (non-consuming read) instead of
+                # re-addressing the stalled task backend (#96634 follow-up).
                 resp = call_llm(
                     messages=[{
                         "role": "user",
@@ -4653,6 +4688,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                     }],
                     task="compression",
                     max_tokens=_LEAN_DIGEST_MAX_TOKENS,
+                    **attempt_summary_route_kwargs(),
                 )
                 body = (
                     resp.choices[0].message.content

@@ -67,6 +67,9 @@ type BotsMessages = {
     helpPromptPlaceholder: string
     descriptionHint: string
     newChatWith: string
+    /** Re-opens the forever-chat on purpose. A plain row click only returns to
+     *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
+    openBotChat: string
     duplicate: string
     duplicateFailed: string
     deleteTitle: string
@@ -190,6 +193,7 @@ const en: BotsMessages = {
     helpPromptPlaceholder: 'What should this bot help with?',
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
     newChatWith: 'New chat with this bot',
+    openBotChat: 'Open Bot Chat',
     duplicate: 'Duplicate',
     duplicateFailed: 'Duplicate failed',
     deleteTitle: 'Delete bot and profile?',

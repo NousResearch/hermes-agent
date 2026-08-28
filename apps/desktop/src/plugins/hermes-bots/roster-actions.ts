@@ -105,11 +105,38 @@ export function trackInboundActivity(roster: RosterRow[]) {
   }
 }
 
+/** The tab this bot's workspace already has open, fronted — or null when it has
+ *  none. A roster click consults this BEFORE the canonical registry so a bot
+ *  with open tabs simply comes back to the one the user left. It is what lets a
+ *  closed Bot Chat STAY closed: the click path used to re-open the forever-chat
+ *  beside every newer thread on every bot switch, and nothing records a close
+ *  (this plugin keeps no closed set; core's tile bucket only forgets), so the
+ *  only honest signal is the open set itself. Feature-detected — older shells
+ *  fall through to the canonical open. */
+function focusExistingBotTab(bot: RosterRow): null | string {
+  if (typeof host.focusOpenWorkspaceSession !== 'function') {
+    return null
+  }
+
+  try {
+    const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot))
+
+    return typeof focused === 'string' && focused ? focused : null
+  } catch {
+    return null
+  }
+}
+
 /** Select one exact roster owner, then open its named canonical chat only when
  *  the current Desktop can route that owner without guessing. The workspace
  *  remembers only this transient opened-view observation; it never stores or
- *  resolves a canonical-chat id. */
-export async function openRosterBot(bot: RosterRow): Promise<boolean> {
+ *  resolves a canonical-chat id.
+ *
+ *  `canonical`: the user asked for the forever-chat itself (the row menu's
+ *  "Open Bot Chat"). A plain row click is "go to this bot": when its workspace
+ *  already holds tabs, the one the user last had active is fronted and no chat
+ *  is resolved or opened — see focusExistingBotTab. */
+export async function openRosterBot(bot: RosterRow, { canonical = false } = {}): Promise<boolean> {
   const generation = bumpBotOpenGeneration()
   const key = botRosterKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())
@@ -162,6 +189,20 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   // which the selection listener alone would file against the wrong profile —
   // a bot open deliberately leaves the gateway on the launch profile.
   ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
+
+  if (!canonical) {
+    const focused = focusExistingBotTab(bot)
+
+    if (focused) {
+      // Open tabs win: no source activation, no registry consult, no open. The
+      // claim carries only the fronted tab so the focus edge it fires keeps it
+      // (releaseStaleOpenBotChat) and no registry id is recorded, because none
+      // was resolved.
+      $openBotChat.set({ key, openedRegistryId: '', openedSessionId: focused })
+
+      return true
+    }
+  }
 
   try {
     // Activation selects this row's source only. Canonical identity is resolved

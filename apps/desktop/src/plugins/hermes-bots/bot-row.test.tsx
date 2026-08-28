@@ -20,6 +20,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BotRow } from './bot-row'
+import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
 const { ensureAgent, ensureBotMetadata, notifyError, openRosterBot, requestProfile, warmAgent, warmProfile } =
@@ -38,7 +39,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
   return {
     ...sdk,
-    host: { ...sdk.host, ensureAgent, notifyError, requestProfile, warmAgent, warmProfile }
+    host: { ...sdk.host, ensureAgent, notifyError, requestProfile, warmAgent, warmProfile },
+    // The plugin bundle normally lands via `ctx.i18n.register` at load, so
+    // without this every localized label in the row renders empty.
+    usePluginI18n: () => translateBots
   }
 })
 
@@ -125,6 +129,17 @@ describe('the row delegates the open and claims no activation authority', () => 
     expect(ensureAgent).not.toHaveBeenCalled()
     expect(openRosterBot.mock.calls[0][0].connectionId).toBe('mac-mini')
     expect(notifyError).not.toHaveBeenCalled()
+  })
+})
+
+describe('the menu carries the explicit ask for the forever-chat', () => {
+  it('opens the canonical chat, which a plain row click deliberately does not', async () => {
+    const bot = { name: 'alpha' } as RosterRow
+
+    fireEvent.contextMenu(renderRow(bot))
+    fireEvent.click(await screen.findByText('Open Bot Chat'))
+
+    expect(openRosterBot.mock.calls).toEqual([[bot, { canonical: true }]])
   })
 })
 

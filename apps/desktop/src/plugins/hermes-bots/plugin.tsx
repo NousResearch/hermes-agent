@@ -543,6 +543,14 @@ export default {
                 return
               }
 
+              // A claim without a registry id is a fronted non-canonical tab
+              // (focusExistingBotTab / the draft fallback): re-resolving the
+              // canonical chat here would open the Bot Chat the user has
+              // closed. Its tile recovers on the next send like any tab.
+              if (!claim.openedRegistryId) {
+                return
+              }
+
               const bot = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
 
               if (!bot) {

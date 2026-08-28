@@ -40,8 +40,11 @@ export const $selectedRosterHydrated = atom(false)
 export const $rosterHydrated = atom(false)
 /** Mirrors host.paneVisibility('hermes-bots:pane') — wired in register(). */
 export const $botsPaneVisible = atom(false)
-/** An explicit open landed: {key, openedRegistryId}. This transient view
- *  observation is empty only for the legacy newChat draft fallback. */
+/** An explicit open landed: {key, openedRegistryId, openedSessionId}. The
+ *  registry id is empty for the legacy newChat draft fallback and for a click
+ *  that came back to the bot's already-open tabs (only openedSessionId set — no
+ *  canonical chat was resolved). This transient view observation is never an
+ *  identity preference. */
 export const $openBotChat = atom<{ key: string; openedRegistryId: string; openedSessionId?: string } | null>(null)
 /** A session owns the main workspace. The roster highlight and the Cronjobs
  *  lifecycle both key off this rather than reading host.state conditionally

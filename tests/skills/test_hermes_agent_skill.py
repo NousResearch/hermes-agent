@@ -81,6 +81,14 @@ def test_native_mcp_reference_matches_runtime_timeout():
     assert f"| `timeout`         | int    | `{match.group(1)}`" in NATIVE_MCP_TEXT
 
 
+def test_native_mcp_reference_matches_runtime_tool_names():
+    source = (REPO / "tools" / "mcp_tool.py").read_text(encoding="utf-8")
+    assert 'MCP_TOOL_NAME_PREFIX = "mcp__"' in source
+    assert "mcp__{server_name}__{tool_name}" in NATIVE_MCP_TEXT
+    for stale in ("mcp_{server}_{tool}", "mcp_filesystem_", "mcp_github_", "mcp_time_"):
+        assert stale not in NATIVE_MCP_TEXT
+
+
 def test_native_mcp_reference_documents_reload():
     assert "/reload-mcp" in NATIVE_MCP_TEXT
     assert "auto_reload_on_config_change" in NATIVE_MCP_TEXT

@@ -38,11 +38,12 @@ mcp_servers:
     args: ["mcp-server-time"]
 ```
 
-Restart Hermes Agent. On startup it will:
-1. Connect to the server
-2. Discover available tools
-3. Register them with the prefix `mcp_time_*`
-4. Inject them into all platform toolsets
+Hermes Agent connects during startup, then:
+
+1. Connects to the server.
+2. Discovers available tools.
+3. Registers them with names such as `mcp__time__get_current_time`.
+4. Injects them into the eligible platform toolsets.
 
 You can then use the tools naturally -- just ask the agent to get the current time.
 
@@ -110,20 +111,21 @@ When Hermes Agent starts, `discover_mcp_tools()` is called during tool initializ
 3. Initializes the MCP session and calls `list_tools()` to discover available tools
 4. Registers each tool in the Hermes tool registry
 
-### Tool Naming Convention
+### Tool naming convention
 
-MCP tools are registered with the naming pattern:
+MCP tools use a double-underscore delimiter:
 
+```text
+mcp__{server_name}__{tool_name}
 ```
-mcp_{server_name}_{tool_name}
-```
 
-Hyphens and dots in names are replaced with underscores for LLM API compatibility.
+Hyphens and dots in names become underscores for LLM API compatibility.
 
 Examples:
-- Server `filesystem`, tool `read_file` → `mcp_filesystem_read_file`
-- Server `github`, tool `list-issues` → `mcp_github_list_issues`
-- Server `my-api`, tool `fetch.data` → `mcp_my_api_fetch_data`
+
+- Server `filesystem`, tool `read_file` → `mcp__filesystem__read_file`
+- Server `github`, tool `list-issues` → `mcp__github__list_issues`
+- Server `my-api`, tool `fetch.data` → `mcp__my_api__fetch_data`
 
 ### Auto-Injection
 
@@ -245,7 +247,7 @@ pip install --upgrade mcp
 - Check that the server is listed under `mcp_servers` (not `mcp` or `servers`)
 - Ensure the YAML indentation is correct
 - Look at Hermes Agent startup logs for connection messages
-- Tool names are prefixed with `mcp_{server}_{tool}` -- look for that pattern
+- Tool names use `mcp__{server_name}__{tool_name}`; look for that pattern.
 
 ### Connection keeps dropping
 
@@ -262,7 +264,7 @@ mcp_servers:
     args: ["mcp-server-time"]
 ```
 
-Registers tools like `mcp_time_get_current_time`.
+Registers tools such as `mcp__time__get_current_time`.
 
 ### Filesystem Server (npx)
 
@@ -274,7 +276,7 @@ mcp_servers:
     timeout: 30
 ```
 
-Registers tools like `mcp_filesystem_read_file`, `mcp_filesystem_write_file`, `mcp_filesystem_list_directory`.
+Registers tools such as `mcp__filesystem__read_file`, `mcp__filesystem__write_file`, and `mcp__filesystem__list_directory`.
 
 ### GitHub Server with Authentication
 
@@ -288,7 +290,7 @@ mcp_servers:
     timeout: 60
 ```
 
-Registers tools like `mcp_github_list_issues`, `mcp_github_create_pull_request`, etc.
+Registers tools such as `mcp__github__list_issues` and `mcp__github__create_pull_request`.
 
 ### Remote HTTP Server
 
@@ -358,8 +360,8 @@ Disable sampling for untrusted servers with `sampling: { enabled: false }`.
 
 ## Notes
 
-- MCP tools are called synchronously from the agent's perspective but run asynchronously on a dedicated background event loop
-- Tool results are returned as JSON with either `{"result": "..."}` or `{"error": "..."}`
-- The native MCP client is independent of `mcporter` -- you can use both simultaneously
-- Server connections are persistent and shared across all conversations in the same agent process
+- MCP tools are called synchronously from the agent's perspective but run asynchronously on a dedicated background event loop.
+- Tool results are returned as JSON with either `{"result": "..."}` or `{"error": "..."}`.
+- The native MCP client is independent of `mcporter`; you can use both simultaneously.
+- Server connections persist across conversations in the same agent process.
 - Configuration changes reload automatically by default. Use `/reload-mcp` when automatic reload is disabled.

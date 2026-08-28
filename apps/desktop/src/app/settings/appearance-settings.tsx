@@ -22,7 +22,7 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
-import { $retiredTips, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
+import { $retiredTips, $tipRotationEnabled, resetTips, setTipRotationEnabled } from '@/store/tips'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import {
   $translucency,
@@ -356,7 +356,7 @@ export function AppearanceSettings() {
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const reactionsEnabled = useStore($reactionsEnabled)
-  const tipsEnabled = useStore($tipsEnabled)
+  const tipRotation = useStore($tipRotationEnabled)
   const retiredTips = useStore($retiredTips)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
@@ -764,13 +764,13 @@ export function AppearanceSettings() {
                 <SegmentedControl
                   onChange={id => {
                     triggerHaptic('selection')
-                    setTipsEnabled(id === 'on')
+                    setTipRotationEnabled(id === 'on')
                   }}
                   options={[
                     { id: 'off', label: t.common.off },
                     { id: 'on', label: t.common.on }
                   ]}
-                  value={tipsEnabled ? 'on' : 'off'}
+                  value={tipRotation ? 'on' : 'off'}
                 />
                 {/* The ✕ on a tip is permanent, so this is the only way back.
                     It appears once there is something to bring back. */}

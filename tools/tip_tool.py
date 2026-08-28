@@ -8,9 +8,11 @@ about, which is the right weight for "that button, there" in the middle of a
 sentence.
 
 Fire-and-forget, unlike ``tour``: a tip is not a question, so blocking the turn
-on a round-trip would stall the reply it belongs to. The renderer enforces the
-user's Settings → Appearance → In-App Tips switch as well, so a stale config
-read here can never put a bubble on a screen that asked for none.
+on a round-trip would stall the reply it belongs to.
+
+Ungated, also like ``tour``. The desktop's Settings → Appearance switch governs
+the app's own idle rotation — the half that talks unprompted — not this, which
+Hermes raises mid-conversation in answer to something the user said.
 
 Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
 desktop-sourced sessions.
@@ -57,26 +59,6 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
     return json.dumps({"success": True, "selector": selector}, ensure_ascii=False)
 
 
-def check_tips_enabled() -> bool:
-    """The user's own switch (Settings → Appearance → In-App Tips).
-
-    Opt-OUT, so an absent key reads as ON — that matches the desktop's own
-    default, and the renderer only writes the key when the user changes it. The
-    desktop mirrors the toggle into ``display.in_app_tips`` on the CONNECTED
-    gateway's config, so this reads the right value whether that gateway is
-    local, SSH, URL, or cloud.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        display = load_config_readonly().get("display")
-    except Exception:
-        return True
-    if not isinstance(display, dict):
-        return True
-    return bool(display.get("in_app_tips", True))
-
-
 TIP_SCHEMA = {
     "name": "tip",
     "description": (
@@ -87,9 +69,8 @@ TIP_SCHEMA = {
         "Call tour(action='targets') first to see what's on screen and prefer "
         "a target reporting `stable: true`; never guess a selector. One tip at "
         "a time — a new one replaces the last. Say the same thing in chat as "
-        "well; the bubble is a pointer, not the message. Use it sparingly: the "
-        "app shows its own tips on a slow rotation, and a bubble on every turn "
-        "is what makes people turn the feature off."
+        "well; the bubble is a pointer, not the message. Use it sparingly: a "
+        "bubble on every turn is what makes people stop reading them."
     ),
     "parameters": {
         "type": "object",
@@ -130,6 +111,5 @@ registry.register(
         title=args.get("title", ""),
         side=args.get("side", ""),
     ),
-    check_fn=check_tips_enabled,
     emoji="💡",
 )

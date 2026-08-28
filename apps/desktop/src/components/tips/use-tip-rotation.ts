@@ -1,7 +1,11 @@
 /**
  * The rotation's clock: when the app is quiet, offer a tip.
  *
- * "Quiet" is doing the work here. A tip is the app talking unprompted, so it
+ * Off unless the user turned it on (Settings → Appearance) — this is the half
+ * of the feature that talks unprompted, so it is the half that has to be asked
+ * for. An agent tip doesn't come through here at all.
+ *
+ * "Quiet" is doing the rest of the work. A tip is the app interrupting, so it
  * waits for a moment that is genuinely idle — nothing streaming, no dialog,
  * menu or tour on screen, the window focused, and a few seconds since the last
  * keystroke. Fail any of those and the tick simply passes; a tip is never
@@ -15,7 +19,7 @@ import { resolveTipAnchor } from '@/lib/tips/anchor'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { nextTip } from '@/lib/tips/rotation'
 import { $awaitingResponse, $busy } from '@/store/session'
-import { $activeTip, $lastTipId, $retiredTips, showTip } from '@/store/tips'
+import { $activeTip, $lastTipId, $retiredTips, $tipRotationEnabled, showTip } from '@/store/tips'
 
 const TICK_MS = 5_000
 /** Long enough that the first tip lands after you've settled in, not on boot. */
@@ -57,6 +61,10 @@ export function useTipRotation(copy: Translations['tips']) {
     }
 
     const offer = () => {
+      if (!$tipRotationEnabled.get()) {
+        return
+      }
+
       if ($activeTip.get()) {
         // One is up; the next comes due a good while after it goes away.
         dueAt = Date.now() + BETWEEN_TIPS_MS

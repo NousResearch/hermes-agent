@@ -401,7 +401,7 @@ export const zhHant = defineLocale({
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       tipsTitle: '應用程式內提示',
-      tipsDesc: '偶爾指出你可能還沒發現的功能。關掉一則就不再出現；需要時 Hermes 也能指給你看。',
+      tipsDesc: '應用程式閒置時，偶爾指出你可能還沒發現的功能。關掉一則就不再出現。',
       tipsReset: (count: number) => `復原 ${count} 則已關閉的提示`,
       composerPopoutTitle: '懸浮輸入框',
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',

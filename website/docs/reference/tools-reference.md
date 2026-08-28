@@ -205,7 +205,7 @@ messaging, and cron sessions.
 | `focus_pane` | Reveal and focus a pane in the Hermes desktop app (chat, files, terminal, review, sessions). | — |
 | `react_to_message` | React to a message with a single emoji, iMessage-tapback style. Opt-in via Settings → Appearance (`display.message_reactions`). | — |
 | `tour` | Give a live guided tour: dim the screen, highlight an element, and attach a narrated popover (driver.js). Works on the Hermes app's own UI and on any page open in the preview pane; `targets` discovers what's on screen, `show` narrates step-by-step, `start` hands the user Next/Prev controls. | — |
-| `tip` | Point at one element with a small accent bubble and an arrow — the quiet sibling of `tour`, with no dimming, no spotlight, and no Next/Prev. Same `data-tour` handles and the same `tour(action='targets')` discovery call. Opt-out via Settings → Appearance (`display.in_app_tips`). | — |
+| `tip` | Point at one element with a small accent bubble and an arrow — the quiet sibling of `tour`, with no dimming, no spotlight, and no Next/Prev. Same `data-tour` handles and the same `tour(action='targets')` discovery call. | — |
 
 ### Tours
 
@@ -264,10 +264,12 @@ The `tip` tool takes the same selectors `tour(action='targets')` reports, so
 discovery is one call for both, and the durable `data-tour` handles above name
 targets for either. One tip is on screen at a time; a new one replaces the last.
 
-The app also shows its own tips, walking a built-in catalog of app features on a
-slow rotation whenever things are quiet. Closing one with its ✕ retires that tip
-for good (Settings → Appearance → Reset brings them back), and the same
-Appearance switch turns the whole feature — rotation and tool alike — off.
+The app can also show its own, walking a built-in catalog of app features on a
+slow rotation whenever things are quiet. That half is off until switched on in
+Settings → Appearance, since it talks unprompted; closing one of its tips with
+the ✕ retires that tip for good, and the same settings row brings them back. The
+tool is not behind that switch — like `tour`, it runs in answer to the
+conversation rather than at idle.
 
 ## `todo` toolset
 

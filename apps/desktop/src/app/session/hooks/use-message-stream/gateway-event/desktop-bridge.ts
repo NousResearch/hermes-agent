@@ -217,11 +217,11 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'tip.show') {
     // tip tool: point the accent bubble at something and say one line about
     // it. Fire-and-forget — a tip is not a question, and blocking the turn on
-    // one would stall the sentence the agent is in the middle of. The opt-out
-    // is enforced inside showTip, so the renderer is the last word on it even
-    // if a stale config let the tool through. Active session only: a
-    // background turn must never paint on the user's screen (desktop
-    // AGENTS.md: offer, don't hijack).
+    // one would stall the sentence the agent is in the middle of. Not behind
+    // the Appearance switch: that governs the app's own idle rotation, and
+    // this is Hermes answering the user mid-conversation, like a tour. Active
+    // session only, though: a background turn must never paint on the user's
+    // screen (desktop AGENTS.md: offer, don't hijack).
     const selector = typeof payload?.selector === 'string' ? payload.selector : ''
     const text = typeof payload?.text === 'string' ? payload.text : ''
 

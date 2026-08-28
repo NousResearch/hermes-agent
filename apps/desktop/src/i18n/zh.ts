@@ -575,7 +575,7 @@ export const zh: Translations = {
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       tipsTitle: '应用内提示',
-      tipsDesc: '偶尔指出你可能还没发现的功能。关掉一条就不再出现；需要时 Hermes 也能指给你看。',
+      tipsDesc: '应用空闲时，偶尔指出你可能还没发现的功能。关掉一条就不再出现。',
       tipsReset: (count: number) => `恢复 ${count} 条已关闭的提示`,
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',

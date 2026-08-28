@@ -30,6 +30,14 @@ def test_lives_in_the_gui_surface_toolset(monkeypatch):
     assert entry.toolset == "desktop_ui"
 
 
+def test_is_ungated_like_tour():
+    """The Appearance switch governs the app's idle rotation, not this."""
+    entry = registry.get_entry("tip")
+
+    assert entry is not None
+    assert entry.check_fn is None
+
+
 def test_requires_the_desktop_bridge(monkeypatch):
     """Outside the desktop GUI there is no emitter — a clear error, no crash."""
     monkeypatch.setattr(tt.desktop_ui, "emit", lambda _event, _payload: False)
@@ -77,38 +85,3 @@ def test_bridge_failure_is_reported(monkeypatch):
     monkeypatch.setattr(tt.desktop_ui, "emit", _boom)
 
     assert "renderer went away" in json.loads(tt.tip_tool(text="Hi", selector="#a"))["error"]
-
-
-class TestOptOut:
-    """The user's switch gates the tool, and an absent key reads as ON."""
-
-    def _with_display(self, monkeypatch, display):
-        import hermes_cli.config as config_mod
-
-        monkeypatch.setattr(config_mod, "load_config_readonly", lambda: {"display": display})
-
-    def test_available_by_default(self, monkeypatch):
-        self._with_display(monkeypatch, {})
-
-        assert tt.check_tips_enabled() is True
-
-    def test_withdrawn_when_the_user_opts_out(self, monkeypatch):
-        self._with_display(monkeypatch, {"in_app_tips": False})
-
-        assert tt.check_tips_enabled() is False
-
-    def test_unreadable_config_leaves_the_tool_available(self, monkeypatch):
-        import hermes_cli.config as config_mod
-
-        def _boom():
-            raise OSError("no config here")
-
-        monkeypatch.setattr(config_mod, "load_config_readonly", _boom)
-
-        assert tt.check_tips_enabled() is True
-
-    def test_the_switch_is_what_gates_registration(self):
-        entry = registry.get_entry("tip")
-
-        assert entry is not None
-        assert entry.check_fn is tt.check_tips_enabled

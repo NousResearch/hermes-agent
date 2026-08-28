@@ -590,7 +590,7 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'Occasional pointers at parts of the app you may not have found yet. Closing one retires it for good; Hermes can also point one out when it helps.',
+        'While the app is idle, occasionally point out a part of it you may not have found yet. Closing a tip retires it for good.',
       tipsReset: (count: number) => `Bring back ${count} closed ${count === 1 ? 'tip' : 'tips'}`,
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',

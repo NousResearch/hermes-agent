@@ -3,10 +3,10 @@
  *
  * Two sources, one bubble, and only one of them is behind a switch:
  *
- * - `$tipRotationEnabled` is the ambient rotation, OFF until asked for. The app
- *   volunteering commentary at idle is a taste, not a default, and a feature
- *   that talks unprompted has to be opted into rather than discovered and then
- *   switched off.
+ * - `$tipRotationEnabled` is the ambient rotation, ON with a switch to stop it.
+ *   A feature nobody meets is a feature nobody has, and the pacing is what
+ *   earns the default: minutes into a launch at the earliest, then six hours,
+ *   which is a nicety rather than the nag that would owe you an opt-in.
  * - An agent tip is not ambient. Hermes raises one mid-sentence, in a
  *   conversation the user is having, exactly as it raises a `tour` — so it
  *   answers to the same nothing a tour answers to.
@@ -44,7 +44,7 @@ export interface ActiveTip {
   title?: string
 }
 
-export const $tipRotationEnabled = persistentAtom('hermes.desktop.tips.rotation.v1', false, Codecs.bool)
+export const $tipRotationEnabled = persistentAtom('hermes.desktop.tips.rotation.v1', true, Codecs.bool)
 export const $retiredTips = persistentAtom<string[]>('hermes.desktop.tips.retired.v1', [], Codecs.stringArray)
 export const $lastTipId = persistentAtom<null | string>('hermes.desktop.tips.last.v1', null, Codecs.nullableText)
 export const $nextTipAt = persistentAtom<null | number>(

@@ -2,9 +2,8 @@
  * The rotation's clock: a few minutes into a launch, then hours apart, offer a
  * tip if the app happens to be quiet.
  *
- * Off unless the user turned it on (Settings → Appearance) — this is the half
- * of the feature that talks unprompted, so it is the half that has to be asked
- * for. An agent tip doesn't come through here at all.
+ * On unless the user turned it off (Settings → Appearance). An agent tip
+ * doesn't come through here at all.
  *
  * The pacing is a loading-screen tip's, not a notification's. Two clocks have
  * to agree: a per-launch settling delay, so opening the app is never met with a

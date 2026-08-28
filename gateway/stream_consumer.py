@@ -48,6 +48,10 @@ _COMMENTARY = object()
 # Sentinel for tool-progress lines injected into the native stream bubble.
 # Enqueued as ``(_TOOL_PROGRESS, line_text)`` by ``on_tool_progress()``.
 _TOOL_PROGRESS = object()
+# Sentinel for the tool-timer tick — a no-op wake-up for the drain loop.
+# The tick callback already updated ``_tool_progress_lines`` and set
+# ``_tool_progress_active``; this just unblocks the loop so it pushes a frame.
+_TIMER_TICK = object()
 # Authoritative turn-final payload, enqueued by ``finish(final_text=...)``
 # just before ``_DONE``.  Carries the completed ``final_response`` —
 # including post-stream augmentation (file-mutation verifier footer,
@@ -83,6 +87,29 @@ _REOPEN_SEED = object()
 # accumulated yet.  Callers may override per-boundary (e.g. clarify passes its
 # own) via close_for_approval_prompt(placeholder=...).
 _DEFAULT_BOUNDARY_PLACEHOLDER = "⏸ 等待审批中..."
+
+# Braille-dot spinner characters for the tool timer animation.
+_SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+import re as _re
+
+# Pattern to extract a tool name from progress lines emitted by run.py.
+# Examples: "🔧 Running terminal..." → "terminal"
+#           "⚙️ Calling web_search..." → "web_search"
+#           "🔍 Searching..." → "Searching"  (fallback: first word after emoji)
+_TOOL_NAME_RE = _re.compile(
+    r"^[^\w]*"              # leading emoji / punctuation
+    r"(?:Running|Calling|Using)?\s*"  # optional verb
+    r"(\w+)",               # capture the tool name
+    _re.UNICODE,
+)
+
+
+def _parse_tool_name(line: str) -> str:
+    """Extract a tool name from a progress line like '🔧 Running terminal...'."""
+    m = _TOOL_NAME_RE.search(line)
+    return m.group(1) if m else "tool"
 
 
 def escape_code_fences_for_display(text: str) -> str:
@@ -431,6 +458,16 @@ class GatewayStreamConsumer:
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
 
+        # Tool-timer animation state (native streaming only).
+        # Ticks every 1s updating spinner + elapsed time in the bubble.
+        self._tool_timer_handle: Optional[asyncio.TimerHandle] = None
+        self._tool_timer_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._tool_start_times: dict[str, float] = {}  # tool_name -> monotonic start
+        self._tool_timer_labels: dict[str, str] = {}  # tool_name -> original progress line
+        self._tool_timer_tick_count: int = 0  # for spinner rotation
+        self._timer_lock = threading.Lock()  # guards _tool_start_times & _tool_timer_labels
+        self._tool_completed_lines: list[str] = []  # completed tool history (max 3)
+
 
     def _stream_is_message(self) -> bool:
         """Whether THIS chat's transport treats the stream as the message.
@@ -454,10 +491,13 @@ class GatewayStreamConsumer:
     def accepts_tool_progress(self) -> bool:
         """Whether this consumer can absorb tool progress into its stream.
 
-        True only when native streaming is resolved and active. Callers use
-        this to decide the progress routing path (in-stream vs progress_queue).
+        True only when native streaming is resolved and active AND the
+        adapter supports the tool timer feature. Callers use this to decide
+        the progress routing path (in-stream vs progress_queue).
         """
-        return self._use_native_streaming
+        if not self._use_native_streaming:
+            return False
+        return bool(getattr(self.adapter, "SUPPORTS_TOOL_TIMER", True))
 
     def on_tool_progress(self, line: str) -> None:
         """Inject a tool-progress status line into the native stream bubble.
@@ -468,9 +508,21 @@ class GatewayStreamConsumer:
 
         The line is displayed as an overlay until the next text delta arrives,
         at which point real content overwrites the tool-progress lines.
+
+        Also starts the tool-timer animation (1s ticks with spinner + elapsed)
+        if not already running.
         """
         if line:
             self._queue.put((_TOOL_PROGRESS, line))
+            # Start/join the timer for this tool, preserving the original
+            # progress line as the display label for animated ticks.
+            tool_name = _parse_tool_name(line)
+            # Don't clear other running tools — they may be parallel.
+            # on_tool_completed() handles moving finished tools to
+            # _tool_completed_lines when tool.completed fires.
+            with self._timer_lock:
+                self._tool_timer_labels[tool_name] = line
+            self._start_tool_timer(tool_name)
 
     def _compose_frame_content(self) -> str:
         """Compose the current frame content for native streaming.
@@ -479,14 +531,157 @@ class GatewayStreamConsumer:
         append tool lines below the text separated by a horizontal rule.
         On finalize, only accumulated text is sent (no tool lines).
         """
-        if self._accumulated and self._tool_progress_lines:
+        # Build the tool overlay: active progress lines (which include
+        # completed history when the timer is ticking) or just completed
+        # history when the timer has stopped but history remains.
+        tool_lines = self._tool_progress_lines
+        if not tool_lines and self._tool_completed_lines:
+            tool_lines = list(self._tool_completed_lines)
+
+        if self._accumulated and tool_lines:
             # Text + active tool status at the bottom
-            return self._accumulated + "\n\n---\n" + "\n".join(self._tool_progress_lines)
+            return self._accumulated + "\n\n---\n" + "\n".join(tool_lines)
         elif self._accumulated:
             return self._accumulated
-        elif self._tool_progress_lines:
-            return "\n".join(self._tool_progress_lines)
+        elif tool_lines:
+            return "\n".join(tool_lines)
         return ""
+
+    # ── Tool-timer animation ─────────────────────────────────────────
+
+    def _start_tool_timer(self, tool_name: str) -> None:
+        """Start (or join) the 1-second tool-timer animation.
+
+        Records *tool_name*'s start time and arms the periodic tick if not
+        already running.  Only arms when ``_use_native_streaming`` is True
+        (non-native platforms don't benefit from sub-second bubble updates).
+
+        Thread-safe: called from the agent worker thread.  Uses
+        call_soon_threadsafe to schedule the first tick on the event loop.
+        """
+        if not self._use_native_streaming:
+            return
+        if tool_name not in self._tool_start_times:
+            self._tool_start_times[tool_name] = time.monotonic()
+        # Arm the periodic tick if not already running.
+        # Use call_soon_threadsafe because this method is called from the
+        # agent worker thread, not the event loop thread.
+        if self._tool_timer_handle is None and self._tool_timer_loop is not None:
+            self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
+
+    def _arm_tool_timer(self) -> None:
+        """Arm the 1s periodic tick.  Must run on the event loop thread."""
+        if self._tool_timer_handle is None:
+            self._tool_timer_handle = self._tool_timer_loop.call_later(
+                1.0, self._tool_timer_tick,
+            )
+            logger.info("[timer] armed")
+
+    def _stop_tool_timer(self) -> None:
+        """Cancel the tool-timer animation and clear associated state."""
+        was_running = self._tool_timer_handle is not None
+        if self._tool_timer_handle is not None:
+            self._tool_timer_handle.cancel()
+            self._tool_timer_handle = None
+        with self._timer_lock:
+            self._tool_start_times.clear()
+            self._tool_timer_labels.clear()
+            self._tool_completed_lines.clear()
+        self._tool_timer_tick_count = 0
+        logger.info("[timer] stopped (was_running=%s)", was_running)
+
+    def on_tool_completed(self, tool_name: str, duration: float) -> None:
+        """Record a completed tool in the history overlay.
+
+        Thread-safe: called from the agent worker thread.
+        """
+        with self._timer_lock:
+            label = self._tool_timer_labels.pop(tool_name, tool_name)
+            self._tool_start_times.pop(tool_name, None)
+            completion_line = f"✓ {label} ({int(duration)}s)"
+            self._tool_completed_lines.append(completion_line)
+            # Keep max 5 entries
+            if len(self._tool_completed_lines) > 5:
+                self._tool_completed_lines = self._tool_completed_lines[-5:]
+        self._tool_progress_active = True
+        self._queue.put(_TIMER_TICK)
+
+    def on_llm_thinking(self, label: "str | None" = None) -> None:
+        """Signal that an LLM API call has started — show thinking animation.
+
+        Thread-safe: called from the agent worker thread.  Only activates
+        when the native stream is already open (the bubble is visible).
+
+        ``label`` is an optional display string (e.g. "claude-4.6-opus (API call #3)")
+        shown alongside the thinking timer for richer context.
+        """
+        if not self._use_native_streaming:
+            return
+        if not self._native_stream_opened:
+            return
+        # LLM thinking means all tools are done — move remaining tool entries
+        # to completed history, then start the thinking timer.
+        with self._timer_lock:
+            stale = [k for k in self._tool_start_times if k != "_thinking"]
+            now = time.monotonic()
+            for k in stale:
+                start = self._tool_start_times.pop(k)
+                tool_label = self._tool_timer_labels.pop(k, k)
+                elapsed = int(now - start)
+                completion_line = f"✓ {tool_label} ({elapsed}s)"
+                self._tool_completed_lines.append(completion_line)
+            # Trim to max 5 completed entries
+            if len(self._tool_completed_lines) > 5:
+                self._tool_completed_lines = self._tool_completed_lines[-5:]
+            if "_thinking" not in self._tool_start_times:
+                self._tool_start_times["_thinking"] = time.monotonic()
+            # Store the label for display in _tool_timer_tick
+            if label:
+                self._tool_timer_labels["_thinking"] = label
+        # Arm the timer if not already running
+        if self._tool_timer_handle is None and self._tool_timer_loop is not None:
+            self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
+
+    def _tool_timer_tick(self) -> None:
+        """Periodic tick: rebuild tool-progress lines with spinner + elapsed.
+
+        Runs on the asyncio event loop thread (via ``call_later``).
+        """
+        with self._timer_lock:
+            if not self._tool_start_times:
+                # All tools cleared — don't re-arm
+                self._tool_timer_handle = None
+                return
+
+            self._tool_timer_tick_count += 1
+            logger.info("[timer] tick #%d, entries=%d", self._tool_timer_tick_count, len(self._tool_start_times))
+            now = time.monotonic()
+            lines: list[str] = list(self._tool_completed_lines)  # completed history first
+            for tool_name, start in self._tool_start_times.items():
+                elapsed = int(now - start)
+                spinner = _SPINNER_CHARS[self._tool_timer_tick_count % len(_SPINNER_CHARS)]
+                if tool_name == "_thinking":
+                    thinking_label = self._tool_timer_labels.get("_thinking")
+                    if thinking_label:
+                        lines.append(f"{spinner} 💭 {thinking_label} ({elapsed}s)")
+                    else:
+                        lines.append(f"{spinner} 💭 Thinking ({elapsed}s)")
+                else:
+                    # Use the original progress line (full summary) as label,
+                    # stripping any trailing "..." and appending elapsed time.
+                    label = self._tool_timer_labels.get(tool_name, f"{tool_name}...")
+                    lines.append(f"{spinner} {label} ({elapsed}s)")
+
+            self._tool_progress_lines = lines
+        self._tool_progress_active = True
+        # Wake the drain loop so it pushes a frame
+        self._queue.put(_TIMER_TICK)
+
+        # Re-arm for the next tick
+        if self._tool_timer_loop is not None:
+            self._tool_timer_handle = self._tool_timer_loop.call_later(
+                1.0, self._tool_timer_tick,
+            )
 
     def _metadata_for_send(
         self,
@@ -587,6 +782,11 @@ class GatewayStreamConsumer:
         if self._tool_progress_lines:
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
+        # Keep _tool_completed_lines — they persist below the text until
+        # finalize so the user sees tool history throughout the turn.
+        # Stop the tool-timer animation — text means tools are done.
+        if self._tool_start_times:
+            self._stop_tool_timer()
         self._accumulated += text
         self._stream_ledger += text
 
@@ -882,6 +1082,9 @@ class GatewayStreamConsumer:
         # starts clean.
         self._tool_progress_lines = []
         self._tool_progress_active = False
+        self._tool_completed_lines = []
+        # Stop the tool-timer animation on segment reset.
+        self._stop_tool_timer()
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter
         # can't fool the gateway. Safe: got_done returns before any reset, and
@@ -1300,6 +1503,10 @@ class GatewayStreamConsumer:
                     self.chat_id, self._draft_id,
                 )
 
+        # Capture the running event loop so the tool-timer can schedule ticks
+        # via call_later (only meaningful when native streaming is active).
+        self._tool_timer_loop = asyncio.get_event_loop()
+
         try:
             while True:
                 # Abandon the stream early if the session has been reset
@@ -1347,7 +1554,7 @@ class GatewayStreamConsumer:
                                 or self._message_id
                                 or self._last_sent_text
                             )
-                            if _streamed_something and not self._turn_split_delivery:
+                            if _streamed_something and not self._turn_split_delivery and not self._use_native_streaming:
                                 _final_payload = self._clean_for_display(item[1])
                                 _visible = self._clean_for_display(self._accumulated)
                                 if _final_payload and _final_payload != _visible:
@@ -1407,6 +1614,12 @@ class GatewayStreamConsumer:
                                 self._tool_progress_lines.append(item[1])
                                 self._tool_progress_active = True
                             continue  # continue draining to batch simultaneous progress lines
+                        if item is _TIMER_TICK:
+                            # No-op wake-up from the tool-timer tick — the tick
+                            # already updated _tool_progress_lines and set
+                            # _tool_progress_active. Just drain it.
+                            logger.info("[timer] drain-loop received TIMER_TICK, tool_progress_active=%s", self._tool_progress_active)
+                            continue
                         self._filter_and_accumulate(item)
                     except queue.Empty:
                         break
@@ -1481,6 +1694,8 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+                    # Stop the tool-timer animation — stream is done.
+                    self._stop_tool_timer()
 
                     # Intentional-silence suppression.  When the agent chose
                     # not to reply it emits a bare control marker (NO_REPLY /
@@ -1986,6 +2201,8 @@ class GatewayStreamConsumer:
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
         except asyncio.CancelledError:
+            # Stop the tool-timer on cancellation.
+            self._stop_tool_timer()
             # Best-effort final edit on cancellation.  finalize=True so
             # REQUIRES_EDIT_FINALIZE platforms (Telegram) apply final
             # formatting — a plain edit here would leave the entire reply
@@ -3191,6 +3408,8 @@ class GatewayStreamConsumer:
             # connection mode has no polling cadence, so every cumulative
             # update is pushed as soon as it arrives.
             if not finalize and text == self._last_sent_text:
+                if self._tool_progress_active:
+                    logger.info("[timer] frame suppressed by dedup (len=%d)", len(text))
                 return True  # unchanged — skip
 
             # B2 — timeout-inversion race fix. For a finalize frame, mark

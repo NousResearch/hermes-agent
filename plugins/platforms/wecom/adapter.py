@@ -176,6 +176,23 @@ STREAM_SAFE_DURATION_SECONDS = 330.0  # 5.5 min — Layer 2 clock fallback
 STREAM_KEEPALIVE_INTERVAL_SECONDS = 120.0  # 2 min — Layer 1 heartbeat cadence
 STREAM_KEEPALIVE_ENABLED_DEFAULT = False  # Layer 1 off unless config opts in
 
+# ── Block-streaming parameters (aligned with the official wecom-openclaw-plugin) ──
+# The official plugin (wecom-openclaw-plugin/src/webhook/helpers.ts) coalesces
+# incoming LLM tokens into sentence-aligned blocks before sending each frame,
+# rather than echoing every char-delta.  This produces ~1 frame per natural
+# sentence boundary instead of one per 60-char delta, which means:
+#   - frame cadence drops from "every 200ms" to "every 0.5-2s typical",
+#   - the 5s ack timeout almost never fires (frames are spaced wider apart),
+#   - and the user sees content land in complete thought-units rather than
+#     mid-sentence cursors moving every tick.
+#
+# Values copied verbatim from the official plugin so we match its behaviour
+# in WeCom's rate-limit budget (≈30 frames/min/chat).
+
+# Sentence terminators recognised by the block chunker.  Includes the most
+# common Chinese full-stop / exclamation / question forms; matches the
+# official plugin's "sentence" break preference for the WeCom channel.
+
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
 VOICE_MAX_BYTES = 2 * 1024 * 1024
@@ -309,6 +326,7 @@ class WeComAdapter(BasePlatformAdapter):
     # the gateway streaming consumer treats as a transport that bypasses the
     # edit-based path. See ``send_stream_frame`` and ``supports_native_streaming``.
     SUPPORTS_NATIVE_STREAMING = True
+    SUPPORTS_TOOL_TIMER = True  # Can be overridden by extra.tool_timer_enabled
     MAX_STREAM_CONTENT_LENGTH = MAX_STREAM_CONTENT_LENGTH
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
@@ -396,6 +414,11 @@ class WeComAdapter(BasePlatformAdapter):
         self._stream_keepalive_interval_seconds = _extra_float(
             "stream_keepalive_interval_seconds", STREAM_KEEPALIVE_INTERVAL_SECONDS
         )
+
+        # Tool timer animation in native stream bubble (default: on).
+        # Set tool_timer_enabled: false in extra to disable.
+        _tool_timer_raw = extra.get("tool_timer_enabled", True)
+        self.SUPPORTS_TOOL_TIMER = bool(_tool_timer_raw) if not isinstance(_tool_timer_raw, str) else _tool_timer_raw.lower() not in ("false", "0", "no", "off")
 
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
@@ -936,9 +959,11 @@ class WeComAdapter(BasePlatformAdapter):
         # Unrouted payload — did not match reply-queue, pending-response,
         # callback, ping, or event. If WeCom delivers group messages under a
         # cmd not in CALLBACK_COMMANDS, they land here and are dropped. Log at
-        # INFO with cmd + body keys so we can spot an unhandled callback cmd.
+        # DEBUG for routine pings, INFO for unexpected commands we might need to handle.
         body_keys = list(payload.get("body", {}).keys()) if isinstance(payload.get("body"), dict) else None
-        logger.info(
+        _log_level = logging.DEBUG if not cmd or cmd == "(empty)" else logging.INFO
+        logger.log(
+            _log_level,
             "[%s] Unrouted websocket payload dropped: cmd=%r req_id=%s body_keys=%s",
             self.name, cmd or "(empty)", req_id or "(none)", body_keys,
         )
@@ -1265,6 +1290,21 @@ class WeComAdapter(BasePlatformAdapter):
         body = payload.get("body")
         if not isinstance(body, dict):
             return
+
+        # --- Full callback dump: log the complete body + source frame metadata
+        # so we can diagnose routing issues (e.g. group @mentions arriving as
+        # chattype='single' with no chatid).
+        try:
+            _dump_body = json.dumps(body, ensure_ascii=False, default=str)
+        except Exception:
+            _dump_body = repr(body)
+        logger.info(
+            "[%s] Inbound callback FULL payload: cmd=%r req_id=%s body=%s",
+            self.name,
+            payload.get("cmd"),
+            self._payload_req_id(payload),
+            _dump_body[:2000],
+        )
 
         msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
         if self._dedup.is_duplicate(msg_id):
@@ -1870,6 +1910,7 @@ class WeComAdapter(BasePlatformAdapter):
         entirely when keep-alive is disabled by config (the default).
         """
         if not self._stream_keepalive_enabled:
+            logger.debug("[%s] keepalive: DISABLED by config", self.name)
             return
         if turn.finalized or turn.expired:
             return
@@ -1879,6 +1920,10 @@ class WeComAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return  # not inside a loop (defensive)
+        logger.info(
+            "[%s] keepalive: ARMED (interval=%.0fs, turn=%s)",
+            self.name, self._stream_keepalive_interval_seconds, turn.stream_id,
+        )
         handle = loop.call_later(
             self._stream_keepalive_interval_seconds,
             self._on_keepalive_fire,
@@ -1893,6 +1938,10 @@ class WeComAdapter(BasePlatformAdapter):
         turn_id: Optional[str],
     ) -> None:
         """Loop callback — dispatch an async keep-alive send without blocking."""
+        logger.info(
+            "[stream] keepalive FIRED for turn %s (finalized=%s, expired=%s)",
+            turn.stream_id, turn.finalized, turn.expired,
+        )
         turn.keepalive_handle = None
         if turn.finalized or turn.expired:
             return
@@ -2371,10 +2420,11 @@ class WeComAdapter(BasePlatformAdapter):
         Uses the per-req_id reply queue with ack tracking, aligned with the
         official WeCom SDK's replyStreamNonBlocking semantics:
 
-          * **Intermediate frames** (finish=False): sent non-blocking via
-            ``_send_reply_queued(skip_if_pending=True)``. If a prior frame's
-            ack is still pending, the frame is skipped (cumulative text means
-            no information is lost — the next frame carries all content).
+          * **Intermediate frames** (finish=False): sent fire-and-forget via
+            direct ``_send_json`` — every frame is sent immediately regardless
+            of whether a prior ack is pending.  The ``pending_ack`` slot on the
+            ReplyQueue is still maintained (overwriting any stale entry) so that
+            the final frame can wait for the last intermediate ack to drain.
           * **Final frame** (finish=True): waits for any pending ack to drain
             before sending, then awaits its own ack. This prevents version
             conflicts (errcode 6000) between the finalize and a concurrent
@@ -2401,13 +2451,70 @@ class WeComAdapter(BasePlatformAdapter):
         }
 
         if not finish:
-            # Intermediate frame: non-blocking with pending-skip semantics.
-            # If a previous frame's ack is still pending on this req_id,
-            # skip this frame entirely (cumulative text guarantees no loss).
-            response = await self._send_reply_queued(
-                reply_req_id, body, is_final=False, skip_if_pending=True,
+            # Intermediate frame: truly fire-and-forget.
+            # We bypass _send_reply_queued's skip-if-pending gate and send
+            # every intermediate frame immediately via _send_json.  This
+            # prevents the streaming freeze where most timer frames were
+            # silently skipped because WeCom acks take longer than the 1s
+            # frame interval.
+            #
+            # We still register pending_ack on the ReplyQueue so that the
+            # finalize frame (is_final=True) can wait for the last
+            # intermediate frame's ack to drain — avoiding errcode 6000
+            # (version conflict).
+            if not self._ws or self._ws.closed:
+                raise RuntimeError("WeCom websocket is not connected")
+
+            normalized = str(reply_req_id or "").strip()
+            if not normalized:
+                raise ValueError("reply_req_id is required")
+
+            queue = self._reply_queues.get(normalized)
+            if queue is None:
+                queue = ReplyQueue(normalized)
+                self._reply_queues[normalized] = queue
+
+            # If a prior intermediate frame's ack is still pending, cancel
+            # its future (it's now stale — cumulative text means the new
+            # frame supersedes it) and overwrite with the new one.
+            if queue.pending_ack is not None:
+                old_frame = queue.pending_ack
+                if not old_frame.future.done():
+                    old_frame.future.cancel()
+
+            # Create future for THIS frame's ack
+            future: asyncio.Future = asyncio.get_running_loop().create_future()
+            frame = ReplyFrame(body=body, future=future, is_final=False)
+            frame.sent_at = time.monotonic()
+
+            # Register pending_ack BEFORE sending (so _resolve_reply_ack
+            # can route the ack if it arrives during the _send_json await).
+            self._reply_queues[normalized] = queue
+            queue.pending_ack = frame
+
+            logger.debug(
+                "[%s] _send_stream_reply: fire-and-forget intermediate — "
+                "req_id=%s stream_id=%s content_len=%d",
+                self.name, normalized,
+                body.get("stream", {}).get("id", "N/A"),
+                len(body.get("stream", {}).get("content", "") or ""),
             )
-            return response
+
+            try:
+                await self._send_json(
+                    {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized}, "body": body}
+                )
+            except Exception:
+                # Send failed — clear pending and cancel future
+                if queue.pending_ack is frame:
+                    queue.pending_ack = None
+                    if not self._reply_queues.get(normalized) or queue.pending_ack is None:
+                        self._reply_queues.pop(normalized, None)
+                if not future.done():
+                    future.cancel()
+                raise
+
+            return {"errcode": 0, "errmsg": "sent_fire_and_forget"}
 
         # Final frame: wait for any pending intermediate ack, then send
         # with ack tracking so we reliably detect 846608/6000.
@@ -2911,6 +3018,11 @@ class WeComAdapter(BasePlatformAdapter):
             if turn_id:
                 turn_key = f"{chat}:{turn_id}"
                 turn = self._stream_turns.get(turn_key)
+                if turn:
+                    logger.info(
+                        "[stream] reusing turn %s (turn_key=%s, finalized=%s, expired=%s)",
+                        turn.stream_id, turn_key, turn.finalized, turn.expired,
+                    )
                 if not turn:
                     # finalize=True should NOT create a new turn.
                     # If the turn was already cleaned up (e.g., due to errcode 6000),
@@ -2918,6 +3030,10 @@ class WeComAdapter(BasePlatformAdapter):
                     # creating a fresh turn just to finalize it (which would send
                     # another seed + finish, potentially triggering more conflicts).
                     if finalize:
+                        logger.info(
+                            "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                            "finalize_non_existent_turn", chat, turn_id,
+                        )
                         logger.debug(
                             "[%s] send_stream_frame: cannot finalize non-existent turn (turn_id=%s, chat=%s)",
                             self.name, turn_id, chat,
@@ -2927,6 +3043,10 @@ class WeComAdapter(BasePlatformAdapter):
                     # First frame for this turn: need to create it.
                     # Check if chat is expired (blocks NEW turn creation).
                     if chat in self._stream_expired_chats:
+                        logger.info(
+                            "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                            "chat_expired", chat, turn_id,
+                        )
                         logger.debug(
                             "[%s] send_stream_frame: chat %s is expired, cannot create new turn (turn_id=%s)",
                             self.name, chat, turn_id,
@@ -2936,6 +3056,10 @@ class WeComAdapter(BasePlatformAdapter):
                     # First frame for this turn: resolve req_id and create turn
                     req_id = self._resolve_stream_req_id(chat, reply_to)
                     if not req_id:
+                        logger.info(
+                            "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                            "no_req_id", chat, turn_id,
+                        )
                         logger.debug(
                             "[%s] send_stream_frame: no req_id available for chat %s (turn_id=%s)",
                             self.name, chat, turn_id,
@@ -2943,6 +3067,10 @@ class WeComAdapter(BasePlatformAdapter):
                         return False
                     turn = StreamTurn(chat, req_id)
                     self._stream_turns[turn_key] = turn
+                    logger.info(
+                        "[stream] created turn %s (turn_key=%s, req_id=%s, chat=%s)",
+                        turn.stream_id, turn_key, req_id, chat,
+                    )
                     logger.debug(
                         "[%s] send_stream_frame: created new turn %s (turn_id=%s, req_id=%s) for chat %s",
                         self.name, turn.stream_id, turn_id, req_id, chat,
@@ -2962,6 +3090,10 @@ class WeComAdapter(BasePlatformAdapter):
                     # No active turn, need to create a new one.
                     # Check if chat is expired at the chat level (blocks NEW turn creation).
                     if chat in self._stream_expired_chats:
+                        logger.info(
+                            "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                            "chat_expired", chat, turn_id,
+                        )
                         logger.debug(
                             "[%s] send_stream_frame: chat %s is expired, cannot create new turn",
                             self.name, chat,
@@ -2970,6 +3102,10 @@ class WeComAdapter(BasePlatformAdapter):
 
                     req_id = self._resolve_stream_req_id(chat, reply_to)
                     if not req_id:
+                        logger.info(
+                            "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                            "no_req_id", chat, turn_id,
+                        )
                         logger.debug(
                             "[%s] send_stream_frame: no req_id available for chat %s",
                             self.name, chat,
@@ -2983,6 +3119,10 @@ class WeComAdapter(BasePlatformAdapter):
 
             # Check if this turn has expired
             if turn.expired:
+                logger.info(
+                    "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                    "turn_expired", chat, turn_id,
+                )
                 return False
 
             # First frame for this turn: send seed ONLY if not already seeded.
@@ -3000,6 +3140,10 @@ class WeComAdapter(BasePlatformAdapter):
                     "<think></think>", finish=False,
                 )
                 turn.seeded = True
+                logger.info(
+                    "[stream] seed sent for turn %s (req_id=%s)",
+                    turn.stream_id, turn.req_id,
+                )
                 # Stream is now open on the server — arm the keep-alive timer
                 # (Layer 1) so long, content-sparse turns refresh the 6-min
                 # window.  No-op when keep-alive is disabled by config.
@@ -3047,6 +3191,10 @@ class WeComAdapter(BasePlatformAdapter):
                         turn.expired = True
                         self._retire_turn(turn, turn_id)
                         self._stream_expired_chats.add(chat)
+                        logger.info(
+                            "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                            "layer2_clock_fallback", chat, turn_id,
+                        )
                         return False
 
                 self._cancel_idle_flush(turn)
@@ -3072,8 +3220,16 @@ class WeComAdapter(BasePlatformAdapter):
                 if turn_id:
                     turn_key = f"{chat}:{turn_id}"
                     self._stream_turns.pop(turn_key, None)
+                    logger.info(
+                        "[stream] finalized turn %s (turn_key=%s)",
+                        turn.stream_id, turn_key,
+                    )
                 else:
                     self._cleanup_stream_turn(chat, turn.req_id)
+                    logger.info(
+                        "[stream] finalized turn %s (turn_key=%s)",
+                        turn.stream_id, f"{chat}:{turn.req_id}",
+                    )
             else:
                 # Fire-and-forget: gateway already decides when to push
                 # (pure identity-dedup in stream_consumer.py).  No adapter-
@@ -3086,11 +3242,6 @@ class WeComAdapter(BasePlatformAdapter):
                 # mark — the root cause of the "Cla"/"ude" split-bubble bug.
                 turn.accumulated_text = text
 
-                if turn._intermediate_frames_sent >= MAX_INTERMEDIATE_FRAMES:
-                    # Frame cap reached — drop intermediates, keep accumulating.
-                    # The finalize path will drain whatever is left.
-                    return True
-
                 # Pure dedup: skip if content is identical to last sent frame.
                 if text == turn.last_sent_content:
                     return True
@@ -3102,6 +3253,10 @@ class WeComAdapter(BasePlatformAdapter):
                     turn.stream_id,
                     text,
                     finish=False,
+                )
+                logger.info(
+                    "[stream] frame pushed to turn %s (len=%d, finish=%s)",
+                    turn.stream_id, len(text), False,
                 )
                 turn._last_frame_sent_at = time.monotonic()
                 turn._intermediate_frames_sent += 1
@@ -3140,6 +3295,10 @@ class WeComAdapter(BasePlatformAdapter):
             # Mark the chat as stream-expired to prevent new stream attempts.
             # Other concurrent turns may continue if they're already active.
             self._stream_expired_chats.add(chat)
+            logger.info(
+                "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                "stream_expired_error", chat, turn_id,
+            )
             return False
         except Exception as exc:
             # Same intermediate/final split as the expired path above: a single
@@ -3163,6 +3322,10 @@ class WeComAdapter(BasePlatformAdapter):
             # Clean up this turn on error
             if 'turn' in locals():
                 self._retire_turn(turn, turn_id)
+            logger.info(
+                "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
+                "exception", chat, turn_id,
+            )
             return False
 
     def supports_native_streaming(

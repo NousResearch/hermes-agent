@@ -46,11 +46,10 @@ logger = logging.getLogger(__name__)
 # profile's cron store. Anchor on get_hermes_home() (profile home), not the
 # shared default root. See cron/jobs.py for the full rationale.
 #
-# Optional test overrides. Production resolves the path at call time so
+# Optional test override. Production resolves the path at call time so
 # multiplexed profile ticks (set_hermes_home_override) cannot leak one
 # profile's suggestions into the import-time home (#86519). Same pattern as
 # cron/executions.py.
-CRON_DIR: Optional[Path] = None
 SUGGESTIONS_FILE: Optional[Path] = None
 
 

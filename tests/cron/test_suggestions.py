@@ -37,6 +37,26 @@ def _add(store, key="k1", title="Test", source="catalog", schedule="0 9 * * *"):
 
 
 class TestStore:
+    def test_explicit_file_override_wins_over_profile_home(self, tmp_path, monkeypatch):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        import cron.suggestions as suggestions_mod
+
+        explicit_file = tmp_path / "explicit" / "suggestions.json"
+        profile_home = tmp_path / "profile"
+        monkeypatch.setattr(suggestions_mod, "SUGGESTIONS_FILE", explicit_file)
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            _add(suggestions_mod, key="explicit-file")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert explicit_file.exists()
+        assert not (profile_home / "cron" / "suggestions.json").exists()
+
     def test_profile_override_routes_writes_to_current_home(self, tmp_path):
         from hermes_constants import (
             reset_hermes_home_override,

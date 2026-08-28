@@ -518,6 +518,37 @@ class TestResolvedHiddenSet:
         assert str(home / "elsewhere") not in argv
         assert str(home / ".ssh") not in argv
 
+    def test_default_hermes_home_is_hidden_when_hermes_home_is_relocated(self, paths, tmp_path):
+        # A profile HERMES_HOME leaves HOME/.hermes (the default home, with
+        # its .env and auth.json) an ordinary directory unless it is hidden
+        # too.
+        home = Path(paths["home"])
+        (home / ".hermes").mkdir(parents=True)
+        relocated = tmp_path / "profiles" / "coder"
+        relocated.mkdir(parents=True)
+        hidden = sensitive_paths(paths["home"], str(relocated))
+        assert str(relocated) in hidden
+        assert str(home / ".hermes") in hidden
+        argv = build(paths=paths, hermes_home=str(relocated), hidden_paths=hidden)
+        assert str(home / ".hermes") in singles(argv, "--tmpfs")
+        assert str(relocated) in singles(argv, "--tmpfs")
+
+    def test_absent_default_hermes_home_stays_in_the_set_and_emits_nothing(self, paths, tmp_path):
+        home = Path(paths["home"])
+        home.mkdir()
+        relocated = tmp_path / "hermes"
+        relocated.mkdir()
+        hidden = sensitive_paths(paths["home"], str(relocated))
+        assert str(home / ".hermes") in hidden
+        argv = build(paths=paths, hermes_home=str(relocated), hidden_paths=hidden)
+        assert str(home / ".hermes") not in argv
+
+    def test_default_hermes_home_is_listed_once_when_it_is_hermes_home(self, paths):
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        assert hidden.count(os.path.realpath(paths["hermes_home"])) == 1
+        assert hidden.count(str(Path(paths["home"]) / ".hermes")) == 1
+        assert len(hidden) == len(set(hidden))
+
 
 class TestResolvedBindDest:
     """An operator bind lands at the real path of its dest, so the pins are

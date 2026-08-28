@@ -24,7 +24,10 @@ Layout of the argv (later mounts overlay earlier ones):
    overlay
 6. the sensitive overlays: a tmpfs over each sensitive directory and an
    empty file over each sensitive file that exists on the host, then the
-   same for HERMES_HOME
+   same for HERMES_HOME and for the default HOME/.hermes when HERMES_HOME
+   points elsewhere (a profile under HOME/.hermes/profiles, or any other
+   directory), so a profile's sandbox cannot read the default home's
+   credentials
 7. under terminal.home_mode=profile, HERMES_HOME/home read-write on top of
    that overlay (it is the subprocess HOME then)
 8. the per-environment state dir read-write at the same path; between
@@ -94,6 +97,13 @@ SENSITIVE_HOME_PATHS: tuple[str, ...] = (
     ".netrc",
     ".env",
 )
+
+# The default Hermes home under the real HOME (the Linux default of
+# hermes_constants.get_hermes_home). It joins the hidden set beside the
+# resolved HERMES_HOME so a relocated HERMES_HOME (a profile at
+# HOME/.hermes/profiles/<name>, or any other directory) does not leave the
+# default home's .env and auth.json readable inside the sandbox.
+DEFAULT_HERMES_HOME_NAME = ".hermes"
 
 # Variables that name host agent or bus sockets. LocalEnvironment passes them
 # through; the bwrap prefix unsets them so the sandbox env is local's minus
@@ -223,7 +233,13 @@ def load_bubblewrap_config(environ: Mapping[str, str] | None = None) -> Bubblewr
 
 
 def sensitive_paths(home: str, hermes_home: str) -> tuple[str, ...]:
-    """Real host paths that must stay hidden: the HOME set plus HERMES_HOME.
+    """Real host paths that must stay hidden: the HOME set, HERMES_HOME and HOME/.hermes.
+
+    The default HOME/.hermes rides along with the resolved HERMES_HOME so a
+    relocated HERMES_HOME (a profile at HOME/.hermes/profiles/<name>) does
+    not leave the default home readable; when the two are the same
+    directory it is listed once. A missing HOME/.hermes stays in the set
+    and emits no mount (sensitive_overlay_args skips absent paths).
 
     Each path goes through os.path.realpath, so an entry that is a symlink
     (a dotfiles repository linking ~/.ssh to ~/dotfiles/ssh) or that sits
@@ -238,6 +254,7 @@ def sensitive_paths(home: str, hermes_home: str) -> tuple[str, ...]:
     home = os.path.abspath(os.path.expanduser(home))
     nominal = [os.path.join(home, rel) for rel in SENSITIVE_HOME_PATHS]
     nominal.append(os.path.abspath(os.path.expanduser(hermes_home)))
+    nominal.append(os.path.join(home, DEFAULT_HERMES_HOME_NAME))
     resolved: list[str] = []
     for path in nominal:
         real = os.path.realpath(path)
@@ -840,15 +857,22 @@ class BubblewrapEnvironment(LocalEnvironment):
         The plain directory under
         HERMES_HOME, a link to another directory under HERMES_HOME and a
         link to a clean directory outside every hidden path stay allowed.
+        A profile home inside HERMES_HOME is exempt from the lies-under
+        test against every hidden path, not only HERMES_HOME itself: under
+        the standard profile layout HERMES_HOME sits inside the hidden
+        default HOME/.hermes, and the plain HERMES_HOME/home there
+        is the designed carve-out. A link into another profile under
+        HOME/.hermes is outside HERMES_HOME and is refused.
         """
         if self._config.home_mode not in PROFILE_HOME_MODES:
             return
         link = os.path.join(self._hermes_home, "home")
         profile_home = os.path.realpath(link)
+        inside_hermes_home = _is_within(profile_home, self._hermes_home)
         for hidden in self._hidden_paths:
             if _is_within(hidden, profile_home):
                 relation = f"contains {hidden}"
-            elif hidden != self._hermes_home and _is_within(profile_home, hidden):
+            elif not inside_hermes_home and _is_within(profile_home, hidden):
                 relation = f"lies under {hidden}"
             else:
                 continue
@@ -857,8 +881,9 @@ class BubblewrapEnvironment(LocalEnvironment):
                 f"{link} read-write inside the sandbox with the bubblewrap backend, but "
                 f"it resolves to {profile_home}, which {relation}, a path the backend "
                 "hides: the bind would show it again. Make HERMES_HOME/home a plain "
-                "directory, or a link to a directory outside HOME's hidden dotfiles "
-                "and the rest of HERMES_HOME, or set terminal.home_mode to auto or real."
+                "directory, or a link to a directory outside HOME's hidden dotfiles, "
+                "the default HOME/.hermes and the rest of HERMES_HOME, or set "
+                "terminal.home_mode to auto or real."
             )
 
     def _check_initial_cwd(self) -> None:

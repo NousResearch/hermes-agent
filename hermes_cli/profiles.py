@@ -764,6 +764,41 @@ def _read_config_model(profile_dir: Path) -> tuple:
         return None, None
 
 
+def _seed_model_config(profile_dir: Path) -> None:
+    """Give a profile created without a clone source a usable model block.
+
+    Such a profile gets its directory tree but no ``config.yaml`` at all, so it
+    resolves no provider and its first turn dies with "No LLM provider
+    configured" — created, but unable to run. Copy the active profile's
+    ``model`` block over at creation time.
+
+    This is a copy, not a link: profiles remain independent islands, and
+    editing either one afterwards never touches the other. "Fresh" means fresh
+    skills and SOUL, not unreachable.
+    """
+    config_path = profile_dir / "config.yaml"
+    if config_path.exists():
+        return
+    try:
+        import yaml
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import read_user_config_raw
+
+        source = get_hermes_home() / "config.yaml"
+        if not source.is_file():
+            return
+        model_cfg = read_user_config_raw(source).get("model")
+        if not model_cfg:
+            return
+        config_path.write_text(
+            yaml.safe_dump({"model": model_cfg}, sort_keys=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        # Creation must not fail over this; `hermes model` still sets it later.
+        pass
+
+
 def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory.
 
@@ -1225,6 +1260,9 @@ def create_profile(
         profile_dir.mkdir(parents=True, exist_ok=True)
         for subdir in _PROFILE_DIRS:
             (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+        if source_dir is None:
+            _seed_model_config(profile_dir)
 
         # Clone config files from source
         if source_dir is not None:

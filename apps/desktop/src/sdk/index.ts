@@ -783,9 +783,11 @@ export const host = {
   },
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
-   *  analogue of warmProfile. Fire-and-forget, same semantics. */
-  warmAgent: (connectionId: null | string, profile: string): void => {
-    void openGatewayForAgent(connectionId, (profile ?? '').trim() || 'default').catch(() => undefined)
+   *  analogue of warmProfile. Fire-and-forget, same semantics.
+   *  `undefined` is accepted alongside `null` because a roster row's
+   *  `connectionId` is optional; both mean "no explicit source". */
+  warmAgent: (connectionId: null | string | undefined, profile: string): void => {
+    void openGatewayForAgent(connectionId ?? null, (profile ?? '').trim() || 'default').catch(() => undefined)
   },
 
   /** Activate an agent's gateway (dialing it if needed) so subsequent
@@ -794,8 +796,8 @@ export const host = {
    *  and rapid switches can't land out of order. The local source falls
    *  through to the profile path — single-source plugins keep working
    *  against older behavior unchanged. */
-  ensureAgent: async (connectionId: null | string, profile: string): Promise<void> =>
-    ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default'),
+  ensureAgent: async (connectionId: null | string | undefined, profile: string): Promise<void> =>
+    ensureGatewayAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
 
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —
@@ -1108,8 +1110,6 @@ export const host = {
       render: () => ReactNode
       title?: string
       uncloseable?: boolean
-      workspaceMode?: WorkspaceMode
-      workspaceOwnerKey?: string
     }
   ): (() => void) => {
     const key = (id ?? '').trim()
@@ -1133,9 +1133,7 @@ export const host = {
       },
       id: paneId,
       render: options.render,
-      title: options.title ?? key,
-      workspaceMode: options.workspaceMode,
-      workspaceOwnerKey: options.workspaceOwnerKey
+      title: options.title ?? key
     })
 
     const close = () => {
@@ -1383,8 +1381,53 @@ export {
 
 // -- ui: the design language --------------------------------------------------
 
+/** THE session status dot — the one primitive the sidebar row, the pane tabs
+ *  and the session switcher render, so a session's status can never disagree
+ *  between surfaces. Pass the STORED session id and it resolves the rest
+ *  itself: the live state (needs-input / working / stalled / background /
+ *  unread / draft / idle) and the project color. Never hand-roll a status
+ *  circle beside it — a plugin's own dot inverts core's color vocabulary the
+ *  moment either side moves. */
+export { SessionStatusDot, type SessionStatusDotProps } from '@/app/chat/session-status-dot'
+/** The sidebar row's leading cell — the fixed box a dot, icon or handle sits in.
+ *  Reserve it and your label starts on the same left edge as every session row
+ *  above you; spell the classes yourself and the row drifts. The session row is
+ *  canonical; `row-geometry.ts` explains what each measurement belongs to. */
+export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
+/** One glyph per gateway kind — device, cloud, terminal, network. The statusbar
+ *  switcher, the fleet profile rail and any plugin rail listing gateways share
+ *  it, so a connection looks the same wherever it is named. */
+export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
+export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
+ *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
+ *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
+ *  `PanelEmpty` is the icon+action empty state (plain `EmptyState` is title +
+ *  description only, and silently drops an `icon`). A row takes a custom `lead`
+ *  (avatar/swatch), trailing `meta`, and `menuItems` for kebab + right-click
+ *  parity, so a roster needs no hand-rolled row. The overlay-bound `Panel` root
+ *  is deliberately NOT exported — these compose inside a pane just as well. */
+export {
+  PanelAction,
+  PanelAddButton,
+  PanelBlock,
+  PanelBody,
+  PanelDetail,
+  PanelEmpty,
+  PanelHeader,
+  PanelList,
+  PanelListRow,
+  type PanelMenuItem,
+  PanelMeta,
+  type PanelMetaRow,
+  PanelPill,
+  type PanelPillTone,
+  PanelRowMenu,
+  PanelSectionLabel
+} from '@/app/overlays/panel'
 export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
+
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
@@ -1404,7 +1447,6 @@ export {
 } from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
-
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1420,6 +1462,9 @@ export { SkillsView } from '@/app/skills'
  *  renders anywhere (a plugin dialog); pass a live `gateway` (see
  *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
 export { McpTab } from '@/app/skills/mcp-tab'
+/** The oversized Collapse lettering an empty chat is titled with — core writes
+ *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
+export { Wordmark } from '@/components/chat/wordmark'
 /** Pane placement roles. `'floating'` is the one NON-tiling value: the pane is
  *  excluded from the layout tree and rendered as a fixed, draggable card above
  *  it — it takes no width from any zone, has no tab, and can't be docked.
@@ -1431,6 +1476,11 @@ export { Badge } from '@/components/ui/badge'
 export { Button } from '@/components/ui/button'
 export { Checkbox } from '@/components/ui/checkbox'
 export { Codicon } from '@/components/ui/codicon'
+/** THE color picker — swatch grid plus a clear row that means "back to the
+ *  deterministic color". Feed it `PROFILE_SWATCHES` so a hand-picked color
+ *  shares the generated palette's saturation and lightness; a bespoke grid of
+ *  literal hex drifts off-theme the moment the palette moves. */
+export { ColorSwatches } from '@/components/ui/color-swatches'
 export { ConfirmDialog } from '@/components/ui/confirm-dialog'
 export {
   ContextMenu,
@@ -1450,6 +1500,10 @@ export {
   DialogTitle,
   DialogTrigger
 } from '@/components/ui/dialog'
+/** The caret every collapsible section in core uses — points right when closed
+ *  and rotates down when open, so the motion matches the rest of the app. Swap
+ *  a hand-written `chevron-down`/`chevron-right` ternary for this. */
+export { DisclosureCaret } from '@/components/ui/disclosure-caret'
 export {
   DropdownMenu,
   DropdownMenuContent,
@@ -1468,6 +1522,10 @@ export { Kbd, KbdGroup } from '@/components/ui/kbd'
 export { Loader, type LoaderType } from '@/components/ui/loader'
 export { LogView } from '@/components/ui/log-view'
 export { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+/** Full-row / region click target. Imposes NO styling — the caller keeps its own
+ *  layout classes — it just bakes in `type="button"` and a stable `data-slot`.
+ *  Use it for rows and regions; `Button` is for ordinary compact actions. */
+export { RowButton } from '@/components/ui/row-button'
 export { ScrollArea } from '@/components/ui/scroll-area'
 export { SearchField } from '@/components/ui/search-field'
 export { SegmentedControl } from '@/components/ui/segmented-control'
@@ -1507,7 +1565,11 @@ export type { HermesGateway } from '@/hermes'
 export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
 /** Localized copy. `useI18n` reuses the app's strings; `usePluginI18n(id)` +
  *  `ctx.i18n.register` let a plugin ship its OWN locale bundles, scoped like
- *  `ctx.storage` and resolved against the app's active locale — no core edit. */
+ *  `ctx.storage` and resolved against the app's active locale — no core edit.
+ *  `translateNow` is the one-shot form for the places a hook can't reach —
+ *  notably a `ctx.register` pane `title`, which is read at registration time
+ *  and is why plugin pane titles otherwise strand as hardcoded English. It
+ *  samples the locale at call time, so React should still use the hooks. */
 export {
   type Locale,
   type PluginI18n,
@@ -1515,6 +1577,7 @@ export {
   type PluginMessages,
   type PluginMessageValue,
   type PluginTranslate,
+  translateNow,
   useI18n,
   usePluginI18n
 } from '@/i18n'
@@ -1523,6 +1586,9 @@ export {
  *  Plugins must route animation clocks through this instead of raw rAF loops
  *  so a disabled plugin or an empty roster costs zero frames. */
 export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from '@/lib/budgeted-loop'
+/** The blank transcript as a contribution area: claim the sessions you own and
+ *  render what stands in the gap. Core's own splash keeps a fresh draft. */
+export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@/lib/format'
@@ -1542,14 +1608,23 @@ export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export * as icons from '@/lib/icons'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
+/** A `Map` with a ceiling, for the module-level caches a plugin keeps across
+ *  a renderer that stays open for days. Only for values that can be
+ *  regenerated — eviction costs a recompute or a refetch, never correctness. */
+export { LruCache } from '@/lib/lru-cache'
 /** The app's deterministic identity color for a name (profiles, assignees,
- *  authors) + its translucent tag fill — so plugin-rendered identities read
- *  the same hue as everywhere else. */
-export { profileColor, profileColorSoft } from '@/lib/profile-color'
+ *  authors), its translucent tag fill, and the curated picker swatches — so
+ *  plugin-rendered identities read the same hue as everywhere else. The
+ *  swatches share the deterministic palette's saturation/lightness, so a
+ *  hand-picked color still sits with the generated ones; reach for them
+ *  instead of literal hex, which can't follow the theme. */
+export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-color'
 /** The shared client itself, for invalidation OUTSIDE React (e.g. a
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
+
+export const PANES_AREA = 'panes'
 /** Hermes' reasoning levels + their compact labels, so a plugin surfacing a
  *  thinking depth uses the same scale and spelling as the rest of the app. */
 export {
@@ -1559,16 +1634,20 @@ export {
   type ReasoningEffort,
   reasoningEffortLabel
 } from '@/lib/reasoning-effort'
+export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
+export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
-export const PANES_AREA = 'panes'
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
-export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
-
-export { coarseElapsed, fmtDateTime, fmtDayTime, relativeTime } from '@/lib/time'
+/** Canonical time formatting — every surface pulls from here so timestamps read
+ *  the same app-wide. For a row's AGE, bucket with `coarseElapsed` and render
+ *  the compact suffixes (`t.sidebar.row.ageMin` → "52m"), which is what the
+ *  session rows beside you do; `formatAgo` is the same buckets with an " ago"
+ *  suffix. `relativeTime` is the bidirectional Intl form ("in 14 hr") — use it
+ *  for a scheduled next-run, not for an age. */
+export { type AgoLabels, coarseElapsed, fmtDateTime, fmtDayTime, formatAgo, relativeTime } from '@/lib/time'
 /** The transcript as a contribution area: register a named `::directive{...}`
  *  and the model can render your component inline in assistant messages. */
 export {
@@ -1577,6 +1656,19 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+/** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
+ *  learns out-of-band that a session produced something the user hasn't seen
+ *  (a roster poll's activity watermark, say) writes HERE rather than keeping
+ *  its own unread map — core's dot only paints what this store claims, and a
+ *  parallel map means a second badge that drifts. Works for sessions core
+ *  cannot see: a hidden session is never in the session list, so the backend
+ *  watermark can never claim it, but the transient marker resolves to the id
+ *  you pass. Key every call by the SAME stored id you hand the dot.
+ *  `markSessionUnreadFinished` lights it, `ackStoredSessionId` clears it when
+ *  the user opens the session, `forgetSessionUnread` drops it when the session
+ *  is gone. Pass the owning profile — a hidden session has no row to read it
+ *  from, and the persisted half is bucketed per profile. */
+export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } from '@/store/session-unread'
 /** Live accent override — set a hex and the ACTIVE theme repaints with its
  *  accent family re-seeded from it (see `retintTheme`); `null` restores the
  *  authored palette. Deliberately not persisted: it is an authoring knob, not

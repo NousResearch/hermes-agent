@@ -978,14 +978,18 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             except OSError as e:
                 logger.debug("real-profile snapshot: skipped Local State: %s", e)
 
-        # The copy contains ONLY the mirrored Default
-        # dir (that is where the pinned/active profile's auth was mirrored
-        # into), but a verbatim Local State still names the SOURCE profile
-        # (e.g. last_used="Profile 2", info_cache listing Profile 2/4/7).
-        # Chrome therefore opens a missing profile dir and starts SIGNED OUT
-        # (verified live: 3 anonymous cookies instead of the ~4000 copied).
-        # Rewrite Local State so the copy's only profile is Default and it is
-        # the last-used one.
+        # The copy contains ONLY the mirrored Default dir (that is where the
+        # pinned/active profile's auth was mirrored into), but a verbatim
+        # Local State still names the SOURCE profile (e.g. last_used="Profile
+        # 2", info_cache listing Profile 2/4/7). Chrome therefore opens a
+        # missing profile dir and starts SIGNED OUT. Rewrite Local State so
+        # the copy's only profile is Default and it is the last-used one.
+        # CRITICAL: Default's identity entry must be the SOURCE profile's
+        # entry (name + Google account), not the source's own "Default"
+        # entry — the Default DIR holds the source profile's cookies. A
+        # mismatch (cookies belong to profile B, info_cache names profile A) makes Chrome
+        # demand a "Continue as <name>" profile-sign-in reconciliation on
+        # every launch and treat the profile as mid-sign-in.
         try:
             import json as _json
 
@@ -994,8 +998,10 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             prof = state.get("profile")
             if isinstance(prof, dict):
                 cache = prof.get("info_cache")
-                if isinstance(cache, dict) and "Default" in cache:
-                    prof["info_cache"] = {"Default": cache["Default"]}
+                if isinstance(cache, dict):
+                    src_entry = cache.get(source_profile) or cache.get("Default")
+                    if src_entry:
+                        prof["info_cache"] = {"Default": src_entry}
                 prof["last_used"] = "Default"
                 prof["last_active_profiles"] = ["Default"]
             with open(ls_dst, "w", encoding="utf-8") as fh:

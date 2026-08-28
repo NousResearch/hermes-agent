@@ -11166,7 +11166,7 @@ def cmd_profile(args):
 
             # Profile dir for display
             try:
-                profile_dir_display = "~/" + str(profile_dir.relative_to(Path.home()))
+                profile_dir_display = "~/" + profile_dir.relative_to(Path.home()).as_posix()
             except ValueError:
                 profile_dir_display = str(profile_dir)
 

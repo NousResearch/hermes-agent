@@ -1117,7 +1117,13 @@ def display_hermes_home() -> str:
     """
     home = get_hermes_home()
     try:
-        return "~/" + str(home.relative_to(Path.home()))
+        # as_posix(): on Windows, str() of a relative Path renders
+        # backslashes, producing mixed-separator chimeras like
+        # ``~/AppData\Local\hermes/skills/`` once callers append
+        # sub-paths. ``~/`` shorthand implies POSIX rendering; keep the
+        # whole string consistent (forward slashes work everywhere,
+        # including Windows shells and Python APIs).
+        return "~/" + home.relative_to(Path.home()).as_posix()
     except ValueError:
         return str(home)
 

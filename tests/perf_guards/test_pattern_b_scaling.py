@@ -68,7 +68,6 @@ class TestStreamedTextAccumulationLinear:
         from run_agent import AIAgent
 
         agent = AIAgent.__new__(AIAgent)
-        agent._interrupt_requested = False
         agent._current_streamed_assistant_text = ""
         for _ in range(n):
             agent._record_streamed_assistant_text(self.DELTA)
@@ -123,25 +122,36 @@ class TestListSessionsRichQueryBound:
         yield db
         db.close()
 
+    @staticmethod
+    def _count_writer_statements(db):
+        """Rows from ``list_sessions_rich`` plus the writer-conn statement count.
+
+        Uses the house trace-callback idiom (``statements.append`` — see
+        tests/test_hermes_state.py) so failures can dump the captured SQL.
+        """
+        statements: list[str] = []
+        db._conn.set_trace_callback(statements.append)
+        try:
+            rows = db.list_sessions_rich(limit=50)
+        finally:
+            db._conn.set_trace_callback(None)
+        return rows, statements
+
     @pytest.mark.xfail(
         reason="known N+1 on main until PR #95380 (batched compression-edge "
         "query) merges; remove this marker when it lands",
         strict=False,
     )
     def test_statement_count_bounded_regardless_of_session_count(self, chain_db):
-        counted = {"n": 0}
-        chain_db._conn.set_trace_callback(lambda stmt: counted.__setitem__("n", counted["n"] + 1))
-        try:
-            rows = chain_db.list_sessions_rich(limit=50)
-        finally:
-            chain_db._conn.set_trace_callback(None)
+        rows, statements = self._count_writer_statements(chain_db)
 
         assert len(rows) == self.N_CHAINS
-        assert counted["n"] <= self.MAX_STATEMENTS, (
-            f"list_sessions_rich issued {counted['n']} writer-connection "
+        assert len(statements) <= self.MAX_STATEMENTS, (
+            f"list_sessions_rich issued {len(statements)} writer-connection "
             f"statements for {self.N_CHAINS} sessions (bound: "
             f"{self.MAX_STATEMENTS}). Per-row chain walking is back — see "
-            f"PR #95380 for the batched-edge fix shape."
+            f"PR #95380 for the batched-edge fix shape. Captured SQL: "
+            f"{[s[:80] for s in statements[:10]]}"
         )
 
     def test_statement_count_does_not_scale_with_sessions(self, chain_db):
@@ -149,17 +159,12 @@ class TestListSessionsRichQueryBound:
         O(N) but must never exceed a per-session budget of 4 — catching a
         regression from N+1 to N·M (nested walks, per-hop re-queries).
         """
-        counted = {"n": 0}
-        chain_db._conn.set_trace_callback(lambda stmt: counted.__setitem__("n", counted["n"] + 1))
-        try:
-            rows = chain_db.list_sessions_rich(limit=50)
-        finally:
-            chain_db._conn.set_trace_callback(None)
+        rows, statements = self._count_writer_statements(chain_db)
 
         assert len(rows) == self.N_CHAINS
         budget = 4 * self.N_CHAINS + 8
-        assert counted["n"] <= budget, (
-            f"list_sessions_rich issued {counted['n']} statements for "
+        assert len(statements) <= budget, (
+            f"list_sessions_rich issued {len(statements)} statements for "
             f"{self.N_CHAINS} sessions — beyond even the legacy N+1 budget "
             f"({budget}). A nested per-row walk has been introduced."
         )

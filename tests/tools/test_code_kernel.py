@@ -65,18 +65,21 @@ def _run(code, **kwargs):
 
 
 class TestKernelModeResolution(unittest.TestCase):
-    def test_default_is_per_call(self):
-        self.assertEqual(DEFAULT_KERNEL_MODE, "per-call")
+    """kernel_mode is retired: session kernels are always on for local runs.
+
+    _get_kernel_mode() survives only as a compat shim; a leftover
+    kernel_mode key in user config (any value) must be ignored."""
+
+    def test_session_is_always_on(self):
+        self.assertEqual(DEFAULT_KERNEL_MODE, "session")
         with patch("tools.code_execution_tool._load_config", return_value={}):
-            self.assertEqual(_get_kernel_mode(), "per-call")
+            self.assertEqual(_get_kernel_mode(), "session")
 
-    def test_kernel_modes_tuple(self):
-        self.assertEqual(KERNEL_MODES, ("per-call", "session"))
-
-    def test_invalid_value_falls_back(self):
-        with patch("tools.code_execution_tool._load_config",
-                   return_value={"kernel_mode": "forever"}):
-            self.assertEqual(_get_kernel_mode(), "per-call")
+    def test_leftover_config_key_is_ignored(self):
+        for stale in ("per-call", "forever", "", None):
+            with patch("tools.code_execution_tool._load_config",
+                       return_value={"kernel_mode": stale}):
+                self.assertEqual(_get_kernel_mode(), "session")
 
 
 class TestSessionStatePersistence(unittest.TestCase):
@@ -90,13 +93,6 @@ class TestSessionStatePersistence(unittest.TestCase):
         self.assertIn("42", second["output"])
         self.assertEqual(second["kernel"]["reused"], True)
         self.assertEqual(second["kernel"]["execution_count"], 2)
-
-    def test_per_call_default_shares_nothing(self):
-        with _kernel_config(kernel_mode="per-call"):
-            _run("x = 41")
-            second = _run("print(x + 1)")
-        self.assertEqual(second["status"], "error", second)
-        self.assertNotIn("kernel", second)
 
     def test_reset_discards_state(self):
         with _kernel_config():
@@ -163,13 +159,17 @@ class TestSchemaSurface(unittest.TestCase):
             schema = build_execute_code_schema(mode="strict")
         self.assertIn("reset", schema["parameters"]["properties"])
 
-    def test_session_note_only_when_active(self):
+    def test_session_note_is_always_present(self):
+        """The schema's kernel note is unconditional now — session kernels
+        are always on for local execution (kernel_mode retired), so every
+        session is told about persistence and reset=true."""
         with _kernel_config():
             session_schema = build_execute_code_schema(mode="strict")
         self.assertIn("Session kernel is active", session_schema["description"])
+        # Even with a stale per-call key in config, the note stays.
         with _kernel_config(kernel_mode="per-call"):
-            per_call_schema = build_execute_code_schema(mode="strict")
-        self.assertNotIn("Session kernel is active", per_call_schema["description"])
+            stale_schema = build_execute_code_schema(mode="strict")
+        self.assertIn("Session kernel is active", stale_schema["description"])
 
 
 if __name__ == "__main__":

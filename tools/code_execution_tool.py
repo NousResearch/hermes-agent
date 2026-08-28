@@ -1379,8 +1379,14 @@ def execute_code(
     reset: bool = False,
 ) -> str:
     """
-    Run a Python script in a sandboxed child process with RPC access
-    to a subset of Hermes tools.
+    Run Python in the session's persistent kernel (local) or a per-call
+    child process (remote backends), with RPC access to a subset of
+    Hermes tools.
+
+    "Sandbox" in names below refers to the security envelope (env
+    scrubbing, tool whitelist + call budget, output redaction) — not an
+    isolation jail: in the default `project` mode, code runs in the
+    session's cwd with the project venv's interpreter.
 
     Dispatches to the local (UDS) or remote (file-based RPC) path
     depending on the configured terminal backend.
@@ -1908,19 +1914,21 @@ def _load_config() -> dict:
 EXECUTION_MODES = ("project", "strict")
 DEFAULT_EXECUTION_MODE = "project"
 
-# Valid values for code_execution.kernel_mode.
-#   per-call : today's behavior — a fresh child process per execute_code call.
-#   session  : one persistent kernel per (task, mode, interpreter, cwd,
-#              tool-set); variables and imports survive across calls. See
-#              tools/code_kernel.py for the design and its boundaries.
-KERNEL_MODES = ("per-call", "session")
-DEFAULT_KERNEL_MODE = "per-call"
+# Session kernels are the only local execution model: one persistent kernel
+# per conversation (see tools/code_kernel.py). The former
+# code_execution.kernel_mode knob ("per-call" | "session") is retired — the
+# config key is silently ignored if present, and _get_kernel_mode() remains
+# only as a compat symbol for external callers. Remote terminal backends
+# still run per-call: their file-based RPC path has no kernel host YET (a
+# long-lived remote runner + cell protocol is tracked follow-up work, not a
+# design limit).
+KERNEL_MODES = ("per-call", "session")  # legacy compat constant
+DEFAULT_KERNEL_MODE = "session"
 
 
 def _get_kernel_mode() -> str:
-    """Return the active execute_code kernel mode — 'per-call' or 'session'."""
-    value = _load_config().get("kernel_mode", DEFAULT_KERNEL_MODE)
-    return value if value in KERNEL_MODES else DEFAULT_KERNEL_MODE
+    """Legacy compat shim — session kernels are always on for local runs."""
+    return "session"
 
 
 def _get_execution_mode() -> str:

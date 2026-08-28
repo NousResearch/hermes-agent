@@ -2888,8 +2888,12 @@ DEFAULT_CONFIG = {
         #     scan cannot see — the runtime RPC boundary (allow-list, call
         #     budget, per-cell authority) is the operative cross-cell
         #     enforcement in this mode.
-        "kernel_mode": "per-call",
-        # Lifecycle bounds for kernel_mode: session.
+        # kernel_mode is retired: session kernels are always on for local
+        # execution. Remote terminal backends still run per-call — their
+        # file-based RPC path has no kernel host yet (tracked follow-up,
+        # not a design limit). A leftover kernel_mode key in user config
+        # is ignored.
+        # Lifecycle bounds for session kernels.
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
     },

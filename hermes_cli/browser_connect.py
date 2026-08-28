@@ -630,26 +630,36 @@ def _copy_auth_file(src_file: str, dst_file: str) -> bool:
     """
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
     if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
-        try:
-            import sqlite3
-
-            # Read-only URI + immutable-free: we want a consistent committed
-            # snapshot, not to fight the writer. Short busy timeout so a truly
-            # wedged DB fails fast rather than hanging the launch.
-            source = sqlite3.connect(f"file:{src_file}?mode=ro", uri=True, timeout=5)
+        # On a live Chrome on macOS the profile holds
+        # its DBs in a state where mode=ro WITHOUT immutable=1 can hang the
+        # connect/backup indefinitely (the sqlite busy-timeout never fires
+        # because the block happens inside lock negotiation). immutable=1
+        # reads instantly and is correct here: we want a committed snapshot of
+        # a file another process owns, not coordinated writes. A torn read
+        # raises → falls through to the plain-copy fallback below.
+        for uri in (
+            f"file:{src_file}?mode=ro&immutable=1",
+            f"file:{src_file}?mode=ro",
+        ):
             try:
-                out = sqlite3.connect(dst_file)
+                import sqlite3
+
+                # Short busy timeout so a truly wedged DB fails fast rather
+                # than hanging the launch.
+                source = sqlite3.connect(uri, uri=True, timeout=5)
                 try:
-                    with out:
-                        source.backup(out)
+                    out = sqlite3.connect(dst_file)
+                    try:
+                        with out:
+                            source.backup(out)
+                    finally:
+                        out.close()
                 finally:
-                    out.close()
-            finally:
-                source.close()
-            return True
-        except Exception as e:
-            logger.debug("real-profile: sqlite-backup of %s failed (%s); trying raw copy",
-                         src_file, e)
+                    source.close()
+                return True
+            except Exception as e:
+                logger.debug("real-profile: sqlite-backup of %s failed (%s); trying next mode",
+                             src_file, e)
     # Non-DB file, or DB whose backup failed: raw copy.
     try:
         shutil.copy2(src_file, dst_file)
@@ -720,6 +730,53 @@ def _profile_is_locked(src: str, source_profile: str) -> bool:
     except OSError:
         # Other errors (transient) — don't declare locked; let the copy try.
         return False
+
+
+def _real_profile_pin() -> str | None:
+    """Pinned source profile dir name from ``browser.real_profile_pin``.
+
+    Natively the snapshot follows Chrome's
+    ``profile.last_used`` — whichever profile the user touched last. On a
+    machine with a work profile (HM) and a personal profile, that roulette
+    can silently give the agent the wrong identity. When set (e.g.
+    ``"Profile 2"``), the snapshot ALWAYS copies that profile regardless of
+    last_used. Unset → native last_used behavior, unchanged.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            pin = browser_cfg.get("real_profile_pin")
+            if isinstance(pin, str) and pin.strip():
+                return pin.strip()
+    except Exception as e:
+        logger.debug("could not read real_profile_pin: %s", e)
+    return None
+
+
+def _resolve_source_profile(src: str) -> tuple[str | None, str | None]:
+    """Resolve which source profile to copy: pin first, else last_used.
+
+    Returns ``(profile_dir_name, error)``. A configured pin that does not
+    exist under ``src`` FAILS CLOSED with a fixable message — falling back
+    to last_used would silently browse as the wrong identity, which is the
+    exact wrong-principal bug this pin exists to prevent.
+    """
+    pin = _real_profile_pin()
+    if pin:
+        if os.path.isdir(os.path.join(src, pin)):
+            return pin, None
+        return None, (
+            f"browser.real_profile_pin is set to '{pin}' but that profile "
+            f"directory does not exist under {src!r}. Fix the pin (run: "
+            "`python3 -c \"import json; "
+            "print(json.load(open(input()))['profile']['info_cache'])\" "
+            "against '<user-data-dir>/Local State' to list profiles) or "
+            "remove it to fall back to last-used."
+        )
+    return _last_used_profile(src), None
 
 
 def _real_profile_autoclose() -> bool:
@@ -822,7 +879,9 @@ def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool
     psutil.wait_procs(alive, timeout=3.0)
 
     # The lock releases slightly after the process exits on Windows; poll.
-    source_profile = _last_used_profile(src)
+    source_profile, _resolve_err = _resolve_source_profile(src)
+    if not source_profile:
+        source_profile = _last_used_profile(src)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _profile_is_locked(src, source_profile):
@@ -859,8 +918,10 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             f"profile directory for '{browser}' was not found ({src!r}). "
             "Launch that browser at least once, or turn browser.use_real_profile off."
         )
+    source_profile, resolve_err = _resolve_source_profile(src)
+    if resolve_err or not source_profile:
+        return None, resolve_err
     dst = real_profile_copy_dir(browser)
-    source_profile = _last_used_profile(src)
     # Fast lock probe BEFORE any copy: a running browser holds the cookie DB
     # deny-all (Windows), and a blocking file op on it can hang the launch for
     # minutes. On POSIX this never trips (no mandatory locking) so
@@ -910,11 +971,37 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         # Base user-data-dir file the browser reads at startup. Cheap; always
         # re-synced so last_used etc. stay current.
         ls_src = os.path.join(src, "Local State")
+        ls_dst = os.path.join(dst, "Local State")
         if os.path.isfile(ls_src):
             try:
-                shutil.copy2(ls_src, os.path.join(dst, "Local State"))
+                shutil.copy2(ls_src, ls_dst)
             except OSError as e:
                 logger.debug("real-profile snapshot: skipped Local State: %s", e)
+
+        # The copy contains ONLY the mirrored Default
+        # dir (that is where the pinned/active profile's auth was mirrored
+        # into), but a verbatim Local State still names the SOURCE profile
+        # (e.g. last_used="Profile 2", info_cache listing Profile 2/4/7).
+        # Chrome therefore opens a missing profile dir and starts SIGNED OUT
+        # (verified live: 3 anonymous cookies instead of the ~4000 copied).
+        # Rewrite Local State so the copy's only profile is Default and it is
+        # the last-used one.
+        try:
+            import json as _json
+
+            with open(ls_dst, encoding="utf-8") as fh:
+                state = _json.load(fh)
+            prof = state.get("profile")
+            if isinstance(prof, dict):
+                cache = prof.get("info_cache")
+                if isinstance(cache, dict) and "Default" in cache:
+                    prof["info_cache"] = {"Default": cache["Default"]}
+                prof["last_used"] = "Default"
+                prof["last_active_profiles"] = ["Default"]
+            with open(ls_dst, "w", encoding="utf-8") as fh:
+                _json.dump(state, fh)
+        except (OSError, ValueError) as e:
+            logger.debug("real-profile snapshot: could not normalize Local State: %s", e)
 
         if not populated:
             # Fresh (or torn-and-rebuilding): drop any partial Default and copy

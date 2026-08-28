@@ -176,10 +176,21 @@ class TestRealProfileCdpLaunch:
     def test_launch_returns_http_cdp(self, tmp_path):
         import tools.browser_tool as bt
         self._reset()
-        proc = Mock(returncode=0, stdout="", stderr="")
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
         with patch.object(bt, "_use_real_profile", return_value=True), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
@@ -191,19 +202,36 @@ class TestRealProfileCdpLaunch:
         self._reset()
 
     def test_launch_never_passes_headless(self, tmp_path):
-        """--headless would use a separate cookie store → 0 real cookies."""
+        """--headless would use a separate cookie store → 0 real cookies.
+
+        We launch the REAL Chrome binary
+        ourselves (no mock-keychain switches — those break macOS cookie
+        decryption) and agent-browser attaches via --cdp. So the agent-browser
+        argv must contain --cdp (attach, not launch) and must NOT contain
+        --headless or --profile (launch-mode switches).
+        """
         import tools.browser_tool as bt
         self._reset()
-        proc = Mock(returncode=0, stdout="", stderr="")
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
         captured = {}
 
         def fake_run(argv, **kw):
             captured["argv"] = argv
             return proc
 
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
         with patch.object(bt, "_use_real_profile", return_value=True), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
@@ -211,19 +239,30 @@ class TestRealProfileCdpLaunch:
              patch.object(bt, "_is_headed_mode", return_value=False):
             bt._real_profile_cdp()
         assert "--headless" not in captured["argv"]
-        assert "--profile" in captured["argv"]
-        assert str(tmp_path) in captured["argv"]
+        assert "--profile" not in captured["argv"]
+        assert "--cdp" in captured["argv"]
         self._reset()
 
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
         """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
         import tools.browser_tool as bt
         self._reset()
-        proc = Mock(returncode=0, stdout="", stderr="")
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
         closed = {"n": 0}
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
         with patch.object(bt, "_use_real_profile", return_value=True), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt, "_agent_browser_get_cdp",
                           side_effect=["http://127.0.0.1:5000", "http://127.0.0.1:41000"]), \
              patch.object(bt, "_cdp_http_ready", return_value=True), \

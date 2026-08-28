@@ -776,6 +776,20 @@ def authorize_agent_sdk_kwargs(
         getattr(agent, "_llm_egress_max_sanitized_bytes", 32_768)
     )
     used_grants: dict[str, SourceGrant] = {}
+    # Protected providers must use the bounded-context path regardless of
+    # whether the worker inherited the dispatcher marker.  The marker is
+    # still required for path redaction and the reduced Kanban toolset, but it
+    # is not a safe prerequisite for transport framing: fallback/provider
+    # resolution can rebuild the agent without preserving that process-global
+    # flag.  Without this route-derived guard, a large protected request raises
+    # ValueError while typing, bypassing the firewall's content-free receipt
+    # and triggering a provider fallback loop.
+    protected_remote_context = (
+        os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
+        or provider_uses_egress_firewall(
+            _route_field(resolved_route, "provider", "")
+        )
+    )
     typed_body = _typed_payload(
         body,
         _grant_texts(grants),
@@ -786,9 +800,7 @@ def authorize_agent_sdk_kwargs(
             if os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
             else frozenset()
         ),
-        protected_kanban_context=(
-            os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
-        ),
+        protected_kanban_context=protected_remote_context,
         redact_generated_context=(
             str(_route_field(resolved_route, "provider", "") or "").strip().lower()
             == "openai-codex"

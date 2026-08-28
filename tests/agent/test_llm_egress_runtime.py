@@ -372,6 +372,29 @@ def test_protected_kanban_splits_single_oversized_line_without_relaxing_cap(
     assert json.loads(receipt.payload_bytes)["messages"][0]["content"] == text
 
 
+def test_protected_provider_route_splits_without_dispatcher_marker(
+    tmp_path, monkeypatch
+):
+    """Route protection must survive provider/fallback agent reconstruction."""
+    monkeypatch.delenv("HERMES_KANBAN_PROTECTED_REMOTE", raising=False)
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.model = "tencent/hy3:free"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+    agent._llm_egress_max_sanitized_bytes = 128_000
+
+    text = "bounded protected repair context. " * 2_000
+    assert len(text.encode("utf-8")) > 32_768
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {"model": agent.model, "messages": [{"role": "system", "content": text}]},
+    )
+
+    assert authorized["messages"][0]["content"] == text
+    assert json.loads(receipt.payload_bytes)["messages"][0]["content"] == text
+
+
 @pytest.mark.parametrize(
     "identifier",
     [

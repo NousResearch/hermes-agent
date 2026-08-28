@@ -33,6 +33,19 @@ from hermes_cli.kanban_specify import _profile_author as _specify_author
 
 logger = logging.getLogger(__name__)
 
+# These phrases are LLM placeholders, not executable scope.  A previous
+# decomposer response emitted "the target monolith component" with no parent,
+# path, symbol, artifact, or task id; the resulting leaf could only ask a human
+# to choose its target and eventually escalated to triage.  Keep this narrow:
+# ordinary prose is accepted, but known placeholder targets are rejected before
+# the atomic graph write so the root stays in triage for a real specification.
+_PLACEHOLDER_CHILD_SCOPE_RE = re.compile(
+    r"\b(?:the|a)\s+(?:target|specified|relevant)\s+"
+    r"(?:(?:monolith|source|code)\s+)?"
+    r"(?:component|module|file|codebase)\b",
+    re.IGNORECASE,
+)
+
 
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
 
@@ -81,6 +94,8 @@ Rules:
     invent a hypothesis, or say that "someone else" has the missing context.
     If context lives on another Kanban card, name its exact id and tell the
     worker to retrieve it with kanban_show before deciding it is missing.
+    Never use placeholders such as "the target monolith component"; name the
+    actual path, symbol, artifact, or task id.
   - Use parents for dependencies between these returned children. Do not
     encode a dependency only in vague prose.
 

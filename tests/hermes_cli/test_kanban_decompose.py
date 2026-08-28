@@ -163,6 +163,43 @@ def test_decompose_makes_leaf_handoff_self_contained(kanban_home):
     assert "do not decompose this task" in (child.body or "").lower()
 
 
+def test_decompose_rejects_placeholder_child_scope_before_graph_write(kanban_home):
+    """A generic monolith placeholder must not become a runnable leaf card."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="continue monolith burndown",
+            body="Split only concrete source targets.",
+            triage=True,
+        )
+
+    payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "bad placeholder",
+        "tasks": [{
+            "title": "Analyze extraction",
+            "body": "Examine the target monolith component and define seams.",
+            "assignee": "researcher",
+            "parents": [],
+        }],
+    })
+    patches = _patch_list_profiles(["orchestrator", "researcher"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "placeholder target" in outcome.reason
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+        assert kb.child_ids(conn, tid) == []
+
+
 def test_decompose_inherits_recent_root_handoffs(kanban_home):
     """Comments added after creation must reach fresh phase workers."""
     with kb.connect() as conn:

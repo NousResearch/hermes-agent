@@ -13,7 +13,7 @@ import { PR_COMMENT_URL_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
-import { useStoreSelector } from '@/lib/use-session-slice'
+import { useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
@@ -24,7 +24,7 @@ import { $hudMode } from '@/store/hud'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
-import { $sessionStates, isBotChatSession } from '@/store/session-states'
+import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
@@ -949,7 +949,11 @@ export function ChatBar({
 
   // A bot chat is a companion conversation, not a working session, so it has no
   // repo to speak of — see the blank repoPath handed to CodingStatusRow below.
-  const botChat = useStoreSelector($sessionStates, () => isBotChatSession(sessionId))
+  // Three stores: the scope set records the answer, and resolving this runtime
+  // id to the stored one it is filed under reads the other two.
+  const botChat = useStoresSelector([$botChatSessionIds, $sessionStates, $sessionTiles], () =>
+    isBotChatSession(sessionId)
+  )
 
   // Branch / worktree hand-offs (CodingStatusRow). Owns the worktree open +
   // branch-off/convert/list/switch actions; draft travels into the new session.

@@ -383,11 +383,13 @@ DEFAULT_CONFIG = {
         "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
         # Root directory for Hermes' terminal session temp files (background
-        # logs/pid/exit files, code-execution sandboxes, etc.). Defaults to the
-        # OS temp root. Set this to a path on real storage when /tmp is a small
-        # tmpfs and Hermes runs out of space — e.g. on RAM-based tmpfs setups
-        # common to some Arch-based distros. Must be an absolute POSIX path;
-        # relative or empty values fall back to the default temp resolution.
+        # logs/pid/exit files, code-execution sandboxes, etc.). When empty,
+        # Hermes uses TMPDIR/TMP/TEMP if set, otherwise a managed dir on real
+        # storage at HERMES_HOME/cache/terminal (auto-pruned after 72h) — NOT
+        # tmpfs /tmp, which is RAM-capped and small on many distros (e.g.
+        # Arch-based setups) and fills up under load. Set this to redirect
+        # session temp anywhere else; must be an absolute POSIX path that
+        # exists. User-set paths are never auto-pruned.
         "temp_dir": "",
         # Terminal font family for the desktop app's embedded xterm.js terminal.
         # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),

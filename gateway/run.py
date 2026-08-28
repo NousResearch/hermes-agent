@@ -30736,6 +30736,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         cleanup_video_cache,
     )
     from tools.tool_result_storage import cleanup_spillover_cache
+    from tools.environments.local import cleanup_terminal_temp_cache
     from tools.bot_mode_dm import cleanup_bot_dm_cache
     from tools.bot_relay import cleanup_bot_relay_artifacts
     from hermes_cli.debug import _sweep_expired_pastes
@@ -30757,6 +30758,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         ("Video", cleanup_video_cache),
         ("Screenshot", cleanup_screenshot_cache),
         ("Spillover", cleanup_spillover_cache),
+        ("Terminal temp", cleanup_terminal_temp_cache),
         ("Bot DM", cleanup_bot_dm_cache),
         ("Bot relay", cleanup_bot_relay_artifacts),
     )

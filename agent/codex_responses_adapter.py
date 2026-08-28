@@ -165,6 +165,13 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
     ``output_text`` inside user messages, so callers MUST pass the correct
     role for the message being converted.
 
+    Image parts are likewise role-restricted: the API only accepts
+    ``input_image`` on user-role messages. An assistant message carrying
+    ``input_image`` is rejected with HTTP 400 on every history replay, which
+    permanently bricks the session (#96816), so image parts are dropped for
+    the assistant role here (the API cannot carry them in any form, so the
+    drop is lossless w.r.t. what would survive the wire).
+
     Returns an empty list when ``content`` is not a list or contains no
     recognized parts — callers fall back to the string path.
     """
@@ -186,6 +193,10 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
                 converted.append({"type": text_type, "text": text})
             continue
         if ptype in {"image_url", "input_image"}:
+            if role == "assistant":
+                # Responses API rejects input_image on assistant messages
+                # (HTTP 400 on every replay) — drop, see docstring (#96816).
+                continue
             image_ref = part.get("image_url")
             detail = part.get("detail")
             if isinstance(image_ref, dict):

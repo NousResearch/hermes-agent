@@ -1221,11 +1221,12 @@ interface PaneDockHint {
   pos: DropPosition
   /** Center docks: stack BEFORE this pane id (the strip divider's slot). */
   before?: null | string
-  /** Enforced dock invariant: the pane is re-homed onto this hint's anchor
-   *  on EVERY boot when it isn't already in the declared relationship —
-   *  no one-time token, and user placement does not exempt it. Once per
-   *  adoption lifetime (per boot), so an intra-session drag sticks until the
-   *  next boot. See `enforceDockedPanes`. */
+  /** Enforced dock invariant: at boot the pane is guaranteed present and
+   *  sanely docked. Re-homes when it is missing, has no user-placed record,
+   *  or its persisted group no longer resolves. A user-dragged pane whose
+   *  spot still resolves is left alone. Once per adoption lifetime (per
+   *  boot), so an intra-session drag sticks until the next boot. See
+   *  `enforceDockedPanes`. */
   enforce?: boolean
 }
 
@@ -1241,14 +1242,15 @@ writeKey('hermes.desktop.paneDockHeals.v1', null)
 const enforcedDocksThisBoot = new Set<string>()
 
 /**
- * A `panes` contribution whose dock hint carries `enforce: true` is re-homed
- * onto the hint's anchor at every boot's first adoption pass when it isn't
- * already docked there. Unlike the retired one-time heal, nothing
- * exempts the pane — not a burned token, not $userPlacedPanes — because the
- * hint is the owner's standing invariant about where the pane lives
- * (Bot Mode's Bots pane IS the SESSIONS | BOTS tab strip), not a one-shot
- * migration. Center hints consolidate panes into their anchor's tab strip;
- * edge hints restore the declared split beside their anchor.
+ * A `panes` contribution whose dock hint carries `enforce: true` is
+ * guaranteed present and sanely docked at every boot's first adoption pass.
+ * Unlike the retired one-time heal, a burned token does not exempt it —
+ * that ledger skipped the users who had fought a stacked layout and then
+ * pinned the broken shape forever. `$userPlacedPanes` DOES exempt a pane
+ * whose persisted group still resolves: enforce means "here if missing or
+ * unusable", not "override the user on every launch". Center hints
+ * consolidate panes into their anchor's tab strip; edge hints restore the
+ * declared split beside their anchor.
  *
  * Silent like adoption — the anchor zone keeps its active tab. The center
  * insert pins the zone's header shown, which is the point: the strip is how
@@ -1277,6 +1279,13 @@ function enforceDockedPanes(
     const anchor = findGroupOfPane(next, dock.pane)
 
     if (!from || !anchor) {
+      continue
+    }
+
+    // User dragged this pane and the persisted group still resolves — keep
+    // that spot. Missing panes never reach this loop; adoption places them
+    // on the hint, which is how a destroyed group still re-homes.
+    if ($userPlacedPanes.get().has(pane.id)) {
       continue
     }
 

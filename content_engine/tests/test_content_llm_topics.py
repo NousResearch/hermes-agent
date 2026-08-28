@@ -13,6 +13,7 @@ import topics as tp
 _BUILTIN_KEY_VARS = (
     "COMMANDCODE_API_KEY",
     "OLLAMA_API_KEY",
+    "NVIDIA_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_AI_API_KEY",
     "GOOGLE_API_KEY",
@@ -38,11 +39,36 @@ def test_fallback_chain_is_ollama_cloud_only():
 def test_key_for_provider(monkeypatch):
     monkeypatch.setenv("OLLAMA_API_KEY", "ollama-xyz")
     monkeypatch.setenv("OPENCODE_GO_API_KEY", "go-abc")
+    monkeypatch.setenv("NVIDIA_API_KEY", "nim-789")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-123")
     assert lg._key_for("ollama") == "ollama-xyz"
     # Legacy OpenCode key resolution is retained for explicit fallback entries/operator overrides.
     assert lg._key_for("opencode") == "go-abc"
+    assert lg._key_for("nvidia-nim") == "nim-789"
     assert lg._key_for("gemini") == "gemini-123"
+
+
+def test_longform_chain_uses_nim_as_final_credentialled_fallback(monkeypatch):
+    monkeypatch.delenv("CONTENT_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
+    _clear_builtin_keys(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
+    monkeypatch.setenv("NVIDIA_API_KEY", "nim-test")
+
+    cfgs = lg._llm_configs(longform=True)
+
+    assert cfgs == [
+        {
+            "base": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "model": "gemini-2.5-flash",
+            "key": "gemini-test",
+        },
+        {
+            "base": "https://integrate.api.nvidia.com/v1",
+            "model": "minimaxai/minimax-m3",
+            "key": "nim-test",
+        },
+    ]
 
 
 def test_llm_configs_attaches_ollama_keys(monkeypatch):

@@ -400,12 +400,13 @@ _FREE_FALLBACK_CHAIN = [
 
 # Long-form / factual tier (articles + blog): stronger models with fallback.
 # Primary: CommandCode (deepseek-v4-flash 0731 build).
-# Final fallback: Gemini's OpenAI-compatible endpoint. If all fail, callers
+# Final fallback: NVIDIA NIM MiniMax M3 after Gemini. If all fail, callers
 # such as the art_director hard-stop rather than silently degrading.
 _LONGFORM_CHAIN = [
     {"base": "https://api.commandcode.ai/provider/v1", "model": "deepseek/deepseek-v4-flash", "provider": "commandcode"},
     {"base": "https://ollama.com/v1", "model": "deepseek-v4-flash", "provider": "ollama"},
     {"base": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.5-flash", "provider": "gemini"},
+    {"base": "https://integrate.api.nvidia.com/v1", "model": "minimaxai/minimax-m3", "provider": "nvidia-nim"},
 ]
 
 
@@ -423,6 +424,8 @@ def _key_for(provider: str) -> str:
         return os.getenv("OPENAI_API_KEY", "").strip()
     if provider == "ollama":
         return os.getenv("OLLAMA_API_KEY", "").strip()
+    if provider == "nvidia-nim":
+        return os.getenv("NVIDIA_API_KEY", "").strip()
     if provider == "gemini":
         return (os.getenv("GEMINI_API_KEY", "")
                 or os.getenv("GOOGLE_AI_API_KEY", "")

@@ -28,6 +28,36 @@ intentionally different — do not "deduplicate" them.
   timestamp is stripped later by ``_cache_scope_from_session_id`` exactly as
   before.
 
+A host that mints one physical ``session_id`` per RESPONSE (Hermes Studio's
+group chat, and ``POST /v1/responses`` with client-managed history, which
+mints ``str(uuid4())`` per request) re-keys every conversation-affinity hint
+Hermes sends — ``prompt_cache_key`` on both OpenAI-wire transports, plus the
+OpenRouter/Nous sticky ``session_id`` and xAI's ``x-grok-conv-id`` through
+``portal_tags`` (issue #96811). Those rows carry no lineage, so the walk
+above correctly returns the physical id and the scope moves every reply.
+
+Hermes must not infer the logical conversation from the id's SYNTAX (that
+rule collides independent client-supplied ids and merges Studio members
+truncated past its 96-character boundary — the #79017 failure class). The
+host has to declare it, and one carrier already means exactly that:
+``gateway_session_key`` — the "stable per-chat key" (``agent:main:telegram:
+dm:123``) built by ``gateway.session.build_session_key`` from the
+``X-Hermes-Session-Key`` header, which branching deliberately does NOT key
+off. ``declared_conversation_scope()`` consumes it, and it wins over the
+lineage walk because it is stable across rotation AND across per-response
+ids. Two boundaries it must not cross:
+
+- explicit fork children (``/branch``, delegate subagents, tool children)
+  share their parent's chat key but are separate conversations — the row's
+  fork markers keep them on their own scope (#79161);
+- background-review forks run on a clone of the live runtime, so they are
+  excluded by ``_persist_disabled`` for the same reason.
+
+The declared key is hashed into ``gwk_<sha256[:24]>`` before it becomes a
+scope: unlike a session id it embeds platform/chat/user identifiers, and
+this value leaves the process verbatim as OpenRouter's sticky ``session_id``
+and xAI's ``x-grok-conv-id``.
+
 The resolution is memoized per (agent, session_id): the lineage walk runs
 once per transcript segment — NOT per API call — and re-runs only when
 rotation actually changes ``agent.session_id`` (per the no-DB-on-the-hot-path
@@ -35,12 +65,15 @@ constraint recorded on #79017). Default installs compact in place and never
 rotate, so they hit the memo forever and behave byte-identically to before.
 """
 
+import hashlib
 import logging
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 _MEMO_ATTR = "_prompt_cache_scope_memo"
+# Namespace for a scope resolved from a host-declared conversation key.
+_DECLARED_SCOPE_PREFIX = "gwk_"
 
 
 def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
@@ -64,12 +97,47 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
     return None
 
 
+def declared_conversation_scope(agent: Any) -> Optional[str]:
+    """Return the host-declared logical conversation scope, or None.
+
+    Resolved from ``agent._gateway_session_key`` (the ``X-Hermes-Session-Key``
+    /``build_session_key`` per-chat key), hashed into ``gwk_<sha256[:24]>``
+    so no platform/chat/user identifier reaches a provider on the wire and
+    the value stays inside every caller's length/charset budget.
+
+    None — meaning "fall back to the physical-id scope" — when no key was
+    declared, when this agent is a background-review fork (``_persist_disabled``:
+    it clones the live runtime, including the key), when the session row is an
+    explicit fork child (``/branch``, delegate, tool), and on any DB error
+    during that check.
+    """
+    key = str(getattr(agent, "_gateway_session_key", "") or "").strip()
+    if not key:
+        return None
+    if getattr(agent, "_persist_disabled", False):
+        return None
+    sid = str(getattr(agent, "session_id", None) or "")
+    db = getattr(agent, "_session_db", None)
+    if sid and db is not None:
+        try:
+            if db.is_explicit_fork_child(sid):
+                return None
+        except Exception:
+            # Degrade to the physical-id scope rather than risk merging a
+            # fork onto its parent's key on a transient DB failure.
+            logger.debug("declared-scope fork check failed", exc_info=True)
+            return None
+    digest = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:24]
+    return f"{_DECLARED_SCOPE_PREFIX}{digest}"
+
+
 def resolve_prompt_cache_scope(agent: Any) -> str:
     """Resolve the rotation-stable cache-scope id for *agent*'s conversation.
 
-    Returns the compression-lineage ROOT of ``agent.session_id`` (the
-    physical id itself when the session has no compression ancestry, no DB
-    is attached, or the walk fails). The result is memoized on the agent
+    Returns the host-declared conversation scope when one applies
+    (``declared_conversation_scope``), else the compression-lineage ROOT of
+    ``agent.session_id`` (the physical id itself when the session has no
+    compression ancestry, no DB is attached, or the walk fails). The result is memoized on the agent
     keyed by the current session id, so the DB walk happens once per
     transcript segment rather than once per API call.
     """
@@ -84,7 +152,12 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     memo = getattr(agent, _MEMO_ATTR, None)
     if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == key:
         return memo[1]
-    root = _lineage_root(sid, db) if db is not None else None
+    # A declared conversation key outranks the lineage walk: it is stable
+    # across compression rotation AND across a host's per-response ids, which
+    # the walk cannot see (#96811).
+    root = declared_conversation_scope(agent) or (
+        _lineage_root(sid, db) if db is not None else None
+    )
     scope = root or sid
     # Memoize on a successful walk, or when there is no DB to consult at all,
     # or when the agent will never persist a row (background-review forks set
@@ -106,6 +179,15 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
             # unmemoized.
             pass
     return scope
+
+
+def declared_conversation_scope_safe(agent: Any) -> Optional[str]:
+    """Never-raising variant of :func:`declared_conversation_scope`."""
+    try:
+        return declared_conversation_scope(agent)
+    except Exception:
+        logger.debug("declared conversation scope resolution failed", exc_info=True)
+        return None
 
 
 def resolve_prompt_cache_scope_safe(agent: Any) -> Optional[str]:

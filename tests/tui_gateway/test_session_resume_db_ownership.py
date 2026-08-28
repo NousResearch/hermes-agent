@@ -134,6 +134,28 @@ def test_resume_closes_profile_db_when_session_not_found(profile_dbs):
     assert scoped[0].closed == 1
 
 
+def test_deferred_desktop_resume_keeps_stored_workspace_provenance(
+    profile_dbs, monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def _factory(db_path=None, **kwargs):
+        db = _RecordingDB(db_path=db_path, **kwargs)
+        db.rows["s1"] = {"id": "s1", "cwd": str(workspace)}
+        profile_dbs.append(db)
+        return db
+
+    monkeypatch.setattr("hermes_state.SessionDB", _factory)
+
+    resp = _resume(session_id="s1", profile="work", source="desktop")
+    session = server._sessions[resp["result"]["session_id"]]
+
+    assert session["cwd"] == str(workspace)
+    assert session["explicit_cwd"] is True
+    assert server._context_cwd_is_launch_artifact(session) is False
+
+
 def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
     """The 'resume failed' early return must not leak the handle."""
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -509,6 +510,51 @@ def test_explicit_desktop_and_terminal_cwds_are_context_workspaces():
     assert server._context_cwd_is_launch_artifact(
         {"source": "tui", "cwd": "/opt/hermes"}
     ) is False
+
+
+@pytest.mark.parametrize(
+    ("explicit_cwd", "launch_artifact"),
+    [(True, False), (False, True)],
+)
+def test_desktop_agent_rebuild_preserves_workspace_provenance(
+    monkeypatch, explicit_cwd, launch_artifact
+):
+    captured = {}
+    session = {
+        "agent": object(),
+        "attached_images": [],
+        "cwd": "/picked/repo" if explicit_cwd else "/opt/hermes",
+        "edit_snapshots": {},
+        "explicit_cwd": explicit_cwd,
+        "history": ["old"],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "image_counter": 0,
+        "running": False,
+        "session_key": "stored-session",
+        "show_reasoning": False,
+        "source": "desktop",
+        "tool_progress_mode": "off",
+        "tool_started_at": {},
+    }
+
+    def _make_agent(*_args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(server, "_set_session_context", lambda _key: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", _make_agent)
+    monkeypatch.setattr(server, "_config_model_target", lambda: None)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
+
+    server._reset_session_agent("live-session", session)
+
+    assert captured["context_cwd_is_launch_artifact"] is launch_artifact
 
 
 def test_home_container_dirs_are_never_a_workspace(tmp_path):

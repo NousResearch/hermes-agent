@@ -368,6 +368,34 @@ def test_deferred_build_transfers_the_handle_on_success(
     assert session["agent"]._owns_session_db is True
 
 
+def test_deferred_build_uses_the_preserved_desktop_workspace_provenance(
+    build_env, registered, monkeypatch
+):
+    captured: dict = {}
+
+    def _fake_make_agent(*_args, session_db=None, **kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(_session_db=session_db, _owns_session_db=False)
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(
+        server, "_session_source", lambda current: current.get("source")
+    )
+    sid, session = "sid-workspace", _session(build_env.profile_home)
+    session.update(
+        {
+            "cwd": "C:/picked/repo",
+            "explicit_cwd": True,
+            "source": "desktop",
+        }
+    )
+    registered(sid, session)
+
+    _run_build(sid, session)
+
+    assert captured["context_cwd_is_launch_artifact"] is False
+
+
 def test_deferred_build_closes_the_handle_when_the_session_is_reaped_midbuild(
     build_env, registered, monkeypatch
 ):

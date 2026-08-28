@@ -20,11 +20,13 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as CanonicalChat from './canonical-chat'
 import type { RosterRow } from './types'
 
-const { ackStoredSessionId, openBotCanonicalChat } = vi.hoisted(() => ({
+const { ackStoredSessionId, openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
   ackStoredSessionId: vi.fn(),
-  openBotCanonicalChat: vi.fn()
+  openBotCanonicalChat: vi.fn(),
+  prepareBotSource: vi.fn()
 }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -33,31 +35,117 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   return { ...sdk, ackStoredSessionId }
 })
 
-vi.mock('./canonical-chat', () => ({
+vi.mock('./canonical-chat', async () => ({
   CANONICAL_CHAT_TITLE: 'Bot Chat',
   ensureBotMetadata: vi.fn(async () => ({})),
+  isStaleBotChatTile: (await vi.importActual<typeof CanonicalChat>('./canonical-chat')).isStaleBotChatTile,
   notifyBotOpenFailure: vi.fn(),
   openBotCanonicalChat,
-  prepareBotSource: vi.fn(async () => undefined),
+  prepareBotSource,
   PROFILE_SESSION_LIST_LIMIT: 200
 }))
 
-const { $openBotChat } = await import('./bot-state')
+const { host } = await import('@hermes/plugin-sdk')
+const { $openBotChat, $pendingBotOpen } = await import('./bot-state')
 const { openRosterBot } = await import('./roster-actions')
 const { releaseStaleOpenBotChat } = await import('./roster-pane')
+
+const bot = {
+  canonical_session: { id: 'reg-1', last_active: 100 },
+  connectionId: 'local',
+  name: 'ops'
+} as RosterRow
+
+function withFocusApi(impl: () => null | string) {
+  const original = host.focusOpenWorkspaceSession
+
+  host.focusOpenWorkspaceSession = impl
+
+  return () => {
+    host.focusOpenWorkspaceSession = original
+  }
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
   $openBotChat.set(null)
+  $pendingBotOpen.set(null)
+  prepareBotSource.mockResolvedValue(undefined)
+  openBotCanonicalChat.mockResolvedValue({ openedId: 'tip-9', registryId: 'reg-1' })
 })
 
 describe('an open claims both identities of the chat it opened', () => {
   it('records the registry row and the lineage tip it actually navigated to', async () => {
     openBotCanonicalChat.mockResolvedValue({ openedId: 'tip-9', registryId: 'reg-1' })
 
-    await openRosterBot({ connectionId: 'local', name: 'ops' } as RosterRow)
+    await openRosterBot(bot)
 
     expect($openBotChat.get()).toMatchObject({ openedRegistryId: 'reg-1', openedSessionId: 'tip-9' })
+  })
+})
+
+describe('unread acknowledgement follows a successful foreground transition', () => {
+  it('acknowledges only after the canonical chat opens', async () => {
+    openBotCanonicalChat.mockImplementation(async () => {
+      expect(ackStoredSessionId).not.toHaveBeenCalled()
+
+      return { openedId: 'tip-9', registryId: 'reg-1' }
+    })
+
+    await expect(openRosterBot(bot)).resolves.toBe(true)
+
+    expect(ackStoredSessionId).toHaveBeenCalledWith('reg-1', 'ops')
+  })
+
+  it('acknowledges the exact lineage tip after a cold open and clears pending', async () => {
+    const compressed = {
+      ...bot,
+      canonical_session: { id: 'reg-1', resolved_id: 'tip-9', last_active: 100 }
+    } as RosterRow
+    openBotCanonicalChat.mockImplementation(async () => {
+      expect($pendingBotOpen.get()?.key).toBe('local::ops')
+      expect(ackStoredSessionId).not.toHaveBeenCalled()
+
+      return { openedId: 'tip-9', registryId: 'reg-1' }
+    })
+
+    await expect(openRosterBot(compressed)).resolves.toBe(true)
+
+    expect(ackStoredSessionId).toHaveBeenCalledExactlyOnceWith('tip-9', 'ops')
+    expect($pendingBotOpen.get()).toBeNull()
+  })
+
+  it('acknowledges after an existing bot tab successfully fronts', async () => {
+    const restore = withFocusApi(() => {
+      expect(ackStoredSessionId).not.toHaveBeenCalled()
+
+      return 'reg-1'
+    })
+
+    try {
+      await expect(openRosterBot(bot)).resolves.toBe(true)
+
+      expect(openBotCanonicalChat).not.toHaveBeenCalled()
+      expect(ackStoredSessionId).toHaveBeenCalledWith('reg-1', 'ops')
+    } finally {
+      restore()
+    }
+  })
+
+  it('preserves unread activity when source preparation fails', async () => {
+    prepareBotSource.mockRejectedValue(new Error('gateway unavailable'))
+
+    await expect(openRosterBot(bot)).resolves.toBe(false)
+
+    expect(ackStoredSessionId).not.toHaveBeenCalled()
+  })
+
+  it('preserves unread activity when the canonical chat fails to open', async () => {
+    openBotCanonicalChat.mockRejectedValue(new Error('open failed'))
+
+    await expect(openRosterBot(bot)).resolves.toBe(false)
+
+    expect(ackStoredSessionId).not.toHaveBeenCalled()
   })
 })
 

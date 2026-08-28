@@ -621,6 +621,43 @@ class TestFollowProfileConfigRuntimeOverrides:
         assert overrides["model_override"]["model"] == "openai/gpt-5.6-luna-pro"
         assert overrides["model_override"]["provider"] == "nous"
 
+    def test_legacy_bot_chat_title_backfills_contract(self):
+        """Canonical Bot Chats created BEFORE the marker existed carry no
+        follow_profile_config, but they are still the plugin-owned forever-DM
+        (identified by the exact title "Bot Chat"). They must also rebuild
+        from the profile's CURRENT config — the live-report shape where every
+        pre-existing Bot Chat stayed pinned to a deleted provider."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        for hidden in (0, 1):
+            row = {
+                "title": "Bot Chat",
+                "hidden": hidden,
+                "model": "openai/gpt-5.6-luna-pro",
+                "billing_provider": "nous",
+                "model_config": json.dumps(
+                    {"model": "openai/gpt-5.6-luna-pro", "provider": "nous"}
+                ),
+            }
+            assert _stored_session_runtime_overrides(row) == {}
+
+    def test_bot_chat_prefix_title_is_not_backfilled(self):
+        """Only the EXACT canonical title matches the legacy backfill — a
+        user chat that merely mentions bots keeps its stored runtime."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "title": "Bot Chat ideas for my app",
+            "hidden": 0,
+            "model": "glm-5.1",
+            "billing_provider": "ollama-cloud",
+            "model_config": json.dumps(
+                {"model": "glm-5.1", "provider": "ollama-cloud"}
+            ),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+        assert overrides["model_override"]["model"] == "glm-5.1"
+
     def test_ensure_db_row_persists_contract_marker(self, monkeypatch):
         """_ensure_session_db_row stamps follow_profile_config into the row's
         model_config when the session carries the contract."""

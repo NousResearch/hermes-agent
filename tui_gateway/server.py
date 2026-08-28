@@ -5318,6 +5318,16 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         _follow_marker = None
     if _follow_marker:
         return {}
+    # Legacy backfill: canonical Bot Chats created BEFORE the
+    # follow_profile_config contract existed carry no marker, yet they are
+    # still the plugin-owned forever-DM. The plugin's own identity rule is
+    # "the profile's session titled exactly 'Bot Chat'" (UNIQUE(title) makes
+    # that an exact registry, and pre-policy rows may be visible OR hidden),
+    # so mirror that rule here. Without this, every Bot Chat that already
+    # exists in the field stays pinned to its stale stored provider until
+    # the user deletes it — the exact live-report shape (#89497 / #94818).
+    if _row_title == "Bot Chat":
+        return {}
 
     raw_config = row.get("model_config")
     model_config: dict = {}

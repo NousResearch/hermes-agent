@@ -849,7 +849,29 @@ def _forward_relay_fronted_run(job: Dict[str, Any]) -> Optional[str]:
         port = int(port_raw) if port_raw else 8642
     except ValueError:
         port = 8642
-    url = f"http://127.0.0.1:{port}/api/jobs/{job_id}/run"
+    # Mirror the api_server's own bind resolution (adapter reads
+    # extra.host -> API_SERVER_HOST -> 127.0.0.1). A wildcard bind
+    # (0.0.0.0/::) listens on loopback too, so dial loopback for those.
+    host = ""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        host = str(
+            cfg_get(
+                load_config_readonly(), "platforms", "api_server", "extra", "host",
+                default="",
+            )
+            or ""
+        ).strip()
+    except Exception:
+        host = ""
+    if not host:
+        host = os.getenv("API_SERVER_HOST", "").strip()
+    if not host or host in ("0.0.0.0", "::", "*"):
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"  # bare IPv6 literal
+    url = f"http://{host}:{port}/api/jobs/{job_id}/run"
 
     from agent.secret_scope import get_secret
 

@@ -86,4 +86,35 @@ class TestForwardRelayFrontedRun:
         ):
             cronjob_tools._forward_relay_fronted_run({"id": "abc123"})
         assert sent["url"].endswith("/api/jobs/abc123/run")
+        assert sent["url"].startswith("http://127.0.0.1:")
         assert sent["headers"]["Authorization"] == "Bearer secret-key-16chars"
+
+    def test_honors_api_server_host_env(self, monkeypatch):
+        """API_SERVER_HOST must reach the forward URL (adapter bind parity)."""
+        monkeypatch.setenv("API_SERVER_HOST", "10.9.8.7")
+        sent = {}
+
+        def fake_post(url, headers=None, timeout=None):
+            sent["url"] = url
+            return _Resp(200)
+
+        with patch.object(
+            cronjob_tools, "_relay_fronted_delivery_platforms", return_value={"discord"}
+        ), patch("httpx.post", side_effect=fake_post):
+            cronjob_tools._forward_relay_fronted_run({"id": "j1"})
+        assert sent["url"].startswith("http://10.9.8.7:")
+
+    def test_wildcard_bind_dials_loopback(self, monkeypatch):
+        """0.0.0.0 is a bind address, not a dial address — use loopback."""
+        monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
+        sent = {}
+
+        def fake_post(url, headers=None, timeout=None):
+            sent["url"] = url
+            return _Resp(200)
+
+        with patch.object(
+            cronjob_tools, "_relay_fronted_delivery_platforms", return_value={"discord"}
+        ), patch("httpx.post", side_effect=fake_post):
+            cronjob_tools._forward_relay_fronted_run({"id": "j1"})
+        assert sent["url"].startswith("http://127.0.0.1:")

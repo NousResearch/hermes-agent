@@ -3836,6 +3836,11 @@ def _ctx_header(lines: list[str], task: Task) -> None:
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    lines.append(
+        "Use the dispatcher-assigned workspace above as the only repository location. "
+        "Do not search for alternate worktrees or invent paths. If it is unresolved, "
+        "report that exact missing assignment and stop."
+    )
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds, os.environ.get("TERMINAL_TIMEOUT"),

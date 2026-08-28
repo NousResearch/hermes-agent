@@ -1499,6 +1499,7 @@ def test_worker_context_requires_terminal_kanban_receipt(kanban_home):
 
         context = kb.build_worker_context(conn, tid)
 
+        assert "Do not search for alternate worktrees" in context
         assert "## Completion contract" in context
         assert "kanban_complete" in context
         assert "never exit with only conversational text" in context

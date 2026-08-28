@@ -296,7 +296,11 @@ class KanbanSubprocessClient:
 
 def _kanban_create_argv(task: KanbanTask) -> list[str]:
     body = (
-        f"{task.instructions}\n\n{task.evidence_heading}:\n"
+        f"{task.instructions}\n\n"
+        f"Canonical receipt worktree: {task.repository_path}\n\n"
+        "The worker starts in this directory. Do not search for the worktree; "
+        "run the required preflight commands here first.\n\n"
+        f"{task.evidence_heading}:\n"
         f"{json.dumps(task.evidence, sort_keys=True)}"
     )
     argv = [

@@ -38,6 +38,7 @@ from agent.llm_egress_firewall import (
     validate_tool_syntax,
 )
 from agent.message_sanitization import tool_result_id_variants
+from agent.redact import redact_sensitive_text
 from agent.source_provenance import DEFAULT_POLICY_DIGEST, SourceProvenanceRegistry
 
 
@@ -72,11 +73,47 @@ logger = logging.getLogger(__name__)
 
 _VALIDATED_SYNTAX_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
+_REMOTE_KANBAN_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,}\"']+"
+)
 _REMOTE_KANBAN_PROJECTION_ELISION = (
     "kanban_show completed locally. The bounded task assignment is already "
     "present in your worker context; do not request or repeat the raw board "
     "record remotely. Continue with the assigned work or use a lifecycle tool."
 )
+
+
+def _project_bound_kanban_show(value: str) -> GeneratedContextSegment:
+    """Expose only the redacted current assignment needed by a remote worker."""
+
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return GeneratedContextSegment(_REMOTE_KANBAN_PROJECTION_ELISION)
+    task = payload.get("task") if isinstance(payload, dict) else None
+    if not isinstance(task, dict):
+        return GeneratedContextSegment(_REMOTE_KANBAN_PROJECTION_ELISION)
+
+    projection = {
+        "task": {
+            key: task[key]
+            for key in ("title", "body", "status", "workspace_access")
+            if key in task
+        },
+        "parents": payload.get("parents", []),
+        "children": payload.get("children", []),
+        "worker_instruction": (
+            "Use the dispatcher-assigned current workspace. Do not invent or search "
+            "for alternate worktrees; report an unresolved assignment and stop."
+        ),
+    }
+    safe = redact_remote_unsafe_text(
+        redact_sensitive_text(json.dumps(projection, sort_keys=True), force=True)
+    )
+    safe = _REMOTE_KANBAN_SECRET_ASSIGNMENT.sub(r"\1=<redacted>", safe)
+    return GeneratedContextSegment(
+        "kanban_show completed locally. Bounded sanitized task projection:\n" + safe
+    )
 _APPLICATION_IDENTIFIER_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_-])(?:t_[0-9a-f]{8}|[0-9a-f]{40}|[0-9a-f]{64}|"
     r"[a-z][a-z0-9]{0,31}(?:[_-][a-z][a-z0-9]{0,31}){1,7}"
@@ -550,13 +587,9 @@ def _typed_payload(
                 sanitized_cap=sanitized_cap,
             )
         if elide_kanban_tool_content:
-            # The protected remote worker already received its bounded task
-            # assignment at spawn.  ``kanban_show`` is a local state refresh;
-            # forwarding its arbitrary card text would turn board content into
-            # a remote egress payload.  Replace the result rather than trust,
-            # redact, or transmit it.  This preserves the fail-closed boundary
-            # for every other tool result while avoiding a fallback loop.
-            return GeneratedContextSegment(_REMOTE_KANBAN_PROJECTION_ELISION)
+            # Return only the bounded, redacted current assignment; omit
+            # comments, run history, identifiers, and raw host paths.
+            return _project_bound_kanban_show(value)
         if generated_context and redact_generated_context:
             return GeneratedContextSegment(redact_remote_unsafe_text(value))
         if protected_kanban_context:

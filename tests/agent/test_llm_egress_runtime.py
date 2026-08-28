@@ -359,6 +359,7 @@ def test_protected_codex_elides_bound_kanban_show_result(tmp_path, monkeypatch):
 
     rendered = authorized["messages"][1]["content"]
     assert receipt.allowed
+    assert "untrusted" in rendered
     assert rendered.startswith("kanban_show completed locally.")
     assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
     assert "super-secret-value" not in rendered

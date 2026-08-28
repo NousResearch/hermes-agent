@@ -82,6 +82,8 @@ import traceback
 
 _SENTINEL = os.environ["HERMES_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {capture_limit}
+_SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
+_SPILL_CAP = {spill_cap}
 
 # The persistent cell namespace. `__name__` is `__main__` so scripts behave
 # like the per-call path; builtins resolve normally through exec.
@@ -90,10 +92,25 @@ GLOBALS = {{"__name__": "__main__", "__builtins__": __builtins__}}
 _real_stdout = sys.stdout
 
 
-def _bounded(text):
+def _bounded(text, spill_name=None):
+    """Clip to the inline cap; spill the FULL text to disk when clipping.
+
+    Returns (clipped_text, clipped?, spill_path_or_empty). Spill is
+    best-effort — a failed write degrades to plain clipping.
+    """
     if len(text) <= _CAPTURE_LIMIT:
-        return text, False
-    return text[: _CAPTURE_LIMIT], True
+        return text, False, ""
+    spill_path = ""
+    if _SPILL_DIR and spill_name:
+        try:
+            spill_path = os.path.join(_SPILL_DIR, spill_name)
+            with open(spill_path, "w", encoding="utf-8", errors="replace") as f:
+                f.write(text[:_SPILL_CAP])
+                if len(text) > _SPILL_CAP:
+                    f.write("\\n\\n[... spill capped ...]")
+        except Exception:
+            spill_path = ""
+    return text[: _CAPTURE_LIMIT], True, spill_path
 
 
 def _reply(payload):
@@ -128,8 +145,10 @@ def main():
         except BaseException:
             status = "error"
             trace = traceback.format_exc()
-        stdout_text, stdout_clipped = _bounded(out.getvalue())
-        stderr_text, stderr_clipped = _bounded(err.getvalue())
+        stdout_text, stdout_clipped, stdout_spill = _bounded(
+            out.getvalue(), "cell_%06d_stdout.txt" % execution_count
+        )
+        stderr_text, stderr_clipped, _ = _bounded(err.getvalue())
         _reply(
             {{
                 "id": request.get("id", ""),
@@ -138,6 +157,7 @@ def main():
                 "stderr": stderr_text,
                 "stdout_clipped": stdout_clipped,
                 "stderr_clipped": stderr_clipped,
+                "stdout_spill_path": stdout_spill,
                 "traceback": trace,
                 "execution_count": execution_count,
             }}
@@ -148,7 +168,8 @@ def main():
 
 if __name__ == "__main__":
     main()
-'''.format(capture_limit=_RUNNER_CAPTURE_BYTES)
+'''.format(capture_limit=_RUNNER_CAPTURE_BYTES,
+           spill_cap=5_000_000)
 
 
 class CellAuthority:
@@ -564,6 +585,10 @@ def _spawn(kernel: SessionKernel, *, task_id: str, child_python: str,
         child_python=child_python,
     )
     child_env["HERMES_KERNEL_SENTINEL"] = kernel.sentinel
+    # Cells clip stdout to the inline cap; the full text spills to the
+    # kernel's own tmpdir so the agent can read_file the middle instead of
+    # re-running (host surfaces the path in the result).
+    child_env["HERMES_KERNEL_SPILL_DIR"] = kernel.tmpdir
     # Tell the generated client to reconnect after the RPC server's idle
     # timeout — a kernel outlives the 300s window between cells.
     child_env["HERMES_RPC_PERSISTENT"] = "1"
@@ -740,6 +765,20 @@ def execute_in_session_kernel(
                 },
             }
             result.update(stdout_metadata)
+
+            # Cell-side spill (runner clipped before replying): surface the
+            # full-output path with the same read_file recipe as the
+            # host-side spill in _truncate_stdout_text.
+            cell_spill = str(payload.get("stdout_spill_path", "") or "")
+            if cell_spill and payload.get("stdout_clipped"):
+                result["stdout_spill_path"] = cell_spill
+                result["warning"] = (
+                    "Cell stdout exceeded the inline cap; head shown. FULL "
+                    f"output saved to {cell_spill} — page it with "
+                    f'read_file(path="{cell_spill}", offset=...) instead of '
+                    "re-running. (Kernel state persists: printing a narrower "
+                    "slice next call is often cheaper.)"
+                )
 
             if status == "timeout":
                 message = (

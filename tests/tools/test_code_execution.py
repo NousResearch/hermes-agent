@@ -810,7 +810,15 @@ class TestHeadTailTruncation(unittest.TestCase):
         self.assertIn("TAIL", result["output"])
         self.assertGreater(result["stdout_bytes_total"], result["stdout_bytes_captured"])
         self.assertGreater(result["stdout_bytes_omitted"], 0)
+        # Spillover (#96997-adjacent): the warning now points at the saved
+        # full-output file instead of advising a narrower re-run.
         self.assertIn("execute_code stdout was truncated", result["warning"])
+        self.assertIn("read_file", result["warning"])
+        self.assertIn("stdout_spill_path", result)
+        with open(result["stdout_spill_path"], encoding="utf-8") as f:
+            body = f.read()
+        self.assertIn("HEAD", body)
+        self.assertIn("TAIL", body)
 
 
 class TestRpcTokenAuthorization(unittest.TestCase):

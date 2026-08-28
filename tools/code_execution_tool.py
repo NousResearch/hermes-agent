@@ -120,18 +120,72 @@ def _assemble_stdout_result(
 
 
 def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
-    """Cap a complete stdout string by bytes using the same head/tail policy."""
+    """Cap a complete stdout string by bytes using the same head/tail policy.
+
+    When the full text is in hand (this function's callers, unlike the
+    streaming per-call reader), the omitted middle is not discarded: the
+    complete output is spilled to cache/exec and the result carries the
+    path — the same recover-don't-rerun pattern as web_extract's
+    cache/web full-text store.
+    """
     stdout_bytes = stdout_text.encode("utf-8", errors="replace")
     if len(stdout_bytes) <= MAX_STDOUT_BYTES:
         return _assemble_stdout_result(stdout_bytes)
 
     head_bytes = int(MAX_STDOUT_BYTES * 0.4)
     tail_bytes = MAX_STDOUT_BYTES - head_bytes
-    return _assemble_stdout_result(
+    text, metadata = _assemble_stdout_result(
         stdout_bytes[:head_bytes],
         stdout_bytes[-tail_bytes:],
         total_bytes=len(stdout_bytes),
     )
+    spill_path = _spill_full_stdout(stdout_text)
+    if spill_path:
+        metadata["stdout_spill_path"] = spill_path
+        metadata["warning"] = (
+            "execute_code stdout was truncated (head/tail shown); the "
+            f"script did run. FULL output saved to {spill_path} — page it "
+            f'with read_file(path="{spill_path}", offset=...) instead of '
+            "re-running."
+        )
+    return text, metadata
+
+
+# Hard ceiling on the spilled file, mirroring web_tools' MAX_STORED_TEXT_CHARS
+# rationale: a runaway print loop must not write unbounded bytes to disk.
+MAX_SPILLED_STDOUT_BYTES = 5_000_000
+
+
+def _spill_full_stdout(stdout_text: str) -> Optional[str]:
+    """Write full stdout to cache/exec; return its path (None on failure).
+
+    Best-effort by design — truncated inline output is still returned when
+    storage fails. Files are keyed by content digest so identical reruns
+    coalesce; the directory rides the same remote bind-mount list as
+    cache/web (credential_files._CACHE_DIRS) if present there.
+    """
+    try:
+        import hashlib
+        from hermes_constants import get_hermes_dir
+
+        if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
+            stdout_text = (
+                stdout_text[:MAX_SPILLED_STDOUT_BYTES]
+                + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]"
+            )
+        cache_dir = get_hermes_dir("cache/exec", "exec_spill")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(
+            stdout_text.encode("utf-8", errors="replace")
+        ).hexdigest()[:12]
+        path = cache_dir / f"stdout-{digest}.txt"
+        from tools.spill_safety import write_text_exclusive
+
+        write_text_exclusive(path, stdout_text, private=False, overwrite=True)
+        return str(path)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to spill execute_code stdout: %s", exc)
+        return None
 
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must

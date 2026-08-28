@@ -1129,6 +1129,42 @@ def test_agent_disabled_toolsets_python_literal_string_form_still_wins():
     assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
 
 
+def test_disabled_composite_debugging_prunes_constituent_platform_toolsets():
+    """#97015: ``agent.disabled_toolsets: [debugging]`` must hide member
+    toolsets on ``hermes tools --summary``, not only strip them at runtime."""
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": ["debugging"]},
+    }
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" not in enabled
+    assert "file" not in enabled
+    assert "web" not in enabled
+
+
+def test_disabled_composite_debugging_matches_runtime_tool_definitions():
+    """CLI inspection surfaces should list the same tools the agent receives."""
+    from model_tools import get_tool_definitions
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": ["debugging"]},
+    }
+    enabled = sorted(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
+    summary_tools = {
+        t["function"]["name"]
+        for t in get_tool_definitions(
+            enabled_toolsets=enabled,
+            disabled_toolsets=["debugging"],
+            quiet_mode=True,
+        )
+    }
+    assert "terminal" not in summary_tools
+    assert "read_file" not in summary_tools
+    assert "web_search" not in summary_tools
+
+
 @_requires_recently_shipped
 def test_platforms_whose_composite_excludes_it_are_left_narrow():
     """Parity is the justification, so don't widen a deliberately small

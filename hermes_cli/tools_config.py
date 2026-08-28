@@ -595,11 +595,38 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     # (e.g. "memory") across all platforms without per-platform toolset configuration. See #86661.
     if disabled_toolsets:
         from agent.skill_utils import parse_config_string_list
-        enabled_toolsets -= {name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()}
+        disabled_names = [name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()]
+        enabled_toolsets = _prune_toolsets_stripped_by_disabled(enabled_toolsets, disabled_names)
 
     if explicitly_configured and toolset_names:
         _warn_all_invalid_platform_toolsets(platform, platform_toolsets[platform])
     return enabled_toolsets
+
+
+def _prune_toolsets_stripped_by_disabled(enabled_toolsets: Set[str], disabled_names: List[str]) -> Set[str]:
+    """Drop disabled names AND every toolset whose tools the runtime would strip anyway.
+
+    The agent subtracts ``agent.disabled_toolsets`` at TOOL granularity (``model_tools._select_tool_names``),
+    so disabling a composite like ``debugging`` removes the terminal/web/file tools even though those names
+    never appear in the list. A name-only subtraction here left inspection surfaces (``hermes tools
+    --summary``, banner, ``/tools``) showing toolsets as enabled that no session could call (#97015).
+    Passthrough entries (MCP server names) and toolsets with no static tools (``context_engine``) are kept.
+    """
+    from model_tools import _apply_toolset_selection
+    from toolsets import resolve_toolset, validate_toolset
+
+    remaining = set(enabled_toolsets) - set(disabled_names)
+    surviving: Set[str] = set()
+    for name in remaining:
+        if validate_toolset(name):
+            surviving.update(resolve_toolset(name))
+    _apply_toolset_selection(surviving, disabled_names, quiet_mode=True, disable=True)
+    pruned = set()
+    for name in remaining:
+        tools = set(resolve_toolset(name)) if validate_toolset(name) else set()
+        if tools and not tools & surviving:
+            pruned.add(name)
+    return remaining - pruned
 
 
 def _recover_platform_native_toolsets(enabled_toolsets: Set[str], platform: str, *, skip: Set[str]) -> None:

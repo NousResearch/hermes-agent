@@ -527,7 +527,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._probe_timeout = _setting("probe_timeout_seconds", "PHOTON_PROBE_TIMEOUT_SECONDS", 10.0, float)
         self._probe_max_failures = _setting("probe_max_failures", "PHOTON_PROBE_MAX_FAILURES", 3, int)
         self._probe_enabled = self._probe_interval > 0
-        self.supports_code_blocks = _markdown_enabled()  # markdown on => fences pass through
+        # Never advertise fences: a URL-bearing message goes out as raw text (literal ```), and the
+        # markdown path renders a fence as inline Unicode monospace, not a block.
+        self.supports_code_blocks = False
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
         self._respawn_lock: Optional[asyncio.Lock] = None

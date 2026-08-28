@@ -56,7 +56,12 @@ import {
   setSessions
 } from './session'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
-import { requestForSessionProfile, type SessionOwnerRoute, type SessionOwnerScope, type SessionProfileRoute } from './session-request-router'
+import {
+  requestForSessionProfile,
+  type SessionOwnerRoute,
+  type SessionOwnerScope,
+  type SessionProfileRoute
+} from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 

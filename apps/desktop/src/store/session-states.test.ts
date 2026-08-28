@@ -445,6 +445,7 @@ describe('dropTilesForProfile', () => {
 
     return raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
   }
+
   // The tile buckets are module-private and other suites leave persisted
   // entries behind, so each test re-imports a FRESH session-states module
   // (empty tilesByProfile + empty storage) instead of fighting the residue —

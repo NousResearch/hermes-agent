@@ -138,6 +138,7 @@ const {
   $sessionTiles,
   sessionTileDelegate
 } = await import('@/store/session-states')
+
 const { dropTilesForProfile } = await import('@/store/session-states')
 
 const { setWorkspaceScope } = await import('@/components/pane-shell/workspace-scope')

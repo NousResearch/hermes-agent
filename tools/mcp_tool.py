@@ -2871,21 +2871,44 @@ class MCPServerTask:
                 await asyncio.wait_for(self.session.send_ping(), timeout=30.0)
                 return
             except Exception as exc:
-                # Only a "method not found" means ping is unsupported. Any
-                # other error (timeout, closed transport, session expired) is
-                # a real liveness failure — propagate so we reconnect.
-                if not _is_method_not_found_error(exc):
+                if _is_method_not_found_error(exc):
+                    # Structural -32601 or "Unknown method" — ping is
+                    # definitively unsupported.
+                    if not self._advertises_tools():
+                        raise
+                    self._ping_unsupported = True
+                    logger.info(
+                        "MCP server '%s': does not implement the optional "
+                        "'ping' utility (-32601); using 'list_tools' for "
+                        "keepalive on this connection.",
+                        self.name,
+                    )
+                elif isinstance(exc, (TimeoutError, asyncio.TimeoutError)) and self._advertises_tools():
+                    # A server that silently drops ping (no response at all)
+                    # produces a TimeoutError indistinguishable from a dead
+                    # transport. Before declaring it dead, try list_tools as
+                    # a confirmation probe (#97245). If the transport is
+                    # genuinely broken, list_tools will also fail and we
+                    # propagate that failure.
+                    try:
+                        await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
+                    except Exception:
+                        # Both probes failed — genuine liveness failure.
+                        raise exc from None
+                    # Transport alive, ping just isn't answered. Latch the
+                    # fallback so subsequent keepalives skip the 30s wait.
+                    self._ping_unsupported = True
+                    logger.info(
+                        "MCP server '%s': ping timed out but list_tools "
+                        "succeeded — server silently drops ping; using "
+                        "'list_tools' for keepalive on this connection.",
+                        self.name,
+                    )
+                    return
+                else:
+                    # Any other error (closed transport, session expired,
+                    # etc.) is a real liveness failure — propagate.
                     raise
-                if not self._advertises_tools():
-                    # No ping, no tools → no cheaper probe to fall back to.
-                    raise
-                self._ping_unsupported = True
-                logger.info(
-                    "MCP server '%s': does not implement the optional 'ping' "
-                    "utility (-32601); using 'list_tools' for keepalive on "
-                    "this connection.",
-                    self.name,
-                )
 
         # Fallback probe for servers without ping support.
         await asyncio.wait_for(self.session.list_tools(), timeout=30.0)

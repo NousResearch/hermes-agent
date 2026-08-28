@@ -719,9 +719,13 @@ class TestSecondaryProfileConfigHandling:
         assert adapter._runtime_status_platform_key == "reviewer:discord"
 
     @pytest.mark.asyncio
-    async def test_duplicate_credential_is_persisted_as_profile_fatal(
+    async def test_duplicate_credential_is_persisted_as_profile_disabled(
         self, monkeypatch
     ):
+        """A same-credential multiplex refusal is a deliberate skip (shared-token
+        fleets ride the primary adapter), so it persists as "disabled", not the
+        red "fatal" that status popovers render for crashes (relay_disabled
+        precedent)."""
         runner = _secondary_recovery_runner()
         config = GatewayConfig(
             multiplex_profiles=True,
@@ -753,7 +757,7 @@ class TestSecondaryProfileConfigHandling:
             (
                 "reviewer:discord",
                 {
-                    "platform_state": "fatal",
+                    "platform_state": "disabled",
                     "error_code": "duplicate_credential",
                     "error_message": (
                         "Profile 'default' and 'reviewer' both configure discord "

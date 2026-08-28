@@ -17391,9 +17391,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "its own %s credential.",
                         owner, profile_name, platform.value, platform.value,
                     )
+                    # A same-credential multiplex refusal is a deliberate skip,
+                    # not a crash: fleets that intentionally share one token
+                    # (the owner-approved "shared adapter" topology) ride the
+                    # primary profile's adapter for cron delivery. Persist it
+                    # as a clean "disabled" state — same precedent as the
+                    # relay_disabled opt-out — instead of a red "fatal" that
+                    # paints every boot's status popover (#80451 follow-up).
                     self._update_platform_runtime_status(
                         f"{profile_name}:{platform.value}",
-                        platform_state="fatal",
+                        platform_state="disabled",
                         error_code="duplicate_credential",
                         error_message=message,
                     )

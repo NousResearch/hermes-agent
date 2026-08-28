@@ -81,8 +81,8 @@ readable and writable; the rest of `HERMES_HOME` stays hidden.
 When `HERMES_HOME` points elsewhere (a profile at `~/.hermes/profiles/<name>`,
 or any other directory), the default `~/.hermes` is hidden as well, so the
 default home's `.env` and `auth.json` are not readable from that profile's
-sandbox. The profile's own `HERMES_HOME/home` and state directory stay
-reachable.
+sandbox. The profile's own state directory stays reachable, and so does its
+`HERMES_HOME/home` under `terminal.home_mode: profile`.
 
 A path that does not exist on the host is simply skipped. An entry that
 is a symlink (a dotfiles repository that links `~/.ssh` to
@@ -155,7 +155,8 @@ affected.
 The profile home is a bind too. Under `terminal.home_mode: profile`,
 `HERMES_HOME/home` must be a plain directory or a link to a directory
 outside the hidden set: a link into the home tree (for example to `~` or
-`~/.config`) or into another profile under `~/.hermes` would show the
+`~/.config`), into `HERMES_HOME` itself (another profile under
+`~/.hermes/profiles` included) or into a hidden dotfile would show the
 hidden paths again through the bind, and the backend refuses to start.
 
 ## Resource limits

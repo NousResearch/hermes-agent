@@ -534,7 +534,7 @@ browser:
 # =============================================================================
 # Soft warnings are enabled by default. They append guidance to repeated failed
 # or non-progressing tool results but still let the tool execute. Hard stops stay
-# opt-in for interactive CLI/TUI sessions, but default on for non-interactive
+# opt-in for interactive CLI/TUI/Desktop/ACP sessions, but default on for unattended
 # gateway/cron sessions where nobody is present to interrupt a model that
 # ignores loop warnings.
 tool_loop_guardrails:

@@ -75,12 +75,15 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.no_progress_block_after == 8
 
 
-def test_gateway_platform_defaults_to_hard_stop_without_changing_cli_default():
-    cli_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="cli")
+def test_gateway_platform_defaults_to_hard_stop_without_changing_interactive_defaults():
+    interactive_configs = [
+        ToolCallGuardrailConfig.from_mapping({}, platform=platform)
+        for platform in ("cli", "tui", "desktop", "acp")
+    ]
     telegram_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="telegram")
     cron_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="cron")
 
-    assert cli_cfg.hard_stop_enabled is False
+    assert all(cfg.hard_stop_enabled is False for cfg in interactive_configs)
     assert telegram_cfg.hard_stop_enabled is True
     assert cron_cfg.hard_stop_enabled is True
 

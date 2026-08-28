@@ -232,19 +232,60 @@ def get_default_hermes_root() -> Path:
 # erase the fact that the profile was deleted.
 _DELETED_PROFILES_DIR = ".deleted"
 
+# Files whose presence marks a directory as a real Hermes home. A fresh home
+# always gains at least one of these on first use (config save, env backfill,
+# session DB), while arbitrary directories that merely contain a ``profiles``
+# path segment (e.g. ``/srv/profiles/buildcache``) do not.
+_HERMES_HOME_MARKERS = ("config.yaml", ".env", "state.db")
+
+
+def _is_hermes_profiles_root(profiles_dir: Path) -> bool:
+    """Return True when *profiles_dir* is a canonical ``<hermes-home>/profiles``.
+
+    Anchors named-profile recognition so it only fires for directories that
+    provably live under a Hermes home: the classic ``~/.hermes`` layout, a
+    root carrying Hermes-home marker files (Docker/custom ``HERMES_HOME``
+    like ``/opt/data``), a ``profiles/.deleted`` tombstone directory (only
+    ever created by ``hermes profile delete``), or the process's resolved
+    default Hermes root.
+    """
+    root = profiles_dir.parent
+    if root.name == ".hermes":
+        return True
+    try:
+        if (profiles_dir / _DELETED_PROFILES_DIR).is_dir():
+            return True
+        if any((root / marker).exists() for marker in _HERMES_HOME_MARKERS):
+            return True
+    except OSError:
+        pass
+    try:
+        return root.resolve(strict=False) == get_default_hermes_root().resolve(
+            strict=False
+        )
+    except OSError:
+        return False
+
 
 def named_profile_home(path: str | Path) -> Path | None:
     """Return ``<root>/profiles/<name>`` when *path* is that home or under it.
 
     A named profile home is only ``.../profiles/<id>`` where ``<id>`` does
-    not start with ``.``. A default Hermes home whose path merely contains a
-    ``profiles`` segment (e.g. ``/tmp/foo/profiles/notahome/.hermes``) is not
-    a named profile. ``.../profiles/worker/logs`` still resolves to
-    ``.../profiles/worker``.
+    not start with ``.`` AND the ``profiles`` directory's parent is a real
+    Hermes home (see :func:`_is_hermes_profiles_root`). A default Hermes home
+    whose path merely contains a ``profiles`` segment
+    (e.g. ``/tmp/foo/profiles/notahome/.hermes``) is not a named profile,
+    and neither is an unrelated custom home like
+    ``/srv/profiles/buildcache`` — those must keep mkdir-ing normally.
+    ``.../profiles/worker/logs`` still resolves to ``.../profiles/worker``.
     """
     current = Path(path)
     for candidate in (current, *current.parents):
-        if candidate.parent.name == "profiles" and not candidate.name.startswith("."):
+        if (
+            candidate.parent.name == "profiles"
+            and not candidate.name.startswith(".")
+            and _is_hermes_profiles_root(candidate.parent)
+        ):
             return candidate
         # Stop at a default Hermes home so a coincidental ``profiles/``
         # ancestor is not treated as a named-profile root.

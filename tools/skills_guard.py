@@ -123,6 +123,65 @@ MODIFY_VERB_RE = (
     r'|\breplac(?:e|es|ed|ing)\b|\balter(?:s|ed|ing)?\b|\badd(?:s|ed|ing)\b)'
 )
 
+# Config-file groups shared by the agent-config persistence tiers below.
+_AGENT_CONFIG_FILES = r'(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)'
+_HERMES_CONFIG_FILES = r'\.hermes/(?:config\.yaml|SOUL\.md)'
+# Path prefixes (real files are e.g. .claude/settings.json), so consume any
+# trailing filename characters rather than requiring a clean end-of-word.
+_OTHER_AGENT_CONFIG_FILES = r'\.(?:claude/settings|codex/config)[\w.]*'
+
+
+def _shell_write_re(file_alt: str) -> str:
+    """Regex for a mechanical shell write into *file_alt*.
+
+    Covers redirection (``>``/``>>``), in-place ``sed -i``, ``tee`` (with the
+    target as its immediate argument, so a markdown table cell like
+    ``| tee output | AGENTS.md |`` does not match), and ``cp``/``mv`` with the
+    config file in destination position (a preceding source argument is
+    required, so ``cp AGENTS.md backup/`` — a read — does not match; a
+    trailing extension like ``AGENTS.md.bak`` is not the config file).
+    A single ``>`` must be preceded by a word/quote/paren character so that
+    markdown blockquotes (``> text``) and arrows (``-> file``) do not match.
+    """
+    return (
+        rf'(?:>>|[\w"\'`)\]]\s*>)\s*[~\w./-]*{file_alt}(?!\.?\w)'
+        rf'|\bsed\b[^\n]*\s-i\b[^\n]*{file_alt}(?!\.?\w)'
+        rf'|\btee\s+(?:-a\s+)?[~\w./"\'-]*{file_alt}(?!\.?\w)'
+        rf'|\b(?:cp|mv)\s+[^\s|;&]+\s+[^\n|;&]{{0,40}}?{file_alt}(?!\.?\w)'
+    )
+
+
+def _prose_modify_re(file_alt: str) -> str:
+    """Regex for prose instructing modification of *file_alt*.
+
+    Two shapes: an imperative-position verb (start of line / bullet item),
+    or a mid-line verb strengthened by an explicit directive marker
+    ("you must", "please", "make sure to"). Descriptive mid-line prose
+    ("skills that edit AGENTS.md") matches neither. The verb→file gap
+    forbids commas so enumerations ("Write or refactor skills, AGENTS.md,
+    CLAUDE.md") — a doc listing its subject matter — do not match.
+    """
+    return (
+        rf'^\s*(?:[-*+]\s+|\d+[.)]\s+)?{MODIFY_VERB_RE}[^\n,]{{0,80}}?{file_alt}\b'
+        rf'|(?:\byou\s+(?:must|should|need\s+to)\s+|\bplease\s+'
+        rf'|\bmake\s+sure\s+(?:to\s+|you\s+)|\bbe\s+sure\s+to\s+)'
+        rf'{MODIFY_VERB_RE}[^\n,]{{0,80}}?{file_alt}\b'
+    )
+
+
+def _content_contract_re(file_alt: str) -> str:
+    """Regex for "<file> should contain/include ..." content-contract prose.
+
+    Ambiguous shape: authoring guides teach "Every AGENTS.md should contain
+    the project purpose" while an attack writes "AGENTS.md should contain
+    the bypass instructions". Not separable statically, so this tier is
+    scored high (caution → user confirmation), never critical.
+    """
+    return (
+        rf'{file_alt}\b[^\n]{{0,40}}?\b(?:should|must|needs?\s+to)\s+'
+        rf'(?:contain|say|include|have|list)\b'
+    )
+
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
@@ -488,40 +547,44 @@ THREAT_PATTERNS = [
     # legitimate meta-skills discuss them constantly (authoring guides,
     # setup docs, cross-references to other skills). Flagging any mention
     # as critical produced permanent false-positive blocks for popular
-    # community skills (#92021). Two tiers instead:
-    #   * Mechanical persistence (shell redirection, sed -i targeting the
-    #     file) is critical — an unambiguous write path.
-    #   * Prose modification intent is scored only in IMPERATIVE POSITION
-    #     (start of line / bullet item): regexes cannot reliably separate
-    #     "Edit AGENTS.md to inject instructions" from descriptive prose
-    #     like "a guide about writing AGENTS.md", but an imperative verb
-    #     aimed at the file is the shape real instructions take. Scored
-    #     high → caution verdict (user confirmation) rather than an
-    #     irreversible community block.
+    # community skills (#92021). Tiers instead:
+    #   * Mechanical persistence (shell redirection, sed -i, tee, cp/mv
+    #     into the file) is critical — an unambiguous write path.
+    #   * Prose modification intent — an imperative-position verb or an
+    #     explicit directive ("you must edit ...") aimed at the file.
+    #     For AGENT config files (AGENTS.md/CLAUDE.md/...) this is critical:
+    #     that sentence shape is exactly how persistence attacks instruct
+    #     the agent, and project-skill quarantine only acts on "dangerous".
+    #     For Hermes/other config files it is high (caution) — legitimate
+    #     setup docs routinely instruct users to edit config.yaml.
     #   * Bare references are informational (low) for auditability.
-    (r'^\s*(?:[-*+]\s+|\d+[.)]\s+)?' + MODIFY_VERB_RE + r'[^\n]{0,80}?(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)\b',
-     "agent_config_mod", "high", "persistence",
-     "modification language aimed at agent config files (verify intent)"),
-    (r'(?:>>|>)\s*[~\w./-]*(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)\b'
-     r'|\bsed\b[^\n]*\s-i\b[^\n]*(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)\b',
+    (_prose_modify_re(_AGENT_CONFIG_FILES),
+     "agent_config_mod", "critical", "persistence",
+     "instructs modification of agent config files (could persist instructions across sessions)"),
+    (_shell_write_re(_AGENT_CONFIG_FILES),
      "agent_config_mod_shell", "critical", "persistence",
-     "shell redirection or sed -i targeting agent config files (persistence mechanism)"),
+     "shell write (redirect/sed -i/tee/cp/mv) targeting agent config files (persistence mechanism)"),
+    (_content_contract_re(_AGENT_CONFIG_FILES),
+     "agent_config_contract", "high", "persistence",
+     "dictates agent config file contents (verify intent — authoring guides use this shape too)"),
     (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
      "agent_config_ref", "low", "persistence",
      "references agent config files (informational; only modification intent is scored)"),
-    (r'^\s*(?:[-*+]\s+|\d+[.)]\s+)?' + MODIFY_VERB_RE + r'[^\n]{0,80}?\.(?:hermes/config\.yaml|hermes/SOUL\.md)\b',
+    (_prose_modify_re(_HERMES_CONFIG_FILES),
      "hermes_config_mod", "high", "persistence",
      "modification language aimed at Hermes configuration files (verify intent)"),
-    (r'(?:>>|>)\s*[~\w./-]*\.(?:hermes/config\.yaml|hermes/SOUL\.md)\b'
-     r'|\bsed\b[^\n]*\s-i\b[^\n]*\.(?:hermes/config\.yaml|hermes/SOUL\.md)\b',
+    (_shell_write_re(_HERMES_CONFIG_FILES),
      "hermes_config_mod_shell", "critical", "persistence",
-     "shell redirection or sed -i targeting Hermes configuration files"),
+     "shell write (redirect/sed -i/tee/cp/mv) targeting Hermes configuration files"),
     (r'\.hermes/config\.yaml|\.hermes/SOUL\.md',
      "hermes_config_ref", "low", "persistence",
      "references Hermes configuration files (informational; only modification intent is scored)"),
-    (r'^\s*(?:[-*+]\s+|\d+[.)]\s+)?' + MODIFY_VERB_RE + r'[^\n]{0,80}?\.(?:claude/settings|codex/config)',
+    (_prose_modify_re(_OTHER_AGENT_CONFIG_FILES),
      "other_agent_config_mod", "high", "persistence",
      "modifies other agents' configuration files"),
+    (_shell_write_re(_OTHER_AGENT_CONFIG_FILES),
+     "other_agent_config_mod_shell", "critical", "persistence",
+     "shell write (redirect/sed -i/tee/cp/mv) targeting other agents' configuration files"),
     (r'\.claude/settings|\.codex/config',
      "other_agent_config_ref", "low", "persistence",
      "references other agent configuration files (informational; only modification intent is scored)"),

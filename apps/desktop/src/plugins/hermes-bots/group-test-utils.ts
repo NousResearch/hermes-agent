@@ -30,6 +30,7 @@ export interface ScriptedMessage {
 }
 
 export interface ScriptedSession {
+  contracts?: { follow_profile_config: boolean; room_plumbing: boolean }
   messages: ScriptedMessage[]
   profile: string
   runtime: string
@@ -219,6 +220,10 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
       const title = String(params.title ?? '')
 
       const session: ScriptedSession = {
+        contracts: {
+          follow_profile_config: params.follow_profile_config === true,
+          room_plumbing: params.room_plumbing === true
+        },
         messages: [],
         profile,
         runtime: `rt-${profile}-${sequence}`,

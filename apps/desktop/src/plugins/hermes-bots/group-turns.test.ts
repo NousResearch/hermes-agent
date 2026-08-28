@@ -81,6 +81,26 @@ describe('session resolution', () => {
     expect(room.gateway.sessions.get(String(fresh.stored))?.title).toBe('Group: r-abc')
   })
 
+  it('creates member sessions with the room_plumbing + follow_profile_config contracts', async () => {
+    // The PR #97008 contracts: room member sessions always rebuild from the
+    // member profile's CURRENT config on resume, never a stale stored
+    // model/provider pin. Dropping either param silently regresses rooms to
+    // the server's hidden + "Group: " title legacy fallback.
+    const room = await loadRoom()
+
+    room.chat.updateGroupChat('Contract', current => {
+      current.roomId = 'r-contract'
+
+      return current
+    })
+    const handle = await room.turns.ensureGroupChatSession('Contract', { name: 'research', title: '' })
+
+    expect(room.gateway.sessions.get(String(handle.stored))?.contracts).toEqual({
+      follow_profile_config: true,
+      room_plumbing: true
+    })
+  })
+
   it('mints fresh member sessions when a same-name group is recreated after disband', async () => {
     const room = await loadRoom()
     const member: GroupMember = { name: 'research', title: '' }

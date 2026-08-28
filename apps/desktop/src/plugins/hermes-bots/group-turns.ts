@@ -198,7 +198,13 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
     profile: member.name,
     title,
     // Room member sessions are plumbing — always hidden from the sidebar.
-    hidden: true
+    hidden: true,
+    // Explicit contracts (PR #97008): room plumbing sessions always rebuild
+    // from the member profile's CURRENT config on resume, never a stale
+    // stored model/provider pin. Older gateways ignore the unknown params;
+    // the server's hidden + "Group: " title fallback then covers legacy.
+    room_plumbing: true,
+    follow_profile_config: true
   })) as { session_id?: string; stored_session_id?: string }
 
   const stored = created?.stored_session_id || null

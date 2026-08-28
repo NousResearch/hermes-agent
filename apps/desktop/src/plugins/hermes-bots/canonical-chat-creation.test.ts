@@ -125,7 +125,15 @@ describe('the lazy row is materialized before anything else touches it', () => {
     const { createCanonicalChat } = await loadModule()
     await createCanonicalChat('alpha')
 
-    expect(created).toMatchObject({ hidden: true, title: 'Bot Chat' })
+    expect(created).toMatchObject({
+      hidden: true,
+      title: 'Bot Chat',
+      // The PR #97008 contract: the canonical Bot Chat's runtime always
+      // follows the profile's CURRENT config on resume — never the stored
+      // model/provider pin. Dropping this param silently regresses bots to
+      // the server's exact-title legacy fallback.
+      follow_profile_config: true
+    })
   })
 
   it('sends the one intro turn on New Bot creation (kickoff: true)', async () => {

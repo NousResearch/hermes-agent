@@ -302,7 +302,14 @@ export function createCanonicalChat(
       // plugin-owned. Core applies this via the generic `hidden` flag
       // (deferred as pending_hidden until the row exists); older gateways
       // ignore the unknown param and it stays visible.
-      hidden: true
+      hidden: true,
+      // Explicit contract (PR #97008): this session's runtime always follows
+      // the member profile's CURRENT config. Resume must NOT restore the
+      // stored model/provider pin from an old row — that left bot DMs stuck
+      // on a stale/dead provider after a profile switch. Older gateways
+      // ignore the unknown param; the server's exact-title backfill then
+      // covers the legacy path.
+      follow_profile_config: true
     })
 
     const sid = res?.stored_session_id

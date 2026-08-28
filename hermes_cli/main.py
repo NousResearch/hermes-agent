@@ -3437,6 +3437,7 @@ def cmd_chat(args):
         "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
+        "oneshot": bool(getattr(args, "oneshot_exit", False)),
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),

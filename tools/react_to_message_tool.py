@@ -120,17 +120,9 @@ def check_react_requirements() -> bool:
     """Opt-in feature flag — surface eligibility is the toolset's job.
 
     ``desktop_ui`` already restricts this to GUI sessions. What's left is the
-    user's own toggle (Settings → Appearance), which the desktop mirrors into
-    ``display.message_reactions`` on the CONNECTED gateway's config — so this
-    reads the right config whether that gateway is local, SSH, URL, or cloud.
+    user's own toggle (Settings → Appearance).
     """
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        display = load_config_readonly().get("display")
-    except Exception:
-        return False
-    return isinstance(display, dict) and bool(display.get("message_reactions", False))
+    return desktop_ui.user_enabled("message_reactions", default=False)
 
 
 REACT_TO_MESSAGE_SCHEMA = {

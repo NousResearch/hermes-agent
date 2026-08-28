@@ -156,6 +156,8 @@ class TestExtractCacheBustingConfig:
                     "enabled": False,
                     "threshold": 0.6,
                     "codex_gpt55_autoraise": False,
+                    "codex_responses_native": True,
+                    "codex_responses_compact_threshold": 120_000,
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
                     "codex_app_server_auto": "hermes",
@@ -166,6 +168,8 @@ class TestExtractCacheBustingConfig:
         assert out["compression.enabled"] is False
         assert out["compression.threshold"] == 0.6
         assert out["compression.codex_gpt55_autoraise"] is False
+        assert out["compression.codex_responses_native"] is True
+        assert out["compression.codex_responses_compact_threshold"] == 120_000
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"

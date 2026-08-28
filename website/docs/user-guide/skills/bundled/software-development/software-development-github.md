@@ -15,7 +15,7 @@ GitHub via gh CLI: PRs, issues, reviews, repos, auth.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\github` |
+| Path | `skills/software-development/github` |
 | Version | `2.0.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |

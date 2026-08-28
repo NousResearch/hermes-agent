@@ -680,9 +680,9 @@ export function BotsPane() {
               <DropdownMenuContent align="end">
                 {(
                   [
-                    ['all', 'Bots and group chats'],
-                    ['bots', 'Bots only'],
-                    ['groups', 'Group chats only']
+                    ['all', b.roster.botsAndGroups],
+                    ['bots', b.roster.botsOnly],
+                    ['groups', b.roster.groupsOnly]
                   ] as [RosterKindFilter, string][]
                 ).map(([value, label]) => (
                   <DropdownMenuItem key={`kind:${value}`} onSelect={() => setRowKindFilter(value)}>
@@ -693,10 +693,10 @@ export function BotsPane() {
                 <DropdownMenuSeparator />
                 {(
                   [
-                    ['all', 'Any activity'],
+                    ['all', b.roster.anyActivity],
                     ['active', b.roster.activeNow],
-                    ['recent', 'Recently active'],
-                    ['older', 'Older']
+                    ['recent', b.roster.recentlyActive],
+                    ['older', b.roster.older]
                   ] as [RosterActivityFilter, string][]
                 ).map(([value, label]) => (
                   <DropdownMenuItem key={`activity:${value}`} onSelect={() => setActivityFilter(value)}>
@@ -923,7 +923,10 @@ export function BotsPane() {
         doneLabel="Deleted"
         onClose={() => setDeletingGroup(null)}
         onConfirm={async () => {
-          if (!deletingGroup) {return}
+          if (!deletingGroup) {
+            return
+          }
+
           await disbandGroupChat(deletingGroup.name, deletingGroup.members)
           host.notify({
             kind: 'success',

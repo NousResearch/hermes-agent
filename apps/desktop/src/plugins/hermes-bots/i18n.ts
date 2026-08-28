@@ -41,7 +41,20 @@ type BotsMessages = {
     pinned: string
     needsAttention: string
     needsInput: string
+    /** The kind filter's three options, in menu order. */
+    botsAndGroups: string
+    botsOnly: string
+    groupsOnly: string
+    /** The activity filter's four options, in menu order. */
+    anyActivity: string
     activeNow: string
+    recentlyActive: string
+    older: string
+    /** How a row's owning gateway is doing — see `botSourceStatus`. */
+    gatewayRemoved: string
+    onDemand: string
+    ready: string
+    statusUnknown: string
     unavailable: string
     retryNow: string
     rosterUnavailable: (reason: string) => string
@@ -74,7 +87,11 @@ type BotsMessages = {
     blobFromName: string
     unlockFollowsName: string
     randomize: string
+    /** The picker's four tabs, in order. */
+    tabBot: string
+    tabGenerate: string
     upload: string
+    tabPet: string
     removeImage: string
     removeBackToShape: string
     describePlaceholder: string
@@ -90,7 +107,7 @@ type BotsMessages = {
   /** Group chats: the room, its composer, threads and activity feed. */
   group: {
     newTitle: string
-    newDesc: string
+    manageDesc: string
     manageTitle: string
     settingsTitle: string
     settingsDesc: string
@@ -149,7 +166,17 @@ const en: BotsMessages = {
     pinned: 'Pinned',
     needsAttention: 'needs attention',
     needsInput: 'Needs your input',
+    botsAndGroups: 'Bots and group chats',
+    botsOnly: 'Bots only',
+    groupsOnly: 'Group chats only',
+    anyActivity: 'Any activity',
     activeNow: 'Active now',
+    recentlyActive: 'Recently active',
+    older: 'Older',
+    gatewayRemoved: 'Gateway removed',
+    onDemand: 'On demand',
+    ready: 'Ready',
+    statusUnknown: 'Status unknown',
     unavailable: 'Unavailable',
     retryNow: 'Retry now',
     rosterUnavailable: reason =>
@@ -181,12 +208,14 @@ const en: BotsMessages = {
     blobFromName: 'Blob face — drawn from the bot’s name',
     unlockFollowsName: 'Unlock — the face follows the bot’s name again',
     randomize: 'Randomize',
+    tabBot: 'Bot',
+    tabGenerate: 'Generate',
     upload: 'Upload',
+    tabPet: 'Pet',
     removeImage: 'Remove image — use shape',
     removeBackToShape: 'Remove — back to shape avatar',
     describePlaceholder: 'Describe your avatar…',
-    describeHint:
-      'Leave blank to auto-generate from name/title/description + agent-messaging roster.',
+    describeHint: 'Leave blank to auto-generate from name/title/description + agent-messaging roster.',
     matchTheName: 'Match the name',
     pickPet: 'Pick a pet as this bot’s profile picture.',
     petLoadFailed: 'Could not load that pet — try another.',
@@ -197,7 +226,7 @@ const en: BotsMessages = {
   },
   group: {
     newTitle: 'New Group Chat',
-    newDesc: 'A bot can join multiple group chats. Memberships sync to every machine.',
+    manageDesc: 'A bot can join multiple group chats. Memberships sync to every machine.',
     manageTitle: 'Manage groups',
     settingsTitle: 'Group settings',
     settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',

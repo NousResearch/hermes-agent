@@ -121,14 +121,13 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
 
   return (
     <div className="grid justify-items-center gap-3">
-      {/* Tab pills: Bot | Generate | Upload | Pet */}
       <SegmentedControl
         onChange={goTab}
         options={[
-          { id: 'bot', label: 'Bot' },
-          { id: 'generate', label: 'Generate' },
+          { id: 'bot', label: b.avatar.tabBot },
+          { id: 'generate', label: b.avatar.tabGenerate },
           { id: 'upload', label: b.avatar.upload },
-          { id: 'pet', label: 'Pet' }
+          { id: 'pet', label: b.avatar.tabPet }
         ]}
         value={tab}
       />
@@ -165,7 +164,12 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
                       title={k || 'Auto — the name decides'}
                     >
                       {k ? (
-                        <BotFace color={avatarColor(color, pickerName)} name={pickerName} shape={blobShapeString(seedPart, k)} size={32} />
+                        <BotFace
+                          color={avatarColor(color, pickerName)}
+                          name={pickerName}
+                          shape={blobShapeString(seedPart, k)}
+                          size={32}
+                        />
                       ) : (
                         <span className="text-[0.6rem] text-(--ui-text-tertiary)">Auto</span>
                       )}
@@ -188,9 +192,7 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
                   <Button
                     onClick={() => onShape(blobShapeString(locked ? '' : pickerName, kind))}
                     size="sm"
-                    title={
-                      locked ? b.avatar.unlockFollowsName : 'Keep this exact face even if the name changes'
-                    }
+                    title={locked ? b.avatar.unlockFollowsName : 'Keep this exact face even if the name changes'}
                     type="button"
                     variant="ghost"
                   >
@@ -270,9 +272,7 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
               {genBusy ? 'Generating…' : 'Generate'}
             </Button>
             {describe.trim() ? null : (
-              <div className="text-center text-[0.65rem] text-(--ui-text-quaternary)">
-                {b.bot.descriptionHint}
-              </div>
+              <div className="text-center text-[0.65rem] text-(--ui-text-quaternary)">{b.bot.descriptionHint}</div>
             )}
           </div>
         ) : (

@@ -518,7 +518,7 @@ export async function prepareBotSource(bot: RosterRow) {
 
   if (route && typeof host.requestProfile !== 'function') {
     throw new Error(
-      getPluginCtx()?.i18n.t('bot.remoteConnectionsUnsupported') ??
+      getPluginCtx()?.i18n?.t('bot.remoteConnectionsUnsupported') ??
         'Update Hermes Desktop to chat with bots on other connections.'
     )
   }

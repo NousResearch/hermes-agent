@@ -65,6 +65,8 @@ type BotsMessages = {
     advancedFailed: string
     openAnotherChatUnsupported: string
     remoteConnectionsUnsupported: string
+    /** Stands under the bot's name in a chat it has not spoken in yet. */
+    chatEmpty: string
   }
   /** Avatar picker: shapes, blobs, pets, uploads, generation. */
   avatar: {
@@ -171,7 +173,8 @@ const en: BotsMessages = {
     advancedHint: 'Advanced — model, skills, toolsets, SOUL.md',
     advancedFailed: 'Advanced configuration failed',
     openAnotherChatUnsupported: 'Update Hermes Desktop to open another Bot chat.',
-    remoteConnectionsUnsupported: 'Update Hermes Desktop to chat with bots on other connections.'
+    remoteConnectionsUnsupported: 'Update Hermes Desktop to chat with bots on other connections.',
+    chatEmpty: 'Say something to get started.'
   },
   avatar: {
     classicShapes: 'Classic shapes',

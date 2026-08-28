@@ -99,7 +99,6 @@ class NousPortalAccountInfo:
     subscription: Optional[NousPortalSubscriptionInfo] = None
     paid_service_access: Optional[bool] = None
     paid_service_access_info: Optional[NousPaidServiceAccessInfo] = None
-    policy_present: Optional[bool] = None
     tool_access: Optional[NousToolAccessInfo] = None
     raw_claims: Optional[dict[str, Any]] = None
     raw_account: Optional[dict[str, Any]] = None

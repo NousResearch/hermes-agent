@@ -94,6 +94,7 @@ CODE_EXEMPT_PATTERN_IDS = {
     # Plugins legitimately write their own settings into config.yaml during
     # post_setup, and encode credentials (e.g. HTTP Basic auth) with base64.
     "agent_config_mod",
+    "agent_config_contract",
     "encoded_exfil",
 }
 

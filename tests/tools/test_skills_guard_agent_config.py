@@ -127,6 +127,22 @@ class TestTruePositivesStillCaught:
         result = _scan(tmp_path, "sed -i 's/safe/malicious/' ./AGENTS.md")
         assert result.verdict == "dangerous"
 
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "sed -Ei 's/a/b/' AGENTS.md",       # combined flags, i last
+            "sed -iE 's/a/b/' CLAUDE.md",       # combined flags, i first
+            "sed --in-place 's/a/b/' AGENTS.md",  # GNU long form
+        ],
+    )
+    def test_sed_flag_variants_are_dangerous(self, tmp_path, line):
+        result = _scan(tmp_path, line)
+        assert result.verdict == "dangerous"
+
+    def test_sed_read_only_is_not_flagged(self, tmp_path):
+        result = _scan(tmp_path, "sed -n '1,10p' AGENTS.md")
+        assert result.verdict == "safe"
+
     def test_tee_append_is_dangerous(self, tmp_path):
         result = _scan(tmp_path, "cat payload.txt | tee -a .cursorrules")
         assert result.verdict == "dangerous"

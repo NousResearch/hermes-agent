@@ -1,15 +1,23 @@
 /**
- * The rotation's clock: when the app is quiet, offer a tip.
+ * The rotation's clock: a few minutes into a launch, then hours apart, offer a
+ * tip if the app happens to be quiet.
  *
  * Off unless the user turned it on (Settings → Appearance) — this is the half
  * of the feature that talks unprompted, so it is the half that has to be asked
  * for. An agent tip doesn't come through here at all.
  *
- * "Quiet" is doing the rest of the work. A tip is the app interrupting, so it
- * waits for a moment that is genuinely idle — nothing streaming, no dialog,
- * menu or tour on screen, the window focused, and a few seconds since the last
- * keystroke. Fail any of those and the tick simply passes; a tip is never
- * queued up to ambush the user the instant they stop typing.
+ * The pacing is a loading-screen tip's, not a notification's. Two clocks have
+ * to agree: a per-launch settling delay, so opening the app is never met with a
+ * bubble, and a six-hour cooldown persisted across launches, so quitting and
+ * reopening isn't a way to farm them. In practice that lands around one tip per
+ * day of use and takes weeks to walk the catalog, which is the point — ten tips
+ * in an afternoon is how a nicety turns into a thing people switch off.
+ *
+ * Then "quiet" does the rest. A tip is still the app interrupting, so it waits
+ * for a moment that is genuinely idle — nothing streaming, no dialog, menu or
+ * tour on screen, the window focused, and a few seconds since the last
+ * keystroke. Fail any of those and the tick passes; being due only means the
+ * next quiet moment is eligible, never that one gets taken.
  */
 
 import { useEffect } from 'react'
@@ -19,13 +27,14 @@ import { resolveTipAnchor } from '@/lib/tips/anchor'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { nextTip } from '@/lib/tips/rotation'
 import { $awaitingResponse, $busy } from '@/store/session'
-import { $activeTip, $lastTipId, $retiredTips, $tipRotationEnabled, showTip } from '@/store/tips'
+import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipRotationEnabled, showTip } from '@/store/tips'
 
-const TICK_MS = 5_000
-/** Long enough that the first tip lands after you've settled in, not on boot. */
-const FIRST_TIP_MS = 45_000
-/** And rare enough afterwards to stay a nicety rather than a nag. */
-const BETWEEN_TIPS_MS = 6 * 60_000
+const TICK_MS = 30_000
+/** Nothing in the first stretch of a launch, however long the cooldown says
+ *  it's been: you opened the app to do a thing, and the tip can wait until
+ *  you've done it. Jittered so it isn't the same beat every time. */
+const SETTLE_MIN_MS = 5 * 60_000
+const SETTLE_SPREAD_MS = 5 * 60_000
 /** Typing is the clearest "I'm busy" signal the renderer gets for free. */
 const TYPING_GRACE_MS = 5_000
 
@@ -54,25 +63,24 @@ function appIsQuiet(lastTypedAt: number): boolean {
 export function useTipRotation(copy: Translations['tips']) {
   useEffect(() => {
     let lastTypedAt = 0
-    let dueAt = Date.now() + FIRST_TIP_MS
+    let settledAt = Date.now() + SETTLE_MIN_MS + Math.random() * SETTLE_SPREAD_MS
 
     const noteTyping = () => {
       lastTypedAt = Date.now()
     }
 
+    const isDue = () => {
+      const nextAt = $nextTipAt.get()
+
+      return Date.now() >= settledAt && (nextAt === null || Date.now() >= nextAt)
+    }
+
     const offer = () => {
-      if (!$tipRotationEnabled.get()) {
+      if (!$tipRotationEnabled.get() || $activeTip.get()) {
         return
       }
 
-      if ($activeTip.get()) {
-        // One is up; the next comes due a good while after it goes away.
-        dueAt = Date.now() + BETWEEN_TIPS_MS
-
-        return
-      }
-
-      if (Date.now() < dueAt || !appIsQuiet(lastTypedAt)) {
+      if (!isDue() || !appIsQuiet(lastTypedAt)) {
         return
       }
 
@@ -102,11 +110,22 @@ export function useTipRotation(copy: Translations['tips']) {
       })
     }
 
+    // Turning the rotation on is its own kind of settled: the delay guards a
+    // launch you came into with a purpose, and has nothing to say about someone
+    // who just asked for tips and is owed the sight of one working.
+    const unbindSwitch = $tipRotationEnabled.listen(enabled => {
+      if (enabled) {
+        settledAt = Date.now()
+        offer()
+      }
+    })
+
     const timer = window.setInterval(offer, TICK_MS)
 
     window.addEventListener('keydown', noteTyping, true)
 
     return () => {
+      unbindSwitch()
       window.clearInterval(timer)
       window.removeEventListener('keydown', noteTyping, true)
     }

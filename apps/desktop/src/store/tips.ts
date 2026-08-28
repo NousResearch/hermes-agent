@@ -17,15 +17,18 @@
  * - `$activeTip` is what is on screen. Ephemeral by design: a tip is a nicety,
  *   and one that survives a reload has overstayed.
  *
- * `$lastTipId` is the rotation's cursor — where the next walk through the
- * catalog resumes from. Persisted, because the alternative is that every
- * relaunch reopens the tour at tip one.
+ * `$lastTipId` is the rotation's cursor and `$nextTipAt` is its clock. Both are
+ * persisted, because the alternative is that every relaunch reopens the tour at
+ * tip one and re-arms a schedule measured in hours.
  */
 
 import { atom } from 'nanostores'
 
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import type { TipSide } from '@/lib/tips/catalog'
+
+/** Hours, not minutes. The catalog is ten tips and it should take weeks. */
+const COOLDOWN_MS = 6 * 60 * 60_000
 
 /** A tip as the bubble needs it: resolved copy, resolved anchor. */
 export interface ActiveTip {
@@ -44,6 +47,11 @@ export interface ActiveTip {
 export const $tipRotationEnabled = persistentAtom('hermes.desktop.tips.rotation.v1', false, Codecs.bool)
 export const $retiredTips = persistentAtom<string[]>('hermes.desktop.tips.retired.v1', [], Codecs.stringArray)
 export const $lastTipId = persistentAtom<null | string>('hermes.desktop.tips.last.v1', null, Codecs.nullableText)
+export const $nextTipAt = persistentAtom<null | number>(
+  'hermes.desktop.tips.next.v1',
+  null,
+  Codecs.json(value => (typeof value === 'number' && Number.isFinite(value) ? value : null))
+)
 export const $activeTip = atom<ActiveTip | null>(null)
 
 export function setTipRotationEnabled(enabled: boolean): void {
@@ -56,9 +64,11 @@ export function setTipRotationEnabled(enabled: boolean): void {
   $tipRotationEnabled.set(enabled)
 }
 
-/** Un-retire everything. The rotation starts over from a full deck. */
+/** Un-retire everything, and let the rotation start over from a full deck
+ *  rather than from wherever a six-hour cooldown had left it. */
 export function resetTips(): void {
   $retiredTips.set([])
+  $nextTipAt.set(null)
 }
 
 /** Put a tip on screen, replacing whatever was there. */
@@ -67,6 +77,9 @@ export function showTip(tip: ActiveTip): void {
     $lastTipId.set(tip.tipId)
   }
 
+  // Any tip starts the cooldown, an agent's included: whoever just pointed at
+  // something, the user has had their one interruption for a good while.
+  $nextTipAt.set(Date.now() + COOLDOWN_MS)
   $activeTip.set(tip)
 }
 

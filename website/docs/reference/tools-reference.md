@@ -264,12 +264,15 @@ The `tip` tool takes the same selectors `tour(action='targets')` reports, so
 discovery is one call for both, and the durable `data-tour` handles above name
 targets for either. One tip is on screen at a time; a new one replaces the last.
 
-The app can also show its own, walking a built-in catalog of app features on a
-slow rotation whenever things are quiet. That half is off until switched on in
-Settings → Appearance, since it talks unprompted; closing one of its tips with
-the ✕ retires that tip for good, and the same settings row brings them back. The
-tool is not behind that switch — like `tour`, it runs in answer to the
-conversation rather than at idle.
+The app can also show its own, walking a built-in catalog of app features in
+order. That half is off until switched on in Settings → Appearance, since it
+talks unprompted, and it is paced like a game's loading-screen tips rather than
+a notification: a few minutes into a launch at the earliest, then at most one
+every six hours, and only at a genuinely idle moment. Closing one of its tips
+with the ✕ retires that tip for good, and the same settings row brings them
+back. The tool is not behind that switch — like `tour`, it runs in answer to the
+conversation rather than at idle. It does share the cooldown, so a tip from
+Hermes also buys the user six hours of quiet from the rotation.
 
 ## `todo` toolset
 

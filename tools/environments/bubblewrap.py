@@ -854,25 +854,26 @@ class BubblewrapEnvironment(LocalEnvironment):
         of it), or to a directory at or under one (HOME/.ssh), the bind is
         a second view of the same host tree and shows the secrets at
         HERMES_HOME/home, the shape filter_binds drops for operator binds.
-        The plain directory under
-        HERMES_HOME, a link to another directory under HERMES_HOME and a
-        link to a clean directory outside every hidden path stay allowed.
-        A profile home inside HERMES_HOME is exempt from the lies-under
-        test against every hidden path, not only HERMES_HOME itself: under
-        the standard profile layout HERMES_HOME sits inside the hidden
-        default HOME/.hermes, and the plain HERMES_HOME/home there
-        is the designed carve-out. A link into another profile under
-        HOME/.hermes is outside HERMES_HOME and is refused.
+        Only the plain directory
+        HERMES_HOME/home is exempt from the lies-under test: it sits under
+        HERMES_HOME, and under the standard profile layout under the hidden
+        default HOME/.hermes as well, and binding it back is the
+        designed carve-out. A symlinked profile home must resolve outside
+        every hidden path: a link to another directory under HERMES_HOME,
+        another profile at HOME/.hermes/profiles/<name> in the default
+        layout included, is a second view of the hidden tree and is
+        refused. A link to a clean
+        directory outside every hidden path stays allowed.
         """
         if self._config.home_mode not in PROFILE_HOME_MODES:
             return
         link = os.path.join(self._hermes_home, "home")
         profile_home = os.path.realpath(link)
-        inside_hermes_home = _is_within(profile_home, self._hermes_home)
+        plain = not os.path.islink(link)
         for hidden in self._hidden_paths:
             if _is_within(hidden, profile_home):
                 relation = f"contains {hidden}"
-            elif not inside_hermes_home and _is_within(profile_home, hidden):
+            elif not plain and _is_within(profile_home, hidden):
                 relation = f"lies under {hidden}"
             else:
                 continue
@@ -881,9 +882,9 @@ class BubblewrapEnvironment(LocalEnvironment):
                 f"{link} read-write inside the sandbox with the bubblewrap backend, but "
                 f"it resolves to {profile_home}, which {relation}, a path the backend "
                 "hides: the bind would show it again. Make HERMES_HOME/home a plain "
-                "directory, or a link to a directory outside HOME's hidden dotfiles, "
-                "the default HOME/.hermes and the rest of HERMES_HOME, or set "
-                "terminal.home_mode to auto or real."
+                "directory, or a link to a directory outside every hidden path (HOME's "
+                "hidden dotfiles, the default HOME/.hermes and all of HERMES_HOME), or "
+                "set terminal.home_mode to auto or real."
             )
 
     def _check_initial_cwd(self) -> None:

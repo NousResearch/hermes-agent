@@ -679,14 +679,15 @@ class TestInitialCwdGuard:
     def test_cwd_under_a_profile_home_linked_inside_hermes_home_is_refused(self, sandbox_root, fake_home, monkeypatch, spelling):
         # The profile-home bind lands at the link path, so a cwd under a
         # link target inside HERMES_HOME sits under the tmpfs in every
-        # spawn and nothing binds it back.
+        # spawn and nothing binds it back. The link itself is refused first,
+        # by the profile-home guard; the cwd guard stays as the second line.
         hermes_home = fake_home / ".hermes"
         target = hermes_home / "profiles" / "x"
         (target / "proj").mkdir(parents=True)
         (hermes_home / "home").symlink_to(target)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         cwd = (hermes_home / "home" if spelling == "link" else target) / "proj"
-        with _no_session(), pytest.raises(ValueError, match="terminal.cwd"):
+        with _no_session(), pytest.raises(ValueError, match="terminal.home_mode"):
             BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=BubblewrapConfig(home_mode="profile"))
         assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
 
@@ -913,11 +914,42 @@ class TestProfileHomeGuard:
         (hermes_home / "home").mkdir()
         self._constructs(work_dir, "profile")
 
-    @pytest.mark.parametrize("where", ["outside", "under-hermes-home"])
-    def test_profile_home_linked_to_a_clean_directory_constructs_under_home_mode_profile(self, sandbox_root, work_dir, fake_home, hermes_home, tmp_path, where):
-        target = tmp_path / "elsewhere" / "home" if where == "outside" else hermes_home / "profiles" / "x"
+    def test_profile_home_linked_to_a_clean_directory_outside_constructs_under_home_mode_profile(self, sandbox_root, work_dir, fake_home, hermes_home, tmp_path):
+        target = tmp_path / "elsewhere" / "home"
         target.mkdir(parents=True)
         self._link(hermes_home, target)
+        self._constructs(work_dir, "profile")
+
+    def test_profile_home_linked_to_a_directory_under_hermes_home_is_refused(self, sandbox_root, work_dir, fake_home, hermes_home):
+        # A second view of the hidden HERMES_HOME tree; only the plain
+        # directory is exempt.
+        target = hermes_home / "profiles" / "x"
+        target.mkdir(parents=True)
+        self._link(hermes_home, target)
+        with _no_session(), pytest.raises(ValueError, match="terminal.home_mode") as exc:
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode="profile"))
+        assert f"lies under {os.path.realpath(hermes_home)}" in str(exc.value)
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+    @pytest.fixture
+    def default_layout(self, fake_home, monkeypatch):
+        """The default layout: HERMES_HOME = HOME/.hermes with profiles under it."""
+        hh = fake_home / ".hermes"
+        (hh / "profiles" / "other" / "home").mkdir(parents=True)
+        (hh / "profiles" / "other" / ".env").write_text("SECRET=1\n")
+        monkeypatch.setenv("HERMES_HOME", str(hh))
+        return hh
+
+    @pytest.mark.parametrize("rel", ["profiles", "profiles/other", "profiles/other/home"])
+    def test_default_layout_profile_home_linked_into_another_profile_is_refused(self, sandbox_root, work_dir, default_layout, rel):
+        self._link(default_layout, default_layout / rel)
+        with _no_session(), pytest.raises(ValueError, match="terminal.home_mode") as exc:
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode="profile"))
+        assert f"lies under {os.path.realpath(default_layout)}" in str(exc.value)
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
+    def test_default_layout_plain_profile_home_constructs(self, sandbox_root, work_dir, default_layout):
+        (default_layout / "home").mkdir()
         self._constructs(work_dir, "profile")
 
     @pytest.mark.parametrize("rel", ["", ".ssh"])

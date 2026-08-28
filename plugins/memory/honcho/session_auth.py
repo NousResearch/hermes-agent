@@ -104,7 +104,12 @@ class SessionAuthMixin:
             host = getattr(self._config, "host", "") or ""
             if not host:
                 return False
-            token = oauth.force_refresh_token(self._bound_config_path(), host)
+            # Tell the refresher which bearer 401'd so a sibling's rotation is adopted, not replayed.
+            try:
+                failed = getattr(getattr(self.honcho, "_http", None), "api_key", None)
+            except Exception:
+                failed = None
+            token = oauth.force_refresh_token(self._bound_config_path(), host, failed_access_token=failed)
             if not token:
                 return False
             if not oauth.apply_token_to_client(self.honcho, token):

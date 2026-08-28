@@ -732,11 +732,17 @@ def _is_named_profile_path(path: Path) -> bool:
     Named profiles live under ``<hermes_home>/profiles/<name>/``.  The
     default profile lives at ``<hermes_home>`` directly (no ``profiles``
     parent), as do custom ``HERMES_HOME`` paths outside ``~/.hermes``.
+
+    Checks both the resolved path (handles symlinks in the parent chain)
+    and the raw path (catches symlinked profile homes whose resolve()
+    target no longer contains ``profiles``).
     """
     try:
-        return "profiles" in path.resolve().parts
+        if "profiles" in path.resolve().parts:
+            return True
     except (OSError, RuntimeError):
-        return False
+        pass
+    return "profiles" in path.parts
 
 
 def _ensure_cron_dir(cron_dir: Path) -> None:
@@ -759,7 +765,7 @@ def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
     store = _current_cron_store()
     _ensure_cron_dir(store.cron_dir)
-    store.output_dir.mkdir(exist_ok=True)
+    _ensure_cron_dir(store.output_dir)
     _secure_dir(store.cron_dir)
     _secure_dir(store.output_dir)
 

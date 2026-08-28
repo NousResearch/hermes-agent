@@ -1275,6 +1275,39 @@ class TestSafeCopyDb:
         assert is_zeroed_sqlite_file(p) is True
 
 
+class TestForeignDbHolderPids:
+    @pytest.mark.parametrize("unreadable", ("fd-table", "fd-target"))
+    def test_returns_unknown_when_process_inspection_is_unreadable(
+        self, tmp_path, monkeypatch, unreadable
+    ):
+        from hermes_cli import backup as backup_mod
+
+        if not backup_mod.sys.platform.startswith("linux"):
+            pytest.skip("Linux holder scanning uses /proc")
+
+        own_pid = backup_mod.os.getpid()
+        foreign_pid = own_pid + 100_000
+
+        def _listdir(path):
+            if path == "/proc":
+                return [str(own_pid), str(foreign_pid)]
+            if path == f"/proc/{foreign_pid}/fd":
+                if unreadable == "fd-table":
+                    raise PermissionError("fd table unreadable")
+                return ["7"]
+            raise AssertionError(f"unexpected path: {path}")
+
+        def _readlink(_path):
+            if unreadable == "fd-target":
+                raise PermissionError("fd target unreadable")
+            raise AssertionError("readlink should not be reached")
+
+        monkeypatch.setattr(backup_mod.os, "listdir", _listdir)
+        monkeypatch.setattr(backup_mod.os, "readlink", _readlink)
+
+        assert backup_mod._foreign_db_holder_pids(tmp_path / "state.db") is None
+
+
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests
 # ---------------------------------------------------------------------------
@@ -1396,6 +1429,47 @@ class TestQuickSnapshot:
             f"Live connection still sees {len(rows_after)} rows after restore "
             f"(expected 1); the extra row 's2' should have been reverted."
         )
+
+    def test_restore_refuses_destructive_fallback_when_holder_scan_is_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import backup as backup_mod
+
+        src = tmp_path / "snapshot.db"
+        dst = tmp_path / "state.db"
+        for path, value in (
+            (src, "snapshot-generation"),
+            (dst, "live-generation"),
+        ):
+            conn = sqlite3.connect(path)
+            try:
+                conn.execute("CREATE TABLE marker (value TEXT)")
+                conn.execute("INSERT INTO marker VALUES (?)", (value,))
+                conn.commit()
+            finally:
+                conn.close()
+
+        sidecars = {}
+        for suffix in ("-wal", "-shm", "-journal"):
+            sidecar = dst.with_name(dst.name + suffix)
+            sidecar.write_bytes(f"live{suffix}".encode())
+            sidecars[sidecar] = sidecar.read_bytes()
+
+        before_bytes = dst.read_bytes()
+        before_inode = dst.stat().st_ino
+
+        def _fail_safe_route(*_args, **_kwargs):
+            raise sqlite3.OperationalError("forced safe-restore failure")
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", _fail_safe_route)
+        monkeypatch.setattr(
+            backup_mod, "_foreign_db_holder_pids", lambda _path: None
+        )
+
+        assert backup_mod._safe_restore_db(src, dst) is False
+        assert dst.read_bytes() == before_bytes
+        assert dst.stat().st_ino == before_inode
+        assert {path: path.read_bytes() for path in sidecars} == sidecars
 
 
 

@@ -416,12 +416,15 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
     def _canonical(path: str) -> str:
         return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
 
-    def _holds_watched(fds: List[str], fd_dir: str) -> bool:
+    def _holds_watched(fds: List[str], fd_dir: str) -> Optional[bool]:
         for fd in fds:
             try:
                 target = os.readlink(f"{fd_dir}/{fd}")
-            except OSError:
+            except FileNotFoundError:
+                # The descriptor closed after its directory was listed.
                 continue
+            except OSError:
+                return None
             if _canonical(target) in watched:
                 return True
         return False
@@ -437,9 +440,15 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
             fd_dir = f"/proc/{pid_str}/fd"
             try:
                 fds = os.listdir(fd_dir)
-            except OSError:
+            except FileNotFoundError:
+                # The process exited after the /proc PID listing.
                 continue
-            if _holds_watched(fds, fd_dir):
+            except OSError:
+                return None
+            holds_watched = _holds_watched(fds, fd_dir)
+            if holds_watched is None:
+                return None
+            if holds_watched:
                 pids.append(int(pid_str))
     except OSError:
         return None
@@ -451,7 +460,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 
     Writing pages into the live file preserves its inode and WAL state, so other holders (gateway,
     dashboard, another CLI) see the restored data instead of stale pages from a replaced inode.
-    The fallback runs ONLY when no other process or in-process connection holds the file
+    The fallback runs ONLY when inspection proves that no other process or in-process connection holds the file
     (replacing the inode under a live holder is the #90950 split-brain); otherwise it fails closed
     (``False``) and the caller reports the file as skipped.
     """
@@ -482,6 +491,14 @@ def _unlink_move_restore_db(src: Path, dst: Path) -> bool:
     from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     try:
         holders = _foreign_db_holder_pids(dst)
+        if holders is None:
+            logger.error(
+                "Refusing unlink+move restore of %s: database-holder inspection "
+                "is unavailable or incomplete, so the destructive fallback "
+                "cannot be proven safe. Resolve the SQLite restore error and retry.",
+                dst,
+            )
+            return False
         if holders:
             logger.error("Refusing unlink+move restore of %s: process(es) %s still "
                          "hold the database or its WAL open. Stop them and retry.", dst, holders)

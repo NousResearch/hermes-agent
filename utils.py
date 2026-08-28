@@ -390,7 +390,12 @@ def _rt_safe_scalar(value: Any) -> Any:
 
 
 def _apply_yaml_diff(doc: Any, before: Any, after: Any) -> None:
-    """Apply only changed paths to a round-trip document, preserving untouched formatting."""
+    """Apply only changed paths to a round-trip document.
+
+    Untouched siblings retain their ruamel comment and formatting metadata.
+    Equal-length lists merge element-wise so an indexed write does not flatten
+    comments on sibling elements; structural list changes replace that list.
+    """
     if not isinstance(before, dict) or not isinstance(after, dict):
         return
     for key in before:

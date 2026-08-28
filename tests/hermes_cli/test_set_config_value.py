@@ -779,6 +779,8 @@ class TestMalformedYAMLConfigPreservation:
         assert "Failed to parse" in combined or "not valid YAML" in combined
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG
+
+
 # ---------------------------------------------------------------------------
 # Literal dots in key paths — regression tests for #84064
 # ---------------------------------------------------------------------------

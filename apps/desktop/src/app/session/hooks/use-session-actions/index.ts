@@ -172,10 +172,10 @@ interface SessionActionsOptions {
   busyRef: MutableRefObject<boolean>
   creatingSessionRef: MutableRefObject<boolean>
   ensureSessionState: (sessionId: string, storedSessionId?: string | null) => ClientSessionState
-    getRouteToken: () => string
-    getRoutedStoredSessionId: () => null | string
-    holdSessionTranscriptView?: (runtimeId: string) => () => void
-    navigate: NavigateFunction
+  getRouteToken: () => string
+  getRoutedStoredSessionId: () => null | string
+  holdSessionTranscriptView?: (runtimeId: string) => () => void
+  navigate: NavigateFunction
   onFreshDraftRouteIntent?: () => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resetViewSync: () => void
@@ -1039,6 +1039,7 @@ export function useSessionActions({
           // transport, so a turn finishing between snapshot and reattach
           // cannot leave a stale partial on screen.
           const shouldRefreshPersistedTranscript = !isWatchWindow()
+
           const suppressUnprovenWarmTranscript =
             !resumedSameSelectedSession && shouldRefreshPersistedTranscript && !hasValidProvenance
 
@@ -1256,6 +1257,7 @@ export function useSessionActions({
                   (persisted.messages.length || !activatedMessages.length)
                 ) {
                   acceptedPersistedDisplayTranscript = Boolean(expectedProvenance)
+
                   // The REST hydration is a newest-tail page; graft it onto any
                   // older pages the previous view already backfilled so
                   // re-activating a scrolled-back session keeps its history.

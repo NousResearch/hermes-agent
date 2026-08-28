@@ -3507,13 +3507,16 @@ describe('resumeSession warm-cache mapping integrity', () => {
     const runtimeIdByStoredSessionIdRef = {
       current: new Map([['stored-1', 'runtime-warm']])
     } satisfies MutableRefObject<Map<string, string>>
+
     const sessionStateByRuntimeIdRef = {
       current: new Map([['runtime-warm', cachedState]])
     } satisfies MutableRefObject<Map<string, ClientSessionState>>
+
     const persistedAuthority = deferred<{
       messages: Array<{ content: string; role: 'assistant' | 'user'; timestamp: number }>
       session_id: string
     }>()
+
     const publications: Array<{ older: boolean; latest: boolean }> = []
 
     setSessions([storedSession({ message_count: 4 })])

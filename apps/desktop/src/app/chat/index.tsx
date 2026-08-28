@@ -515,11 +515,10 @@ const ChatViewContent = memo(function ChatViewContent({
   // spinning forever. Gated on the route matching so a stale latch from another
   // session can't blank the current one.
   const resumeExhausted = isPrimary && isRoutedSessionView && resumeExhaustedSessionId === routedSessionId
+
   const routedHasHistory = Boolean(
     routedSessionId &&
-    sessions.some(
-      session => sessionMatchesStoredId(session, routedSessionId) && sessionShouldHaveTranscript(session)
-    )
+    sessions.some(session => sessionMatchesStoredId(session, routedSessionId) && sessionShouldHaveTranscript(session))
   )
 
   const loadingSession = routedSessionIsLoading({

@@ -63,4 +63,3 @@ export function routedSessionIsLoading({
   // runtime is bound but messages are still suppressed.
   return !activeSessionId || knownHistory
 }
-

@@ -70,6 +70,12 @@ _PROTECTED_REMOTE_PROVIDERS = frozenset({
 logger = logging.getLogger(__name__)
 
 _VALIDATED_SYNTAX_TOOL_NAMES = frozenset({"terminal"})
+_REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
+_REMOTE_KANBAN_PROJECTION_ELISION = (
+    "kanban_show completed locally. The bounded task assignment is already "
+    "present in your worker context; do not request or repeat the raw board "
+    "record remotely. Continue with the assigned work or use a lifecycle tool."
+)
 _APPLICATION_IDENTIFIER_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_-])(?:t_[0-9a-f]{8}|[0-9a-f]{40}|[0-9a-f]{64}|"
     r"[a-z][a-z0-9]{0,31}(?:[_-][a-z][a-z0-9]{0,31}){1,7}"
@@ -375,8 +381,10 @@ def _segment_protected_context(
     return segments[0] if len(segments) == 1 else OutboundText(tuple(segments))
 
 
-def _recognized_syntax_tool_call_ids(value: Any) -> frozenset[str]:
-    """Bind output admission to a preceding call of an exact recognized tool."""
+def _recognized_tool_call_ids(
+    value: Any, tool_names: frozenset[str]
+) -> frozenset[str]:
+    """Bind a narrow output handling rule to an exact prior tool call."""
 
     recognized: set[str] = set()
 
@@ -390,7 +398,7 @@ def _recognized_syntax_tool_call_ids(value: Any) -> frozenset[str]:
             )
             if (
                 item.get("type") in {"function", "function_call"}
-                and direct_name in _VALIDATED_SYNTAX_TOOL_NAMES
+                and direct_name in tool_names
             ):
                 call_id = item.get("call_id") or item.get("id")
                 if isinstance(call_id, str):
@@ -403,7 +411,7 @@ def _recognized_syntax_tool_call_ids(value: Any) -> frozenset[str]:
                     function = call.get("function")
                     if (
                         isinstance(function, Mapping)
-                        and function.get("name") in _VALIDATED_SYNTAX_TOOL_NAMES
+                        and function.get("name") in tool_names
                         and isinstance(call.get("id"), str)
                     ):
                         recognized.add(call["id"])
@@ -415,6 +423,12 @@ def _recognized_syntax_tool_call_ids(value: Any) -> frozenset[str]:
 
     visit(value)
     return frozenset(recognized)
+
+
+def _recognized_syntax_tool_call_ids(value: Any) -> frozenset[str]:
+    """Return preceding terminal calls eligible for strict syntax parsing."""
+
+    return _recognized_tool_call_ids(value, _VALIDATED_SYNTAX_TOOL_NAMES)
 
 
 def _segment_protected_tool_result(
@@ -514,7 +528,9 @@ def _typed_payload(
     sanitized_cap: int,
     field_name: str | None = None,
     syntax_tool_call_ids: frozenset[str] = frozenset(),
+    elided_kanban_tool_call_ids: frozenset[str] = frozenset(),
     protected_tool_content: bool = False,
+    elide_kanban_tool_content: bool = False,
     protected_kanban_context: bool = False,
     generated_context: bool = False,
     redact_generated_context: bool = False,
@@ -531,6 +547,14 @@ def _typed_payload(
                 used_grants,
                 sanitized_cap=sanitized_cap,
             )
+        if elide_kanban_tool_content:
+            # The protected remote worker already received its bounded task
+            # assignment at spawn.  ``kanban_show`` is a local state refresh;
+            # forwarding its arbitrary card text would turn board content into
+            # a remote egress payload.  Replace the result rather than trust,
+            # redact, or transmit it.  This preserves the fail-closed boundary
+            # for every other tool result while avoiding a fallback loop.
+            return GeneratedContextSegment(_REMOTE_KANBAN_PROJECTION_ELISION)
         if generated_context and redact_generated_context:
             return GeneratedContextSegment(redact_remote_unsafe_text(value))
         if protected_kanban_context:
@@ -564,6 +588,11 @@ def _typed_payload(
                 or value.get("type") == "function_call_output"
             )
         )
+        is_elided_kanban_tool_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in elided_kanban_tool_call_ids
+            and value.get("role") == "tool"
+        )
         typed: dict[Any, Any] = {}
         context_mapping = value.get("role") in {"system", "developer"}
         for key, item in value.items():
@@ -594,8 +623,12 @@ def _typed_payload(
                 sanitized_cap=sanitized_cap,
                 field_name=key,
                 syntax_tool_call_ids=syntax_tool_call_ids,
+                elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 protected_tool_content=(
                     is_recognized_tool_result and key in {"content", "output"}
+                ),
+                elide_kanban_tool_content=(
+                    is_elided_kanban_tool_result and key == "content"
                 ),
                 protected_kanban_context=protected_kanban_context,
                 generated_context=(
@@ -620,7 +653,9 @@ def _typed_payload(
                 sanitized_cap=sanitized_cap,
                 field_name=field_name,
                 syntax_tool_call_ids=syntax_tool_call_ids,
+                elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 protected_tool_content=protected_tool_content,
+                elide_kanban_tool_content=elide_kanban_tool_content,
                 protected_kanban_context=protected_kanban_context,
                 generated_context=generated_context,
                 redact_generated_context=redact_generated_context,
@@ -806,6 +841,14 @@ def authorize_agent_sdk_kwargs(
         syntax_tool_call_ids=(
             _recognized_syntax_tool_call_ids(body)
             if protected_kanban_remote
+            else frozenset()
+        ),
+        elided_kanban_tool_call_ids=(
+            _recognized_tool_call_ids(body, _REMOTE_KANBAN_PROJECTION_TOOL_NAMES)
+            if (
+                protected_kanban_remote
+                and str(route_provider or "").strip().lower() == "openai-codex"
+            )
             else frozenset()
         ),
         protected_kanban_context=protected_remote_context,

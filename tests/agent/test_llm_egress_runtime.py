@@ -318,6 +318,83 @@ def test_codex_user_content_private_path_is_not_silently_redacted(tmp_path):
     assert "private_absolute_path" in exc_info.value.decision.reason_codes
 
 
+def test_protected_codex_elides_bound_kanban_show_result(tmp_path, monkeypatch):
+    """Board data remains local instead of causing a remote fallback loop."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_kanban_show_123"
+    board_text = (
+        '{"task":{"body":"untrusted c2VjcmV0LXBheWxvYWQ= '
+        'token=super-secret-value /Users/private/source.py"}}'
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": "kanban_show", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_name": "kanban_show",
+                    "tool_call_id": call_id,
+                    "content": board_text,
+                },
+            ],
+        },
+    )
+
+    rendered = authorized["messages"][1]["content"]
+    assert receipt.allowed
+    assert rendered.startswith("kanban_show completed locally.")
+    assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
+    assert "super-secret-value" not in rendered
+    assert "/Users/private/source.py" not in rendered
+
+
+def test_protected_codex_does_not_elide_unbound_kanban_show_result(
+    tmp_path, monkeypatch
+):
+    """Only an actual prior Kanban tool call may discard its output."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": "gpt-5.6-terra",
+                "messages": [
+                    {
+                        "role": "tool",
+                        "tool_name": "kanban_show",
+                        "tool_call_id": "call_unbound_kanban_show",
+                        "content": "c2VjcmV0LXBheWxvYWQ=",
+                    }
+                ],
+            },
+        )
+
+    assert "base64_payload" in exc_info.value.decision.reason_codes
+
+
 def test_runtime_does_not_manufacture_boundaries_for_oversized_sanitized_text(
     tmp_path,
 ):

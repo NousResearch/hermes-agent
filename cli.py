@@ -21822,22 +21822,31 @@ def main(
     parsed_skills = _parse_skills_argument(skills)
 
     # Create CLI instance
-    cli = HermesCLI(
-        model=model,
-        toolsets=toolsets_list,
-        provider=provider,
-        reasoning=reasoning,
-        api_key=api_key,
-        base_url=base_url,
-        max_turns=max_turns,
-        run_budget=run_budget,
-        verbose=verbose,
-        compact=compact,
-        resume=resume,
-        checkpoints=checkpoints,
-        pass_session_id=pass_session_id,
-        ignore_rules=ignore_rules,
-    )
+    try:
+        cli = HermesCLI(
+            model=model,
+            toolsets=toolsets_list,
+            provider=provider,
+            reasoning=reasoning,
+            api_key=api_key,
+            base_url=base_url,
+            max_turns=max_turns,
+            run_budget=run_budget,
+            verbose=verbose,
+            compact=compact,
+            resume=resume,
+            checkpoints=checkpoints,
+            pass_session_id=pass_session_id,
+            ignore_rules=ignore_rules,
+        )
+    except ImportError as e:
+        # Direct `python cli.py` / `python -m cli` bypasses cmd_chat's
+        # ImportError handler. Same mixed-tree class as #96900.
+        from hermes_constants import emit_partial_update_hint
+
+        if emit_partial_update_hint(e):
+            sys.exit(1)
+        raise
 
     if parsed_skills:
         # Load the skill payloads in the background: skill_view walks the

@@ -162,7 +162,8 @@ export const ja = defineLocale({
       microphonePermission: 'マイクのアクセス許可が拒否されました。',
       openaiRejectedApiKey: 'OpenAI が API キーを拒否しました。',
       openaiRejectedApiKeyWithStatus: status => `OpenAI が API キーを拒否しました (${status} invalid_api_key)。`,
-      openaiTtsNeedsKey: 'OpenAI TTS には VOICE_TOOLS_OPENAI_KEY または OPENAI_API_KEY が必要です。'
+      openaiTtsNeedsKey: 'OpenAI TTS には VOICE_TOOLS_OPENAI_KEY または OPENAI_API_KEY が必要です。',
+      codeSkewRestartRequired: 'アップデート後、このバックエンドは古いコードのままです。再起動して新しいコードを読み込んでください。'
     },
     voice: {
       configureSpeechToText: '音声モードを使用するには音声認識を設定してください。',
@@ -996,6 +997,11 @@ export const ja = defineLocale({
       provider: 'プロバイダー',
       model: 'モデル',
       applying: '適用中...',
+      loadFailed: 'モデルを読み込めませんでした',
+      restartRequired: 'アップデート後、このバックエンドは古いコードのままです。再起動して新しいコードを読み込んでください。',
+      restartBackend: 'バックエンドを再起動',
+      restartingBackend: 'バックエンドを再起動中...',
+      restartFailed: 'バックエンドを再起動できませんでした',
       auxiliaryTitle: '補助モデル',
       resetAllToMain: 'すべてメインにリセット',
       auxiliaryDesc:

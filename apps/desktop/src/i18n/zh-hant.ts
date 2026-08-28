@@ -156,7 +156,8 @@ export const zhHant = defineLocale({
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',
       openaiRejectedApiKeyWithStatus: status => `OpenAI 拒絕了該 API 金鑰 (${status} invalid_api_key)。`,
-      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。'
+      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
+      codeSkewRestartRequired: '更新後此後端仍在執行舊程式碼。請重新啟動以載入新程式碼。'
     },
     voice: {
       configureSpeechToText: '設定語音轉文字後即可使用語音模式。',
@@ -962,6 +963,11 @@ export const zhHant = defineLocale({
       provider: '提供方',
       model: '模型',
       applying: '套用中...',
+      loadFailed: '無法載入模型',
+      restartRequired: '更新後此後端仍在執行舊程式碼。請重新啟動以載入新程式碼。',
+      restartBackend: '重新啟動後端',
+      restartingBackend: '正在重新啟動後端...',
+      restartFailed: '無法重新啟動後端',
       auxiliaryTitle: '輔助模型',
       resetAllToMain: '全部重設為主要模型',
       auxiliaryDesc: '輔助任務預設使用主要模型。您可以為任何任務指定專用模型。',

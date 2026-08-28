@@ -156,7 +156,8 @@ export const zh: Translations = {
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
       openaiRejectedApiKeyWithStatus: status => `OpenAI 拒绝了该 API key (${status} invalid_api_key)。`,
-      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。'
+      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
+      codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。'
     },
     voice: {
       configureSpeechToText: '配置语音转文字后即可使用语音模式。',
@@ -1284,6 +1285,11 @@ export const zh: Translations = {
       reasoning: '推理',
       reasoningOff: '关闭',
       defaultsFailed: '保存模型默认值失败',
+      loadFailed: '无法加载模型',
+      restartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',
+      restartBackend: '重启后端',
+      restartingBackend: '正在重启后端...',
+      restartFailed: '无法重启后端',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
       auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',

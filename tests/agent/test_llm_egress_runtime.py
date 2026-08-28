@@ -402,6 +402,71 @@ def test_protected_codex_elides_responses_kanban_show_output(tmp_path, monkeypat
     assert "super-secret-value" not in rendered
 
 
+def test_protected_nous_elides_bound_kanban_show_result(tmp_path, monkeypatch):
+    """The same safe projection covers protected free-provider workers."""
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_safe_projection")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+    call_id = "call_kanban_show_nous"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "poolside/laguna-xs-2.1:free",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": "kanban_show", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": "c2VjcmV0LXBheWxvYWQ= token=super-secret-value",
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][1]["content"].startswith(
+        "kanban_show completed locally."
+    )
+
+
+def test_protected_nous_keeps_unbound_kanban_output_blocked(tmp_path, monkeypatch):
+    """Provider broadening never treats an asserted call ID as trusted."""
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_safe_projection")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": "poolside/laguna-xs-2.1:free",
+                "messages": [
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_unbound_kanban_show",
+                        "content": "c2VjcmV0LXBheWxvYWQ=",
+                    }
+                ],
+            },
+        )
+
+    assert "base64_payload" in exc_info.value.decision.reason_codes
+
+
 def test_protected_codex_does_not_elide_unbound_kanban_show_result(
     tmp_path, monkeypatch
 ):

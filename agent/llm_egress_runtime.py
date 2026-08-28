@@ -848,10 +848,7 @@ def authorize_agent_sdk_kwargs(
         ),
         elided_kanban_tool_call_ids=(
             _recognized_tool_call_ids(body, _REMOTE_KANBAN_PROJECTION_TOOL_NAMES)
-            if (
-                protected_kanban_remote
-                and str(route_provider or "").strip().lower() == "openai-codex"
-            )
+            if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),
         protected_kanban_context=protected_remote_context,

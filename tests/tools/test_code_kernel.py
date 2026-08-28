@@ -159,17 +159,18 @@ class TestSchemaSurface(unittest.TestCase):
             schema = build_execute_code_schema(mode="strict")
         self.assertIn("reset", schema["parameters"]["properties"])
 
-    def test_session_note_is_always_present(self):
-        """The schema's kernel note is unconditional now — session kernels
-        are always on for local execution (kernel_mode retired), so every
-        session is told about persistence and reset=true."""
+    def test_kernel_persistence_is_taught_unconditionally(self):
+        """Persistence is woven into the tool's main description (always-on
+        since #96787, integrated in the schema diet) — every session must be
+        told state survives across calls, in strict and project mode alike,
+        regardless of any stale kernel_mode key in config."""
         with _kernel_config():
-            session_schema = build_execute_code_schema(mode="strict")
-        self.assertIn("Session kernel is active", session_schema["description"])
-        # Even with a stale per-call key in config, the note stays.
+            schema = build_execute_code_schema(mode="strict")
+        self.assertIn("persistent session kernel", schema["description"])
+        self.assertIn("reset", schema["parameters"]["properties"])
         with _kernel_config(kernel_mode="per-call"):
             stale_schema = build_execute_code_schema(mode="strict")
-        self.assertIn("Session kernel is active", stale_schema["description"])
+        self.assertIn("persistent session kernel", stale_schema["description"])
 
 
 if __name__ == "__main__":

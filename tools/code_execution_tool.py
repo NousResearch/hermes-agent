@@ -2314,36 +2314,38 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         )
     else:
         cwd_note = (
-            "Scripts run in the session's working directory with the active venv's python, "
-            "so project deps (pandas, etc.) and relative paths work like in terminal()."
+            "Scripts run in the session's working directory. Interpreter: "
+            "the project's activated venv/conda python when one is active "
+            "(VIRTUAL_ENV/CONDA_PREFIX — matches terminal()); otherwise "
+            "Hermes's own python (the common case — stdlib plus Hermes's "
+            "deps; check `import x` before relying on project packages)."
         )
 
-    kernel_note = ""
-    if _get_kernel_mode() == "session":
-        kernel_note = (
-            "\n\nSession kernel is active: variables, imports, and loaded "
-            "data persist across execute_code calls in this session. Pass "
-            "reset=true to discard that state. A timed-out or interrupted "
-            "cell kills the kernel and loses its state."
-        )
+    # Session kernels are always on (kernel_mode retired in #96787):
+    # persistence is part of the tool's one description, not a bolt-on
+    # paragraph behind a dead conditional. Remote hosts that cannot sustain
+    # a kernel fail open to per-call silently — not worth schema words;
+    # the result's `kernel` field tells the truth per call.
     description = (
-        "Run a Python script that calls Hermes tools programmatically. "
-        "Use when you need 3+ tool calls with logic between them: "
-        "filtering/reducing large outputs before they enter context, "
-        "conditional branching, or loops (N pages/files, retry on failure). "
-        "Use normal tool calls for single calls, results you must reason "
-        "over in full, or anything needing user interaction.\n\n"
+        "Run Python that calls Hermes tools programmatically. Use when you "
+        "need 3+ tool calls with logic between them: filtering/reducing "
+        "large outputs before they enter context, branching, or loops "
+        "(N pages/files, retry on failure). Use normal tool calls for "
+        "single calls, results you must reason over in full, or anything "
+        "needing user interaction.\n\n"
+        "Calls run in a persistent session kernel: variables, imports, and "
+        "loaded data survive across execute_code calls, so build on earlier "
+        "work instead of re-loading it. A timed-out or interrupted call "
+        "loses that state.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty).\n\n"
+        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per "
+        "call.\n\n"
         f"{cwd_note}\n\n"
-        "Print your final result to stdout; stdlib (json, re, csv, datetime, ...) "
-        "is available for processing.\n\n"
-        "Built-in helpers (no import): json_parse(text) — tolerant json.loads for "
-        "terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; "
-        "retry(fn, max_attempts=3, delay=2) — exponential backoff for transient failures."
-        + kernel_note
+        "Built-in helpers (no import): json_parse(text) — tolerant "
+        "json.loads for terminal() output; shell_quote(s) — shlex.quote for "
+        "dynamic shell args; retry(fn, max_attempts=3, delay=2) — "
+        "exponential backoff."
     )
 
     return {
@@ -2363,9 +2365,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                 "reset": {
                     "type": "boolean",
                     "description": (
-                        "Session-kernel mode only: discard the persistent "
-                        "kernel's state and start fresh before running this "
-                        "code. Ignored in per-call mode."
+                        "Discard the kernel's persistent state and start "
+                        "fresh before running this code."
                     ),
                 },
             },

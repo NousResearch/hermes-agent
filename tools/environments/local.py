@@ -1789,6 +1789,13 @@ class LocalEnvironment(BaseEnvironment):
             # Force forward slashes so the same string serves both contexts.
             return str(cache_dir).replace("\\", "/")
 
+        # Explicit temp-dir override from terminal.temp_dir (TERMINAL_TEMP_DIR).
+        # Honored ahead of the generic TMPDIR so users can redirect Hermes' temp
+        # root to real storage when /tmp is a small tmpfs.
+        configured = self.env.get("TERMINAL_TEMP_DIR") or os.environ.get("TERMINAL_TEMP_DIR")
+        if configured and configured.startswith("/") and os.path.isdir(configured):
+            return configured.rstrip("/") or "/"
+
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):

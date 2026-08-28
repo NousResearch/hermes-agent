@@ -3640,6 +3640,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "modal_mode": "TERMINAL_MODAL_MODE",
     "degraded_mode": "TERMINAL_DEGRADED_MODE",
     "cwd": "TERMINAL_CWD",
+    "temp_dir": "TERMINAL_TEMP_DIR",
     "timeout": "TERMINAL_TIMEOUT",
     "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
     "docker_image": "TERMINAL_DOCKER_IMAGE",

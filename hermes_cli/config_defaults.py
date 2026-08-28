@@ -382,6 +382,13 @@ DEFAULT_CONFIG = {
         # preserves the historical error + traceback behavior.
         "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
+        # Root directory for Hermes' terminal session temp files (background
+        # logs/pid/exit files, code-execution sandboxes, etc.). Defaults to the
+        # OS temp root. Set this to a path on real storage when /tmp is a small
+        # tmpfs and Hermes runs out of space — e.g. on RAM-based tmpfs setups
+        # common to some Arch-based distros. Must be an absolute POSIX path;
+        # relative or empty values fall back to the default temp resolution.
+        "temp_dir": "",
         # Terminal font family for the desktop app's embedded xterm.js terminal.
         # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
         # the desktop terminal uses this as the CSS font-family value, with the

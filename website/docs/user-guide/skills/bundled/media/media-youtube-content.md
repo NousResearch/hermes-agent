@@ -15,7 +15,7 @@ YouTube transcripts to summaries, threads, blogs.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/media\youtube-content` |
+| Path | `skills/media/youtube-content` |
 | Version | `1.0.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |

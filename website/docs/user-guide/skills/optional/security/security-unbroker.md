@@ -15,7 +15,7 @@ Autonomously remove your info from data-broker sites.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/unbroker` |
-| Path | `optional-skills/security\unbroker` |
+| Path | `optional-skills/security/unbroker` |
 | Version | `1.0.0` |
 | Author | SHL0MS (github.com/SHL0MS) |
 | License | MIT |

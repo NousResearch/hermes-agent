@@ -15,7 +15,7 @@ Parallel 4-agent cleanup of recent code changes.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\simplify-code` |
+| Path | `skills/software-development/simplify-code` |
 | Version | `1.1.0` |
 | Author | Hermes Agent (inspired by Claude Code /simplify) |
 | License | MIT |

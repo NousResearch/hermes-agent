@@ -15,7 +15,7 @@ description: "4-phase root cause debugging: understand bugs before fixing"
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\systematic-debugging` |
+| Path | `skills/software-development/systematic-debugging` |
 | Version | `1.1.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |

@@ -15,7 +15,7 @@ p5.js sketches: gen art, shaders, interactive, 3D.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/creative\p5js` |
+| Path | `skills/creative/p5js` |
 | Version | `1.0.0` |
 | Author | SHL0MS, Hermes Agent |
 | License | MIT |

@@ -234,6 +234,35 @@ def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
     return memory, user
 
 
+def _refresh_agent_tool_definitions(agent) -> bool:
+    """Rebuild agent.tools at the compaction commit boundary.
+
+    Forever-sessions (Bot Mode desktop chats, gateway channels) never
+    restart, so compaction is the only moment a config change can reach the
+    tool snapshot: dynamic schemas (image_generate capability gating,
+    delegate_task limits, execute_code interpreter/stub text) are built
+    once at agent init and then frozen for cache stability. The prompt
+    cache is already invalidated at this boundary, so refreshing here is
+    free; between compactions the snapshot stays byte-stable as before.
+
+    Delegates to tools.mcp_tool.refresh_agent_mcp_tools — the single shared
+    snapshot rebuild (atomic publish, generation guard, memory/LCM tool
+    re-injection) — in content_aware mode, which also swaps when schema
+    CONTENT changed under a stable name set (the dynamic-schema case; the
+    name-only diff is sufficient for its MCP-reload callers). Returns True
+    when new tools were added. Never raises: tool staleness must not fail
+    a compaction.
+    """
+    from tools.mcp_tool import refresh_agent_mcp_tools
+
+    added = refresh_agent_mcp_tools(agent, content_aware=True)
+    if added:
+        logger.info(
+            "Compaction tool refresh added tools: %s", sorted(added),
+        )
+    return bool(added)
+
+
 def _cached_prompt_reflects_builtin_memory(agent: Any, cached_prompt: str) -> bool:
     """Whether the cached system prompt already embeds current built-in memory.
 
@@ -3852,6 +3881,24 @@ def compress_context(
 
         cached_system_prompt = agent._cached_system_prompt
         agent._invalidate_system_prompt()
+
+        # Refresh dynamic tool schemas at the same admitted-commit boundary
+        # that rebuilds the system prompt (maintainer-directed, #95681 arc):
+        # forever-sessions (Bot Mode chats, gateway channels) never restart,
+        # so compaction is the ONLY point where a config change — image
+        # model swap, delegation depth, code_execution mode — can reach
+        # agent.tools. The prompt cache is already broken here, so the
+        # refresh is free; when nothing changed the snapshot is byte-equal
+        # and we keep the existing list object (identity matters to
+        # provider-side tool-block caching on some backends).
+        try:
+            _refresh_agent_tool_definitions(agent)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "compaction tool-definition refresh failed; keeping the "
+                "session's existing tool snapshot",
+                exc_info=True,
+            )
 
         # Built-in memory is the only system-prompt input that a normal
         # compaction reloads. When the cached prompt already embeds the

@@ -437,6 +437,75 @@ def test_block_happy_path(worker_env):
         conn.close()
 
 
+def test_auto_decomposed_leaf_rejects_invented_needs_input(monkeypatch, worker_env):
+    """A generated leaf must execute its fixed scope rather than reopen it.
+
+    This is a lifecycle guard, not prompt-only advice: repeated local-model
+    requests for a human to choose analysis metrics were previously accepted as
+    real blocks and escalated the card to triage.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="bounded generated analysis",
+            body="Inspect the named source and report factual findings.",
+            assignee="test-worker",
+            created_by="auto-decomposer",
+        )
+        assert kb.claim_task(conn, tid) is not None
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    out = kt._handle_block({
+        "kind": "needs_input",
+        "reason": "Please choose which metrics to analyze.",
+    })
+    assert "error" in json.loads(out)
+    assert "auto-decomposed leaf" in out
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_auto_decomposed_leaf_allows_real_capability_block(monkeypatch, worker_env):
+    """The guard must not suppress a factual external access escalation."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="generated external audit",
+            assignee="test-worker",
+            created_by="auto-decomposer",
+        )
+        assert kb.claim_task(conn, tid) is not None
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    out = kt._handle_block({
+        "kind": "capability",
+        "reason": "gh pr view failed: authentication is unavailable.",
+    })
+    assert json.loads(out)["ok"] is True
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
 def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     """Set up an isolated HERMES_HOME with one claimed goal_mode task,
     matching the pattern used by the kanban_complete judge gate tests."""
@@ -841,6 +910,7 @@ def test_kanban_guidance_resolves_board_context_before_needs_input_block():
     assert "kanban_show(task_id=...)" in KANBAN_GUIDANCE
     assert "profile roster" in KANBAN_GUIDANCE
     assert "only then block" in KANBAN_GUIDANCE.lower()
+    assert "bounded leaf assignment" in KANBAN_GUIDANCE
 
 
 def test_kanban_guidance_keeps_board_record_receipts_off_the_filesystem():

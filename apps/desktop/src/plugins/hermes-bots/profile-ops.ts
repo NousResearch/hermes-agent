@@ -37,8 +37,6 @@ import { botConnectionRoute, botRouteKey, requestForBot } from './routing'
 import { getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
-/** Fetch server-side avatars for roster rows flagged has_avatar when the
- *  local cache doesn't already have an image for them. Fire-and-forget. */
 const avatarFetchInflight = new Set<string>()
 const avatarPushInflight = new Set<string>()
 
@@ -159,6 +157,8 @@ interface ProfilesGetAssetResult {
   found?: boolean
 }
 
+/** Fetch server-side avatars for roster rows flagged has_avatar when the
+ *  local cache doesn't already have an image for them. Fire-and-forget. */
 export function pullServerAvatars(roster: RosterRow[]) {
   pushLocalAvatars(roster)
 

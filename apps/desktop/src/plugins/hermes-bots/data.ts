@@ -11,6 +11,7 @@ import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
 import { displayName } from './labels'
 import {
   aliasIdentityFor,
+  beginAliasRouteIndex,
   botConnectionRoute,
   botRosterMeta,
   botRouteKey,
@@ -267,8 +268,23 @@ export function botOwner(owner: RosterRow | string): BotOwner {
  * before the latest local/server metadata write must not overwrite it. */
 export const botMetaWriteAt = new Map<string, number>()
 
+/** How long a write can still outrank a roster snapshot. The overlay only
+ *  skips a bot while some snapshot ISSUED before the write is still landing,
+ *  and the roster refetches every 5s with retry backoff capped at 15s — well
+ *  inside a minute. Past that the stamp can never fence anything again, so
+ *  keeping it just grows the map for the life of the renderer. */
+const BOT_META_WRITE_FENCE_MS = 60_000
+
 export function noteBotMetaWrite(key: string) {
-  botMetaWriteAt.set(key, Date.now())
+  const now = Date.now()
+
+  for (const [written, at] of botMetaWriteAt) {
+    if (now - at > BOT_META_WRITE_FENCE_MS) {
+      botMetaWriteAt.delete(written)
+    }
+  }
+
+  botMetaWriteAt.set(key, now)
 }
 
 /** Three-way outcome of the server half of a save — see the block comment on
@@ -637,8 +653,10 @@ export function useRoster() {
       // Best-effort and feature-detected — a failed read keeps the last
       // good index rather than dropping identities mid-session.
       if (typeof host.profileRoutes === 'function') {
+        const epoch = beginAliasRouteIndex()
+
         try {
-          indexAliasRoutes(await host.profileRoutes())
+          indexAliasRoutes(await host.profileRoutes(), epoch)
         } catch {
           /* keep the previous alias index */
         }
@@ -1010,7 +1028,10 @@ interface RosterOwnerRef {
   name?: null | string
 }
 
-export function isActiveRosterBot(bot: Partial<RosterRow> | null | undefined, active: RosterOwnerRef | null | undefined) {
+export function isActiveRosterBot(
+  bot: Partial<RosterRow> | null | undefined,
+  active: RosterOwnerRef | null | undefined
+) {
   if (!active) {
     return false
   }
@@ -1035,12 +1056,14 @@ export function isActiveRosterBot(bot: Partial<RosterRow> | null | undefined, ac
  *  load-bearing on the nullable overload — callers use it to CLEAR a
  *  selection, so it must never be coerced to a 'default' fallback the way
  *  botRosterKey does. A real row always yields a key (`name` is required). */
+/* eslint-disable no-redeclare -- overload signatures; the rule predates TS */
 export function botSelectionKey(bot: RosterRow): string
 export function botSelectionKey(bot: Partial<RosterRow> | null | undefined): string | undefined
 
 export function botSelectionKey(bot: Partial<RosterRow> | null | undefined): string | undefined {
   return bot?.sourceScoped || bot?.remoteSource ? botRosterKey(bot) : bot?.name
 }
+/* eslint-enable no-redeclare */
 
 export function isDefaultBot(bot: Partial<RosterRow> | null | undefined): boolean {
   const route = botConnectionRoute(bot)
@@ -1056,7 +1079,8 @@ export function newBotChat(bot: RosterRow) {
   if (typeof host.newChat !== 'function') {
     host.notify?.({
       kind: 'error',
-      message: getPluginCtx()?.i18n.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
+      message:
+        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
     })
 
     return
@@ -1067,7 +1091,8 @@ export function newBotChat(bot: RosterRow) {
   if (!route) {
     host.notify?.({
       kind: 'error',
-      message: getPluginCtx()?.i18n.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
+      message:
+        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
     })
 
     return
@@ -1179,6 +1204,7 @@ export function botRosterKey(bot: Partial<RosterRow> | null | undefined): string
 /** The key a bot's persisted appearance/meta lives under. Same nullable
  *  contract as botSelectionKey: a real row always resolves to a key, a
  *  partial/absent one may not. */
+/* eslint-disable no-redeclare -- overload signatures; the rule predates TS */
 export function botMetaKey(bot: RosterRow): string
 export function botMetaKey(bot: Partial<RosterRow> | null | undefined): string | undefined
 
@@ -1187,6 +1213,7 @@ export function botMetaKey(bot: Partial<RosterRow> | null | undefined): string |
 
   return route ? botRouteKey(route) : bot?.name
 }
+/* eslint-enable no-redeclare */
 
 export function persistBotMetaSnapshot(value: Record<string, BotMeta>, scoped = false): Promise<void> {
   try {
@@ -1258,6 +1285,14 @@ interface BotSourceStatus {
   tone: 'bad' | 'good' | 'muted' | 'warn'
 }
 
+/** Called from plain functions rather than components, so there is no `useBots`
+ *  to lean on and the ctx may not be installed yet — the English text is the
+ *  floor, not the intended reading. Guard `i18n` as well as the ctx: this runs
+ *  on every roster row, and a throw here paints an empty rail. */
+function sourceLabel(key: string, fallback: string): string {
+  return getPluginCtx()?.i18n?.t(`roster.${key}`) ?? fallback
+}
+
 export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSourceStatus {
   const error = String(bot?.sourceError || '').trim()
 
@@ -1265,7 +1300,7 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
     return {
       available: false,
       key: 'missing',
-      label: 'Gateway removed',
+      label: sourceLabel('gatewayRemoved', 'Gateway removed'),
       tone: 'bad'
     }
   }
@@ -1274,7 +1309,7 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
     return {
       available: true,
       key: 'on-demand',
-      label: 'On demand',
+      label: sourceLabel('onDemand', 'On demand'),
       tone: 'muted'
     }
   }
@@ -1283,7 +1318,7 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
     return {
       available: false,
       key: 'unavailable',
-      label: getPluginCtx()?.i18n.t('roster.unavailable') ?? 'Unavailable',
+      label: sourceLabel('unavailable', 'Unavailable'),
       tone: 'warn'
     }
   }
@@ -1292,7 +1327,7 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
     return {
       available: true,
       key: 'ready',
-      label: 'Ready',
+      label: sourceLabel('ready', 'Ready'),
       tone: 'good'
     }
   }
@@ -1300,7 +1335,7 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
   return {
     available: true,
     key: 'unknown',
-    label: 'Status unknown',
+    label: sourceLabel('statusUnknown', 'Status unknown'),
     tone: 'muted'
   }
 }

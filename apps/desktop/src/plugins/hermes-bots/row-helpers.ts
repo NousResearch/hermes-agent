@@ -1,7 +1,7 @@
 /**
  * The row-level reads a roster row is assembled from: who sent the last
- * message, what to call a generically-titled session, whether a bot counts as
- * live, and whether its row owns the highlight.
+ * message, whether a bot counts as live, and whether its row owns the
+ * highlight.
  *
  * Pure below the surfaces. Every one of these takes a roster row and returns
  * a value, so the bot row, the roster pane and the open path can share one
@@ -9,7 +9,7 @@
  */
 
 import { botActivitySession, botHandle, botRosterKey, isActiveRosterBot } from './data'
-import type { CanonicalSession, RosterActivityFilter, RosterRow } from './types'
+import type { RosterActivityFilter, RosterRow } from './types'
 
 // ── human-readable row helpers ───────────────────────────────────────────────
 
@@ -49,43 +49,6 @@ export function previewKind(preview: null | string | undefined): { fromBot: null
   return {
     fromBot: null
   }
-}
-
-/** Session titles the gateway auto-assigns that carry no information. */
-const GENERIC_TITLES = new Set(['', 'bot chat', 'new chat', 'new conversation', 'conversation', 'chat', 'untitled'])
-
-function isGenericTitle(title: null | string | undefined): boolean {
-  return GENERIC_TITLES.has((title || '').trim().toLowerCase())
-}
-
-/** Title for the session chip: the real session title when it means
- *  something, otherwise a short label generated from the newest message
- *  (delivery prefixes stripped) so "Bot Chat" rows still say what the
- *  conversation is actually about. */
-export function generatedSessionTitle(session: CanonicalSession | null | undefined, preview: null | string | undefined) {
-  const raw = (session?.title || '').trim()
-
-  if (raw && !isGenericTitle(raw)) {
-    return raw
-  }
-
-  const cleaned = (preview || '').trim().replace(A2A_PREFIX_RE, '').trim()
-
-  if (!cleaned) {
-    return raw || 'Conversation'
-  }
-
-  const words = cleaned
-    .split(/\s+/)
-    .slice(0, 5)
-    .join(' ')
-    .replace(/[,;:.]+$/, '')
-
-  if (!words) {
-    return raw || 'Conversation'
-  }
-
-  return words.length > 34 ? `${words.slice(0, 33)}…` : words
 }
 
 /** Roster liveness window: a bot whose last message landed within this many

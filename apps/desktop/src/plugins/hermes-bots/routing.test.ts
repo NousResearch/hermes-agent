@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { displayName } from './labels'
 import {
   aliasIdentityFor,
+  beginAliasRouteIndex,
   botConnectionRoute,
   botRosterMeta,
   indexAliasRoutes,
@@ -147,6 +148,59 @@ describe('alias identity survives the hosted handoff (#89131)', () => {
 
     expect(aliasIdentityFor(hostedRow)).toBeNull()
     expect(displayName(hostedRow, null)).toBe('cloud.example.com')
+  })
+})
+
+describe('overlapping index rebuilds', () => {
+  const deferred = () => {
+    let resolve!: (routes: ProfileRoute[]) => void
+
+    const promise = new Promise<ProfileRoute[]>(settle => {
+      resolve = settle
+    })
+
+    return { promise, resolve }
+  }
+
+  /** The rebuild exactly as useRoster runs it: claim the epoch, read the
+   *  route inventory over the wire, then replace the index wholesale. */
+  const rebuild = async (read: Promise<ProfileRoute[]>) => {
+    const epoch = beginAliasRouteIndex()
+
+    indexAliasRoutes(await read, epoch)
+  }
+
+  const STALE_ROUTE: ProfileRoute = {
+    connectionId: 'cloud-abc',
+    mode: 'remote',
+    profile: 'stale',
+    targetProfile: 'default'
+  }
+
+  it('keeps the newer routes when an older read resolves last', async () => {
+    const older = deferred()
+    const newer = deferred()
+
+    const first = rebuild(older.promise)
+    const second = rebuild(newer.promise)
+
+    newer.resolve([MOXIE_ROUTE])
+    await second
+
+    older.resolve([STALE_ROUTE])
+    await first
+
+    expect(aliasIdentityFor(hostedRow)?.name).toBe('moxie')
+  })
+
+  it('still adopts the newest routes once rebuilds stop overlapping', async () => {
+    await rebuild(Promise.resolve([MOXIE_ROUTE]))
+
+    expect(aliasIdentityFor(hostedRow)?.name).toBe('moxie')
+
+    await rebuild(Promise.resolve([STALE_ROUTE]))
+
+    expect(aliasIdentityFor(hostedRow)?.name).toBe('stale')
   })
 })
 

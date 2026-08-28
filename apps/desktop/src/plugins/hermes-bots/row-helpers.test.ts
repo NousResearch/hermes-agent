@@ -1,7 +1,6 @@
 /**
  * The row-level reads a roster row is assembled from: who sent the last
- * message, what to call a generically-titled session, and whether a bot counts
- * as live right now.
+ * message, and whether a bot counts as live right now.
  *
  * Two bug classes are pinned:
  *  - #89484 — the bot-to-bot badge rendered the raw captured profile name, so
@@ -20,7 +19,6 @@ import {
   activeBots,
   botCanonicalSessionId,
   botRowOwnsWorkspace,
-  generatedSessionTitle,
   previewKind,
   rosterActivityMatches,
   workerActiveAt
@@ -76,41 +74,6 @@ describe('previewKind classifies a roster preview', () => {
   it('treats an empty or absent preview as not a DM', () => {
     expect(fromBot('')).toBeNull()
     expect(fromBot(undefined)).toBeNull()
-  })
-})
-
-describe('generatedSessionTitle labels a generically-titled chat', () => {
-  it('keeps a stored title that means something', () => {
-    expect(generatedSessionTitle({ id: 's', last_active: 1, title: 'Weekly review' }, 'some preview')).toBe(
-      'Weekly review'
-    )
-  })
-
-  it('invents a label from the preview for auto-assigned titles', () => {
-    for (const title of ['Bot Chat', 'New chat', '']) {
-      expect(generatedSessionTitle({ id: 's', last_active: 1, title }, 'The tailnet proxy binds 100.64.0.1')).toBe(
-        'The tailnet proxy binds 100.64.0.1'
-      )
-    }
-  })
-
-  it('strips the bot-to-bot delivery prefix before generating', () => {
-    const label = generatedSessionTitle(
-      { id: 's', last_active: 1, title: '' },
-      'Message from 🤖 manager (@manager): Learn-share: skill installed'
-    )
-
-    expect(label).toMatch(/Learn-share/)
-    expect(label).not.toMatch(/Message from/)
-  })
-
-  it('caps the generated label so it fits the row', () => {
-    const label = generatedSessionTitle(
-      { id: 's', last_active: 1, title: '' },
-      'this is a very long preview that goes on and on and on about something or other entirely'
-    )
-
-    expect(label.length).toBeLessThanOrEqual(34)
   })
 })
 

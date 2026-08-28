@@ -294,10 +294,26 @@ interface AliasIdentity {
 
 /** Keyed `${connectionId}::${targetProfile}`; null marks an ambiguous claim. */
 let aliasRouteIndex = new Map<string, AliasIdentity | null>()
+let aliasRouteEpoch = 0
+
+/** Claim the next rebuild epoch BEFORE reading the route inventory, then hand
+ *  the token to indexAliasRoutes. The read is async and the index is replaced
+ *  wholesale, so two overlapping roster fetches can resolve out of order and
+ *  the slower one's stale routes would win. */
+export function beginAliasRouteIndex(): number {
+  aliasRouteEpoch += 1
+
+  return aliasRouteEpoch
+}
 
 /** Rebuild the alias index from the credential-free route inventory. Only
- *  genuine aliases (route.profile !== route.targetProfile) participate. */
-export function indexAliasRoutes(routes: ProfileRoute[]) {
+ *  genuine aliases (route.profile !== route.targetProfile) participate. A
+ *  rebuild overtaken by a newer one drops its result. */
+export function indexAliasRoutes(routes: ProfileRoute[], epoch = beginAliasRouteIndex()) {
+  if (epoch < aliasRouteEpoch) {
+    return
+  }
+
   const next = new Map<string, AliasIdentity | null>()
 
   for (const route of Array.isArray(routes) ? routes : []) {

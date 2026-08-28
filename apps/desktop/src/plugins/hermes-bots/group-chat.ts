@@ -11,7 +11,7 @@
 
 import { atom, host } from '@hermes/plugin-sdk'
 
-import { $botMeta, $lastRoster } from './data'
+import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { getPluginCtx } from './shared'
 import type {
@@ -161,8 +161,7 @@ function normalizeGroupChatSyncSnapshot(snapshot: GroupChatSyncSnapshot | null |
 
   for (const [name, at] of Object.entries(snapshot.deleted || {})) {
     // v1 tombstones carried wall-clock ms, not gateway revisions — they must
-    // not outrank real revisions (same rule groupChatSyncDeletedRevision
-    // applied before v3).
+    // not outrank real revisions.
     deleted[`name:${name}`] = Number(snapshot.version || 0) >= 2 ? Math.max(0, Number(at || 0)) : 0
   }
 
@@ -324,22 +323,17 @@ function groupChatSyncEntryKey(entry: GroupMessage) {
   ])
 }
 
-function groupChatSyncMemberKey(member: GroupMember & { source?: string }) {
-  // TODO(bot-mode-types): `member.source` cannot exist. Member descriptors are
-  // roster-derived (name/handle/connectionId/connectionLabel); only message
-  // AUTHORS carry `source`. This field always stringifies to '' , so it adds
-  // nothing to the identity key — it likely meant `connectionLabel`.
-  return JSON.stringify([
-    String(member?.source || ''),
-    String(member?.connectionId || ''),
-    String(member?.connectionLabel || ''),
-    String(member?.handle || ''),
-    String(member?.name || '')
-  ])
-}
-
-function groupChatSyncDeletedRevision(source: GroupChatSyncSnapshot | null | undefined, value: unknown) {
-  return Number(source?.version || 0) >= 2 ? Math.max(0, Number(value || 0)) : 0
+/** Members dedupe on durable identity — the same (connectionId, name) pair
+ *  botRosterKey seats them by everywhere else. `connectionLabel` and `handle`
+ *  are display strings each machine re-derives (a connection rename, an older
+ *  build with no handle), so keying on them seats one bot twice; both copies
+ *  then answer to a single groupMemberKey in watermarks/sessions/stranded and
+ *  the round engine gives that bot two turns. Deliberately unconditional,
+ *  unlike groupMemberKey: the projection stamps `remoteSource` onto members it
+ *  merges in, so a scoped/unscoped branch would fork a member from its own
+ *  previously-merged copy. */
+function groupChatSyncMemberKey(member: GroupMember) {
+  return botRosterKey(member)
 }
 
 /** Merge two bounded projections without treating an absent room/message as
@@ -764,7 +758,9 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
 
 export function persistGroupChatRooms(all: Record<string, GroupChat> = $groupChats.get()) {
   try {
-    return Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durableGroupChatRooms(all))).catch(() => undefined)
+    return Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durableGroupChatRooms(all))).catch(
+      () => undefined
+    )
   } catch {
     return Promise.resolve()
   }

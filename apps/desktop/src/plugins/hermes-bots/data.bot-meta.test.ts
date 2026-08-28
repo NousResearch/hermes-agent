@@ -298,4 +298,23 @@ describe('server metadata reconciliation', () => {
 
     expect($botMeta.get().builder.groups).toEqual(['Team'])
   })
+
+  it('forgets write stamps far too old to fence any snapshot', async () => {
+    vi.useFakeTimers()
+
+    try {
+      await saveBotMeta('builder', { title: 'Builder' })
+
+      expect([...botMetaWriteAt.keys()]).toEqual(['builder'])
+
+      // The renderer stays up for days. Once no snapshot can still be in
+      // flight from before a stamp, keeping it just costs a row per bot.
+      vi.advanceTimersByTime(120_000)
+      await saveBotMeta('researcher', { title: 'Research' })
+
+      expect([...botMetaWriteAt.keys()]).toEqual(['researcher'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

@@ -449,7 +449,10 @@ export default {
           // Leaving Bot Mode ($botsPaneVisible false) still unregisters.
           const $self = host.paneVisibility(`${ID}:routines`)
 
-          if ($botsPaneVisible.get() && $self && typeof $self.get === 'function' && $self.get()) {return}
+          if ($botsPaneVisible.get() && $self && typeof $self.get === 'function' && $self.get()) {
+            return
+          }
+
           unregisterRoutines()
           unregisterRoutines = null
         }

@@ -649,6 +649,43 @@ describe('cold hydrate', () => {
     expect(merged.Shared.syncRevision).toBe(4)
     expect(merged.Shared.log.map(entry => entry.id).sort()).toEqual(['local', 'remote'])
   })
+
+  it('seats a member once when the projection re-derived its label and handle', async () => {
+    const { chat } = await loadRoom()
+
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      {
+        rooms: {
+          Shared: {
+            log: [],
+            members: [{ connectionId: 'mini', connectionLabel: 'Home lab', name: 'research', sourceScoped: true }],
+            revision: 1
+          }
+        },
+        version: 3
+      },
+      {
+        Shared: {
+          log: [],
+          members: [
+            {
+              connectionId: 'mini',
+              connectionLabel: 'Homelab',
+              handle: 'research',
+              name: 'research',
+              sourceScoped: true
+            }
+          ],
+          syncRevision: 1,
+          watermarks: {}
+        }
+      } as unknown as Record<string, GroupChat>
+    )
+
+    // Both copies answer to one groupMemberKey, so a second seat would take a
+    // second turn every round off a single watermark.
+    expect(merged.Shared.members?.map(member => member.name)).toEqual(['research'])
+  })
 })
 
 // A room's identity is its roomId. Display names are labels: renaming one is a

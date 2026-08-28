@@ -83,7 +83,10 @@ export function ensureMessagingProtocol(
 ) {
   const text = (soul || '').trim()
 
-  if (serverInjectsProtocol || hasMessagingProtocol(text)) {return text}
+  if (serverInjectsProtocol || hasMessagingProtocol(text)) {
+    return text
+  }
+
   const section = messagingProtocolSection(name, roster)
 
   return text ? text + '\n\n' + section : section

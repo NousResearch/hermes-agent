@@ -6,6 +6,9 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator
 
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -203,6 +206,15 @@ def effective_stop_watchdog_delay(runner: object, watchdog_delay: float) -> floa
 
 
 _TRUTHY = {"1", "true", "yes", "on"}
+
+
+@contextmanager
+def restart_notification_marker_lock(hermes_home: str | Path) -> Iterator[None]:
+    """Serialize restart-marker compare/write/unlink operations across processes."""
+    from hermes_cli.active_sessions import _FileLock
+
+    with _FileLock(Path(hermes_home) / ".restart_notify.lock"):
+        yield
 
 
 def is_global_startup_conflict(error_code: str | None) -> bool:

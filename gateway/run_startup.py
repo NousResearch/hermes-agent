@@ -260,19 +260,19 @@ class GatewayStartupMixin:
         from gateway.run import _startup_restore_drain_timeout_secs
         claimed = await self._claim_pending_obligations()
 
-        async def _boot_sends() -> None:
-            await self._send_restart_notification()
-            if planned_restart_notification_pending:
-                await self._replay_pending_planned_restart_notification()
-            await self._redeliver_claimed_obligations(claimed)
-
-        boot_task = asyncio.create_task(_boot_sends())
+        # Lifecycle retries must not hold already-claimed generated replies behind them.
+        boot_tasks = {
+            asyncio.create_task(self._send_restart_notification()),
+            asyncio.create_task(self._redeliver_claimed_obligations(claimed)),
+        }
+        if planned_restart_notification_pending:
+            boot_tasks.add(asyncio.create_task(self._replay_pending_planned_restart_notification()))
         timeout = _startup_restore_drain_timeout_secs()
         if timeout <= 0:
-            await boot_task  # unbounded: a failing send surfaces here (unlike the gate path)
+            await asyncio.gather(*boot_tasks)  # explicit unbounded gate setting
             return
         await self._wait_bounded_or_release(
-            {boot_task}, timeout,
+            boot_tasks, timeout,
             "Boot-path sends still running after %.0fs; releasing inbound gate so other platforms are not "
             "frozen. Restart notification / obligation redelivery continue in the background.",
             "background boot-path send failed after gate release: see traceback", track=True,
@@ -1369,15 +1369,11 @@ class GatewayStartupMixin:
 
     async def _start_finish_wiring(self, connected_count: int) -> None:
         """Post-connect wiring: services, boot notifications, startup restore, recovered watchers."""
-        from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
+        from gateway.run import _planned_restart_notification_pending
         await self._start_post_connect_services(connected_count)
         # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries).
         if connected_count > 0:
             await asyncio.sleep(1.0)
-        # Before _send_restart_notification() unlinks the marker: did we boot from a chat /restart?
-        # One-shot signal for _is_stale_restart_redelivery.
-        if _restart_notification_pending():
-            self._booted_from_restart = True
         # Boot-path adapter.send() calls must not pin the inbound restore gate (a Telegram flood-
         # control sleep here once froze every platform).
         # Restart notification, home-channel startup notice, and obligation redelivery all call
@@ -1469,6 +1465,7 @@ class GatewayStartupMixin:
 
     async def _start_impl(self) -> bool:
         logger.info("Starting Hermes Gateway...")
+        self._capture_restart_notification()
         self._start_install_faulthandler()
         await self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():

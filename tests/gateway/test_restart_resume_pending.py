@@ -1289,11 +1289,10 @@ async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
     )
     assert runner._startup_restore_queue == []
     assert runner._startup_restore_in_progress is False
-    # The DB half (claim + resume clear) runs inline BEFORE the abandonable
-    # send task, so it must have completed even though the boot send hung;
-    # the network half never ran because the hung notification precedes it.
+    # Claim/resume clearing stays inline; independent generated replies must not wait behind
+    # a lifecycle notification's retry window, even when the restore gate releases early.
     runner._claim_pending_obligations.assert_awaited_once()
-    runner._redeliver_claimed_obligations.assert_not_awaited()
+    runner._redeliver_claimed_obligations.assert_awaited_once_with([])
 
     hung.set()
     leftover = [t for t in list(runner._background_tasks) if not t.done()]

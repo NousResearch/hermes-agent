@@ -15,6 +15,7 @@ import re
 import shlex
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
@@ -521,7 +522,16 @@ class GatewaySlashCommandsMixin(
         self._resume_paused_platform(platform)
         return f"✓ {name} resumed — retrying on next watcher tick."
 
+    _restart_command_lock: Optional[asyncio.Lock] = None
+
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Serialize publication through the restart transition, including cancelled writers."""
+        if self._restart_command_lock is None:
+            self._restart_command_lock = asyncio.Lock()
+        async with self._restart_command_lock:
+            return await self._handle_restart_command_serialized(event)
+
+    async def _handle_restart_command_serialized(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         # Idempotency check: if the previous gateway process recorded this same /restart (platform +
@@ -538,14 +548,9 @@ class GatewaySlashCommandsMixin(
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
-        async def _write_marker(name: str, build, label: str) -> None:
-            try:
-                await asyncio.to_thread(atomic_json_write, _hermes_home / name, build(), indent=None)
-            except Exception as e:
-                logger.debug("Failed to write restart %s: %s", label, e)
-
         def _notify_payload() -> dict:
             data = _restart_notify_payload(event)
+            data["request_id"] = uuid.uuid4().hex
             mid = str(event.message_id) if event.message_id is not None else event.source.message_id
             try:
                 self._restart_command_source = dataclasses.replace(event.source, message_id=mid)
@@ -561,12 +566,34 @@ class GatewaySlashCommandsMixin(
                 data["update_id"] = event.platform_update_id
             return data
 
-        # Save the requester's routing info so the new gateway process can notify them once back.
-        await _write_marker(".restart_notify.json", _notify_payload, "notify file")
-        # Record the triggering platform + update_id in a dedicated dedup marker. Unlike
-        # .restart_notify.json (unlinked once the new gateway sends its notification) this persists
-        # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.
-        await _write_marker(".restart_last_processed.json", _dedup_payload, "dedup marker")
+        # Build routing in the requester's context; only file I/O runs off-loop. The dedicated
+        # dedup marker outlives delivery so a delayed platform redelivery cannot restart us again.
+        markers = {".restart_notify.json": _notify_payload(), ".restart_last_processed.json": _dedup_payload()}
+
+        def publish():
+            from gateway.restart import restart_notification_marker_lock
+            with restart_notification_marker_lock(_hermes_home):
+                for name, payload in markers.items():
+                    try:
+                        atomic_json_write(_hermes_home / name, payload, indent=None)
+                    except Exception as exc:
+                        logger.warning("Failed to write restart marker %s: %s", name, exc)
+
+        write_task = asyncio.create_task(asyncio.to_thread(publish))
+        cancellation = None
+        while True:
+            try:
+                await asyncio.shield(write_task)
+                break
+            except asyncio.CancelledError as exc:
+                # A thread cannot be cancelled. Keep the command lock until it is finished,
+                # then request the promised restart BEFORE propagating cancellation.
+                cancellation = exc
+                if write_task.cancelled():
+                    break
+            except Exception:
+                logger.warning("Failed to publish restart markers", exc_info=True)
+                break
         active_agents = self._running_agent_count()
         # Under a service manager (systemd/launchd) or Docker/Podman, exit 75 so the supervisor /
         # restart policy restarts us — detached setsid+bash fails there (systemd KillMode=mixed kills
@@ -574,6 +601,8 @@ class GatewaySlashCommandsMixin(
         from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
         via_service = is_gateway_supervisor_process() or is_container_restart_context()
         self.request_restart(detached=not via_service, via_service=via_service)
+        if cancellation is not None:
+            raise cancellation
         # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
         # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
         # restarts while active), the next startup auto-suspends it — breaking the loop.

@@ -1294,3 +1294,45 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
     monkeypatch.setattr("run_agent.AIAgent", CapturingAgent)
     adapter._create_agent(session_id="gated", interim_assistant_callback=lambda *_a, **_k: None)
     assert captured["interim_assistant_callback"] is None
+
+
+@pytest.mark.asyncio
+async def test_delete_session_scrubs_on_disk_artifacts(adapter, session_db, tmp_path, monkeypatch):
+    """DELETE /api/sessions/{id} sweeps the session's transcript artifacts with the row (#55088):
+    ``<home>/sessions`` when no runner is wired, the runner's configured ``sessions_dir`` for the
+    launch profile (the dir the gateway's own prune sweeps), and never a neighbour's files."""
+    from types import SimpleNamespace
+
+    import hermes_constants
+
+    default_sessions = tmp_path / "home" / "sessions"
+    default_sessions.mkdir(parents=True)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path / "home")
+
+    def seed(directory, sid):
+        (directory / f"session_{sid}.json").write_text("{}")
+        (directory / f"{sid}.jsonl").write_text("")
+        (directory / f"request_dump_{sid}_t1.json").write_text("{}")
+
+    sid = session_db.create_session("del-disk-cleanup", "api_server")
+    seed(default_sessions, sid)
+    seed(default_sessions, "other_session")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.delete(f"/api/sessions/{sid}")
+        assert resp.status == 200, await resp.text()
+    assert session_db.get_session(sid) is None
+    assert not list(default_sessions.glob(f"*{sid}*"))
+    assert len(list(default_sessions.glob("*other_session*"))) == 3
+
+    configured = tmp_path / "custom-sessions"
+    configured.mkdir()
+    adapter.gateway_runner = SimpleNamespace(config=SimpleNamespace(sessions_dir=configured))
+    sid2 = session_db.create_session("del-configured-dir", "api_server")
+    seed(configured, sid2)
+    seed(default_sessions, sid2)  # same names in the default layout: only the configured one is swept
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.delete(f"/api/sessions/{sid2}")
+        assert resp.status == 200, await resp.text()
+    assert not list(configured.glob(f"*{sid2}*"))
+    assert len(list(default_sessions.glob(f"*{sid2}*"))) == 3

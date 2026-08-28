@@ -242,15 +242,19 @@ THREAT_PATTERNS = [
     # os.environ on the line — handles both full-line comments and inline
     # comments like `x = 1  # os.environ`. The docstring pre-filter in
     # scan_file() skips lines inside triple-quoted strings entirely.
-    (r'^[^#\n]*os\.environ\b(?!\s*\.get\s*\(\s*["\'](?![^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)))',
+    # ANY `.get("<name>")` form is exempt here — non-secret names are plain
+    # config reads, and secret-shaped names are scored (medium) by the
+    # dedicated python_environ_get_secret pattern below; without the blanket
+    # exemption the high severity here would swamp that intended medium.
+    (r'^[^#\n]*os\.environ\b(?!\s*\.get\s*\()',
      "python_os_environ", "high", "exfiltration",
      "accesses os.environ outside comments/docstrings (potential env dump)"),
     (r'os\.environ\s*\.get\s*\(\s*["\'][^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
      "python_environ_get_secret", "medium", "exfiltration",
      "reads secret via os.environ.get() (normal API-key access; informational)"),
     (r'os\.getenv\s*\(\s*[^\)]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
-     "python_getenv_secret", "critical", "exfiltration",
-     "reads secret via os.getenv()"),
+     "python_getenv_secret", "medium", "exfiltration",
+     "reads secret via os.getenv() (normal API-key access; informational)"),
     (r'process\.env\[',
      "node_process_env", "high", "exfiltration",
      "accesses process.env (Node.js environment)"),

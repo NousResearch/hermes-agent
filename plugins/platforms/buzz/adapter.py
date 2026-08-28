@@ -98,7 +98,10 @@ def _unscoped_profile_secrets() -> Dict[str, str]:
     resolvers (Bitwarden via ``BWS_ACCESS_TOKEN``), and the requirement
     gate / validate / is_connected probes all want the same snapshot. Any
     failure degrades to an empty mapping — callers then simply report the
-    platform as not configured, which is the pre-fix behavior.
+    platform as not configured, which is the pre-fix behavior. The cache
+    is startup-gate-only: it pins whatever ``get_hermes_home()`` resolved
+    on first build, so it must not be reused off the startup path (where
+    a profile scope is always active and shadows it anyway).
     """
     global _UNSCOPED_PROFILE_SECRETS
     if _UNSCOPED_PROFILE_SECRETS is None:
@@ -118,7 +121,6 @@ def _unscoped_profile_secrets() -> Dict[str, str]:
             )
             _UNSCOPED_PROFILE_SECRETS = {}
     return _UNSCOPED_PROFILE_SECRETS
-    return val if val is not None else default
 
 
 def _profile_scoped() -> bool:

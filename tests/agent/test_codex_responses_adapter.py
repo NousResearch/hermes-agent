@@ -30,6 +30,8 @@ def test_chat_content_drops_images_from_assistant_role():
 
     assert _chat_content_to_responses_parts(content, role="assistant") == [
         {"type": "output_text", "text": "generated image"},
+        {"type": "output_text", "text": "[Assistant image omitted during replay]"},
+        {"type": "output_text", "text": "[Assistant image omitted during replay]"},
     ]
 
 
@@ -43,6 +45,24 @@ def test_chat_content_keeps_images_on_user_role():
         "type": "input_image",
         "image_url": "https://example.invalid/p.png",
         "detail": "high",
+    }]
+
+
+def test_preflight_rewrites_raw_assistant_images_to_text_markers():
+    raw = [{
+        "role": "assistant",
+        "content": [{
+            "type": "input_image",
+            "image_url": "https://example.invalid/p.png",
+        }],
+    }]
+
+    assert _preflight_codex_input_items(raw) == [{
+        "role": "assistant",
+        "content": [{
+            "type": "output_text",
+            "text": "[Assistant image omitted during replay]",
+        }],
     }]
 
 

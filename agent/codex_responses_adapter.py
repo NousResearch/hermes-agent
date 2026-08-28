@@ -194,8 +194,13 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
             continue
         if ptype in {"image_url", "input_image"}:
             if role == "assistant":
-                # Responses API rejects input_image on assistant messages
-                # (HTTP 400 on every replay) — drop, see docstring (#96816).
+                # Responses output messages cannot carry input_image. Keep a
+                # text marker so image-only assistant turns still survive in
+                # replay and later references retain their conversational slot.
+                converted.append({
+                    "type": "output_text",
+                    "text": "[Assistant image omitted during replay]",
+                })
                 continue
             image_ref = part.get("image_url")
             detail = part.get("detail")
@@ -1167,6 +1172,14 @@ def _preflight_codex_input_items(
                             text = str(text or "")
                         validated.append({"type": text_type, "text": sanitize_text(text)})
                     elif ptype in {"input_image", "image_url"}:
+                        if role == "assistant":
+                            # Enforce the same output-message invariant for
+                            # raw request overrides as for normal history.
+                            validated.append({
+                                "type": "output_text",
+                                "text": "[Assistant image omitted during replay]",
+                            })
+                            continue
                         image_ref = part.get("image_url", "")
                         detail = part.get("detail")
                         if isinstance(image_ref, dict):

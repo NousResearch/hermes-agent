@@ -200,6 +200,7 @@ describe('useSessionTileDelegate resumeTile', () => {
       messages: [{ id: 'm1', parts: [{ type: 'text', text: 'old' }], role: 'user' }],
       storedSessionId: 'stored-a'
     }
+
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-a', 'runtime-a']]) }
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-a', stateA]]) }
     const updateSessionState = vi.fn((_id, updater) => updater(stateA))
@@ -221,7 +222,10 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(getLatestSessionMessages).toHaveBeenCalled()
     expect(updateSessionState).toHaveBeenCalled()
 
-    const updater = updateSessionState.mock.calls[0][1] as (state: typeof stateA) => { messages: Array<{ parts?: Array<{ text?: string }> }> }
+    const updater = updateSessionState.mock.calls[0][1] as (state: typeof stateA) => {
+      messages: Array<{ parts?: Array<{ text?: string }> }>
+    }
+
     const next = updater(stateA)
     const texts = next.messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
 

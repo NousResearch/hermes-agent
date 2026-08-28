@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
-import { $workspaceMode, setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
+import { $workspaceMode, forgetActivePane, rememberActivePane, setWorkspaceScope, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
@@ -16,6 +16,7 @@ import {
   closeAllOpenSessionTiles,
   focusedSessionNeedsRoute,
   focusOpenSession,
+  focusWorkspaceOwnerSessionTile,
   foregroundSessionScopes,
   isSessionRemote,
   knownOwnerForSession,
@@ -328,6 +329,63 @@ describe('SessionTile workspace scope', () => {
       workspaceMode: 'bots',
       workspaceOwnerKey: 'connection-a::default'
     })
+  })
+})
+
+describe('focusWorkspaceOwnerSessionTile', () => {
+  const botA = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:a' }
+  const botB = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:b' }
+
+  afterEach(() => {
+    forgetActivePane(workspaceScopeKey('bots', 'bot:a'))
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('reports null for an owner with no open tile — the caller opens something', () => {
+    openSessionTile('other-bot-chat', 'center', 'workspace', undefined, botB)
+    openSessionTile('sessions-chat')
+
+    expect(focusWorkspaceOwnerSessionTile('bot:a')).toBeNull()
+  })
+
+  it('fronts the tab the owner last had active and reports its stored id', () => {
+    openSessionTile('older-thread', 'center', 'workspace', undefined, botA)
+    openSessionTile('newer-thread', 'center', 'workspace', undefined, botA)
+    $layoutTree.set(
+      group(['workspace', tilePane('older-thread'), tilePane('newer-thread')], { active: 'workspace', id: 'main' })
+    )
+    rememberActivePane(workspaceScopeKey('bots', 'bot:a'), tilePane('older-thread'))
+
+    expect(focusWorkspaceOwnerSessionTile('bot:a')).toBe('older-thread')
+    expect(findGroupOfPane($layoutTree.get()!, tilePane('older-thread'))?.active).toBe(tilePane('older-thread'))
+  })
+
+  it('falls back to the most recently opened tab when nothing is remembered', () => {
+    openSessionTile('older-thread', 'center', 'workspace', undefined, botA)
+    openSessionTile('newer-thread', 'center', 'workspace', undefined, botA)
+    $layoutTree.set(
+      group(['workspace', tilePane('older-thread'), tilePane('newer-thread')], { active: 'workspace', id: 'main' })
+    )
+
+    expect(focusWorkspaceOwnerSessionTile('bot:a')).toBe('newer-thread')
+    expect(findGroupOfPane($layoutTree.get()!, tilePane('newer-thread'))?.active).toBe(tilePane('newer-thread'))
+  })
+
+  it('ignores a remembered tab that has since been closed', () => {
+    openSessionTile('closed-bot-chat', 'center', 'workspace', undefined, botA)
+    openSessionTile('thread', 'center', 'workspace', undefined, botA)
+    rememberActivePane(workspaceScopeKey('bots', 'bot:a'), tilePane('closed-bot-chat'))
+    $sessionTiles.set($sessionTiles.get().filter(t => t.storedSessionId !== 'closed-bot-chat'))
+
+    expect(focusWorkspaceOwnerSessionTile('bot:a')).toBe('thread')
+  })
+
+  it('never crosses owners: another bot\'s open tabs do not count', () => {
+    openSessionTile('other-bot-chat', 'center', 'workspace', undefined, botB)
+
+    expect(focusWorkspaceOwnerSessionTile('bot:a')).toBeNull()
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['other-bot-chat'])
   })
 })
 

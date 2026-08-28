@@ -483,6 +483,8 @@ export interface Translations {
       tipsTitle: string
       tipsDesc: string
       tipsReset: (count: number) => string
+      toursTitle: string
+      toursDesc: string
       composerPopoutTitle: string
       composerPopoutDesc: string
       vibeHeartsTitle: string

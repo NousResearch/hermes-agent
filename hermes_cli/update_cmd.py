@@ -8467,13 +8467,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 "fully quit & relaunch once."
             )
 
-        # NOTE: the macOS TCC interpreter anchor that used to refresh here
-        # (#95131/#95478) is REVERTED: the anchored real-file copy could not
-        # load libpython (LC_RPATH resolved into venv/lib/), bricking every
-        # hermes command on real Macs (#95425), and re-pointed aliases lost
-        # the stdlib (#95541). `hermes doctor` now heals already-anchored
-        # venvs back to symlinks. Re-land requires a dylib-complete design
-        # verified on macOS hardware first.
+        # macOS TCC interpreter anchor (#95596): dylib-complete re-land.
+        # Boot-gated — a failed probe leaves the venv untouched.
+        try:
+            from hermes_cli.macos_tcc_anchor import ensure_tcc_anchor
+
+            ensure_tcc_anchor()
+        except Exception:
+            logger.debug("macOS TCC anchor refresh skipped", exc_info=True)
 
         # ── Post-update state.db integrity guard (#68474) ─────────────────
         # Verify that state.db survived the update intact.  If the live file

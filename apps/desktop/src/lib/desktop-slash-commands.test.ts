@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  type CommandCatalogMeta,
+  type CommandsCatalogLike,
   desktopSkinSlashCompletions,
+  type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
@@ -11,10 +14,65 @@ import {
   isModelPickerCommand,
   isPickerCommand,
   rankSkillCommands,
-  resolveDesktopCommand
+  rememberDesktopCommandsCatalog,
+  resolveDesktopCommand,
+  slashCompletionGroup
 } from './desktop-slash-commands'
 
+function registryCatalog(
+  modes: Record<string, DesktopSlashArgumentMode | null>,
+  aliases: Record<string, string> = {}
+): CommandsCatalogLike {
+  const commands: Record<string, CommandCatalogMeta> = {}
+  const canon: Record<string, string> = {}
+
+  for (const [name, argument_mode] of Object.entries(modes)) {
+    commands[name] = { argument_mode, desktop: null }
+    canon[name] = name
+  }
+
+  for (const [alias, target] of Object.entries(aliases)) {
+    commands[alias] = commands[target]
+    canon[alias] = target
+  }
+
+  return { commands, canon }
+}
+
+const REGISTRY_CATALOG = registryCatalog(
+  {
+    '/approvals': 'options',
+    '/review': 'text',
+    '/refine': 'text',
+    '/usage': null,
+    '/version': null,
+    '/agents': null,
+    '/steer': 'text',
+    '/stop': null,
+    '/background': 'text',
+    '/debug': null,
+    '/goal': 'mixed',
+    '/personality': 'options',
+    '/queue': 'text',
+    '/retry': null,
+    '/rollback': null,
+    '/tools': 'options',
+    '/undo': null,
+    '/loop': 'mixed',
+    '/lcm': 'text'
+  },
+  { '/tasks': '/agents', '/bg': '/background', '/q': '/queue', '/proactive': '/loop' }
+)
+
 describe('desktop slash command curation', () => {
+  beforeEach(() => {
+    rememberDesktopCommandsCatalog(REGISTRY_CATALOG)
+  })
+
+  afterEach(() => {
+    rememberDesktopCommandsCatalog(undefined)
+  })
+
   it('keeps core desktop chat commands in suggestions', () => {
     expect(isDesktopSlashSuggestion('/new')).toBe(true)
     expect(isDesktopSlashSuggestion('/branch')).toBe(true)
@@ -26,6 +84,29 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/approvals')).toBe(true)
     expect(isDesktopSlashCommand('/approvals')).toBe(true)
     expect(resolveDesktopCommand('/approvals')?.surface).toEqual({ kind: 'exec' })
+    expect(isDesktopSlashSuggestion('/review')).toBe(true)
+    expect(isDesktopSlashCommand('/review')).toBe(true)
+    expect(resolveDesktopCommand('/review')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/review')?.argumentMode).toBe('text')
+  })
+
+  it('treats registry and plugin commands as exec when the catalog says so', () => {
+    expect(resolveDesktopCommand('/refine')?.argumentMode).toBe('text')
+    expect(isDesktopSlashSuggestion('/refine')).toBe(true)
+    expect(isDesktopSlashSuggestion('/bg')).toBe(false)
+    expect(isDesktopSlashCommand('/background')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/background')).toBe('text')
+    expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
+    expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
+  })
+
+  it('groups complete.slash rows by backend kind, not the desktop table', () => {
+    // A registry command the table has never heard of is still a command.
+    expect(slashCompletionGroup('/refine', 'command')).toBe('Commands')
+    expect(slashCompletionGroup('/docx', 'skill')).toBe('Skills')
+    // Older backends omit kind — fall back to the table.
+    expect(slashCompletionGroup('/new')).toBe('Commands')
+    expect(slashCompletionGroup('/docx')).toBe('Skills')
   })
 
   it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {

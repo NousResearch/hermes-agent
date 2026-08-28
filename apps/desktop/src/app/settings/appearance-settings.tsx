@@ -22,8 +22,9 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
-import { $retiredTips, $tipRotationEnabled, resetTips, setTipRotationEnabled } from '@/store/tips'
+import { $retiredTips, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
+import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import {
   $translucency,
   beginTranslucencyPeek,
@@ -356,7 +357,8 @@ export function AppearanceSettings() {
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const reactionsEnabled = useStore($reactionsEnabled)
-  const tipRotation = useStore($tipRotationEnabled)
+  const tipsEnabled = useStore($tipsEnabled)
+  const toursEnabled = useStore($toursEnabled)
   const retiredTips = useStore($retiredTips)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
@@ -764,13 +766,13 @@ export function AppearanceSettings() {
                 <SegmentedControl
                   onChange={id => {
                     triggerHaptic('selection')
-                    setTipRotationEnabled(id === 'on')
+                    setTipsEnabled(id === 'on')
                   }}
                   options={[
                     { id: 'off', label: t.common.off },
                     { id: 'on', label: t.common.on }
                   ]}
-                  value={tipRotation ? 'on' : 'off'}
+                  value={tipsEnabled ? 'on' : 'off'}
                 />
                 {/* The ✕ on a tip is permanent, so this is the only way back.
                     It appears once there is something to bring back. */}
@@ -790,6 +792,24 @@ export function AppearanceSettings() {
             }
             description={a.tipsDesc}
             title={a.tipsTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setToursEnabled(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={toursEnabled ? 'on' : 'off'}
+              />
+            }
+            description={a.toursDesc}
+            title={a.toursTitle}
           />
 
           <ListRow

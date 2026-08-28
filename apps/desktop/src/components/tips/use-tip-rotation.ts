@@ -2,9 +2,8 @@
  * The rotation's clock: a few minutes into a launch, then hours apart, offer a
  * tip if the app happens to be quiet.
  *
- * Off unless the user turned it on (Settings → Appearance) — this is the half
- * of the feature that talks unprompted, so it is the half that has to be asked
- * for. An agent tip doesn't come through here at all.
+ * On unless the user turned it off (Settings → Appearance). An agent tip
+ * doesn't come through here at all.
  *
  * The pacing is a loading-screen tip's, not a notification's. Two clocks have
  * to agree: a per-launch settling delay, so opening the app is never met with a
@@ -27,7 +26,7 @@ import { resolveTipAnchor } from '@/lib/tips/anchor'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { nextTip } from '@/lib/tips/rotation'
 import { $awaitingResponse, $busy } from '@/store/session'
-import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipRotationEnabled, showTip } from '@/store/tips'
+import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipsEnabled, showTip } from '@/store/tips'
 
 const TICK_MS = 30_000
 /** Nothing in the first stretch of a launch, however long the cooldown says
@@ -76,7 +75,7 @@ export function useTipRotation(copy: Translations['tips']) {
     }
 
     const offer = () => {
-      if (!$tipRotationEnabled.get() || $activeTip.get()) {
+      if (!$tipsEnabled.get() || $activeTip.get()) {
         return
       }
 
@@ -110,10 +109,10 @@ export function useTipRotation(copy: Translations['tips']) {
       })
     }
 
-    // Turning the rotation on is its own kind of settled: the delay guards a
+    // Turning tips on is its own kind of settled: the delay guards a
     // launch you came into with a purpose, and has nothing to say about someone
     // who just asked for tips and is owed the sight of one working.
-    const unbindSwitch = $tipRotationEnabled.listen(enabled => {
+    const unbindSwitch = $tipsEnabled.listen(enabled => {
       if (enabled) {
         settledAt = Date.now()
         offer()

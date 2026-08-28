@@ -1946,6 +1946,17 @@ class TestPluginCommands:
         assert len(mgr._plugin_commands) == 0
         assert "empty name" in caplog.text
 
+    def test_register_command_infers_text_argument_mode_from_args_hint(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("lcm", lambda a: a, description="LCM", args_hint="<prompt>")
+        ctx.register_command("ping", lambda a: a, description="Ping")
+
+        assert mgr._plugin_commands["lcm"]["argument_mode"] == "text"
+        assert mgr._plugin_commands["ping"]["argument_mode"] is None
+
 
 
 

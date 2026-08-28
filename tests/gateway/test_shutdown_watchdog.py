@@ -8,11 +8,15 @@ structurally unable to fire. These tests pin the out-of-loop backstop
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
+import os
 import threading
 import time
 from unittest.mock import patch
 
+import gateway.shutdown_watchdog as shutdown_watchdog_module
 import pytest
 
 from gateway.shutdown_watchdog import (
@@ -66,3 +70,83 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
 
 
+
+
+async def _run_heartbeat_until_payload(tmp_path, timeout_s=10.0):
+    """Run loop_heartbeat_forever as a task until a heartbeat payload exists.
+
+    Returns (task, payload). Cancels the task and awaits it (suppressing
+    CancelledError) before returning so the tick server is closed cleanly.
+    """
+    task = asyncio.ensure_future(
+        loop_heartbeat_forever(interval_s=1.0, home=tmp_path)
+    )
+    heartbeat_path = get_loop_heartbeat_path(tmp_path)
+    deadline = time.monotonic() + timeout_s
+    payload = None
+    while time.monotonic() < deadline:
+        if heartbeat_path.is_file():
+            with contextlib.suppress(OSError, json.JSONDecodeError):
+                payload = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+                if payload:
+                    break
+                payload = None
+        await asyncio.sleep(0.05)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    if payload is None:
+        pytest.fail(
+            f"heartbeat payload did not appear at {heartbeat_path} within "
+            f"{timeout_s}s"
+        )
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_loop_tick_witness_skipped_intentionally_on_windows(
+    tmp_path, caplog, monkeypatch
+):
+    # Pretend the platform is Windows as seen from the module under test.
+    # A plain monkeypatch of the global os.name would flip pathlib.Path
+    # dispatch (Path.__new__ reads os.name at runtime) and crash pytest's
+    # own tmp-dir machinery, so swap the module's `os` binding for a proxy
+    # whose `.name` is "nt" and which delegates everything else to real os.
+    class _WindowsOsProxy:
+        name = "nt"
+
+        def __getattr__(self, item):
+            return getattr(os, item)
+
+    monkeypatch.setattr(shutdown_watchdog_module, "os", _WindowsOsProxy())
+
+    start_unix_server_calls = []
+
+    def _forbid_start_unix_server(*args, **kwargs):
+        start_unix_server_calls.append((args, kwargs))
+        raise AssertionError("start_unix_server must not be called on non-POSIX")
+
+    with patch.object(
+        shutdown_watchdog_module.asyncio,
+        "start_unix_server",
+        side_effect=_forbid_start_unix_server,
+    ), caplog.at_level(logging.DEBUG, logger="gateway.shutdown_watchdog"):
+        payload = await _run_heartbeat_until_payload(tmp_path)
+
+    # (a) the witness server was never attempted
+    assert start_unix_server_calls == []
+    # (b) no warning about an unavailable tick socket
+    assert not [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING"
+        and "Loop tick socket unavailable" in r.getMessage()
+    ]
+    # (c) the fail-safe flag is still recorded
+    assert payload["loop_tick_socket"] is False
+
+
+@pytest.mark.asyncio
+async def test_loop_tick_witness_arms_on_posix(tmp_path):
+    payload = await _run_heartbeat_until_payload(tmp_path)
+    assert payload["loop_tick_socket"] is True

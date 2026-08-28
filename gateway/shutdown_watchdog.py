@@ -526,13 +526,16 @@ async def loop_heartbeat_forever(
     # disables the witness, and the payload flag tells probes that staleness is
     # no longer sufficient authority to escalate.
     #
-    # Windows: asyncio.start_unix_server raises (no AF_UNIX event-loop
-    # support), so the witness is PERMANENTLY absent there — the payload
-    # records loop_tick_socket=False and every stale-file probe classifies
-    # UNKNOWN, never WEDGED. That is deliberate fail-safe: a wedged native
-    # Windows gateway keeps the graceful-drain backstop instead of an
-    # escalation verdict built on a witness that cannot exist. (WSL2 — the
-    # #90502 incident environment — is Linux and arms the socket normally.)
+    # Windows (non-POSIX generally): the server creation below is explicitly
+    # gated to POSIX — asyncio AF_UNIX support is POSIX-only, and an ungated
+    # call would raise AttributeError on every native-Windows gateway start.
+    # The witness is therefore DELIBERATELY left absent there (debug log only,
+    # no warning): the payload records loop_tick_socket=False and every
+    # stale-file probe classifies UNKNOWN, never WEDGED. That is deliberate
+    # fail-safe: a wedged native Windows gateway keeps the graceful-drain
+    # backstop instead of an escalation verdict built on a witness that cannot
+    # exist. (WSL2 — the #90502 incident environment — is Linux and arms the
+    # socket normally.)
     tick_server = None
     tick_socket_path = None
     try:
@@ -569,9 +572,16 @@ async def loop_heartbeat_forever(
                 logger.debug(
                     "stale loop-tick socket sweep failed", exc_info=True
                 )
-        tick_server = await asyncio.start_unix_server(
-            _tick_socket_handler, path=str(tick_socket_path)
-        )
+            tick_server = await asyncio.start_unix_server(
+                _tick_socket_handler, path=str(tick_socket_path)
+            )
+        else:
+            logger.debug(
+                "loop-tick witness intentionally not armed on non-POSIX "
+                "platform (os.name=%r): asyncio AF_UNIX support is "
+                "POSIX-only; heartbeat payload records loop_tick_socket=False",
+                os.name,
+            )
     except Exception:
         tick_server = None
         logger.warning(

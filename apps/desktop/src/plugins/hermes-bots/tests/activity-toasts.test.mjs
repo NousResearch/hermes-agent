@@ -77,6 +77,11 @@ test('pref defaults OFF and persists via ctx.storage under activity-toasts', () 
   assert.match(source, /storage\?\.get\?\.\('activity-toasts'\)/)
 })
 
+test('Bot Chat opens pass the exported 60-second hydration budget', () => {
+  assert.match(source, /sdk\.BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS/)
+  assert.match(source, /hydrationTimeoutMs,/)
+})
+
 test('activity in the hidden canonical Bot Chat still badges (the "6d ago" class)', () => {
   // The canonical Bot Chat is hidden from session lists, so last_session
   // never advances when a DM lands there — only canonical_session does.

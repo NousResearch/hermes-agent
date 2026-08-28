@@ -1,6 +1,6 @@
 /**
- * BROWSER BAR: back / forward / reload / address / open-in-browser for a URL
- * preview.
+ * BROWSER BAR: back / forward / reload / address / pop-out (or pop-in) for a
+ * URL preview.
  *
  * The Browser tab had no way to move: no history, and the only address on
  * screen was a read-only label. Every other embedded browser (VS Code's Simple
@@ -32,7 +32,9 @@ interface PreviewBrowserBarProps {
   onBack: () => void
   onForward: () => void
   onNavigate: (url: string) => void
-  onOpenExternal: () => void
+  onOpenExternal?: () => void
+  onPopIn?: () => void
+  onPopOut?: () => void
   onReload: () => void
   onToggleConsole: () => void
   onToggleDevTools: () => void
@@ -96,6 +98,8 @@ export function PreviewBrowserBar({
   onForward,
   onNavigate,
   onOpenExternal,
+  onPopIn,
+  onPopOut,
   onReload,
   onToggleConsole,
   onToggleDevTools,
@@ -202,11 +206,25 @@ export function PreviewBrowserBar({
           text={url}
         />
       </div>
-      <PaneStripGlyph
-        icon={<Codicon name="link-external" size="0.8125rem" />}
-        label={t.preview.openInBrowser}
-        onSelect={onOpenExternal}
-      />
+      {onPopIn ? (
+        <PaneStripGlyph
+          icon={<Codicon name="screen-normal" size="0.8125rem" />}
+          label={t.preview.popIn}
+          onSelect={onPopIn}
+        />
+      ) : onPopOut ? (
+        <PaneStripGlyph
+          icon={<Codicon name="empty-window" size="0.8125rem" />}
+          label={t.preview.popOut}
+          onSelect={onPopOut}
+        />
+      ) : onOpenExternal ? (
+        <PaneStripGlyph
+          icon={<Codicon name="link-external" size="0.8125rem" />}
+          label={t.preview.openInBrowser}
+          onSelect={onOpenExternal}
+        />
+      ) : null}
       <PaneStripGlyph
         active={consoleOpen}
         icon={<Codicon name="terminal" size="0.8125rem" />}

@@ -1618,6 +1618,24 @@ class SessionStore:
                         recovered_keys += 1
                         continue
 
+                    # A non-None recovery with the SAME session id is a
+                    # successful resume (all recovery gates passed, row
+                    # reopened): keep the routing entry — it is proven valid,
+                    # not a dead route (#95957). Keep the ORIGINAL entry
+                    # object, not the recovered one: the recovered entry is
+                    # rebuilt minimal from the DB row and would silently drop
+                    # live state the existing entry carries (token/cost
+                    # counters, model_override, resume_pending/queued-work
+                    # markers, metadata). Nothing in sessions.json changes,
+                    # so no save is needed for this branch.
+                    if recovered_entry is not None:
+                        logger.info(
+                            "gateway.session: reopened ended session %s for "
+                            "sessions.json entry %r (end_reason=%r); keeping route",
+                            entry.session_id, key, row["end_reason"],
+                        )
+                        continue
+
                     logger.warning(
                         "gateway.session: pruning stale sessions.json entry "
                         "%r -> %s (end_reason=%r); left by a crashed gateway",

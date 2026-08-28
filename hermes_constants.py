@@ -227,6 +227,114 @@ def get_default_hermes_root() -> Path:
     return result
 
 
+# Named-profile deletion must survive stale mkdir from live serve/logging.
+# The marker lives beside the profile dir, not inside it, so rmtree cannot
+# erase the fact that the profile was deleted.
+_DELETED_PROFILES_DIR = ".deleted"
+
+# Files whose presence marks a directory as a real Hermes home. A fresh home
+# always gains at least one of these on first use (config save, env backfill,
+# session DB), while arbitrary directories that merely contain a ``profiles``
+# path segment (e.g. ``/srv/profiles/buildcache``) do not.
+_HERMES_HOME_MARKERS = ("config.yaml", ".env", "state.db")
+
+
+def _is_hermes_profiles_root(profiles_dir: Path) -> bool:
+    """Return True when *profiles_dir* is a canonical ``<hermes-home>/profiles``.
+
+    Anchors named-profile recognition so it only fires for directories that
+    provably live under a Hermes home: the classic ``~/.hermes`` layout, a
+    root carrying Hermes-home marker files (Docker/custom ``HERMES_HOME``
+    like ``/opt/data``), a ``profiles/.deleted`` tombstone directory (only
+    ever created by ``hermes profile delete``), or the process's resolved
+    default Hermes root.
+    """
+    root = profiles_dir.parent
+    if root.name == ".hermes":
+        return True
+    try:
+        if (profiles_dir / _DELETED_PROFILES_DIR).is_dir():
+            return True
+        if any((root / marker).exists() for marker in _HERMES_HOME_MARKERS):
+            return True
+    except OSError:
+        pass
+    try:
+        return root.resolve(strict=False) == get_default_hermes_root().resolve(
+            strict=False
+        )
+    except OSError:
+        return False
+
+
+def named_profile_home(path: str | Path) -> Path | None:
+    """Return ``<root>/profiles/<name>`` when *path* is that home or under it.
+
+    A named profile home is only ``.../profiles/<id>`` where ``<id>`` does
+    not start with ``.`` AND the ``profiles`` directory's parent is a real
+    Hermes home (see :func:`_is_hermes_profiles_root`). A default Hermes home
+    whose path merely contains a ``profiles`` segment
+    (e.g. ``/tmp/foo/profiles/notahome/.hermes``) is not a named profile,
+    and neither is an unrelated custom home like
+    ``/srv/profiles/buildcache`` — those must keep mkdir-ing normally.
+    ``.../profiles/worker/logs`` still resolves to ``.../profiles/worker``.
+    """
+    current = Path(path)
+    for candidate in (current, *current.parents):
+        if (
+            candidate.parent.name == "profiles"
+            and not candidate.name.startswith(".")
+            and _is_hermes_profiles_root(candidate.parent)
+        ):
+            return candidate
+        # Stop at a default Hermes home so a coincidental ``profiles/``
+        # ancestor is not treated as a named-profile root.
+        if candidate.name == ".hermes":
+            return None
+    return None
+
+
+def profile_tombstone_path(profile_home: Path) -> Path:
+    return profile_home.parent / _DELETED_PROFILES_DIR / profile_home.name
+
+
+def named_profile_is_deleted(profile_home: str | Path) -> bool:
+    return profile_tombstone_path(Path(profile_home)).exists()
+
+
+def mark_named_profile_deleted(profile_home: str | Path) -> None:
+    marker = profile_tombstone_path(Path(profile_home))
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("deleted\n", encoding="utf-8")
+
+
+def clear_named_profile_deleted(profile_home: str | Path) -> None:
+    profile_tombstone_path(Path(profile_home)).unlink(missing_ok=True)
+
+
+def assert_named_profile_home_live(path: str | Path) -> None:
+    """Refuse missing or tombstoned named profile homes.
+
+    Default ``HERMES_HOME`` (not under ``profiles/``) is unchanged.
+    """
+    home = named_profile_home(path)
+    if home is None:
+        return
+    if named_profile_is_deleted(home) or not home.exists():
+        raise FileNotFoundError(
+            f"Named profile home does not exist: {home}. "
+            "Create the profile explicitly before using it."
+        )
+
+
+def mkdir_under_hermes_home(path: str | Path) -> Path:
+    """Create *path*, but never materialize a deleted/missing named profile."""
+    target = Path(path)
+    assert_named_profile_home_live(target)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 
@@ -1009,7 +1117,13 @@ def display_hermes_home() -> str:
     """
     home = get_hermes_home()
     try:
-        return "~/" + str(home.relative_to(Path.home()))
+        # as_posix(): on Windows, str() of a relative Path renders
+        # backslashes, producing mixed-separator chimeras like
+        # ``~/AppData\Local\hermes/skills/`` once callers append
+        # sub-paths. ``~/`` shorthand implies POSIX rendering; keep the
+        # whole string consistent (forward slashes work everywhere,
+        # including Windows shells and Python APIs).
+        return "~/" + home.relative_to(Path.home()).as_posix()
     except ValueError:
         return str(home)
 

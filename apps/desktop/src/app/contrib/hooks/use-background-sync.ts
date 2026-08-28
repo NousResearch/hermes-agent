@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
-import { getLatestSessionMessages } from '@/hermes'
+import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
@@ -16,11 +16,14 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  getSessionOwnerHint,
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
+  $sessionTiles,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
@@ -30,15 +33,23 @@ import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
 interface ActiveTranscriptSession {
+  ownerRoute?: SessionProfileRoute
   profile?: string | null
 }
 
-/** Resolve an active transcript from either local recents or messaging slices. */
+/** Resolve an active transcript from visible rows or its unique hidden owner. */
 export function resolveActiveTranscriptSession(storedSessionId: string): ActiveTranscriptSession | undefined {
-  return (
+  const visible =
     $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
     $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-  )
+
+  if (visible) {
+    return { profile: visible.profile }
+  }
+
+  const ownerRoute = getSessionOwnerHint(storedSessionId)
+
+  return ownerRoute ? { ownerRoute, profile: ownerRoute.profile } : undefined
 }
 
 export interface ActiveTranscriptRefreshDeps {
@@ -53,6 +64,106 @@ export interface ActiveTranscriptRefreshDeps {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+}
+
+/**
+ * Reconcile the persisted transcripts of every open WORKSPACE TILE (#93942
+ * slice 1). Bot canonical chats live here — never in $sessions /
+ * $messagingSessions (they carry the core `hidden` flag), so the main-pane
+ * reconcile path's resolveSession() bails on them and a background delivery
+ * never reaches an open bot chat. Each tile carries its own stored↔runtime id
+ * pair, so no resolution step is needed; refreshes are signature-gated per
+ * tile so a no-change event costs nothing, and a busy tile is skipped (its own
+ * stream owns the view while streaming).
+ *
+ * Sequencing note (#94255 review): all tiles SHARE one request sequence, so a
+ * second tick arriving mid-read invalidates every in-flight read from the
+ * first (latest-wins — same discipline as the main pane path). Under rapid
+ * tick bursts only the final tick lands updates; that is intended, since each
+ * tick re-reads from storage anyway.
+ */
+export async function reconcileTileTranscripts({
+  requestSequenceRef,
+  busyRef,
+  signatureRef,
+  updateSessionState,
+  tiles: tilesOverride
+}: {
+  busyRef: MutableRefObject<boolean>
+  requestSequenceRef: MutableRefObject<number>
+  signatureRef: MutableRefObject<Map<string, string>>
+  tiles?: Array<{ storedSessionId: string; runtimeId?: string }>
+  updateSessionState: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null
+  ) => ClientSessionState
+}): Promise<void> {
+  const tiles = tilesOverride ?? $sessionTiles.get()
+
+  for (const tile of tiles) {
+    const storedSessionId = tile.storedSessionId
+    const runtimeSessionId = tile.runtimeId
+
+    if (!runtimeSessionId) {
+      // Resume not yet bound — the tile's own stream owns the view.
+      continue
+    }
+
+    if (!storedSessionId || !runtimeSessionId || busyRef.current) {
+      continue
+    }
+
+    if ($activeSessionId.get() === runtimeSessionId) {
+      // The main pane reconcile already owns this surface.
+      continue
+    }
+
+    const requestId = ++requestSequenceRef.current
+
+    // With a tiles override (test path), the live $sessionTiles check can't
+    // see the synthetic tile — treat override tiles as present.
+    const stillPresent = tilesOverride
+      ? tilesOverride.some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
+      : $sessionTiles.get().some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
+
+    try {
+      const latest = await getLatestSessionMessages(storedSessionId)
+
+      if (requestId !== requestSequenceRef.current || busyRef.current || !stillPresent) {
+        // Tile closed or superseded mid-read — discard AND prune its
+        // signature so the map doesn't grow one entry per ever-opened tile
+        // for the app's lifetime (#94255 review point 3).
+        signatureRef.current.delete(`tile:${storedSessionId}`)
+
+        continue
+      }
+
+      const signatureKey = `tile:${storedSessionId}`
+      const signature = sessionMessagesSignature(latest.messages)
+
+      if (signatureRef.current.get(signatureKey) === signature) {
+        continue
+      }
+
+      signatureRef.current.set(signatureKey, signature)
+      const messages = toChatMessages(latest.messages)
+
+      updateSessionState(
+        runtimeSessionId,
+        state => ({
+          ...state,
+          messages: preserveLocalAssistantErrors(
+            graftRefreshedTailOntoBackfill(messages, state.messages),
+            state.messages
+          )
+        }),
+        storedSessionId
+      )
+    } catch {
+      // Non-fatal: the next change event retries.
+    }
+  }
 }
 
 /** Reconcile one persisted transcript snapshot into the currently viewed session. */
@@ -82,7 +193,14 @@ export async function reconcileActiveTranscript({
   requestSequenceRef.current = requestId
 
   try {
-    const latest = await getLatestSessionMessages(storedSessionId, stored.profile)
+    const profileScope: ProfileScope = stored.ownerRoute
+      ? {
+          connectionId: stored.ownerRoute.connectionId,
+          profile: stored.ownerRoute.targetProfile ?? stored.ownerRoute.profile
+        }
+      : stored.profile
+
+    const latest = await getLatestSessionMessages(storedSessionId, profileScope)
 
     if (
       requestId !== requestSequenceRef.current ||
@@ -93,7 +211,16 @@ export async function reconcileActiveTranscript({
       return
     }
 
-    const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+    const signatureKey = stored.ownerRoute
+      ? JSON.stringify([
+          stored.ownerRoute.connectionId,
+          stored.ownerRoute.profile,
+          stored.ownerRoute.targetProfile ?? '',
+          stored.ownerRoute.mode ?? '',
+          storedSessionId
+        ])
+      : `${stored.profile ?? 'default'}:${storedSessionId}`
+
     const signature = sessionMessagesSignature(latest.messages)
 
     if (signatureRef.current.get(signatureKey) === signature) {
@@ -146,6 +273,16 @@ const LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS = 30_000
 // full list refresh is heavier than the active_list snapshot. Trailing-edge
 // scheduled, so the burst's last write always lands.
 const SESSIONS_LIST_TICK_GAP_MS = 10_000
+// A typing burst keeps the composer's contentEditable input handling on the
+// same renderer main thread as the list refresh above (#95033): with a large
+// session store, one refresh pass can block keystroke echo long enough that
+// input visibly stalls. While the keyboard is warm — any keydown in this
+// renderer window, not just the composer — hold that pass and land it once
+// shortly after the last keypress. Sidebar staleness during a burst is
+// accepted; the lighter polls (active_list snapshot, cron, transcript
+// backstops) keep their cadence because they carry liveness, not the heavy
+// list reconciliation.
+const TYPING_BURST_QUIET_MS = 1_500
 
 interface LiveSessionStatusItem {
   id?: string
@@ -163,6 +300,34 @@ interface LiveSessionStatusResponse {
 // served by different gateways and never appear in this profile's active_list,
 // so an unscoped reap would dark out every other profile's running rows.
 const liveRuntimeIdsByProfile = new Map<string, Set<string>>()
+
+// Renderer-wide keyboard warmth, tracked at module scope like the live-runtime
+// bookkeeping above: any keydown anywhere in the window marks activity, and a
+// burst stays warm for TYPING_BURST_QUIET_MS after the last key. IME
+// composition still emits keydown (keyCode 229), so one listener covers both.
+let lastRendererInputAt = 0
+
+/** Record renderer-wide keyboard activity (wired to a capture-phase window
+ *  keydown listener by useBackgroundSync). */
+export function noteRendererKeyboardActivity(nowMs = Date.now()): void {
+  lastRendererInputAt = nowMs
+}
+
+/** True while a typing burst is still warm enough to hold the heavy list
+ *  refresh (see TYPING_BURST_QUIET_MS). */
+export function isTypingBurstActive(nowMs = Date.now()): boolean {
+  return nowMs - lastRendererInputAt < TYPING_BURST_QUIET_MS
+}
+
+function remainingTypingQuietMs(nowMs: number): number {
+  return Math.max(0, TYPING_BURST_QUIET_MS - (nowMs - lastRendererInputAt))
+}
+
+/** Forget keyboard history — test isolation only (mirrors
+ *  resetLiveRuntimeTracking). */
+export function resetTypingActivityTracking(): void {
+  lastRendererInputAt = 0
+}
 
 /** Restore sidebar liveness after a renderer/backend reconnect. Stream events
  * normally own these states, but events emitted while Desktop was disconnected
@@ -298,6 +463,11 @@ interface BackgroundSyncParams {
   refreshMessagingSessions: () => Promise<unknown> | unknown
   refreshSessions: () => Promise<unknown> | unknown
   requestGateway: GatewayRequester
+  updateSessionState: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null
+  ) => ClientSessionState
 }
 
 /** Poll a callback while the tab is visible, on `intervalMs`; re-checks on tab
@@ -365,13 +535,22 @@ export function useBackgroundSync({
   refreshHermesConfig,
   refreshMessagingSessions,
   refreshSessions,
-  requestGateway
+  requestGateway,
+  updateSessionState
 }: BackgroundSyncParams): void {
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
   const sessionsChangeTick = useStore($sessionsChangeTick)
   const activeTranscriptBusy = useStore($busy)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
+  // Tile reconcile state (#93942 slice 1): shared sequence guard + per-tile
+  // transcript signatures, so no-change ticks and closed tiles cost nothing.
+  const tileRequestSequenceRef = useRef(0)
+  const tileSignatureRef = useRef(new Map<string, string>())
+  // Read $busy.get() directly inside the reconcile loop instead of mirroring
+  // the atom into a ref (lint: no-restricted-syntax — refs synced from atoms
+  // lag one render). The reconcile runs on tick, not render, so .get() is
+  // always current.
 
   const requestActiveTranscriptRefresh = useCallback(
     (preservePending: boolean) => {
@@ -506,23 +685,68 @@ export function useBackgroundSync({
 
     let lastRunAt = 0
     let timer: null | number = null
+    let typingDeferTimer: null | number = null
 
     const run = () => {
       lastRunAt = Date.now()
       void refreshSessions()
       void refreshMessagingSessions()
       requestActiveTranscriptRefresh(true)
+      // Bot canonical chats live in workspace tiles, never in the main-pane
+      // selection — without this they never see background deliveries
+      // (#93942 scenario A). Signature-gated per tile, so no-change ticks
+      // cost nothing.
+      void reconcileTileTranscripts({
+        busyRef: {
+          get current() {
+            return $busy.get()
+          }
+        },
+        requestSequenceRef: tileRequestSequenceRef,
+        signatureRef: tileSignatureRef,
+        updateSessionState
+      })
+    }
+
+    // Hold the coalesced pass while a typing burst is warm (#95033) so the
+    // heavy list work never lands under keystrokes. One timer services every
+    // caller: ticks that arrive mid-deferral find it already armed and return.
+    // Fire time is the remaining quiet window, not a poll — a later key
+    // extends lastRendererInputAt, and the firing callback re-arms if still
+    // warm. There is no starvation cap: a continuous burst keeps holding.
+    const runWhenKeyboardQuiet = () => {
+      const now = Date.now()
+
+      if (!isTypingBurstActive(now)) {
+        if (typingDeferTimer !== null) {
+          window.clearTimeout(typingDeferTimer)
+          typingDeferTimer = null
+        }
+
+        run()
+
+        return
+      }
+
+      if (typingDeferTimer === null) {
+        typingDeferTimer = window.setTimeout(() => {
+          typingDeferTimer = null
+          runWhenKeyboardQuiet()
+        }, remainingTypingQuietMs(now))
+      }
     }
 
     const unsubscribe = $sessionsChangeTick.listen(() => {
       const since = Date.now() - lastRunAt
 
       if (since >= SESSIONS_LIST_TICK_GAP_MS) {
-        run()
-      } else if (timer === null) {
+        runWhenKeyboardQuiet()
+      } else if (typingDeferTimer === null && timer === null) {
+        // Within the gap a pass is already scheduled — trailing timer or a
+        // typing deferral. Arming another one here would stack extra passes.
         timer = window.setTimeout(() => {
           timer = null
-          run()
+          runWhenKeyboardQuiet()
         }, SESSIONS_LIST_TICK_GAP_MS - since)
       }
     })
@@ -533,8 +757,32 @@ export function useBackgroundSync({
       if (timer !== null) {
         window.clearTimeout(timer)
       }
+
+      if (typingDeferTimer !== null) {
+        window.clearTimeout(typingDeferTimer)
+      }
     }
-  }, [changeEventsAvailable, gatewayState, refreshMessagingSessions, refreshSessions, requestActiveTranscriptRefresh])
+  }, [
+    changeEventsAvailable,
+    gatewayState,
+    refreshMessagingSessions,
+    refreshSessions,
+    requestActiveTranscriptRefresh,
+    updateSessionState
+  ])
+
+  // Keyboard warmth for the deferral above: capture phase on window. Any
+  // keydown in this renderer (composer, modal, settings) counts — conservative
+  // on purpose. Pure timestamp write, no React state.
+  useEffect(() => {
+    const markInput = (): void => noteRendererKeyboardActivity()
+
+    window.addEventListener('keydown', markInput, true)
+
+    return () => {
+      window.removeEventListener('keydown', markInput, true)
+    }
+  }, [])
 
   // Keep the cron-jobs section live without a user action (scheduler ticks in
   // the background). cron.changed (jobs.json moved: CRUD or a scheduler tick's

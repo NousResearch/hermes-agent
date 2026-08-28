@@ -400,6 +400,11 @@ export const zhHant = defineLocale({
       introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
+      tipsTitle: '應用程式內提示',
+      tipsDesc: '指向應用程式某處的小氣泡：閒置時偶爾出現，需要時 Hermes 也會給你一則。關掉一則就不再出現。',
+      tipsReset: (count: number) => `復原 ${count} 則已關閉的提示`,
+      toursTitle: '導覽',
+      toursDesc: '讓 Hermes 帶你認識應用程式：調暗畫面並逐步標示每個位置。',
       composerPopoutTitle: '懸浮輸入框',
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
       vibeHeartsTitle: '心情愛心',
@@ -809,6 +814,10 @@ export const zhHant = defineLocale({
       plainTextStoredTitle: 'Token 以純文字儲存',
       plainTextStoredDesc:
         '安全儲存無法使用，因此已儲存的 Token 以未加密方式儲存在此裝置上應用程式的連線設定檔中。請安裝或啟用 GNOME Keyring 或 KWallet 以將其加密。',
+      keychainEncryptionTitle: '使用系統鑰匙圈加密已儲存的機密',
+      keychainEncryptionDesc:
+        '預設關閉。開啟後，閘道 Token 與登入憑證將使用系統鑰匙圈（Keychain Access、GNOME Keyring 或 Windows DPAPI）加密——系統可能會要求授權或密碼。關閉時，它們以僅目前使用者可讀的一般檔案形式儲存。',
+      keychainEncryptionFailed: '無法變更機密加密設定',
       testRemote: '測試遠端',
       saveForRestart: '儲存至下次重新啟動',
       saveAndReconnect: '儲存並重新連線',
@@ -1581,7 +1590,11 @@ export const zhHant = defineLocale({
       message: count => `在您檢查模型設定之前，${count} 個排程工作將被略過。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 個`,
       review: '檢查排程工作',
-      saveFailed: 'Hermes 未儲存該模型變更。'
+      saveFailed: 'Hermes 未儲存該模型變更。',
+      confirmTitle: '模型選擇警告',
+      confirmDetail: '僅在你接受此權衡時確認。',
+      confirmAction: '確認',
+      declined: '已取消模型變更 — 你拒絕了資料訓練層級警告。'
     },
     search: '搜尋排程工作…',
     loading: '正在載入排程工作…',
@@ -2531,6 +2544,9 @@ export const zhHant = defineLocale({
     hide: '隱藏',
     openPreview: '開啟預覽',
     openInBrowser: '在瀏覽器中開啟',
+    openInExternal: '在外部開啟',
+    popIn: '彈回',
+    popOut: '彈出',
     linkHint: '⌘/Ctrl+點擊在預覽窗格開啟',
     sourceLineTitle: '點擊選取 · shift 點擊擴展 · 拖曳至輸入框',
     source: '原始碼',
@@ -2894,6 +2910,10 @@ export const zhHant = defineLocale({
     editFailed: '編輯失敗',
     editTurnUnavailable: '此回合已不在伺服器歷史中（可能已被壓縮移除）。',
     resumeFailed: '繼續失敗',
+    readOnlyTranscriptTitle: '已以唯讀方式開啟',
+    readOnlyTranscriptBody:
+      '尚無已連線的後端認領這個較早的對話，因此它以唯讀逐字稿方式開啟。歷史紀錄完好；在有後端認領之前無法傳送訊息。',
+    readOnlyTranscriptSendBlocked: '此對話目前以唯讀逐字稿方式開啟——傳送已停用。',
     resumeStrandedTitle: '無法載入此工作階段',
     resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
     resumeRetry: '重試',
@@ -2911,6 +2931,7 @@ export const zhHant = defineLocale({
     cwdStagedTitle: '工作目錄已暫存',
     cwdStagedMessage: '重新啟動桌面後端後，工作目錄變更才會套用至此作用中工作階段。',
     modelSwitchFailed: '模型切換失敗',
+    hydrationSyncing: (profile: string) => `正在同步 ${profile}\u2026`,
     sessionExported: '工作階段已匯出',
     sessionExportFailed: '無法匯出工作階段',
     imageSaved: '圖片已儲存',
@@ -2945,6 +2966,52 @@ export const zhHant = defineLocale({
     boundaryDesc: '此檢視遇到意外錯誤。您的聊天和設定是安全的。',
     reloadWindow: '重新載入視窗',
     openLogs: '開啟記錄'
+  },
+
+  tips: {
+    close: '不再顯示這則提示',
+    items: {
+      'new-session': {
+        title: '從頭開始',
+        text: '新對話擁有獨立的上下文、終端機與工作目錄。'
+      },
+      skills: {
+        title: '教一次就夠',
+        text: '技能是一組說明檔，Hermes 會在需要時自行載入。'
+      },
+      messaging: {
+        title: '離開電腦也能用',
+        text: '接上 Telegram、Discord、Slack 等 — 同一個代理，同一份記憶。'
+      },
+      artifacts: {
+        title: 'Hermes 做過的一切',
+        text: '所有工作階段的圖片、檔案與連結，都彙整在這裡。'
+      },
+      cron: {
+        title: '會自己執行的工作',
+        text: '讓一則提示按小時、按夜間，或依 cron 運算式定時執行。'
+      },
+      'command-palette': {
+        title: '一個輸入框搞定一切',
+        text: '工作階段、設定、技能與指令都能從命令選單找到。'
+      },
+      profiles: {
+        title: '設定檔彼此獨立',
+        text: '每個都是獨立的 Hermes — 自己的金鑰、記憶與工作階段。'
+      },
+      'composer-mentions': {
+        title: '附件與指令',
+        text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
+      },
+      'model-switch': {
+        title: '對話中隨時換模型',
+        text: '模型名稱就是按鈕。工作性質變了就換一個。'
+      },
+      'right-pane': {
+        title: '工作面板',
+        text: '檔案、終端機、審閱與內建瀏覽器都在側邊面板裡。'
+      }
+    }
   },
 
   ui: {

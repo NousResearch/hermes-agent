@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-21T20:49:36Z",
+  "updated_at": "2026-08-28T07:53:26Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -109,6 +109,10 @@
           "description": ""
         },
         {
+          "id": "qwen/qwen3.8-flash",
+          "description": ""
+        },
+        {
           "id": "moonshotai/kimi-k3",
           "description": "recommended"
         },
@@ -118,6 +122,10 @@
         },
         {
           "id": "z-ai/glm-5.3",
+          "description": ""
+        },
+        {
+          "id": "z-ai/glm-5.3-flash",
           "description": ""
         },
         {
@@ -154,11 +162,15 @@
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
         {
-          "id": "stealth/ox-alpha",
+          "id": "thinkingmachines/inkling:free",
           "description": "free"
         },
         {
-          "id": "openrouter/elephant-alpha",
+          "id": "thinkingmachines/inkling-small:free",
+          "description": "free"
+        },
+        {
+          "id": "minimax/minimax-m3:free",
           "description": "free"
         },
         {
@@ -260,6 +272,9 @@
           "id": "qwen/qwen3.8-max"
         },
         {
+          "id": "qwen/qwen3.8-flash"
+        },
+        {
           "id": "moonshotai/kimi-k3"
         },
         {
@@ -267,6 +282,9 @@
         },
         {
           "id": "z-ai/glm-5.3"
+        },
+        {
+          "id": "z-ai/glm-5.3-flash"
         },
         {
           "id": "z-ai/glm-5.2",
@@ -286,9 +304,6 @@
         },
         {
           "id": "sakana/fugu-ultra"
-        },
-        {
-          "id": "stealth/ox-alpha"
         }
       ]
     }

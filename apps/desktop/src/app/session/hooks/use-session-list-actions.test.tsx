@@ -5,15 +5,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
 import { $cronJobs, setCronJobs } from '@/store/cron'
 import {
+  beginGatewaySwitch,
+  endGatewaySwitch,
+  recoverActiveSourceAfterFailedGatewaySwitch,
+  registerGatewaySwitchLifecycle
+} from '@/store/gateway-switch'
+import {
   $cronSessions,
   $messagingPlatformTotals,
   $messagingSessions,
+  $messagingTruncated,
+  $sessionProfilesTruncated,
+  $sessionProfilesUsage,
   $sessions,
   $sessionsLoading,
   setCronSessions,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
+  setSessionProfilesTruncated,
+  setSessionProfilesUsage,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
@@ -104,6 +115,8 @@ beforeEach(() => {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
+  setSessionProfilesTruncated({})
+  setSessionProfilesUsage({})
   setSessionsLoading(false)
 })
 
@@ -114,6 +127,8 @@ afterEach(() => {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
+  setSessionProfilesTruncated({})
+  setSessionProfilesUsage({})
   setSessionsLoading(false)
 })
 
@@ -248,6 +263,102 @@ describe('refreshSessions identity + loading hygiene', () => {
 
     off()
     expect(loadingStates).toEqual([false, true, false])
+  })
+
+  it('does not let a superseded owner publish or release a newer switch loading barrier', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+    let ownsRefresh = true
+
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+    const refresh = result.current.refreshSessions(() => ownsRefresh)
+
+    expect($sessionsLoading.get()).toBe(true)
+
+    ownsRefresh = false
+    setSessions([row('winner')])
+    setCronSessions([row('winner-cron', { source: 'cron' })])
+    setMessagingSessions([row('winner-message', { source: 'signal' })])
+    setMessagingTruncated(true)
+    setSessionProfilesTruncated({ winner: true })
+    setSessionProfilesUsage({ winner: { cost_usd: 2, tokens: 20 } })
+    setSessionsLoading(true)
+
+    await act(async () => {
+      pending.resolve({
+        recents: {
+          profiles_truncated: { stale: true },
+          profiles_usage: { stale: { cost_usd: 1, tokens: 10 } },
+          sessions: [row('stale')]
+        },
+        cron: { sessions: [row('stale-cron', { source: 'cron' })] },
+        messaging: { sessions: [row('stale-message', { source: 'telegram' })] }
+      })
+      await refresh
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['winner'])
+    expect($cronSessions.get().map(session => session.id)).toEqual(['winner-cron'])
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['winner-message'])
+    expect($messagingTruncated.get()).toBe(true)
+    expect($sessionProfilesTruncated.get()).toEqual({ winner: true })
+    expect($sessionProfilesUsage.get()).toEqual({ winner: { cost_usd: 2, tokens: 20 } })
+    expect($sessionsLoading.get()).toBe(true)
+    expect(getCronJobs).not.toHaveBeenCalled()
+  })
+
+  it('keeps failed-switch recovery from publishing through a newer switch', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const off = registerGatewaySwitchLifecycle({
+      beforeConnectionSwitch: () => undefined,
+      refreshSessions: result.current.refreshSessions
+    })
+
+    let newer: number | undefined
+
+    try {
+      const failed = beginGatewaySwitch()
+
+      recoverActiveSourceAfterFailedGatewaySwitch(failed)
+      endGatewaySwitch(failed)
+      await vi.waitFor(() => expect(listSidebarSessions).toHaveBeenCalledTimes(1))
+
+      // A newer switch owns the freshly wiped lists and loading barrier while
+      // the failed switch's real sidebar publisher is still in flight.
+      newer = beginGatewaySwitch()
+
+      await act(async () => {
+        pending.resolve({
+          recents: {
+            profiles_truncated: { stale: true },
+            profiles_usage: { stale: { cost_usd: 1, tokens: 10 } },
+            sessions: [row('stale')]
+          },
+          cron: { sessions: [row('stale-cron', { source: 'cron' })] },
+          messaging: { sessions: [row('stale-message', { source: 'telegram' })] }
+        })
+        await pending.promise
+      })
+
+      expect($sessions.get()).toEqual([])
+      expect($cronSessions.get()).toEqual([])
+      expect($messagingSessions.get()).toEqual([])
+      expect($messagingTruncated.get()).toBe(false)
+      expect($sessionProfilesTruncated.get()).toEqual({})
+      expect($sessionProfilesUsage.get()).toEqual({})
+      expect($sessionsLoading.get()).toBe(true)
+      expect($cronJobs.get()).toEqual([])
+      expect(getCronJobs).not.toHaveBeenCalled()
+    } finally {
+      endGatewaySwitch(newer)
+      off()
+    }
   })
 
   it('clears initial loading after a failed source activation advances the gateway epoch', async () => {

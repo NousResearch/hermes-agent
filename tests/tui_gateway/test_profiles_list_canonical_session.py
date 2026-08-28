@@ -361,3 +361,54 @@ def test_canonical_session_scoped_per_profile_db(home):
     rows = _profiles({})
     assert "default profile content" in _row(rows, "default")["canonical_session"]["preview"]
     assert "ops profile content" in _row(rows, "ops")["canonical_session"]["preview"]
+
+
+def test_profiles_list_opens_session_db_read_only(home, monkeypatch):
+    """Roster inspection must not take a writable SessionDB (20s lock patience)."""
+    import hermes_state
+
+    db = _db(home)
+    _add_session(db, "bot", title="Bot Chat", ts=1000, text="hello")
+    db.close()
+
+    seen = []
+    Real = hermes_state.SessionDB
+
+    class Spy(Real):
+        def __init__(self, *args, **kwargs):
+            seen.append(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(hermes_state, "SessionDB", Spy)
+
+    row = _row(_profiles({}), "default")
+    assert row["canonical_session"]["preview"]
+    assert seen, "profiles.list should open the profile state.db"
+    assert all(call.get("read_only") is True for call in seen)
+
+
+def test_profiles_list_does_not_wait_out_write_lock(home):
+    """A live writer on state.db must not stall the whole roster RPC."""
+    import sqlite3
+    import time
+
+    db = _db(home)
+    _add_session(db, "bot", title="Bot Chat", ts=1000, text="hello from bot")
+    db.close()
+
+    holder = sqlite3.connect(str(home / "state.db"), isolation_level=None, timeout=0)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        started = time.monotonic()
+        rows = _profiles({})
+        elapsed = time.monotonic() - started
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+
+    assert elapsed < 3.0, elapsed
+    row = _row(rows, "default")
+    assert row["name"] == "default"
+    canonical = row["canonical_session"]
+    assert canonical is not None, "WAL readers must still resolve Bot Chat under a live writer"
+    assert "hello from bot" in canonical["preview"]

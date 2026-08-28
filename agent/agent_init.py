@@ -814,9 +814,10 @@ def init_agent(
     # providers have exceptions (for example Copilot's gpt-5-mini still
     # uses chat completions). Also auto-upgrade for direct OpenAI URLs
     # (api.openai.com) since all newer tool-calling models prefer
-    # Responses there. ACP runtimes are excluded: CopilotACPClient
-    # handles its own routing and does not implement the Responses API
-    # surface.
+    # Responses there. ACP runtimes are excluded: an ACP client handles
+    # its own routing and does not implement the Responses API surface.
+    # Keyed on the `acp://` scheme, not one vendor, so every ACP client
+    # is covered.
     # When api_mode was explicitly provided, respect it — the user
     # knows what their endpoint supports (#10473).
     # Exception: Azure OpenAI serves gpt-5.x on /chat/completions and
@@ -826,7 +827,7 @@ def init_agent(
         api_mode is None
         and agent.api_mode == "chat_completions"
         and agent.provider != "copilot-acp"
-        and not str(agent.base_url or "").lower().startswith("acp://copilot")
+        and not str(agent.base_url or "").lower().startswith("acp://")
         and not str(agent.base_url or "").lower().startswith("acp+tcp://")
         and not agent._is_azure_openai_url()
         and (
@@ -2146,11 +2147,15 @@ def init_agent(
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
-    # Tail retention mode (compression.tail_mode). "legacy" (default) keeps
-    # the 0.20*window verbatim tail; "lean" switches to the clamped
-    # 2.5%/10K-25K tail with recovery-pointer machinery (#87326). Unknown
-    # values fall back to legacy inside the compressor.
-    compression_tail_mode = str(_compression_cfg.get("tail_mode", "legacy")).strip().lower()
+    # Tail retention mode (compression.tail_mode). "lean" (default) keeps a
+    # clamped 2.5%/10K-25K verbatim tail with recovery-pointer machinery —
+    # continuity rides the upgraded summary (digests, anchor index, verbatim
+    # user messages, session_search pointers; recall-eval'd, see
+    # evals/compaction/results/). "legacy" restores the pre-#87326
+    # 0.20*threshold verbatim tail, which on big-window/raised-threshold
+    # setups hoards 100-240K tokens per compaction. Unknown values fall back
+    # to lean inside the compressor.
+    compression_tail_mode = str(_compression_cfg.get("tail_mode", "lean")).strip().lower()
     # Minimum REAL (actionable) user messages guaranteed to survive in the
     # uncompressed tail (compression.min_tail_user_messages).  Default 1
     # preserves current behavior exactly — the existing single-user tail
@@ -2947,6 +2952,12 @@ def init_agent(
     agent._user_turn_count = 0
     # Copilot x-initiator flag: first API call of a user turn sends "user" (#3040).
     agent._is_user_initiated_turn = False
+
+    # Usage-anchored context accounting (agent/model_metadata.py): the last
+    # main-loop provider response's exact usage + transcript snapshot. None
+    # until the first response with usage; invalidated on compaction and
+    # session switches so stale anchors can never suppress compression.
+    agent._usage_anchor = None
 
     # Cumulative token usage for the session
     agent.session_prompt_tokens = 0

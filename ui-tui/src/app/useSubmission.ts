@@ -79,7 +79,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
   }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (text: string, showUserMessage = true, displayText?: string, expandOverride?: (value: string) => string) => {
+    (
+      text: string,
+      showUserMessage = true,
+      displayText?: string,
+      expandOverride?: (value: string) => string,
+      submitOpts: { skipDetectDrop?: boolean } = {}
+    ) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
       const expand = expandOverride ?? expandTokens(composerRefs.tokensRef.current)
@@ -95,7 +101,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
           sys
         },
         showUserMessage,
-        displayText
+        displayText,
+        submitOpts
       )
     },
     [appendMessage, composerActions, composerRefs, gw, setLastUserMsg, sys]
@@ -384,7 +391,22 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   submitRef.current = submit
 
-  return { dispatchSubmission, send, sendQueued, submit }
+  // Literal submission: route text straight to the prompt pipeline, skipping
+  // slash-command routing, `!` shell dispatch, [[token]] expansion, and
+  // $(...) interpolation. Startup `-q` queries use this — they're arbitrary
+  // launcher/script text, and one-shot mode already treats them literally.
+  const submitLiteral = useCallback(
+    (value: string) => {
+      if (!value.trim()) {
+        return
+      }
+
+      send(value, true, value, v => v, { skipDetectDrop: true })
+    },
+    [send]
+  )
+
+  return { dispatchSubmission, send, sendQueued, submit, submitLiteral }
 }
 
 export interface UseSubmissionOptions {

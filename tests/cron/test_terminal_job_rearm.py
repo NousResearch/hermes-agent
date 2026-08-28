@@ -2,16 +2,21 @@
 
 from datetime import datetime, timedelta, timezone
 import copy
+from unittest import mock
 
 import pytest
 
 from cron.jobs import (
     advance_next_run,
+    advance_next_runs,
+    claim_job_for_fire,
     create_job,
     get_due_jobs,
     get_job,
     load_jobs,
     mark_job_run,
+    rearm_oneshot,
+    resume_job,
     save_jobs,
     trigger_job,
     update_job,
@@ -136,3 +141,105 @@ def test_rearm_refuses_recurring_and_live_claim(tmp_cron_dir):
     save_jobs([record])
     with pytest.raises(ValueError, match="claim"):
         rearm_oneshot(oneshot["id"], future)
+
+
+class TestRecurringJobStuckInErrorStateIsRecoverable:
+    """A recurring (cron/interval) job that could not compute its next
+    occurrence is marked ``state=error`` but left ``enabled=True`` — issue
+    #16265's invariant that recurring jobs must never be silently disabled.
+
+    ``is_terminal_job()`` previously treated ``state=error`` identically to
+    ``state=completed`` at every call site, which blocked BOTH the due-scan's
+    own ``next_run_at`` self-heal AND every manual recovery path
+    (``resume_job``, ``claim_job_for_fire``, ``advance_next_runs``) — wedging
+    the job forever with no exit except deleting and recreating it. These
+    tests pin the fix: an error-state recurring job stays recoverable through
+    every one of those paths, while a genuinely terminal ``state=completed``
+    job (covered by the tests above) remains blocked through all of them.
+    """
+
+    @staticmethod
+    def _force_error_state(job_id):
+        """Reproduce the exact state _mark_job_run_locked produces when
+        compute_next_run() fails for a recurring job (e.g. croniter
+        missing): state=error, enabled stays True, next_run_at=None."""
+        with mock.patch("cron.jobs.compute_next_run", return_value=None):
+            mark_job_run(job_id, success=True)
+
+    def test_due_scan_self_heals_next_run_at(self, tmp_cron_dir):
+        job = create_job("recurring", "every 5m")
+        self._force_error_state(job["id"])
+        stuck = get_job(job["id"])
+        assert stuck["state"] == "error"
+        assert stuck["enabled"] is True
+        assert stuck["next_run_at"] is None
+
+        # compute_next_run works again on the next tick (the transient
+        # issue resolved) — the due-scan must recompute next_run_at even
+        # though the persisted record is still state=error.
+        get_due_jobs()
+
+        healed = get_job(job["id"])
+        assert healed["next_run_at"] is not None, (
+            "due-scan self-heal never reached an error-state recurring job"
+        )
+
+    def test_resume_job_recovers_error_state(self, tmp_cron_dir):
+        job = create_job("recurring", "every 5m")
+        self._force_error_state(job["id"])
+
+        resumed = resume_job(job["id"])
+
+        assert resumed is not None, "resume_job must not raise on state=error"
+        assert resumed["state"] == "scheduled"
+        assert resumed["enabled"] is True
+        assert resumed["next_run_at"] is not None
+
+    def test_claim_job_for_fire_recovers_error_state(self, tmp_cron_dir):
+        job = create_job("recurring", "every 5m")
+        self._force_error_state(job["id"])
+
+        claimed = claim_job_for_fire(job["id"], return_job=True)
+
+        assert isinstance(claimed, dict), (
+            "claim_job_for_fire must not refuse an error-state recurring "
+            "job — it still has future occurrences"
+        )
+        assert claimed["fire_claim"] is not None
+
+    def test_advance_next_runs_recovers_error_state(self, tmp_cron_dir):
+        job = create_job("recurring", "every 5m")
+        self._force_error_state(job["id"])
+
+        advanced = advance_next_runs([job["id"]])
+
+        assert advanced == 1, (
+            "advance_next_runs must still pre-advance an error-state "
+            "recurring job's next_run_at before it fires (crash-safety)"
+        )
+
+    def test_pause_job_now_works_on_error_state(self, tmp_cron_dir):
+        from cron.jobs import pause_job
+
+        job = create_job("recurring", "every 5m")
+        self._force_error_state(job["id"])
+
+        paused = pause_job(job["id"])
+
+        assert paused is not None, "pause_job must not raise on state=error"
+        assert paused["state"] == "paused"
+        assert paused["enabled"] is False
+
+    def test_completed_oneshot_still_blocked_on_every_path(self, tmp_cron_dir):
+        """Control: the fix must not weaken protection for a genuinely
+        terminal state=completed job — only state=error recurring jobs are
+        exempted."""
+        job = create_job("done", "30m", repeat=1)
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["state"] == "completed"
+
+        with pytest.raises(ValueError, match="terminal"):
+            resume_job(job["id"])
+        assert claim_job_for_fire(job["id"], return_job=True) is False
+        assert advance_next_runs([job["id"]]) == 0
+        assert get_due_jobs() == []

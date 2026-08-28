@@ -27,13 +27,20 @@ class _FakeRelayAdapter:
         return True
 
 
-def _runner_with(monkeypatch, *, idle, armed_adapter=True):
+def _runner_with(monkeypatch, *, idle, armed_adapter=True, can_self_suspend=True):
     """Build a GatewayRunner without booting it, stubbing just what the watcher
     touches. Real methods (_scale_to_zero_is_idle composition, the watcher body)
-    run; only their dependencies are stubbed."""
+    run; only their dependencies are stubbed.
+
+    `can_self_suspend` stands in for the platform: True is Fly (an in-machine
+    suspend API exists, so quiescing is followed by a freeze), False is anywhere
+    the platform suspends on its own timer. The watcher only quiesces in the
+    first case, so this defaults True to keep the existing cases on that path.
+    """
     r = GatewayRunner.__new__(GatewayRunner)
     r._running = True
     r._scale_to_zero_cooldown_until = 0.0
+    r._scale_to_zero_no_suspend_logged = False
     r._last_inbound_at = time.time()
     r._running_agents = {}
     r._background_tasks = set()
@@ -43,7 +50,41 @@ def _runner_with(monkeypatch, *, idle, armed_adapter=True):
     monkeypatch.setattr(r, "_relay_adapter_for_dormancy", lambda: adapter, raising=False)
     monkeypatch.setattr(r, "_scale_to_zero_idle_timeout_seconds", lambda: 300.0, raising=False)
     monkeypatch.setattr(r, "_update_runtime_status", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.self_suspend_available",
+        lambda *a, **k: can_self_suspend,
+    )
     return r, adapter
+
+
+@pytest.mark.asyncio
+async def test_watcher_does_not_quiesce_when_the_platform_owns_the_suspend(
+    monkeypatch,
+):
+    """Quiescing cannot help when the platform owns the freeze, and the reconnect
+    that follows the socket close undoes the flip, so the destination ends up
+    unflipped when the freeze lands.
+    """
+    r, adapter = _runner_with(monkeypatch, idle=True, can_self_suspend=False)
+    suspends = []
+    monkeypatch.setattr(
+        r,
+        "_scale_to_zero_self_suspend",
+        lambda *a, **k: suspends.append(1),
+        raising=False,
+    )
+
+    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
+    await asyncio.sleep(0.1)
+    r._running = False
+    await asyncio.wait_for(task, timeout=2)
+
+    assert adapter.go_dormant_calls == 0, "must not flip/close on a platform-timed suspend"
+    assert suspends == []
+    # No cooldown either: nothing was driven, so the next tick is free to act
+    # the moment the platform picture changes.
+    assert r._scale_to_zero_cooldown_until == 0.0
+    assert r._scale_to_zero_no_suspend_logged is True
 
 
 @pytest.mark.asyncio

@@ -150,6 +150,31 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
 
 
 
+def test_codex_app_server_compression_failure_preserves_bookkeeping():
+    agent = DummyAgent(TurnResult(error="compact failed"))
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100000,
+        force=True,
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert agent._codex_session.calls == 1
+    assert agent.context_compressor.compression_count == 0
+    assert agent.context_compressor.last_prompt_tokens == 123
+    assert agent.warnings
+    assert agent.touch_calls[0] == "context compression started"
+    assert agent.touch_calls[-1] == "context compression failed"
+    assert agent.status_events == [
+        ("lifecycle", COMPACTION_STATUS),
+        ("warn", "⚠ Codex app-server compaction failed: compact failed"),
+    ]
+
 
 
 

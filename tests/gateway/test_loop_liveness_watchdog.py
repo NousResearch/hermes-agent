@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
+import inspect
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -10,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.shutdown_watchdog import (
+    loop_heartbeat_forever,
     _arm_loop_floor_timer,
     start_loop_liveness_watchdog,
 )
@@ -310,3 +313,93 @@ def test_gateway_runner_liveness_guards_start_and_stop():
     floor_timer.cancel.assert_called_once_with()
     assert runner._loop_liveness_watchdog is None
     assert runner._loop_floor_timer_handle is None
+def test_heartbeat_write_does_not_block_the_loop_it_monitors():
+    """The heartbeat write must not freeze the loop the watchdog is watching.
+
+    ``write_loop_heartbeat`` ends in ``atomic_json_write`` -> ``os.fsync``, and on
+    a stalling filesystem that fsync blocks whichever thread runs it. Run inline,
+    that thread was the gateway loop — so the loop-liveness watchdog would time
+    out its probe (10s, 3 strikes, a ~90-120s budget) and kill the loop for being
+    unresponsive at the moment it was blocked inside the watchdog's own write. A
+    WSL2 VHDX under io pressure was measured stalling a trivial stat-and-fsync
+    probe at p99 31s, max 112s — longer than the whole budget.
+
+    Bounded by a fixed sleep rather than an Event handshake on purpose: if the
+    write ever goes back on-loop this fails on the tick count instead of hanging.
+    """
+    block_s = 0.30
+
+    def slow_write(**_kwargs):
+        time.sleep(block_s)
+        return pathlib.Path("/dev/null")
+
+    async def scenario() -> int:
+        ticks = 0
+
+        async def ticker() -> None:
+            nonlocal ticks
+            deadline = time.monotonic() + block_s
+            while time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        with patch(
+            "gateway.shutdown_watchdog.write_loop_heartbeat", slow_write
+        ):
+            # should_continue False -> exactly one write, then return.
+            hb = asyncio.create_task(
+                loop_heartbeat_forever(interval_s=60.0, should_continue=lambda: False)
+            )
+            await ticker()
+            await asyncio.wait_for(hb, timeout=5.0)
+        return ticks
+
+    ticks = asyncio.run(scenario())
+    # Off-loop, the ticker gets roughly block_s / 0.02 ticks. Inline it gets at
+    # most one, because the loop cannot run anything while fsync blocks it.
+    assert ticks >= 5, (
+        "the loop made only %d tick(s) while the heartbeat was writing — "
+        "the write is blocking the loop again" % ticks
+    )
+
+
+def test_heartbeat_write_is_awaited_so_a_frozen_loop_still_goes_stale():
+    """The staleness signal external monitors rely on must survive the fix.
+
+    The docstring on ``loop_heartbeat_forever`` promises that a frozen loop lets the file
+    age, which is how an outside supervisor notices. Handing the write to a thread
+    keeps that promise only because the loop still *initiates* it and awaits it —
+    fire-and-forget would refresh the file from a thread while the loop was
+    wedged, destroying exactly that signal.
+    """
+    src = pathlib.Path(
+        inspect.getsourcefile(loop_heartbeat_forever) or ""
+    ).read_text()
+    body = src[src.index("async def loop_heartbeat_forever("):]
+    body = body[: body.index("\ndef ") if "\ndef " in body else len(body)]
+    assert "await asyncio.to_thread(" in body, "the write is not handed to a thread"
+    assert "create_task(" not in body, (
+        "the heartbeat write is fire-and-forget; a frozen loop would keep the "
+        "file fresh and the staleness signal would be lost"
+    )
+
+
+def test_loop_scheduling_witness_is_served_by_the_loop_itself():
+    """The tick socket must be armed on the loop, never in a thread.
+
+    The two-witness contract in ``probe_gateway_loop_liveness`` rests on the
+    socket being answered only while the loop is actually dispatching. If the
+    server ever moved into the heartbeat's executor thread, a wedged loop
+    could keep answering pings (same class of lie as a fire-and-forget file
+    write) and the interlock would be void.
+    """
+    src = pathlib.Path(
+        inspect.getsourcefile(loop_heartbeat_forever) or ""
+    ).read_text()
+    body = src[src.index("async def loop_heartbeat_forever("):]
+    body = body[: body.index("\ndef ") if "\ndef " in body else len(body)]
+    # Awaited directly on the loop task: a coroutine cannot run inside a
+    # thread, so an awaited start_unix_server is structurally loop-owned.
+    assert "await asyncio.start_unix_server(" in body, (
+        "the loop-scheduling witness socket is not armed by the loop task"
+    )

@@ -40,11 +40,56 @@ def test_mechanism_ids_are_machine_readable_and_described():
     assert _restart_mechanism("launchd", "work") == "launchd"
     assert _restart_mechanism("desktop", "default") == "desktop"
     assert _restart_mechanism("manual", "work") == "manual"
+    assert _restart_mechanism("windows-service", "default") == "windows-service"
     # display derives FROM the id
     assert "systemctl" in describe_restart_mechanism("systemd", "default")
     assert "kickstart" in describe_restart_mechanism("launchd", "work")
     assert "-p work" in describe_restart_mechanism("manual", "work")
     assert describe_restart_mechanism("manual", "default") == "hermes gateway restart"
+    assert "sc.exe" in describe_restart_mechanism("windows-service", "default")
+
+
+def test_windows_service_supervisor_classification():
+    from hermes_cli.update_inventory import _detect_supervisor_for_pid
+
+    # An SCM-owned gateway PID classifies as windows-service even when the
+    # generic service-PID probe also knows the pid.
+    assert (
+        _detect_supervisor_for_pid(41, set(), {41}) == "windows-service"
+    )
+    assert (
+        _detect_supervisor_for_pid(41, {41}, {41}) == "windows-service"
+    )
+    # Without SCM ownership the existing classification is untouched.
+    assert _detect_supervisor_for_pid(42, set(), set()) == "manual"
+    assert _detect_supervisor_for_pid(42, set(), None) == "manual"
+
+
+def test_windows_service_runtime_reconciles_via_service_profiles():
+    # The update path merges the pause token's service_profiles into
+    # relaunched_profiles after sc.exe start — a restarted SCM gateway
+    # must not trip the unaccounted tripwire.
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 500, supervisor="windows-service")),
+        restarted_services=["hermes-gateway"], relaunched_profiles=["default"],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes == [
+        {"kind": "gateway", "profile": "default", "pid": 500,
+         "mechanism": "windows-service", "outcome": "restarted"}
+    ]
+    assert report_unaccounted_runtimes(outcomes) is False
+
+
+def test_windows_service_runtime_unaccounted_when_restart_fails():
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("work", 501, supervisor="windows-service")),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["mechanism"] == "windows-service"
+    assert outcomes[0]["outcome"] == "unaccounted"
+    assert report_unaccounted_runtimes(outcomes) is True
 
 
 def test_relaunched_profile_is_restarted():

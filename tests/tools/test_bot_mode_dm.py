@@ -238,6 +238,8 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     call = calls[0]
     assert call["background"] is True
     assert call["notify_on_complete"] is True
+    assert call["_host_local"] is True
+    assert Path(call["workdir"]) == Path(bot_mode_dm.__file__).resolve().parent.parent
     command = call["command"]
     mode, dm_file, transport_argv = _runner_parts(command)
     assert mode == "query-file"
@@ -466,6 +468,38 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
 
     assert result.returncode == 0
     assert observed.read_text(encoding="utf-8") == "secret λ\nsecond line"
+    assert not dm_file.exists()
+
+
+@pytest.mark.windows_only
+def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
+    """Native runner paths must survive the Git Bash process boundary."""
+    from tools.environments.local import _find_shell
+
+    dm_file = tmp_path / "message with spaces.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    observed = tmp_path / "observed with spaces.txt"
+    child = tmp_path / "child with spaces.py"
+    child.write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text('started', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    command = bot_mode_dm._delivery_command(
+        [sys.executable, str(child), str(observed)],
+        str(dm_file),
+        stdin_file=False,
+    )
+
+    result = subprocess.run(
+        [_find_shell(), "-lic", command],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert observed.read_text(encoding="utf-8") == "started"
     assert not dm_file.exists()
 
 

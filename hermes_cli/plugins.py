@@ -34,6 +34,7 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import hashlib
 import importlib.metadata
@@ -46,6 +47,7 @@ import queue
 import re
 import sys
 import threading
+import time
 import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -395,6 +397,62 @@ VALID_HOOKS: Set[str] = {
 SHELL_UNSUPPORTED_HOOKS: Set[str] = {
     "transform_api_error_classification",
 }
+
+# Timeout coverage is an allowlist for the agent-turn hot path, not every
+# entry in VALID_HOOKS. The goal is to stop a hung Python plugin callback from
+# wedging the conversation loop (#76821) without joining the worker (avoids
+# the #6622 ThreadPoolExecutor shutdown hang). Hooks not listed below run
+# synchronously to completion.
+#
+# Intentionally unbounded (no hook_callback_timeout wrapper):
+#   - on_session_finalize / on_session_reset — infrequent teardown / session
+#     swap; finalize is a last-chance flush where fail-open abandon can lose
+#     state. (on_session_start/end stay bounded — they sit on the common
+#     session-boundary path.)
+#   - subagent_start — observer only; blocking delegation belongs in
+#     pre_tool_call. Lower frequency than tool/LLM hooks.
+#   - pre_gateway_dispatch — policy gate (skip/rewrite/allow). Abandoning is
+#     unsafe either way (fail-open skips auth-like checks; fail-closed can
+#     drop legitimate messages). Prefer finish-or-exception fallthrough.
+#   - pre_approval_request / post_approval_response — observers only (cannot
+#     veto); the approval UX already has its own timeout; not on the tool
+#     loop hot path.
+#   - kanban_task_* — fire after the board DB commit, observers only, in
+#     dispatcher/worker processes; kanban has its own heartbeat/stale reclaim.
+# Abandon-without-join also leaves a daemon thread that may still mutate
+# shared state — safer for value-returning observers than for gates/flushes.
+#
+# Bounded hooks: timeout is fail-open (abandon/skip, agent continues).
+_HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
+    "post_tool_call",
+    "transform_terminal_output",
+    "transform_tool_result",
+    "transform_llm_output",
+    "pre_llm_call",
+    "post_llm_call",
+    "pre_api_request",
+    "post_api_request",
+    "api_request_error",
+    "pre_verify",
+    "on_session_start",
+    "on_session_end",
+}
+
+# Policy hooks: timeout / still-running must fail closed (block the tool).
+# Skipping would let the tool run without a completed policy decision.
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+
+# Documented parent-thread serialization contract — never move the callback
+# body onto a timeout worker (see website/docs/user-guide/features/hooks.md).
+_HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
+
+# After a timeout, suppress re-firing the same callback for this long so a
+# repeatedly invoked hung hook cannot accumulate abandoned daemon threads.
+_HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
+
+_PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = (
+    "pre_tool_call plugin callback timed out or is still running"
+)
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
@@ -2124,6 +2182,7 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -2140,6 +2199,10 @@ class PluginContext:
         command picker. Plugin commands without ``args_hint`` register as
         parameterless in Discord and still accept trailing text when invoked
         as free-form chat.
+
+        ``argument_mode`` tells the desktop composer how text after the command
+        name behaves (``options``, ``text``, or ``mixed``). Omit it to infer
+        ``text`` whenever ``args_hint`` is set, so ``/myplugin `` stays typeable.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -2165,12 +2228,17 @@ class PluginContext:
             pass  # If commands module isn't available, skip the check
 
         previous = self._manager._plugin_commands.get(clean)
+        hint = (args_hint or "").strip()
+        mode = argument_mode if argument_mode in {"options", "text", "mixed"} else (
+            "text" if hint else None
+        )
         entry = {
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "plugin_key": self.manifest.key or self.manifest.name,
-            "args_hint": (args_hint or "").strip(),
+            "args_hint": hint,
+            "argument_mode": mode,
         }
         self._manager._plugin_commands[clean] = entry
         handle = self._track_replacement(
@@ -3013,6 +3081,130 @@ class PluginContext:
         )
         return handle
 
+    # -- platform handler registration ----------------------------------------
+
+    def register_platform_handler(self, platform: str, factory: Callable) -> None:
+        """Register a native-client handler factory for a gateway platform.
+
+        The generic surface for plugins that need to receive platform
+        events the core adapter doesn't route (extra update types, native
+        button callbacks, reaction/member events, webhook routes, ...).
+
+        The adapter for ``platform`` invokes registered factories at
+        ``connect()`` time, after its native client object is built and
+        before (or as) its own handlers register. The factory receives
+        ``(native, adapter)``::
+
+            def _wire(native, adapter):
+                # native: the platform's client/app object (see table)
+                # adapter: the platform adapter instance (treat read-only)
+                ...
+
+            ctx.register_platform_handler("discord", _wire)
+
+        What ``native`` is per platform (None when the adapter has no
+        separate native client — the adapter itself is then the only
+        useful handle):
+
+        =============  ======================================================
+        telegram       python-telegram-bot ``Application`` (add_handler)
+        discord        ``discord.ext.commands.Bot`` (add_listener / events)
+        slack          ``slack_bolt.async_app.AsyncApp`` (event/action)
+        matrix         the Matrix client (event callbacks)
+        teams          Microsoft Teams ``App`` (on_message / on_card_action)
+        dingtalk       ``DingTalkStreamClient`` (register_callback_handler)
+        line           aiohttp ``web.Application`` (router)
+        others         ``None`` — connect-time hook with the adapter handle
+        =============  ======================================================
+
+        Notes:
+
+        * Factories are invoked lazily at connect time, so platform SDK
+          imports belong inside the factory body — ``register()`` keeps
+          working when the SDK isn't installed.
+        * Factories are isolated: an exception is logged and the platform
+          still connects.
+        * When hooking dispatch tables that stop at the first match
+          (e.g. PTB callback handlers), always scope your handler
+          (pattern prefixes, specific event types) so core flows keep
+          working.
+
+        Args:
+            platform: Gateway platform name, lowercase (``"telegram"``,
+                ``"discord"``, ``"slack"``, ...).
+            factory: Callable receiving ``(native, adapter)``.
+
+        Raises:
+            ValueError: if ``factory`` is not callable or ``platform`` is
+                empty.
+        """
+        if not callable(factory):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a platform "
+                f"handler factory with a non-callable factory."
+            )
+        key = (platform or "").strip().lower()
+        if not key:
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a platform "
+                f"handler factory with an empty platform name."
+            )
+        self._manager._platform_handler_factories.setdefault(key, []).append(
+            (factory, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered %s handler factory: %s",
+            self.manifest.name, key,
+            getattr(factory, "__name__", repr(factory)),
+        )
+
+    # -- telegram handler registration ---------------------------------------
+
+    def register_telegram_handler(self, factory: Callable) -> None:
+        """Register a python-telegram-bot handler factory from a plugin.
+
+        Hermes' Telegram adapter invokes registered factories at ``connect()``
+        time, right after the PTB ``Application`` is built and **before** the
+        core handlers are added. The factory receives
+        ``(application, adapter)`` and wires its own handlers::
+
+            def _wire(application, adapter):
+                from telegram.ext import CallbackQueryHandler
+
+                application.add_handler(
+                    CallbackQueryHandler(_on_button, pattern=r"^myplugin:")
+                )
+
+            ctx.register_telegram_handler(_wire)
+
+        Notes:
+
+        * The factory is called lazily at connect time, so plugins may import
+          ``telegram`` / ``telegram.ext`` inside the factory body — the
+          plugin's ``register()`` still works when PTB is not installed.
+        * PTB dispatches only the *first* matching handler within a group,
+          and the core adapter registers a catch-all ``CallbackQueryHandler``
+          in the default group. Because plugin factories run first,
+          a pattern-scoped ``CallbackQueryHandler`` (e.g. ``pattern=r"^bd:"``)
+          takes precedence for its own callbacks while every other update
+          falls through to the core handlers unchanged. Always scope
+          callback handlers with ``pattern=`` — an unscoped handler would
+          swallow the core button flows (approvals, model picker, clarify).
+        * ``adapter`` is the ``TelegramAdapter`` instance (``adapter.bot``,
+          ``adapter.config`` etc.); treat it as read-only.
+        * Exceptions raised by the factory are caught and logged by the
+          adapter — a broken plugin cannot prevent Telegram from connecting.
+
+        Args:
+            factory: Callable receiving ``(application, adapter)``.
+
+        Raises:
+            ValueError: if ``factory`` is not callable.
+        """
+        # Thin alias over the generic surface — kept for back-compat and
+        # for the Telegram-specific docs above.
+        self.register_platform_handler("telegram", factory)
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------
@@ -3468,6 +3660,78 @@ class PluginContext:
 
 
 # ---------------------------------------------------------------------------
+# Hook callback timeout (non-blocking abandon)
+# ---------------------------------------------------------------------------
+
+# Default wall-clock cap for a single Python plugin hook callback. Overridden
+# by ``plugins.hook_callback_timeout`` in config.yaml (see DEFAULT_CONFIG).
+# Shell hooks already enforce their own subprocess timeout.
+_HOOK_CALLBACK_TIMEOUT_SECS = 30.0
+_MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
+
+
+def _resolve_hook_callback_timeout() -> float:
+    """Return the effective hook-callback timeout in seconds.
+
+    Reads ``plugins.hook_callback_timeout`` via the cached readonly config
+    loader. Falls back to ``_HOOK_CALLBACK_TIMEOUT_SECS``. Values ``<= 0``
+    disable the threaded timeout (sync call). Values above
+    ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS`` are clamped.
+    """
+    timeout = _HOOK_CALLBACK_TIMEOUT_SECS
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        plugins_cfg = (load_config_readonly() or {}).get("plugins")
+        if isinstance(plugins_cfg, dict) and "hook_callback_timeout" in plugins_cfg:
+            raw = plugins_cfg.get("hook_callback_timeout")
+            if raw is not None:
+                timeout = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "plugins.hook_callback_timeout is not a number; using default %gs",
+            _HOOK_CALLBACK_TIMEOUT_SECS,
+        )
+        timeout = _HOOK_CALLBACK_TIMEOUT_SECS
+    except Exception:
+        timeout = _HOOK_CALLBACK_TIMEOUT_SECS
+
+    if timeout < 0:
+        logger.warning(
+            "plugins.hook_callback_timeout=%g is negative; using default %gs",
+            timeout,
+            _HOOK_CALLBACK_TIMEOUT_SECS,
+        )
+        return _HOOK_CALLBACK_TIMEOUT_SECS
+    if timeout > _MAX_HOOK_CALLBACK_TIMEOUT_SECS:
+        logger.warning(
+            "plugins.hook_callback_timeout=%g exceeds max %gs; clamping",
+            timeout,
+            _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
+        )
+        return _MAX_HOOK_CALLBACK_TIMEOUT_SECS
+    return timeout
+
+
+def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
+    """Whether *hook_name* should run under the non-blocking timeout path."""
+    if timeout <= 0 or hook_name in _HOOK_CALLER_THREAD_HOOKS:
+        return False
+    return (
+        hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS
+        or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+    )
+
+
+def _pre_tool_call_timeout_block() -> Dict[str, str]:
+    """Fail-closed directive when a policy callback times out or is still running."""
+    return {
+        "action": "block",
+        "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE,
+    }
+
+
+# ---------------------------------------------------------------------------
 # PluginManager
 # ---------------------------------------------------------------------------
 
@@ -3523,6 +3787,13 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # In-flight / recently-timed-out hook callbacks. Keyed by
+        # (hook_name, id(cb)) so a stuck policy hook cannot spawn a new
+        # abandoned daemon thread on every subsequent fire.
+        self._hook_running_callbacks: Dict[tuple, object] = {}
+        self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
+        self._hook_timeout_lock = threading.Lock()
+        self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
         # Registration handles are kept both per plugin (ownership lookup) and
         # globally (reverse-order teardown for overrides spanning plugins).
         #
@@ -3555,6 +3826,15 @@ class PluginManager:
         # full plugin loads.
         self._predeclared_modules: Dict[str, types.ModuleType] = {}
         self._predeclared_tools: Dict[str, List[str]] = {}
+        # Native platform handler factories registered by plugins, keyed by
+        # lowercase platform name. Each entry is (factory, plugin_name);
+        # the platform's adapter invokes factories at connect() time with
+        # (native_client, adapter) so plugins can wire their own handlers
+        # (PTB handlers, discord.py listeners, slack_bolt events, webhook
+        # routes, ...) without touching core files.
+        # ``register_telegram_handler`` is a thin alias writing into the
+        # "telegram" bucket.
+        self._platform_handler_factories: Dict[str, List[tuple]] = {}
 
     # -----------------------------------------------------------------------
     # Registration ledger internals
@@ -3901,7 +4181,11 @@ class PluginManager:
             self._slack_action_handlers.clear()
             self._predeclared_modules.clear()
             self._predeclared_tools.clear()
+            self._platform_handler_factories.clear()
             self._context_engine = None
+            with self._hook_timeout_lock:
+                self._hook_running_callbacks.clear()
+                self._hook_timeout_suppressed_until.clear()
             self._discovered = False
         else:
             for key in target_keys:
@@ -5286,6 +5570,17 @@ class PluginManager:
         wrapped in its own try/except so a misbehaving plugin cannot break the
         core agent loop.
 
+        Hot-path / observer hooks in ``_HOOK_TIMEOUT_BOUNDED_HOOKS`` and the
+        policy hook ``pre_tool_call`` are bounded by
+        ``plugins.hook_callback_timeout`` (default 30s). On timeout the worker
+        is abandoned (not joined) so we do not reintroduce the #6622 hang.
+        Timed-out or still-running ``pre_tool_call`` callbacks fail closed
+        with a block directive; other bounded hooks fail open (skip).
+
+        ``subagent_stop`` (and any hook in ``_HOOK_CALLER_THREAD_HOOKS``)
+        always runs on the caller thread to preserve the documented parent-
+        thread serialization contract.
+
         Returns a list of non-``None`` return values from callbacks.
 
         For ``pre_llm_call``, callbacks may return a dict describing
@@ -5308,16 +5603,97 @@ class PluginManager:
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
+        timeout = _resolve_hook_callback_timeout()
+        use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
+        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+
         for cb in callbacks:
+            callback_name = getattr(cb, "__name__", repr(cb))
+            callback_key = (hook_name, id(cb))
             try:
-                ret = self._invoke_hook_callback(cb, kwargs)
+                if use_timeout:
+                    token = object()
+                    now = time.monotonic()
+                    with self._hook_timeout_lock:
+                        suppressed_until = self._hook_timeout_suppressed_until.get(
+                            callback_key
+                        )
+                        running = callback_key in self._hook_running_callbacks
+                        if (
+                            suppressed_until is not None and suppressed_until > now
+                        ) or running:
+                            logger.warning(
+                                "Hook '%s' callback %s skipped after previous "
+                                "timeout or while still running",
+                                hook_name,
+                                callback_name,
+                            )
+                            if fail_closed:
+                                results.append(_pre_tool_call_timeout_block())
+                            continue
+                        if suppressed_until is not None:
+                            self._hook_timeout_suppressed_until.pop(callback_key, None)
+                        self._hook_running_callbacks[callback_key] = token
+
+                    context = contextvars.copy_context()
+                    done = threading.Event()
+                    outcome: Dict[str, Any] = {}
+                    failure: Dict[str, Exception] = {}
+
+                    def _runner(
+                        _cb: Callable[..., Any] = cb,
+                        _key: tuple = callback_key,
+                        _token: object = token,
+                    ) -> None:
+                        try:
+                            # Route through _invoke_hook_callback so the
+                            # additive-payload signature filtering (narrow
+                            # legacy callbacks) applies on the worker too.
+                            outcome["value"] = context.run(
+                                self._invoke_hook_callback, _cb, kwargs
+                            )
+                        except Exception as exc:
+                            failure["exc"] = exc
+                        finally:
+                            with self._hook_timeout_lock:
+                                if self._hook_running_callbacks.get(_key) is _token:
+                                    self._hook_running_callbacks.pop(_key, None)
+                            done.set()
+
+                    thread = threading.Thread(
+                        target=_runner,
+                        name=f"hermes-hook-{callback_name}"[:40],
+                        daemon=True,
+                    )
+                    thread.start()
+                    if not done.wait(timeout=timeout):
+                        # Do not join — that would reintroduce the #6622 hang.
+                        with self._hook_timeout_lock:
+                            self._hook_timeout_suppressed_until[callback_key] = (
+                                time.monotonic()
+                                + self._hook_timeout_suppression_seconds
+                            )
+                        logger.warning(
+                            "Hook '%s' callback %s timed out after %gs — skipping",
+                            hook_name,
+                            callback_name,
+                            timeout,
+                        )
+                        if fail_closed:
+                            results.append(_pre_tool_call_timeout_block())
+                        continue
+                    if "exc" in failure:
+                        raise failure["exc"]
+                    ret = outcome.get("value")
+                else:
+                    ret = self._invoke_hook_callback(cb, kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
                     hook_name,
-                    getattr(cb, "__name__", repr(cb)),
+                    callback_name,
                     exc,
                 )
         return results
@@ -5659,6 +6035,30 @@ class PluginManager:
         :meth:`PluginContext.register_slack_action_handler`.
         """
         return list(self._slack_action_handlers)
+
+    # -----------------------------------------------------------------------
+    # Platform handler factory accessors
+    # -----------------------------------------------------------------------
+
+    def get_platform_handler_factories(self, platform: str) -> List[tuple]:
+        """Return plugin-registered handler factories for one platform.
+
+        Each entry is a ``(factory, plugin_name)`` tuple. Consumed by the
+        platform's adapter at connect time; each factory is invoked with
+        ``(native_client, adapter)`` so plugins can wire their own native
+        handlers before/alongside the core ones.
+
+        Plugins register factories via
+        :meth:`PluginContext.register_platform_handler` (or the
+        Telegram-specific alias
+        :meth:`PluginContext.register_telegram_handler`).
+        """
+        key = (platform or "").strip().lower()
+        return list(self._platform_handler_factories.get(key, []))
+
+    def get_telegram_handler_factories(self) -> List[tuple]:
+        """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
+        return self.get_platform_handler_factories("telegram")
 
     # -----------------------------------------------------------------------
     # Introspection

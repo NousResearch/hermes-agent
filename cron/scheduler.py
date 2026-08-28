@@ -191,6 +191,21 @@ def _failure_streak_nudge(job: dict) -> str:
     )
 
 
+def _detect_gateway_code_skew() -> tuple[str, str] | None:
+    """Boot-vs-disk revision skew for THIS process, or None.
+
+    Thin wrapper over ``gateway.code_skew.detect_code_skew`` so the failure
+    summarizer stays a pure function under test (monkeypatch this seam) and
+    a broken import can never take the delivery path down with it.
+    """
+    try:
+        from gateway.code_skew import detect_code_skew
+
+        return detect_code_skew()
+    except Exception:
+        return None
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -339,7 +354,98 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if len(cleaned) > 180:
         cleaned = cleaned[:177].rstrip() + "..."
-    return f"⚠️ Cron '{job_name}' failed: {cleaned}"
+    message = f"⚠️ Cron '{job_name}' failed: {cleaned}"
+
+    # Import-class failures (#95294 part 3): a long-lived gateway whose
+    # checkout was updated underneath it (interrupted `hermes update`, manual
+    # git pull) serves MIXED modules — old entries frozen in sys.modules,
+    # new files loaded by lazy imports — and every agent cron job then dies
+    # with `cannot import name X` / ModuleNotFoundError. The error itself
+    # reads like a code bug, so operators debug the wrong thing (2 days on
+    # the reporting incident, 15 missed jobs). This process knows its own
+    # boot fingerprint: when boot SHA differs from disk HEAD, APPEND the
+    # cause and the one-command fix — never replacing the raw error text,
+    # which carries the failing symbol name.
+    #
+    # Fail-safe by construction: skew detection returns None on non-git
+    # installs and in processes without a boot fingerprint (no false
+    # accusations — message delivered unchanged), the probe seam swallows
+    # every exception, and no_agent script jobs are excluded via the same
+    # mode-gate as the provider branches (a fresh subprocess resolves
+    # imports consistently against disk; its ImportError is the script's
+    # own problem, and blaming gateway skew would send the reader to the
+    # wrong place).
+    if provider_reachable and re.search(
+        r"cannot import name|modulenotfounderror|importerror", lower
+    ):
+        try:
+            skew = _detect_gateway_code_skew()
+        except Exception:
+            skew = None  # delivery must never die on a diagnostics probe
+        if skew is not None:
+            boot_rev, disk_rev = skew
+            message += (
+                f" Likely cause: the gateway is running stale code (booted "
+                f"on {boot_rev}, disk is at {disk_rev}) — run "
+                "`hermes gateway restart` to fix it."
+            )
+
+    return message
+
+
+def _upsert_incident_for_failure(
+    job: dict, error: str, *, output_file: Optional[Any] = None
+) -> tuple[bool, Optional[str]]:
+    """Record a durable failure incident for this run.
+
+    The incident store groups "same job + same error signature" across runs so
+    an operator-acked failure stops re-pinging every run. Returns
+    ``(acked, incident_id)``: ``acked`` is True when the incident for this
+    exact signature is already ``closed`` (acked) — the per-run failure ping
+    should be suppressed. ``incident_id`` lets the caller mark the incident
+    ``alerted`` after the ping actually goes out. The streak nudge and
+    ``_summarize_cron_failure_for_delivery`` text stay intact for un-acked
+    failures.
+
+    Best-effort: an incident-store error must never break the cron run or the
+    delivery path — failures are logged at debug and the caller delivers as if
+    no incident existed.
+    """
+    try:
+        from cron.incidents import get_incident, upsert_incident
+
+        incident_id, _is_new = upsert_incident(
+            job["id"],
+            str(error or ""),
+            job_name=job.get("name"),
+            output_file=output_file,
+        )
+        incident = get_incident(incident_id)
+        acked = bool(incident and incident.get("state") == "closed")
+        return acked, incident_id
+    except Exception as exc:
+        logger.debug(
+            "Incident store unavailable for job %s (delivery unaffected): %s",
+            job["id"], exc,
+        )
+        return False, None
+
+
+def _mark_incident_alerted(incident_id: Optional[str]) -> None:
+    """Record that a failure ping for this incident reached delivery.
+
+    Best-effort like the upsert: bookkeeping never breaks the cron run.
+    ``set_incident_state`` is a no-op for closed incidents, so this can
+    never resurrect an acked signature.
+    """
+    if not incident_id:
+        return
+    try:
+        from cron.incidents import set_incident_state
+
+        set_incident_state(incident_id, "alerted")
+    except Exception as exc:
+        logger.debug("Failed marking incident %s alerted: %s", incident_id, exc)
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -534,6 +640,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import (
+    _ensure_cron_dir,
     advance_next_runs,
     claim_dispatch,
     claim_job_for_fire,
@@ -865,7 +972,7 @@ def _record_forced_release(job_id: str, name: str, age_seconds: float, allowance
         del _forced_releases[:-_FORCED_RELEASE_HISTORY]
     try:
         path = _get_hermes_home() / "cron" / "inflight_forced_releases.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_cron_dir(path.parent)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
     except Exception as e:  # never let telemetry break a tick
@@ -1406,7 +1513,7 @@ def _write_usage_audit(record: dict) -> None:
     """
     try:
         path = _usage_audit_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_cron_dir(path.parent)
         line = json.dumps(record, ensure_ascii=False)
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -1668,6 +1775,92 @@ def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
     if origin_thread is not None and str(origin_thread) != str(thread_id or ""):
         return False
     return True
+
+
+# Resolution-provenance ranking for the dedup OR-merge in
+# _resolve_delivery_targets: higher rank = stronger mirror claim. Broadcast
+# expansions rank 0 so "origin,all"/"all,origin" hitting the same chat keeps
+# the origin(-fallback) tag regardless of token order.
+_MIRROR_PROVENANCE_RANK = {
+    "origin": 3,
+    "origin_fallback": 2,
+    "explicit": 1,
+}
+
+
+def _target_mirror_eligible(
+    job: dict,
+    target: dict,
+    *,
+    global_mirror: bool,
+    origin_match: Optional[bool] = None,
+) -> bool:
+    """Whether a resolved delivery target may receive the transcript mirror.
+
+    The June origin-scoping refactor gated mirroring on target == origin,
+    which correctly excluded broadcasts but also silenced two legitimate
+    conversation shapes — both hit by script-provisioned ("managed") crons,
+    which never capture an origin (``_origin_from_env`` only fires for jobs
+    created from a live gateway chat):
+
+    - ``origin_fallback``: ``deliver=origin`` with no captured origin resolves
+      to the home channel — the user's primary conversation standing in for
+      the origin, not a broadcast. Eligible under the same flags as a true
+      origin target. (Field report 2026-08-17: brief delivered to the Slack
+      DM, mirror silently skipped, reply hit a context-less session.)
+    - ``explicit``: a ``platform:chat_id`` target is eligible ONLY when the
+      job itself opts in via ``attach_to_session: true`` — the job author
+      declaring this target a conversation (managed per-user DM briefings).
+      The global ``cron.mirror_delivery`` flag never activates explicit
+      targets: it must not start writing transcript entries into arbitrary
+      explicitly-addressed chats (shared channels, other users' DMs).
+
+    Broadcast expansions (``all``, bare-platform home targets) carry no
+    provenance tag and are never eligible — unchanged invariant.
+
+    ``origin_match`` lets the caller pass a precomputed
+    ``_target_matches_origin`` result (``_deliver_result`` already computes it
+    for the same target); when ``None`` it is computed here so tests and
+    future callers stay self-contained.
+    """
+    if origin_match is None:
+        origin = _resolve_origin(job) or {}
+        origin_match = _target_matches_origin(
+            origin, target.get("platform", ""), target.get("chat_id", ""),
+            target.get("thread_id"),
+        )
+    if origin_match:
+        return True
+    resolved_from = target.get("_resolved_from")
+    if resolved_from == "origin_fallback":
+        # Same activation rules as an origin target: per-job attach wins,
+        # else the global flag. This deliberately restates the precedence
+        # _cron_mirror_delivery_enabled encodes (keep the two in sync): the
+        # sole production caller pre-merges it into `global_mirror`, but the
+        # helper must stay correct standalone — a per-job False must beat a
+        # raw global True for any caller that does not pre-merge.
+        per_job = job.get("attach_to_session")
+        if isinstance(per_job, bool):
+            return per_job
+        return bool(global_mirror)
+    if resolved_from == "explicit":
+        return job.get("attach_to_session") is True
+    return False
+
+
+def _inchannel_seed_allowed(*, is_dm: bool, user_id: Optional[str]) -> bool:
+    """Whether the flat in_channel session seed may run for a target.
+
+    Group-channel session keys are user-isolated
+    (``…:group:<chat_id>:<user_id>`` — see _seed_cron_channel_session); a
+    seed without a real user_id would create an orphan session that no
+    inbound reply ever resolves to, which is worse than no seed (the plain
+    mirror can still land if a session exists). DM keys don't embed
+    user_id, so DM targets are always seedable. Origin-captured jobs carry
+    the scheduler's user_id; origin-less managed jobs typically don't, and
+    their group-channel targets must fall back to the plain mirror.
+    """
+    return bool(is_dm or user_id)
 
 
 def _maybe_mirror_cron_delivery(
@@ -2324,6 +2517,9 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": _origin_delivery_thread(origin),
+                # Resolution provenance for mirror eligibility (see
+                # _target_mirror_eligible): this IS the origin conversation.
+                "_resolved_from": "origin",
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
@@ -2339,6 +2535,11 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                     "platform": platform_name,
                     "chat_id": chat_id,
                     "thread_id": _get_home_target_thread_id(platform_name),
+                    # The fallback stands in for the user's primary
+                    # conversation (NOT a broadcast) — mirror-eligible so
+                    # continuable crons work for script-provisioned jobs
+                    # that never captured an origin.
+                    "_resolved_from": "origin_fallback",
                 }
         return None
 
@@ -2383,6 +2584,9 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
+            # Explicit platform:chat target — mirror-eligible only under the
+            # job's own attach_to_session opt-in (see _target_mirror_eligible).
+            "_resolved_from": "explicit",
         }
 
     platform_name = deliver_value
@@ -2660,15 +2864,24 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     for raw in raw_parts:
         parts.extend(_expand_routing_tokens(raw))
 
-    seen = set()
+    seen = {}
     targets = []
     for part in parts:
         target = _resolve_single_delivery_target(job, part)
         if target:
             key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
             if key not in seen:
-                seen.add(key)
+                seen[key] = target
                 targets.append(target)
+            else:
+                # OR-merge resolution provenance on dedup: "origin,all" (either
+                # order) resolving to the same chat must keep the
+                # origin/origin_fallback tag — a mirror-eligible token must not
+                # lose eligibility to token order (see _target_mirror_eligible).
+                kept = seen[key]
+                if _MIRROR_PROVENANCE_RANK.get(str(target.get("_resolved_from") or ""), 0) > \
+                        _MIRROR_PROVENANCE_RANK.get(str(kept.get("_resolved_from") or ""), 0):
+                    kept["_resolved_from"] = target.get("_resolved_from")
     return targets
 
 
@@ -3001,17 +3214,45 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 job["id"], platform_name, chat_id, thread_id,
             )
 
-        # Mirror is scoped to the ORIGIN conversation only. A fan-out / broadcast
-        # / home-channel-fallback target is never mirrored (it is not the
-        # conversation the job was created in, and may have no session at all).
+        # Mirror scope: the origin conversation, the home-channel FALLBACK for
+        # an origin-less deliver=origin job (a script-provisioned managed cron
+        # standing in for the user's primary conversation — not a broadcast),
+        # or an explicit target the job opted into via attach_to_session.
+        # Broadcast/fan-out targets are never mirrored (_target_mirror_eligible).
         origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id)
-        mirror_this_target = mirror_enabled and origin_target
+        mirror_this_target = mirror_enabled and _target_mirror_eligible(
+            job, target, global_mirror=mirror_enabled, origin_match=origin_target,
+        )
         # Pass the origin's user_id so a per-user-isolated group chat resolves to
         # the exact member who scheduled the job — parity with send_message.
         # Resolved for ANY origin-matching target (not just mirror-enabled):
         # the in_channel seed below needs it too, and it must not depend on
         # the attach_to_session/mirror opt-in.
         origin_user_id = origin.get("user_id") if origin_target else None
+
+        # DM shape of this target, needed by BOTH the in_channel flatten gate
+        # below and the seed/_seed_cron_channel_session chat_type further down:
+        # a 1:1 DM keys as ``dm`` (Slack DM channel ids start with "D"; or the
+        # origin says so), everything else as ``group``.
+        origin_chat_type = str(origin.get("chat_type") or "").lower()
+        is_dm_target = origin_chat_type == "dm" or (
+            not origin_chat_type and str(chat_id).startswith("D")
+        )
+
+        # Shared continuable-target gate for the in_channel surface. The
+        # thread-flatten and the flat-session seed MUST use the SAME gate —
+        # if they drift, the brief and its continuation session land in
+        # different places (the split-surface bug the flatten exists to
+        # prevent). Origin targets qualify unconditionally (independent of the
+        # attach_to_session / mirror opt-in — see 3c52d3589f); non-origin
+        # mirror-eligible targets (origin_fallback / opted-in explicit)
+        # qualify only when the seed can actually create a resolvable session
+        # (_inchannel_seed_allowed: DM-shaped, or a known user_id for
+        # user-isolated group keys).
+        inchannel_continuable = origin_target or (
+            mirror_this_target
+            and _inchannel_seed_allowed(is_dm=is_dm_target, user_id=origin_user_id)
+        )
 
         # Built-in names resolve to their enum member; plugin platform names
         # create dynamic members via Platform._missing_().
@@ -3030,8 +3271,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = transport.config
             runtime_adapter = transport.adapter
         else:
-            # No live transport: preserve the existing standalone delivery path,
-            # which uses the logical platform's configured credential.
+            # No live transport. A relay-fronted platform's ONLY sender is the
+            # gateway's live relay adapter — there is no standalone fallback
+            # (the connector owns the credential). A manual in-process run
+            # (`hermes cron run`) has no live relay adapter, so surface the
+            # accurate remediation instead of the native configured/enabled
+            # gate, which misdiagnoses relay-fronted deployments.
+            from gateway.relay import relay_fronted_platforms
+
+            if platform_name in relay_fronted_platforms():
+                msg = (
+                    f"platform '{platform_name}' is relay-fronted and has no "
+                    "live gateway transport; start the gateway (its ticker "
+                    "owns relay-fronted delivery and will fire the job on "
+                    "schedule)"
+                )
+                logger.warning("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+            # Preserve the existing standalone delivery path, which uses the
+            # logical platform's configured credential.
             pconfig = config.platforms.get(platform)
             runtime_adapter = None
 
@@ -3112,7 +3371,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
                 in_channel_surface = False
 
-        if in_channel_surface and origin_target and live_adapter_ready:
+        if in_channel_surface and inchannel_continuable and live_adapter_ready:
             # Force flat delivery (D2): the continuable-channel target must
             # ignore any inherited origin/target thread_id, or the flat
             # continuable session seeded below (thread_id=None, via
@@ -3121,8 +3380,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # reads `thread_id` and would otherwise route into the origin
             # thread instead of flat into the channel.
             #
-            # Gated on `origin_target`, NOT `mirror_this_target`: the seed
-            # below fires on origin-match alone (in_channel is the
+            # Gated on `inchannel_continuable` (the SAME gate as the seed
+            # below), NOT `mirror_this_target` alone: for origin targets the
+            # seed fires on origin-match alone (in_channel is the
             # continuation surface, independent of the attach_to_session /
             # mirror opt-in), so the flatten must use the SAME gate — with
             # the default knobs off, a mirror-gated flatten kept delivering
@@ -3150,15 +3410,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # For an in_channel delivery the flat continuation session is created
         # explicitly below (the shipped mirror only APPENDS to an existing
         # session, and the flat channel row is otherwise absent for a
-        # chat_postMessage delivery). ``is_dm`` selects the session chat_type so
-        # the seeded key matches the inbound reply's key: a 1:1 DM keys as
-        # ``dm`` (Slack DM channel ids start with "D"; or the origin says so),
-        # everything else as ``group`` (shared channel). ``inchannel_seeded``
-        # suppresses the generic mirror below so the brief is not double-written.
-        origin_chat_type = str(origin.get("chat_type") or "").lower()
-        is_dm_target = origin_chat_type == "dm" or (
-            not origin_chat_type and str(chat_id).startswith("D")
-        )
+        # chat_postMessage delivery). ``is_dm_target`` (computed above with
+        # origin_user_id) selects the session chat_type so the seeded key
+        # matches the inbound reply's key. ``inchannel_seeded`` suppresses the
+        # generic mirror below so the brief is not double-written.
         inchannel_seeded = False
 
         # Continuable cron (thread-preferred): when mirroring is enabled for the
@@ -3479,14 +3734,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     # session (the shipped mirror only appends to an existing
                     # session — the flat row is otherwise absent for a
                     # chat_postMessage delivery, so the brief would be lost).
-                    # Gated on ORIGIN-match only, NOT on the mirror opt-in:
-                    # in_channel IS the continuation surface — a continuable
-                    # flat cron without its seed is a brief the next reply
-                    # can't see (the bug Victor hit live 2026-08-19: agent had
-                    # "no idea about the delivery message"). attach_to_session
-                    # remains the knob for the SEPARATE thread/default-surface
-                    # mirror behavior; it must not be required here.
-                    if in_channel_surface and origin_target and not thread_seeded:
+                    # Gated on `inchannel_continuable` — the SHARED gate with
+                    # the thread-flatten above (they must not drift, or the
+                    # brief and its continuation session land in different
+                    # places). Origin targets seed without requiring the
+                    # mirror opt-in: in_channel IS the continuation surface —
+                    # a continuable flat cron without its seed is a brief the
+                    # next reply can't see (the bug Victor hit live
+                    # 2026-08-19: agent had "no idea about the delivery
+                    # message"). Mirror-eligible NON-origin targets
+                    # (origin_fallback / opted-in explicit — see
+                    # _target_mirror_eligible) also seed, guarded by
+                    # _inchannel_seed_allowed inside the gate: group-channel
+                    # keys are user-isolated, so a seed without a user_id
+                    # (origin-less managed cron into a shared channel) would
+                    # create an orphan session no reply resolves to — those
+                    # fall back to the plain mirror instead.
+                    if in_channel_surface and inchannel_continuable and not thread_seeded:
                         inchannel_seeded = _seed_cron_channel_session(
                             job, runtime_adapter, platform_name, chat_id,
                             mirror_text, is_dm=is_dm_target,
@@ -3516,11 +3780,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 is_dm=is_dm_target,
                                 scope_id=origin.get("scope_id"),
                             )
-                    elif in_channel_surface and not origin_target:
+                    elif in_channel_surface and not inchannel_continuable:
                         logger.warning(
-                            "Job '%s': in_channel delivery to %s:%s is not the "
-                            "origin conversation (origin=%s:%s thread=%s) — seed "
-                            "skipped, brief not continuable here",
+                            "Job '%s': in_channel delivery to %s:%s is not a "
+                            "continuable target (origin=%s:%s thread=%s; not the "
+                            "origin conversation, and not a mirror-eligible "
+                            "fallback/opted-in target the seed can key) — seed "
+                            "skipped; the plain mirror below may still apply",
                             job["id"], platform_name, chat_id,
                             origin.get("platform"), origin.get("chat_id"),
                             origin.get("thread_id"),
@@ -3737,6 +4003,40 @@ def _get_media_send_timeout() -> int:
     return _DEFAULT_MEDIA_SEND_TIMEOUT
 
 
+def _get_session_db_timeout() -> float:
+    """Resolve the bound on run_job's SessionDB init from env/config.
+
+    Mirrors the ``script_timeout_seconds`` resolution pattern: the
+    HERMES_CRON_SESSION_DB_TIMEOUT env var wins, then
+    ``cron.session_db_timeout_seconds`` in config.yaml (present in
+    DEFAULT_CONFIG, so ``load_config()``'s deep-merge supplies it), then
+    10s. Unlike the sibling timeouts, 0 is meaningful (unlimited — legacy
+    behavior, opt-in for debugging), so values are passed through untouched.
+    """
+    env_value = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            return float(env_value)
+        except (ValueError, TypeError):
+            logger.warning(
+                "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
+                env_value,
+            )
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("session_db_timeout_seconds")
+        if configured is not None:
+            return float(configured)
+    except Exception as exc:
+        logger.debug(
+            "Failed to load cron.session_db_timeout_seconds from config: %s", exc
+        )
+
+    return 10.0
+
+
 def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     cfg_path = venv_dir / "pyvenv.cfg"
     try:
@@ -3843,6 +4143,53 @@ def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait(timeout=1.0)
+
+
+def _terminate_cron_script_tree(proc: subprocess.Popen) -> None:
+    """Terminate a script tree, then fall back to the local process-group path."""
+    if proc.poll() is not None:
+        # Already exited (e.g. finished right at the deadline): nothing to
+        # signal, and calling kill_process_tree on a reaped pid would log a
+        # spurious "no signal" warning. Mirrors _terminate_cron_script_process.
+        return
+    pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        logger.warning(
+            "Cron script tree-kill received invalid pid %r; "
+            "falling back to process-group termination",
+            pid,
+        )
+        _terminate_cron_script_process(proc)
+        return
+    try:
+        # Function-local so tests can monkeypatch agent.deadline.kill_process_tree;
+        # separate from the kill try below so a packaging/import problem
+        # surfaces as what it is instead of masquerading as a kill failure.
+        from agent.deadline import kill_process_tree
+    except Exception:
+        logger.warning(
+            "agent.deadline.kill_process_tree unavailable; "
+            "falling back to process-group termination",
+            exc_info=True,
+        )
+        _terminate_cron_script_process(proc)
+        return
+    try:
+        if kill_process_tree(pid):
+            return
+        logger.warning(
+            "Cron script tree-kill reported no signal for pid %s; "
+            "falling back to process-group termination",
+            pid,
+        )
+    except Exception:
+        logger.warning(
+            "Cron script tree-kill failed for pid %s; "
+            "falling back to process-group termination",
+            pid,
+            exc_info=True,
+        )
+    _terminate_cron_script_process(proc)
 
 
 def _drain_script_pipes(proc: subprocess.Popen) -> None:
@@ -3964,7 +4311,7 @@ def _run_job_script(
         LLM can report the problem to the user.
     """
     scripts_dir = _get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_cron_dir(scripts_dir)
     scripts_dir_resolved = scripts_dir.resolve()
 
     # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path:
@@ -4073,12 +4420,23 @@ def _run_job_script(
         deadline = time.monotonic() + script_timeout
         while True:
             if cancel_event is not None and cancel_event.is_set():
-                _terminate_cron_script_process(proc)
+                # Same bug class as the timeout site below: a cancelled fire
+                # must not orphan own-session grandchildren either.
+                _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
                 return False, "Script cancelled because cron fire ownership was lost"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _terminate_cron_script_process(proc)
+                # Phase 4a (#85125): a script timeout must leave ZERO living
+                # descendants. killpg only reaches the script's own process
+                # group — a grandchild that called setsid (backgrounded
+                # shell jobs, watchdogs) escapes it and keeps running after
+                # the job reports failure (#71148 / #59549).
+                # agent.deadline.kill_process_tree snapshots the descendant
+                # set via psutil BEFORE signalling, so own-session
+                # grandchildren are reached too — the unified deadline
+                # layer's tree-kill (#85147, d6a5cb9725).
+                _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
                 return False, f"Script timed out after {script_timeout}s: {path}"
             try:
@@ -5297,81 +5655,12 @@ def run_job(
     # ---------------------------------------------------------------
     from run_agent import AIAgent
 
-    # Initialize SQLite session store so cron job messages are persisted
-    # and discoverable via session_search (same pattern as gateway/run.py).
-    #
-    # Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which
-    # only watches the agent's run_conversation below): SessionDB.__init__
-    # opens/migrates state.db synchronously and has no timeout of its own
-    # against a wedged sqlite3.connect (e.g. a stale flock left by a crashed
-    # sibling process). An unbounded hang here is invisible to every other
-    # cron safeguard, because it happens BEFORE _submit_with_guard's future
-    # exists — the finally block that releases the job from
-    # _running_job_ids never runs, so the job stays wedged "running" until
-    # the whole gateway process is restarted, silently skipping every
-    # scheduled fire in between with "already running — skipping".
-    _session_db = None
-    try:
-        from hermes_state import SessionDB
-
-        # Resolve timeout: env override → config.yaml → default 10s.
-        # Mirrors the script_timeout_seconds resolution pattern.
-        _session_db_timeout: float | None = None
-        _raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
-        if _raw_env_timeout:
-            try:
-                _session_db_timeout = float(_raw_env_timeout)
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
-                    _raw_env_timeout,
-                )
-        if _session_db_timeout is None:
-            try:
-                from hermes_cli.config import load_config
-                _cfg = load_config() or {}
-                _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
-                _configured = _cron_cfg.get("session_db_timeout_seconds")
-                if _configured is not None:
-                    _session_db_timeout = float(_configured)
-            except Exception as exc:
-                logger.debug(
-                    "Failed to load cron.session_db_timeout_seconds from config: %s",
-                    exc,
-                )
-        if _session_db_timeout is None:
-            _session_db_timeout = 10.0
-
-        if _session_db_timeout > 0:
-            _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            _session_db_future = _session_db_pool.submit(SessionDB)
-            try:
-                _session_db = _session_db_future.result(timeout=_session_db_timeout)
-            except concurrent.futures.TimeoutError:
-                # The worker is abandoned (shutdown below doesn't wait for it).
-                # If SessionDB() later completes inside it, the future's result
-                # would be orphaned and its SQLite FDs (.db, WAL, SHM) leak
-                # until process exit.  Register a done-callback that retrieves
-                # and closes any eventual late result (#72782).
-                _session_db_future.add_done_callback(_close_late_session_db_result)
-                raise
-            finally:
-                # Don't wait for a wedged connect() to unwind — abandon the
-                # worker thread (same pattern as the agent inactivity timeout
-                # further down) rather than blocking shutdown on it too.
-                _session_db_pool.shutdown(wait=False)
-        else:
-            # 0 = unlimited (legacy behavior, opt-in for debugging)
-            _session_db = SessionDB()
-    except concurrent.futures.TimeoutError:
-        logger.error(
-            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
-            "without a session store for this run instead of blocking it "
-            "forever",
-            job.get("id", "?"), _session_db_timeout,
-        )
-    except Exception as e:
-        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+    # NOTE: the SQLite session store used to be initialized here, BEFORE the
+    # wake-gate and prompt-validation early returns below. Every gated run
+    # (``wakeAgent: false``, blocked prompt) opened state.db and returned
+    # without reaching the finally that closes it, relying on GC to release
+    # the handle. Init now happens inside the main try, right before the
+    # agent is constructed — after every early-return path (#96290).
 
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
@@ -5543,6 +5832,7 @@ def run_job(
     _cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
     _cron_session_token = None
     _non_dispatcher_token = None
+    _session_db = None
     try:
         if not _cwd_lock_acquired:
             # Fail closed (#79768): running without the lock would let a
@@ -6058,6 +6348,57 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        # Initialize the SQLite session store so cron job messages are
+        # persisted and discoverable via session_search (same pattern as
+        # gateway/run.py) — only now, after every early-return path
+        # (wake-gate, prompt validation, drift skip) has passed, so a gated
+        # run never opens state.db just to abandon the handle (#96290).
+        #
+        # Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT,
+        # which only watches the agent's run_conversation below):
+        # SessionDB.__init__ opens/migrates state.db synchronously and has no
+        # timeout of its own against a wedged sqlite3.connect (e.g. a stale
+        # flock left by a crashed sibling process). An unbounded hang here
+        # would wedge the job's worker thread, so the init is bounded and a
+        # timeout proceeds without a session store instead of blocking the
+        # run forever.
+        _session_db_timeout = _get_session_db_timeout()
+        try:
+            from hermes_state import SessionDB
+
+            if _session_db_timeout > 0:
+                _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                _session_db_future = _session_db_pool.submit(SessionDB)
+                try:
+                    _session_db = _session_db_future.result(timeout=_session_db_timeout)
+                except concurrent.futures.TimeoutError:
+                    # The worker is abandoned (shutdown below doesn't wait for
+                    # it). If SessionDB() later completes inside it, the
+                    # future's result would be orphaned and its SQLite FDs
+                    # (.db, WAL, SHM) leak until process exit.  Register a
+                    # done-callback that retrieves and closes any eventual
+                    # late result (#72782).
+                    _session_db_future.add_done_callback(_close_late_session_db_result)
+                    raise
+                finally:
+                    # Don't wait for a wedged connect() to unwind — abandon the
+                    # worker thread (same pattern as the agent inactivity
+                    # timeout further down) rather than blocking shutdown on
+                    # it too.
+                    _session_db_pool.shutdown(wait=False)
+            else:
+                # 0 = unlimited (legacy behavior, opt-in for debugging)
+                _session_db = SessionDB()
+        except concurrent.futures.TimeoutError:
+            logger.error(
+                "Job '%s': SessionDB init did not return within %.0fs — proceeding "
+                "without a session store for this run instead of blocking it "
+                "forever",
+                job.get("id", "?"), _session_db_timeout,
+            )
+        except Exception as e:
+            logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -6499,9 +6840,43 @@ def run_job(
                             break
                     except (Exception, KeyboardInterrupt):
                         continue
+            # Verified completion booking (#93820): the run may only be
+            # recorded as cron_complete when the session's LAST message row is
+            # a real assistant reply — a plain answer or the [SILENT] sentinel
+            # (both are assistant-text rows, so both classify as 'complete').
+            # A turn that died after a tool call, mid-API-wait, or without any
+            # assistant text leaves the last row as a tool result / pending
+            # call / user prompt and must not surface as a healthy run.
+            # session_lifecycle_statuses is the existing cost-bounded
+            # classifier for exactly this shape. Only a POSITIVELY recognized
+            # pathological status (see the status vocabulary in
+            # hermes_state's session_lifecycle_statuses docstring — keep the
+            # tuple below in sync when it grows) downgrades the booking: an
+            # unknown value (newer classifier shape, test doubles) keeps the
+            # historical reason, and so does a failed probe — the booking
+            # itself is FAIL-OPEN on probe errors, because classification is
+            # best-effort metadata and must not mislabel a healthy run.
+            _end_reason = "cron_complete"
+            try:
+                _statuses = _session_db.session_lifecycle_statuses(
+                    [_final_cron_session_id]
+                )
+                _lifecycle = _statuses.get(_final_cron_session_id)
+                if _lifecycle in ("interrupted", "error", "empty"):
+                    _end_reason = "cron_incomplete_no_output"
+                    logger.warning(
+                        "Job '%s': session ended without a final assistant "
+                        "message (lifecycle=%s) — booking run as %s",
+                        job_id, _lifecycle, _end_reason,
+                    )
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug(
+                    "Job '%s': session lifecycle classification failed: %s",
+                    job_id, e,
+                )
             try:
                 _session_db.end_session(
-                    _final_cron_session_id, "cron_complete"
+                    _final_cron_session_id, _end_reason
                 )
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
@@ -6688,6 +7063,15 @@ def run_one_job(
     run cooperatively — agent interruption AND script process-tree kill —
     through the single fenced completion path.
     """
+    if extra_prompt is None:
+        # A gateway-forwarded manual run (`hermes cron run --prompt` /
+        # cronjob(action='run', prompt=...) on a relay-fronted target) stamps
+        # its transient context on the job via trigger_job; the ticker/Chronos
+        # fire that consumes the manual occurrence carries it here. Single-fire:
+        # mark_job_run clears the field after the run.
+        _stamped = job.get("manual_run_prompt")
+        if _stamped and job.get("manual_run_at"):
+            extra_prompt = str(_stamped)
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
@@ -6768,6 +7152,11 @@ def _run_one_job_body(
         execution_id = create_execution(job["id"], source="direct")["id"]
     delivery_attempted = False
     delivery_error = None
+    # Durable failure-incident bookkeeping for this run (see cron.incidents):
+    # set on the failure paths below; consumed by the delivery_outcome
+    # computation and the post-delivery "alerted" transition.
+    incident_acked = False
+    failure_incident_id = None
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -6943,15 +7332,35 @@ def _run_one_job_body(
                     "the configuration is fixed."
                 )
             else:
-                deliver_content = final_response if success else (
-                    _summarize_cron_failure_for_delivery(job, error)
-                    + _failure_streak_nudge(job)
-                )
+                if success:
+                    deliver_content = final_response
+                else:
+                    # Durable failure incident: record this job+error
+                    # signature once and, when the operator already acked it,
+                    # suppress the per-run failure ping (the streak nudge and
+                    # the failure summarizer stay intact for un-acked
+                    # failures). Best-effort — an incident-store error never
+                    # breaks the delivery path (see _upsert_incident_for_failure).
+                    incident_acked, failure_incident_id = _upsert_incident_for_failure(
+                        job, error or "", output_file=output_file
+                    )
+                    if incident_acked and not drift_skip:
+                        deliver_content = ""
+                    else:
+                        deliver_content = (
+                            _summarize_cron_failure_for_delivery(job, error)
+                            + _failure_streak_nudge(job)
+                        )
                 if drift_skip and not success:
                     # Drift-skip alert: bypass the generic summarizer's
                     # 180-char truncation (it would eat the remediation
                     # command) and strip the internal marker — deliver the
                     # guard's own actionable message intact.
+                    # Deliberately NOT gated on incident ack: a drift skip
+                    # means the run was never attempted and the message
+                    # carries the remediation command — acking the failure
+                    # signature silences failure pings, not drift alerts
+                    # (which already alert once via the drift_alerted marker).
                     _drift_text = re.sub(
                         r"\[drift_skip[^\]]*\]\s*", "", str(error)
                     ).strip()
@@ -7092,8 +7501,18 @@ def _run_one_job_body(
             delivery_outcome = "not_configured"
         elif should_deliver and normalized_deliver != "local":
             delivery_outcome = "delivered"
+        elif incident_acked and not success:
+            # Distinct from plain "suppressed" (silence marker / local jobs):
+            # the failure ping was withheld because the operator acked this
+            # exact signature via `hermes cron incidents ack`.
+            delivery_outcome = "suppressed_acked"
         else:
             delivery_outcome = "suppressed"
+        if delivery_outcome in ("delivered", "not_configured") and not success:
+            # The failure ping left the process (or was composed for a
+            # configured target) — record it on the incident so the CLI
+            # distinguishes "failure seen" from "operator was pinged".
+            _mark_incident_alerted(failure_incident_id)
         finish_execution(
             execution_id,
             success=success,
@@ -7130,34 +7549,45 @@ def _run_one_job_body(
                 job.get("deliver", "local")
             )
             unresolved_origin = False
-            try:
-                delivery_attempted = True
-                delivery_error = _deliver_result(
-                    job,
-                    # Composed exactly like the normal failure delivery above.
-                    # mark_job_run below records THIS run in failure_streak
-                    # whichever layer failed, so a job that fails before the
-                    # run body every tick builds a streak nobody is ever told
-                    # about: its alerts only ever leave through here, and the
-                    # nudge only ever left through there (#88655).
-                    _summarize_cron_failure_for_delivery(job, _err_text)
-                    + _failure_streak_nudge(job),
-                    adapters=adapters,
-                    loop=loop,
-                )
-            except Exception as delivery_exc:
-                delivery_error = str(delivery_exc)
-                logger.error(
-                    "Delivery failed for job %s: %s", job["id"], delivery_exc
-                )
-            if not delivery_error and normalized_deliver == "origin":
-                unresolved_origin = not _resolve_delivery_targets(job)
-            if delivery_error:
-                delivery_outcome = "failed"
-            elif unresolved_origin:
-                delivery_outcome = "not_configured"
-            elif normalized_deliver != "local":
-                delivery_outcome = "delivered"
+            # Durable failure incident: same ack gate as the normal failure
+            # delivery above — an acked signature stays silent on this path
+            # too, so the retry-path alert cannot re-ping after acknowledgment.
+            incident_acked, failure_incident_id = _upsert_incident_for_failure(
+                job, _err_text
+            )
+            if incident_acked:
+                delivery_outcome = "suppressed_acked"
+            else:
+                try:
+                    delivery_attempted = True
+                    delivery_error = _deliver_result(
+                        job,
+                        # Composed exactly like the normal failure delivery above.
+                        # mark_job_run below records THIS run in failure_streak
+                        # whichever layer failed, so a job that fails before the
+                        # run body every tick builds a streak nobody is ever told
+                        # about: its alerts only ever leave through here, and the
+                        # nudge only ever left through there (#88655).
+                        _summarize_cron_failure_for_delivery(job, _err_text)
+                        + _failure_streak_nudge(job),
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                except Exception as delivery_exc:
+                    delivery_error = str(delivery_exc)
+                    logger.error(
+                        "Delivery failed for job %s: %s", job["id"], delivery_exc
+                    )
+                if not delivery_error and normalized_deliver == "origin":
+                    unresolved_origin = not _resolve_delivery_targets(job)
+                if delivery_error:
+                    delivery_outcome = "failed"
+                elif unresolved_origin:
+                    delivery_outcome = "not_configured"
+                elif normalized_deliver != "local":
+                    delivery_outcome = "delivered"
+                if delivery_outcome in ("delivered", "not_configured"):
+                    _mark_incident_alerted(failure_incident_id)
         try:
             if not _consume_interrupted_flag(job["id"], execution_token):
                 mark_kwargs = {}
@@ -7285,7 +7715,7 @@ def tick(
         Number of jobs executed (0 if another tick is already running)
     """
     lock_dir, lock_file = _get_lock_paths()
-    lock_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_cron_dir(lock_dir)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows.
     # Only genuine lock contention (another ticker holds the lock) skips the

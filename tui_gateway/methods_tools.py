@@ -260,15 +260,22 @@ def _(rid, params: dict) -> dict:
             COMMAND_REGISTRY,
             SUBCOMMANDS,
             _build_description,
+            command_desktop_meta,
         )
 
         all_pairs: list[list[str]] = []
         canon: dict[str, str] = {}
+        commands: dict[str, dict[str, str | None]] = {}
         categories: list[dict] = []
         cat_map: dict[str, list[list[str]]] = {}
         cat_order: list[str] = []
 
         for cmd in COMMAND_REGISTRY:
+            meta = command_desktop_meta(cmd)
+            commands[f"/{cmd.name}"] = dict(meta)
+            for alias in cmd.aliases:
+                commands[f"/{alias}"] = dict(meta)
+
             if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
                 continue
 
@@ -328,6 +335,35 @@ def _(rid, params: dict) -> dict:
             if not warning:
                 warning = f"quick_commands discovery unavailable: {e}"
 
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+
+            plugin_cmds = get_plugin_commands() or {}
+            if plugin_cmds:
+                bucket = "Plugin commands"
+                if bucket not in cat_map:
+                    cat_map[bucket] = []
+                    cat_order.append(bucket)
+                for pname, info in sorted(plugin_cmds.items()):
+                    if not isinstance(info, dict):
+                        continue
+                    key = f"/{pname}"
+                    if key.lower() in canon:
+                        continue
+                    canon[key.lower()] = key
+                    pdesc = str(info.get("description") or "Plugin command")
+                    pdesc = pdesc[:120] + ("…" if len(pdesc) > 120 else "")
+                    all_pairs.append([key, pdesc])
+                    cat_map[bucket].append([key, pdesc])
+                    hint = str(info.get("args_hint") or "").strip()
+                    mode = info.get("argument_mode")
+                    if mode not in {"options", "text", "mixed"}:
+                        mode = "text" if hint else None
+                    commands[key] = {"argument_mode": mode, "desktop": None}
+        except Exception as e:
+            if not warning:
+                warning = f"plugin command discovery unavailable: {e}"
+
         skill_count = 0
         skills: dict[str, dict] = {}
         try:
@@ -358,6 +394,7 @@ def _(rid, params: dict) -> dict:
                 "pairs": all_pairs,
                 "sub": sub,
                 "canon": canon,
+                "commands": commands,
                 "categories": categories,
                 "skills": skills,
                 "skill_count": skill_count,

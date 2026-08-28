@@ -102,7 +102,7 @@ _DEFAULT_PROVIDER_MODELS = {
         "google/gemini-3-flash-preview", "google/gemini-3.1-flash-lite-preview",
         "google/gemini-2.5-pro", "google/gemini-2.5-flash",
     ],
-    "zai": ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
+    "zai": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "kimi-coding-cn": ["kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "stepfun": ["step-3.5-flash", "step-3.5-flash-2603"],
@@ -113,7 +113,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "kilocode": ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["x-preview-f-free", "gpt-5.6-sol", "gpt-5.4", "gpt-5.3-codex", "claude-opus-5", "claude-sonnet-5", "gemini-3.7-flash", "glm-5.2", "kimi-k3", "minimax-m3"],
     "opencode-free": ["x-preview-f-free", "hy3-free", "laguna-s-2.1-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free"],
-    "opencode-go": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "gpt-5.6-luna", "grok-4.5", "glm-5.3", "glm-5.2", "mimo-v2.5-pro", "mimo-v2.5", "minimax-m3", "minimax-m2.7", "qwen3.8-max", "qwen3.7-max", "deepseek-v4-pro", "hy3"],
+    "opencode-go": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "gpt-5.6-luna", "grok-4.5", "glm-5.3", "glm-5.3-flash", "glm-5.2", "mimo-v2.5-pro", "mimo-v2.5", "minimax-m3", "minimax-m2.7", "qwen3.8-max", "qwen3.7-max", "deepseek-v4-pro", "hy3"],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
@@ -3425,9 +3425,37 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     print_info("  Configure all settings:    hermes setup")
     if gateway_choice != 0:
         print_info("  Connect Telegram/Discord:  hermes setup gateway")
+    _print_macos_fda_tip()
     print()
 
     _print_setup_summary(config, hermes_home)
+
+
+def _print_macos_fda_tip() -> None:
+    """One-time macOS onboarding tip: a single Full Disk Access grant kills
+    every per-folder permission prompt, permanently (issue #52010 follow-up).
+
+    Uses the same prompt-free probe as doctor's check_macos_full_disk_access
+    (the TCC db dir is FDA-gated but probing it never triggers a dialog).
+    Silent on non-macOS and when FDA is already granted or indeterminate.
+    """
+    if sys.platform != "darwin":
+        return
+    tcc_dir = Path.home() / "Library" / "Application Support" / "com.apple.TCC"
+    try:
+        os.listdir(tcc_dir)
+        return  # already granted — nothing to teach
+    except PermissionError:
+        pass
+    except OSError:
+        return  # indeterminate — don't nag
+    print()
+    print_info("  macOS tip: silence ALL folder permission prompts with one switch —")
+    print_info("  System Settings → Privacy & Security → Full Disk Access → enable")
+    print_info("  your terminal (and Hermes.app if you use Desktop), or run:")
+    print_info("    open \"x-apple.systempreferences:com.apple.preference"
+               ".security?Privacy_AllFiles\"")
+    print_info("  The grant is permanent — it survives every Hermes update.")
 
 
 def _blank_slate_minimal_toolsets(config: dict):

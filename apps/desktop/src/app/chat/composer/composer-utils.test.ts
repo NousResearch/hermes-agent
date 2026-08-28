@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   acceptsTriggerCompletion,
+  implicitSlashAcceptIndex,
   isPendingDraftPersistCurrent,
   type PendingDraftPersist,
   pickPlaceholder,
@@ -85,6 +86,34 @@ describe('acceptsTriggerCompletion', () => {
 
   it('keeps Tab as the explicit accept even over free text', () => {
     expect(press('Tab', { freeTextArgStage: true, query: 'goal stat' })).toBe(true)
+  })
+})
+
+describe('implicitSlashAcceptIndex', () => {
+  const rows = ['/compress', '/review', '/resume']
+
+  it('completes a prefix of the highlighted row', () => {
+    expect(implicitSlashAcceptIndex('com', rows, 0, false)).toBe(0)
+  })
+
+  it('keeps a fully typed command even when another row is highlighted', () => {
+    expect(implicitSlashAcceptIndex('review', rows, 0, false)).toBe(1)
+  })
+
+  it('does not steal when the typed token is not a prefix of any row', () => {
+    expect(implicitSlashAcceptIndex('review', ['/compress', '/resume'], 0, false)).toBeNull()
+  })
+
+  it('takes the only prefix match when the highlight is a leftover', () => {
+    expect(implicitSlashAcceptIndex('rev', ['/compress', '/review', '/resume'], 0, false)).toBe(1)
+  })
+
+  it('honours an arrowed pick even when it is not a prefix', () => {
+    expect(implicitSlashAcceptIndex('review', rows, 0, true)).toBe(0)
+  })
+
+  it('matches an arg-stage prefix against the full completion text', () => {
+    expect(implicitSlashAcceptIndex('personality alic', ['/personality alice', '/personality none'], 0, false)).toBe(0)
   })
 })
 

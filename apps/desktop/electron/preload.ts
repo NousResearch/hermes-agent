@@ -29,6 +29,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
+  openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
+  onBrowserPopoutClosed: callback => {
+    const listener = (_event, tabId) => callback(tabId)
+    ipcRenderer.on('hermes:browser-popout:closed', listener)
+
+    return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
+  },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
   wakeIndicator: {
     getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),
@@ -165,6 +172,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),
   testConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:test', payload),
+  // Opt-in OS-keychain encryption for stored gateway secrets (default off —
+  // see secret-storage-policy.ts). get never touches the OS keychain.
+  getSecretStorageEncryption: () => ipcRenderer.invoke('hermes:secret-storage:get'),
+  setSecretStorageEncryption: (on: boolean) => ipcRenderer.invoke('hermes:secret-storage:set', on),
   // v2 multi-connection registry: named agent sources (local / remote / cloud / ssh).
   connections: {
     list: () => ipcRenderer.invoke('hermes:connections:list'),
@@ -174,6 +185,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setLaunchMode: mode => ipcRenderer.invoke('hermes:connections:set-launch-mode', mode),
     setLastUsed: id => ipcRenderer.invoke('hermes:connections:set-last-used', id),
     test: id => ipcRenderer.invoke('hermes:connections:test', id),
+    updateManaged: id => ipcRenderer.invoke('hermes:connections:update-managed', id),
     // Fan out `hermes update` to every eligible registered connection.
     // Optional excludeIds skips rows the caller updates through another path.
     updateAll: options => ipcRenderer.invoke('hermes:connections:update-all', options),
@@ -203,6 +215,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   profile: {
     get: () => ipcRenderer.invoke('hermes:profile:get'),
+    remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   api: request => ipcRenderer.invoke('hermes:api', request),
@@ -256,6 +269,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),
   reachPreviewUrl: url => ipcRenderer.invoke('hermes:preview:reach', url),
+  setActiveConnectionRoute: route => ipcRenderer.send('hermes:connection:active-route', route),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
   resolveFavicon: url => ipcRenderer.invoke('hermes:resolveFavicon', url),
   sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),

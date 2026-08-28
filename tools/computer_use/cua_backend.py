@@ -61,7 +61,6 @@ from tools.computer_use.backend import (
     ComputerUseBackend,
     UIElement,
 )
-from tools.computer_use.browser_route import CuaTypedBrowserRoute
 
 logger = logging.getLogger(__name__)
 
@@ -235,10 +234,12 @@ def _cua_no_overlay() -> bool:
     """True when Hermes should pass ``--no-overlay`` to cua-driver.
 
     Reads ``computer_use.no_overlay``. Default ``None`` (auto-detect):
-    disable the overlay where idle CPU burn is a known failure mode —
-    macOS (cursor-overlay vImage redraw loop, #28152/#47032), headless
-    Linux / WSL2 / containers — and keep it on Windows / desktop Linux
-    with a display. Explicit ``True`` / ``False`` overrides auto-detection.
+    disable the overlay where idle CPU burn or an X11 desktop wedge is a
+    known failure mode — macOS (cursor-overlay vImage redraw loop,
+    #28152/#47032), headless Linux / WSL2 / containers, and Linux X11
+    (fullscreen always-on-top overlay window that can get stuck over every
+    workspace after an unclean session end) — and keep it on Windows and
+    Linux Wayland. Explicit ``True`` / ``False`` overrides auto-detection.
     """
     val = _computer_use_cfg().get("no_overlay")
     if val is not None:
@@ -258,6 +259,17 @@ def _cua_no_overlay() -> bool:
                 return True
     except Exception:
         pass
+    # Linux/X11: the cursor overlay is a fullscreen, always-on-top,
+    # all-workspaces X11 window (save-unders path). An unclean session end
+    # (agent interrupted mid-capture, stale target window) can leave it stuck
+    # above every app on every workspace, wedging desktop input until the app
+    # restarts — the same failure class as the HUD window on Mutter/X11
+    # (#83473). There is no compositor-owned surface to tear down with the
+    # client connection, so default the overlay off on X11 too; set
+    # computer_use.no_overlay: false to keep the cursor. Wayland keeps it: the
+    # compositor owns the overlay surface lifecycle there.
+    if os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"):
+        return True
     return False
 
 
@@ -311,8 +323,8 @@ def _cua_grant_existing_profile() -> bool:
     It DOES apply to unrestricted mode. An approval bypass (``--yolo``,
     ``-z``) is consent to skip prompts, not consent to read an existing
     browser profile's live pages, cookies, and storage, so the host-side
-    floor in ``CuaTypedBrowserRoute.prepare`` enforces this key even when the
-    private unrestricted daemon would answer the prepare.
+    grant floor enforces this key even when the private unrestricted daemon
+    would answer the launch.
     """
     return bool(_computer_use_cfg().get("grant_existing_profile", False))
 
@@ -579,13 +591,129 @@ def _wsl_windows_path_to_posix(path: str) -> str:
     return os.path.join("/mnt", drive, *(str(part) for part in win.parts[1:]))
 
 
+def _resolve_cua_driver_app_path(driver_cmd: str) -> Optional[str]:
+    """Return the CuaDriver.app bundle that CARRIES *driver_cmd*, if any.
+
+    Deliberately derived from the resolved driver binary path only — no
+    /Applications or ~/Applications fallback. A fallback candidate can be a
+    DIFFERENT install than the driver the manifest resolved (stale copy,
+    side-by-side version), and launching it would run code the resolution
+    chain never validated. If the resolved driver does not live inside an
+    app bundle, the caller fails closed with install guidance.
+    """
+    resolved_driver_cmd = os.path.realpath(driver_cmd)
+    marker = ".app/Contents/MacOS/"
+    marker_index = resolved_driver_cmd.find(marker)
+    if marker_index < 0:
+        return None
+    candidate = resolved_driver_cmd[: marker_index + len(".app")]
+    executable = os.path.join(candidate, "Contents", "MacOS", "cua-driver")
+    if os.path.isfile(executable) and os.access(executable, os.X_OK):
+        return candidate
+    return None
+
+
+# The only bundle identity the private daemon may launch through, and the
+# teams that sign official cua-driver releases. Exact matches only: a
+# suffixed identifier ("com.trycua.driver.evil") or a different non-empty
+# team is an impostor bundle, not a variant.
+_CUA_DRIVER_BUNDLE_ID = "com.trycua.driver"
+_CUA_DRIVER_TEAM_IDS = ("4YEC26S9KF", "YCK386LBJ7")
+
+
+def _validate_cua_driver_app_signature(app_path: str) -> None:
+    """Fail closed unless *app_path* is the genuinely-signed CuaDriver.app.
+
+    Launching via ``/usr/bin/open`` hands LaunchServices whatever bundle sits
+    at the path, so the TCC-identity fix must not become a launcher for
+    arbitrary apps: require ``codesign -dv`` to report EXACTLY
+    ``Identifier=com.trycua.driver`` and an expected TeamIdentifier.
+    ``TeamIdentifier=not set`` (unsigned/ad-hoc dev builds) is allowed only
+    when ``computer_use.allow_unsigned_driver: true`` is set in config.yaml —
+    the escape hatch for local driver development, never the default. Raises
+    RuntimeError on any mismatch or when codesign is unavailable/fails.
+    """
+    codesign = shutil.which("codesign")
+    if not codesign:
+        raise RuntimeError(
+            "codesign is required to verify CuaDriver.app before launching it."
+        )
+    try:
+        proc = subprocess.run(
+            [codesign, "-dv", app_path],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not verify CuaDriver.app signature: {exc}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"CuaDriver.app at {app_path} is not code-signed; refusing to launch it "
+            f"({(proc.stderr or '').strip()})"
+        )
+    # codesign -dv reports on stderr.
+    fields = {}
+    for line in (proc.stderr or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            fields.setdefault(key.strip(), value.strip())
+    identifier = fields.get("Identifier", "")
+    team = fields.get("TeamIdentifier", "")
+    if identifier != _CUA_DRIVER_BUNDLE_ID:
+        raise RuntimeError(
+            f"CuaDriver.app at {app_path} has identifier {identifier!r}, "
+            f"expected {_CUA_DRIVER_BUNDLE_ID!r}; refusing to launch it."
+        )
+    if team in _CUA_DRIVER_TEAM_IDS:
+        return
+    if team in ("", "not set") and _computer_use_cfg().get("allow_unsigned_driver") is True:
+        return
+    raise RuntimeError(
+        f"CuaDriver.app at {app_path} is signed by team {team!r}, expected one of "
+        f"{_CUA_DRIVER_TEAM_IDS!r}; refusing to launch it. (Set "
+        "computer_use.allow_unsigned_driver: true in config.yaml only for "
+        "local unsigned driver builds.)"
+    )
+
+
+def _embedded_daemon_spawn_command(
+    driver_cmd: str,
+    serve_args: List[str],
+    *,
+    platform: str,
+    app_path: Optional[str] = None,
+) -> List[str]:
+    """Build the private-daemon launch while preserving macOS TCC identity."""
+    if platform != "darwin":
+        return [driver_cmd, *serve_args]
+    resolved_app = app_path or _resolve_cua_driver_app_path(driver_cmd)
+    if not resolved_app:
+        raise RuntimeError(
+            "CuaDriver.app is required for private computer-use sessions on macOS. "
+            "Run `hermes computer-use install` to restore it."
+        )
+    _validate_cua_driver_app_signature(resolved_app)
+    return [
+        "/usr/bin/open",
+        "-n",
+        "-g",
+        "-a",
+        resolved_app,
+        "--args",
+        *serve_args,
+    ]
+
+
 class _EmbeddedCuaDaemon:
-    """Private host-owned daemon for a non-standard permission mode.
+    """Private daemon for a non-standard permission mode.
 
     Cua Driver permission mode is immutable after daemon startup.  Reusing the
     machine-wide daemon would therefore let one Hermes session's YOLO choice
     affect another session.  A private embedded daemon gives the requesting
-    session its own socket, process, and launch-time authorization:
+    session its own socket, runtime, and launch-time authorization. On macOS
+    the runtime is launched through CuaDriver.app so TCC remains attached to
+    ``com.trycua.driver`` instead of the embedding host's ad-hoc signature:
 
     * ``unrestricted`` — explicit Hermes YOLO; launch-time risk
       acknowledgement via ``--dangerously-bypass-approvals``.
@@ -648,6 +776,9 @@ class _EmbeddedCuaDaemon:
         self._command = driver_cmd
         self._mcp_args: List[str] = list(_CUA_DRIVER_ARGS)
         self._process: Any = None
+        self._owns_runtime = False
+        self._running = False
+        self._launch_via_app = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
         self._stderr_thread: Optional[threading.Thread] = None
         token = uuid.uuid4().hex[:12]
@@ -679,7 +810,7 @@ class _EmbeddedCuaDaemon:
             pass
 
     def start(self) -> None:
-        if self._process is not None and self._process.poll() is None:
+        if self._running:
             return
         from tools.environments.local import _sanitize_subprocess_env
 
@@ -689,8 +820,7 @@ class _EmbeddedCuaDaemon:
             raise RuntimeError(cua_driver_install_hint())
         self._command, self._mcp_args = _resolve_mcp_invocation(self._driver_cmd)
         env = _sanitize_subprocess_env(self.child_env())
-        command = [
-            self._command,
+        serve_args = [
             "serve",
             "--embedded",
             "--socket",
@@ -700,7 +830,7 @@ class _EmbeddedCuaDaemon:
             self.permission_mode,
         ]
         if self.permission_mode == "unrestricted":
-            command.append("--dangerously-bypass-approvals")
+            serve_args.append("--dangerously-bypass-approvals")
         # A v3 manifest is a ceiling, not a mode: cua-driver accepts it
         # alongside any permission mode and it "can narrow a profile but never
         # widen it". Attaching it to unrestricted is what bounds an
@@ -708,13 +838,25 @@ class _EmbeddedCuaDaemon:
         # applies — not only for bounded, which used to drop it for every
         # other mode.
         if self.manifest_applies:
-            command.extend(
+            serve_args.extend(
                 [
                     "--capability-manifest",
                     str(self.capability_manifest),
                     "--approve-capability-manifest",
                 ]
             )
+        # The private daemon owns the platform cursor overlay. Applying the
+        # policy only to its MCP proxy leaves this long-lived serve process
+        # free to create a full-screen overlay before session tuning runs.
+        # Must be appended BEFORE the macOS app-launch wrapping so the flag
+        # travels inside `open ... --args` with the rest of the serve args.
+        serve_args = _mcp_args_with_overlay_flag(serve_args, driver_cmd=self._command)
+        self._launch_via_app = sys.platform == "darwin"
+        command = _embedded_daemon_spawn_command(
+            self._command,
+            serve_args,
+            platform=sys.platform,
+        )
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -723,6 +865,7 @@ class _EmbeddedCuaDaemon:
             text=True,
             env=env,
         )
+        self._owns_runtime = True
         self._stderr_thread = threading.Thread(
             target=self._drain_stderr,
             args=(self._process,),
@@ -733,7 +876,10 @@ class _EmbeddedCuaDaemon:
 
         deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            if self._process.poll() is not None:
+            return_code = self._process.poll()
+            if return_code is not None and (
+                not self._launch_via_app or return_code != 0
+            ):
                 detail = "; ".join(self._stderr_tail) or "no diagnostic output"
                 raise RuntimeError(
                     f"embedded cua-driver exited during startup: {detail}"
@@ -750,6 +896,7 @@ class _EmbeddedCuaDaemon:
             except (OSError, subprocess.SubprocessError):
                 probe = None
             if probe is not None and probe.returncode == 0:
+                self._running = True
                 return
             time.sleep(0.1)
 
@@ -758,7 +905,7 @@ class _EmbeddedCuaDaemon:
         raise RuntimeError(f"embedded cua-driver startup timed out: {detail}")
 
     def proxy_invocation(self) -> Tuple[str, List[str]]:
-        if self._process is None or self._process.poll() is not None:
+        if not self._running:
             raise RuntimeError("embedded cua-driver daemon is not running")
         return self._command, [
             *self._mcp_args,
@@ -770,7 +917,10 @@ class _EmbeddedCuaDaemon:
     def stop(self) -> None:
         process = self._process
         self._process = None
-        if process is not None and process.poll() is None:
+        owns_runtime = self._owns_runtime
+        self._owns_runtime = False
+        self._running = False
+        if owns_runtime:
             from tools.environments.local import _sanitize_subprocess_env
 
             try:
@@ -784,6 +934,7 @@ class _EmbeddedCuaDaemon:
                 )
             except (OSError, subprocess.SubprocessError):
                 pass
+        if process is not None:
             try:
                 process.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
@@ -818,9 +969,9 @@ def _resolve_mcp_invocation(
     expose ``manifest``, or any indeterminate failure — the wrapper must
     not refuse to start just because the discovery hop failed.
 
-    When ``computer_use.no_overlay`` is enabled (or auto-detected on
-    Linux), ``--no-overlay`` is appended to suppress the cursor overlay
-    rendering loop that can consume CPU indefinitely when idle
+    When ``computer_use.no_overlay`` is enabled (or auto-detected — macOS,
+    headless/WSL2/X11 Linux), ``--no-overlay`` is appended to suppress the
+    cursor overlay rendering loop that can consume CPU indefinitely when idle
     (#28152, #47032).  Older drivers that don't recognise the flag will
     reject it; callers should fall back to the no-overlay invocation on
     spawn failure.
@@ -2640,31 +2791,11 @@ class CuaDriverBackend(ComputerUseBackend):
         # part of the required Cua Driver 0.20 runtime contract checked at
         # backend startup.
         self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
-        self._typed_browser = CuaTypedBrowserRoute(
-            session_id=self._session_id,
-            call_tool=self._session.call_tool,
-            has_tool=self._session._has_tool,
-        )
         self._session.set_transport_reset_callback(self._handle_transport_reset)
 
     def _handle_transport_reset(self) -> None:
         """Invalidate every capability minted by the replaced transport."""
         self._clear_active_target()
-        route = getattr(self, "_typed_browser", None)
-        if route is not None:
-            route.state.clear()
-
-    def _browser_route(self) -> CuaTypedBrowserRoute:
-        """Return the per-backend typed route, including test-constructed instances."""
-        route = getattr(self, "_typed_browser", None)
-        if route is None:
-            route = CuaTypedBrowserRoute(
-                session_id=self._session_id,
-                call_tool=self._session.call_tool,
-                has_tool=self._session._has_tool,
-            )
-            self._typed_browser = route
-        return route
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -3816,35 +3947,6 @@ class CuaDriverBackend(ComputerUseBackend):
         # property. It is a standalone native focus operation, not a
         # session-scoped input action.
         return self._action("bring_to_front", args, inject_session=False)
-
-    # ── Typed browser (cua-driver 0.9 contract) ───────────────────
-    def typed_browser_state(self, **kwargs: Any) -> Dict[str, Any]:
-        """Exact-bind a native browser window or read fresh semantic state."""
-        return self._browser_route().observe(**kwargs)
-
-    def typed_browser_prepare(self, **kwargs: Any) -> Dict[str, Any]:
-        """Prepare an explicitly approved driver-owned browser profile.
-
-        The authorization inputs are resolved here, from config and this
-        backend's immutable mode — never from model-supplied kwargs.
-        """
-        kwargs.pop("grant_existing_profile", None)
-        kwargs.pop("permission_mode", None)
-        return self._browser_route().prepare(
-            grant_existing_profile=_cua_grant_existing_profile(),
-            permission_mode=self.permission_mode,
-            **kwargs,
-        )
-
-    def typed_browser_action(
-        self,
-        driver_tool: str,
-        *,
-        tab_id: Optional[str] = None,
-        args: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Run one namespaced typed-browser mutation in this exact route."""
-        return self._browser_route().mutate(driver_tool, tab_id=tab_id, args=args)
 
     # ── Pointer + display introspection ─────────────────────────────
 

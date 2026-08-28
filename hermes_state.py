@@ -702,6 +702,10 @@ _wal_fallback_warned_lock = threading.Lock()
 _wal_reset_bug_warned_paths: set[str] = set()
 _wal_reset_bug_warned_lock = threading.Lock()
 
+# Dedup ERROR for the "configured delete overridden by on-disk WAL" warning.
+_delete_overridden_warned_paths: set[str] = set()
+_delete_overridden_warned_lock = threading.Lock()
+
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
 
@@ -1034,6 +1038,31 @@ def sqlite_source_id() -> str:
     return str(row[0])
 
 
+def _database_has_content(conn: sqlite3.Connection) -> bool:
+    """Return whether the database file already holds pages.
+
+    Used to tell an EXISTING database apart from a brand-new one before
+    rewriting its journal mode. ``PRAGMA page_count`` is a header read, so
+    this costs nothing and takes no lock.
+
+    Fail-quiet: any error, or a database we cannot measure, answers False.
+    The only caller uses this to decide whether to emit a warning, and a
+    warning that fires when the answer is unknown would fire on every fresh
+    database -- precisely the case where there is provably no operator choice
+    being overwritten.
+    """
+    try:
+        row = conn.execute("PRAGMA page_count").fetchone()
+    except sqlite3.Error:
+        return False
+    if not row or row[0] is None:
+        return False
+    try:
+        return int(row[0]) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def resolve_journal_mode() -> str:
     """Return the configured journal mode (``wal`` or ``delete``).
 
@@ -1145,6 +1174,10 @@ def apply_wal_with_fallback(
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
     current_mode = _on_disk_journal_mode(conn)
     if current_mode == "wal":
+        if configured == "delete":
+            # Never-live-downgrade keeps this WAL; tell the operator their
+            # configured delete did not apply (see _log_configured_delete_overridden_once).
+            _log_configured_delete_overridden_once(db_label)
         _apply_wal_size_limit(conn)
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
@@ -1173,6 +1206,21 @@ def apply_wal_with_fallback(
             )
         return actual
 
+    # Decide BEFORE the flip whether it would silently overwrite a mode
+    # somebody chose. Both inputs are only readable while the file is still
+    # in its original state: `current_mode` is the probe above, and
+    # page_count distinguishes an existing database from a fresh one.
+    #
+    # A 0-page database has no prior choice to overwrite, and every caller
+    # reaches this before creating any schema (SessionDB._connect_and_init
+    # applies WAL, then _init_schema), so brand-new databases land here empty
+    # and stay quiet.
+    _upgrading_existing_db = (
+        current_mode is not None
+        and current_mode != "wal"
+        and _database_has_content(conn)
+    )
+
     try:
         # ``PRAGMA journal_mode=WAL`` is a query-that-sets: it RETURNS the
         # resulting journal mode. Network filesystems that refuse WAL by
@@ -1186,6 +1234,8 @@ def apply_wal_with_fallback(
         row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
         if mode == "wal":
+            if _upgrading_existing_db:
+                _log_journal_mode_upgrade_once(db_label, current_mode)
             _apply_wal_size_limit(conn)
             _apply_macos_checkpoint_barrier(conn)
             _enforce_macos_synchronous_full(conn)
@@ -1235,6 +1285,11 @@ def apply_wal_with_fallback(
                     else ""
                 )
                 if mode == "wal":
+                    # Same flip, later door: a transient EIO cleared and the
+                    # switch went through. The header rewrite is identical, so
+                    # the signal must be too.
+                    if _upgrading_existing_db:
+                        _log_journal_mode_upgrade_once(db_label, current_mode)
                     _apply_wal_size_limit(conn)
                     _apply_macos_checkpoint_barrier(conn)
                     _enforce_macos_synchronous_full(conn)
@@ -1312,9 +1367,15 @@ def _apply_delete_for_wal_reset_bug(
     current = _on_disk_journal_mode(conn)
 
     if current == "wal":
-        # Do not TRUNCATE / journal_mode=DELETE while other processes may
-        # still hold this WAL DB open — same safety rule as the NFS path.
         _log_wal_reset_bug_once(db_label, kept_wal=True)
+        if require_delete:
+            # The vulnerability warning above suggests upgrading SQLite, which
+            # does not help on a WAL-incompatible filesystem; surface that the
+            # configured delete is not in effect (see _log_configured_delete_overridden_once).
+            # Emitted last so the actionable message is the final one in the log.
+            _log_configured_delete_overridden_once(db_label)
+        # Do not TRUNCATE / journal_mode=DELETE while other processes may
+        # still hold this WAL DB open; same safety rule as the NFS path.
         _apply_wal_size_limit(conn)
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
@@ -1386,6 +1447,12 @@ def _wal_reset_repair_hint() -> str:
     )
 
 
+# Dedup state for _log_journal_mode_upgrade_once, mirroring the
+# _wal_fallback_warned_* pair below it.
+_journal_upgrade_warned_paths: set = set()
+_journal_upgrade_warned_lock = threading.Lock()
+
+
 def _log_wal_reset_bug_once(
     db_label: str,
     *,
@@ -1428,6 +1495,47 @@ def _log_wal_reset_bug_once(
     )
 
 
+def _log_journal_mode_upgrade_once(db_label: str, previous_mode: str) -> None:
+    """Log a single WARNING per (process, db_label) about a non-WAL -> WAL flip.
+
+    ``PRAGMA journal_mode`` is a property of the FILE, not of the connection:
+    switching an existing database to WAL rewrites its header and outlives the
+    process that did it. Operators do set it directly on the file -- that was
+    the documented mitigation for the SQLite 3.50.4 WAL-reset bug -- and
+    nothing here told them the next open would silently put it back.
+
+    WARNING, not ERROR, and deliberately so. The reverse move is logged at
+    ERROR by ``_log_wal_fallback_once`` because dropping to DELETE is a real
+    loss of concurrency; this direction is normally the desirable one (see
+    ``hermes_cli/managed_uv._default_live_venv``, which treats a database
+    stuck on DELETE as a bug worth repairing on update). The problem is not
+    the change, it is that the change was invisible: an operator who chose
+    DELETE deliberately had no way to learn their choice had been overwritten,
+    or which lever makes it stick. So this says what happened and names the
+    durable setting, without claiming a degradation that is not there.
+
+    Deduped per process per ``db_label`` like its siblings: kanban opens a
+    fresh connection per operation, so an undeduped line here would be a log
+    flood rather than a signal.
+    """
+    with _journal_upgrade_warned_lock:
+        if db_label in _journal_upgrade_warned_paths:
+            return
+        _journal_upgrade_warned_paths.add(db_label)
+    logger.warning(
+        "%s: on-disk journal_mode was %s and has been switched to WAL. This "
+        "rewrites the database header and persists after this process exits. "
+        "If %s was a deliberate choice (for example the mitigation for the "
+        "SQLite WAL-reset bug, or a WAL-unsafe filesystem), setting it with "
+        "PRAGMA on the file will not survive -- every open re-applies the "
+        "configured mode. Set `database.journal_mode: delete` in config.yaml "
+        "to make it stick. This message fires once per process per database.",
+        db_label,
+        previous_mode,
+        previous_mode,
+    )
+
+
 def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
     """Log a single ERROR per (process, db_label) about WAL fallback.
 
@@ -1454,9 +1562,125 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
     )
 
 
+def _log_configured_delete_overridden_once(db_label: str) -> None:
+    """Log a single ERROR per (process, db_label) when the operator configured
+    ``journal_mode=delete`` but the on-disk DB is already WAL, so the configured
+    mode is not in effect.
+
+    Counterpart to :func:`_log_wal_fallback_once` for the opposite direction:
+    there WAL was refused by the filesystem and we silently fell back to DELETE;
+    here the operator asked for DELETE but an inherited on-disk WAL header means
+    we keep WAL (the never-live-downgrade rule prevents a live downgrade, which
+    causes mixed-mode corruption). The signal matters because otherwise the
+    operator has no indication that ``database.journal_mode: delete`` had no
+    effect and the DB still requires a one-time offline ``PRAGMA
+    journal_mode=DELETE`` (with no open connections) to apply.
+
+    Fires once per process per database.
+    """
+    with _delete_overridden_warned_lock:
+        if db_label in _delete_overridden_warned_paths:
+            return
+        _delete_overridden_warned_paths.add(db_label)
+    logger.error(
+        "%s: database.journal_mode=delete is configured but the on-disk "
+        "database is already WAL; keeping WAL (a live downgrade under open "
+        "connections can corrupt the DB). To apply journal_mode=DELETE, stop "
+        "all connections to this DB and run a one-time offline "
+        "'PRAGMA journal_mode=DELETE' on the file. This message fires once "
+        "per process per database.",
+        db_label,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Config-driven database pragmas
 # ---------------------------------------------------------------------------
+# PRAGMA synchronous accepts either an integer or a symbolic name, and operators
+# write the names. Mapped here rather than passed through so a typo becomes a
+# warning instead of a silently different durability level.
+_SYNCHRONOUS_LEVELS: Dict[str, int] = {
+    "OFF": 0,
+    "NORMAL": 1,
+    "FULL": 2,
+    "EXTRA": 3,
+}
+_SYNCHRONOUS_NAMES: Dict[int, str] = {v: k for k, v in _SYNCHRONOUS_LEVELS.items()}
+_SYNCHRONOUS_FULL = 2
+
+
+def resolve_synchronous_level(raw_value: Any) -> Optional[int]:
+    """Map a configured ``database.synchronous`` value to its PRAGMA integer.
+
+    Accepts the symbolic names SQLite documents (``OFF``/``NORMAL``/``FULL``/
+    ``EXTRA``, any case) and the equivalent integers ``0``-``3``. Returns None
+    for anything else so the caller can warn and leave the level untouched —
+    guessing at a malformed durability setting is worse than ignoring it.
+    """
+    if isinstance(raw_value, bool):
+        # bool is an int subclass, and YAML turns a bare `on`/`off` into one.
+        # "off" as a durability level is a real choice; True is meaningless.
+        return 0 if raw_value is False else None
+    if isinstance(raw_value, int):
+        return raw_value if raw_value in _SYNCHRONOUS_NAMES else None
+    text = str(raw_value).strip()
+    if not text:
+        return None
+    upper = text.upper()
+    if upper in _SYNCHRONOUS_LEVELS:
+        return _SYNCHRONOUS_LEVELS[upper]
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return None
+    return value if value in _SYNCHRONOUS_NAMES else None
+
+
+def _apply_synchronous_pragma(
+    conn: sqlite3.Connection,
+    raw_value: Any,
+    *,
+    db_label: str,
+) -> None:
+    """Set ``PRAGMA synchronous`` from config, never below FULL on macOS.
+
+    Split out of the integer loop in :func:`apply_database_pragmas` because
+    this PRAGMA is not interchangeable with the sizing ones around it. Those
+    trade memory or disk for speed; this one decides whether a commit is on
+    the platter, so an unrecognised value must not fall through to "SQLite
+    default" the way a bad ``cache_size`` harmlessly can.
+
+    The Darwin floor exists because :func:`_enforce_macos_synchronous_full`
+    runs during ``apply_wal_with_fallback()`` and this function runs after it,
+    so a configured ``NORMAL`` would otherwise silently undo the macOS btree
+    protection that fix put there deliberately. Raising the level on macOS is
+    allowed; lowering it is refused out loud.
+    """
+    level = resolve_synchronous_level(raw_value)
+    if level is None:
+        logger.warning(
+            "%s: ignoring unrecognized database.synchronous=%r "
+            "(expected OFF, NORMAL, FULL, EXTRA, or 0-3)",
+            db_label,
+            raw_value,
+        )
+        return
+    if sys.platform == "darwin" and level < _SYNCHRONOUS_FULL:
+        logger.warning(
+            "%s: refusing database.synchronous=%s on macOS; keeping FULL. "
+            "Darwin's fsync() does not guarantee write ordering, so a lower "
+            "level readmits the half-written btree pages FULL exists to "
+            "prevent.",
+            db_label,
+            _SYNCHRONOUS_NAMES[level],
+        )
+        return
+    try:
+        conn.execute(f"PRAGMA synchronous={level}")
+    except sqlite3.OperationalError:
+        pass
+
+
 def apply_database_pragmas(
     conn: sqlite3.Connection,
     *,
@@ -1479,6 +1703,11 @@ def apply_database_pragmas(
     * ``temp_store`` — 0=DEFAULT(file), 1=FILE, 2=MEMORY, 3=ALWAYS
     * ``wal_autocheckpoint`` — WAL auto-checkpoint threshold in pages
     * ``journal_size_limit`` — max journal/WAL size in bytes
+    * ``synchronous`` — durability level: ``OFF``/``NORMAL``/``FULL``/``EXTRA``
+      or ``0``-``3``. Unset leaves SQLite's own default, which is a
+      *compile-time* constant (``SQLITE_DEFAULT_WAL_SYNCHRONOUS``) and so
+      differs between the bundled, distro and Homebrew builds an operator
+      might be running. Setting it explicitly is the only way to know.
 
     Best-effort: config load or pragma failures are ignored so DB init
     never breaks on a malformed ``database:`` section.
@@ -1517,6 +1746,14 @@ def apply_database_pragmas(
             conn.execute(f"PRAGMA {pragma_name}={value}")
         except sqlite3.OperationalError:
             pass
+
+    # Last, so it wins over nothing and loses to nothing: the sizing pragmas
+    # above cannot change durability, and the macOS enforcement ran earlier
+    # during WAL activation (see _apply_synchronous_pragma for why that
+    # ordering needs an explicit floor rather than an explicit override).
+    raw_synchronous = cfg_get(cfg, "database", "synchronous", default=None)
+    if raw_synchronous is not None:
+        _apply_synchronous_pragma(conn, raw_synchronous, db_label=db_label)
 
 
 # ---------------------------------------------------------------------------
@@ -2640,6 +2877,31 @@ def _reapply_durability_barriers(conn: sqlite3.Connection) -> bool:
         return False
 
 
+def apply_durability_barriers(conn: sqlite3.Connection) -> bool:
+    """Apply state-store durability barriers without changing journal mode.
+
+    This is the public entry point for secondary users of ``state.db`` that
+    must inherit its owner's journal mode while retaining per-connection
+    durability settings. Also applies the configured ``database.synchronous``
+    level (a per-connection pragma that would otherwise only ride on the
+    journal-mode setup path guest connections must not run).
+    """
+    ok = _reapply_durability_barriers(conn)
+    try:
+        # Local import avoids a circular import with hermes_cli.config.
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        cfg = load_config_readonly()
+        raw_synchronous = cfg_get(cfg, "database", "synchronous", default=None)
+        if raw_synchronous is not None:
+            _apply_synchronous_pragma(
+                conn, raw_synchronous, db_label="state.db (guest)"
+            )
+    except Exception:
+        pass
+    return ok
+
+
 @contextmanager
 def _exclusive_repair_db_guard(db_path: Path):
     """Yield one live connection that excludes writers for repair surgery.
@@ -3020,9 +3282,22 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                 )
                 logger.error("state.db repair skipped: %s", report["error"])
             else:
+                # Probe the mode BEFORE surgery (#89674): every repair
+                # strategy rewrites the file, and a rebuilt SQLite file comes
+                # back in the default journal mode (delete) — silently moving
+                # a WAL store out of WAL with nothing in the logs recording
+                # the flip. The open-time WAL-reset gate never sees this flip
+                # because it happens inside the repair path (distinct from
+                # the open-time flip #89393 warns about). A probe of the
+                # damaged file may fail, in which case the canonical
+                # database.journal_mode setting is the restore target.
+                before_mode = _probe_journal_mode_for_repair(db_path)
                 result = _repair_state_db_schema_locked(
                     db_path, backup=backup, report=report
                 )
+                if result.get("repaired"):
+                    result["journal_mode_before"] = before_mode
+                    _restore_journal_mode_after_repair(db_path, before_mode)
             # Environmental aborts happen before a strategy gets to mutate the
             # isolated snapshot. They are retriable operating conditions, not
             # proof that the damaged database exhausted a repair strategy.
@@ -3038,6 +3313,71 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                     db_path, repaired=bool(result.get("repaired"))
                 )
     return result
+
+
+def _probe_journal_mode_for_repair(db_path: Path) -> Optional[str]:
+    """Best-effort journal-mode probe for a (possibly malformed) DB file.
+
+    Returns the on-disk mode (``wal``/``delete``), or ``None`` when the file
+    cannot be opened or probed — a malformed header or a concurrent opener's
+    locks are both expected on the repair path. Callers fall back to the
+    configured ``database.journal_mode`` for ``None``.
+    """
+    try:
+        conn = _connect_repair_durable(db_path)
+        try:
+            return _on_disk_journal_mode(conn)
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return None
+
+
+def _restore_journal_mode_after_repair(db_path: Path, before_mode: Optional[str]) -> None:
+    """Re-apply the journal mode after schema surgery (#89674).
+
+    A repaired/rebuilt SQLite file comes back in the default journal mode
+    (delete). Without this restore, a corruption event deterministically
+    moves a WAL store out of WAL and nothing records the change — the
+    WAL-reset gate at open time never sees the flip because it happened
+    inside the repair path, not at open (the open-time flip #89393 warns
+    about is a different door).
+
+    The restore runs through :func:`apply_wal_with_fallback` — the canonical
+    journal-mode path — rather than issuing a switch pragma directly, so it
+    inherits the vulnerable-SQLite WAL-reset gate (a rebuilt file IS a new
+    database: on a vulnerable runtime the gate deliberately keeps it in
+    DELETE, and "restore could not reach WAL" there is the expected outcome,
+    not a failure), the macOS-NFS silent-refusal handling, and the WAL
+    companions (size limit, checkpoint barrier, synchronous=FULL) that the
+    front door applies. ``before_mode`` is the pre-surgery probe (None when
+    the damaged file could not be probed) and is only used for the log
+    comparison — the restore target itself is whatever the canonical path
+    resolves from ``database.journal_mode``.
+
+    Best-effort by design: the repair itself already succeeded, so failures
+    to re-apply are logged at WARNING, never raised.
+    """
+    try:
+        conn = _connect_repair_durable(db_path)
+        try:
+            after = apply_wal_with_fallback(conn, db_label=db_path.name)
+        finally:
+            conn.close()
+        if before_mode and after != before_mode:
+            logger.warning(
+                "state.db repair changed journal_mode %r -> %r "
+                "(pre-surgery probe %r; restore resolved through "
+                "apply_wal_with_fallback per database.journal_mode and the "
+                "WAL-reset gate)",
+                before_mode, after, before_mode,
+            )
+    except (sqlite3.Error, OSError) as exc:
+        logger.warning(
+            "state.db repair at %s: post-surgery journal-mode restore "
+            "failed (%s); verify with PRAGMA journal_mode on the next open",
+            db_path, exc,
+        )
 
 
 def _repair_state_db_schema_locked(
@@ -8950,8 +9290,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         max_idle_seconds: float,
         sources: Tuple[str, ...] = ("tui", "desktop", "subagent"),
         exclude_ids: Tuple[str, ...] = (),
+        heartbeat_staleness_seconds: Optional[float] = None,
+        heartbeat_ownership_grace_seconds: Optional[float] = None,
     ) -> List[str]:
-        """Close session rows orphaned by a dead gateway process (#65194).
+        """Close session rows orphaned by a dead gateway process (#65194, #94895).
 
         The TUI/desktop gateway reaps disconnected websocket sessions with an
         in-process ``threading.Timer`` grace timer; a gateway restart destroys
@@ -8974,6 +9316,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         window).  Non-destructive: messages are preserved and the row remains
         resumable.  First-reason-wins is preserved via ``ended_at IS NULL``.
 
+        Cross-backend liveness (#94895): when one ``state.db`` is shared by
+        N serve / gateway processes (isolated backends, fixed-port launchd
+        ``hermes serve``, desktop WS sidecar), each backend registers a row
+        in ``gateway_heartbeats`` refreshed every few seconds.  A row is
+        only reaped when ``started_at``/message staleness hold AND no live
+        backend (heartbeat refreshed within ``heartbeat_staleness_seconds``,
+        default ``2 * max_idle_seconds``) could plausibly own it.
+
+        Ownership inference: a live backend B ``owns`` a session S if
+        ``B.started_at <= S.started_at + heartbeat_ownership_grace_seconds``
+        (default ``heartbeat_staleness_seconds``).  The grace window
+        accommodates the deploy-time migration case where a backend just
+        wrote its first heartbeat row while its existing open sessions
+        predate the schema.  The grace is bounded by the staleness window
+        so a fresh PID-reuse respawn cannot indefinitely protect sessions
+        inherited from a dead predecessor.
+
+        When NO backend has ever written a heartbeat (legacy deployment
+        mid-upgrade before any process has registered) the predicate falls
+        back to the original behavior so we never silently strand a row
+        that pre-dates the schema.
+
         The SELECT + UPDATE run in one ``BEGIN IMMEDIATE`` write, so a sibling
         process cannot sneak a new message or end-reason between the
         staleness check and the close.  Returns the swept session ids.
@@ -8981,7 +9345,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         srcs = tuple(s for s in sources if s)
         if max_idle_seconds <= 0 or not srcs:
             return []
+        hb_staleness = (
+            heartbeat_staleness_seconds
+            if heartbeat_staleness_seconds and heartbeat_staleness_seconds > 0
+            else max_idle_seconds * 2
+        )
+        hb_grace = (
+            heartbeat_ownership_grace_seconds
+            if heartbeat_ownership_grace_seconds and heartbeat_ownership_grace_seconds >= 0
+            else hb_staleness
+        )
         cutoff = time.time() - max_idle_seconds
+        hb_cutoff = time.time() - hb_staleness
         placeholders = ",".join("?" for _ in srcs)
         staleness = (
             "started_at < ? AND COALESCE((SELECT MAX(m.timestamp) FROM messages m"
@@ -8989,10 +9364,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         )
 
         def _do(conn):
+            # Cross-process liveness gate (#94895). A session is "owned by
+            # a live backend" if any row in gateway_heartbeats is fresh
+            # (last_heartbeat >= hb_cutoff) AND was alive no later than
+            # ``sessions.started_at + hb_grace`` (heartbeats.started_at <=
+            # sessions.started_at + hb_grace). If at least one live backend
+            # matches, the row is not orphaned.
+            #
+            # ``hb_cutoff`` and ``hb_grace`` are computed above so all
+            # backends running concurrent sweep queries agree on the same
+            # boundaries. We do NOT clear heartbeats here — that's each
+            # backend's atexit responsibility via ``clear_backend_heartbeat``.
+            orphan_predicate = (
+                f"{staleness} AND NOT EXISTS ("
+                "SELECT 1 FROM gateway_heartbeats h"
+                " WHERE h.last_heartbeat >= ?"
+                f" AND h.started_at <= sessions.started_at + ?"
+                ")"
+            )
             rows = conn.execute(
                 f"SELECT id FROM sessions WHERE ended_at IS NULL"
-                f" AND source IN ({placeholders}) AND {staleness}",
-                (*srcs, cutoff, cutoff),
+                f" AND source IN ({placeholders}) AND {orphan_predicate}",
+                (*srcs, cutoff, cutoff, hb_cutoff, hb_grace),
             ).fetchall()
             excluded = {str(x) for x in exclude_ids if x}
             victims = [str(r["id"]) for r in rows if str(r["id"]) not in excluded]
@@ -9000,16 +9393,120 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 return []
             now = time.time()
             marks = ",".join("?" for _ in victims)
-            # Re-apply the same staleness predicate under the write lock so a
-            # row that raced to activity between SELECT and UPDATE is spared.
+            # Re-apply the same predicates under the write lock so a
+            # row that raced to activity between SELECT and UPDATE is
+            # spared (and so a freshly registered heartbeat from a sibling
+            # that started during this transaction can still save the row).
             conn.execute(
                 f"UPDATE sessions SET ended_at = ?, end_reason = 'startup_orphan_reap'"
-                f" WHERE id IN ({marks}) AND ended_at IS NULL AND {staleness}",
-                (now, *victims, cutoff, cutoff),
+                f" WHERE id IN ({marks}) AND ended_at IS NULL"
+                f" AND {orphan_predicate}",
+                (now, *victims, cutoff, cutoff, hb_cutoff, hb_grace),
             )
             return victims
 
         return self._execute_write(_do) or []
+
+    # ── Cross-backend heartbeat API (#94895) ───────────────────────────
+    # Each serve / tui_gateway process registers a heartbeat row at startup
+    # and refreshes ``last_heartbeat`` periodically. The startup orphan
+    # sweep reads these rows to avoid reaping sessions owned by another
+    # still-live backend that just happens to be idle. Backends remove
+    # their own row on graceful shutdown; a row that survives a crash is
+    # reclaimed by the staleness sweep once ``last_heartbeat`` ages out.
+
+    def register_backend_heartbeat(
+        self,
+        *,
+        backend_id: str,
+        pid: int,
+        started_at: float,
+        last_heartbeat: Optional[float] = None,
+        profile: str = "",
+        host: str = "",
+    ) -> None:
+        """Upsert this backend's liveness row (#94895).
+
+        ``backend_id`` MUST be stable for the lifetime of the process
+        (e.g. ``f"{profile}@{host}:{pid}"``) so a respawn cannot accidentally
+        inherit the dead predecessor's heartbeat and protect stale rows.
+        ``started_at`` records when THIS process started (not the wall clock
+        at first refresh) so a long-lived backend whose previous run died
+        cannot be confused with a freshly-spawned sibling.
+        """
+        if not backend_id:
+            return
+        ts = time.time() if last_heartbeat is None else float(last_heartbeat)
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO gateway_heartbeats"
+                " (backend_id, pid, started_at, last_heartbeat, profile, host)"
+                " VALUES (?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(backend_id) DO UPDATE SET"
+                " pid = excluded.pid,"
+                " started_at = excluded.started_at,"
+                " last_heartbeat = excluded.last_heartbeat,"
+                " profile = excluded.profile,"
+                " host = excluded.host",
+                (str(backend_id), int(pid), float(started_at), ts,
+                 str(profile), str(host)),
+            )
+        self._execute_write(_do)
+
+    def clear_backend_heartbeat(self, backend_id: str) -> bool:
+        """Remove this backend's heartbeat row (#94895).
+
+        Called from ``atexit`` so a graceful shutdown doesn't leave a stale
+        row behind. A crashed backend's row is reclaimed later by
+        ``prune_stale_heartbeats``. Returns True if a row was removed.
+        """
+        if not backend_id:
+            return False
+        def _do(conn):
+            cur = conn.execute(
+                "DELETE FROM gateway_heartbeats WHERE backend_id = ?",
+                (str(backend_id),),
+            )
+            return cur.rowcount > 0
+        return bool(self._execute_write(_do))
+
+    def prune_stale_heartbeats(self, *, max_age_seconds: float) -> List[str]:
+        """Drop heartbeat rows whose ``last_heartbeat`` is older than the
+        staleness window. Returns the removed backend ids. Safe to call
+        from any process; only stale rows are touched.
+        """
+        if max_age_seconds <= 0:
+            return []
+        cutoff = time.time() - max_age_seconds
+        def _do(conn):
+            cur = conn.execute(
+                "DELETE FROM gateway_heartbeats WHERE last_heartbeat < ?"
+                " RETURNING backend_id",
+                (cutoff,),
+            )
+            return [str(r[0]) for r in cur.fetchall()]
+        return list(self._execute_write(_do) or [])
+
+    def list_backend_heartbeats(self) -> List[Dict[str, Any]]:
+        """Snapshot of every registered backend's heartbeat (for diagnostics
+        and tests). The fields mirror ``gateway_heartbeats`` exactly.
+        """
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT backend_id, pid, started_at, last_heartbeat,"
+                " profile, host FROM gateway_heartbeats"
+                " ORDER BY last_heartbeat DESC"
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            if isinstance(r, sqlite3.Row):
+                out.append({k: r[k] for k in r.keys()})
+            else:
+                out.append({
+                    "backend_id": r[0], "pid": r[1], "started_at": r[2],
+                    "last_heartbeat": r[3], "profile": r[4], "host": r[5],
+                })
+        return out
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
@@ -9095,6 +9592,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         TITLE_SOURCE_LLM: 1,
         TITLE_SOURCE_USER: 2,
     }
+
+    # Bot Mode's forever-chat registry: the session titled exactly this, on a
+    # bot's profile, IS the bot's canonical chat — resolved by exact-title
+    # lookup on every open (no session-id pointer exists). The title is the
+    # identity, which is why _set_session_title refuses user renames of a
+    # hidden row holding it (#92473).
+    CANONICAL_BOT_CHAT_TITLE = "Bot Chat"
 
     @classmethod
     def _title_rank(cls, source: Optional[str]) -> int:
@@ -9222,11 +9726,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         def _do(conn):
             current = conn.execute(
-                "SELECT title, title_source FROM sessions WHERE id = ?",
+                "SELECT title, title_source, hidden FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()
             if current is None:
                 return 0
+            # The canonical Bot Chat's NAME is its identity: Bot Mode resolves
+            # the forever-chat by exact-title lookup on every open, so renaming
+            # the row orphans the entire conversation — the next click mints an
+            # empty replacement and UNIQUE(title) then blocks ever renaming
+            # back (#92473). Refuse the rename at the single write path every
+            # surface funnels through (gateway session.title, /title, CLI
+            # rename, REST). Hidden is the discriminator: canonical chats are
+            # born hidden; an ordinary visible session a user happens to call
+            # "Bot Chat" stays freely renameable.
+            if (
+                is_user
+                and (current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE
+                and bool(current["hidden"])
+                and title != self.CANONICAL_BOT_CHAT_TITLE
+            ):
+                raise ValueError(
+                    "This is the bot's canonical Bot Chat — its name is its "
+                    "identity, and renaming it would orphan the conversation. "
+                    "To start fresh, create a new bot instead."
+                )
             if not is_user and current["title"] is not None:
                 if self._title_rank(current["title_source"]) >= new_rank:
                     return 0
@@ -9357,6 +9881,45 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return cursor.rowcount
 
         return self._execute_write(_do) > 0
+
+    def backfill_null_session_profiles(self, profile_name: str) -> int:
+        """One-shot owner backfill for legacy pre-ownership session rows.
+
+        Sessions created before the durable-ownership work (#95407 lineage)
+        carry ``profile_name = NULL``. On single-backend installs that was
+        harmless, but once a Desktop registers a second connection the
+        fail-closed owner ladder (which is correct for new sessions) can no
+        longer route those rows anywhere — every pre-campaign session becomes
+        unresumable after upgrade (#94724, field report).
+
+        This store belongs to exactly one profile — the profile whose
+        ``state.db`` this is — so stamping its own name onto rows that never
+        recorded one is a single-match backfill, not a guess. Rules mirror the
+        ``create_session`` COALESCE contract:
+
+        * only ``NULL``/empty ``profile_name`` rows are touched — a non-NULL
+          owner is NEVER overwritten;
+        * idempotent and one-shot-per-row: a second run matches zero rows.
+
+        Returns the number of rows stamped (0 when nothing was legacy).
+        """
+        stamp = (profile_name or "").strip()
+        if not stamp:
+            return 0
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE sessions
+                   SET profile_name = ?
+                 WHERE profile_name IS NULL OR TRIM(profile_name) = ''""",
+                (stamp,),
+            )
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
+
+        return int(self._execute_write(_do) or 0)
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
         """Archive or unarchive a session.
@@ -13107,16 +13670,39 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    #: Shared selector for :meth:`count_empty_sessions` and
+    #: :meth:`delete_empty_sessions` so the badge and the sweep agree.
+    #:
+    #: ``message_count`` tracks live (``active = 1``) rows only; rewind
+    #: (:meth:`replace_messages` w/ ``archive_dropped``) and in-place
+    #: compaction (:meth:`archive_and_compact`) reset it to 0 while keeping
+    #: dropped turns on disk as ``active = 0`` — the only recoverable copy
+    #: (#70516 / #80763 / #82756). The ``NOT EXISTS`` probe is the authority;
+    #: ``message_count = 0`` stays as a cheap prefilter. Same shape as every
+    #: other emptiness guard in this module. (#95868)
+    _EMPTY_SESSION_WHERE = (
+        "message_count = 0 "
+        "AND ended_at IS NOT NULL "
+        "AND archived = 0 "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM messages WHERE messages.session_id = sessions.id"
+        ")"
+    )
+
     def count_empty_sessions(self) -> int:
         """Return the count of empty, non-active, non-archived sessions.
 
-        "Empty" = ``message_count = 0`` AND the session has ended
+        "Empty" = the session holds no message rows at all AND has ended
         (``ended_at IS NOT NULL``) AND is not archived. The ``ended_at``
         guard matches the safety contract used by :meth:`prune_sessions`:
         only ended sessions are candidates for bulk deletion, so a freshly
         spawned session whose first message hasn't landed yet — or one
         held open by the live agent — is never sniped out from under
         the runtime.
+
+        Emptiness is decided by :data:`_EMPTY_SESSION_WHERE` — see that
+        constant for why the ``NOT EXISTS`` probe is needed instead of
+        trusting ``message_count`` alone.
 
         Backs the ``GET /api/sessions/empty/count`` endpoint that lets the
         web dashboard hide its "Delete empty" button when there's nothing
@@ -13125,10 +13711,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM sessions "
-                "WHERE message_count = 0 "
-                "AND ended_at IS NOT NULL "
-                "AND archived = 0"
+                f"SELECT COUNT(*) FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
             )
             return cursor.fetchone()[0]
 
@@ -13140,9 +13723,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Mirrors :meth:`prune_sessions`' transactional shape:
 
-        * Selects candidate IDs first (``message_count = 0`` AND
-          ``ended_at IS NOT NULL`` AND ``archived = 0``) so we never
-          touch a live session or one the user deliberately archived.
+        * Selects candidate IDs first (:data:`_EMPTY_SESSION_WHERE`) so we
+          never touch a live session, one the user deliberately archived,
+          or one whose transcript survives as soft-archived rows.
         * Orphans any child whose parent is in the kill list — children
           of an empty parent are kept and re-parented to ``NULL`` rather
           than cascade-deleted, matching ``delete_session`` /
@@ -13165,10 +13748,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         def _do(conn):
             cursor = conn.execute(
-                "SELECT id FROM sessions "
-                "WHERE message_count = 0 "
-                "AND ended_at IS NOT NULL "
-                "AND archived = 0"
+                f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
             )
             session_ids = {row["id"] for row in cursor.fetchall()}
 
@@ -13183,10 +13763,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
 
             for sid in session_ids:
-                # DELETE FROM messages is paranoia — by construction
-                # these rows have ``message_count = 0`` — but if a
-                # bookkeeping bug ever lets the counter drift below the
-                # real row count, we still leave a clean FK state.
+                # DELETE FROM messages is paranoia — the selector's
+                # ``NOT EXISTS`` probe already proved these sessions own no
+                # message rows — but a row inserted between the SELECT and
+                # this statement would otherwise be left dangling, so we
+                # still leave a clean FK state.
                 conn.execute(
                     "DELETE FROM messages WHERE session_id = ?", (sid,)
                 )

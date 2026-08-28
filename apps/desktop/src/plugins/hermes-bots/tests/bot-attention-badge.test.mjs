@@ -133,8 +133,11 @@ test('hooks: relay delivery and group member turns note/clear attention', () => 
   assert.match(drain, /\.\.\.\(reason \? \{ reason \} : \{\}\)/)
 
   // Group member turn boundary: failure notes under the member key; a real
-  // reply clears it.
-  assert.match(pluginSource, /noteBotAttention\(groupMemberKey\(member\), error\?\.message \|\| error\)/)
+  // reply clears it. Typed gateway reasons take precedence over text parsing.
+  assert.match(
+    pluginSource,
+    /noteBotAttention\(groupMemberKey\(member\), reason \|\| error\?\.message \|\| error\)/
+  )
   assert.match(pluginSource, /clearBotAttention\(groupMemberKey\(member\)\)/)
 })
 

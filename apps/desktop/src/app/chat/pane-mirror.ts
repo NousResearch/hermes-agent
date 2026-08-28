@@ -10,6 +10,7 @@ import type { ReadableAtom } from 'nanostores'
 import type { ReactElement, ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 
 import { registerPaneCloser, removeTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
+import type { MenuKit } from '@/components/ui/actions-menu'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import type { TileDock } from '@/store/session-states'
@@ -52,6 +53,8 @@ export interface PaneMirror<T> {
    *  Per tile so a mirror can offer it for some of its tabs and not others. */
   newTab?: (key: string) => (() => void) | undefined
   render: (key: string) => ReactNode
+  /** Extra rows at the top of the zone tab menu (see PaneChrome.tabMenuPrefix). */
+  tabMenuPrefix?: (key: string) => ((kit: MenuKit) => ReactNode) | undefined
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
   /** Override the tile's TAB drag (session drop language: stack/split/link).
@@ -113,6 +116,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
           tabDrag: cfg.tabDrag
             ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void) => cfg.tabDrag!(key, event, onTap)
             : undefined, // returns boolean (handled) — see PaneChrome.tabDrag
+          tabMenuPrefix: cfg.tabMenuPrefix?.(key),
           tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
         },
         render: () => cfg.render(key),

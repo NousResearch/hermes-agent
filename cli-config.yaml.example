@@ -17,6 +17,15 @@ database:
   # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints
   # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
+  #
+  # Durability level for every state.db connection: OFF, NORMAL, FULL, EXTRA
+  # (or 0-3). Unset leaves SQLite's default, which is baked in at compile time
+  # (SQLITE_DEFAULT_WAL_SYNCHRONOUS) and therefore differs between the bundled
+  # interpreter, a distro python3 and a Homebrew one. Set it if you need to
+  # know which one you are running rather than infer it. On macOS this is a
+  # floor, not a pin: values below FULL are refused because Darwin's fsync()
+  # does not guarantee write ordering, while EXTRA is honored normally.
+  # synchronous: FULL
 
 # =============================================================================
 # Runtime Limits
@@ -1214,6 +1223,10 @@ platform_toolsets:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
 #       # opt-in works even though Slack text tool_progress defaults to off.
 #       native_task_cards: false
+#       # Suppress automatic link-preview cards without removing clickable links.
+#       # Omit either key to preserve Slack's default for that preview type.
+#       unfurl_links: false
+#       unfurl_media: false
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
@@ -1504,6 +1517,15 @@ stt:
 code_execution:
   timeout: 300         # Max seconds per script before kill (default: 300 = 5 min)
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
+  # Local execution uses a persistent session kernel: variables, imports, and
+  # loaded data survive across execute_code calls in one conversation, so
+  # multi-step data work stops re-loading its inputs every call. Pass
+  # reset=true on a call to discard state; a timed-out/interrupted cell kills
+  # the kernel (next call starts fresh). Remote terminal backends currently
+  # run per-call (remote kernel host is tracked follow-up work). Security
+  # scrubbing, tool whitelist, and output redaction are identical either way.
+  # kernel_idle_timeout: 1800   # Reap kernels idle longer than this (seconds)
+  # max_session_kernels: 4      # Process-wide LRU cap on live kernels
 
 # =============================================================================
 # Subagent Delegation
@@ -1855,6 +1877,16 @@ updates:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+#   #
+#   # Reverse proxies connecting from another container or host are not
+#   # trusted by default. Add only the proxy's exact IP address, or a bounded
+#   # CIDR for a dedicated proxy network, so X-Forwarded-Proto and
+#   # X-Forwarded-For can be honored. Loopback is always trusted. Wildcards
+#   # and /0 networks are rejected.
+#   #
+#   #   trusted_proxies:
+#   #     - "172.20.0.5"
+#   #     # - "172.20.0.0/24"  # dedicated network, if the IP is dynamic
 #
 # -----------------------------------------------------------------------------
 # Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,

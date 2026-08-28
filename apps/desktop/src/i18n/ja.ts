@@ -411,6 +411,12 @@ export const ja = defineLocale({
       reactionsTitle: 'メッセージリアクション',
       reactionsDesc:
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
+      tipsTitle: 'アプリ内ヒント',
+      tipsDesc:
+        'アプリの一部を指す小さな吹き出し。待機中にときどき、また役に立つときは Hermes からも表示します。閉じたヒントは二度と表示されません。',
+      tipsReset: (count: number) => `閉じた${count}件のヒントを元に戻す`,
+      toursTitle: 'ガイドツアー',
+      toursDesc: '画面を暗くして各ステップを強調しながら、Hermes がアプリを案内します。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
       vibeHeartsTitle: 'バイブハート',
@@ -835,6 +841,10 @@ export const ja = defineLocale({
       plainTextStoredTitle: 'トークンは平文で保存されています',
       plainTextStoredDesc:
         'セキュアストレージが利用できないため、保存済みのトークンはこのマシンのアプリの接続設定ファイルに暗号化されずに保存されています。暗号化するには GNOME Keyring または KWallet をインストールまたは有効化してください。',
+      keychainEncryptionTitle: 'OS キーチェーンで保存済みのシークレットを暗号化',
+      keychainEncryptionDesc:
+        'デフォルトはオフです。オンにすると、ゲートウェイのトークンとサインイン資格情報がシステムのキーチェーン（Keychain Access、GNOME Keyring、Windows DPAPI）で暗号化されます。システムから許可やパスワードを求められる場合があります。オフの場合は、現在のユーザーのみが読める通常ファイルとして保存されます。',
+      keychainEncryptionFailed: 'シークレット暗号化の設定を変更できませんでした',
       testRemote: 'リモートをテスト',
       saveForRestart: '次回起動時のために保存',
       saveAndReconnect: '保存して再接続',
@@ -1642,7 +1652,11 @@ export const ja = defineLocale({
       message: count => `モデル設定を確認するまで、${count} 件のスケジュール済みジョブがスキップされます。`,
       detailMore: (names, remaining) => `${names}、ほか ${remaining} 件`,
       review: 'スケジュール済みジョブを確認',
-      saveFailed: 'Hermes はモデルの変更を保存しませんでした。'
+      saveFailed: 'Hermes はモデルの変更を保存しませんでした。',
+      confirmTitle: 'モデル選択の警告',
+      confirmDetail: 'このトレードオフを受け入れる場合のみ確認してください。',
+      confirmAction: '確認',
+      declined: 'モデル変更をキャンセルしました — データ学習ティアの警告を拒否しました。'
     },
     search: 'Cron ジョブを検索...',
     loading: 'Cron ジョブを読み込み中...',
@@ -2620,6 +2634,9 @@ export const ja = defineLocale({
     hide: '非表示',
     openPreview: 'プレビューを開く',
     openInBrowser: 'ブラウザで開く',
+    openInExternal: '外部で開く',
+    popIn: 'ポップイン',
+    popOut: 'ポップアウト',
     linkHint: '⌘/Ctrl+クリックでプレビューペイン',
     sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
     source: 'ソース',
@@ -3019,6 +3036,10 @@ export const ja = defineLocale({
     editFailed: '編集に失敗しました',
     editTurnUnavailable: 'このターンはサーバー履歴にありません（圧縮で削除された可能性があります）。',
     resumeFailed: '再開に失敗しました',
+    readOnlyTranscriptTitle: '読み取り専用で開きました',
+    readOnlyTranscriptBody:
+      'この古いチャットを所有するバックエンドがまだ接続されていないため、読み取り専用のトランスクリプトとして開きました。履歴は無事です。バックエンドが所有を認識するまで送信は無効です。',
+    readOnlyTranscriptSendBlocked: 'このチャットは読み取り専用トランスクリプトとして開いています。送信は無効です。',
     resumeStrandedTitle: 'このセッションを読み込めませんでした',
     resumeStrandedBody:
       'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
@@ -3038,6 +3059,7 @@ export const ja = defineLocale({
     cwdStagedMessage:
       'このアクティブなセッションへの cwd の変更を適用するにはデスクトップバックエンドを再起動してください。',
     modelSwitchFailed: 'モデルの切り替えに失敗しました',
+    hydrationSyncing: (profile: string) => `${profile} を同期中\u2026`,
     sessionExported: 'セッションをエクスポートしました',
     sessionExportFailed: 'セッションをエクスポートできませんでした',
     imageSaved: '画像を保存しました',
@@ -3063,6 +3085,52 @@ export const ja = defineLocale({
       systemNote: platform => `↻ ${platform} に引き継ぎました — いつでもここで再開できます。`,
       failed: error => `引き継ぎに失敗しました: ${error}`,
       timedOut: 'ゲートウェイの待機がタイムアウトしました。`hermes gateway` は起動していますか？'
+    }
+  },
+
+  tips: {
+    close: 'このヒントを今後表示しない',
+    items: {
+      'new-session': {
+        title: '新しく始める',
+        text: '新しいチャットは、専用のコンテキスト・ターミナル・作業ディレクトリを持ちます。'
+      },
+      skills: {
+        title: '一度教えれば覚えます',
+        text: 'スキルは手順書のフォルダで、必要な場面で Hermes が自分で読み込みます。'
+      },
+      messaging: {
+        title: 'デスクを離れても Hermes',
+        text: 'Telegram、Discord、Slack などに接続。同じエージェント、同じ記憶のままです。'
+      },
+      artifacts: {
+        title: 'Hermes が作ったものすべて',
+        text: '全セッションの画像・ファイル・リンクを一箇所にまとめています。'
+      },
+      cron: {
+        title: '自動で動く仕事',
+        text: 'プロンプトを毎時・毎晩、または cron 式で実行できます。'
+      },
+      'command-palette': {
+        title: 'すべてはこの一箇所から',
+        text: 'セッション、設定、スキル、コマンドはすべてパレットから呼び出せます。'
+      },
+      profiles: {
+        title: 'プロファイルは独立しています',
+        text: 'それぞれが独自のキー・メモリ・セッションを持つ、別の Hermes です。'
+      },
+      'composer-mentions': {
+        title: 'ファイルとコマンド',
+        text: '@ でファイルを会話に取り込み、/ でコマンドを実行できます。'
+      },
+      'model-switch': {
+        title: '会話の途中でモデルを変更',
+        text: 'モデル名はボタンです。作業の性質が変わったら切り替えてください。'
+      },
+      'right-pane': {
+        title: '作業用ペイン',
+        text: 'ファイル、ターミナル、レビュー、アプリ内ブラウザはサイドペインにまとまっています。'
+      }
     }
   },
 

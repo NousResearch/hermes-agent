@@ -33,6 +33,7 @@ import contextlib
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 import logging
 import os
 import uuid
@@ -251,6 +252,21 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
     """
     header = data[:64]
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        # Magic bytes alone are insufficient: native vision history is
+        # immutable, so reject corrupt PNGs before they can be embedded.
+        # Pillow is an optional dependency — when it is missing we fall back
+        # to header-only sniffing (the full-decode gate in
+        # _validate_raster_image_decodable is likewise skipped without PIL);
+        # only an actual failed verify() rejects the bytes.
+        try:
+            from PIL import Image
+        except ImportError:
+            return "image/png"
+        try:
+            with Image.open(BytesIO(data)) as image:
+                image.verify()
+        except Exception:
+            return None
         return "image/png"
     if header.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
@@ -377,6 +393,66 @@ def _normalize_to_supported_image(
         f"and could not be converted to PNG (install Pillow for raster "
         f"conversion). Convert it to PNG or JPEG and try again.",
     )
+
+
+# Full raster validation runs on untrusted images in a shared CPU executor.
+# Bound animated-image work by both iteration count and total decoded area so a
+# compact file cannot monopolize a worker with an effectively unbounded number
+# of frames. Images at or below both limits still have every frame decoded.
+_VISION_MAX_VALIDATED_FRAME_COUNT = 100
+_VISION_MAX_VALIDATED_AGGREGATE_PIXELS = 100_000_000
+
+
+def _validate_raster_image_decodable(image_path: Path) -> Optional[str]:
+    """Return an error when Pillow cannot completely decode every image frame.
+
+    Magic-byte MIME sniffing and ``Image.open`` only inspect container headers.
+    A timed-out download can therefore look like a supported PNG/JPEG/GIF/WebP
+    while its pixel stream is truncated. Native vision results are retained in
+    conversation history, so embedding those bytes poisons every later provider
+    request. Verify structure, then reopen and force every frame within the
+    validation resource limits to decode before the image can enter history.
+    """
+    try:
+        from PIL import Image as _PILImage
+        from PIL import ImageSequence as _PILImageSequence
+    except ImportError:
+        # Pillow is optional — without it we cannot decode-validate, so pass
+        # the image through unvalidated rather than rejecting everything.
+        return None
+    try:
+        with _PILImage.open(image_path) as image:
+            image.verify()
+        with _PILImage.open(image_path) as image:
+            validated_pixels = 0
+            for frame_number, frame in enumerate(
+                _PILImageSequence.Iterator(image), start=1
+            ):
+                if frame_number > _VISION_MAX_VALIDATED_FRAME_COUNT:
+                    return (
+                        "Image validation rejected animation: "
+                        f"frame {frame_number} exceeds the maximum "
+                        f"{_VISION_MAX_VALIDATED_FRAME_COUNT} validated frames."
+                    )
+
+                frame_pixels = frame.width * frame.height
+                next_validated_pixels = validated_pixels + frame_pixels
+                if (
+                    next_validated_pixels
+                    > _VISION_MAX_VALIDATED_AGGREGATE_PIXELS
+                ):
+                    return (
+                        "Image validation rejected animation: aggregate decoded "
+                        f"pixel count would reach {next_validated_pixels} at frame "
+                        f"{frame_number}, exceeding the maximum "
+                        f"{_VISION_MAX_VALIDATED_AGGREGATE_PIXELS}."
+                    )
+
+                frame.load()
+                validated_pixels = next_validated_pixels
+    except Exception as exc:
+        return f"Image could not be fully decoded: {exc}"
+    return None
 
 
 def _is_retryable_download_error(error: Exception) -> bool:
@@ -1225,6 +1301,12 @@ async def _vision_analyze_native(
             temp_image_path = normalized_path
             should_cleanup = True
             image_size_bytes = temp_image_path.stat().st_size
+
+        decode_error = await _run_encode_on_cpu_executor(
+            _validate_raster_image_decodable, temp_image_path,
+        )
+        if decode_error:
+            return tool_error(decode_error, success=False)
 
         # Optional region zoom: crop BEFORE the downscale/embed-cap pipeline
         # so the cropped area gets the full resolution budget.

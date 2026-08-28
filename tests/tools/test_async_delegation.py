@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -63,6 +64,61 @@ def _drain_for(delegation_id, timeout=5.0):
             continue
         time.sleep(0.02)
     return None
+
+
+def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
+    """The delegation ledger is a guest in state.db, not its mode owner."""
+    conn = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+
+        ad._initialize_schema(conn)
+
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='async_delegations'"
+        ).fetchone() == ("async_delegations",)
+    finally:
+        conn.close()
+
+
+def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
+    """Schema initialization must not replace an existing WAL mode."""
+    conn = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+
+        ad._initialize_schema(conn)
+
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='async_delegations'"
+        ).fetchone() == ("async_delegations",)
+    finally:
+        conn.close()
+
+
+@pytest.mark.macos_only
+def test_connect_preserves_wal_and_applies_macos_durability_barriers(
+    tmp_path, monkeypatch
+):
+    """Each ledger connection must carry the macOS write barriers."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seed = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    finally:
+        seed.close()
+
+    conn = ad._connect()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+        assert conn.execute("PRAGMA checkpoint_fullfsync").fetchone()[0] == 1
+    finally:
+        conn.close()
 
 
 def test_active_for_session_counts_every_live_delegation_state():

@@ -149,6 +149,19 @@ the manifest fails closed inside cua-driver. A missing or unreadable manifest
 fails loudly at session start rather than silently downgrading. Session YOLO
 still overrides bounded for that one session.
 
+On macOS, private-session daemons launch through the installed
+`CuaDriver.app` bundle (so permission grants attribute to the driver's own
+identity instead of resetting with every Hermes build), and Hermes verifies
+the bundle's code signature — exact `com.trycua.driver` identifier and the
+official signing team — before launching it. If you build cua-driver from
+source (unsigned), opt in explicitly:
+
+```yaml
+# config.yaml
+computer_use:
+  allow_unsigned_driver: true   # local driver development only
+```
+
 Each MCP transport owns a private lifecycle session inside its runtime. A
 public session name is only a label for cursor identity and session-scoped
 state. It does not select, share, or keep a runtime alive. Turning `/yolo` off,
@@ -216,6 +229,15 @@ Hermes run declares a public cua-driver **session name** (something like
 `hermes-3a7b9c14d2e8`). The name labels cursor identity and related state, so
 concurrent runs and subagents get distinct cursors. The MCP transport owns the
 private lifecycle session inside the runtime; the public name does not.
+
+The overlay cursor is cosmetic — captures, clicks, and typing all work
+without it. Hermes disables it automatically where it is a known failure
+mode: macOS (idle CPU burn), headless Linux / WSL2 / containers, and
+**Linux X11 desktops** (the overlay is a fullscreen always-on-top window
+that can get stuck over every workspace after an unclean session end,
+wedging desktop input). Linux Wayland and Windows keep the overlay. Set
+`computer_use.no_overlay: false` in `config.yaml` to force the cursor on
+(or `true` to force it off) on any platform.
 
 Tune the cursor with `cua-driver`'s CLI flags or the runtime
 `set_agent_cursor_style` MCP tool — see

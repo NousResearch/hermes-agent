@@ -613,6 +613,12 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool) -> str
         dm_file,
         *argv,
     ]
+    if sys.platform == "win32":
+        # The tracked local backend uses Git Bash on native Windows. Forward
+        # slashes preserve native drive paths while remaining executable by
+        # that shell; backslash-form paths are parsed as command names and die
+        # with exit 127 before this runner starts.
+        runner_argv = [part.replace("\\", "/") for part in runner_argv]
     return shlex.join(runner_argv)
 
 
@@ -664,6 +670,8 @@ def _spawn_delivery(
             background=True,
             notify_on_complete=True,
             task_id=task_id,
+            workdir=str(Path(__file__).resolve().parent.parent),
+            _host_local=True,
         )
         try:
             parsed = json.loads(raw)

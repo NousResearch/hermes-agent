@@ -78,8 +78,16 @@ class UpdatePlan:
         return payload
 
 
-def _detect_supervisor_for_pid(pid: int, service_pids: set) -> str:
+def _detect_supervisor_for_pid(
+    pid: int, service_pids: set, windows_service_pids: set | None = None
+) -> str:
     """Classify how a live gateway PID is supervised."""
+    if windows_service_pids and pid in windows_service_pids:
+        # SCM-supervised Windows gateway (WinSW/NSSM/sc.exe create): the
+        # update pause machinery stops the SERVICE via sc.exe instead of
+        # killing the child, so #91277 Phase 2 reconciliation must plan it
+        # under its own mechanism id, not "manual".
+        return "windows-service"
     if pid in service_pids:
         try:
             from hermes_cli.gateway import is_macos, supports_systemd_services
@@ -109,6 +117,10 @@ def _restart_mechanism(supervisor: str, profile: str) -> str:
         return "launchd"
     if supervisor == "desktop":
         return "desktop"
+    if supervisor == "windows-service":
+        return "windows-service"
+    if supervisor == "manual-serve":
+        return "respawn-argv"
     return "manual"
 
 
@@ -120,6 +132,10 @@ def describe_restart_mechanism(mechanism: str, profile: str) -> str:
         return "launchctl kickstart -k (drain-first, per-label domain)"
     if mechanism == "desktop":
         return "Desktop app respawns its serve backend"
+    if mechanism == "windows-service":
+        return "sc.exe stop before venv mutation, sc.exe start after update"
+    if mechanism == "respawn-argv":
+        return "stop before code swap, relaunch with recorded launch args"
     if profile != "default":
         return f"hermes -p {profile} gateway restart"
     return "hermes gateway restart"
@@ -148,6 +164,21 @@ def collect_runtime_inventory() -> UpdatePlan:
         if managed:
             plan.install_method = managed
         plan.updatable_in_place = method in ("git", "unknown") and not managed
+        # Baked image provenance (#91277 Phase 3): when the image marker is
+        # present it is authoritative — a bind-mounted checkout inside a
+        # container can look like `git` to the heuristics while the running
+        # filesystem is actually an immutable image. Fail-closed: an invalid
+        # marker still flips the plan to not-updatable.
+        try:
+            from hermes_cli.image_provenance import read_image_provenance
+
+            provenance = read_image_provenance()
+            if provenance is not None:
+                plan.updatable_in_place = False
+                if provenance.valid and provenance.manager:
+                    plan.install_method = provenance.manager
+        except Exception as exc:
+            logger.debug("Image provenance probe failed: %s", exc)
         plan.update_mechanism = recommended_update_command_for_method(method)
     except Exception as exc:
         logger.debug("Install-method probe failed: %s", exc)
@@ -196,6 +227,23 @@ def collect_runtime_inventory() -> UpdatePlan:
     except Exception as exc:
         logger.debug("Service-PID probe failed: %s", exc)
 
+    # --- SCM-supervised gateway PIDs (Windows) ------------------------------
+    # find_windows_gateway_services() maps validated gateway PIDs through
+    # process ancestry to running SCM service PIDs (no-op off Windows). The
+    # update's pause phase stops these via `sc.exe stop` / restarts via
+    # `sc.exe start`, so the plan must carry the matching mechanism id for
+    # the #91277 Phase 2 reconciliation and the fleet check.
+    windows_service_pids: set = set()
+    try:
+        from hermes_cli.gateway import find_windows_gateway_services
+
+        windows_service_pids = {
+            int(service.gateway_pid)
+            for service in find_windows_gateway_services()
+        }
+    except Exception as exc:
+        logger.debug("Windows SCM service-ownership probe failed: %s", exc)
+
     # --- per-profile gateways (PID files + runtime status stamps) ----------
     seen_pids: set[int] = set()
     try:
@@ -228,7 +276,9 @@ def collect_runtime_inventory() -> UpdatePlan:
                     supervisor = (
                         str(declared)
                         if declared
-                        else _detect_supervisor_for_pid(sock_pid, service_pids)
+                        else _detect_supervisor_for_pid(
+                            sock_pid, service_pids, windows_service_pids
+                        )
                     )
                     sock_sha = identity.get("code_sha")
                     plan.runtimes.append(
@@ -256,7 +306,9 @@ def collect_runtime_inventory() -> UpdatePlan:
             if pid is None or not _pid_exists(pid):
                 continue
             seen_pids.add(pid)
-            supervisor = _detect_supervisor_for_pid(pid, service_pids)
+            supervisor = _detect_supervisor_for_pid(
+                pid, service_pids, windows_service_pids
+            )
             plan.runtimes.append(
                 RuntimeRecord(
                     kind="gateway",
@@ -279,7 +331,9 @@ def collect_runtime_inventory() -> UpdatePlan:
             if proc.pid in seen_pids:
                 continue
             seen_pids.add(proc.pid)
-            supervisor = _detect_supervisor_for_pid(proc.pid, service_pids)
+            supervisor = _detect_supervisor_for_pid(
+                proc.pid, service_pids, windows_service_pids
+            )
             plan.runtimes.append(
                 RuntimeRecord(
                     kind="gateway",
@@ -291,6 +345,46 @@ def collect_runtime_inventory() -> UpdatePlan:
             )
     except Exception as exc:
         logger.debug("PID-file gateway inventory failed: %s", exc)
+
+    # Serve/dashboard backends from the spawn ledger (#63206). These are the
+    # runtimes the gateway collectors above can never see: a manually
+    # launched `hermes serve --host <ip>` for a remote Desktop, or a
+    # long-lived `hermes dashboard`. Every serve/dashboard registers itself
+    # (with structured host/port/profile since #63206) at startup, and
+    # ledger_entries() live-verifies (pid, create_time) so PID reuse never
+    # fabricates a row. Desktop-supervised backends are classified by their
+    # recorded spawner still being alive — those restart via the Desktop's
+    # own respawn, not ours.
+    try:
+        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+
+        for entry in ledger_entries():
+            purpose = entry.get("purpose")
+            if purpose not in ("serve", "dashboard"):
+                continue
+            pid = entry.get("pid")
+            if not isinstance(pid, int) or pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            has_live_spawner = spawner_is_dead(entry) is False
+            supervisor = "desktop" if has_live_spawner else "manual-serve"
+            profile = str(entry.get("profile") or "default")
+            plan.runtimes.append(
+                RuntimeRecord(
+                    kind=str(purpose),
+                    profile=profile,
+                    pid=pid,
+                    supervisor=supervisor,
+                    restart_via=_restart_mechanism(supervisor, profile),
+                    detail={
+                        "argv": entry.get("argv") or "",
+                        "host": entry.get("host") or "",
+                        "port": entry.get("port"),
+                    },
+                )
+            )
+    except Exception as exc:
+        logger.debug("Serve/dashboard ledger inventory failed: %s", exc)
 
     return plan
 

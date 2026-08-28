@@ -3703,6 +3703,50 @@ class BasePlatformAdapter(ABC):
         release_scoped_lock(self._platform_lock_scope, identity)
         self._platform_lock_identity = None
 
+    def _wire_plugin_handlers(self, native: Any = None) -> None:
+        """Invoke plugin-registered native handler factories for this platform.
+
+        Plugins call ``ctx.register_platform_handler(<platform>, factory)``
+        at register() time; adapters call this from ``connect()`` once
+        their native client object exists (and, where dispatch order
+        matters, before their own handlers register). Each factory is
+        invoked with ``(native, adapter)``.
+
+        Args:
+            native: The platform's native client/app object to hand to
+                factories (PTB ``Application``, ``commands.Bot``,
+                ``AsyncApp``, aiohttp ``web.Application``, ...). Pass
+                ``None`` for adapters with no separate native object —
+                factories then work against the adapter handle alone.
+
+        Each factory is isolated so a misbehaving plugin can't prevent
+        the platform from connecting.
+        """
+        platform_name = getattr(self.platform, "value", str(self.platform))
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            factories = get_plugin_manager().get_platform_handler_factories(
+                platform_name
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "[%s] Could not load plugin handler factories: %s",
+                self.name, e,
+            )
+            return
+        for factory, plugin_name in factories:
+            try:
+                factory(native, self)
+                logger.info(
+                    "[%s] Wired native handlers from plugin '%s'",
+                    self.name, plugin_name,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] Plugin '%s' handler factory raised: %s",
+                    self.name, plugin_name, exc, exc_info=True,
+                )
+
     @property
     def name(self) -> str:
         """Human-readable name for this adapter."""
@@ -6684,6 +6728,9 @@ class BasePlatformAdapter(ABC):
                                     chat_id=event.source.chat_id,
                                     thread_id=getattr(event.source, "thread_id", None),
                                     content=text_content,
+                                    adapter_profile=getattr(
+                                        delivery_adapter, "_owner_profile", None
+                                    ),
                                 )
                                 await asyncio.to_thread(mark_attempting, _obligation_id)
                         except Exception:
@@ -6706,11 +6753,41 @@ class BasePlatformAdapter(ABC):
                             if getattr(result, "success", False):
                                 await asyncio.to_thread(mark_delivered, _obligation_id)
                             else:
+                                _delivery_error = str(
+                                    getattr(result, "error", "") or ""
+                                )
                                 await asyncio.to_thread(
                                     mark_failed,
                                     _obligation_id,
-                                    str(getattr(result, "error", "") or ""),
+                                    _delivery_error,
                                 )
+                                # A replacement can finish reconnecting before
+                                # this in-flight failure reaches mark_failed. In
+                                # that ordering the watcher's sweep found no row.
+                                # Signal a second transactional sweep only when a
+                                # new live adapter is already installed; atomic
+                                # claiming makes concurrent signals idempotent.
+                                if _delivery_error == "send_path_degraded":
+                                    _live_adapter = self._final_delivery_adapter(
+                                        event.source
+                                    )
+                                    _runtime_redeliver = getattr(
+                                        getattr(self, "gateway_runner", None),
+                                        "_redeliver_failed_obligations_for_platform",
+                                        None,
+                                    )
+                                    if (
+                                        _live_adapter is not delivery_adapter
+                                        and callable(_runtime_redeliver)
+                                    ):
+                                        await _runtime_redeliver(
+                                            event.source.platform,
+                                            profile=getattr(
+                                                delivery_adapter,
+                                                "_owner_profile",
+                                                None,
+                                            ),
+                                        )
                         except Exception:
                             logger.debug(
                                 "delivery ledger update failed", exc_info=True

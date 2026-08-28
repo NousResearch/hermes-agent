@@ -162,10 +162,105 @@ def extract_document_bytes(data: bytes, path: str) -> str:
                 pass
 
 
+def _anydoc_missing_error(path: str) -> str:
+    """Teaching error for anydoc-gated formats when the converter is absent.
+
+    Response-time hint (#95681 pattern): the schema no longer lists the
+    anydoc-gated formats or the availability caveat — a session that never
+    touches a .doc/.odt/.epub never pays for the explanation, and one that
+    does gets the full story here, with the fix.
+    """
+    return (
+        f"Cannot convert {path!r}: this format needs the optional anydoc "
+        "converter, which is not installed (install blocked or first "
+        "attempt failed; retried every 5 minutes). Fix: `pip install "
+        "firecrawl-anydoc` in Hermes's environment, or convert the file "
+        "yourself via terminal (e.g. libreoffice --headless --convert-to "
+        "txt)."
+    )
+
+
+def _hosted_ocr_config() -> tuple:
+    """Resolve hosted-OCR settings: (enabled, api_key, api_url).
+
+    Maintainer decision: the ONLY route is a direct ``FIRECRAWL_API_KEY``
+    (anydoc defaults api_url to https://api.firecrawl.dev). The Nous
+    managed gateway is NOT used — its Parse proxy was live-probed broken
+    (uniform HTTP 500, 2026-08-28) while scrape/search worked; revisit
+    when the gateway grows Parse support. ``file_tools.hosted_ocr``:
+    false disables even with a key; true/unset → enabled iff key
+    present. Never raises.
+    """
+    api_key = os.environ.get("FIRECRAWL_API_KEY") or None
+    enabled = api_key is not None
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        section = cfg.get("file_tools") if isinstance(cfg, dict) else None
+        if isinstance(section, dict) and section.get("hosted_ocr") is False:
+            enabled = False
+    except Exception:  # noqa: BLE001
+        pass
+    return enabled, api_key, None
+
+
+def hosted_ocr_available() -> bool:
+    """Public probe for read_file's schema line: is hosted OCR unlocked?
+
+    Maintainer decision: ONE gate — a direct ``FIRECRAWL_API_KEY`` in the
+    environment. Nothing else unlocks the "PDF (scanned or text)" wording
+    (not the Nous gateway — Parse proxy live-probed broken 2026-08-28 —
+    and not config assertions). ``file_tools.hosted_ocr: false`` still
+    disables. Env probe only — no network at schema-build time; a key
+    that fails at conversion time lands in the NEEDS-OCR warning.
+    """
+    try:
+        if not os.environ.get("FIRECRAWL_API_KEY"):
+            return False
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            cfg = load_config_readonly()
+            section = cfg.get("file_tools") if isinstance(cfg, dict) else None
+            if isinstance(section, dict) and section.get("hosted_ocr") is False:
+                return False
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _needs_ocr_warning(path: str, pages, hosted_error: str = "") -> str:
+    """Typed replacement for the heuristic coverage note on full-OCR PDFs.
+
+    Fired when anydoc raises NeedsOcrError and hosted OCR is disabled,
+    unavailable, or failed. Maintainer-directed shape: hint at CHECKING
+    for an OCR skill (never name one — none is guaranteed to exist), and
+    never advertise the hosted_ocr config knob — when hosted fails or is
+    absent, a skill or ignoring the gap are the paths that exist.
+    """
+    page_list = ", ".join(str(p) for p in pages) if pages else "unknown"
+    msg = (
+        f"[NEEDS OCR: pages {page_list} of this PDF are scanned images "
+        "with no text layer — their content is MISSING below. "
+    )
+    if hosted_error:
+        msg += f"Hosted OCR was attempted and failed ({hosted_error}). "
+    msg += (
+        "If the missing pages matter: render just those pages with "
+        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> '{path}' /tmp/page` "
+        "and inspect via vision_analyze, or check whether an OCR skill is "
+        "available (skills_list)."
+    )
+    return msg + "]\n"
+
+
 def _extract_anydoc(path: str) -> str:
     mod = _anydoc()
     if mod is None:
-        raise ExtractionError(f"Unsupported document type: {path!r}")
+        raise ExtractionError(_anydoc_missing_error(path))
     try:
         size = os.path.getsize(path)
     except OSError as exc:
@@ -174,11 +269,32 @@ def _extract_anydoc(path: str) -> str:
         raise ExtractionError(
             f"Document too large to convert ({size:,} bytes, limit is {MAX_ANYDOC_BYTES:,})"
         )
+    needs_ocr = getattr(mod, "NeedsOcrError", None)
     try:
         text = mod.to_markdown(path)
     except OSError as exc:
         raise ExtractionError(str(exc)) from exc
     except Exception as exc:
+        if needs_ocr is not None and isinstance(exc, needs_ocr):
+            # Typed scanned-pages signal (anydoc >= 0.2). Try hosted OCR
+            # when a Firecrawl route exists; otherwise teach recovery.
+            pages = list(getattr(exc, "pages", []) or [])
+            enabled, api_key, api_url = _hosted_ocr_config()
+            hosted_error = ""
+            if enabled:
+                try:
+                    kwargs = {"ocr": "hosted"}
+                    if api_key:
+                        kwargs["api_key"] = api_key
+                    if api_url:
+                        kwargs["api_url"] = api_url
+                    text = mod.to_markdown(path, **kwargs)
+                    return text.rstrip("\n") + "\n"
+                except Exception as hosted_exc:  # noqa: BLE001
+                    hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
+            # No route / disabled / hosted failed: whole doc is scans —
+            # nothing to extract, so the warning IS the result.
+            return _needs_ocr_warning(path, pages, hosted_error)
         # anydoc raises one ConvertError subclass per failure mode
         # (Unsupported, Malformed, Encrypted, ResourceLimit, MissingPart).
         # Any of them means "no meaningful text": fall back to the normal
@@ -192,6 +308,9 @@ def _extract_anydoc(path: str) -> str:
         if note:
             # Prepend: read_file paginates the extraction, so a footer on a
             # long document would sit on a page the model may never fetch.
+            # This heuristic note survives for PARTIAL coverage gaps —
+            # documents with a text layer plus some scanned pages, which
+            # convert without raising NeedsOcrError.
             text = note + text
     return text
 
@@ -335,7 +454,7 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
 def _extract_anydoc_bytes(data: bytes, path: str) -> str:
     mod = _anydoc()
     if mod is None:
-        raise ExtractionError(f"Unsupported document type: {path!r}")
+        raise ExtractionError(_anydoc_missing_error(path))
     if len(data) > MAX_ANYDOC_BYTES:
         raise ExtractionError(
             f"Document too large to convert ({len(data):,} bytes, limit is {MAX_ANYDOC_BYTES:,})"

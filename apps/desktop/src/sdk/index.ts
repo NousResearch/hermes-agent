@@ -41,7 +41,7 @@ import {
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
-import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
+import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -57,6 +57,7 @@ import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
+  $hydrationSyncProfile,
   $profiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
@@ -89,10 +90,13 @@ import {
   $focusedSessionState,
   $focusedStoredSessionId,
   $sessionStates,
-  $sessionTiles
+  $sessionTiles,
+  dropTilesForProfile,
+  focusWorkspaceOwnerSessionTile,
+  sessionTileDelegate
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
-import type { UsageStats } from '@/types/hermes'
+import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
 
@@ -310,12 +314,26 @@ const $activeConnectionId = computed($connection, connection => {
   return connection.mode === 'local' ? 'local' : null
 })
 
-const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
+/** Ordinary session opens fail fast when their gateway or socket is dead. */
+export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
+/** Cold Bot profiles get a larger per-attempt budget to start their backend
+ *  and paint durable history. Bot Mode opts into one retry, so its effective
+ *  ceiling is two bounded attempts rather than an unbounded wait. */
+export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
 let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
   expectHistory?: boolean
+  /** Always request a sequenced session.resume after the open, even when the
+   *  surface already looks healthy. The healthy check trusts any non-empty
+   *  cached transcript, so an explicit bot-switch re-open can paint a STALE
+   *  snapshot kept by the session-states cache and skip the refresh entirely
+   *  (#93604 — Bot Chat shows old messages until app restart). Resume is
+   *  cheap and idempotent (the route-resume effect consumes redundant
+   *  requests as no-ops), so callers who know the user explicitly navigated
+   *  here set this to guarantee freshness. Only honored with awaitHydration. */
+  forceResume?: boolean
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
@@ -335,6 +353,24 @@ export interface PluginOpenSessionOptions {
 export interface PluginNewChatOptions {
   workspaceMode?: WorkspaceMode
   workspaceOwnerKey?: string
+}
+
+// Raise the "Syncing…" affordance for a paint-first wake (#89843) and tear it
+// down as soon as the active-profile gate catches up. The listener clears ONLY
+// its own profile's badge: a newer wake may have replaced the badge with a
+// different profile, and the stale listener must not wipe the winner's.
+function beginHydrationBackgroundSync(profile: string): void {
+  $hydrationSyncProfile.set(profile)
+
+  const unlisten = $activeGatewayProfile.listen(next => {
+    if (normalizeProfileKey(next) === profile) {
+      if ($hydrationSyncProfile.get() === profile) {
+        $hydrationSyncProfile.set(null)
+      }
+
+      unlisten()
+    }
+  })
 }
 
 function waitForFocusedSessionHydration({
@@ -423,8 +459,33 @@ function waitForFocusedSessionHydration({
       // surface is real rather than a stuck loader.
       const hydrated = expectHistory ? historyPainted : runtimeReady
 
-      if (profileMatches && (mainMatches || tileMatches) && hydrated) {
-        finish()
+      if ((mainMatches || tileMatches) && hydrated) {
+        if (profileMatches) {
+          finish()
+
+          return
+        }
+
+        // Paint-first completion on an unsatisfiable profile gate (#89843).
+        // On a shared-remote connection every profile is legitimately served
+        // through the primary socket, so $activeGatewayProfile can NEVER
+        // equal the bot's profile — the old gate held a fully painted
+        // transcript hostage for the whole 20s budget and then stranded the
+        // pane. When the stored history is already painted on exactly this
+        // session, that content IS the proof the surface is real: resolve
+        // now, raise the subtle "Syncing…" affordance, and let the profile
+        // gate catch up in the background.
+        //
+        // Fail closed everywhere the content is NOT its own proof: a
+        // superseded generation already rejected above (conflicting
+        // concurrent hydration never resolves paint-first), and an
+        // expected-EMPTY chat keeps waiting for the full gate — with no
+        // transcript to paint, a bound runtime on an unmatched profile is
+        // not evidence of a real surface.
+        if (expectHistory && historyPainted) {
+          beginHydrationBackgroundSync(profile)
+          finish()
+        }
       }
     }
 
@@ -617,6 +678,16 @@ export const host = {
     }
 
     const targetProfile = route?.targetProfile || name
+    // A name-only call is ambient, not local: Bot Mode's active SSH roster
+    // rows deliberately use the ambient gateway door and therefore carry no
+    // explicit owner route. Preserve the active registry connection so the
+    // profile teardown and DELETE both land on the VPS instead of retiring the
+    // unrelated local pool and leaving the warmed remote backend to recreate
+    // the deleted profile.
+    const ambientConnectionId = route ? null : String(activeGatewayConnectionId() || '').trim()
+
+    const ambientRemoteConnectionId =
+      ambientConnectionId && ambientConnectionId !== 'local' ? ambientConnectionId : null
 
     if (!name) {
       throw new Error('deleteProfile: profile name required')
@@ -637,11 +708,27 @@ export const host = {
     // A hover-warmed Bot Mode row owns a retained renderer socket. Retire it
     // before Electron stops the profile backend so the socket closure cannot
     // schedule a reconnect that resurrects the deleted profile.
-    if (!route || route.mode === 'local') {
+    if (route?.mode === 'local' || (!route && !ambientRemoteConnectionId)) {
       retireLocalProfileGateways(targetProfile)
     }
 
-    await deleteProfile(targetProfile, route ? { connectionId: route.connectionId, profile: route.profile } : undefined)
+    await deleteProfile(
+      targetProfile,
+      route
+        ? { connectionId: route.connectionId, profile: route.profile }
+        : ambientRemoteConnectionId
+          ? { connectionId: ambientRemoteConnectionId, profile: name }
+          : undefined
+    )
+
+    // The profile is gone. Drop its persisted tiles now — a leftover tile
+    // restores on relaunch and re-creates the deleted profile (hermes-agent#94235).
+    dropTilesForProfile(
+      route ? route.profile : name,
+      route
+        ? { connectionId: route.connectionId, profile: route.profile, targetProfile: route.targetProfile }
+        : undefined
+    )
 
     // The profile rail paints from the shared $profiles cache; without a
     // refresh the deleted profile's badge survives and clicking it starts a
@@ -719,6 +806,10 @@ export const host = {
    *  also scope chrome onto that profile and collapse the sidebar. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
+
+    // A new wake owns the syncing affordance — a lingering badge from an
+    // earlier paint-first wake must not survive into this one.
+    $hydrationSyncProfile.set(null)
     const explicitRoute = options.route ? { ...options.route } : null
     const profile = (explicitRoute?.profile ?? options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
@@ -893,8 +984,30 @@ export const host = {
             Boolean($activeSessionId.get()) &&
             (!expectHistory || $messages.get().length > 0)
 
-          if (options.awaitHydration && !surfaceHealthy) {
-            requestSessionResume(storedSessionId, ownerRoute || undefined)
+          // surfaceHealthy trusts ANY non-empty cached transcript, so it
+          // cannot distinguish a fresh transcript from a stale snapshot the
+          // session-states cache kept across a bot switch (#93604). Callers
+          // that represent an explicit user navigation pass forceResume to
+          // skip the heuristic entirely; the resume is idempotent either way.
+          //
+          // Bot Chat opens as a tab/tile. requestSessionResume is consumed
+          // only when the MAIN route is that session, so a roster reopen of
+          // an already-mounted tile would paint the idle snapshot and never
+          // pull messages that arrived while the panel WS was down (#96183).
+          // Refresh the tile transcript in place instead.
+          if (options.awaitHydration && (options.forceResume || !surfaceHealthy)) {
+            const existingTile = $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId)
+            const tileDelegate = existingTile ? sessionTileDelegate() : null
+
+            if (tileDelegate) {
+              try {
+                await tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true })
+              } catch {
+                requestSessionResume(storedSessionId, ownerRoute || undefined)
+              }
+            } else {
+              requestSessionResume(storedSessionId, ownerRoute || undefined)
+            }
           }
 
           if (options.awaitHydration) {
@@ -1083,6 +1196,15 @@ export const host = {
     window.location.hash = '#/'
   },
 
+  /** Front the tab a Bot Mode owner already has open — the tile that owner's
+   *  zone last had active, else its most recent — and return that stored id;
+   *  `null` when the owner has nothing open. A roster click asks this before
+   *  resolving the canonical chat, so the tabs the user left (and the ones
+   *  they closed) are respected. Presentation only: no gateway activation,
+   *  no session create. Feature-detect on older desktops. */
+  focusOpenWorkspaceSession: (workspaceOwnerKey: string): null | string =>
+    focusWorkspaceOwnerSessionTile(workspaceOwnerKey),
+
   /** Reactive on-screen visibility of a contributed pane: true while it is in
    *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding
    *  its zone's active tab slot (a lone pane in its own zone counts). The
@@ -1165,6 +1287,65 @@ export const host = {
     }
 
     return retainGatewayForAgent(null, route.trim() || 'default')
+  },
+
+  /** Read persisted sessions from a profile's owning source without dialing
+   *  that profile's gateway. The source primary opens state.db directly. */
+  listPersistedSessions: async (
+    route: PluginProfileRoute | null,
+    options: { profile: string; limit?: number }
+  ): Promise<PaginatedSessions> => {
+    if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
+      throw new Error('Profile route must include connectionId, profile, and targetProfile')
+    }
+
+    const profile = options.profile.trim()
+
+    if (!profile) {
+      throw new Error('Persisted session reads require a profile')
+    }
+
+    const limit = Math.min(500, Math.max(0, options.limit ?? 200))
+
+    const query = new URLSearchParams({
+      limit: String(limit),
+      offset: '0',
+      min_messages: '0',
+      archived: 'exclude',
+      order: 'created',
+      profile
+    })
+
+    return hermesApi<PaginatedSessions>({
+      ...(route ? { connectionId: route.connectionId } : {}),
+      path: `/api/profiles/sessions?${query.toString()}`,
+      timeoutMs: 60_000
+    })
+  },
+
+  /** Mutate the durable hidden flag through the source primary. Keeping the
+   *  owner profile in the body (not request.profile) prevents Electron from
+   *  starting a profile backend merely to reconcile persisted visibility. */
+  setPersistedSessionHidden: async (
+    route: PluginProfileRoute | null,
+    options: { sessionId: string; profile: string; hidden: boolean }
+  ): Promise<{ ok: boolean; hidden: boolean }> => {
+    if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
+      throw new Error('Profile route must include connectionId, profile, and targetProfile')
+    }
+
+    const profile = options.profile.trim()
+
+    if (!profile || !options.sessionId.trim()) {
+      throw new Error('Persisted session updates require a profile and session id')
+    }
+
+    return hermesApi<{ ok: boolean; hidden: boolean }>({
+      ...(route ? { connectionId: route.connectionId } : {}),
+      path: `/api/sessions/${encodeURIComponent(options.sessionId)}`,
+      method: 'PATCH',
+      body: { hidden: options.hidden, profile }
+    })
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
@@ -1345,6 +1526,16 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@/lib/format'
+/** THE confirm flow for guarded model switches — when a gateway model-switch
+ *  RPC answers `confirm_required` (data-policy / expensive-model guard),
+ *  route it through this shared applier instead of forking a per-surface
+ *  dialog: it shows the warning and resends with
+ *  `confirm_expensive_model: true` on Confirm (#95293). */
+export {
+  type GuardedModelSwitchResult,
+  surfaceModelSwitchConfirm,
+  type SurfaceModelSwitchConfirmOptions
+} from '@/lib/guarded-model-switch'
 export { triggerHaptic as haptic } from '@/lib/haptics'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */

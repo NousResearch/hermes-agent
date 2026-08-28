@@ -7,7 +7,7 @@ import {
   resolveGatewayEventSessionId,
   UNSCOPED_STREAM_EVENT_TYPES
 } from '@/lib/gateway-events'
-import { setSessionCompacting } from '@/store/compaction'
+import { reconcileSessionCompacting } from '@/store/compaction'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { replayPendingApproval } from '@/store/prompts'
@@ -206,7 +206,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // turn has resumed, so retire the phase label without waiting for the
       // whole turn to complete.
       if (sessionId && COMPACTION_RESUME_EVENT_TYPES.has(event.type) && compactedTurnRef.current.has(sessionId)) {
-        setSessionCompacting(sessionId, false)
+        reconcileSessionCompacting(sessionId, 'resumed')
       }
 
       if (sessionId && DRAFT_SUPERSEDING_EVENT_TYPES.has(event.type)) {

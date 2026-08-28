@@ -697,7 +697,10 @@ class TestNonStringContent:
         mock_response.choices[0].message = "plain summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True)
+            # Pin legacy: this test asserts the raw coerced string terminates
+            # the summary, which lean mode's verbatim-user-quote appendix
+            # intentionally follows. Coercion is mode-independent.
+            c = ContextCompressor(model="test", quiet_mode=True, tail_mode="legacy")
 
         messages = [
             {"role": "user", "content": "do something"},
@@ -927,7 +930,99 @@ class TestAuthFailureAborts:
         assert c._last_summary_network_failure is True
         assert c._last_summary_auth_failure is False
 
+    def test_generate_summary_flags_empty_content_failure(self):
+        """An empty-content response on the summary call flags
+        _last_summary_empty_content_failure (#94448)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value={"choices": [{"message": {"content": "   "}}]},
+        ):
+            result = c._generate_summary(self._msgs())
+        assert result is None
+        assert c._last_summary_empty_content_failure is True
+        assert c._last_summary_auth_failure is False
+        assert c._last_summary_network_failure is False
 
+    def test_empty_content_summary_aborts_compression_and_preserves_messages(self):
+        """Empty-content response from degraded provider aborts compression and
+        preserves original messages without dropping context (#94448)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value={"choices": [{"message": {"content": ""}}]},
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result == msgs
+        assert c._last_summary_empty_content_failure is True
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+
+        # Cooldown re-entry must keep aborting, same as network/auth —
+        # _generate_summary() returns None from the cooldown early-return
+        # without re-asserting the flag, so compress() must still see it.
+        second = c.compress(msgs, current_tokens=999999)
+        assert second == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+
+    def test_auxiliary_none_response_aborts_compression(self):
+        """Sibling shape (#94459, from #7264): the auxiliary boundary's own
+        terminal "None response" error is the same degraded-provider class
+        and must ABORT, not fall through to the destructive fallback."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=RuntimeError("Auxiliary compression: LLM returned None response"),
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_empty_content_failure is True
+
+    def test_auxiliary_invalid_response_aborts_compression(self):
+        """Sibling shape (#94459, from #7264): malformed/missing
+        choices[0].message terminal error must ABORT the same way."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=RuntimeError(
+                "Auxiliary compression: LLM returned invalid response "
+                "(type=str): 'oops'. Expected object with .choices[0].message "
+                "— check provider adapter or custom endpoint compatibility."
+            ),
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_empty_content_failure is True
 
 
 class TestSummaryFallbackToMainModel:
@@ -980,6 +1075,35 @@ class TestSummaryFallbackToMainModel:
         assert c._last_aux_model_failure_error is not None
         assert "404" in c._last_aux_model_failure_error
 
+    def test_empty_content_falls_back_to_main_and_succeeds(self):
+        """Aux model returns empty content -> falls back to main model -> succeeds (#94448)."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model after empty aux"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="flaky-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[
+                {"choices": [{"message": {"content": "   "}}]},
+                mock_ok,
+            ],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "flaky-aux-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model after empty aux" in result
+        assert c._last_aux_model_failure_model == "flaky-aux-model"
+        assert "empty content" in (c._last_aux_model_failure_error or "").lower()
 
     def test_no_fallback_when_summary_model_equals_main_model(self):
         """If the aux model IS the main model, there's nowhere to fall back
@@ -1922,7 +2046,9 @@ class TestUpdateModelBudgets:
         """tail_token_budget must change after switching to a different context length."""
         from unittest.mock import patch
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
-            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True, tail_mode="legacy",
+            )
         old_tail = comp.tail_token_budget
         old_max_summary = comp.max_summary_tokens
 
@@ -1935,10 +2061,74 @@ class TestUpdateModelBudgets:
         """Budgets should be proportional to context_length after update."""
         from unittest.mock import patch
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
-            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True, tail_mode="legacy",
+            )
         comp.update_model("model-b", context_length=10_000)
         assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
         assert comp.max_summary_tokens == min(int(10_000 * 0.05), 4000)
+
+    def test_default_mode_is_lean(self):
+        """#tail-default-flip: an unconfigured compressor uses the lean tail.
+
+        Behavior contract, not a snapshot: the default-constructed budget must
+        equal the lean clamp for the window, NOT the legacy threshold formula
+        (which on a 1M window would be ~100-170K tokens).
+        """
+        from unittest.mock import patch
+
+        from agent.context_compressor import (
+            LEAN_TAIL_CAP_TOKENS,
+            LEAN_TAIL_FLOOR_TOKENS,
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor("model-big", threshold_percent=0.85, quiet_mode=True)
+        assert comp.tail_mode == "lean"
+        expected = max(
+            LEAN_TAIL_FLOOR_TOKENS,
+            min(LEAN_TAIL_CAP_TOKENS, int(comp.context_length * 0.025)),
+        )
+        assert comp.tail_token_budget == expected
+        # The legacy hoard for this config would be far larger — prove the
+        # default no longer produces it.
+        assert comp.tail_token_budget < int(comp.threshold_tokens * comp.summary_target_ratio)
+
+    def test_update_model_preserves_lean_mode(self):
+        """update_model() must recompute the tail through the MODE-AWARE path.
+
+        Regression for the latent bug exposed by the default flip: the old
+        recompute assigned the legacy threshold formula directly, silently
+        reverting a lean compressor to the legacy hoard on every mid-session
+        model switch.
+        """
+        from unittest.mock import patch
+
+        from agent.context_compressor import (
+            LEAN_TAIL_CAP_TOKENS,
+            LEAN_TAIL_FLOOR_TOKENS,
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor("model-a", threshold_percent=0.85, quiet_mode=True)
+        comp.update_model("model-b", context_length=400_000)
+        expected = max(
+            LEAN_TAIL_FLOOR_TOKENS,
+            min(LEAN_TAIL_CAP_TOKENS, int(400_000 * 0.025)),
+        )
+        assert comp.tail_token_budget == expected
+        assert comp.tail_token_budget < int(comp.threshold_tokens * comp.summary_target_ratio)
+
+    def test_explicit_legacy_still_honored(self):
+        """tail_mode: legacy in config keeps the pre-flip behavior exactly."""
+        from unittest.mock import patch
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.85, quiet_mode=True, tail_mode="legacy",
+            )
+        assert comp.tail_mode == "legacy"
+        assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
 
 
 class TestUpdateModelResetsCalibration:
@@ -3340,7 +3530,15 @@ class TestPreLlmFeasibilityCheck:
         """The target scenario from #60451: a tool-heavy transcript whose
         protected tail already holds most of the tokens, leaving a tiny
         middle window. The skip must fire and _generate_summary must not
-        be called."""
+        be called.
+
+        Pinned to legacy tail sizing: the scenario REQUIRES the big
+        payloads to sit inside the protected tail (legacy budget ≈ 17K on
+        this fixture). Under the lean default (10K clamp) the same
+        payloads fall into the compressible middle, so compression
+        correctly proceeds — that is desired behavior, not a skip case.
+        """
+        compressor.tail_mode = "legacy"
         compressor._ineffective_compression_count = 1
         msgs = [{"role": "system", "content": "system prompt"}]
         # Small middle: a few lightweight early exchanges.
@@ -3421,3 +3619,60 @@ class TestPreLlmFeasibilityCheck:
             feasibility_skip=compressor._last_feasibility_skip,
         )
         assert compressor._fallback_compression_streak == 1
+
+
+class TestSanitizeToolPairsWhitespace:
+    """_sanitize_tool_pairs must strip whitespace from tool_call_id before
+    comparing, matching the fix applied to agent_runtime_helpers.py in
+    commit fa3ab2ffd.  Without stripping, a valid tool result whose
+    tool_call_id has surrounding whitespace is misclassified as orphaned
+    and silently replaced with a [Result unavailable] stub.
+    """
+
+    def _make(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(model="test/model", quiet_mode=True,
+                                     protect_first_n=2, protect_last_n=2)
+
+    def _assistant(self, call_id):
+        return {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": call_id, "type": "function",
+                             "function": {"name": "f", "arguments": "{}"}}],
+        }
+
+    def test_leading_whitespace_on_result_id_preserved(self):
+        c = self._make()
+        msgs = [
+            self._assistant("call_abc"),
+            {"role": "tool", "tool_call_id": " call_abc", "content": "ok"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == "ok", "valid result must not be treated as orphaned"
+
+    def test_trailing_whitespace_on_result_id_preserved(self):
+        c = self._make()
+        msgs = [
+            self._assistant("call_xyz"),
+            {"role": "tool", "tool_call_id": "call_xyz  ", "content": "data"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == "data"
+
+    def test_truly_orphaned_still_removed(self):
+        """Whitespace-trimmed ID that still has no match must be removed.
+        The assistant's call_real has no matching result, so a stub is
+        inserted in its place — the original orphaned entry must be gone."""
+        c = self._make()
+        msgs = [
+            self._assistant("call_real"),
+            {"role": "tool", "tool_call_id": " call_orphan ", "content": "stale"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+        assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
+        assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"

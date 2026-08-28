@@ -131,6 +131,13 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     # reasoning variants.
     ("ox-alpha", 300),
     ("x-preview-f-free", 300),
+    # Thinking Machines Inkling (thinkingmachines/inkling[-small][:free]
+    # on OpenRouter).  Reasoning model (OpenRouter supported_parameters
+    # includes "reasoning"); 1M context — same tier as the Grok
+    # reasoning variants and Ox Alpha.  "inkling" left-anchors on the
+    # slug after the aggregator prefix and the right anchor accepts the
+    # "-" separator, so inkling-small and the :free SKUs all match.
+    ("inkling", 300),
 )
 
 
@@ -161,7 +168,12 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
 # in each entry for debuggability (log/inspection), even though _match_any
 # only consumes floor + pattern.
 _SORTED_REASONING_FLOORS: list[tuple[str, float, re.Pattern[str]]] = [
-    (slug, floor, re.compile(r"^" + re.escape(slug) + r"(?:$|[\-._])"))
+    # Right anchor: end-of-string or a slug separator.  ``:`` is in the
+    # separator class because OpenRouter SKU/routing suffixes
+    # (``:free``, ``:batch``, ``:nitro``, ``:floor``) attach directly to
+    # the slug — ``thinkingmachines/inkling:free`` must match the
+    # ``inkling`` entry the same way ``inkling-small`` does.
+    (slug, floor, re.compile(r"^" + re.escape(slug) + r"(?:$|[\-._:])"))
     for slug, floor in sorted(
         _REASONING_STALE_TIMEOUT_FLOORS, key=lambda kv: -len(kv[0])
     )

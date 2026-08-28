@@ -382,6 +382,29 @@ def _resolve_review_runtime(
         return parent
 
 
+def _parent_can_emit_tool_calls(agent: Any) -> bool:
+    """Whether a fork inheriting ``agent``'s runtime could act at all.
+
+    The review fork's entire job is to emit ``memory`` / ``skill_manage`` tool
+    calls. A provider that IS an autonomous agent reaches Hermes through a client
+    shim, and a shim that cannot carry Hermes tool calls back turns the fork into
+    a guaranteed no-op — one that still pays for a full agent spawn (a whole CLI
+    process, sometimes a JVM) on every review cadence. The in-tree ACP client CAN
+    carry them (it uses the text bridge in ``agent/acp_openai_bridge.py``); this
+    exists so a shim that can't declares ``SUPPORTS_HERMES_TOOL_CALLS = False``
+    and is skipped instead of burning a spawn. Anything that doesn't say
+    otherwise is assumed capable, so ordinary providers are unaffected.
+    """
+    client = getattr(agent, "client", None)
+    for candidate in (client, type(client) if client is not None else None):
+        if candidate is None:
+            continue
+        supported = getattr(candidate, "SUPPORTS_HERMES_TOOL_CALLS", None)
+        if supported is not None:
+            return bool(supported)
+    return True
+
+
 def _msg_text(m: Dict) -> str:
     c = m.get("content")
     if isinstance(c, str):
@@ -1117,6 +1140,29 @@ def _run_review_in_thread(
         _set_approval_callback(_bg_review_auto_deny)
     except Exception:
         pass
+
+    # An agent-as-provider whose client can't carry Hermes tool calls back would
+    # produce a fork that spawns a whole agent and then cannot write anything.
+    # Don't spawn it — point at the override that does work. Checked BEFORE the
+    # thread-scoped silence below so the warning is not swallowed, and
+    # cheap-check-first so the normal path never resolves the runtime twice.
+    # Fixes the class, not one provider: any future agent-as-provider client
+    # inherits the guard.
+    if not _parent_can_emit_tool_calls(agent) and not bool(
+        _resolve_review_runtime(agent, task_cfg).get("routed")
+    ):
+        logger.warning(
+            "Background review skipped: provider %r cannot emit Hermes tool calls, "
+            "so the review fork could not write memories or skills. Set "
+            "auxiliary.background_review.{provider,model} to route the review to "
+            "a normal model.",
+            getattr(agent, "provider", "?"),
+        )
+        try:
+            _set_approval_callback(None)
+        except Exception:
+            pass
+        return
 
     review_agent = None
     review_messages: List[Dict] = []

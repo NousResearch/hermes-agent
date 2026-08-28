@@ -1681,6 +1681,13 @@ def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(mo
         _codex_tool_call_response(),
         _codex_message_response("Summary after compaction."),
     ]
+    # The usage anchor now TRUSTS provider-reported usage (#97206). The shared
+    # fixture reports a 12-token prompt, which would honestly mean there is no
+    # pressure; give this tool-heavy-turn scenario a realistic anchored history
+    # so the pressure check exercises the same decision it did pre-anchor.
+    responses[0].usage = SimpleNamespace(
+        input_tokens=18_000, output_tokens=4, total_tokens=18_004
+    )
     requests = []
     monkeypatch.setattr(
         agent,
@@ -1750,6 +1757,10 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
         _codex_tool_call_response(),
         _codex_message_response("Summary after compaction."),
     ]
+    # Same anchored-usage realism as the mid-turn compaction test above.
+    responses[0].usage = SimpleNamespace(
+        input_tokens=18_000, output_tokens=4, total_tokens=18_004
+    )
     monkeypatch.setattr(
         agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
     )

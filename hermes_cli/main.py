@@ -433,6 +433,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -1990,7 +1991,24 @@ def _print_tui_exit_summary(
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
+_NPM_LOCK_RUNTIME_KEYS = frozenset(
+    {
+        "ideallyInert",
+        "peer",
+        # npm writes these boolean annotation fields non-deterministically
+        # between the declarative package-lock.json and the hidden actualized
+        # .package-lock.json.  The intersection comparison (see
+        # _tui_need_npm_install) already handles the "field present in root
+        # but absent in hidden" case for structured fields like version,
+        # dependencies, license, etc.  These boolean flags need explicit
+        # exclusion because when present in *both* lockfiles they may still
+        # differ (e.g. dev: true → stripped in hidden).
+        "dev",
+        "extraneous",
+        "hasInstallScript",
+        "optional",
+    }
+)
 """Lockfile fields npm writes non-deterministically at install time.
 
 ``ideallyInert`` is npm's runtime annotation for packages it skipped installing
@@ -2000,6 +2018,14 @@ on dev-dependencies that are *also* declared as peers — the canonical
 it.  Neither key represents a real skew between what was declared and what was
 installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
 to avoid false-positive reinstalls on every launch.
+
+``dev``, ``optional``, ``extraneous``, and ``hasInstallScript`` are boolean
+annotations that npm populates differently in the hidden lock (npm >= 10/11
+writes ``extraneous`` into the hidden lock only, and ``dev: true`` from the
+root lock may be absent or ``false`` in the hidden actualized tree).
+They never indicate a changed dependency — the authoritative check is the
+``resolved``/``integrity`` pair, which the intersection comparison always
+catches.
 """
 
 
@@ -2056,6 +2082,108 @@ def _termux_workspace_install_context(
     return ws_root, tuple(workspace_args)
 
 
+def _npm_lock_workspace_closure(packages: dict, starts) -> Optional[set]:
+    """Package-map keys reachable from the selected workspaces via npm resolution.
+
+    *starts* is the set of workspace keys the launch install explicitly scopes
+    to (a single str is accepted for convenience).  ``devDependencies`` are
+    followed for **each** of those workspaces, since ``npm install`` installs
+    the dev toolchain for every workspace it selects.  Returns ``None`` when
+    none of *starts* are present in *packages* so callers fall back to the
+    full-lockfile comparison.
+
+    The launch install is scoped with ``npm install --workspace ui-tui`` (see
+    ``_make_tui_argv``), so only the ui-tui workspace's dependency closure is
+    written to the hidden ``.package-lock.json``.  On Termux it additionally
+    selects ui-tui's child ``packages/*`` workspaces, so their devDependencies
+    join the closure too.  The shared root ``package-lock.json`` additionally
+    lists every *other* workspace's deps (``apps/desktop``, ``web``, …);
+    comparing the two in full reports those unrelated packages as "missing" and
+    reinstalls on every launch (#66978).
+
+    Keys follow npm's v3 ``packages`` map (``""`` root, ``ui-tui`` /
+    ``apps/desktop`` workspace members, ``node_modules/<name>`` hoisted deps,
+    ``<dir>/node_modules/<name>`` nested deps).  Dependency names resolve to a
+    key by walking up ``node_modules`` ancestors, mirroring node resolution, and
+    workspace symlinks (``link: true``) are followed to their real entry so a
+    linked workspace's own deps join the closure.
+    """
+    start_set = {starts} if isinstance(starts, str) else {s for s in starts if s}
+    present = [s for s in start_set if s in packages]
+    if not present:
+        return None
+
+    def resolve(from_key: str, dep: str) -> Optional[str]:
+        base = from_key
+        while True:
+            prefix = f"{base}/" if base else ""
+            candidate = f"{prefix}node_modules/{dep}"
+            if candidate in packages:
+                return candidate
+            if not base:
+                return None
+            base = base.rsplit("/", 1)[0] if "/" in base else ""
+
+    seen: set = set()
+    stack = list(present)
+    while stack:
+        key = stack.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = packages.get(key)
+        if not isinstance(entry, dict):
+            continue
+        # Workspace symlink (e.g. node_modules/@hermes/ink → ui-tui/packages/…):
+        # follow to the real package entry so its dependencies join the closure.
+        resolved = entry.get("resolved")
+        if entry.get("link") and isinstance(resolved, str) and resolved in packages:
+            stack.append(resolved)
+        # devDependencies are installed for each explicitly-selected workspace
+        # (its build toolchain), but not for transitive deps.
+        fields = ["dependencies", "optionalDependencies", "peerDependencies"]
+        if key in start_set:
+            fields.append("devDependencies")
+        for field in fields:
+            deps = entry.get(field)
+            if not isinstance(deps, dict):
+                continue
+            for dep in deps:
+                target = resolve(key, dep)
+                if target is not None:
+                    stack.append(target)
+    return seen
+
+
+def _tui_selected_workspace_keys(tui_dir: Path, ws_root: Path) -> set:
+    """Lock-map keys for the workspaces the launch install scopes to.
+
+    Mirrors ``_make_tui_argv``: always the ui-tui workspace, plus its child
+    ``packages/*`` workspaces on Termux (where ``include_child_workspaces=True``
+    in ``_termux_workspace_install_context``).  ``npm install`` installs the
+    devDependencies of every workspace it selects, so the freshness closure must
+    treat each as a dev-included root — otherwise a devDependency unique to a
+    selected child is dropped from the closure and a genuine missing package
+    slips past the check.  Returns an empty set when ui-tui can't be located
+    under *ws_root*, so the caller falls back to the full comparison.
+    """
+    try:
+        primary = tui_dir.relative_to(ws_root).as_posix()
+    except ValueError:
+        return set()
+    keys = {primary}
+    if _is_termux_startup_environment():
+        packages_dir = tui_dir / "packages"
+        if packages_dir.is_dir():
+            for child in sorted(packages_dir.iterdir()):
+                if child.is_dir() and (child / "package.json").is_file():
+                    try:
+                        keys.add(child.relative_to(ws_root).as_posix())
+                    except ValueError:
+                        continue
+    return keys
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -2079,8 +2207,13 @@ def _tui_need_npm_install(root: Path) -> bool:
     For each entry in the root lock's ``packages`` map:
       - missing from hidden lock → reinstall (unless the entry is marked
         ``optional`` or ``peer``, which npm may intentionally skip per platform)
-      - present but with differing fields (excluding npm-written runtime
-        annotations like ``ideallyInert``) → reinstall
+      - present in both → compare only the **intersection** of fields (after
+        stripping ``_NPM_LOCK_RUNTIME_KEYS``).  npm's hidden lock
+        intentionally omits many metadata fields (version, license, engines,
+        dependencies, funding, etc.) — those one-side-only fields are normal
+        npm artefacts, not real skew.  A real version/dependency change will
+        change ``resolved``/``integrity``, which are present in both locks
+        and will be caught by the intersection comparison.
 
     Extra entries that exist only in the hidden lock are ignored — stale
     transitives left over from a removed dependency don't break runtime and
@@ -2114,23 +2247,66 @@ def _tui_need_npm_install(root: Path) -> bool:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return lock.stat().st_mtime > marker.stat().st_mtime
 
-    def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+    def entries_differ(pkg: dict, installed_pkg: dict) -> bool:
+        # Only compare keys present in *both* lockfiles with non-null values.
+        # npm's hidden .package-lock.json intentionally omits many metadata
+        # fields the root lock records (version, dependencies, license,
+        # engines, bin, ...), and npm >= 10/11 writes a further *reduced*
+        # hidden lockfile that stores some of them as null.  Missing- or
+        # null-on-one-side is a normal npm artefact, not a real skew.  The
+        # authoritative fields "resolved" and "integrity" are present in both
+        # locks for installed packages, so a genuinely stale install (root
+        # lockfile bumped while node_modules is behind) still differs on them.
+        a = {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+        b = {
+            k: v
+            for k, v in installed_pkg.items()
+            if k not in _NPM_LOCK_RUNTIME_KEYS
+        }
+        for k in a.keys() & b.keys():
+            if a[k] is None or b[k] is None:
+                continue
+            if a[k] != b[k]:
+                return True
+        return False
+
+    # In a shared workspace checkout the launch install is scoped to the ui-tui
+    # workspace (plus its child packages/* workspaces on Termux), so only that
+    # dependency closure lands in the hidden lock.  Limit the comparison to the
+    # same selected-workspace closure so unrelated workspace deps (apps/desktop,
+    # web, …) don't force a reinstall every launch (#66978).  Standalone /
+    # own-lockfile layouts (ws_root == root) do a full install, so keep the full
+    # comparison; a missing/unlocatable workspace falls back to it too.
+    closure: Optional[set] = None
+    if ws_root != root:
+        selected = _tui_selected_workspace_keys(root, ws_root)
+        if selected:
+            closure = _npm_lock_workspace_closure(wanted, selected)
 
     for name, pkg in wanted.items():
         if not name:
+            continue
+
+        if closure is not None and name not in closure:
             continue
 
         if not isinstance(pkg, dict):
             continue
 
         if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
+            # Workspace link entries (`"link": true`, paths outside
+            # node_modules/ like `apps/desktop`, `node_modules/web`) are never
+            # materialized by a partial `npm install --workspace ui-tui` —
+            # they're deliberately skipped (see #38772) and would otherwise
+            # force a reinstall on every launch.
+            if pkg.get("optional") or pkg.get("peer") or pkg.get("link"):
+                continue
+            if not name.startswith("node_modules/"):
                 continue
             return True
 
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
+        if isinstance(installed[name], dict) and entries_differ(
+            pkg, installed[name]
         ):
             return True
 
@@ -3261,6 +3437,7 @@ def cmd_chat(args):
         "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
+        "oneshot": bool(getattr(args, "oneshot_exit", False)),
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
@@ -4877,10 +5054,13 @@ _LAZY_COMMAND_EXPORTS = {
     "hermes_cli.update_cmd": (
         "_abort_dependency_sync_if_self_locked",
         "_add_upstream_remote",
+        "_apply_pending_fleet_restart_catchup",
         "_atomic_replace_dir",
         "_capture_active_lazy_features",
         "_capture_active_tool_dependencies",
         "_capture_head_sha",
+        "_classify_concurrent_instance",
+        "_clear_fleet_restart_pending_marker",
         "_assess_parked_branch_switch",
         "_branch_head_label",
         "_branch_head_suffix",
@@ -4901,9 +5081,14 @@ _LAZY_COMMAND_EXPORTS = {
         "_ensure_uv_for_termux",
         "_finish_dashboard_update_cleanup",
         "_fleet_probe_expected_runtimes",
+        "_fleet_restart_pending_marker_path",
+        "_filter_non_gateway_concurrent_instances",
         "_for_each_systemd_gateway_unit",
         "_format_concurrent_instances_message",
         "_format_time_ago",
+        "_gateway_service_matches_profile",
+        "_gateway_recovery_partition",
+        "_gateway_restart_recovery_profiles",
         "_handoff_reapable_backend_pids",
         "_ledger_reapable_backend_pids",
         "_purge_stale_hermes_modules",
@@ -4916,6 +5101,9 @@ _LAZY_COMMAND_EXPORTS = {
         "_is_android_python",
         "_is_fork",
         "_leftover_pausable_gateway_pids",
+        "_ledger_manual_serve_holders",
+        "_relaunch_stopped_serves",
+        "_serve_relaunch_commands",
         "_log_only_write",
         "_mark_skip_upstream_prompt",
         "_npm_bin_exists",
@@ -4923,6 +5111,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_npm_manifest_paths",
         "_npm_manifests_digest",
         "_orphaned_desktop_backend_pids",
+        "_pending_fleet_restart_needed",
         "_pause_windows_gateways_for_update",
         "_print_curator_first_run_notice",
         "_print_curator_recent_run_notice",
@@ -4936,6 +5125,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_refresh_active_memory_provider_dependencies",
         "_refresh_bootstrap_cache_scripts",
         "_refresh_windows_gateway_launchers",
+        "_recover_gateway_restart_after_abort",
         "_reload_updated_runtime_modules",
         "_resolve_pre_update_backup_mode",
         "_resolve_stash_selector",
@@ -4943,6 +5133,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_restore_active_tool_dependencies",
         "_restore_stashed_changes",
         "_resume_windows_gateways_after_update",
+        "_run_pending_fleet_restart",
         "_run_logged_subprocess",
         "_run_pre_update_backup",
         "_service_unit_supports_graceful_sigusr1_restart",
@@ -4963,8 +5154,10 @@ _LAZY_COMMAND_EXPORTS = {
         "_wait_for_windows_update_gateway_exit",
         "_warn_gateway_restart_phase_aborted",
         "_warn_incomplete_gateway_fleet_restart",
+        "_warn_pending_fleet_restart_on_startup",
         "_web_build_toolchain_ready",
         "_web_toolchain_roots",
+        "_write_fleet_restart_pending_marker",
         "_write_lazy_refresh_incomplete_marker",
         "_write_marker_file",
         "_write_update_incomplete_marker",
@@ -5700,7 +5893,16 @@ def cmd_config(args):
     """Configuration management."""
     from hermes_cli.config import config_command
 
-    config_command(args)
+    try:
+        config_command(args)
+    except RuntimeError as exc:
+        # Safety net for the fail-closed config write guard (unparseable /
+        # non-mapping / unreadable config.yaml raises RuntimeError from
+        # require_readable_config_before_write). set/unset already surface
+        # this per-branch; this covers migrate and future write subcommands
+        # so no path ends in a raw traceback.
+        print(f"✗ {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_skin(args):
@@ -7609,10 +7811,232 @@ def _desktop_macos_relaunchable_fixup(
             )
         print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
     try:
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        # Legacy ad-hoc fallback: re-sign, but NEVER delete the safeStorage
+        # keychain item. Deleting it would permanently orphan every
+        # credential encrypted under it (gateway token, native OAuth access/
+        # refresh tokens) — and this path is reached exactly when the
+        # entitlement-preserving signer failed, so there is no verified
+        # successor identity to hand the key to. The keychain prompt macOS
+        # shows instead is recoverable ("Always Allow" updates the item's ACL
+        # partition list and preserves the key); deletion is not. The real
+        # fix (proof-carrying rotation/migration) belongs in Electron, where
+        # safeStorage can read the old key. Tracked as follow-up.
+        result = subprocess.run(
+            [codesign, "--force", "--deep", "--sign", "-", str(app)],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(
+                f"  (warning: legacy ad-hoc re-sign failed (exit {result.returncode}); "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        verify = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(app)],
+            check=False, capture_output=True, text=True,
+        )
+        if verify.returncode != 0:
+            print(
+                f"  (warning: legacy ad-hoc re-sign did not pass strict verification; "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        print("  → macOS desktop re-signed (legacy ad-hoc); safeStorage keychain item left untouched")
+        return True
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
     return False
+
+
+def _macos_codesigning_identity_valid(security: str, identity: str) -> bool:
+    """True when `identity` appears among VALID code-signing identities.
+
+    ``security find-identity -p codesigning`` (without ``-v``) also lists
+    certificates macOS will refuse to sign with — e.g. a self-signed cert that
+    was imported but never trusted for the codeSign policy. Only the ``-v``
+    listing proves codesign can actually use it, so this is both the
+    idempotency probe and the success postcondition for
+    ``--setup-tcc-identity``. Never raises.
+    """
+    try:
+        result = subprocess.run(
+            [security, "find-identity", "-v", "-p", "codesigning"],
+            capture_output=True, text=True, check=False,
+        )
+    except Exception:
+        return False
+
+    return f'"{identity}"' in (result.stdout or "")
+
+
+def _desktop_macos_setup_tcc_identity(identity: str = "Hermes Local Signing") -> bool:
+    """Create/import a self-signed code-signing cert and configure Hermes to use it.
+
+    One-shot setup for ``hermes desktop --setup-tcc-identity``. Creates a
+    self-signed "Code Signing" certificate in the login keychain (the same
+    artifact the docs describe creating manually via Keychain Access), grants
+    ``codesign`` access to it, writes ``desktop.macos_signing_identity`` to
+    config.yaml, and re-signs the already-packaged app so the next launch uses
+    the certificate-anchored identity.
+
+    Why this matters: macOS TCC grants (Full Disk Access, Accessibility,
+    Automation, Files and Folders, microphone) persist against the app's
+    code-signing identity, not its path. A plain ad-hoc signature gets a
+    cdhash-only Designated Requirement, so every rebuild looks like a new app
+    and the user must re-grant everything. A certificate-anchored identity is
+    stable across rebuilds — the same mechanism yabai/skhd users rely on.
+
+    Idempotent: re-running after an update finds the existing certificate and
+    only re-points the config + re-signs. Returns True on success (or when
+    already configured), False on failure. Never raises.
+    """
+    if sys.platform != "darwin":
+        print("  (--setup-tcc-identity is macOS-only; skipping)")
+        return False
+
+    openssl = shutil.which("openssl")
+    security = shutil.which("security")
+    codesign = shutil.which("codesign")
+    if not (openssl and security and codesign):
+        print(
+            "  (--setup-tcc-identity requires openssl, security, and codesign; "
+            f"found openssl={bool(openssl)} security={bool(security)} codesign={bool(codesign)})"
+        )
+        return False
+
+    keychain = str(Path.home() / "Library" / "Keychains" / "login.keychain-db")
+    # A certificate that merely EXISTS in the keychain is not enough — macOS
+    # only treats it as a code-signing identity once it is trusted for the
+    # codeSign policy. Probe with `-v` (valid identities only) so a previously
+    # imported-but-untrusted cert is repaired rather than reported as done.
+    already_imported = _macos_codesigning_identity_valid(security, identity)
+
+    if not already_imported:
+        # Create a self-signed code-signing cert (valid 10 years) and import it
+        # into the login keychain with codesign access so signing works without
+        # an interactive unlock prompt.
+        tmp_dir = Path(tempfile.mkdtemp(prefix="hermes-tcc-"))
+        try:
+            key = tmp_dir / "sign.key"
+            crt = tmp_dir / "sign.crt"
+            p12 = tmp_dir / "sign.p12"
+            subprocess.run(
+                [
+                    openssl, "req", "-x509", "-newkey", "rsa:2048",
+                    "-keyout", str(key), "-out", str(crt),
+                    "-days", "3650", "-nodes",
+                    "-subj", f"/CN={identity}",
+                    "-addext", "basicConstraints=critical,CA:TRUE",
+                    "-addext", "keyUsage=critical,digitalSignature,keyCertSign",
+                    "-addext", "extendedKeyUsage=codeSigning",
+                ],
+                capture_output=True, check=True,
+            )
+            # OpenSSL 3 defaults to AES/SHA-2 PKCS#12 encryption that macOS
+            # `security import` rejects with "MAC verification failed during
+            # PKCS12 import (wrong password?)". The `-legacy` flag restores the
+            # RC2/SHA-1 format the importer accepts, but only exists on
+            # OpenSSL 3 — so try the plain export first and fall back to
+            # `-legacy` when the IMPORT fails with that signature. (Verified
+            # E2E on macOS 26.3.1 / OpenSSL 3.6.3 by @ctaylor86 on PR #77189.)
+            def _export_p12(extra_args: list) -> None:
+                subprocess.run(
+                    [
+                        openssl, "pkcs12", "-export", *extra_args,
+                        "-inkey", str(key), "-in", str(crt),
+                        "-out", str(p12), "-passout", "pass:hermeslocal",
+                    ],
+                    capture_output=True, check=True,
+                )
+
+            def _import_p12():
+                return subprocess.run(
+                    [
+                        security, "import", str(p12), "-k", keychain,
+                        "-P", "hermeslocal",
+                        "-T", codesign, "-T", "/usr/bin/codesign_allocate",
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+
+            _export_p12([])
+            imported = _import_p12()
+            if imported.returncode != 0 and "MAC verification failed" in (imported.stderr or ""):
+                try:
+                    _export_p12(["-legacy"])
+                    imported = _import_p12()
+                except subprocess.CalledProcessError:
+                    # Older OpenSSL without -legacy: keep the original failure.
+                    pass
+            if imported.returncode != 0:
+                print(f"  (could not import signing identity into keychain: {imported.stderr.strip()})")
+                return False
+
+            # Importing is still not enough: without explicit trust for the
+            # codeSign policy, `security find-identity -v -p codesigning`
+            # reports 0 valid identities and codesign refuses the cert. Trust
+            # the self-signed root for code signing. This writes to the user's
+            # trust settings, so macOS may prompt for the login password ONCE
+            # here — that is the one-time setup cost this command exists to
+            # front-load.
+            trusted = subprocess.run(
+                [security, "add-trusted-cert", "-r", "trustRoot", "-p", "codeSign", "-k", keychain, str(crt)],
+                capture_output=True, text=True, check=False,
+            )
+            if trusted.returncode != 0:
+                print(
+                    "  (could not trust the certificate for code signing: "
+                    f"{(trusted.stderr or trusted.stdout).strip()})"
+                )
+                return False
+            print(f"  → created, imported, and trusted self-signed identity: {identity!r}")
+        except Exception as exc:
+            print(f"  (certificate creation failed: {exc})")
+            return False
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    else:
+        print(f"  → identity {identity!r} already valid in keychain")
+
+    # Postcondition gate: only report success once macOS actually agrees the
+    # identity is usable for code signing. Name-in-output checks pass for
+    # invalid identities; this is the check that failed silently before.
+    if not _macos_codesigning_identity_valid(security, identity):
+        print(
+            f"  (identity {identity!r} was imported but is not a VALID code-signing identity; "
+            "run `security find-identity -v -p codesigning` to inspect, and see the manual "
+            "Keychain Access steps in the desktop docs)"
+        )
+        return False
+
+    # Point Hermes at the identity (config.yaml, not .env — it's not a secret).
+    try:
+        from hermes_cli.config import set_config_value
+
+        set_config_value("desktop.macos_signing_identity", identity)
+        print(f"  → set desktop.macos_signing_identity = {identity!r}")
+    except Exception as exc:
+        print(f"  (could not write desktop.macos_signing_identity: {exc})")
+        return False
+
+    # Re-sign the packaged app so the current build already uses the identity.
+    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    if _desktop_packaged_executable(desktop_dir) is not None:
+        try:
+            if _desktop_macos_relaunchable_fixup(desktop_dir):
+                print(
+                    "  → packaged app re-signed with certificate-anchored identity; "
+                    "TCC grants persist across rebuilds"
+                )
+        except Exception as exc:
+            print(f"  (could not re-sign packaged app: {exc})")
+
+    print(
+        "\n  Note: macOS will re-prompt for permissions ONE final time (the identity "
+        "changed). Grant them and they persist from then on. If a permission gets "
+        "stuck, reset it with:  tccutil reset All com.nousresearch.hermes"
+    )
+    return True
 
 
 def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
@@ -7902,6 +8326,13 @@ def cmd_gui(args: argparse.Namespace):
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
+
+    # macOS-only one-shot: create a self-signed code-signing identity so TCC
+    # grants survive rebuilds, then exit without building/launching.
+    if getattr(args, "setup_tcc_identity", False):
+        identity = getattr(args, "identity", None) or "Hermes Local Signing"
+        ok = _desktop_macos_setup_tcc_identity(identity)
+        sys.exit(0 if ok else 1)
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
@@ -10315,12 +10746,8 @@ def cmd_update(args):
     ``sys.exit`` or unhandled exceptions).
     """
     from hermes_cli.config import (
-        detect_install_method,
-        format_docker_update_message,
         is_managed,
-        is_nix_install_method,
         managed_error,
-        recommended_update_command_for_method,
     )
 
     if is_managed():
@@ -10343,20 +10770,23 @@ def cmd_update(args):
         print_update_plan(collect_runtime_inventory())
         return
 
-    # Docker users can't ``git pull`` — the image excludes ``.git`` from
-    # the build context.  Bail with a friendly explanation pointing at
-    # ``docker pull`` BEFORE any of the apply-path / check-path branches
-    # below get a chance to error out with misleading "Not a git
-    # repository" text.  See format_docker_update_message() for the full
-    # rationale and tag-pinning / config-persistence notes.
-    install_method = detect_install_method(PROJECT_ROOT)
-    if install_method == "docker":
-        print(format_docker_update_message())
-        sys.exit(1)
+    # Image-managed / package-managed admission gate (#91277 Phase 3): one
+    # shared decision for every mutation surface. Consults the baked image
+    # provenance marker first (authoritative, fail-closed on malformed),
+    # then the pre-existing docker/nix/apt heuristics. Prints the real
+    # update command, records a `refused` receipt so fleet tooling sees the
+    # blocked attempt, and exits 2 (refused-by-contract, distinct from
+    # exit 1 errors).
+    from hermes_cli.update_contract import (
+        evaluate_update_admission,
+        record_refusal_receipt,
+    )
 
-    if is_nix_install_method(install_method) or install_method == "apt":
-        print(recommended_update_command_for_method(install_method))
-        sys.exit(1)
+    refusal = evaluate_update_admission(PROJECT_ROOT)
+    if refusal is not None:
+        print(refusal.message)
+        record_refusal_receipt(refusal)
+        sys.exit(2)
 
     if getattr(args, "check", False):
         # --check honors --branch so the "any new commits?" answer matches
@@ -10736,7 +11166,7 @@ def cmd_profile(args):
 
             # Profile dir for display
             try:
-                profile_dir_display = "~/" + str(profile_dir.relative_to(Path.home()))
+                profile_dir_display = "~/" + profile_dir.relative_to(Path.home()).as_posix()
             except ValueError:
                 profile_dir_display = str(profile_dir)
 
@@ -11212,30 +11642,35 @@ def _render_distribution_plan(plan) -> None:
 
 
 def _report_dashboard_status() -> int:
-    """Print live listening dashboard processes and return the count."""
+    """Print live listening dashboard/serve processes and return the count.
+
+    Serve-mode backends are INCLUDED (#81564): `--stop` kills them, so
+    `--status` hiding them left Desktop SSH backends invisible to the CLI —
+    an operator could kill what they couldn't see. Ledger-registered serves
+    (profiled launches the argv scan can't match) surface via the
+    spawn-ledger augmentation in _scan_dashboard_processes.
+    """
     from gateway.status import _pid_exists
 
-    live: list[tuple[int, str]] = []
+    live: list[tuple[int, str, str]] = []
     for pid, command in _self()._scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
-        if mode != "dashboard":
-            continue
         if port <= 0 or not _pid_exists(pid):
             continue
         if not _dashboard_listening(host, port):
             continue
-        live.append((pid, command))
+        live.append((pid, command, mode))
 
     if not live:
-        print("No hermes dashboard processes running.")
+        print("No hermes dashboard or serve processes running.")
         return 0
 
-    print(f"{len(live)} hermes dashboard process(es) running:")
-    for pid, command in live:
-        print(f"    PID {pid}: {command}")
+    print(f"{len(live)} hermes dashboard/serve process(es) running:")
+    for pid, command, mode in live:
+        print(f"    PID {pid} [{mode}]: {command}")
     return len(live)
 
 
@@ -11933,6 +12368,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
+        "browser",
         "verify",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -12711,6 +13147,15 @@ def main():
     except Exception:
         pass
 
+    # Cheap hint only (#95294): an interrupted update that pulled code but
+    # never restarted the fleet. Do NOT restart here — that is ``hermes
+    # update`` catch-up work. Skip when the user is already running update.
+    try:
+        if "update" not in sys.argv[1:]:
+            _warn_pending_fleet_restart_on_startup()
+    except Exception:
+        pass
+
     if _try_termux_fast_tui_launch():
         return
     if _try_termux_fast_cli_launch():
@@ -12828,6 +13273,61 @@ def main():
         return cmd_worktree(_args)
 
     worktree_parser.set_defaults(func=_dispatch_worktree)
+
+
+    # =========================================================================
+    # browser command — real-profile helpers (agent-invoked, user-approved)
+    # =========================================================================
+    browser_parser = subparsers.add_parser(
+        "browser",
+        help="Real-profile browsing helpers (close a browser locking its profile)",
+        description=(
+            "Helpers for real-profile browsing (browser.use_real_profile). "
+            "close-profile terminates the browser process tree holding your "
+            "default profile so Hermes can copy it — DESTRUCTIVE (unsaved tabs "
+            "in that browser are lost). The agent runs this only after you "
+            "approve closing the browser."
+        ),
+    )
+    browser_subparsers = browser_parser.add_subparsers(dest="browser_action")
+    browser_close = browser_subparsers.add_parser(
+        "close-profile",
+        help="Close the browser locking your real profile (asks nothing — "
+             "run only with the user's explicit OK; loses unsaved tabs)",
+    )
+    browser_close.add_argument(
+        "--browser",
+        help="Override detected default browser (chrome/edge/brave/chromium)",
+    )
+
+    def _dispatch_browser(_args):
+        from hermes_cli.browser_connect import (
+            UNSUPPORTED_CHANNEL,
+            close_browser_holding_profile,
+            detect_default_chromium,
+            real_profile_data_dir,
+        )
+
+        action = getattr(_args, "browser_action", None)
+        if action != "close-profile":
+            browser_parser.print_help()
+            return 2
+        browser = getattr(_args, "browser", None) or detect_default_chromium()
+        if not browser or browser == UNSUPPORTED_CHANNEL:
+            print("✗ No supported Chromium default browser detected.", file=sys.stderr)
+            return 1
+        src = real_profile_data_dir(browser)
+        if not src:
+            print(f"✗ Could not resolve the {browser} profile directory.", file=sys.stderr)
+            return 1
+        closed, msg = close_browser_holding_profile(src)
+        if closed:
+            print(f"✓ {msg}")
+            return 0
+        print(f"✗ {msg}", file=sys.stderr)
+        return 1
+
+    browser_parser.set_defaults(func=_dispatch_browser)
 
 
     # =========================================================================

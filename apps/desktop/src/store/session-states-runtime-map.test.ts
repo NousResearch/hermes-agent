@@ -1,6 +1,18 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $profiles } from '@/store/profile'
+import { _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } from '@/store/session'
+import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
+import {
+  $sessionTiles,
+  clearAllSessionStates,
+  knownOwnerForSession,
+  publishSessionState,
+  requestForOwnedSession,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
+import { makeSessionInfo } from '@/test/session-info'
 
 // #92687-adjacent Bot Mode misroute: a session RPC (prompt.submit et al.)
 // carries its target as a RUNTIME id, while tile owner routes key on the
@@ -47,6 +59,20 @@ describe('storedSessionIdForRuntimeId', () => {
     expect(storedSessionIdForRuntimeId('undefined')).toBeNull()
   })
 
+  it('maps a MAIN-PANE runtime id through the per-runtime state mirror (no tile involved)', () => {
+    // approval.respond from a native notification, a queued send: the caller
+    // holds the runtime id of the primary thread, which no tile knows. The
+    // state mirror carries the stored id the wiring cache bound.
+    publishSessionState('rt-main', createClientSessionState('stored-main'))
+
+    expect(storedSessionIdForRuntimeId('rt-main')).toBe('stored-main')
+    // A detached runtime (null stored id) is still unknown.
+    publishSessionState('rt-detached', createClientSessionState(null))
+    expect(storedSessionIdForRuntimeId('rt-detached')).toBeNull()
+
+    clearAllSessionStates()
+  })
+
   it('prefers the stored-id identity when one tile is stored-matched and another is runtime-matched', () => {
     // Pathological but possible after a stale rebind: some other tile's dead
     // runtimeId equals a live tile's storedSessionId. The stored-id claim is
@@ -57,5 +83,47 @@ describe('storedSessionIdForRuntimeId', () => {
     ])
 
     expect(storedSessionIdForRuntimeId('collision')).toBe('collision')
+  })
+})
+
+describe('knownOwnerForSession / requestForOwnedSession', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+    clearAllSessionStates()
+    setSessions([])
+    $profiles.set([])
+    _resetSessionOwnerHintsForTests({ storage: true })
+  })
+
+  it('resolves a main-pane runtime id to its EXACT owner via the mirror + the hint, then the tagged row', () => {
+    publishSessionState('rt-main', createClientSessionState('stored-main'))
+    setSessionOwnerHint('stored-main', { connectionId: 'local', profile: 'omar' })
+
+    expect(knownOwnerForSession('rt-main')).toEqual({ connectionId: 'local', profile: 'omar' })
+
+    _resetSessionOwnerHintsForTests()
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-main', profile: 'omar' })])
+    expect(knownOwnerForSession('rt-main')).toEqual({ connectionId: 'local', profile: 'omar' })
+
+    setSessions([makeSessionInfo({ id: 'stored-main', profile: 'coder' })])
+    expect(knownOwnerForSession('rt-main')).toBe('coder')
+  })
+
+  it('fails closed with an explicit owner-resolution error instead of the ambient socket', async () => {
+    // Somewhere to misroute to: two profiles exist.
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    const ambient = vi.fn(async () => ({ ok: true }))
+
+    await expect(
+      requestForOwnedSession('rt-orphan', ambient as never, 'approval.respond', { session_id: 'rt-orphan' })
+    ).rejects.toSatisfy(isSessionOwnerResolutionError)
+    expect(ambient).not.toHaveBeenCalled()
+
+    // Legacy single backend: the ambient gateway IS the owner.
+    $profiles.set([{ name: 'default' }] as never)
+    await expect(
+      requestForOwnedSession('rt-orphan', ambient as never, 'approval.respond', { session_id: 'rt-orphan' })
+    ).resolves.toEqual({ ok: true })
+    expect(ambient).toHaveBeenCalledWith('approval.respond', { session_id: 'rt-orphan' })
   })
 })

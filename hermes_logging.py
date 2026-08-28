@@ -301,8 +301,8 @@ def setup_logging(
     """
     global _logging_initialized
     home = hermes_home or get_hermes_home()
-    log_dir = home / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    log_dir = mkdir_under_hermes_home(home / "logs")
 
     # Read config defaults (best-effort — config may not be loaded yet).
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
@@ -745,7 +745,8 @@ def _add_rotating_handler(
         ):
             return  # already attached
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
         encoding="utf-8",

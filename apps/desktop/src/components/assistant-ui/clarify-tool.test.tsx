@@ -7,9 +7,24 @@ import { onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { I18nProvider } from '@/i18n'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
-import { $activeSessionId } from '@/store/session'
+import { $profiles } from '@/store/profile'
+import { $activeSessionId, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 
 import { ClarifyTool, readClarifyBatchResult, readClarifyResult } from './clarify-tool'
+
+// The OWNER-socket seam (`requestForOwnedSession` → `requestForSessionProfile`
+// → here). Mocked so the real owner ladder still runs against real fixtures and
+// only the dial is observed; the rest of the gateway store stays actual, so
+// `$gateway` remains the genuine ambient atom every other test in this file
+// drives.
+const gatewayMocks = vi.hoisted(() => ({
+  requestGatewayForAgent: vi.fn(async () => ({ ok: true }))
+}))
+
+vi.mock('@/store/gateway', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  requestGatewayForAgent: gatewayMocks.requestGatewayForAgent
+}))
 
 // The live pending card used to require message-running. Tests that exercise
 // the pending form force that on; the settle-shift case flips it off.
@@ -705,5 +720,125 @@ describe('ClarifyTool batch card', () => {
     expect(screen.getByText('red')).toBeTruthy()
     expect(screen.getByText('Name?')).toBeTruthy()
     expect(screen.getByText('Skipped')).toBeTruthy()
+  })
+})
+
+// ─── Owner routing (#91684 client half) ─────────────────────────────────────
+// The clarify card used to answer on the AMBIENT socket. That socket follows
+// foreground focus, so after a profile / Bot Chat switch it can be profile B
+// while the blocking clarify belongs to profile A — the response lands on a
+// backend that never held the request and the owner stays blocked until the
+// tool times out. Every live clarify.respond now routes by request.sessionId.
+
+const OWNER_CONNECTION_ID = 'conn-profile-a'
+const OWNER_PROFILE = 'profile-a'
+
+/** Profile A owns the clarify's session; the window has since switched to
+ *  profile B, so `$gateway` (ambient) is profile B's socket. */
+function armCrossProfileOwner() {
+  // Two profiles exist → the ambient gateway is not provably the sole backend,
+  // so the legacy single-backend escape hatch stays shut.
+  $profiles.set([{ name: OWNER_PROFILE }, { name: 'profile-b' }] as never)
+  setSessionOwnerHint('session-a', { connectionId: OWNER_CONNECTION_ID, profile: OWNER_PROFILE })
+
+  const ambient = vi.fn().mockResolvedValue({ ok: true })
+
+  $activeSessionId.set('session-a')
+  $gateway.set({ request: ambient } as never)
+
+  return ambient
+}
+
+function expectOwnerCall(nth: number, params: Record<string, unknown>) {
+  expect(gatewayMocks.requestGatewayForAgent).toHaveBeenNthCalledWith(
+    nth,
+    OWNER_CONNECTION_ID,
+    OWNER_PROFILE,
+    'clarify.respond',
+    params
+  )
+}
+
+describe('ClarifyTool owner routing', () => {
+  afterEach(() => {
+    $profiles.set([])
+    _resetSessionOwnerHintsForTests({ storage: true })
+    gatewayMocks.requestGatewayForAgent.mockClear()
+  })
+
+  it('answers a single clarify on the owner socket, never profile B ambient', async () => {
+    const ambient = armCrossProfileOwner()
+
+    setClarifyRequest({
+      choices: ['staging', 'production'],
+      multiSelect: false,
+      question: 'Which deployment target?',
+      requestId: 'request-1',
+      sessionId: 'session-a'
+    })
+    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(1)
+    })
+    expectOwnerCall(1, { answer: 'staging', request_id: 'request-1' })
+    expect(ambient).not.toHaveBeenCalled()
+  })
+
+  it('sends both sequential batch locks on the owner socket, in order', async () => {
+    const ambient = armCrossProfileOwner()
+
+    setClarifyRequest({
+      choices: null,
+      multiSelect: false,
+      question: '',
+      questions: [
+        { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+        { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+      ],
+      requestId: 'request-batch',
+      sessionId: 'session-a'
+    })
+    renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+
+    await waitFor(() => {
+      expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(2)
+    })
+    // The LAST lock resolves the blocked tool, so order is load-bearing.
+    expectOwnerCall(1, { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
+    expectOwnerCall(2, { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
+    expect(ambient).not.toHaveBeenCalled()
+  })
+
+  it('sends a batch skip/cancel on the owner socket', async () => {
+    const ambient = armCrossProfileOwner()
+
+    setClarifyRequest({
+      choices: null,
+      multiSelect: false,
+      question: '',
+      questions: [
+        { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+        { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+      ],
+      requestId: 'request-batch',
+      sessionId: 'session-a'
+    })
+    renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+
+    await waitFor(() => {
+      expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(1)
+    })
+    expectOwnerCall(1, { answer: '', request_id: 'request-batch' })
+    expect(ambient).not.toHaveBeenCalled()
   })
 })

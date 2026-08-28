@@ -15,6 +15,7 @@ This module provides:
 """
 
 import copy
+from decimal import Decimal, InvalidOperation
 from hermes_cli.cli_output import line_input
 import json
 import logging
@@ -140,6 +141,12 @@ def _warn_config_parse_failure(
             f"Keeping the previously loaded config for this process — "
             f"edits to config.yaml are being IGNORED until the YAML is fixed."
         )
+    elif fallback == "refuse-write":
+        msg = (
+            f"Failed to parse {config_path}: {exc}. "
+            f"REFUSING to write config.yaml so the existing file is preserved. "
+            f"Fix the YAML (hermes config edit) and retry."
+        )
     else:
         msg = (
             f"Failed to parse {config_path}: {exc}. "
@@ -215,7 +222,32 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     # NOT a HERMES_* blanket: integration credentials (HERMES_GEMINI_*,
     # HERMES_LANGFUSE_*, HERMES_SPOTIFY_*, ...) ARE allowed.
     "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
+    "HERMES_CONFIG_PATH", "HERMES_ENV_PATH",
+    # MCP catalog trust root. Package-manager wrappers may still provide this
+    # in the process environment; only generic persistence writes are blocked.
+    "HERMES_OPTIONAL_MCPS",
+    # Local ACP subprocess selection. Existing operator/package-manager values
+    # remain readable; generic writers cannot acquire executable/argv authority.
+    "HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS",
+    # Hermes security policy / approval-routing context. These remain available
+    # through their dedicated CLI/config/session controls, but a generic
+    # credential writer must not persist them for the next process startup.
+    "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
+    "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
+    "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
+    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM",
 })
+
+
+def _env_var_policy_name(key: str, *, is_windows: Optional[bool] = None) -> str:
+    """Return the name used for environment policy comparisons.
+
+    Windows environment names are case-insensitive; POSIX names are not. The
+    explicit override keeps both semantics directly testable without pretending
+    the test interpreter is running on another host OS.
+    """
+    windows = _IS_WINDOWS if is_windows is None else is_windows
+    return key.upper() if windows else key
 
 
 def _reject_denylisted_env_var(key: str) -> None:
@@ -224,15 +256,27 @@ def _reject_denylisted_env_var(key: str) -> None:
     Centralised so both the regular and "secure" env writers share the
     same gate, and so the message is consistent for callers.
     """
-    if key in _ENV_VAR_NAME_DENYLIST:
+    if _env_var_policy_name(key) in _ENV_VAR_NAME_DENYLIST:
         raise ValueError(
             f"Environment variable {key!r} is on the writer denylist. "
             "Names that influence subprocess execution (LD_PRELOAD, "
             "PYTHONPATH, PATH, EDITOR, ...) or Hermes runtime location "
-            "(HERMES_HOME, HERMES_PROFILE, ...) cannot be persisted via "
+            "and security policy (HERMES_HOME, HERMES_YOLO_MODE, ...) "
+            "cannot be persisted via "
             "the env writer. If you really need this, edit "
             "~/.hermes/.env directly."
         )
+
+
+def validate_env_var_name_for_write(key: str) -> None:
+    """Validate an environment name before a generic persistence write.
+
+    Exposed separately from :func:`save_env_value` so batch-style callers can
+    validate their complete request before writing the first value.
+    """
+    if not _ENV_VAR_NAME_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    _reject_denylisted_env_var(key)
 
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # (path, mtime_ns, size) -> cached expanded config dict.
@@ -914,17 +958,13 @@ def ensure_hermes_home():
     home = get_hermes_home()
     key = str(home)
 
+    # Named profiles must be created explicitly (e.g. ``hermes profile create``).
+    # Check tombstones before the memo so a stale empty shell cannot skip
+    # the deleted-profile guard.
+    from hermes_constants import assert_named_profile_home_live
+    assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
-    # Named profiles must be created explicitly (e.g. ``hermes profile create``).
-    # If a stale process keeps running after the profile was renamed/deleted,
-    # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton
-    # and make the deleted profile reappear in Desktop/profile lists.
-    if home.parent.name == "profiles" and not home.exists():
-        raise FileNotFoundError(
-            f"Named profile home does not exist: {home}. "
-            "Create the profile explicitly before using it."
-        )
     if is_managed():
         old_umask = os.umask(0o007)
         try:
@@ -1345,6 +1385,54 @@ def _canonical_api_mode(api_mode: str) -> str:
     return _API_MODE_ALIASES.get(cleaned.lower(), cleaned)
 
 
+def coerce_provider_id(value: Any) -> str:
+    """Provider identity fields are strings.
+
+    PyYAML loads unquoted scalars like ``provider: 2070`` / ``2070:`` as int,
+    and later ``.strip()`` / ``.lower()`` on that value 500s the Model tab.
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def stringify_provider_map(providers: Any) -> dict:
+    """Copy a ``providers:`` mapping so keys are strings.
+
+    Desktop Custom Endpoints store the name as the dict key. An unquoted
+    YAML key ``2070:`` loads as int; picker code then calls ``ep_name.lower()``
+    and CRUD looks up ``"2070"`` and misses.
+    """
+    if not isinstance(providers, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for stored, value in providers.items():
+        key = coerce_provider_id(stored)
+        if key:
+            out[key] = value
+    return out
+
+
+def find_provider_entry(providers: Any, key: Any) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """Return ``(stored_key, entry)`` matching *key* by string identity.
+
+    Needed because PyYAML may have stored the key as ``2070`` (int) while
+    Desktop looks up ``"2070"``. Prefer an exact string hit, then scan.
+    """
+    if not isinstance(providers, dict):
+        return None, None
+    want = coerce_provider_id(key)
+    if not want:
+        return None, None
+    exact = providers.get(want)
+    if isinstance(exact, dict):
+        return want, exact
+    for stored, entry in providers.items():
+        if coerce_provider_id(stored) == want and isinstance(entry, dict):
+            return stored, entry
+    return None, None
+
+
 def _normalize_custom_provider_entry(
     entry: Any,
     *,
@@ -1362,6 +1450,7 @@ def _normalize_custom_provider_entry(
     # alias keys back into config.yaml through any later
     # save_config(load_config()) round-trip.
     entry = dict(entry)
+    provider_key = coerce_provider_id(provider_key)
 
     # Accept camelCase aliases commonly used in hand-written configs.
     _CAMEL_ALIASES: Dict[str, str] = {
@@ -1439,12 +1528,7 @@ def _normalize_custom_provider_entry(
     if not base_url:
         return None
 
-    name = ""
-    raw_name = entry.get("name")
-    if isinstance(raw_name, str) and raw_name.strip():
-        name = raw_name.strip()
-    elif provider_key.strip():
-        name = provider_key.strip()
+    name = coerce_provider_id(entry.get("name")) or provider_key
     if not name:
         return None
 
@@ -1606,7 +1690,9 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
     for key, entry in providers_dict.items():
         if isinstance(entry, dict) and not is_provider_enabled(entry):
             continue
-        normalized = _normalize_custom_provider_entry(entry, provider_key=str(key))
+        normalized = _normalize_custom_provider_entry(
+            entry, provider_key=coerce_provider_id(key)
+        )
         if normalized is not None:
             custom_providers.append(normalized)
 
@@ -3370,14 +3456,33 @@ def read_raw_config_readonly() -> Dict[str, Any]:
         return cached_copy
 
 
-def require_readable_config_before_write(config_path: Optional[Path] = None) -> None:
-    """Refuse to replace an existing config.yaml that cannot be read."""
+def require_readable_config_before_write(
+    config_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Refuse to replace an existing config.yaml that cannot be read or parsed.
+
+    Guards two collapse-to-empty failure modes that would otherwise let a
+    read-then-write caller silently wipe user overrides:
+
+    1. **Unreadable** (permissions / broken mount) - byte open fails.
+    2. **Unparseable or non-mapping** - YAML load raises, or the root is a
+       list/scalar. ``read_user_config_raw()`` / bare ``except`` loaders treat
+       both as ``{}``, so a subsequent write would replace the recoverable
+       file with only the caller's partial dict.
+
+    Returns the loaded mapping (or ``{}`` for a missing / empty / null
+    document) so mutation callers can skip a second parse. A valid empty
+    mapping (``{}``) is allowed through so first-time installs and
+    intentional empty configs still work. On parse failure this also
+    snapshots a ``.corrupt.*.bak`` via :func:`_warn_config_parse_failure`
+    before raising.
+    """
     if config_path is None:
         config_path = get_config_path()
     try:
         config_path.stat()
     except FileNotFoundError:
-        return
+        return {}
     except OSError as exc:
         raise RuntimeError(
             f"Refusing to overwrite {config_path}: existing config.yaml cannot be accessed "
@@ -3393,6 +3498,47 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
             f"({exc}). Fix the file permissions or move it aside first."
         ) from exc
 
+    return _load_user_config_for_mutation(config_path)
+
+
+def _load_user_config_for_mutation(config_path: Path) -> Dict[str, Any]:
+    """Load raw user config for a fail-closed mutation path.
+
+    Fail closed on parse / non-mapping (no bare-except to ``{}`` collapse).
+    Used by :func:`require_readable_config_before_write` and any caller that
+    must re-validate after other work. Distinct from
+    :func:`read_user_config_raw`, which collapses non-dict roots to ``{}``.
+    """
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            loaded = fast_safe_load(f)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: existing config.yaml cannot be read "
+            f"({exc}). Fix the file permissions or move it aside first."
+        ) from exc
+    except Exception as exc:
+        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: existing config.yaml is not valid YAML "
+            f"({exc}). Fix the file or restore from a .corrupt.*.bak backup first."
+        ) from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        exc = TypeError(
+            f"top-level YAML must be a mapping, got {type(loaded).__name__}"
+        )
+        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, "
+            f"got {type(loaded).__name__}. Fix the file or restore from a "
+            f".corrupt.*.bak backup first."
+        ) from exc
+    return loaded
+
 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """Fail-closed atomic write for ``config.yaml``.
@@ -3402,12 +3548,13 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     :func:`require_readable_config_before_write` first, so a full-file
     replacement can never silently clobber an existing ``config.yaml`` that
     degraded to an empty dict on read (permission error, broken mount,
-    transient I/O). New-file creation still works when the path is absent.
+    transient I/O, unparseable YAML, or a non-mapping root). New-file
+    creation still works when the path is absent.
 
-    Root cause this guards: ``read_raw_config()`` returns ``{}`` for BOTH an
-    absent file and an unreadable-but-present file. Callers that read then
-    overwrite can't tell the two apart, so an unreadable config would be
-    replaced with only defaults or the single edited section. Routing every
+    Root cause this guards: ``read_user_config_raw()`` returns ``{}`` for an
+    absent file / unreadable path edge cases and collapses non-dict roots.
+    Callers that read then overwrite can't tell these apart, so a broken
+    config would be replaced with only defaults or the single edited section. Routing every
     write through this helper enforces the invariant in one place rather than
     relying on each of ~15 independent write sites to remember the guard.
 
@@ -3493,6 +3640,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "modal_mode": "TERMINAL_MODAL_MODE",
     "degraded_mode": "TERMINAL_DEGRADED_MODE",
     "cwd": "TERMINAL_CWD",
+    "temp_dir": "TERMINAL_TEMP_DIR",
     "timeout": "TERMINAL_TIMEOUT",
     "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
     "docker_image": "TERMINAL_DOCKER_IMAGE",
@@ -4211,7 +4359,12 @@ def _quote_env_value(value: str) -> str:
     return f'"{escaped}"'
 
 
-def _env_line_defines_key(line: str, key: str) -> bool:
+def _env_line_defines_key(
+    line: str,
+    key: str,
+    *,
+    is_windows: Optional[bool] = None,
+) -> bool:
     """True when a .env line assigns ``key`` — plain or ``export``-prefixed.
 
     ``load_env()`` accepts the bash-compatible ``export KEY=value`` form
@@ -4222,7 +4375,13 @@ def _env_line_defines_key(line: str, key: str) -> bool:
     stripped = line.strip()
     if stripped.startswith("export "):
         stripped = stripped[7:].lstrip()
-    return stripped.startswith(f"{key}=")
+    assigned_key, separator, _value = stripped.partition("=")
+    if not separator:
+        return False
+    return _env_var_policy_name(
+        assigned_key,
+        is_windows=is_windows,
+    ) == _env_var_policy_name(key, is_windows=is_windows)
 
 
 def save_env_value(key: str, value: str):
@@ -4243,9 +4402,7 @@ def save_env_value(key: str, value: str):
             file=sys.stderr,
         )
         return
-    if not _ENV_VAR_NAME_RE.match(key):
-        raise ValueError(f"Invalid environment variable name: {key!r}")
-    _reject_denylisted_env_var(key)
+    validate_env_var_name_for_write(key)
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
@@ -5388,7 +5545,12 @@ def _coerce_int(value: str):
 
 
 def _coerce_float(value: str):
-    """Return float(value) for a clean float literal, else None."""
+    """Return ``float(value)`` when conversion preserves its decimal value.
+
+    Decimal-looking identifiers can be much more precise than a binary float.
+    Silently rounding one here corrupts it before it reaches ``config.yaml``,
+    so values that do not round-trip through ``float`` remain strings.
+    """
     try:
         f = float(value)
     except (TypeError, ValueError):
@@ -5396,6 +5558,11 @@ def _coerce_float(value: str):
     # Reject NaN/inf spellings — they are almost never intended config values
     # and round-trip confusingly through YAML.
     if f != f or f in (float("inf"), float("-inf")):
+        return None
+    try:
+        if Decimal(value) != Decimal(str(f)):
+            return None
+    except InvalidOperation:
         return None
     return f
 
@@ -5471,21 +5638,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
     config_path = get_config_path()
-    require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
-        except Exception as exc:
-            print(
-                f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a YAML syntax error. Fix the error\n"
-                f"  in your config file first, then retry.\n"
-                f"  (hermes config edit will open it in your editor.)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    # Fail-closed parse via require_readable (unparseable / non-mapping
+    # refuse-write); returns the mapping so we do not re-parse / collapse.
+    user_config = require_readable_config_before_write(config_path)
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -5729,21 +5884,9 @@ def unset_config_value(key: str):
         return
 
     config_path = get_config_path()
-    require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
-        except Exception as exc:
-            print(
-                f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a YAML syntax error. Fix the error\n"
-                f"  in your config file first, then retry.\n"
-                f"  (hermes config edit will open it in your editor.)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    # Fail-closed parse via require_readable (unparseable / non-mapping
+    # refuse-write); returns the mapping so we do not re-parse / collapse.
+    user_config = require_readable_config_before_write(config_path)
 
     removed = _unset_nested(user_config, key)
 
@@ -5803,7 +5946,13 @@ def config_command(args):
             print("  --force: skip the unknown-key notice for unrecognized keys,")
             print("           and allow a scalar to replace a whole mapping section")
             sys.exit(1)
-        set_config_value(key, value, force=force)
+        try:
+            set_config_value(key, value, force=force)
+        except RuntimeError as exc:
+            # Fail-closed write guard (unparseable / non-mapping / unreadable
+            # config.yaml). Surface a clean CLI error instead of a traceback.
+            print(f"✗ {exc}", file=sys.stderr)
+            sys.exit(1)
 
     elif subcmd == "unset":
         key = getattr(args, 'key', None)
@@ -5815,7 +5964,12 @@ def config_command(args):
             print("  hermes config unset terminal.backend")
             print("  hermes config unset OPENROUTER_API_KEY")
             sys.exit(1)
-        unset_config_value(key)
+        try:
+            unset_config_value(key)
+        except RuntimeError as exc:
+            # Same fail-closed guard surface as `config set` above.
+            print(f"✗ {exc}", file=sys.stderr)
+            sys.exit(1)
     
     elif subcmd == "path":
         print(get_config_path())

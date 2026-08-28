@@ -3897,7 +3897,7 @@ class MediaSendHandler(ABC):
                 "[%s] %s.handle() failed: %s",
                 adapter.name, handler_name, exc, exc_info=True,
             )
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
 
 class ImageUrlHandler(MediaSendHandler):
@@ -5068,7 +5068,11 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         Delegates to ConnectionManager.open().
         """
-        return await self._connection.open()
+        ok = await self._connection.open()
+        if ok:
+            # Plugin-registered native handlers (ctx.register_platform_handler).
+            self._wire_plugin_handlers(None)
+        return ok
 
     async def disconnect(self) -> None:
         """Cancel background tasks and close the WebSocket connection."""

@@ -582,6 +582,35 @@ test('turn transport is gateway-native (session RPCs) and hostile text rides ver
   assert.match(pluginSource, /const title = `Group: \$\{room\.roomId \|\| group\}`/)
 })
 
+test('room plumbing sessions carry the room_plumbing contract', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.sendToGroupChat('Rpc', [{ name: 'research', title: '' }], 'hello')
+  for (let i = 0; i < 200 && (gc.$groupChats.get().Rpc || {}).running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  // The per-group plumbing session must be hidden AND stamped as
+  // room_plumbing so the server rebuilds it from the member profile's
+  // CURRENT config instead of restoring a stale stored provider pin
+  // (GH #89497 — room bots stuck on Nous after a provider switch).
+  assert.match(pluginSource, /hidden: true/)
+  assert.match(pluginSource, /room_plumbing: true/)
+})
+
+test('bot sessions carry the follow-profile-config contract (canonical DM + room)', () => {
+  // Canonical Bot Chat: the ONE forever DM per bot must always follow the
+  // member profile's CURRENT config — never a stale stored model/provider pin
+  // (the "out of Nous credits" DM bug after a profile switch).
+  assert.match(pluginSource, /follow_profile_config: true/)
+  // The contract is sent on session.create for BOTH the canonical chat and
+  // room plumbing sessions, so resume rebuilds from current config.
+  const canonical = pluginSource.slice(pluginSource.indexOf('function createCanonicalChat'))
+  assert.match(canonical, /follow_profile_config: true/)
+  const room = pluginSource.slice(pluginSource.indexOf('async function ensureGroupChatSession'))
+  assert.match(room, /follow_profile_config: true/)
+})
+
 test('log trimming keeps watermarks consistent', () => {
   const gc = load(() => '(pass)')
   const log = Array.from({ length: 200 }, (_, i) => ({ from: { kind: 'user', name: 'You' }, text: `m${i}`, at: i }))
@@ -1525,6 +1554,40 @@ test('stranded harvest: a timed-out turn whose reply landed late posts into the 
   assert.equal(log[0].from.name, 'research')
   assert.match(log[0].text, /delivered late/)
   assert.equal(gc.$groupChats.get().Late.stranded.research, undefined, 'marker consumed')
+})
+
+test('stranded harvest: a rescued reply prefers the substantive answer over a trailing synthetic (pass)', async () => {
+  const gc = load(() => '(pass)')
+
+  // #94376 class bug at the second call site: the late-landing turn ends
+  // with a Codex intent-ack continuation nudge that gets a synthetic
+  // "(pass)" — the harvest must still surface the substantive answer that
+  // preceded it, not the trailing pass.
+  gc.updateGroupChat('Rescue', r => {
+    r.stranded = { research: 0 }
+    r.sessions = { research: 'sid-research' }
+    return r
+  })
+  gc.sessions.set('sid-research', {
+    stored: 'sid-research',
+    runtime: 'rt-research',
+    profile: 'research',
+    title: 'Group: Rescue',
+    messages: [
+      { role: 'user', content: 'the turn prompt' },
+      { role: 'assistant', content: 'Here is the full research result, delivered late.' },
+      { role: 'user', content: '[System: Continue now. Execute the required tool calls and only send your final answer after completing the task.]' },
+      { role: 'assistant', content: '(pass)' }
+    ]
+  })
+
+  await gc.harvestStrandedGroupReply('Rescue', { name: 'research', title: '' })
+
+  const log = roomLog(gc, 'Rescue')
+  assert.equal(log.length, 1)
+  assert.equal(log[0].from.name, 'research')
+  assert.match(log[0].text, /delivered late/)
+  assert.equal(gc.$groupChats.get().Rescue.stranded.research, undefined, 'marker consumed')
 })
 
 test('stranded + still busy: the round loop never re-submits into a member whose harvest just confirmed they are still running', async () => {

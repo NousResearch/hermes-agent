@@ -167,6 +167,101 @@ def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_p
     assert db.get_compression_lock_holder(session_id) is None
 
 
+def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) -> None:
+    """A lock loser still closes the structured compaction lifecycle.
+
+    The gateway independently filters this routine notice for chat surfaces
+    unless ``compression.progress_notices`` is enabled.  The low-level event
+    must remain available so the desktop can retire its compaction phase.
+    """
+    from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "LOCK_CONTENDER_STATUS_TEST"
+    db.create_session(session_id, source="discord")
+    assert db.try_acquire_compression_lock(session_id, "winner", ttl_seconds=60)
+
+    agent = _build_agent_with_db(db, session_id)
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    returned, _system_prompt = agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+    )
+
+    assert returned is messages
+    assert getattr(agent, "_compression_skipped_due_to_lock", None) == "winner"
+    assert status_events.count(("compacted", COMPACTION_DONE_STATUS)) == 1
+
+
+def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Path) -> None:
+    """A failed durable split must not emit a successful completion edge."""
+    from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "FAILED_SPLIT_STATUS_TEST"
+    db.create_session(session_id, source="discord")
+    agent = _build_agent_with_db(db, session_id)
+    setattr(agent, "compression_in_place", False)
+    db.publish_compression_child = MagicMock(side_effect=RuntimeError("split boom"))
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+        force=True,
+    )
+
+    db.publish_compression_child.assert_called_once()
+    assert ("compacted", COMPACTION_DONE_STATUS) not in status_events
+    assert db.get_compression_lock_holder(session_id) is None
+
+
+def test_failed_in_place_split_does_not_announce_compaction_complete(tmp_path: Path) -> None:
+    """An in-place persistence failure must not emit a completion edge."""
+    from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "FAILED_IN_PLACE_STATUS_TEST"
+    db.create_session(session_id, source="discord")
+    agent = _build_agent_with_db(db, session_id)
+    setattr(agent, "compression_in_place", True)
+    db.archive_and_compact = MagicMock(side_effect=RuntimeError("archive boom"))
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+        force=True,
+    )
+
+    db.archive_and_compact.assert_called_once()
+    assert ("compacted", COMPACTION_DONE_STATUS) not in status_events
+    assert getattr(agent, "session_id", None) == session_id
+    assert db.get_compression_lock_holder(session_id) is None
+
+
 def test_compression_activity_heartbeat_stops_on_compress_exception(tmp_path: Path) -> None:
     """Exception paths must stop the heartbeat and release the compression lock."""
     db = SessionDB(db_path=tmp_path / "state.db")

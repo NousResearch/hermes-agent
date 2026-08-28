@@ -3479,6 +3479,22 @@ class GatewaySlashCommandsMixin:
                     "gateway.rollback.kept_user_edits",
                     files=shown + more,
                 )
+            oversize = result.get("skipped_oversize") or []
+            if oversize:
+                shown = ", ".join(oversize[:5])
+                more = f" (+{len(oversize) - 5})" if len(oversize) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.kept_oversize",
+                    files=shown + more,
+                )
+            failed = result.get("failed_deletes") or []
+            if failed:
+                shown = ", ".join(failed[:5])
+                more = f" (+{len(failed) - 5})" if len(failed) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.failed_deletes",
+                    files=shown + more,
+                )
             return msg
         return t("gateway.rollback.restore_failed", error=result["error"])
 
@@ -4783,9 +4799,16 @@ class GatewaySlashCommandsMixin:
         temp_dir = tempfile.mkdtemp(prefix="hermes_save_")
         temp_path = os.path.join(temp_dir, filename)
         try:
-            content = render_session_for_save(export_data, fmt)
-            with open(temp_path, "w", encoding="utf-8") as f:
-                f.write(content)
+            # Off-loop: rendering a long session and writing it to disk are
+            # CPU/disk-bound and scale with transcript size (multi-MB for
+            # long sessions). Inline they stall every other chat on the
+            # gateway event loop (Pattern A). One thread hop covers both.
+            def _render_and_write() -> None:
+                rendered = render_session_for_save(export_data, fmt)
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    f.write(rendered)
+
+            await asyncio.to_thread(_render_and_write)
 
             adapter = self.get_adapter(source.platform)
             if adapter:
@@ -5869,7 +5892,35 @@ class GatewaySlashCommandsMixin:
 
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
         plural = "plural" if count > 1 else "singular"
-        return t(f"gateway.approve.{choice}_{plural}", count=count)
+        confirmation_text = t(f"gateway.approve.{choice}_{plural}", count=count)
+        # Native-streaming adapters (WeCom msgtype:"stream") need the
+        # confirmation sent directly with control-lane metadata so it lands
+        # via a reliable proactive send instead of the (already-finalized)
+        # reply stream. Every other platform keeps the normal contract:
+        # else: return the text and let the gateway deliver it.
+        # (`is not True` — mock adapters auto-create truthy attributes.)
+        if getattr(_adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
+            return confirmation_text
+        if _adapter:
+            try:
+                await _adapter.send(
+                    source.chat_id,
+                    confirmation_text,
+                    reply_to=event.message_id,
+                    metadata={
+                        "is_approval_prompt": True,
+                        "force_proactive_send": True,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to send /approve confirmation to %s: %s",
+                    source.chat_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        return None
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject pending dangerous command(s).
@@ -5927,11 +5978,40 @@ class GatewaySlashCommandsMixin:
         )
         if reason:
             if count > 1:
-                return t("gateway.deny.denied_reason_plural", count=count, reason=reason)
-            return t("gateway.deny.denied_reason_singular", reason=reason)
-        if count > 1:
-            return t("gateway.deny.denied_plural", count=count)
-        return t("gateway.deny.denied_singular")
+                confirmation_text = t("gateway.deny.denied_reason_plural", count=count, reason=reason)
+            else:
+                confirmation_text = t("gateway.deny.denied_reason_singular", reason=reason)
+        elif count > 1:
+            confirmation_text = t("gateway.deny.denied_plural", count=count)
+        else:
+            confirmation_text = t("gateway.deny.denied_singular")
+
+        # Same native-streaming carve-out as /approve above: only WeCom-style
+        # native-stream adapters take the direct control-lane send; everyone
+        # else returns the text for normal gateway delivery.
+        # (`is not True` — mock adapters auto-create truthy attributes.)
+        if getattr(_adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
+            return confirmation_text
+        if _adapter:
+            try:
+                await _adapter.send(
+                    source.chat_id,
+                    confirmation_text,
+                    reply_to=event.message_id,
+                    metadata={
+                        "is_approval_prompt": True,
+                        "force_proactive_send": True,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to send /deny confirmation to %s: %s",
+                    source.chat_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        return None
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload debug report (summary only) and return paste URLs.

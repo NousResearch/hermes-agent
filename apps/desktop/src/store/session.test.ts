@@ -15,6 +15,7 @@ vi.mock('@/hermes', () => ({
   setSessionUnreadRemote: (id: string, unread: boolean, profile?: null | string) => setUnreadRemote(id, unread, profile)
 }))
 
+import { deferred } from '../test/deferred'
 import { makeSessionInfo } from '../test/session-info'
 
 import {
@@ -25,11 +26,17 @@ import {
   $sessions,
   $unreadFinishedSessionIds,
   _resetLegacyDiscardForTests,
+  _resetSessionOwnerHintsForTests,
   applyConfiguredDefaultProjectDir,
   commitWorkspaceCwdForSelectedSession,
+  ensureDefaultWorkspaceCwd,
+  forgetSessionOwnerHintsForConnection,
+  getConfiguredDefaultProjectDir,
   getRememberedRoute,
   getRememberedSessionId,
   getSessionOwnerHint,
+  hydrateSessionOwnerHints,
+  knownSessionOwner,
   knownSessionProfile,
   mergeSessionPage,
   rememberedSessionProfile,
@@ -57,6 +64,32 @@ import {
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
 
 describe('session owner hints', () => {
+  afterEach(() => {
+    _resetSessionOwnerHintsForTests({ storage: true })
+  })
+
+  it('preserves the registry owner recorded on a discovered session row', () => {
+    expect(
+      knownSessionOwner(
+        [session({ connection_id: 'test-amnezia', id: 'registry-session', profile: 'default' })],
+        'registry-session'
+      )
+    ).toEqual({ connectionId: 'test-amnezia', profile: 'default' })
+  })
+
+  it('preserves the exact registry owner for session-scoped RPC routing', () => {
+    const route = {
+      connectionId: 'test-amnezia',
+      mode: 'remote' as const,
+      profile: 'default',
+      targetProfile: 'default'
+    }
+
+    setSessionOwnerHint('remote-session', route)
+
+    expect(knownSessionOwner([session({ id: 'remote-session', profile: 'default' })], 'remote-session')).toEqual(route)
+  })
+
   it('keeps identical session ids separate across connection and profile owners', () => {
     const sourceA = { connectionId: 'source-a', mode: 'remote' as const, profile: 'worker', targetProfile: 'backend-a' }
     const sourceB = { connectionId: 'source-b', mode: 'remote' as const, profile: 'worker', targetProfile: 'backend-b' }
@@ -82,6 +115,93 @@ describe('session owner hints', () => {
     const scope = { connectionId: 'bounded-source', profile: 'worker' }
     expect(getSessionOwnerHint('bounded-0', scope)).toBeUndefined()
     expect(getSessionOwnerHint('bounded-256', scope)).toMatchObject({ connectionId: 'bounded-source' })
+  })
+
+  it('survives a relaunch: hints are persisted and rehydrated in LRU order', () => {
+    const omar = { connectionId: 'local', mode: 'local' as const, profile: 'omar' }
+    const remote = { connectionId: 'homelab', mode: 'remote' as const, profile: 'worker', targetProfile: 'w' }
+
+    setSessionOwnerHint('stored-omar', omar)
+    setSessionOwnerHint('stored-remote', remote)
+
+    // "Relaunch": the in-memory map is gone, storage is not.
+    _resetSessionOwnerHintsForTests()
+    expect(getSessionOwnerHint('stored-omar')).toBeUndefined()
+
+    hydrateSessionOwnerHints()
+
+    expect(getSessionOwnerHint('stored-omar')).toEqual(omar)
+    expect(getSessionOwnerHint('stored-remote')).toEqual(remote)
+
+    // LRU order survives: the oldest persisted entry is the first evicted.
+    for (let index = 0; index < 255; index += 1) {
+      setSessionOwnerHint(`filler-${index}`, { connectionId: 'filler', profile: 'p' })
+    }
+
+    expect(getSessionOwnerHint('stored-omar')).toBeUndefined()
+    expect(getSessionOwnerHint('stored-remote')).toEqual(remote)
+  })
+
+  it('ignores malformed persisted entries and never throws on hydrate', () => {
+    window.localStorage.setItem(
+      'hermes.desktop.sessionOwnerHints.v1',
+      JSON.stringify([
+        'junk',
+        ['no-route', null],
+        ['bad-shape', { connectionId: 7, profile: 'x' }],
+        ['good', { connectionId: 'local', profile: 'omar', mode: 'sideways' }]
+      ])
+    )
+
+    _resetSessionOwnerHintsForTests()
+    expect(() => hydrateSessionOwnerHints()).not.toThrow()
+    expect(getSessionOwnerHint('good')).toEqual({ connectionId: 'local', profile: 'omar' })
+    expect(getSessionOwnerHint('no-route')).toBeUndefined()
+    expect(getSessionOwnerHint('bad-shape')).toBeUndefined()
+  })
+
+  it('forgets every hint naming a removed connection, in memory and on disk', () => {
+    setSessionOwnerHint('stored-a', { connectionId: 'gone', profile: 'omar' })
+    setSessionOwnerHint('stored-b', { connectionId: 'gone', profile: 'default' })
+    setSessionOwnerHint('stored-c', { connectionId: 'local', profile: 'omar' })
+
+    forgetSessionOwnerHintsForConnection('gone')
+
+    expect(getSessionOwnerHint('stored-a')).toBeUndefined()
+    expect(getSessionOwnerHint('stored-b')).toBeUndefined()
+    expect(getSessionOwnerHint('stored-c')).toEqual({ connectionId: 'local', profile: 'omar' })
+
+    _resetSessionOwnerHintsForTests()
+    hydrateSessionOwnerHints()
+    expect(getSessionOwnerHint('stored-a')).toBeUndefined()
+    expect(getSessionOwnerHint('stored-c')).toEqual({ connectionId: 'local', profile: 'omar' })
+  })
+})
+
+describe('knownSessionOwner', () => {
+  afterEach(() => {
+    _resetSessionOwnerHintsForTests({ storage: true })
+  })
+
+  it('returns the EXACT route for a connection-tagged row, the bare profile otherwise', () => {
+    const rows = [
+      session({ connection_id: 'local', id: 'tagged', profile: 'omar' }),
+      session({ id: 'untagged', profile: 'coder' }),
+      session({ connection_id: '  ', id: 'blank-tag', profile: 'coder' })
+    ]
+
+    expect(knownSessionOwner(rows, 'tagged')).toEqual({ connectionId: 'local', profile: 'omar' })
+    expect(knownSessionOwner(rows, 'untagged')).toBe('coder')
+    expect(knownSessionOwner(rows, 'blank-tag')).toBe('coder')
+    expect(knownSessionOwner(rows, null)).toBeUndefined()
+  })
+
+  it('falls through to the EXACT hint route for an unlisted session', () => {
+    const route = { connectionId: 'homelab', profile: 'worker', targetProfile: 'w' }
+
+    setSessionOwnerHint('hidden', route)
+
+    expect(knownSessionOwner([], 'hidden')).toEqual(route)
   })
 })
 
@@ -175,6 +295,73 @@ describe('shouldMigrateComposerScope', () => {
 })
 
 describe('mergeSessionPage', () => {
+  it('carries the owning connection onto a row that comes back untagged (local registry source)', () => {
+    // A `local` registry source's rows are served by the primary aggregate as
+    // plain local rows: the unified-list splice tags only non-local sources.
+    // The refresh must not strip the exact owner the routed create stamped.
+    const previous = [session({ connection_id: 'local', id: 'omar-1', last_active: 5, profile: 'omar' })]
+    const incoming = [session({ id: 'omar-1', last_active: 5, profile: 'omar' })]
+
+    expect(mergeSessionPage(previous, incoming, [])[0]).toMatchObject({ connection_id: 'local', profile: 'omar' })
+  })
+
+  it('drops the carried tag when the refreshed row names a different profile, and never overrides an incoming tag', () => {
+    const previous = [
+      session({ connection_id: 'local', id: 'moved', profile: 'omar' }),
+      session({ connection_id: 'local', id: 'foreign', profile: 'omar' })
+    ]
+
+    const incoming = [
+      session({ id: 'moved', profile: 'default' }),
+      session({ connection_id: 'homelab', id: 'foreign', profile: 'omar' })
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, [])
+    expect(merged.find(s => s.id === 'moved')?.connection_id).toBeUndefined()
+    expect(merged.find(s => s.id === 'foreign')?.connection_id).toBe('homelab')
+  })
+
+  it('keeps reference identity when the carried tag is already present', () => {
+    const previous = [session({ connection_id: 'local', id: 'same', last_active: 1, profile: 'omar' })]
+    const incoming = [session({ connection_id: 'local', id: 'same', last_active: 1, profile: 'omar' })]
+
+    expect(mergeSessionPage(previous, incoming, [])[0]).toBe(incoming[0])
+  })
+
+  it('never stitches one profile twin onto another: same id in two profiles stays two sessions (#92454)', () => {
+    // Two profiles can hold sessions with the SAME stored id (restored
+    // backups, copied state.dbs). Keyed by bare id these collapsed into one
+    // row whose title/activity carry crossed profiles — the visible seed of
+    // the cross-profile transcript/route mixups.
+    const previous = [session({ id: 'twin', last_active: 50, profile: 'testbot', title: 'Testbot work' })]
+
+    const incoming = [
+      session({ id: 'twin', last_active: 10, profile: 'quietbot' }),
+      session({ id: 'twin', last_active: 50, profile: 'testbot', title: 'Testbot work' })
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, [])
+
+    // Both twins survive as distinct rows…
+    expect(merged.map(s => `${s.profile}:${s.id}`).sort()).toEqual(['quietbot:twin', 'testbot:twin'])
+    // …and testbot's title/activity is NOT stitched onto quietbot's row.
+    const quiet = merged.find(s => s.profile === 'quietbot')
+    expect(quiet?.title ?? null).toBeNull()
+    expect(quiet?.last_active).toBe(10)
+  })
+
+  it('a kept twin in another profile survives the incoming page dedupe (#92454)', () => {
+    // The incoming page carries only ONE profile's copy; the other profile's
+    // twin was in the previous list and pinned via keep. Bare-id dedupe
+    // treated the ids as equal and dropped the kept twin.
+    const previous = [session({ id: 'twin', profile: 'quietbot' })]
+    const incoming = [session({ id: 'twin', message_count: 2, profile: 'testbot' })]
+
+    const merged = mergeSessionPage(previous, incoming, ['twin'])
+
+    expect(merged.map(s => `${s.profile}:${s.id}`).sort()).toEqual(['quietbot:twin', 'testbot:twin'])
+  })
+
   it('returns the server page untouched when there is nothing to keep', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]
     const incoming = [session({ id: 'a' })]
@@ -421,6 +608,57 @@ describe('workspaceCwdForNewSession', () => {
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('does not publish a delayed configured default after ownership is lost', async () => {
+    const settingsResult = deferred<{
+      defaultLabel: string
+      dir: string
+      resolvedCwd: string
+    }>()
+
+    const sanitizeWorkspaceCwd = vi.fn(async (cwd: string) => ({ cwd }))
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd,
+      settings: { getDefaultProjectDir: vi.fn(() => settingsResult.promise) }
+    }
+    applyConfiguredDefaultProjectDir('/newer/default')
+    let ownsSwitch = true
+
+    const seeding = ensureDefaultWorkspaceCwd(() => ownsSwitch)
+    ownsSwitch = false
+    settingsResult.resolve({ defaultLabel: '/stale', dir: '/stale/default', resolvedCwd: '/stale/default' })
+    await seeding
+
+    expect(getConfiguredDefaultProjectDir()).toBe('/newer/default')
+    expect($currentCwd.get()).toBe('')
+    expect(sanitizeWorkspaceCwd).not.toHaveBeenCalled()
+  })
+
+  it('does not publish a delayed sanitized cwd after ownership is lost', async () => {
+    const sanitized = deferred<{ cwd: string }>()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd: vi.fn(() => sanitized.promise),
+      settings: {
+        getDefaultProjectDir: vi.fn(async () => ({
+          defaultLabel: '/configured',
+          dir: '/configured',
+          resolvedCwd: '/configured'
+        }))
+      }
+    }
+    let ownsSwitch = true
+
+    const seeding = ensureDefaultWorkspaceCwd(() => ownsSwitch)
+    await vi.waitFor(() => expect(getConfiguredDefaultProjectDir()).toBe('/configured'))
+    ownsSwitch = false
+    sanitized.resolve({ cwd: '/stale/sanitized' })
+    await seeding
+
+    expect($currentCwd.get()).toBe('')
   })
 
   it('prefers the configured default over the sticky remembered workspace', () => {
@@ -970,5 +1208,23 @@ describe('knownSessionProfile', () => {
     // probe, not silently route the RPC to whatever profile is on screen.
     expect(knownSessionProfile([], 'totally-unknown')).toBeUndefined()
     expect(knownSessionProfile([], null)).toBeUndefined()
+  })
+})
+
+describe('knownSessionOwner', () => {
+  it('preserves a registry connection on a same-named session row', () => {
+    expect(
+      knownSessionOwner(
+        [session({ connection_id: 'source-b', id: 'shared-session', profile: 'default' })],
+        'shared-session'
+      )
+    ).toEqual({ connectionId: 'source-b', profile: 'default' })
+  })
+
+  it('preserves a composite owner hint when the row is not listed', () => {
+    const owner = { connectionId: 'source-a', profile: 'default', targetProfile: 'backend-default' }
+    setSessionOwnerHint('hidden-session', owner)
+
+    expect(knownSessionOwner([], 'hidden-session')).toEqual(owner)
   })
 })

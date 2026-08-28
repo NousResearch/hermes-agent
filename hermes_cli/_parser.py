@@ -351,7 +351,12 @@ def build_top_level_parser():
     )
     _query_group = chat_parser.add_mutually_exclusive_group()
     _query_group.add_argument(
-        "-q", "--query", help="Single query (non-interactive mode)"
+        "-q", "--query",
+        help=(
+            "Query to run. On a real TTY the prompt seeds an interactive "
+            "session (submitted literally as the first turn); combined with "
+            "--oneshot or -Q, or on a non-TTY, it answers and exits."
+        ),
     )
     _query_group.add_argument(
         "--query-file",
@@ -361,6 +366,21 @@ def build_top_level_parser():
             "('-' reads stdin). Safe for arbitrary text: nothing is shell-"
             "interpreted, so quotes, $(...), and backticks are preserved "
             "verbatim. Mutually exclusive with -q."
+        ),
+    )
+    chat_parser.add_argument(
+        "--oneshot",
+        dest="oneshot_exit",
+        action="store_true",
+        # Distinct dest: the top-level `-z/--oneshot PROMPT` is value-taking
+        # and its dispatch sites do `if args.oneshot: _run_and_exit_oneshot(
+        # args.oneshot)` — a shared boolean dest would be passed as the
+        # prompt. `oneshot_exit` keeps the surfaces independent.
+        default=False,
+        help=(
+            "With -q/--query-file: answer the query and exit (legacy "
+            "single-query behavior) instead of seeding an interactive "
+            "session. Implied on non-TTY stdio and by -Q/--quiet."
         ),
     )
     chat_parser.add_argument(

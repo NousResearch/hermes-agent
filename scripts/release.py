@@ -342,6 +342,8 @@ LEGACY_AUTHOR_MAP = {
     "joelbrilliant1@gmail.com": "joelbrilliant",  # PR #58486 salvage (session-expiry cleanup must not end row as agent_close)
     "bassisho@Mac-mini-bassis.local": "hydracoco7",  # PR #61382 salvage (id-less cron job freeze)
     "AlexFucuson9@users.noreply.github.com": "AlexFucuson9",  # PR #61209 salvage (hygiene compression data loss)
+    "shauneccles@gmail.com": "shauneccles",  # PR #95433 salvage (compression stall-fallback retry on fallback_chain; #78981)
+    "shtorm@fedosis.ru": "fedosis",  # PR #94996 salvage (compression rotation dedupe current-turn rows)
     "email@adambig.gs": "adambiggs",  # PR #43819 salvage (holographic shared SQLite connection)
     "koho.jung@outlook.com": "kohoj",  # PR #61667 salvage (nonce-CSP HTML session export)
     "t.chen@aftership.com": "cypctlinux",  # PR #52403 salvage (Slack bot/workflow auth before no-user-id guard)

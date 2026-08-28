@@ -57,6 +57,8 @@ def _ns(**kw):
         ignore_existing=False,
         hermes_root=None,
         cwd=None,
+        setup_tcc_identity=False,
+        identity=None,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -456,6 +458,10 @@ def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatc
 def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monkeypatch, capsys):
     """A failing stable sign must still leave a launchable (deep ad-hoc) bundle.
 
+    The stable signer raising routes into the legacy deep ad-hoc fallback;
+    with the fallback sign and strict verification succeeding, the fixup
+    reports ``True`` per its documented contract.
+
     ``macos_only``: the subject is ``codesign`` against a real ``.app`` bundle
     layout (``exe.parents[2]``), which only the macOS packaged tree produces.
     """
@@ -485,9 +491,424 @@ def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monk
 
     monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
 
-    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
     assert ["xattr", "-cr", str(app)] in calls
     assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
+
+
+# --- desktop --setup-tcc-identity ------------------------------------------
+
+
+def _fake_proc(cmd, returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
+
+
+def test_setup_tcc_identity_creates_cert_imports_trusts_and_configures(tmp_path, monkeypatch, capsys):
+    """Fresh identity: openssl generates, security imports + trusts, config is written."""
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main.shutil,
+        "which",
+        lambda name: {"openssl": "/usr/bin/openssl", "security": "/usr/bin/security", "codesign": "/usr/bin/codesign"}.get(name),
+    )
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: tmp_path))
+
+    identity = "Hermes Local Signing"
+    calls = []
+    state = {"trusted": False}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:4] == ["/usr/bin/security", "find-identity", "-v", "-p"]:
+            # Valid only after import AND trust have both happened — mirrors
+            # real macOS, where an untrusted self-signed cert is invisible to
+            # the -v listing (the #77189 review finding).
+            if state["trusted"]:
+                return _fake_proc(cmd, stdout=f'  1) ABCD "{identity}"\n     1 valid identities found')
+            return _fake_proc(cmd, stdout="     0 valid identities found")
+        if cmd[0] == "/usr/bin/security" and cmd[1] == "add-trusted-cert":
+            state["trusted"] = True
+            return _fake_proc(cmd)
+        return _fake_proc(cmd)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    # Avoid writing the real user config.
+    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+
+    assert cli_main._desktop_macos_setup_tcc_identity(identity) is True
+
+    out = capsys.readouterr().out
+    assert "created, imported, and trusted self-signed identity" in out
+    assert "set desktop.macos_signing_identity" in out
+    # openssl cert generation + pkcs12 export + security import + trust all ran.
+    assert any(c[0] == "/usr/bin/openssl" and "req" in c for c in calls)
+    assert any(c[0] == "/usr/bin/openssl" and "pkcs12" in c for c in calls)
+    assert any(c[0] == "/usr/bin/security" and c[1] == "import" for c in calls)
+    assert any(c[0] == "/usr/bin/security" and c[1] == "add-trusted-cert" for c in calls)
+    # The trust step targets the codeSign policy specifically.
+    trust_call = next(c for c in calls if c[1:2] == ["add-trusted-cert"])
+    assert "codeSign" in trust_call and "trustRoot" in trust_call
+    # Temp files cleaned up.
+    assert not list(tmp_path.glob("hermes-tcc-*"))
+
+
+def test_setup_tcc_identity_retries_pkcs12_with_legacy_on_mac_verification_failure(tmp_path, monkeypatch, capsys):
+    """OpenSSL 3: first import fails with the MAC-verification signature, the
+    -legacy re-export imports cleanly (the exact failure @ctaylor86 hit live)."""
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main.shutil,
+        "which",
+        lambda name: {"openssl": "/usr/bin/openssl", "security": "/usr/bin/security", "codesign": "/usr/bin/codesign"}.get(name),
+    )
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: tmp_path))
+
+    identity = "Hermes Local Signing"
+    calls = []
+    state = {"legacy_exported": False, "trusted": False}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:4] == ["/usr/bin/security", "find-identity", "-v", "-p"]:
+            if state["trusted"]:
+                return _fake_proc(cmd, stdout=f'  1) ABCD "{identity}"\n     1 valid identities found')
+            return _fake_proc(cmd, stdout="     0 valid identities found")
+        if cmd[0] == "/usr/bin/openssl" and "pkcs12" in cmd:
+            state["legacy_exported"] = "-legacy" in cmd
+            return _fake_proc(cmd)
+        if cmd[0] == "/usr/bin/security" and cmd[1] == "import":
+            if not state["legacy_exported"]:
+                return _fake_proc(
+                    cmd, returncode=1,
+                    stderr="security: SecKeychainItemImport: MAC verification failed during PKCS12 import (wrong password?)",
+                )
+            return _fake_proc(cmd)
+        if cmd[0] == "/usr/bin/security" and cmd[1] == "add-trusted-cert":
+            state["trusted"] = True
+            return _fake_proc(cmd)
+        return _fake_proc(cmd)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+
+    assert cli_main._desktop_macos_setup_tcc_identity(identity) is True
+
+    # Two pkcs12 exports (plain then -legacy) and two import attempts.
+    pkcs12_calls = [c for c in calls if c[0] == "/usr/bin/openssl" and "pkcs12" in c]
+    assert len(pkcs12_calls) == 2
+    assert "-legacy" not in pkcs12_calls[0] and "-legacy" in pkcs12_calls[1]
+    assert len([c for c in calls if c[0] == "/usr/bin/security" and c[1] == "import"]) == 2
+
+
+def test_setup_tcc_identity_fails_when_trust_step_fails(tmp_path, monkeypatch, capsys):
+    """A cert that imports but cannot be trusted for codeSign is a failure,
+    not a silent success."""
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main.shutil,
+        "which",
+        lambda name: {"openssl": "/usr/bin/openssl", "security": "/usr/bin/security", "codesign": "/usr/bin/codesign"}.get(name),
+    )
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: tmp_path))
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["/usr/bin/security", "find-identity", "-v", "-p"]:
+            return _fake_proc(cmd, stdout="     0 valid identities found")
+        if cmd[0] == "/usr/bin/security" and cmd[1] == "add-trusted-cert":
+            return _fake_proc(cmd, returncode=1, stderr="SecTrustSettingsSetTrustSettings: authorization denied")
+        return _fake_proc(cmd)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+
+    assert cli_main._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
+    assert "could not trust the certificate" in capsys.readouterr().out
+
+
+def test_setup_tcc_identity_fails_when_identity_never_becomes_valid(tmp_path, monkeypatch, capsys):
+    """Postcondition gate: import + trust both 'succeed' but find-identity -v
+    still lists nothing → report failure with guidance (the silent-success bug
+    from the original PR)."""
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main.shutil,
+        "which",
+        lambda name: {"openssl": "/usr/bin/openssl", "security": "/usr/bin/security", "codesign": "/usr/bin/codesign"}.get(name),
+    )
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: tmp_path))
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["/usr/bin/security", "find-identity", "-v", "-p"]:
+            return _fake_proc(cmd, stdout="     0 valid identities found")
+        return _fake_proc(cmd)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+
+    assert cli_main._desktop_macos_setup_tcc_identity("Hermes Local Signing") is False
+    assert "not a VALID code-signing identity" in capsys.readouterr().out
+
+
+def test_setup_tcc_identity_skips_generation_when_already_valid(tmp_path, monkeypatch, capsys):
+    """Idempotent: an existing VALID identity is reused, not regenerated."""
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main.shutil,
+        "which",
+        lambda name: {"openssl": "/usr/bin/openssl", "security": "/usr/bin/security", "codesign": "/usr/bin/codesign"}.get(name),
+    )
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: tmp_path))
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:4] == ["/usr/bin/security", "find-identity", "-v", "-p"]:
+            return _fake_proc(cmd, stdout='  1) ABCD "Hermes Local Signing"\n     1 valid identities found')
+        return _fake_proc(cmd)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+
+    assert cli_main._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
+
+    out = capsys.readouterr().out
+    assert "already valid in keychain" in out
+    # No openssl generation, no security import — only find-identity + config.
+    assert not any(c[0] == "/usr/bin/openssl" for c in calls)
+    assert not any(c[0] == "/usr/bin/security" and c[1] == "import" for c in calls)
+
+
+def test_setup_tcc_identity_untrusted_existing_cert_is_repaired(tmp_path, monkeypatch, capsys):
+    """A cert that EXISTS but is not valid (CSSMERR_TP_NOT_TRUSTED) is repaired
+    — regenerated/trusted — instead of being reported as already done. The
+    original name-in-output probe treated this state as success."""
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main.shutil,
+        "which",
+        lambda name: {"openssl": "/usr/bin/openssl", "security": "/usr/bin/security", "codesign": "/usr/bin/codesign"}.get(name),
+    )
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: tmp_path))
+
+    calls = []
+    state = {"trusted": False}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:4] == ["/usr/bin/security", "find-identity", "-v", "-p"]:
+            # -v never lists the untrusted cert; it only appears once the
+            # repair path has run add-trusted-cert.
+            if state["trusted"]:
+                return _fake_proc(cmd, stdout='  1) ABCD "Hermes Local Signing"\n     1 valid identities found')
+            return _fake_proc(cmd, stdout="     0 valid identities found")
+        if cmd[0] == "/usr/bin/security" and cmd[1] == "add-trusted-cert":
+            state["trusted"] = True
+            return _fake_proc(cmd)
+        return _fake_proc(cmd)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+
+    assert cli_main._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
+    assert any(c[0] == "/usr/bin/security" and c[1] == "add-trusted-cert" for c in calls)
+
+
+def test_setup_tcc_identity_non_macos_skips(tmp_path, monkeypatch, capsys):
+    """On non-macOS the setup is a no-op failure (not a crash)."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+
+    assert cli_main._desktop_macos_setup_tcc_identity() is False
+    assert "macOS-only" in capsys.readouterr().out
+
+
+def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
+    """`hermes desktop --setup-tcc-identity` calls the setup and exits 0/1
+    without building or launching the app."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    with patch("hermes_cli.main._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
+         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(setup_tcc_identity=True, identity="Hermes Local Signing"))
+
+    assert exc.value.code == 0
+    mock_setup.assert_called_once_with("Hermes Local Signing")
+    mock_install.assert_not_called()
+
+
+
+
+@pytest.mark.macos_only
+def test_relaunchable_fixup_stable_identity_never_touches_keychain(tmp_path, monkeypatch):
+    """A successful stable-identity re-sign must NOT delete the safeStorage item.
+
+    Regression for review feedback on #90961: deleting the keychain item
+    permanently orphans every safeStorage-backed credential (gateway token,
+    native OAuth access/refresh tokens — see electron/main.ts). On the stable
+    path the cert-anchored designated requirement is stable across rebuilds,
+    so after the first launch the keychain ACL already matches and deleting
+    the item would destroy working credentials on every update.
+
+    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    the subject is codesign against a real ``.app`` bundle layout.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(
+        cli_main, "_desktop_macos_local_signing_identity", lambda: "Developer ID Application: Example"
+    )
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", lambda app, **kw: True)
+    monkeypatch.setattr(
+        cli_main.subprocess, "run",
+        lambda cmd, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert not any("delete-generic-password" in c for c in calls)
+
+
+@pytest.mark.macos_only
+def test_relaunchable_fixup_default_noconfig_success_never_touches_keychain(tmp_path, monkeypatch):
+    """Default no-config path (identity == '-') must not delete the keychain item.
+
+    Witness for the default ad-hoc success path: with no
+    ``desktop.macos_signing_identity`` configured, the fixup signs ad-hoc with
+    identifier-pinned requirements and must leave the safeStorage item alone.
+
+    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    the subject is codesign against a real ``.app`` bundle layout.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", lambda app, **kw: True)
+    monkeypatch.setattr(
+        cli_main.subprocess, "run",
+        lambda cmd, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert not any("delete-generic-password" in c for c in calls)
+
+
+@pytest.mark.macos_only
+def test_relaunchable_fixup_legacy_adhoc_failure_never_touches_keychain(tmp_path, monkeypatch):
+    """A failed fallback re-sign must preserve the keychain item (no deletion).
+
+    Regression for review feedback on #90961: the fallback previously deleted
+    the safeStorage item unconditionally, even when ``codesign`` failed
+    (``check=False`` result was ignored). A failed recovery can permanently
+    orphan gateway and native OAuth credentials without producing a verified
+    successor app/key identity. The fixup must check the codesign result,
+    run strict verification, and leave the keychain untouched on failure.
+
+    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    the subject is codesign against a real ``.app`` bundle layout.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        # First subprocess call is the xattr clear (exit 0); the deep sign
+        # fails with a non-zero exit.
+        if cmd[:2] == ["/usr/bin/codesign", "--force"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(
+        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
+
+    def boom(*a, **kw):
+        raise subprocess.CalledProcessError(1, ["codesign"])
+
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
+    assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
+    assert not any("--verify" in c for c in calls)
+    assert not any("delete-generic-password" in c for c in calls)
+
+
+@pytest.mark.macos_only
+def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_deletes(tmp_path, monkeypatch):
+    """A successful fallback re-sign runs strict verification, no deletion.
+
+    The legacy ad-hoc fallback signs, verifies with
+    ``codesign --verify --deep --strict``, and leaves the safeStorage keychain
+    item untouched. The keychain prompt macOS shows instead is recoverable
+    ("Always Allow" updates the ACL partition list and preserves the key);
+    deletion is not.
+
+    ``macos_only``: the fixup no-ops on non-macOS (sys.platform guard), and
+    the subject is codesign against a real ``.app`` bundle layout.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(
+        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
+
+    def boom(*a, **kw):
+        raise subprocess.CalledProcessError(1, ["codesign"])
+
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
+    assert ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)] in calls
+    assert not any("delete-generic-password" in c for c in calls)
 
 
 # --- desktop.* launch options (config.yaml) -------------------------------

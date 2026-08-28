@@ -2588,6 +2588,11 @@ def human_wait_ceiling() -> float:
     authorization gate's serialization-lock acquire, so the two bounds cannot
     drift. Never call while holding ``_human_wait_lock`` — it reads the
     config cache.
+
+    Platform safety: ``_get_approval_timeout`` caps at
+    ``agent.deadline.MAX_SAFE_TIMEOUT_S``, so this value is always safe to
+    hand to ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``
+    (#83220 macOS time_t overflow).
     """
     return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
 
@@ -2966,6 +2971,23 @@ def clear_session(session_key: str) -> None:
         entry.result = "deny"
         entry.event.set()
     _release_permission_mode_dependents(session_key)
+    # Session-persistent code kernels are owned by this same key: they die
+    # at the same boundary that clears the session's approval and yolo
+    # state, so a finished conversation cannot leak a live interpreter.
+    try:
+        from tools.code_kernel import shutdown_kernels_for_owner
+
+        shutdown_kernels_for_owner(session_key)
+    except Exception:
+        pass
+    # Remote session kernels (docker/ssh/modal) share the owner model and
+    # the disposal boundary.
+    try:
+        from tools.code_kernel_remote import shutdown_remote_kernels_for_owner
+
+        shutdown_remote_kernels_for_owner(session_key)
+    except Exception:
+        pass
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
@@ -3430,11 +3452,37 @@ def _get_approval_timeout() -> int:
     approvals arrive as push notifications the user may not see for a couple
     of minutes; 60s proved too tight in practice (Telegram taps landed after
     the wait had already failed closed).
+
+    Clamped to ``agent.deadline.MAX_SAFE_TIMEOUT_S`` (1 year — semantically
+    unbounded): a very large configured value overflows ``time_t`` inside
+    ``Thread.join(timeout=...)`` / ``Lock.acquire(timeout=...)`` on macOS,
+    and before this clamp a single oversized ``approvals.timeout`` crashed
+    every parallel tool batch with OverflowError (#83220). Clamping at the
+    single config-read site keeps every consumer (prompt join, gateway poll
+    deadline, human-wait ceiling, authorization gate) platform-safe at once.
     """
     try:
-        return int(_get_approval_config().get("timeout", 300))
+        raw = int(_get_approval_config().get("timeout", 300))
     except (ValueError, TypeError):
         return 300
+    try:
+        from agent.deadline import MAX_SAFE_TIMEOUT_S
+
+        safe_cap = int(MAX_SAFE_TIMEOUT_S)
+    except Exception:
+        # Fail CLOSED: returning the raw value here would re-open the exact
+        # time_t overflow this clamp exists to prevent. ~1 year, matching
+        # agent.deadline.MAX_SAFE_TIMEOUT_S.
+        safe_cap = 365 * 24 * 3600
+    if raw > safe_cap:
+        logger.warning(
+            "approvals.timeout=%s exceeds the platform-safe maximum; "
+            "clamping to %ss",
+            raw,
+            safe_cap,
+        )
+        return safe_cap
+    return raw
 
 
 def _get_cron_approval_mode() -> str:
@@ -3543,8 +3591,22 @@ def _smart_approve(command: str, description: str) -> str:
     Inspired by OpenAI Codex's Smart Approvals guardian subagent
     (openai/codex#13860).
     """
+    _smart_t0 = time.monotonic()
     try:
-        from agent.auxiliary_client import call_llm
+        from agent.auxiliary_client import _get_task_timeout, call_llm
+
+        # Explicit timeout for the guardian call. This synchronous call gates
+        # EVERY flagged terminal command — relying on the timeout being
+        # resolved correctly inside call_llm has burned users in production:
+        # a stalled provider response silently froze the agent turn for tens
+        # of minutes with zero log output (#82846, #72500). Pass the same
+        # configured value explicitly (belt) and log the call + duration
+        # (suspenders) so a hang is visible in the logs instead of silent.
+        smart_timeout = _get_task_timeout("approval")
+        logger.debug(
+            "Smart approvals: assessing risk for command (timeout=%ss)",
+            smart_timeout,
+        )
 
         # Strip shell comments to remove the easiest injection vector.
         sanitized_command = _strip_shell_comments(command)
@@ -3601,6 +3663,11 @@ def _smart_approve(command: str, description: str) -> str:
             ],
             temperature=0,
             max_tokens=16,
+            timeout=smart_timeout,
+        )
+        logger.debug(
+            "Smart approvals: LLM call completed in %.1fs",
+            time.monotonic() - _smart_t0,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -3613,7 +3680,15 @@ def _smart_approve(command: str, description: str) -> str:
             return "escalate"
 
     except Exception as e:
-        logger.debug("Smart approvals: LLM call failed (%s), escalating", e)
+        # WARNING (was DEBUG): a failed/blocked guardian call is a real event
+        # the operator needs to see — the whole point of #82846 is that the
+        # hang was invisible. Log the elapsed time and error class too.
+        logger.warning(
+            "Smart approvals: LLM call failed after %.1fs (%s: %s), escalating",
+            time.monotonic() - _smart_t0,
+            type(e).__name__,
+            e,
+        )
         return "escalate"
 
 

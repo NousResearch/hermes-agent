@@ -2643,10 +2643,18 @@ def list_authenticated_providers(
         except Exception:
             pass
 
+    from hermes_cli.config import coerce_provider_id, stringify_provider_map
+
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
-    _current_provider_norm = str(current_provider or "").strip().lower()
-    _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
+    # PyYAML parses unquoted numeric names (`provider: 2070`) as int. Later
+    # `.strip()` / `.lower()` on that raw value 500s GET /api/model/options.
+    current_provider = coerce_provider_id(current_provider)
+    current_base_url = str(current_base_url or "").strip()
+    current_model = str(current_model or "").strip()
+    _current_provider_norm = current_provider.lower()
+    _current_base_url_norm = current_base_url.rstrip("/").lower()
+    user_providers = stringify_provider_map(user_providers)
 
     def _can_probe_custom_provider(*, row_is_current: bool) -> bool:
         return bool(probe_custom_providers or (probe_current_custom_provider and row_is_current))
@@ -3226,7 +3234,7 @@ def list_authenticated_providers(
                 continue
             if ep_name.lower() in seen_slugs:
                 continue
-            display_name = ep_cfg.get("name", "") or ep_name
+            display_name = coerce_provider_id(ep_cfg.get("name")) or ep_name
             api_url = (
                 ep_cfg.get("base_url", "")
                 or ep_cfg.get("api", "")
@@ -3574,8 +3582,8 @@ def list_authenticated_providers(
             if not isinstance(entry, dict):
                 continue
 
-            raw_name = (entry.get("name") or "").strip()
-            api_url = (
+            raw_name = coerce_provider_id(entry.get("name"))
+            api_url = str(
                 entry.get("base_url", "")
                 or entry.get("url", "")
                 or entry.get("api", "")
@@ -3583,8 +3591,8 @@ def list_authenticated_providers(
             ).strip().rstrip("/")
             if not raw_name or not api_url:
                 continue
-            inline_api_key = (entry.get("api_key") or "").strip()
-            key_env = (entry.get("key_env") or "").strip()
+            inline_api_key = str(entry.get("api_key") or "").strip()
+            key_env = str(entry.get("key_env") or "").strip()
             api_key = inline_api_key or _scoped_key_env(key_env)
             api_mode = str(
                 entry.get("api_mode")

@@ -496,12 +496,33 @@ def test_auto_decomposed_leaf_allows_real_capability_block(monkeypatch, worker_e
     out = kt._handle_block({
         "kind": "capability",
         "reason": "gh pr view failed: authentication is unavailable.",
+        "command": "gh pr view 1 --repo example/repo",
+        "stderr": "authentication is unavailable",
     })
     assert json.loads(out)["ok"] is True
 
     conn = kb.connect()
     try:
         assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_capability_block_requires_current_command_evidence(worker_env):
+    """Workers may not turn an unexecuted predicted failure into a block."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_block({
+        "kind": "capability",
+        "reason": "This command will probably time out.",
+    })
+    assert "error" in json.loads(out)
+    assert "require command and stderr" in out
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
     finally:
         conn.close()
 
@@ -911,6 +932,7 @@ def test_kanban_guidance_resolves_board_context_before_needs_input_block():
     assert "profile roster" in KANBAN_GUIDANCE
     assert "only then block" in KANBAN_GUIDANCE.lower()
     assert "bounded leaf assignment" in KANBAN_GUIDANCE
+    assert "literal argv and redacted stderr" in KANBAN_GUIDANCE
 
 
 def test_kanban_guidance_keeps_board_record_receipts_off_the_filesystem():

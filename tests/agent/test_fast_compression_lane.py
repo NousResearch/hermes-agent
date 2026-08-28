@@ -399,3 +399,44 @@ def test_reasoning_effort_aliases_certify_like_none():
         lane = _resolve({**base, "reasoning_effort": not_disabled})
         assert lane.certified_non_reasoning is False, not_disabled
         assert lane.max_tokens is None, not_disabled
+
+
+def test_timing_hooks_propagate_to_protected_call_worker_thread():
+    """The protected daemon path must carry the timing hooks across threads.
+
+    _run_protected_sync_provider_call runs the provider callback on a daemon
+    worker. The dispatch/provider-response hooks are threading.local, so
+    without explicit propagation provider_dispatch_ms and
+    time_to_first_progress_ms silently vanish whenever compression takes the
+    protected path (the common case: aux_interrupt_protection + hard-cancel
+    source both active).
+    """
+    from agent.auxiliary_client import (
+        _aux_timing_hook,
+        _aux_dispatch,
+        _aux_provider_response,
+        _notify_aux_dispatch,
+        _notify_aux_provider_response,
+        _run_protected_sync_provider_call,
+        aux_interrupt_protection,
+    )
+
+    seen = []
+
+    def _callback(_kwargs):
+        # Runs on the daemon worker thread — both notifies must reach the
+        # hooks installed on the owner thread.
+        _notify_aux_dispatch()
+        _notify_aux_provider_response()
+        return "ok"
+
+    with (
+        _aux_timing_hook(_aux_dispatch, lambda: seen.append("dispatch")),
+        _aux_timing_hook(_aux_provider_response, lambda: seen.append("response")),
+        aux_interrupt_protection(cancel_check=lambda: False),
+    ):
+        result = _run_protected_sync_provider_call(_callback, {})
+
+    assert result == "ok"
+    assert "dispatch" in seen
+    assert "response" in seen

@@ -1725,16 +1725,24 @@ def _skill_manage_batch(
                 parsed = {"success": False, "error": "unparseable op result"}
             if not parsed.get("success"):
                 note = _rollback()
-                return json.dumps(
-                    {"success": False,
-                     "error": (
-                         f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
-                         f"{parsed.get('error', 'unknown error')} — batch aborted, {note}."
-                     ),
-                     "failed_index": i,
-                     "completed_before_failure": i},
-                    ensure_ascii=False,
-                )
+                fail = {
+                    "success": False,
+                    "error": (
+                        f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
+                        f"{parsed.get('error', 'unknown error')} — batch aborted, {note}."
+                    ),
+                    "failed_index": i,
+                    "completed_before_failure": i,
+                }
+                # Carry the failing op's teaching payload through (e.g.
+                # patch's file_preview / fuzzy-match hints): without it the
+                # model recovers blind — live A/B showed sonnet probing a
+                # file with placeholder edits for 8 turns because the batch
+                # path dropped the preview the flat path always returned.
+                for k, v in parsed.items():
+                    if k not in ("success", "error") and v is not None:
+                        fail.setdefault(k, v)
+                return json.dumps(fail, ensure_ascii=False)
             results.append({"name": names[i], "action": op["action"],
                             "file_path": op.get("file_path"),
                             "success": True})

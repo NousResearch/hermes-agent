@@ -747,7 +747,6 @@ class TestSendImageFile:
         adapter._send_image_message = AsyncMock(
             return_value=MagicMock(success=True, message_id="img-msg-1")
         )
-        adapter._get_valid_webhook = MagicMock(return_value=None)
 
         with caplog.at_level(logging.INFO, logger="plugins.platforms.dingtalk.adapter"):
             result = await adapter.send_image_file(
@@ -755,6 +754,9 @@ class TestSendImageFile:
             )
         assert result.success is True
         adapter._upload_media.assert_called_once_with(str(img), media_type="image")
+        adapter._send_image_message.assert_called_once_with(
+            "group-1", "mid-img", caption="Look!"
+        )
         assert "Image sent to DingTalk" in caplog.text
         assert "photo.png" in caplog.text
         assert "img-msg-1" in caplog.text
@@ -808,7 +810,6 @@ class TestSendDocument:
         adapter._send_file_message = AsyncMock(
             return_value=MagicMock(success=True, message_id="file-msg-1")
         )
-        adapter._get_valid_webhook = MagicMock(return_value=None)
 
         with caplog.at_level(logging.INFO, logger="plugins.platforms.dingtalk.adapter"):
             result = await adapter.send_document("group-1", str(doc))
@@ -829,7 +830,6 @@ class TestSendDocument:
         adapter._send_file_message = AsyncMock(
             return_value=MagicMock(success=True)
         )
-        adapter._get_valid_webhook = MagicMock(return_value=None)
 
         result = await adapter.send_document(
             "group-1", str(doc), file_name="quarterly.pdf"

@@ -710,7 +710,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         except httpx.TimeoutException:
             return SendResult(
                 success=False,
-                error=f"Timeout sending {kind_label} message to DingTalk",
+                error=f"Timeout sending {kind_label.title()} message to DingTalk",
             )
         except Exception as e:
             logger.error(
@@ -776,8 +776,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         Uploads the local image to DingTalk's media storage, then sends it as
         a native ``sampleImageMsg`` through the robot OpenAPI.  If a caption
-        is provided and a session webhook is available, the caption is sent
-        as a follow-up markdown message.
+        is provided, it is delivered natively inside the robot message's
+        ``text`` field -- sent once as a single combined message.
         """
         if not os.path.exists(image_path):
             return SendResult(success=False, error=f"File not found: {image_path}")
@@ -789,26 +789,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] send_image_file upload error: %s", self.name, e)
             return SendResult(success=False, error=str(e))
-
-        # Send caption as follow-up markdown via session webhook if available
-        if caption:
-            webhook_info = self._get_valid_webhook(chat_id)
-            if webhook_info:
-                caption_result = await self.send(
-                    chat_id=chat_id,
-                    content=caption,
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-                if not caption_result.success:
-                    logger.warning(
-                        "[%s] Failed to send image caption: %s",
-                        self.name, caption_result.error,
-                    )
-            else:
-                logger.debug(
-                    "[%s] No session webhook available for image caption", self.name,
-                )
 
         result = await self._send_image_message(
             chat_id, media_id, caption=caption
@@ -835,8 +815,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         Uploads the local file to DingTalk's media storage, then sends it as
         a native ``sampleFile`` message through the robot OpenAPI.  If a
-        caption is provided and a session webhook is available, the caption
-        is sent as a follow-up markdown message.
+        caption is provided, it is delivered natively inside the robot
+        message's ``text`` field -- sent once as a single combined message.
         """
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
@@ -850,27 +830,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] send_document upload error: %s", self.name, e)
             return SendResult(success=False, error=str(e))
-
-        # Send caption as follow-up markdown via session webhook if available
-        if caption:
-            webhook_info = self._get_valid_webhook(chat_id)
-            if webhook_info:
-                caption_result = await self.send(
-                    chat_id=chat_id,
-                    content=caption,
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-                if not caption_result.success:
-                    logger.warning(
-                        "[%s] Failed to send document caption: %s",
-                        self.name, caption_result.error,
-                    )
-            else:
-                logger.debug(
-                    "[%s] No session webhook available for document caption",
-                    self.name,
-                )
 
         result = await self._send_file_message(chat_id, media_id, display_name)
         if result.success:

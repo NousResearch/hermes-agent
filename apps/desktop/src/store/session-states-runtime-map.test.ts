@@ -7,8 +7,10 @@ import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   $sessionTiles,
   clearAllSessionStates,
+  dropSessionState,
   knownOwnerForSession,
   publishSessionState,
+  recordSessionEventScope,
   requestForOwnedSession,
   storedSessionIdForRuntimeId
 } from '@/store/session-states'
@@ -125,5 +127,45 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
       requestForOwnedSession('rt-orphan', ambient as never, 'approval.respond', { session_id: 'rt-orphan' })
     ).resolves.toEqual({ ok: true })
     expect(ambient).toHaveBeenCalledWith('approval.respond', { session_id: 'rt-orphan' })
+  })
+
+  it('routes a connection-tagged orphan runtime through the owner its inbound event recorded (#97511)', () => {
+    // Registry topology, multiple profiles, no tile/hint/row binding for the
+    // runtime — the approval.request event itself proved the exact owner.
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    recordSessionEventScope({ connectionId: 'homelab', profile: 'omar', session_id: 'rt-unbound' })
+
+    expect(knownOwnerForSession('rt-unbound')).toEqual({ connectionId: 'homelab', profile: 'omar' })
+
+    // An event without a profile tag still records the 'default' convention
+    // every other owner source uses.
+    recordSessionEventScope({ connectionId: 'homelab', session_id: 'rt-unprofiled' })
+    expect(knownOwnerForSession('rt-unprofiled')).toEqual({ connectionId: 'homelab', profile: 'default' })
+  })
+
+  it('still prefers the durable stored owner when a stale runtime ledger entry collides with a stored id (#97511)', () => {
+    // Pathological collision: some dead runtime's id equals a live stored id.
+    // The persisted hint (durable identity) must outrank the ledger entry.
+    setSessionOwnerHint('stored-live', { connectionId: 'local', profile: 'omar' })
+    recordSessionEventScope({ connectionId: 'spark', profile: 'default', session_id: 'stored-live' })
+
+    expect(knownOwnerForSession('stored-live')).toEqual({ connectionId: 'local', profile: 'omar' })
+  })
+
+  it('keeps failing closed for untagged or unknown runtimes in multi-profile topology (#97511)', () => {
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    // Untagged events carry no connectionId and record nothing.
+    recordSessionEventScope({ profile: 'omar', session_id: 'rt-untagged' })
+
+    expect(knownOwnerForSession('rt-untagged')).toBeUndefined()
+    expect(knownOwnerForSession('rt-never-seen')).toBeUndefined()
+  })
+
+  it('drops the recorded event owner together with the runtime state (#97511)', () => {
+    recordSessionEventScope({ connectionId: 'homelab', profile: 'omar', session_id: 'rt-dropped' })
+    expect(knownOwnerForSession('rt-dropped')).toEqual({ connectionId: 'homelab', profile: 'omar' })
+
+    dropSessionState('rt-dropped')
+    expect(knownOwnerForSession('rt-dropped')).toBeUndefined()
   })
 })

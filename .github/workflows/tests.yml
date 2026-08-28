@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         slice: ${{ fromJSON(github.repository == 'NousResearch/hermes-agent' && '["1/1"]' || '["1/12", "2/12", "3/12", "4/12", "5/12", "6/12", "7/12", "8/12", "9/12", "10/12", "11/12", "12/12"]') }}
-    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 60 || 30 }}
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

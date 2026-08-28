@@ -224,3 +224,35 @@ class TestDigestCallsFollowThePinnedRoute:
         from agent.context_compressor import attempt_summary_route_kwargs
 
         assert attempt_summary_route_kwargs() == {}
+
+
+class TestMidRestoreClaimRace:
+    """TOCTOU: a claim landing between entry check and write must void the restore."""
+
+    def test_claim_during_restore_body_voids_the_write(self, monkeypatch):
+        import agent.conversation_compression as cc
+
+        compressor = _compressor()
+        snapshot = _snapshot_compressor_attempt_state(compressor)
+        primary_gen = _claim_compressor_attempt(compressor)
+        compressor._previous_summary = "FALLBACK STATE"
+
+        # Interleave deterministically: the fallback claims the compressor
+        # while the primary is inside the restore body (during deepcopy of
+        # the snapshot, i.e. after the entry check passed).
+        real_deepcopy = cc.copy.deepcopy
+        state = {"claimed": False}
+
+        def claiming_deepcopy(obj, *a, **kw):
+            if not state["claimed"] and obj is snapshot:
+                state["claimed"] = True
+                _claim_compressor_attempt(compressor)  # fallback arrives NOW
+            return real_deepcopy(obj, *a, **kw)
+
+        monkeypatch.setattr(cc.copy, "deepcopy", claiming_deepcopy)
+        _restore_compressor_attempt_state(
+            compressor, snapshot, attempt_generation=primary_gen
+        )
+
+        # The write-time re-check must have refused the stale restore.
+        assert compressor._previous_summary == "FALLBACK STATE"

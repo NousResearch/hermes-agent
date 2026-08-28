@@ -369,6 +369,9 @@ def _claim_compressor_attempt(compressor: Any) -> int:
         except Exception:
             # Slotted/frozen third-party compressor: ownership tracking is
             # unavailable; generation 0 disables the guard (legacy behavior).
+            # Per-compressor all-or-nothing, NOT per-attempt: a compressor
+            # that rejects the setattr rejects it for EVERY claim, so gen-0
+            # and gen>0 attempts can never coexist on one instance.
             return 0
         return generation
 
@@ -514,8 +517,27 @@ def _restore_compressor_attempt_state(
                         exc_info=True,
                     )
     restored = copy.deepcopy(snapshot)
-    for name, value in restored.items():
-        setattr(compressor, name, value)
+    # Close the check-then-act window: the entry check above runs before the
+    # (potentially slow) durable-cooldown rollback, so a fallback attempt can
+    # claim the compressor in between. Re-validate and write the in-memory
+    # fields under the SAME lock claims are taken under — a stale attempt can
+    # never interleave its setattr loop with a newer attempt's writes. The
+    # durable rollback above is safe either way: the dangerous direction
+    # (restore landing AFTER the fallback's writes) requires the fallback to
+    # have claimed first, which the entry check already rejects.
+    with _COMPRESSOR_ATTEMPT_LOCK:
+        if attempt_generation is not None and attempt_generation and (
+            int(getattr(compressor, "_compression_attempt_generation", 0) or 0)
+            != attempt_generation
+        ):
+            logger.warning(
+                "Skipping stale compressor attempt-state restore at write "
+                "time: attempt generation %s lost the compressor mid-restore.",
+                attempt_generation,
+            )
+            return
+        for name, value in restored.items():
+            setattr(compressor, name, value)
 
 
 def _capture_authoritative_cooldown_under_lease(

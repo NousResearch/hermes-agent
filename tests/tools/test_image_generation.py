@@ -347,16 +347,18 @@ class TestAspectRatioNormalization:
 class TestRegistryIntegration:
 
     def test_schema_exposes_expected_agent_params(self, image_tool):
-        """The agent-facing schema exposes the unified text+image surface:
-        prompt (required), aspect_ratio, the image-to-image inputs
-        image_url + reference_image_urls, and the opt-in upscale pass. Model
-        selection stays a user-level config choice, never an agent-level arg."""
+        """The static registration schema stays minimal — prompt (required)
+        + aspect_ratio. Capability args (image_url, reference_image_urls,
+        upscale) are added per-model by the dynamic override so sessions
+        whose active model can't honor them never see them (#95681 diet).
+        Model selection stays a user-level config choice, never an
+        agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {
-            "prompt", "aspect_ratio", "image_url", "reference_image_urls",
-            "upscale",
-        }
+        assert set(props.keys()) == {"prompt", "aspect_ratio"}
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
+        # The dynamic builder owns the capability args.
+        dyn = image_tool._build_dynamic_image_schema()
+        assert "parameters" in dyn and "prompt" in dyn["parameters"]["properties"]
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]

@@ -259,13 +259,39 @@ function kickoffText(): string {
  *  `openingStillCurrent` (click-path opens): a staleness probe consulted
  *  before every navigation — when the user has already moved on (opened a
  *  group, clicked another bot), the create still completes registry-side
- *  but never steals the workspace (#89834 family). */
+ *  but never steals the workspace (#89834 family).
+ *
+ *  It gates WHETHER to navigate, never WHAT the session is. The bots
+ *  workspace fields below ride every open unconditionally: they say this row
+ *  is a bot's chat, which is true of a freshly minted one no matter who asked
+ *  for it. Spreading them only when a probe was passed is how the create path
+ *  — the one caller with no probe — opened its chat unscoped, and the
+ *  composer, reading that scope to stand the branch rail down, showed the
+ *  rail in a bot chat until the next click re-opened it scoped. */
 export function createCanonicalChat(
   owner: RosterRow | string,
   { kickoff = false, openingStillCurrent = null }: CreateCanonicalChatOptions = {}
 ): Promise<null | string> {
   const { bot, name, key, route } = botOwner(owner)
   const inflight = canonicalCreations.get(key)
+
+  // Every open of a just-minted row is the same call — adopting a concurrent
+  // flight's result, the retry after a failed eager title, the retry after the
+  // compat kickoff. Only WHEN differs, so WHAT lives in one place.
+  const openFreshCanonical = (sid: string) =>
+    host.openSession!(sid, {
+      ...(route
+        ? {
+            route
+          }
+        : {}),
+      profile: name,
+      intent: 'main',
+      keepAllProfilesScope: route ? true : false,
+      workspaceMode: 'bots',
+      workspaceOwnerKey: botWorkspaceOwnerKey(bot),
+      tabTitle: CANONICAL_CHAT_TITLE
+    })
 
   if (inflight) {
     if (!openingStillCurrent) {
@@ -274,19 +300,7 @@ export function createCanonicalChat(
 
     return inflight.run!.then(async sid => {
       if (sid && openingStillCurrent() && typeof host.openSession === 'function') {
-        await host.openSession(sid, {
-          ...(route
-            ? {
-                route
-              }
-            : {}),
-          profile: name,
-          intent: 'main',
-          keepAllProfilesScope: route ? true : false,
-          workspaceMode: 'bots',
-          workspaceOwnerKey: botWorkspaceOwnerKey(bot),
-          tabTitle: CANONICAL_CHAT_TITLE
-        })
+        await openFreshCanonical(sid)
       }
 
       return sid
@@ -385,23 +399,7 @@ export function createCanonicalChat(
 
     if (sid && typeof host.openSession === 'function' && canNavigate()) {
       try {
-        await host.openSession(sid, {
-          ...(route
-            ? {
-                route
-              }
-            : {}),
-          profile: name,
-          intent: 'main',
-          keepAllProfilesScope: route ? true : false,
-          ...(openingStillCurrent
-            ? {
-                workspaceMode: 'bots',
-                workspaceOwnerKey: botWorkspaceOwnerKey(bot),
-                tabTitle: CANONICAL_CHAT_TITLE
-              }
-            : {})
-        })
+        await openFreshCanonical(sid)
         opened = true
       } catch {
         // The stored row may not exist until the kickoff persists it. Retry
@@ -427,23 +425,7 @@ export function createCanonicalChat(
           })
 
           if (!opened && sid && typeof host.openSession === 'function' && canNavigate()) {
-            await host.openSession(sid, {
-              ...(route
-                ? {
-                    route
-                  }
-                : {}),
-              profile: name,
-              intent: 'main',
-              keepAllProfilesScope: route ? true : false,
-              ...(openingStillCurrent
-                ? {
-                    workspaceMode: 'bots',
-                    workspaceOwnerKey: botWorkspaceOwnerKey(bot),
-                    tabTitle: CANONICAL_CHAT_TITLE
-                  }
-                : {})
-            })
+            await openFreshCanonical(sid)
           }
         } catch {
           // The chat already exists under the canonical title — the next click
@@ -453,23 +435,7 @@ export function createCanonicalChat(
         // No intro turn: still finish mounting the chat when the first open
         // raced the (now titled) row.
         try {
-          await host.openSession(sid, {
-            ...(route
-              ? {
-                  route
-                }
-              : {}),
-            profile: name,
-            intent: 'main',
-            keepAllProfilesScope: route ? true : false,
-            ...(openingStillCurrent
-              ? {
-                  workspaceMode: 'bots',
-                  workspaceOwnerKey: botWorkspaceOwnerKey(bot),
-                  tabTitle: CANONICAL_CHAT_TITLE
-                }
-              : {})
-          })
+          await openFreshCanonical(sid)
         } catch {
           /* row is titled and persistent — the next click opens it by name */
         }

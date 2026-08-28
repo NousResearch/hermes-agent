@@ -184,6 +184,25 @@ describe('the lazy row is materialized before anything else touches it', () => {
     expect(events).toEqual(['session.list', 'session.create', 'session.title', 'open:stored-1', 'prompt.submit'])
   })
 
+  it('scopes the open to the bots workspace even with no staleness probe', async () => {
+    // The create path is the one caller that passes no probe. Gating the
+    // workspace fields on the probe left ITS chat unscoped, so the composer
+    // could not tell a bot chat from a working session and kept the branch
+    // rail up until the next (probed) click reopened the same row.
+    respondWith(method =>
+      method === 'session.create' ? { session_id: 'runtime-1', stored_session_id: 'stored-1' } : {}
+    )
+
+    const { createCanonicalChat } = await loadModule()
+
+    await createCanonicalChat('ops', { kickoff: true })
+
+    expect(hostMock.openSession).toHaveBeenCalledWith(
+      'stored-1',
+      expect.objectContaining({ tabTitle: 'Bot Chat', workspaceMode: 'bots', workspaceOwnerKey: 'bot:ops' })
+    )
+  })
+
   it('speaks the intro in the active locale (#91827)', async () => {
     // The first line of the forever-chat, and the bot's reply follows its
     // language — so a hardcoded English intro biased the whole conversation.

@@ -456,9 +456,10 @@ interface GroupRowProps {
   needsYou: boolean
   onDisband: (room: { members: GroupMember[]; name: string }) => void
   onOpen: (group: string) => void
+  onSettings: (room: { members: GroupMember[]; name: string }) => void
 }
 
-export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }: GroupRowProps) {
+export function GroupRow({ active, group, members, needsYou, onOpen, onSettings, onDisband }: GroupRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms = useValue($groupChats)
@@ -554,6 +555,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onOpen(group)}>Open Group Chat</ContextMenuItem>
+        <ContextMenuItem onSelect={() => onSettings({ members, name: group })}>{b.group.settingsTitle}</ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           className="text-destructive focus:text-destructive"

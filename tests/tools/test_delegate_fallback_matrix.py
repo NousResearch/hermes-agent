@@ -99,6 +99,29 @@ class TestResolveChildFallbackChainMatrix(unittest.TestCase):
         """Malformed config logs and falls back pin-aware: None when pinned
         (never reintroduce the silent drag through the error path), parent
         chain otherwise — extends #80421's log-and-inherit contract."""
+        for malformed in (
+            "not-a-list",
+            [{"provider": "deepseek"}],
+            ["not-a-mapping"],
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertIsNone(
+                    _resolve_child_fallback_chain(
+                        _parent(list(PARENT_CHAIN)),
+                        {"fallback_providers": malformed},
+                        pinned=True,
+                    )
+                )
+                self.assertEqual(
+                    _resolve_child_fallback_chain(
+                        _parent(list(PARENT_CHAIN)),
+                        {"fallback_providers": malformed},
+                        pinned=False,
+                    ),
+                    PARENT_CHAIN,
+                )
+
+    def test_normalizer_failure_uses_pin_aware_fallback(self):
         with patch(
             "hermes_cli.fallback_config.get_fallback_chain",
             side_effect=TypeError("boom"),
@@ -106,14 +129,14 @@ class TestResolveChildFallbackChainMatrix(unittest.TestCase):
             self.assertIsNone(
                 _resolve_child_fallback_chain(
                     _parent(list(PARENT_CHAIN)),
-                    {"fallback_providers": "not-a-list"},
+                    {"fallback_providers": list(DECLARED_CHAIN)},
                     pinned=True,
                 )
             )
             self.assertEqual(
                 _resolve_child_fallback_chain(
                     _parent(list(PARENT_CHAIN)),
-                    {"fallback_providers": "not-a-list"},
+                    {"fallback_providers": list(DECLARED_CHAIN)},
                     pinned=False,
                 ),
                 PARENT_CHAIN,
@@ -198,6 +221,46 @@ class TestBuildChildAgentWiring(unittest.TestCase):
     def test_default_inheritance_preserved(self):
         kwargs = self._spawn(_parent(list(PARENT_CHAIN)), {})
         self.assertEqual(kwargs["fallback_model"], PARENT_CHAIN)
+
+
+def test_declared_chain_flows_through_real_profile_config_loader(
+    tmp_path, monkeypatch
+):
+    """The public key must survive DEFAULT_CONFIG/profile loading without
+    patching ``_load_config`` and reach the child constructor."""
+    import yaml
+
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
+    token = set_hermes_home_override(tmp_path)
+    try:
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"delegation": {"fallback_providers": list(DECLARED_CHAIN)}}
+            ),
+            encoding="utf-8",
+        )
+        with patch("run_agent.AIAgent") as mock_agent:
+            mock_agent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="real config loader",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=_parent(list(PARENT_CHAIN)),
+                task_count=1,
+            )
+    finally:
+        reset_hermes_home_override(token)
+
+    child_kwargs = mock_agent.call_args.kwargs
+    assert child_kwargs["fallback_model"] == DECLARED_CHAIN
 
 
 if __name__ == "__main__":

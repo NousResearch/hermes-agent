@@ -72,8 +72,10 @@ import {
   $selectedStoredSessionId,
   $sessionResumeRequest,
   $sessions,
+  forgetSessionOwnerHintsForSession,
   requestSessionResume,
   sessionMatchesStoredId,
+  sessionOwnerRouteFromRow,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -992,17 +994,18 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // against whichever cached row is found first — the user clicks a row
     // previewing profile A and the resume dials profile B. Pin the row's own
     // (connection, profile) as the resume owner before navigating; untagged
-    // rows (single-profile installs, legacy pages) keep the id-only path.
+    // rows (single-profile installs and the legacy primary-SSH path) keep the
+    // ambient/id-only path. Clear any stale explicit hint first: older builds
+    // incorrectly persisted those rows as `local`, which made a remote session
+    // click switch to the Mac backend and fail with "session not found".
     onResumeSession: (sessionId, session) => {
-      const rowProfile = session?.profile?.trim()
+      const ownerRoute = sessionOwnerRouteFromRow(session)
 
-      if (rowProfile) {
-        requestSessionResume(sessionId, {
-          connectionId: session?.connection_id?.trim() || 'local',
-          ...(session?.connection_id?.trim() ? {} : { mode: 'local' as const }),
-          profile: rowProfile,
-          targetProfile: rowProfile
-        })
+      if (ownerRoute) {
+        requestSessionResume(sessionId, ownerRoute)
+      } else {
+        forgetSessionOwnerHintsForSession(sessionId)
+        requestSessionResume(sessionId)
       }
 
       openSession(sessionId, navigate)

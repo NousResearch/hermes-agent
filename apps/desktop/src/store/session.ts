@@ -867,6 +867,46 @@ export function forgetSessionOwnerHintsForConnection(connectionId: string): void
   }
 }
 
+/** Drop every persisted route for one session. Untagged rows are owned by the
+ * ambient backend that returned them, so a stale explicit hint must not force a
+ * later resume onto a different connection. */
+export function forgetSessionOwnerHintsForSession(sessionId: string): void {
+  const id = sessionId.trim()
+
+  if (!id) {
+    return
+  }
+
+  let changed = false
+
+  for (const [key, entry] of [...sessionOwnerHints]) {
+    if (entry.id === id) {
+      sessionOwnerHints.delete(key)
+      changed = true
+    }
+  }
+
+  if (changed) {
+    persistSessionOwnerHints()
+  }
+}
+
+/** Exact route carried by a connection-tagged row. An untagged row deliberately
+ * returns undefined: it belongs to the ambient backend that supplied the list,
+ * including the legacy primary-SSH path whose rows have no registry id. */
+export function sessionOwnerRouteFromRow(
+  session?: Pick<SessionInfo, 'connection_id' | 'profile'>
+): SessionOwnerRoute | undefined {
+  const connectionId = (session?.connection_id ?? '').trim()
+  const profile = (session?.profile ?? '').trim()
+
+  if (!connectionId || !profile) {
+    return undefined
+  }
+
+  return { connectionId, profile, targetProfile: profile }
+}
+
 /** @internal Tests: forget every in-memory hint (storage untouched unless asked). */
 export function _resetSessionOwnerHintsForTests({ storage = false }: { storage?: boolean } = {}): void {
   sessionOwnerHints.clear()

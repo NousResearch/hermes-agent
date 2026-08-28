@@ -1197,6 +1197,14 @@ export function setGroupChatSyncDisposed(disposed: boolean) {
   groupChatSyncDisposed = disposed
 }
 
+// ── one room's budget ────────────────────────────────────────────────────────
+// Every ceiling a single user send can spend, in one block on purpose: making
+// them configurable (per room, or model-aware from config.yaml) is live
+// contributor work — #92213 (per-room limits) and #96842 (config + token
+// budget) — and both need exactly one seam to hook. Carried over at the same
+// values the old plugin.js shipped so neither rebase inherits a behavior
+// change on top of a rewrite; deciding the shape of the override belongs to
+// those PRs, not to a design-system pass.
 export const GROUP_CHAT_MAX_ROUNDS = 3
 
 // #94478 review: continuation rounds are bounded independently of the message cap so a pathological mention chain can't consume the room's whole budget on handoffs.

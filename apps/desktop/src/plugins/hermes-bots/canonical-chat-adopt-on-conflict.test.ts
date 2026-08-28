@@ -108,6 +108,39 @@ describe('a title-uniqueness rejection means someone else won the registry', () 
     expect(events).not.toContain('open:stray-1')
   })
 
+  it('adopts the winner but does not navigate once the user has clicked away', async () => {
+    // The conflict path is a full extra round-trip past the point every
+    // sibling open is staleness-probed at, so it is the likeliest of them all
+    // to land late. Identity must still resolve — only the workspace steal is
+    // what the probe prevents.
+    let lists = 0
+
+    respondWith(method => {
+      if (method === 'session.list') {
+        lists += 1
+
+        return lists === 1
+          ? { sessions: [] }
+          : { sessions: [{ id: 'winner-1', message_count: 3, resolved_id: 'winner-1', title: 'Bot Chat' }] }
+      }
+
+      if (method === 'session.create') {
+        return { session_id: 'rt-stray', stored_session_id: 'stray-1' }
+      }
+
+      if (method === 'session.title') {
+        throw new Error("Title 'Bot Chat' is already in use by session winner-1")
+      }
+
+      return {}
+    })
+
+    const { createCanonicalChat } = await loadModule()
+
+    expect(await createCanonicalChat('ops', { openingStillCurrent: () => false })).toBe('winner-1')
+    expect(events).not.toContain('open:winner-1')
+  })
+
   it('keeps the compat path for a NON-conflict title failure (old gateways)', async () => {
     respondWith(method => {
       if (method === 'session.list') {

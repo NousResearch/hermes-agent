@@ -340,7 +340,11 @@ export function createCanonicalChat(
           const winner = await findExistingCanonicalChat(owner)
 
           if (winner?.id) {
-            if (typeof host.openSession === 'function') {
+            // Adopting the winner settles IDENTITY, which is always correct to
+            // return. Navigating to it is not: this path can land a full
+            // round-trip after the user clicked another bot, and every sibling
+            // open here is staleness-probed for exactly that reason.
+            if (typeof host.openSession === 'function' && canNavigate()) {
               await openStoredBotChat(owner, winner.resolved_id || winner.id, winner)
             }
 

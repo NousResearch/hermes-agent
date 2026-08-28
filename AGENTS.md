@@ -1,5 +1,11 @@
 # Hermes Agent - Development Guide
 
+## Local project environment
+
+This checkout is the separate Hermes-agent project. Use `./venv/bin/python` for Hermes-agent
+code, tests, and upgrades. Do not install Hermes dependencies into the LunaBot environment at
+`/Users/mikedemott/LunaBot-default/.venv`; that environment belongs to LunaBot/TradingBotV18.
+
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 This root file holds only what applies everywhere. Each area has its own `AGENTS.md` (aim for
 ~8k chars; `agent/subdirectory_hints.py` delivers up to 32k and truncates head/tail with a warning

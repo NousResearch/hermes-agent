@@ -46,7 +46,7 @@ runtime:
 model:
   # Default model to use (can be overridden with --model flag)
   # Both "default" and "model" work as the key name here.
-  default: "anthropic/claude-opus-4.6"
+  default: "openai-codex/gpt-5.5"
   
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)

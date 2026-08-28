@@ -1319,6 +1319,10 @@ class SessionStore:
         self._db_pinned = _DB_UNPINNED
         self._db_handles: Dict[Path, Any] = {}
         self._db_handles_lock = threading.Lock()
+        # profile name -> its HERMES_HOME (or None to use the ambient scope).
+        # Memoized so the per-key store lookup stays a dict hit instead of a
+        # profile-directory stat on every transcript append.
+        self._profile_home_cache: Dict[str, Optional[Path]] = {}
         from gateway.session_db_recovery import RecoverableHandleCache
 
         self._db_handle_cache = RecoverableHandleCache(
@@ -1327,8 +1331,13 @@ class SessionStore:
         )
         self._open_session_db_for_active_scope()
 
-    def _open_session_db_for_active_scope(self):
+    def _open_session_db_for_active_scope(self, db_path: Optional[Path] = None):
         """Return the SessionDB for the profile scope active on this task.
+
+        ``db_path`` pins the store explicitly instead of consulting the
+        ambient scope.  ``_db_for_key`` uses it so work running outside
+        ``_profile_runtime_scope`` still reaches the profile that owns the
+        row it is about to touch.
 
         ``SessionDB(db_path=None)`` resolves ``_default_db_path()`` at call
         time, and that helper follows the context-local HERMES_HOME override
@@ -1345,10 +1354,10 @@ class SessionStore:
         """
         from hermes_state import SessionDB, _default_db_path
 
-        path = Path(_default_db_path())
+        path = Path(db_path) if db_path is not None else Path(_default_db_path())
         def _open():
             try:
-                return SessionDB()
+                return SessionDB(db_path=path) if db_path is not None else SessionDB()
             except RuntimeError as e:
                 if "live-system guard" in str(e):
                     # Test-isolation guard fired: a pytest-context process
@@ -1388,6 +1397,86 @@ class SessionStore:
     @_db.setter
     def _db(self, value) -> None:
         self._db_pinned = value
+
+    def _profile_home_for_key(self, session_key: Optional[str]) -> Optional[Path]:
+        """HERMES_HOME of the profile that owns *session_key*, or None.
+
+        None means "resolve exactly the way we always have": multiplexing is
+        off, the key carries the legacy ``agent:main`` namespace, or the
+        profile has no live directory.  A single-profile gateway therefore
+        never reaches a different store than before this helper existed.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return None
+        profile = self._profile_from_session_key(session_key)
+        if not profile or profile == "default":
+            return None
+        cache = self._profile_home_cache
+        if profile in cache:
+            return cache[profile]
+        home: Optional[Path] = None
+        try:
+            from hermes_cli.profiles import get_profile_dir, profile_exists
+
+            if profile_exists(profile):
+                home = Path(get_profile_dir(profile))
+        except Exception as exc:
+            logger.debug(
+                "Could not resolve profile home for %r: %s", session_key, exc
+            )
+            home = None
+        cache[profile] = home
+        return home
+
+    def _db_for_key(self, session_key: Optional[str]):
+        """The SessionDB holding *session_key*'s rows, whatever scope is active.
+
+        ``_db`` follows the ambient HERMES_HOME, and only the inbound message
+        path installs one (``_profile_runtime_scope``).  Background work runs
+        unscoped while operating on every profile's keys out of the single
+        process-wide ``_entries`` dict — ``_session_expiry_watcher`` is the
+        clearest case — so it reads and writes the ROOT store for rows that
+        actually live under ``profiles/<name>/state.db``.  The two writers
+        then drift apart on the same logical session until the routing index
+        disagrees with the row and the #54878 self-heal drops a live
+        conversation (#66887).
+
+        The owning profile is already encoded in the key, so deriving the
+        store from it makes every caller agree on one file per session
+        without threading scope through each call site.
+        """
+        if self._db_pinned is not _DB_UNPINNED:
+            return self._db_pinned
+        home = self._profile_home_for_key(session_key)
+        if home is None:
+            return self._db
+        try:
+            return self._open_session_db_for_active_scope(db_path=home / "state.db")
+        except Exception:
+            # Same contract as ``_db``: a failed open degrades to the JSONL
+            # fallback rather than taking routing down.
+            return None
+
+    def _db_for_session_id(self, session_id: Optional[str]):
+        """The SessionDB holding *session_id*'s row.
+
+        Transcript, compression and rewind entry points are addressed by
+        session id rather than routing key, so recover the owning profile
+        from the in-memory index.  Deliberately lock-free: several of those
+        callers already hold ``_lock``, and a miss simply falls back to the
+        ambient store — the behavior that predates ``_db_for_key``.
+        """
+        if not session_id:
+            return self._db
+        key = None
+        try:
+            for entry in list(self._entries.values()):
+                if entry.session_id == session_id:
+                    key = entry.session_key
+                    break
+        except Exception:
+            key = None
+        return self._db_for_key(key)
 
     def close_all_db_handles(self) -> None:
         """Close every SessionDB handle this store opened, one per resolved path.
@@ -2142,9 +2231,9 @@ class SessionStore:
         another team's session. The caller performs one explicit exact lookup
         of the old unscoped key instead.
         """
-        if not self._db:
+        if not self._db_for_key(session_key):
             return None
-        finder = getattr(self._db, "find_latest_gateway_session_for_peer", None)
+        finder = getattr(self._db_for_key(session_key), "find_latest_gateway_session_for_peer", None)
         if not callable(finder):
             return None
         try:
@@ -2226,11 +2315,11 @@ class SessionStore:
         reset_reason = self._should_reset(entry, source)
         if reset_reason:
             try:
-                promote = getattr(self._db, "promote_to_session_reset", None)
+                promote = getattr(self._db_for_key(session_key), "promote_to_session_reset", None)
                 if callable(promote):
                     promote(entry.session_id, reset_reason)
                 else:
-                    self._db.end_session(entry.session_id, reset_reason)
+                    self._db_for_key(session_key).end_session(entry.session_id, reset_reason)
             except Exception as exc:
                 logger.debug(
                     "Gateway recovered-session reset promotion failed for %s: %s",
@@ -2239,7 +2328,7 @@ class SessionStore:
                 )
             return None
         try:
-            self._db.reopen_session(entry.session_id)
+            self._db_for_key(session_key).reopen_session(entry.session_id)
         except Exception as exc:
             logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
         if migrated_legacy:
@@ -2317,9 +2406,9 @@ class SessionStore:
         include_compression_ancestors: bool = False,
     ) -> None:
         """Persist the routing peer for an existing gateway session row."""
-        if not self._db or not source:
+        if not self._db_for_key(session_key) or not source:
             return
-        recorder = getattr(self._db, "record_gateway_session_peer", None)
+        recorder = getattr(self._db_for_key(session_key), "record_gateway_session_peer", None)
         if not callable(recorder):
             return
         try:
@@ -2377,8 +2466,12 @@ class SessionStore:
                 # rehydrate it after the in-memory override was popped.
                 entry.model_override = None
             self._save()
-        if self._db:
-            setter = getattr(self._db, "set_expiry_finalized", None)
+        # The expiry watcher calls this from a background task that never
+        # entered ``_profile_runtime_scope``, so resolve the store from the
+        # key rather than from the ambient scope (#66887).
+        _db = self._db_for_key(entry.session_key)
+        if _db:
+            setter = getattr(_db, "set_expiry_finalized", None)
             if callable(setter):
                 try:
                     setter(entry.session_id, True)
@@ -2397,7 +2490,7 @@ class SessionStore:
                 # live rows or rows ended with ``agent_close``.  Explicit
                 # boundaries (compression, session_reset, new_command, etc.)
                 # are preserved — the first writer wins.
-                self._db.promote_to_session_reset(entry.session_id)
+                _db.promote_to_session_reset(entry.session_id)
             except Exception as exc:
                 logger.debug(
                     "Session DB promote_to_session_reset failed for %s: %s",
@@ -2492,8 +2585,13 @@ class SessionStore:
         live routing key and silently swallow every subsequent message until
         the next restart (#54878 — the live-gateway variant of #52804/FM9).
         DB errors are non-fatal — never block routing on a failed lookup.
+
+        The store is resolved from the row's owning profile rather than the
+        ambient scope: an unscoped background writer keeps its own copy of
+        the same session, and comparing against that copy reports a live
+        session as ended (#66887).
         """
-        db = getattr(self, "_db", None)
+        db = self._db_for_session_id(session_id)
         if not db or not session_id:
             return False
         try:
@@ -2557,10 +2655,10 @@ class SessionStore:
         mapping pointing at the compressed parent.  Heal that on read so the
         next inbound message resumes the child instead of reloading the parent.
         """
-        if not session_id or self._db is None:
+        if not session_id or self._db_for_session_id(session_id) is None:
             return session_id
         try:
-            return self._db.get_compression_tip(session_id) or session_id
+            return self._db_for_session_id(session_id).get_compression_tip(session_id) or session_id
         except Exception:
             logger.debug(
                 "Compression-tip lookup failed for session %s",
@@ -2891,7 +2989,7 @@ class SessionStore:
                     prev_session_id = recovered.session_id
                 else:
                     try:
-                        self._db.reopen_session(recovered.session_id)
+                        self._db_for_key(session_key).reopen_session(recovered.session_id)
                     except Exception as exc:
                         logger.debug(
                             "Gateway session DB reopen failed for %s: %s",
@@ -2971,7 +3069,7 @@ class SessionStore:
                 self._save_entries()
 
         # SQLite operations outside the lock (unchanged).
-        if self._db and db_end_session_id:
+        if self._db_for_key(session_key) and db_end_session_id:
             # Use the specific reset reason so state.db is auditable (e.g.
             # "resume_pending_expired" is distinguishable from a normal
             # "session_reset" caused by idle/daily expiry).
@@ -2982,11 +3080,11 @@ class SessionStore:
                 # (agent_close / ws_orphan_reap), which first-reason-wins
                 # end_session would preserve — leaving the reset session
                 # resurrectable by stale-route recovery (#61220, #61993).
-                _promote = getattr(self._db, "promote_to_session_reset", None)
+                _promote = getattr(self._db_for_key(session_key), "promote_to_session_reset", None)
                 if callable(_promote):
                     _promote(db_end_session_id, _db_end_reason)
                 else:
-                    self._db.end_session(db_end_session_id, _db_end_reason)
+                    self._db_for_key(session_key).end_session(db_end_session_id, _db_end_reason)
             except Exception as e:
                 # A failed end-write leaves a zombie open row still holding
                 # this chat's session_key: restart recovery will resolve the
@@ -2999,9 +3097,9 @@ class SessionStore:
                     db_end_session_id, session_key, e,
                 )
 
-        if self._db and db_create_kwargs:
+        if self._db_for_key(session_key) and db_create_kwargs:
             try:
-                self._db.create_session(**db_create_kwargs)
+                self._db_for_key(session_key).create_session(**db_create_kwargs)
                 self._record_gateway_session_peer(
                     session_id,
                     session_key,
@@ -3471,17 +3569,17 @@ class SessionStore:
                 "model_config": {"_reset_from": db_end_session_id},
             }
 
-        if self._db and db_end_session_id:
+        if self._db_for_key(session_key) and db_end_session_id:
             try:
                 # Promote (not plain end_session): an accidental
                 # agent_close/ws_orphan_reap end must not survive an explicit
                 # user reset, or recovery resurrects the reset session
                 # (#61993 — the user's /new was silently undone).
-                _promote = getattr(self._db, "promote_to_session_reset", None)
+                _promote = getattr(self._db_for_key(session_key), "promote_to_session_reset", None)
                 if callable(_promote):
                     _promote(db_end_session_id, "session_reset")
                 else:
-                    self._db.end_session(db_end_session_id, "session_reset")
+                    self._db_for_key(session_key).end_session(db_end_session_id, "session_reset")
             except Exception as e:
                 # Zombie hazard — see the get_or_create twin path (#82616).
                 logger.warning(
@@ -3491,9 +3589,9 @@ class SessionStore:
                     db_end_session_id, session_key, e,
                 )
 
-        if self._db and db_create_kwargs:
+        if self._db_for_key(session_key) and db_create_kwargs:
             try:
-                self._db.create_session(**db_create_kwargs)
+                self._db_for_key(session_key).create_session(**db_create_kwargs)
                 self._record_gateway_session_peer(
                     session_id,
                     session_key,
@@ -3590,23 +3688,23 @@ class SessionStore:
             self._entries[session_key] = new_entry
             self._save()
 
-        if self._db and db_end_session_id:
+        if self._db_for_key(session_key) and db_end_session_id:
             try:
                 # Promote (not plain end_session): a stale agent_close /
                 # ws_orphan_reap end on the outgoing session must be upgraded
                 # to the explicit switch boundary, or recovery can resurrect
                 # it over the user's /resume choice (#61220 bug class).
-                _promote = getattr(self._db, "promote_to_session_reset", None)
+                _promote = getattr(self._db_for_key(session_key), "promote_to_session_reset", None)
                 if callable(_promote):
                     _promote(db_end_session_id, "session_switch")
                 else:
-                    self._db.end_session(db_end_session_id, "session_switch")
+                    self._db_for_key(session_key).end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
 
-        if self._db:
+        if self._db_for_key(session_key):
             try:
-                self._db.reopen_session(target_session_id)
+                self._db_for_key(session_key).reopen_session(target_session_id)
             except Exception as e:
                 logger.debug("Session DB reopen_session failed: %s", e)
             self._record_gateway_session_peer(
@@ -3680,7 +3778,7 @@ class SessionStore:
 
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Serialize transcript draining across queue migration boundaries."""
-        if not self._db or skip_db:
+        if not self._db_for_session_id(session_id) or skip_db:
             return
         with self._get_transcript_drain_lock():
             reroutes = getattr(self, "_transcript_reroutes", None)
@@ -3802,9 +3900,9 @@ class SessionStore:
                     # continuation exists; adopt only a different, still-live
                     # tip, otherwise fail closed as before.
                     child_id = ""
-                    tip = self._db.get_compression_tip(session_id)
+                    tip = self._db_for_session_id(session_id).get_compression_tip(session_id)
                     if tip and tip != session_id:
-                        tip_row = self._db.get_session(tip)
+                        tip_row = self._db_for_session_id(session_id).get_session(tip)
                         if tip_row is not None and tip_row.get("ended_at") is None:
                             child_id = str(tip)
                     if child_id:
@@ -3933,7 +4031,7 @@ class SessionStore:
 
     def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
         """Write one transcript row. Caller handles retry queuing."""
-        self._db.append_message(
+        self._db_for_session_id(session_id).append_message(
             session_id=session_id,
             role=message.get("role", "unknown"),
             content=message.get("content"),
@@ -4048,10 +4146,10 @@ class SessionStore:
         when no DB is available (in-memory sessions). Used by the gateway's
         transient-failure dedupe guard (#47237).
         """
-        if not self._db:
+        if not self._db_for_session_id(session_id):
             return False
         try:
-            return self._db.has_platform_message_id(
+            return self._db_for_session_id(session_id).has_platform_message_id(
                 session_id, platform_message_id
             )
         except Exception:
@@ -4089,11 +4187,11 @@ class SessionStore:
         own the cross-process turn lease. It leaves internal rewrite policy
         unchanged for existing callers unless they opt in explicitly.
         """
-        if not self._db:
+        if not self._db_for_session_id(session_id):
             return True
         with self._get_transcript_drain_lock():
             try:
-                self._db.replace_messages(
+                self._db_for_session_id(session_id).replace_messages(
                     session_id,
                     messages,
                     active_only=active_only,
@@ -4119,7 +4217,7 @@ class SessionStore:
         "vanished" (disk=0) even though every message sat healthy under the
         child session.
         """
-        if not self._db:
+        if not self._db_for_session_id(session_id):
             return []
         # Follow the write-side reroute chain (cycle-guarded, same shape as
         # append_to_transcript).
@@ -4131,7 +4229,7 @@ class SessionStore:
         try:
             # Durable successor: a compression child published to state.db
             # survives restart even though the in-memory reroute map doesn't.
-            tip = self._db.get_compression_tip(session_id)
+            tip = self._db_for_session_id(session_id).get_compression_tip(session_id)
             if tip:
                 session_id = tip
         except Exception:
@@ -4141,7 +4239,7 @@ class SessionStore:
             # user;user wedge (e.g. a turn that persisted no assistant row)
             # would otherwise re-trigger the pre-request repair on every
             # request forever — heal it once at the restore boundary.
-            return self._db.get_messages_as_conversation(
+            return self._db_for_session_id(session_id).get_messages_as_conversation(
                 session_id, repair_alternation=True
             )
         except Exception as e:
@@ -4176,7 +4274,7 @@ class SessionStore:
         selected current turn must still be a composite carrier, and its live
         payload must be losslessly replayable as text before anything changes.
         """
-        if not self._db:
+        if not self._db_for_session_id(session_id):
             return None
         with self._get_transcript_drain_lock():
             if n < 1:
@@ -4188,8 +4286,8 @@ class SessionStore:
             )
 
             try:
-                expected_active_ids = self._db.get_active_message_ids(session_id)
-                durable = self._db.get_messages_as_conversation(
+                expected_active_ids = self._db_for_session_id(session_id).get_active_message_ids(session_id)
+                durable = self._db_for_session_id(session_id).get_messages_as_conversation(
                     session_id,
                     include_row_ids=True,
                 )
@@ -4218,7 +4316,7 @@ class SessionStore:
                 # so /retry can explain why the selected carrier is unsafe.
                 target_text = retryable_user_text(target_view.get("content"))
             try:
-                result = self._db.rewind_to_message(
+                result = self._db_for_session_id(session_id).rewind_to_message(
                     session_id,
                     target_id,
                     preserve_compaction_handoff=handoff is not None,

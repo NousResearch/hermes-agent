@@ -13,6 +13,15 @@ These tests pin the handle to the *active* scope rather than to construction
 time.  ``test_write_under_profile_scope_lands_in_profile_store`` is the one
 that reproduces the report; it fails against the pre-fix code with the session
 row sitting in the root store.
+
+The second group covers #66887: scoping the handle to the *active* scope is
+only half an answer, because only the inbound path ever installs one.  Every
+background caller — the expiry watcher above all — walks the single
+process-wide ``_entries`` dict, which holds every profile's keys, with no
+scope at all, and so resolved the root store for rows living under
+``profiles/<name>/``.  Those tests resolve the store from the profile encoded
+in the key instead, and pin that single-profile installs still resolve exactly
+where they always did.
 """
 
 import asyncio
@@ -457,3 +466,143 @@ def test_runner_session_db_follows_the_active_profile_scope(multiplex_homes):
     assert runner._session_db_handles == {}
     assert root_db._db._conn is None
     assert profile_db._db._conn is None
+
+
+# ---------------------------------------------------------------------------
+# #66887 — the store must follow the key, not whatever scope happens to be on
+# ---------------------------------------------------------------------------
+
+
+def _expiry_finalized_flag(db_path: Path, session_id: str):
+    """Read one session's expiry_finalized flag, or None when the row is absent."""
+    if not db_path.exists():
+        return None
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT expiry_finalized FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        return None if row is None else row[0]
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def _multiplex_store(root: Path) -> SessionStore:
+    """A store whose keys carry the profile namespace (``agent:<profile>:...``)."""
+    with patch("gateway.session.SessionStore._ensure_loaded"):
+        store = SessionStore(
+            sessions_dir=root / "sessions",
+            config=GatewayConfig(multiplex_profiles=True),
+        )
+    store._loaded = True
+    return store
+
+
+def _profile_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM, chat_id="555", user_id="u1", profile="fitness"
+    )
+
+
+def test_scoped_inbound_turn_lands_in_profile_store(multiplex_homes):
+    """Control for the test below: the scoped path was already correct.
+
+    #88734 fixed the inbound path, which runs inside ``_profile_runtime_scope``.
+    Pinning it here makes the next test unambiguous — the only difference
+    between the two is whether a scope is installed.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+    finally:
+        reset_hermes_home_override(token)
+
+    assert entry.session_key.startswith("agent:fitness:")
+    assert _session_ids(profile / "state.db") == {entry.session_id}
+    assert _session_ids(root / "state.db") == set()
+
+
+def test_unscoped_background_finalize_reaches_the_key_owner_store(multiplex_homes):
+    """Background work carries no scope but owns every profile's keys.
+
+    ``_session_expiry_watcher`` walks the process-wide ``_entries`` dict and
+    finalizes expired sessions without entering ``_profile_runtime_scope``, so
+    resolving from the ambient home wrote the flag to the ROOT store while the
+    row lives under ``profiles/<name>/``.  Two copies of one session then drift
+    apart until the #54878 guard drops a live conversation.
+
+    Fails before this change with ``expiry_finalized`` still 0 on the profile row.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+    finally:
+        reset_hermes_home_override(token)
+
+    # No scope installed — exactly how the watcher calls this.
+    store.set_expiry_finalized(entry)
+
+    assert _expiry_finalized_flag(profile / "state.db", entry.session_id) == 1
+    assert _session_ids(root / "state.db") == set()
+
+
+def test_unscoped_staleness_check_reads_the_key_owner_store(multiplex_homes):
+    """The routing guard must consult the row it actually routes to.
+
+    ``_is_session_ended_in_db`` decides whether the #54878 self-heal fires.
+    Reading the ambient store lets another store's copy answer the question,
+    which is how a live session gets reported as ended and dropped.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+    finally:
+        reset_hermes_home_override(token)
+
+    # Alive in the profile store, and the root store has never heard of it.
+    assert store._is_session_ended_in_db(entry.session_id) is False
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        store._db.end_session(entry.session_id, "agent_close")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert store._is_session_ended_in_db(entry.session_id) is True
+
+
+def test_default_namespace_keeps_ambient_resolution(multiplex_homes):
+    """Guardrail: the legacy ``agent:main`` namespace must not change stores.
+
+    Single-profile installs are the overwhelming majority.  A key without a
+    named profile has to resolve exactly where it did before ``_db_for_key``
+    existed, or this fix would silently relocate their history.
+    """
+    root, _profile = multiplex_homes
+    store = _make_store(root)  # multiplex off -> agent:main keys
+
+    assert store._profile_home_for_key("agent:main:telegram:dm:1") is None
+    assert store._db_for_key("agent:main:telegram:dm:1") is store._db
+    assert store._db_for_key(None) is store._db
+
+
+def test_pinned_handle_still_wins_over_key_resolution(multiplex_homes):
+    """``store._db = fake`` stays authoritative, as the rest of the suite assumes."""
+    root, _profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    sentinel = object()
+    store._db = sentinel
+    assert store._db_for_key("agent:fitness:telegram:dm:1") is sentinel
+    assert store._db_for_session_id("whatever") is sentinel

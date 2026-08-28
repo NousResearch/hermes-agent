@@ -383,7 +383,7 @@ def _make_manager(peer, *, reauth_ok=True):
     )
     mgr._cache["k"] = session
     mgr._get_or_create_peer = lambda peer_id: peer
-    mgr._force_reauth = lambda: reauth_ok
+    mgr._force_reauth = lambda **kw: reauth_ok
     return mgr
 
 
@@ -424,7 +424,7 @@ class TestDialecticAuthRetry:
         assert mgr._auth_failure is not None
 
         peer.failures = 0
-        mgr._force_reauth = lambda: True
+        mgr._force_reauth = lambda **kw: True
         assert mgr.dialectic_query("k", "q") == "synthesized answer"
         assert mgr._auth_failure is None
         assert mgr.pop_auth_notice() is None
@@ -460,6 +460,45 @@ class TestForceReauth:
         mgr = HonchoSessionManager(config=HonchoClientConfig(host="hermes"))
         assert mgr._force_reauth() is False
 
+    def test_passes_pre_call_bearer_not_the_mutated_one(self, tmp_path, monkeypatch):
+        """_authed_call snapshots the bearer BEFORE the operation runs. A
+        sibling waiter's apply_token_to_client mutates the shared client's
+        api_key in place mid-operation; if the post-mutation token were
+        passed, disk would match it and force_refresh_token would exchange
+        again — the exact burst this fix removes."""
+        from plugins.memory.honcho import client as client_mod
+        from plugins.memory.honcho import session as session_mod
+
+        http = SimpleNamespace(api_key="hch-at-old")
+        shared_client = SimpleNamespace(_http=http)
+        monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: shared_client)
+        monkeypatch.setattr(client_mod, "resolve_config_path", lambda: tmp_path / "honcho.json")
+
+        seen = {}
+
+        def fake_force_refresh(p, h, *, failed_access_token=None):
+            seen["failed"] = failed_access_token
+            return "hch-at-new1"
+
+        monkeypatch.setattr(oauth, "force_refresh_token", fake_force_refresh)
+        monkeypatch.setattr(oauth, "apply_token_to_client", lambda c, t: True)
+
+        mgr = HonchoSessionManager(config=HonchoClientConfig(host="hermes", enabled=True))
+
+        calls = {"n": 0}
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Sibling waiter rotates the shared client's bearer in place
+                # while our request is failing with the OLD token.
+                http.api_key = "hch-at-new1"
+                raise Exception("Invalid or expired access token")
+            return "ok"
+
+        assert mgr._authed_call("test op", operation) == "ok"
+        assert seen["failed"] == "hch-at-old"
+
 
 # ---------------------------------------------------------------------------
 # session: message sync 401 recovery
@@ -486,7 +525,7 @@ def _make_sync_manager(flaky_session, *, reauth_ok=True):
     peer.message.side_effect = lambda content: content
     mgr._get_or_create_peer = lambda peer_id: peer
     mgr._sessions_cache["s"] = flaky_session
-    mgr._force_reauth = lambda: reauth_ok
+    mgr._force_reauth = lambda **kw: reauth_ok
     session = HonchoSession(
         key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s"
     )
@@ -524,7 +563,7 @@ class TestSyncAuthRetry:
         assert mgr._flush_session(session) is False
         assert mgr._auth_failure is not None
 
-        mgr._force_reauth = lambda: True
+        mgr._force_reauth = lambda **kw: True
         assert mgr._flush_session(session) is True
         assert all(m["_synced"] for m in session.messages)
         assert mgr._auth_failure is None
@@ -782,7 +821,7 @@ class TestNonAuthFailuresNotRetried:
         _TimeoutPeer.calls = 0
         mgr = _make_manager(_TimeoutPeer())
         reauths = []
-        mgr._force_reauth = lambda: reauths.append(1) or True
+        mgr._force_reauth = lambda **kw: reauths.append(1) or True
 
         ctx = mgr.get_session_context("k")
         assert ctx == {"representation": "", "card": []}
@@ -805,7 +844,7 @@ class TestNonAuthFailuresNotRetried:
         monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: client)
         mgr = _make_manager(_TimeoutSearchPeer())
         reauths = []
-        mgr._force_reauth = lambda: reauths.append(1) or True
+        mgr._force_reauth = lambda **kw: reauths.append(1) or True
 
         assert mgr.search_context("k", "q") == ""
         assert client.search.call_count == 1

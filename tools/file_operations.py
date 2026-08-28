@@ -3572,6 +3572,12 @@ class ShellFileOperations(FileOperations):
             else:
                 files.append(line)
 
+        # Git Bash find echoes native drive roots as /c/... paths. Convert only
+        # local Windows output; remote and container paths must remain untouched.
+        from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
+        if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
+            files = [_msys_to_windows_path(file_path) for file_path in files]
+
         # For explicit hidden roots, find's path-based filtering excludes every
         # file under the hidden path. Apply descendant filtering after command
         # execution so only the explicit root ancestry is bypassed.

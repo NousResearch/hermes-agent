@@ -1,14 +1,13 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import os
-import re
 import pytest
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
-from tools.environments.local import _find_bash, _msys_to_windows_path
+from tools.environments.local import _find_bash, _msys_to_windows_path, LocalEnvironment
 from tools.file_operations import (
     _is_write_denied,
     ReadResult,
@@ -257,7 +256,6 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
     env.cwd = cwd
 
     def execute(command, **kwargs):
-        shell_command = command
         stdin_data = kwargs.get("stdin_data")
         is_windows = os.name == "nt"
         if is_windows:
@@ -276,20 +274,6 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
             completed.stdout.decode("utf-8", "replace")
             if is_windows else completed.stdout
         )
-        if is_windows and shell_command.startswith("find "):
-            # GNU find echoes its MSYS-form root. Convert only find records so
-            # pathlib applies hidden-descendant filtering on the native drive.
-            normalized_lines = []
-            for line in output.splitlines(keepends=True):
-                body = line.rstrip("\r\n")
-                ending = line[len(body):]
-                prefix, separator, path = body.partition(" ")
-                if not (separator and prefix.replace(".", "").isdigit()):
-                    prefix, separator, path = "", "", body
-                if re.match(r"^/[A-Za-z]/", path):
-                    path = _msys_to_windows_path(path)
-                normalized_lines.append(f"{prefix}{separator}{path}{ending}")
-            output = "".join(normalized_lines)
         if include_stderr:
             output += (
                 completed.stderr.decode("utf-8", "replace")
@@ -469,7 +453,7 @@ class TestSearchPathValidation:
 
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
-        return make_real_subprocess_env("/")
+        return LocalEnvironment("/")
 
     def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
         """Fallback find should include visible files when path is inside hidden root."""

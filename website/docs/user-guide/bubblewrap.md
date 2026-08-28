@@ -78,6 +78,12 @@ need to read them from inside a command. With `terminal.home_mode: profile`
 the `HERMES_HOME/home` directory is the subprocess `HOME` and stays
 readable and writable; the rest of `HERMES_HOME` stays hidden.
 
+When `HERMES_HOME` points elsewhere (a profile at `~/.hermes/profiles/<name>`,
+or any other directory), the default `~/.hermes` is hidden as well, so the
+default home's `.env` and `auth.json` are not readable from that profile's
+sandbox. The profile's own `HERMES_HOME/home` and state directory stay
+reachable.
+
 A path that does not exist on the host is simply skipped. An entry that
 is a symlink (a dotfiles repository that links `~/.ssh` to
 `~/dotfiles/ssh`) is hidden at its target, resolved when the backend
@@ -149,8 +155,8 @@ affected.
 The profile home is a bind too. Under `terminal.home_mode: profile`,
 `HERMES_HOME/home` must be a plain directory or a link to a directory
 outside the hidden set: a link into the home tree (for example to `~` or
-`~/.config`) would show the hidden paths again through the bind, and the
-backend refuses to start.
+`~/.config`) or into another profile under `~/.hermes` would show the
+hidden paths again through the bind, and the backend refuses to start.
 
 ## Resource limits
 

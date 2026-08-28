@@ -215,10 +215,11 @@ describe('useHudComposerDrag', () => {
     expect(beginMove).toHaveBeenCalledTimes(1)
     expect(endMove).not.toHaveBeenCalled()
 
-    act(() =>
-      void window.dispatchEvent(
-        new PointerEvent('pointercancel', { cancelable: true, pointerId: 3, screenX: 2100, screenY: 400 })
-      )
+    act(
+      () =>
+        void window.dispatchEvent(
+          new PointerEvent('pointercancel', { cancelable: true, pointerId: 3, screenX: 2100, screenY: 400 })
+        )
     )
 
     expect(endMove).not.toHaveBeenCalled()

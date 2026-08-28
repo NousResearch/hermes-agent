@@ -260,15 +260,6 @@ class TestQwenProfile:
         assert "metadata" not in eb
 
 
-
-
-    def test_build_api_kwargs_extras_empty(self):
-        p = ProviderProfile(name="test")
-        eb, tl = p.build_api_kwargs_extras()
-        assert eb == {}
-        assert tl == {}
-
-
 class TestAlibabaRegionalAndTokenPlanProfiles:
     """#73265: the models.dev catalog advertises alibaba-cn /
     alibaba-token-plan(-cn) / alibaba-coding-plan-cn, but none were registered

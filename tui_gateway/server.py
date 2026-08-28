@@ -880,7 +880,7 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     runtime identity (like the eager resume's overrides splat) so the build can't drop the provider. No
     stored runtime, or an unroutable provider → this session's picked model/effort/tier, else the default."""
     kw = {"session_db": session_db, "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(current),
-          "platform_override": _session_source(current)}
+          "platform_override": _session_source(current), "cwd_override": _session_cwd(current)}
     if resume_sid := current.get("resume_session_id"):
         kw["session_id"] = resume_sid
     resume_overrides = current.get("resume_runtime_overrides")
@@ -1007,7 +1007,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
         try:
             if not _await_resume_history(sid, current):
                 return
-            tokens = _set_session_context(key)
+            tokens = _set_session_context(key, cwd=_session_cwd(current))
             # Global-remote: bind the session profile's HERMES_HOME and hand the agent that profile's db —
             # DEDICATED and ours until _transfer_db_to_agent in the finally; FAIL CLOSED rather than
             # binding the launch DB and bleeding rows into the wrong state.db.

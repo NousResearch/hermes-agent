@@ -19298,7 +19298,9 @@ def test_start_agent_build_passes_session_model_override(
         captured.update(kwargs)
         return types.SimpleNamespace(model="claude-sonnet-4.6")
 
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(
+        server, "_set_session_context", lambda target, cwd=None: []
+    )
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_SlashWorker", FakeWorker)

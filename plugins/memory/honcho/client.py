@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 from agent.secret_scope import get_secret
 from hermes_cli.profiles import _get_default_hermes_home
 from hermes_constants import get_hermes_home
+from hermes_state_common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM
 
 from plugins.memory.honcho.client_cache import (
     _DEFAULT_HTTP_TIMEOUT, _client_cache_key, _client_slots, _client_slots_lock,
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOST = "hermes"
+_AUTOMATIC_SESSION_TITLE_SOURCES = frozenset({TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM})
 
 
 def _sanitize_url(url: str | None) -> str | None:
@@ -492,7 +494,7 @@ class HonchoClientConfig:
             return manual
         # Absent provenance retains the legacy explicit-title override. Generated
         # display titles must not change a strategy-selected memory identity.
-        if session_title and session_title_source not in {"derived", "llm"} and _slug(session_title):
+        if session_title and session_title_source not in _AUTOMATIC_SESSION_TITLE_SOURCES and _slug(session_title):
             return self._with_peer_prefix(_slug(session_title))
         if self.session_strategy == "per-repo":
             return self._with_peer_prefix(self._git_repo_name(cwd) or Path(cwd).name)

@@ -2232,7 +2232,7 @@ def init_agent(
         setattr(agent, _name, _params[_name])
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
-    agent.session_cwd = cwd
+    agent.session_cwd = cwd or None
     # Shared iteration budget: parent creates, children inherit.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's

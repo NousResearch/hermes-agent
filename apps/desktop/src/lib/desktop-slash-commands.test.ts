@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   type CommandCatalogMeta,
   type CommandsCatalogLike,
-  type DesktopSlashArgumentMode,
   desktopSkinSlashCompletions,
+  type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,

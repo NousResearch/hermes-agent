@@ -272,9 +272,9 @@ def _(rid, params: dict) -> dict:
 
         for cmd in COMMAND_REGISTRY:
             meta = command_desktop_meta(cmd)
-            commands[f"/{cmd.name}"] = meta
+            commands[f"/{cmd.name}"] = dict(meta)
             for alias in cmd.aliases:
-                commands[f"/{alias}"] = meta
+                commands[f"/{alias}"] = dict(meta)
 
             if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
                 continue

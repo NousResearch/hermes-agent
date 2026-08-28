@@ -347,6 +347,7 @@ function liveCatalog(): CommandsCatalogLike | undefined {
 
 function catalogMeta(command: string): CommandCatalogMeta | undefined {
   const commands = liveCatalog()?.commands
+
   if (!commands) {
     return undefined
   }
@@ -359,6 +360,7 @@ function catalogMeta(command: string): CommandCatalogMeta | undefined {
 
 function catalogCanonical(normalized: string): string | undefined {
   const canon = liveCatalog()?.canon
+
   if (!canon) {
     return undefined
   }
@@ -390,6 +392,7 @@ function asArgumentMode(value: string | null | undefined): DesktopSlashArgumentM
 
 function specFromCatalog(command: string): DesktopCommandSpec | null {
   const entry = catalogMeta(command)
+
   if (!entry) {
     return null
   }

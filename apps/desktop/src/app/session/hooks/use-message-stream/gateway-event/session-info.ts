@@ -38,16 +38,26 @@ import type { GatewayEventContext } from './types'
  *
  * Absent is not the same as different: the backend omits the id on a
  * not-yet-built (`lazy`) session, and refusing there would leave the workspace
- * marked un-owned for the rest of the conversation. Matching goes through the
- * lineage (`sessionMatchesStoredId`) so a compression-rotated tip and the root
- * a pinned-row selection may hold still read as one conversation.
+ * marked un-owned for the rest of the conversation. That only reads as the
+ * selection when the event is the pane's OWN runtime, though: an unscoped
+ * event applies precisely when no session is active, and the fan-outs
+ * (`broadcast_session_info`, the approvals loop) re-emit for every live
+ * session at once, each with its own cwd. As an unconditional wildcard those
+ * repoint `$currentCwd` and claim it for whatever is selected — nothing, in
+ * the report this comes from — until the next release drops the claim again.
+ * Hence `boundToPane`: with no binding there is no evidence, and no evidence
+ * must not become an ownership claim.
+ *
+ * Matching goes through the lineage (`sessionMatchesStoredId`) so a
+ * compression-rotated tip and the root a pinned-row selection may hold still
+ * read as one conversation.
  */
-function sessionInfoDescribesSelectedSession(storedSessionId: string | undefined): boolean {
+function sessionInfoDescribesSelectedSession(storedSessionId: string | undefined, boundToPane: boolean): boolean {
   const infoStoredSessionId = storedSessionId?.trim() || null
   const selected = $selectedStoredSessionId.get() ?? null
 
   if (!infoStoredSessionId) {
-    return true
+    return boundToPane
   }
 
   // A named session cannot describe a fresh draft. Treating a null selection as
@@ -91,7 +101,10 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
 
   const selected = $selectedStoredSessionId.get()
 
-  if (!selected || !sessionInfoDescribesSelectedSession(payload.stored_session_id)) {
+  // A rebuilt runtime announces itself for a conversation that is already
+  // persisted, so it always names one; an unnamed payload has no lineage to
+  // match and must not capture the pane's active runtime id.
+  if (!selected || !sessionInfoDescribesSelectedSession(payload.stored_session_id, false)) {
     return false
   }
 
@@ -180,7 +193,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // Active-session model/provider still flows through the session state
       // cache via updateSessionState → syncRuntimeMetadataToView below.
 
-      if (typeof payload?.cwd === 'string' && sessionInfoDescribesSelectedSession(payload.stored_session_id)) {
+      if (
+        typeof payload?.cwd === 'string' &&
+        sessionInfoDescribesSelectedSession(payload.stored_session_id, isActiveEvent || rebound)
+      ) {
         // The active session's agent can relocate itself (new repo/worktree
         // via the terminal). When the SAME active session's cwd actually
         // moves, follow it — refresh the project tree + scope so the sidebar

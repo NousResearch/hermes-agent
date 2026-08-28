@@ -187,3 +187,101 @@ def test_read_skill_body_returns_empty_for_missing(tmp_path):
 
 def test_read_skill_body_rejects_traversal():
     assert _read_skill_body("../etc/passwd") == ""
+
+
+# ── mention markers ────────────────────────────────────────────────────────
+
+
+def test_marker_at_sign_triggers_short_skill():
+    # @pdf bypasses the MIN_NAME_LENGTH=4 guard — explicit user intent wins.
+    hits = detect_mentioned_skill_names("please @pdf this", ["pdf", "codex"])
+    assert hits == ["pdf"]
+
+
+def test_marker_skill_colon_triggers_short_skill():
+    hits = detect_mentioned_skill_names("use skill: git here", ["git", "codex"])
+    assert hits == ["git"]
+
+
+def test_marker_slash_skill_triggers():
+    hits = detect_mentioned_skill_names("/skill obsidian", ["obsidian", "pdf"])
+    assert hits == ["obsidian"]
+
+
+def test_marker_is_case_insensitive():
+    # @OBSIDIAN should resolve to "obsidian" in the index.
+    hits = detect_mentioned_skill_names("hi @OBSIDIAN", ["obsidian"])
+    assert hits == ["obsidian"]
+
+
+def test_marker_for_unknown_skill_is_dropped():
+    # The user mentions a skill that isn't installed — silently drop, do not
+    # break the turn. (Markers do not turn into phantom prefetches.)
+    hits = detect_mentioned_skill_names("@does-not-exist", ["codex"])
+    assert hits == []
+
+
+def test_marker_does_not_match_email_or_path():
+    # `foo@pdf.com` and `/skill/foo` should not trigger a marker match.
+    # The pattern requires whitespace/start/paren/space before the marker.
+    hits = detect_mentioned_skill_names(
+        "send me at user@pdf.com please", ["pdf"]
+    )
+    assert hits == []
+    hits = detect_mentioned_skill_names("look at /skill/pdf page", ["pdf"])
+    # The leading space before "/skill" is the boundary, and "pdf" then has
+    # to be the skill name (no leading "skill" word) — this is the slash-
+    # command `/skill <name>`. A bare "/skill/pdf" reads as `/skill` then
+    # `pdf` would be picked up by auto-match, but auto-match skips pdf
+    # (length guard). The marker regex requires a space AFTER "/skill", so
+    # "/skill/pdf" without a space does not match — that's the intended
+    # slash-command discipline.
+    assert hits == []
+
+
+def test_marker_rejects_traversal_attempt():
+    # Defense in depth: a marker whose captured name fails _safe_skill_name
+    # must be dropped, even if the pattern matched.
+    hits = detect_mentioned_skill_names("@../etc/passwd", ["codex"])
+    assert hits == []
+
+
+def test_marker_and_word_boundary_merge_dedup():
+    # Both channels pick up "codex"; the result should not list it twice.
+    hits = detect_mentioned_skill_names(
+        "@codex please, then research the codex harness",
+        ["codex", "obsidian"],
+    )
+    assert hits.count("codex") == 1
+    assert "codex" in hits
+
+
+def test_marker_hits_sort_longest_first_when_merged():
+    # Auto-match picks up "codex" and "codex-operations"; marker explicitly
+    # names "codex-operations". Longest wins overall.
+    hits = detect_mentioned_skill_names(
+        "@codex-operations and the codex harness",
+        ["codex", "codex-operations"],
+    )
+    assert hits[0] == "codex-operations"
+    assert hits.count("codex") == 1
+
+
+def test_build_skill_prefetch_marker_bypasses_length_guard(tmp_path):
+    # End-to-end: short skill hit via marker gets its body prefetched.
+    skill_dir = tmp_path / "pdf"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: pdf\ndescription: merge pdfs\n---\n\nPDF merge instructions.",
+        encoding="utf-8",
+    )
+    with patch(
+        "tools.skills_tool._find_all_skills",
+        return_value=[{"name": "pdf"}],
+    ), patch(
+        "agent.skill_prefetch._find_skill_md",
+        return_value=skill_dir / "SKILL.md",
+    ):
+        out = build_skill_prefetch("please @pdf this file")
+    assert "PDF merge instructions." in out
+    assert "[Implicitly loaded skill: pdf]" in out

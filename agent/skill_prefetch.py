@@ -8,10 +8,12 @@ cache so the model has them on the first turn instead of round-tripping
 
 Hermes differs from Codex in the detection surface. Codex parses shell
 command tokens (running a skill's script / reading a skill's doc); Hermes
-matches the natural-language prompt against the skill index. The matching
-rules are borrowed from the desktop suggestion provider
-(``apps/desktop/src/store/suggestion-providers/skill.ts``), which already
-solved the false-positive problem:
+matches the natural-language prompt against the skill index. Two
+complementary detection channels are supported:
+
+**Word-boundary auto-match** (the natural-language default). Rules are
+borrowed from the desktop suggestion provider
+(``apps/desktop/src/store/suggestion-providers/skill.ts``):
 
 - Unicode word boundaries (a bare ``codex`` cannot match inside
   ``codexified``; a trailing ``-`` is excluded so ``codex`` cannot match the
@@ -20,6 +22,21 @@ solved the false-positive problem:
   "pr ready", the skill is ``pr-ready``.
 - A minimum name length guards against common-word false positives (``pdf``,
   ``git``, ``box``).
+
+**Explicit mention markers** (bypass the length guard). Three syntaxes let
+users force a prefetch when they know they want a specific skill:
+
+- ``@skill-name`` (most common — same as Discord/Slack mentions)
+- ``skill: skill-name`` (natural-language intent)
+- ``/skill skill-name`` (slash-command style)
+
+Markers bypass ``MIN_NAME_LENGTH`` so short skills (``pdf``, ``git``, ``box``)
+remain triggerable when the user is explicit. They still go through
+``_safe_skill_name`` defense in depth.
+
+Markers and word-boundary hits are merged, longest-name-first; if both
+channels pick up the same skill it is deduped. The merged list is still
+capped at ``MAX_PREFETCH_SKILLS`` and ``MAX_TOTAL_CHARS``.
 
 The result is appended to the same ``ext_prefetch_cache`` the memory manager
 uses, so it rides the existing prompt-cache-safe channel (injected into the
@@ -44,6 +61,18 @@ MAX_PREFETCH_SKILLS = 3
 MAX_SKILL_CHARS = 8_000
 MAX_TOTAL_CHARS = 16_000
 
+# Explicit mention markers that bypass MIN_NAME_LENGTH. Three syntaxes:
+#   @skill-name            (Discord/Slack-style mention)
+#   skill: skill-name      (natural-language intent)
+#   /skill skill-name      (slash-command style)
+# The skill-name capture is the same character class used by skill names
+# in the index (letters, digits, hyphen, underscore, dot); we validate
+# the captured name through _safe_skill_name before accepting it.
+_MENTION_MARKER_RE = re.compile(
+    r"(?:^|[\s,(])(?:@|(?:skill\s*:\s*)|/(?:skill\s+))"
+    r"([A-Za-z0-9][A-Za-z0-9._-]*)",
+)
+
 
 def _skill_pattern(name: str) -> re.Pattern:
     """Whole-word pattern for a skill name, exported for tests.
@@ -63,24 +92,54 @@ def detect_mentioned_skill_names(
 ) -> List[str]:
     """Return skill names the prompt mentions, most-specific first, capped.
 
-    Names are matched whole-word against the prompt. When several patterns
-    hit (e.g. both ``codex`` and ``codex-operations`` are skills and the
-    prompt says "codex-operations"), longer names win so the most specific
-    skill is prefetched.
+    Two detection channels contribute, then are merged and deduped:
+
+    1. **Word-boundary auto-match** — ``codex`` matches ``"research the
+       codex harness"``. Skips names shorter than ``MIN_NAME_LENGTH`` to
+       avoid common-word false positives.
+    2. **Explicit mention marker** — ``@pdf``, ``skill: git``,
+       ``/skill obsidian`` force a match regardless of length. The captured
+       name still has to pass ``_safe_skill_name`` (defense in depth).
+
+    The merge sorts longest-name-first (most specific wins) and caps the
+    result at ``MAX_PREFETCH_SKILLS``. Names that are not in the index are
+    silently dropped — a marker for an uninstalled skill should not break
+    the turn.
     """
     if not prompt:
         return []
-    hits = []
-    for name in skill_names:
-        if not name or len(name) < MIN_NAME_LENGTH:
+    index = {str(n) for n in skill_names if n}
+    if not index:
+        return []
+    # Channel 1: word-boundary auto-match (length-gated).
+    auto_hits: List[str] = []
+    for name in index:
+        if len(name) < MIN_NAME_LENGTH:
             continue
         try:
             if _skill_pattern(name).search(prompt):
-                hits.append(name)
+                auto_hits.append(name)
         except re.error:
             continue
-    hits.sort(key=len, reverse=True)
-    return hits[:MAX_PREFETCH_SKILLS]
+    # Channel 2: explicit mention markers (bypass length guard).
+    marker_hits: List[str] = []
+    for match in _MENTION_MARKER_RE.finditer(prompt):
+        candidate = match.group(1)
+        # Match is case-insensitive against the index; preserve the
+        # index's casing in the result so callers see canonical names.
+        resolved = next(
+            (n for n in index if n.lower() == candidate.lower()), None
+        )
+        if resolved and _safe_skill_name(resolved) and resolved not in marker_hits:
+            marker_hits.append(resolved)
+    # Merge: marker hits first (explicit intent wins), then auto hits.
+    # Dedup keeps first occurrence. Longest-first sort applied at the end.
+    merged: List[str] = []
+    for n in marker_hits + auto_hits:
+        if n not in merged:
+            merged.append(n)
+    merged.sort(key=len, reverse=True)
+    return merged[:MAX_PREFETCH_SKILLS]
 
 
 def _safe_skill_name(name: str) -> bool:
@@ -156,6 +215,18 @@ def build_skill_prefetch(prompt: str) -> str:
 
     Safe no-op when nothing matches, when the skill index is unavailable, or
     when a skill vanished between index and read.
+
+    Observability: every call that produces a non-empty result logs a debug
+    line with the resolved skill names and total injected size. The injection
+    rides ``ext_prefetch_cache`` which is part of the user-message API
+    payload — variable content there can degrade prompt-cache hit rate, so
+    it is worth being able to grep for "how much did this turn add?".
+
+    Truncation rule: hits are processed longest-first (most specific wins).
+    Each skill is included in full up to ``MAX_SKILL_CHARS``. The accumulator
+    stops the moment adding the next skill would exceed ``MAX_TOTAL_CHARS``,
+    so a long single skill cannot squeeze out shorter-but-higher-priority
+    ones already in the cache.
     """
     if not prompt or not prompt.strip():
         return ""
@@ -171,14 +242,24 @@ def build_skill_prefetch(prompt: str) -> str:
         return ""
     parts: List[str] = []
     total = 0
+    truncated = False
     for name in hits:
         body = _read_skill_body(name)
         if not body:
             continue
         if total + len(body) > MAX_TOTAL_CHARS:
             body = body[: MAX_TOTAL_CHARS - total]
+            truncated = True
         parts.append(f"[Implicitly loaded skill: {name}]\n{body}")
         total += len(body)
         if total >= MAX_TOTAL_CHARS:
             break
+    if parts:
+        logger.debug(
+            "Skill prefetch injected %d skill(s) %s (%d chars, truncated=%s)",
+            len(parts),
+            [p.split("\n", 1)[0].removeprefix("[Implicitly loaded skill: ").removesuffix("]") for p in parts],
+            total,
+            truncated,
+        )
     return "\n\n".join(parts)

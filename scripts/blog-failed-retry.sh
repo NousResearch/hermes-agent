@@ -21,6 +21,12 @@ if [[ -f "$HERMES_HOME_DIR/.env" ]]; then
   set -a; . "$HERMES_HOME_DIR/.env" 2>/dev/null || true; set +a
 fi
 
+# Hermetic P13 guard: no directory, log, auth, or pipeline mutation.
+if [[ "${BLOG_RETRY_NOOP:-0}" == "1" ]]; then
+  echo "noop: blog failed-image retry disabled"
+  exit 0
+fi
+
 ROOT=${BLOG_RETRY_ENGINE_ROOT:-/home/kensei/repos/KenseiAgent/content_engine}
 LOG_DIR=$ROOT/output/logs
 STATUS=$LOG_DIR/blog-failed-retry-status.json
@@ -31,8 +37,11 @@ LOG="$LOG_DIR/blog-failed-retry-$(date +%Y%m%d-%H%M%S).log"
 PIPELINE_CMD=${BLOG_RETRY_PIPELINE_CMD:-PYTHONPATH=. ../.venv/bin/python -m blog.blog_pipeline --retry}
 
 run_pipeline() {
-  OUT=$(cd "$ROOT" && eval "$PIPELINE_CMD" 2>&1)
-  echo "$OUT"
+  local output pipeline_rc
+  output=$(cd "$ROOT" && eval "$PIPELINE_CMD" 2>&1)
+  pipeline_rc=$?
+  printf '%s\n' "$output"
+  return "$pipeline_rc"
 }
 
 OUT=$(run_pipeline)
@@ -44,10 +53,26 @@ if grep -qE "codex_capped|usage limit|CodexCapExceeded|deferred.*cap" <<<"$OUT" 
   {
     echo "[$(date -Is)] primary Codex capped - switching to secondary account"
   } >> "$LOG"
-  cp "$AUTH" "$AUTH.primary-stash"
-  cp "$SECONDARY" "$AUTH"
+  install -m 0600 "$AUTH" "$AUTH.primary-stash"
+  install -m 0600 "$SECONDARY" "$AUTH"
   touch "$LOCK"
-  trap 'cp "$AUTH.primary-stash" "$AUTH" 2>/dev/null; rm -f "$LOCK" "$AUTH.primary-stash"' EXIT
+
+  restore_codex_auths() {
+    local trap_rc=$?
+    # Codex rotates single-use refresh tokens in auth.json. Persist the
+    # refreshed secondary before restoring the primary or the next fallback
+    # run will replay an already-consumed token and fail authentication.
+    if [[ -f "$AUTH" ]] \
+       && python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$AUTH" 2>/dev/null; then
+      install -m 0600 "$AUTH" "$SECONDARY"
+    fi
+    if [[ -f "$AUTH.primary-stash" ]]; then
+      install -m 0600 "$AUTH.primary-stash" "$AUTH"
+    fi
+    rm -f "$LOCK" "$AUTH.primary-stash"
+    return "$trap_rc"
+  }
+  trap restore_codex_auths EXIT
 
   OUT=$(run_pipeline)
   rc=$?

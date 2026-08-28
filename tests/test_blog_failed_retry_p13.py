@@ -119,3 +119,55 @@ def test_exactly_one_status_file(tmp_path):
     _run(engine, fake_cmd=fake_cmd)
     status_files = list((engine / "output" / "logs").glob("blog-failed-retry-status.json"))
     assert len(status_files) == 1, f"expected exactly one status file, got {status_files}"
+
+
+def test_secondary_refresh_is_persisted_and_primary_restored(tmp_path):
+    """A rotated secondary refresh token must survive the temporary account swap."""
+    home = tmp_path / "home"
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True)
+    primary = {"auth_mode": "chatgpt", "tokens": {"refresh_token": "primary-old"}}
+    secondary = {"auth_mode": "chatgpt", "tokens": {"refresh_token": "secondary-old"}}
+    auth = codex_dir / "auth.json"
+    secondary_auth = codex_dir / "auth.json.secondary"
+    auth.write_text(json.dumps(primary))
+    secondary_auth.write_text(json.dumps(secondary))
+    auth.chmod(0o600)
+    secondary_auth.chmod(0o600)
+
+    engine = _make_engine(tmp_path, fake_rc=0, fake_out="")
+    state = tmp_path / "pipeline-call-count"
+    fake = engine / "blog" / "fake_auth_pipeline.py"
+    fake.write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "state = Path(os.environ['FAKE_PIPELINE_STATE'])\n"
+        "count = int(state.read_text()) if state.exists() else 0\n"
+        "state.write_text(str(count + 1))\n"
+        "if count == 0:\n"
+        "    print('codex_capped')\n"
+        "    raise SystemExit(3)\n"
+        "auth = Path(os.environ['HOME']) / '.codex' / 'auth.json'\n"
+        "auth.write_text(json.dumps({'auth_mode': 'chatgpt', 'tokens': {'refresh_token': 'secondary-rotated'}}))\n"
+        "auth.chmod(0o600)\n"
+        "print('retry_all_pending_images: {recovered: [post-a], still_failed: [], no_draft: [], deferred: [], idle: []}')\n"
+    )
+    fake_cmd = f"{sys.executable} {fake}"
+
+    r = _run(
+        engine,
+        fake_cmd=fake_cmd,
+        env_extra={
+            "HOME": str(home),
+            "HERMES_HOME": str(tmp_path / "hermes-home"),
+            "FAKE_PIPELINE_STATE": str(state),
+        },
+    )
+
+    assert r.returncode == 0, r.stderr
+    assert json.loads(auth.read_text()) == primary
+    assert json.loads(secondary_auth.read_text())["tokens"]["refresh_token"] == "secondary-rotated"
+    assert auth.stat().st_mode & 0o777 == 0o600
+    assert secondary_auth.stat().st_mode & 0o777 == 0o600
+    assert not (codex_dir / ".fallback_in_use").exists()
+    assert not (codex_dir / "auth.json.primary-stash").exists()

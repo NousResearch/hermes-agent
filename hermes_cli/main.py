@@ -756,7 +756,74 @@ def _apply_profile_override() -> None:
             sys.argv = sys.argv[:start] + sys.argv[start + consume :]
 
 
+def _apply_system_gateway_home_override(
+    *, unit_path: Path | None = None
+) -> None:
+    """Adopt a system gateway unit's HERMES_HOME before config imports.
+
+    ``sudo`` normally strips ``HERMES_HOME`` and changes ``HOME`` to ``/root``.
+    Importing :mod:`hermes_cli.config` in that state creates an unrelated
+    ``/root/.hermes`` scaffold before the gateway command can inspect the real
+    system unit.  This deliberately small, stdlib-only pre-parser reads the
+    unit's pinned home early enough to prevent that side effect.
+
+    Explicit/profile-derived ``HERMES_HOME`` always wins.  Missing, malformed,
+    relative, and temporary unit homes fail closed without changing the
+    process environment.
+    """
+    if os.environ.get("HERMES_HOME", "").strip():
+        return
+
+    argv = sys.argv[1:]
+    if not argv or argv[0] != "gateway" or "--system" not in argv:
+        return
+
+    path = unit_path or Path("/etc/systemd/system/hermes-gateway.service")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return
+
+    unit_home = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Environment="):
+            continue
+        body = stripped[len("Environment=") :].strip()
+        try:
+            assignments = shlex.split(body, posix=True)
+        except ValueError:
+            continue
+        for assignment in assignments:
+            if assignment.startswith("HERMES_HOME="):
+                unit_home = assignment.split("=", 1)[1].strip()
+                break
+        if unit_home:
+            break
+
+    if not unit_home:
+        return
+    candidate = Path(unit_home)
+    if not candidate.is_absolute():
+        return
+    try:
+        candidate = candidate.resolve(strict=False)
+        temporary_roots = {
+            Path(tempfile.gettempdir()).resolve(strict=False),
+            Path("/var/tmp").resolve(strict=False),
+        }
+    except OSError:
+        return
+    if candidate == Path(candidate.anchor):
+        return
+    if any(candidate == root or root in candidate.parents for root in temporary_roots):
+        return
+
+    os.environ["HERMES_HOME"] = str(candidate)
+
+
 _apply_profile_override()
+_apply_system_gateway_home_override()
 
 # Windows launcher self-heal — the ``hermes`` command users run is a COPY of
 # the venv console script, staged into the managed binary dir (the default

@@ -336,7 +336,7 @@ def test_hint_does_not_claim_partial_update_for_lookalike_third_party(modname):
 
 
 @pytest.mark.parametrize("modname", ["tools.todo_tool", "agent.context_compressor",
-                                     "hermes_constants", "cli"])
+                                     "hermes_constants", "hermes_cli.config", "cli"])
 def test_hint_fires_for_each_first_party_root(modname):
     exc = ImportError("cannot import name 'X'")
     exc.name = modname

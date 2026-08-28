@@ -645,6 +645,162 @@ def _model_supports_prompt_cache(model_id: str) -> bool:
     return any(pattern in model_lower for pattern in _CACHE_POINT_PATTERNS)
 
 
+# ---------------------------------------------------------------------------
+# Server-verdict cachePoint suppression
+# ---------------------------------------------------------------------------
+# The allowlist above is a static guess about *placement*, and Bedrock's real
+# rule is per-model-family AND per-field: Amazon Nova accepts cachePoint in
+# ``system``/``messages`` but rejects it inside ``toolConfig.tools`` with a
+# hard ValidationException that fails the whole request (#97281). Any static
+# table drifts the moment AWS ships a family whose placement rules differ, and
+# the failure mode is 100% of turns with no recovery and no user workaround.
+#
+# So the table is not the only authority: when Bedrock names a placement as
+# unpermitted, that verdict is recorded and the marker is dropped from that
+# placement for the rest of the process, and the rejected request is retried
+# once without it. Mirrors the existing self-heal idiom in this module
+# (is_streaming_access_denied_error → non-streaming converse()).
+
+CACHE_POINT_PLACEMENTS = ("tools", "system", "messages")
+
+# model_id (lowercased) → placements Bedrock has rejected this process.
+_CACHE_POINT_REJECTIONS: Dict[str, set] = {}
+
+# "#/toolConfig/tools/18: extraneous key [cachePoint] is not permitted"
+_CACHE_POINT_PATH_PATTERN = re.compile(
+    r"#/(?P<path>[A-Za-z0-9_./\[\]-]*)", re.IGNORECASE
+)
+
+
+def cache_point_rejection_placement(exc: BaseException) -> Optional[str]:
+    """Return the Converse section whose cachePoint block Bedrock refused.
+
+    Returns one of ``CACHE_POINT_PLACEMENTS``, or None when the error is not a
+    cachePoint rejection. Bedrock reports it as a ValidationException naming
+    the offending JSON pointer, e.g.::
+
+        Malformed input request: #/toolConfig/tools/18: extraneous key
+        [cachePoint] is not permitted, please reformat your input and try again.
+
+    Detection is message-based on purpose: the pointer is the only part of the
+    response that says *which* section was rejected, and the same wording
+    reaches us both as a raw botocore ``ClientError`` and wrapped by SDKs.
+    """
+    msg = str(exc)
+    lowered = msg.lower()
+    if "cachepoint" not in lowered:
+        return None
+    if "not permitted" not in lowered and "extraneous" not in lowered:
+        return None
+    match = _CACHE_POINT_PATH_PATTERN.search(msg)
+    path = (match.group("path") if match else "").lower()
+    if "toolconfig" in path or "tools" in path:
+        return "tools"
+    if "system" in path:
+        return "system"
+    if "messages" in path:
+        return "messages"
+    # A rejection we cannot localise: suppress the tool marker first, since
+    # toolConfig.tools is the only placement any supported family is known to
+    # refuse while still accepting the others.
+    return "tools"
+
+
+def note_cache_point_rejection(model_id: str, placement: str) -> None:
+    """Record that ``model_id`` refuses cachePoint blocks in ``placement``."""
+    if placement not in CACHE_POINT_PLACEMENTS:
+        return
+    _CACHE_POINT_REJECTIONS.setdefault(model_id.lower(), set()).add(placement)
+
+
+def cache_point_allowed(model_id: str, placement: str) -> bool:
+    """Return False once Bedrock has refused this placement for this model."""
+    return placement not in _CACHE_POINT_REJECTIONS.get(model_id.lower(), ())
+
+
+def reset_cache_point_rejections() -> None:
+    """Clear recorded cachePoint rejections. Used in tests."""
+    _CACHE_POINT_REJECTIONS.clear()
+
+
+def _is_cache_point_block(block: Any) -> bool:
+    return isinstance(block, dict) and set(block.keys()) == {"cachePoint"}
+
+
+def strip_cache_points(kwargs: Dict[str, Any], placement: str) -> Dict[str, Any]:
+    """Return a copy of Converse kwargs with ``placement``'s cachePoint removed.
+
+    Returns the input unchanged (same object) when there was nothing to strip,
+    which is what callers use to decide a retry cannot help.
+    """
+    if placement == "system":
+        system = kwargs.get("system")
+        if not isinstance(system, list):
+            return kwargs
+        cleaned = [b for b in system if not _is_cache_point_block(b)]
+        if len(cleaned) == len(system):
+            return kwargs
+        return {**kwargs, "system": cleaned}
+
+    if placement == "tools":
+        tool_config = kwargs.get("toolConfig")
+        tools = (tool_config or {}).get("tools")
+        if not isinstance(tools, list):
+            return kwargs
+        cleaned = [t for t in tools if not _is_cache_point_block(t)]
+        if len(cleaned) == len(tools):
+            return kwargs
+        return {**kwargs, "toolConfig": {**tool_config, "tools": cleaned}}
+
+    if placement == "messages":
+        messages = kwargs.get("messages")
+        if not isinstance(messages, list):
+            return kwargs
+        changed = False
+        cleaned_messages = []
+        for msg in messages:
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, list) and any(_is_cache_point_block(b) for b in content):
+                changed = True
+                cleaned_messages.append({
+                    **msg,
+                    "content": [b for b in content if not _is_cache_point_block(b)],
+                })
+            else:
+                cleaned_messages.append(msg)
+        if not changed:
+            return kwargs
+        return {**kwargs, "messages": cleaned_messages}
+
+    return kwargs
+
+
+def recover_from_cache_point_rejection(
+    exc: BaseException, kwargs: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Record Bedrock's cachePoint verdict and return retry kwargs, or None.
+
+    None means the error was not a cachePoint rejection, or the marker was
+    already absent — in which case retrying cannot change the outcome and the
+    caller must re-raise.
+    """
+    placement = cache_point_rejection_placement(exc)
+    if placement is None:
+        return None
+    retry_kwargs = strip_cache_points(kwargs, placement)
+    if retry_kwargs is kwargs:
+        return None
+    model_id = str(kwargs.get("modelId", ""))
+    note_cache_point_rejection(model_id, placement)
+    logger.warning(
+        "bedrock: %s rejected a cachePoint block in %s — dropping that cache "
+        "marker for this model and retrying. Prompt caching stays active for "
+        "the remaining sections.",
+        model_id or "model", placement,
+    )
+    return retry_kwargs
+
+
 def is_anthropic_bedrock_model(model_id: str) -> bool:
     """Return True if the model is an Anthropic Claude model on Bedrock.
 
@@ -1238,7 +1394,7 @@ def build_converse_kwargs(
     }
 
     if system_prompt:
-        if cache_enabled:
+        if cache_enabled and cache_point_allowed(model, "system"):
             system_prompt = system_prompt + [{"cachePoint": {"type": "default"}}]
         kwargs["system"] = system_prompt
 
@@ -1263,7 +1419,7 @@ def build_converse_kwargs(
             # Strip tools for known non-tool-calling models and warn the user.
             # Ref: PR #7920 feedback from @ptlally, pattern from PR #4346.
             if _model_supports_tool_use(model):
-                if cache_enabled:
+                if cache_enabled and cache_point_allowed(model, "tools"):
                     converse_tools = converse_tools + [{"cachePoint": {"type": "default"}}]
                 kwargs["toolConfig"] = {"tools": converse_tools}
             else:
@@ -1272,7 +1428,11 @@ def build_converse_kwargs(
                     "The agent will operate in text-only mode.", model
                 )
 
-    if cache_enabled and len(converse_messages) >= 2:
+    if (
+        cache_enabled
+        and cache_point_allowed(model, "messages")
+        and len(converse_messages) >= 2
+    ):
         # Checkpoint everything up to (not including) the newest turn, so the
         # marker survives unchanged across requests as only the tail grows —
         # mirroring the Anthropic system_and_3 strategy in prompt_caching.py.
@@ -1320,6 +1480,9 @@ def call_converse(
     try:
         response = client.converse(**kwargs)
     except Exception as exc:
+        retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
+        if retry_kwargs is not None:
+            return normalize_converse_response(client.converse(**retry_kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
                 "bedrock: stale-connection error on converse(region=%s, model=%s): "
@@ -1362,6 +1525,11 @@ def call_converse_stream(
     try:
         response = client.converse_stream(**kwargs)
     except Exception as exc:
+        retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
+        if retry_kwargs is not None:
+            return normalize_converse_stream_events(
+                client.converse_stream(**retry_kwargs)
+            )
         if is_streaming_access_denied_error(exc):
             # IAM allows bedrock:InvokeModel but not
             # InvokeModelWithResponseStream — permanent for this session.

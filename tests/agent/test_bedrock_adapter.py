@@ -544,6 +544,176 @@ class TestBuildConverseKwargs:
 
 
 # ---------------------------------------------------------------------------
+# cachePoint rejection self-heal (#97281)
+# ---------------------------------------------------------------------------
+
+CACHE_POINT = {"cachePoint": {"type": "default"}}
+
+NOVA_TOOLS_REJECTION = (
+    "An error occurred (ValidationException) when calling the ConverseStream "
+    "operation: The model returned the following errors: Malformed input "
+    "request: #/toolConfig/tools/18: extraneous key [cachePoint] is not "
+    "permitted, please reformat your input and try again."
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_cache_point_rejections():
+    """Rejections are process-wide; keep them from leaking between tests."""
+    from agent.bedrock_adapter import reset_cache_point_rejections
+    reset_cache_point_rejections()
+    yield
+    reset_cache_point_rejections()
+
+
+class TestCachePointRejectionRecovery:
+    """Bedrock placement rules are per-family and per-field: Nova accepts
+    cachePoint in system/messages but rejects it inside toolConfig.tools,
+    failing 100% of tool-enabled turns (#97281). The server verdict is the
+    authority - record it, drop that one marker, and retry."""
+
+    def _nova_kwargs(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        return build_converse_kwargs(
+            model="us.amazon.nova-pro-v1:0",
+            messages=[
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "First"},
+                {"role": "assistant", "content": "Reply"},
+                {"role": "user", "content": "Second"},
+            ],
+            tools=[{"type": "function", "function": {
+                "name": "test", "description": "Test", "parameters": {},
+            }}],
+        )
+
+    def test_classifies_tools_rejection(self):
+        from agent.bedrock_adapter import cache_point_rejection_placement
+        assert cache_point_rejection_placement(
+            Exception(NOVA_TOOLS_REJECTION)
+        ) == "tools"
+
+    def test_classifies_system_and_messages_rejections(self):
+        from agent.bedrock_adapter import cache_point_rejection_placement
+        assert cache_point_rejection_placement(Exception(
+            "Malformed input request: #/system/1: extraneous key [cachePoint] "
+            "is not permitted"
+        )) == "system"
+        assert cache_point_rejection_placement(Exception(
+            "Malformed input request: #/messages/2/content/3: extraneous key "
+            "[cachePoint] is not permitted"
+        )) == "messages"
+
+    def test_ignores_unrelated_errors(self):
+        from agent.bedrock_adapter import cache_point_rejection_placement
+        assert cache_point_rejection_placement(
+            Exception("ThrottlingException: Too many requests")
+        ) is None
+        assert cache_point_rejection_placement(Exception(
+            "Malformed input request: #/toolConfig/tools/0: extraneous key "
+            "[toolChoice] is not permitted"
+        )) is None
+
+    def test_strip_removes_only_the_rejected_placement(self):
+        from agent.bedrock_adapter import strip_cache_points
+        kwargs = self._nova_kwargs()
+        assert CACHE_POINT in kwargs["toolConfig"]["tools"]
+        stripped = strip_cache_points(kwargs, "tools")
+        assert CACHE_POINT not in stripped["toolConfig"]["tools"]
+        # system and messages markers survive - Nova accepts those.
+        assert stripped["system"][-1] == CACHE_POINT
+        assert stripped["messages"][-2]["content"][-1] == CACHE_POINT
+        # Original kwargs are untouched (no in-place mutation).
+        assert CACHE_POINT in kwargs["toolConfig"]["tools"]
+
+    def test_strip_is_identity_when_marker_absent(self):
+        """No marker to remove -> same object, so callers know a retry is futile."""
+        from agent.bedrock_adapter import strip_cache_points
+        kwargs = {"modelId": "x", "toolConfig": {"tools": [{"toolSpec": {}}]}}
+        assert strip_cache_points(kwargs, "tools") is kwargs
+
+    def test_recovery_records_verdict_so_later_turns_omit_the_marker(self):
+        from agent.bedrock_adapter import recover_from_cache_point_rejection
+        kwargs = self._nova_kwargs()
+        retry = recover_from_cache_point_rejection(
+            Exception(NOVA_TOOLS_REJECTION), kwargs
+        )
+        assert retry is not None
+        assert CACHE_POINT not in retry["toolConfig"]["tools"]
+        # Next turn is built clean without another round-trip failure.
+        rebuilt = self._nova_kwargs()
+        assert CACHE_POINT not in rebuilt["toolConfig"]["tools"]
+        assert rebuilt["system"][-1] == CACHE_POINT
+        assert rebuilt["messages"][-2]["content"][-1] == CACHE_POINT
+
+    def test_verdict_is_scoped_to_the_rejecting_model(self):
+        from agent.bedrock_adapter import (
+            build_converse_kwargs,
+            recover_from_cache_point_rejection,
+        )
+        recover_from_cache_point_rejection(
+            Exception(NOVA_TOOLS_REJECTION), self._nova_kwargs()
+        )
+        claude = build_converse_kwargs(
+            model="anthropic.claude-sonnet-4-6-20250514-v1:0",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {
+                "name": "test", "description": "Test", "parameters": {},
+            }}],
+        )
+        assert claude["toolConfig"]["tools"][-1] == CACHE_POINT
+
+    def test_recovery_declines_when_nothing_can_be_stripped(self):
+        """A cachePoint rejection with no marker present must re-raise, not loop."""
+        from agent.bedrock_adapter import recover_from_cache_point_rejection
+        kwargs = {"modelId": "us.amazon.nova-pro-v1:0",
+                  "toolConfig": {"tools": [{"toolSpec": {}}]}}
+        assert recover_from_cache_point_rejection(
+            Exception(NOVA_TOOLS_REJECTION), kwargs
+        ) is None
+
+    def test_call_converse_retries_without_the_marker(self):
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.side_effect = [
+            Exception(NOVA_TOOLS_REJECTION),
+            {"output": {"message": {"role": "assistant",
+                                    "content": [{"text": "ok"}]}},
+             "stopReason": "end_turn",
+             "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}},
+        ]
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=client):
+            response = call_converse(
+                region="us-east-1",
+                model="us.amazon.nova-pro-v1:0",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[{"type": "function", "function": {
+                    "name": "test", "description": "Test", "parameters": {},
+                }}],
+            )
+        assert response.choices[0].message.content == "ok"
+        assert client.converse.call_count == 2
+        first, second = client.converse.call_args_list
+        assert CACHE_POINT in first.kwargs["toolConfig"]["tools"]
+        assert CACHE_POINT not in second.kwargs["toolConfig"]["tools"]
+
+    def test_call_converse_reraises_unrelated_errors(self):
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.side_effect = Exception("ThrottlingException")
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=client):
+            with pytest.raises(Exception, match="ThrottlingException"):
+                call_converse(
+                    region="us-east-1",
+                    model="us.amazon.nova-pro-v1:0",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+        assert client.converse.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Model discovery
 # ---------------------------------------------------------------------------
 

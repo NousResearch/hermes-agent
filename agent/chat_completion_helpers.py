@@ -958,6 +958,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
             invalidate_runtime_client,
             is_stale_connection_error,
             normalize_converse_response,
+            recover_from_cache_point_rejection,
         )
         region = api_kwargs.pop("__bedrock_region__", "us-east-1")
         api_kwargs.pop("__bedrock_converse__", None)
@@ -965,6 +966,15 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         try:
             raw_response = client.converse(**api_kwargs)
         except Exception as _bedrock_exc:
+            # A model that refuses cachePoint in one section (Nova rejects it
+            # inside toolConfig.tools, #97281) fails every turn otherwise —
+            # drop that marker and resend before surfacing the error.
+            _retry_kwargs = recover_from_cache_point_rejection(
+                _bedrock_exc, api_kwargs
+            )
+            if _retry_kwargs is not None:
+                raw_response = client.converse(**_retry_kwargs)
+                return normalize_converse_response(raw_response)
             # Evict the cached client on stale-connection failures
             # so the outer retry loop builds a fresh client/pool.
             if is_stale_connection_error(_bedrock_exc):
@@ -3438,6 +3448,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     is_stale_connection_error,
                     is_streaming_access_denied_error,
                     normalize_converse_response,
+                    recover_from_cache_point_rejection,
                     stream_converse_with_callbacks,
                 )
                 intercepted_events = []
@@ -3451,6 +3462,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     try:
                         raw_response = client.converse_stream(**final_kwargs)
                     except Exception as _bedrock_exc:
+                        # Bedrock refuses a cachePoint block in one section for
+                        # some families (Nova: toolConfig.tools, #97281) and
+                        # fails the whole request. Drop that marker and reopen
+                        # the stream inside the same Relay attempt.
+                        _retry_kwargs = recover_from_cache_point_rejection(
+                            _bedrock_exc, final_kwargs
+                        )
+                        if _retry_kwargs is not None:
+                            return client.converse_stream(**_retry_kwargs).get(
+                                "stream", []
+                            )
                         # InvokeModel-only policies cannot open a stream. Keep
                         # the fallback inside the same managed Relay attempt so
                         # the real provider request and terminal response still

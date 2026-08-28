@@ -5184,6 +5184,66 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     return None
 
 
+def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
+    """True when the primary gateway routes this platform to the profile the
+    scheduler is currently serving.
+
+    Under ``gateway.multiplex_profiles`` a satellite profile's cron jobs are
+    ticked by the primary gateway's in-process ticker (#69377) and delivered
+    through the primary gateway's live adapters — the satellite home never
+    holds the platform credentials itself (giving it a token of its own is a
+    ``duplicate_credential`` fatal). ``_preflight_check_delivery`` loads the
+    gateway config of the job's OWN home, where such a platform correctly
+    reads as unconnected; consulting the primary home's ``profile_routes``
+    keeps routed satellite jobs from being permanently false-blocked (#97476).
+    Reads the primary config.yaml directly (both the top-level and nested
+    ``gateway.`` forms) instead of ``load_gateway_config()`` so no primary
+    platform config leaks into this process's environment.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        primary_home = get_default_hermes_root()
+        current_home = Path(get_hermes_home())
+        if (
+            primary_home.expanduser().resolve(strict=False)
+            == current_home.expanduser().resolve(strict=False)
+        ):
+            return False  # this IS the primary home — nothing to consult
+        config_path = primary_home.expanduser() / "config.yaml"
+        if not config_path.exists():
+            return False
+
+        import yaml
+
+        with open(config_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        routes_raw = raw.get("profile_routes")
+        if routes_raw is None and isinstance(raw.get("gateway"), dict):
+            routes_raw = raw["gateway"].get("profile_routes")
+        if not isinstance(routes_raw, list):
+            return False
+
+        from gateway.profile_routing import parse_profile_routes
+        from hermes_cli.profiles import profile_matches_home
+
+        platform_key = platform_name.lower()
+        for route in parse_profile_routes(routes_raw):
+            if (
+                route.enabled
+                and str(route.platform).lower() == platform_key
+                and profile_matches_home(route.profile)
+            ):
+                return True
+        return False
+    except Exception:
+        logger.debug(
+            "preflight: primary-gateway profile-route lookup unavailable",
+            exc_info=True,
+        )
+        return False
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
     """Check the job's delivery target(s) resolve to configured platforms.
 
@@ -5235,6 +5295,12 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 )
                 return None  # fail-open
         if platform_name.lower() not in connected:
+            # Multiplex escape hatch: a satellite profile whose deliveries
+            # are routed by the primary gateway's profile_routes is served
+            # by the primary's adapters, so its own unconnected reading is
+            # a false block (#97476).
+            if _delivery_platform_routed_from_primary_gateway(platform_name):
+                continue
             return (
                 f"delivery platform '{platform_name}' has no gateway "
                 "credentials configured (not connected). Configure it via "

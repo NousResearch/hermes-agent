@@ -378,3 +378,100 @@ def test_fallback_cap_requires_independent_route_certification():
         "enabled": False,
         "effort": "none",
     }
+
+
+def test_reasoning_effort_aliases_certify_like_none():
+    """Every spelling parse_reasoning_effort treats as disabled must certify.
+
+    _get_task_extra_body uses parse_reasoning_effort to disable reasoning for
+    "false"/"disabled"/YAML False exactly like "none"; the certification
+    predicate must agree or those users silently lose the fast lane.
+    """
+    base = {"provider": "ollama", "model": "qwen3:8b", "max_output_tokens": 1400}
+
+    for alias in ("none", "false", "disabled", False):
+        lane = _resolve({**base, "reasoning_effort": alias})
+        assert lane.certified_non_reasoning is True, alias
+        assert lane.max_tokens == 1400, alias
+
+    # Empty/unset (provider default) and real efforts must NOT certify.
+    for not_disabled in ("", None, "low", "high", True):
+        lane = _resolve({**base, "reasoning_effort": not_disabled})
+        assert lane.certified_non_reasoning is False, not_disabled
+        assert lane.max_tokens is None, not_disabled
+
+
+def test_timing_hooks_propagate_to_protected_call_worker_thread():
+    """The protected daemon path must carry the timing hooks across threads.
+
+    _run_protected_sync_provider_call runs the provider callback on a daemon
+    worker. The dispatch/provider-response hooks are threading.local, so
+    without explicit propagation provider_dispatch_ms and
+    time_to_first_progress_ms silently vanish whenever compression takes the
+    protected path (the common case: aux_interrupt_protection + hard-cancel
+    source both active).
+    """
+    from agent.auxiliary_client import (
+        _aux_timing_hook,
+        _aux_dispatch,
+        _aux_provider_response,
+        _notify_aux_dispatch,
+        _notify_aux_provider_response,
+        _run_protected_sync_provider_call,
+        aux_interrupt_protection,
+    )
+
+    seen = []
+
+    def _callback(_kwargs):
+        # Runs on the daemon worker thread — both notifies must reach the
+        # hooks installed on the owner thread.
+        _notify_aux_dispatch()
+        _notify_aux_provider_response()
+        return "ok"
+
+    with (
+        _aux_timing_hook(_aux_dispatch, lambda: seen.append("dispatch")),
+        _aux_timing_hook(_aux_provider_response, lambda: seen.append("response")),
+        aux_interrupt_protection(cancel_check=lambda: False),
+    ):
+        result = _run_protected_sync_provider_call(_callback, {})
+
+    assert result == "ok"
+    assert "dispatch" in seen
+    assert "response" in seen
+
+
+def test_explicit_caller_max_tokens_keeps_provider_quirk_handling():
+    """An explicit caller cap must NOT be force-injected as a wire param.
+
+    _build_call_kwargs deliberately omits max_tokens for most
+    OpenAI-compatible providers (ZAI vision 400s on it; GPT-5/Copilot need
+    max_completion_tokens). Only a cap the certified lane itself produced may
+    bypass that handling. Before this guard, a caller-passed max_tokens on
+    the compression task flowed through _compression_fast_lane_controls as a
+    passthrough and was misread as a lane cap — forcing the param onto
+    providers where the omission was intentional (pre-fast-lane behavior).
+    """
+    from agent.auxiliary_client import call_llm
+
+    config = {"provider": "auto", "model": "", "max_output_tokens": 0}
+    client = MagicMock()
+    client.base_url = "http://127.0.0.1:11434/v1"
+    response = object()
+    client.chat.completions.create.return_value = response
+
+    with (
+        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3:8b")),
+        patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+    ):
+        assert call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summary request"}],
+            max_tokens=1500,
+        ) is response
+
+    request = client.chat.completions.create.call_args.kwargs
+    assert "max_tokens" not in request
+    assert "max_completion_tokens" not in request

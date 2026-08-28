@@ -484,29 +484,35 @@ def _aux_progress_active() -> bool:
 
 
 @contextlib.contextmanager
-def aux_progress_hook(hook):
-    """Install *hook* as the current thread's aux forward-progress callback.
+def _aux_thread_local_hook(local: threading.local, hook):
+    """Install one thread-local hook callback and restore its prior value.
 
-    ``hook=None`` is a no-op passthrough so callers can wire it
-    unconditionally. Re-entrant-safe: restores the previous hook on exit.
+    ``hook=None`` (or any non-callable) is a no-op passthrough so callers can
+    wire it unconditionally. Re-entrant-safe: restores the previous hook on
+    exit. Shared by the forward-progress hook and the content-free timing
+    hooks — one save/restore implementation, three thread-local slots.
     """
-    prev = getattr(_aux_progress, "hook", None)
-    _aux_progress.hook = hook if callable(hook) else prev
-    try:
-        yield
-    finally:
-        _aux_progress.hook = prev
-
-
-@contextlib.contextmanager
-def _aux_timing_hook(local: threading.local, hook):
-    """Install one content-free timing hook and restore its prior value."""
     previous = getattr(local, "hook", None)
     local.hook = hook if callable(hook) else previous
     try:
         yield
     finally:
         local.hook = previous
+
+
+@contextlib.contextmanager
+def aux_progress_hook(hook):
+    """Install *hook* as the current thread's aux forward-progress callback.
+
+    ``hook=None`` is a no-op passthrough so callers can wire it
+    unconditionally. Re-entrant-safe: restores the previous hook on exit.
+    """
+    with _aux_thread_local_hook(_aux_progress, hook):
+        yield
+
+
+# Back-compat alias — the timing hooks were introduced with this name.
+_aux_timing_hook = _aux_thread_local_hook
 
 
 def _run_protected_sync_provider_call(
@@ -540,14 +546,24 @@ def _run_protected_sync_provider_call(
         raise AuxiliaryExplicitCancellation()
 
     progress_hook = getattr(_aux_progress, "hook", None)
+    # Timing hooks ride along with the progress hook: _create_with_progress
+    # fires _notify_aux_dispatch/_notify_aux_provider_response from whichever
+    # thread runs the provider callback, so an owner-thread-only install would
+    # silently drop provider_dispatch_ms / time_to_first_progress_ms whenever
+    # the protected daemon path is taken.
+    dispatch_hook = getattr(_aux_dispatch, "hook", None)
+    provider_response_hook = getattr(_aux_provider_response, "hook", None)
     provider_context = contextvars.copy_context()
     done = threading.Event()
     outcome: dict[str, Any] = {}
 
     def _provider_worker() -> None:
         try:
-            with aux_progress_hook(progress_hook), aux_interrupt_protection(
-                cancel_check=cancel_check
+            with (
+                aux_progress_hook(progress_hook),
+                _aux_thread_local_hook(_aux_dispatch, dispatch_hook),
+                _aux_thread_local_hook(_aux_provider_response, provider_response_hook),
+                aux_interrupt_protection(cancel_check=cancel_check),
             ):
                 outcome["result"] = callback(kwargs)
         except BaseException as exc:
@@ -8457,6 +8473,38 @@ class CompressionFastLane(NamedTuple):
     reasoning_config: Optional[Dict[str, Any]]
 
 
+def _fast_lane_config_fields(
+    config: Dict[str, Any],
+) -> tuple[str, str, bool, Optional[int]]:
+    """Extract the fast-lane certification fields from one task config.
+
+    Returns ``(provider, model, non_reasoning, cap)``:
+
+    - ``provider``/``model``: normalized (stripped; provider lowercased).
+    - ``non_reasoning``: True only when ``reasoning_effort`` EXPLICITLY
+      disables thinking. Delegates to ``parse_reasoning_effort`` so every
+      spelling users can write in config.yaml (``none``, ``false``,
+      ``disabled``, YAML boolean ``false``) certifies identically —
+      ``_get_task_extra_body`` already uses the same parser to disable
+      reasoning, and the two predicates must not disagree. Empty/unset
+      (provider default) is NOT non-reasoning.
+    - ``cap``: positive int from ``max_output_tokens``, else None.
+      Booleans are config drift, never a cap (``int(True) == 1``).
+    """
+    from hermes_constants import parse_reasoning_effort
+
+    provider = str(config.get("provider") or "").strip().lower()
+    model = str(config.get("model") or "").strip()
+    parsed_effort = parse_reasoning_effort(config.get("reasoning_effort"))
+    non_reasoning = parsed_effort is not None and parsed_effort.get("enabled") is False
+    raw_cap = config.get("max_output_tokens")
+    try:
+        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    return provider, model, non_reasoning, (cap if cap > 0 else None)
+
+
 def resolve_compression_fast_lane(
     actual_provider: str,
     actual_model: Optional[str],
@@ -8477,44 +8525,32 @@ def resolve_compression_fast_lane(
         if route_config is not None
         else _get_auxiliary_task_config("compression")
     )
-    provider = str(requested_provider or config.get("provider") or "").strip().lower()
-    model = str(requested_model or config.get("model") or "").strip()
-    effort = str(config.get("reasoning_effort") or "").strip().lower()
+    cfg_provider, cfg_model, non_reasoning, cap = _fast_lane_config_fields(config)
+    provider = str(requested_provider or "").strip().lower() or cfg_provider
+    model = str(requested_model or "").strip() or cfg_model
     explicit_route = provider not in {"", "auto"} and model.lower() not in {"", "auto"}
     provider_matches = _normalize_aux_provider(
         _fallback_provider_from_label(str(actual_provider or ""))
     ) == _normalize_aux_provider(provider)
     model_matches = str(actual_model or "").strip().lower() == model.lower()
-    certified = explicit_route and provider_matches and model_matches and effort == "none"
+    certified = explicit_route and provider_matches and model_matches and non_reasoning
     if not certified:
         return CompressionFastLane(False, None, None)
-    raw_cap = config.get("max_output_tokens")
-    try:
-        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap)
-    except (TypeError, ValueError):
-        cap = 0
     return CompressionFastLane(
         True,
-        cap if cap > 0 else None,
+        cap,
         {"enabled": False, "effort": "none"},
     )
 
 
 def _compression_config_claims_fast_lane(config: Dict[str, Any]) -> bool:
     """Whether task config declares fast-only controls that cannot leak."""
-    provider = str(config.get("provider") or "").strip().lower()
-    model = str(config.get("model") or "").strip().lower()
-    effort = str(config.get("reasoning_effort") or "").strip().lower()
-    raw_cap = config.get("max_output_tokens")
-    try:
-        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap or 0)
-    except (TypeError, ValueError):
-        cap = 0
+    provider, model, non_reasoning, cap = _fast_lane_config_fields(config)
     return (
         provider not in {"", "auto"}
-        and model not in {"", "auto"}
-        and effort == "none"
-        and cap > 0
+        and model.lower() not in {"", "auto"}
+        and non_reasoning
+        and cap is not None
     )
 
 
@@ -9854,11 +9890,15 @@ def _call_llm_impl(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url, task=task)
-    if fast_compression_cap is not None:
+    if fast_compression_cap is not None and max_tokens is None:
         # Normal auxiliary calls intentionally omit a cap on most
         # OpenAI-compatible/local providers.  This is the narrow exception:
         # the configured compression route is concrete and certified
         # non-reasoning, so a bounded summary request is intentional.
+        # ``max_tokens is None`` restricts the forced param to caps the
+        # certified lane itself produced — an explicit caller max_tokens is
+        # passed through untouched and keeps _build_call_kwargs's
+        # provider-quirk handling (same guard as the fallback path).
         kwargs.update(auxiliary_max_tokens_param(fast_compression_cap, model=final_model))
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)

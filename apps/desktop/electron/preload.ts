@@ -89,6 +89,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     open: request => ipcRenderer.invoke('hermes:hud:open', request),
     close: () => ipcRenderer.invoke('hermes:hud:close'),
     setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
+    beginMove: () => ipcRenderer.send('hermes:hud:begin-move'),
+    endMove: () => ipcRenderer.send('hermes:hud:end-move'),
     moveBy: delta => ipcRenderer.send('hermes:hud:move-by', delta),
     setWorkspaceTransfer: transferring => ipcRenderer.send('hermes:hud:workspace-transfer', transferring),
     setBounds: bounds => ipcRenderer.send('hermes:hud:set-bounds', bounds),

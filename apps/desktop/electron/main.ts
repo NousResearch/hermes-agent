@@ -13533,6 +13533,11 @@ function spawnHudWindow(sessionId, profile) {
     // `hermes:hud:set-bounds`, which flips resizable on for the call — the
     // same pattern the pet overlay uses for its wheel-scale.
     resizable: false,
+    // macOS AppKit's constrainFrameRect clamps setBounds to the current
+    // display unless this is on. The HUD is moved by renderer-driven
+    // setBounds (not a native titlebar drag), so without it the bar cannot
+    // be dragged onto another monitor. No-op on Windows/Linux.
+    enableLargerThanScreen: true,
     movable: true,
     minimizable: false,
     maximizable: false,

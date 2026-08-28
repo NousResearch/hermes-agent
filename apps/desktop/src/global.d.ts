@@ -106,7 +106,9 @@ declare global {
         open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
         close: () => Promise<{ ok: boolean }>
         setIgnoreMouse: (ignore: boolean) => void
-        moveBy: (delta: { x: number; y: number; width: number; height: number }) => void
+        beginMove: () => void
+        endMove: () => void
+        moveBy: (delta: { width: number; height: number }) => void
         setWorkspaceTransfer?: (transferring: boolean) => void
         setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
         resetLayout: () => Promise<{ ok: boolean }>

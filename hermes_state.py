@@ -2429,6 +2429,65 @@ def _cross_process_repair_lock(db_path: Path):
             handle.close()
 
 
+def _try_acquire_auto_maintenance_lock(db_path: Path) -> Optional[Any]:
+    """Non-blocking cross-process lock for one auto-maintenance pass.
+
+    The kernel releases this advisory lock if the holder exits, unlike a
+    durable pid/meta marker. A caller that cannot acquire it must skip the
+    pass: otherwise two startups can both pass the interval check and the
+    second can prune a row the first has only just closed recoverably.
+    """
+    lock_path = db_path.with_name(db_path.name + ".auto-maintenance.lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except OSError as exc:
+        logger.warning(
+            "Could not open state.db auto-maintenance lock %s (%s) — skipping "
+            "automatic maintenance.",
+            lock_path,
+            exc,
+        )
+        return None
+
+    try:
+        if _IS_WINDOWS:
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(  # type: ignore[attr-defined]
+                handle.fileno(), msvcrt.LK_NBLCK, 1  # type: ignore[attr-defined]
+            )
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        handle.close()
+        return None
+    return handle
+
+
+def _release_auto_maintenance_lock(handle: Any) -> None:
+    """Release a handle returned by :func:`_try_acquire_auto_maintenance_lock`."""
+    try:
+        if _IS_WINDOWS:
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(  # type: ignore[attr-defined]
+                handle.fileno(), msvcrt.LK_UNLCK, 1  # type: ignore[attr-defined]
+            )
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:  # pragma: no cover - best effort release
+        pass
+    finally:
+        handle.close()
+
+
 def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
     """Increment the schema cookie after direct ``sqlite_master`` surgery.
 
@@ -4955,6 +5014,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     Thread-safe for the common gateway pattern (multiple reader threads,
     single writer via WAL mode). Each method opens its own cursor.
     """
+
+    # Only these state-owned producers participate in automatic stale-open
+    # reconciliation. Messaging-platform and UI/desktop sources have separate
+    # lifecycle owners; unknown/future sources fail closed (#60609).
+    _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
+        "cli",
+        "cron",
+        "kanban",
+        "acp",
+        "api_server",
+        "subagent",
+        "tool",
+    )
 
     # ── Write-contention tuning ──
     # With multiple hermes processes (gateway + CLI sessions + worktree agents)
@@ -10252,57 +10324,54 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         max_idle_seconds: float,
         sources: Tuple[str, ...] = ("tui", "desktop", "subagent"),
         exclude_ids: Tuple[str, ...] = (),
+        exclude_pinned: bool = False,
         heartbeat_staleness_seconds: Optional[float] = None,
         heartbeat_ownership_grace_seconds: Optional[float] = None,
+        respect_gateway_heartbeats: bool = True,
     ) -> List[str]:
         """Close session rows orphaned by a dead gateway process (#65194, #94895).
 
         The TUI/desktop gateway reaps disconnected websocket sessions with an
         in-process ``threading.Timer`` grace timer; a gateway restart destroys
-        the timer and leaves the row ``ended_at IS NULL`` forever.  This is
-        the startup-time complement: it closes rows for the given ``sources``
-        whose ``started_at`` AND newest ``messages.timestamp`` are both older
-        than ``max_idle_seconds``, with a distinct
+        the timer and leaves the row ``ended_at IS NULL`` forever. This is the
+        startup-time complement: it closes rows for the given ``sources`` whose
+        ``started_at`` and canonical last-activity time are both older than
+        ``max_idle_seconds``, with a distinct
         ``end_reason='startup_orphan_reap'`` for traceability.
 
-        Both timestamps must be stale on purpose: message recency alone would
-        sweep a freshly created compression/branch child carrying old copied
-        message timestamps, while ``started_at`` alone would sweep a
-        long-lived session that is still actively producing messages.
-        Message-less rows fall back to ``started_at`` via COALESCE.
+        Canonical activity is the newest of ``last_activity_at`` (the in-turn
+        heartbeat) and the newest durable message timestamp, falling back to
+        ``started_at``. The separate ``started_at`` predicate protects freshly
+        created compression/branch children whose copied activity is old.
 
-        Only pass sources owned by the local UI stack (never messaging-gateway
+        Only pass sources whose lifecycle the caller owns (never messaging-gateway
         platforms like ``telegram`` — ending those triggers the #60609 routing
-        loop).  ``exclude_ids`` spares rows this process still holds in
-        memory (a ``session.resume`` that landed during the startup grace
-        window).  Non-destructive: messages are preserved and the row remains
-        resumable.  First-reason-wins is preserved via ``ended_at IS NULL``.
+        loop). ``exclude_ids`` spares rows this process still holds in memory
+        (a ``session.resume`` that landed during the startup grace window).
+        ``exclude_pinned`` is intended for broad automatic sweeps; pinned rows
+        remain explicitly recoverable. Non-destructive: messages are preserved
+        and the row remains resumable. First-reason-wins is preserved via
+        ``ended_at IS NULL``.
 
-        Cross-backend liveness (#94895): when one ``state.db`` is shared by
-        N serve / gateway processes (isolated backends, fixed-port launchd
-        ``hermes serve``, desktop WS sidecar), each backend registers a row
-        in ``gateway_heartbeats`` refreshed every few seconds.  A row is
-        only reaped when ``started_at``/message staleness hold AND no live
-        backend (heartbeat refreshed within ``heartbeat_staleness_seconds``,
-        default ``2 * max_idle_seconds``) could plausibly own it.
+        Cross-backend liveness (#94895): when one ``state.db`` is shared by N
+        serve / gateway processes, each backend refreshes a row in
+        ``gateway_heartbeats``. With ``respect_gateway_heartbeats`` enabled, a
+        row is only reaped when activity staleness holds AND no live backend
+        (heartbeat refreshed within ``heartbeat_staleness_seconds``, default
+        ``2 * max_idle_seconds``) could plausibly own it. Disable that gate only
+        for sources whose lifecycle is explicitly owned by state.db itself.
 
         Ownership inference: a live backend B ``owns`` a session S if
         ``B.started_at <= S.started_at + heartbeat_ownership_grace_seconds``
-        (default ``heartbeat_staleness_seconds``).  The grace window
-        accommodates the deploy-time migration case where a backend just
-        wrote its first heartbeat row while its existing open sessions
-        predate the schema.  The grace is bounded by the staleness window
-        so a fresh PID-reuse respawn cannot indefinitely protect sessions
-        inherited from a dead predecessor.
+        (default ``heartbeat_staleness_seconds``). The grace window covers a
+        migrating backend whose existing sessions predate its first heartbeat,
+        but is bounded so a fresh PID-reuse respawn cannot protect rows forever.
+        With no fresh heartbeat the predicate falls back to the legacy sweep.
 
-        When NO backend has ever written a heartbeat (legacy deployment
-        mid-upgrade before any process has registered) the predicate falls
-        back to the original behavior so we never silently strand a row
-        that pre-dates the schema.
-
-        The SELECT + UPDATE run in one ``BEGIN IMMEDIATE`` write, so a sibling
-        process cannot sneak a new message or end-reason between the
-        staleness check and the close.  Returns the swept session ids.
+        The SELECT, live-lease validation, and UPDATE run in one
+        ``BEGIN IMMEDIATE`` transaction. Active turn leases or compression
+        locks spare the row; expired/reclaimed guards are removed so their
+        former owner is fenced. Returns the swept session ids.
         """
         srcs = tuple(s for s in sources if s)
         if max_idle_seconds <= 0 or not srcs:
@@ -10314,56 +10383,76 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         )
         hb_grace = (
             heartbeat_ownership_grace_seconds
-            if heartbeat_ownership_grace_seconds and heartbeat_ownership_grace_seconds >= 0
+            if heartbeat_ownership_grace_seconds is not None
+            and heartbeat_ownership_grace_seconds >= 0
             else hb_staleness
         )
-        cutoff = time.time() - max_idle_seconds
-        hb_cutoff = time.time() - hb_staleness
+        now = time.time()
+        cutoff = now - max_idle_seconds
+        hb_cutoff = now - hb_staleness
         placeholders = ",".join("?" for _ in srcs)
         staleness = (
-            "started_at < ? AND COALESCE((SELECT MAX(m.timestamp) FROM messages m"
-            " WHERE m.session_id = sessions.id), started_at) < ?"
+            f"started_at < ? AND {_sql_session_last_active('sessions')} < ?"
         )
-
-        def _do(conn):
-            # Cross-process liveness gate (#94895). A session is "owned by
-            # a live backend" if any row in gateway_heartbeats is fresh
-            # (last_heartbeat >= hb_cutoff) AND was alive no later than
-            # ``sessions.started_at + hb_grace`` (heartbeats.started_at <=
-            # sessions.started_at + hb_grace). If at least one live backend
-            # matches, the row is not orphaned.
-            #
-            # ``hb_cutoff`` and ``hb_grace`` are computed above so all
-            # backends running concurrent sweep queries agree on the same
-            # boundaries. We do NOT clear heartbeats here — that's each
-            # backend's atexit responsibility via ``clear_backend_heartbeat``.
-            orphan_predicate = (
-                f"{staleness} AND NOT EXISTS ("
+        pin_scope = " AND COALESCE(pinned, 0) = 0" if exclude_pinned else ""
+        heartbeat_params: Tuple[float, ...] = ()
+        orphan_predicate = staleness
+        if respect_gateway_heartbeats:
+            orphan_predicate += (
+                " AND NOT EXISTS ("
                 "SELECT 1 FROM gateway_heartbeats h"
                 " WHERE h.last_heartbeat >= ?"
-                f" AND h.started_at <= sessions.started_at + ?"
+                " AND h.started_at <= sessions.started_at + ?"
                 ")"
             )
+            heartbeat_params = (hb_cutoff, hb_grace)
+
+        def _do(conn):
             rows = conn.execute(
                 f"SELECT id FROM sessions WHERE ended_at IS NULL"
-                f" AND source IN ({placeholders}) AND {orphan_predicate}",
-                (*srcs, cutoff, cutoff, hb_cutoff, hb_grace),
+                f" AND source IN ({placeholders}){pin_scope}"
+                f" AND {orphan_predicate}",
+                (*srcs, cutoff, cutoff, *heartbeat_params),
             ).fetchall()
             excluded = {str(x) for x in exclude_ids if x}
-            victims = [str(r["id"]) for r in rows if str(r["id"]) not in excluded]
+            victims = []
+            for row in rows:
+                sid = str(row["id"])
+                if sid in excluded:
+                    continue
+                try:
+                    self._check_transcript_write_guards(
+                        conn,
+                        sid,
+                        compression_lock_holder=None,
+                        turn_lease_holder=None,
+                        reject_active_turn_lease=True,
+                        reject_active_compression_lock=True,
+                    )
+                except (
+                    SessionCompressionInProgressError,
+                    SessionTurnLeaseLostError,
+                ):
+                    continue
+                victims.append(sid)
             if not victims:
                 return []
-            now = time.time()
+            closed_at = time.time()
             marks = ",".join("?" for _ in victims)
-            # Re-apply the same predicates under the write lock so a
-            # row that raced to activity between SELECT and UPDATE is
-            # spared (and so a freshly registered heartbeat from a sibling
-            # that started during this transaction can still save the row).
+            # Re-apply every scope/liveness predicate under the write lock.
             conn.execute(
                 f"UPDATE sessions SET ended_at = ?, end_reason = 'startup_orphan_reap'"
                 f" WHERE id IN ({marks}) AND ended_at IS NULL"
+                f" AND source IN ({placeholders}){pin_scope}"
                 f" AND {orphan_predicate}",
-                (now, *victims, cutoff, cutoff, hb_cutoff, hb_grace),
+                (
+                    closed_at,
+                    *victims,
+                    *srcs,
+                    cutoff,
+                    cutoff,
+                    *heartbeat_params,
+                ),
             )
             return victims
 
@@ -11873,6 +11962,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         turn_lease_ttl_seconds: float = 300.0,
         reject_active_turn_lease: bool = False,
         reject_active_compression_lock: bool = False,
+        allow_closed_compression_parent: bool = False,
     ) -> None:
         """Transcript-write admission checks, run INSIDE the write txn.
 
@@ -11972,6 +12062,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             session is not None
             and session["ended_at"] is not None
             and session["end_reason"] == "compression"
+            and not allow_closed_compression_parent
         ):
             raise CompressionSessionClosedError(session_id)
 
@@ -14998,6 +15089,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    ) < ?"""
             )
             params.append(last_active_before)
+            # An automatic orphan sweep closes a stale open row so the user can
+            # still recover it. Age those rows from the sweep, not from their old
+            # activity, or the next prune pass can delete them immediately.
+            clauses.append(
+                "(COALESCE(s.end_reason, '') != 'startup_orphan_reap' "
+                "OR s.ended_at < ?)"
+            )
+            params.append(last_active_before)
         if last_active_after is not None:
             clauses.append(
                 """COALESCE(
@@ -15259,6 +15358,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         older_than_days: Optional[float] = 90,
         source: str = None,
         sessions_dir: Optional[Path] = None,
+        exclude_active_write_guards: bool = False,
         **filters,
     ) -> int:
         """Delete sessions matching the filters. Returns count deleted.
@@ -15296,6 +15396,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         on-disk transcript files (``.json`` / ``.jsonl`` /
         ``request_dump_*``) for every pruned session, outside the DB
         transaction.
+
+        ``exclude_active_write_guards`` is for destructive automatic
+        maintenance: rows protected by a live turn lease or compression lock
+        are skipped, while expired or provably dead holders are reclaimed and
+        fenced in the same write transaction.
         """
         self._apply_prune_age_filter(older_than_days, filters)
         where, where_params = self._prune_filter_where(source=source, **filters)
@@ -15306,6 +15411,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"SELECT s.id FROM sessions s WHERE {where}", where_params
             )
             session_ids = {row["id"] for row in cursor.fetchall()}
+
+            if exclude_active_write_guards:
+                protected = set()
+                for sid in session_ids:
+                    try:
+                        self._check_transcript_write_guards(
+                            conn,
+                            sid,
+                            compression_lock_holder=None,
+                            turn_lease_holder=None,
+                            reject_active_turn_lease=True,
+                            reject_active_compression_lock=True,
+                            allow_closed_compression_parent=True,
+                        )
+                    except (
+                        SessionCompressionInProgressError,
+                        SessionTurnLeaseLostError,
+                    ):
+                        protected.add(sid)
+                session_ids.difference_update(protected)
 
             if not session_ids:
                 return 0
@@ -16158,6 +16283,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           - ``"error"`` (str, optional) — present only on failure
         """
         result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
+        maintenance_lock = _try_acquire_auto_maintenance_lock(self.db_path)
+        if maintenance_lock is None:
+            result["skipped"] = True
+            return result
         try:
             # Skip if another process/call did maintenance recently.
             last_raw = self.get_meta("last_auto_prune")
@@ -16171,11 +16300,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except (TypeError, ValueError):
                     pass  # corrupt meta; treat as no prior run
 
+            # Delete only sessions that were already explicitly closed. A
+            # startup orphan discovered by this pass is closed *after* pruning,
+            # preserving a full retention window in which it can be resumed.
             pruned = self.prune_sessions(
                 older_than_days=retention_days,
                 sessions_dir=sessions_dir,
+                exclude_active_write_guards=True,
             )
             result["pruned"] = pruned
+
+            # Reap stale state-owned rows only. Runtime-owned messaging sources
+            # are intentionally outside this automatic destructive scope.
+            closed = self.sweep_orphaned_sessions(
+                max_idle_seconds=float(retention_days) * 86400.0,
+                sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES,
+                exclude_pinned=True,
+                # These sources are owned by state.db lifecycles, not by the
+                # dashboard/TUI gateway heartbeats used by startup recovery.
+                respect_gateway_heartbeats=False,
+            )
 
             # Only VACUUM if we actually freed rows, and no more often than
             # once every min_vacuum_interval_days -- a large prune (e.g. the
@@ -16203,9 +16347,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # every startup within the min_interval_hours window.
             self.set_meta("last_auto_prune", str(now))
 
-            if pruned > 0:
+            if closed or pruned > 0:
                 logger.info(
-                    "state.db auto-maintenance: pruned %d session(s) inactive for %d days%s",
+                    "state.db auto-maintenance: closed %d stale open session(s), "
+                    "pruned %d session(s) inactive for %d days%s",
+                    len(closed),
                     pruned,
                     retention_days,
                     " + VACUUM" if result["vacuumed"] else "",
@@ -16214,6 +16360,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # Maintenance must never block startup. Log and return error marker.
             logger.warning("state.db auto-maintenance failed: %s", exc)
             result["error"] = str(exc)
+        finally:
+            _release_auto_maintenance_lock(maintenance_lock)
 
         return result
 

@@ -481,6 +481,11 @@ def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
     if not (name := _canonical_profile_request((profile or "").strip())):
         return None
+    # An isolated dashboard launched under a named profile still receives
+    # profile="default" from older Desktop clients. In that process,
+    # "default" means the launch profile, not the machine-root database.
+    if name == "default" and _process_is_profile_scoped():
+        return None
     from hermes_cli import profiles as profiles_mod
     home = Path(profiles_mod.get_profile_dir(name))
     if not home.is_dir():
@@ -494,6 +499,16 @@ def _profile_home(profile: str | None) -> Path | None:
 # Profile homes served besides the launch home — the only extra stores the sessions watcher
 # probes. Empty on single-profile installs, so their watcher stays byte-identical.
 _served_profile_homes: set[Path] = set()
+
+
+def _process_is_profile_scoped() -> bool:
+    """Return whether this process was launched outside the machine root."""
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        return Path(_hermes_home).resolve() != Path(get_default_hermes_root()).resolve()
+    except Exception:
+        return False
 
 
 def _profile_scoped(handler):

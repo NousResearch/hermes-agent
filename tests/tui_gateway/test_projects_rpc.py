@@ -496,6 +496,21 @@ def test_desktop_launch_cwd_is_not_persisted_as_a_workspace():
     ) == "/picked/repo"
 
 
+def test_desktop_launch_cwd_is_marked_as_context_artifact():
+    assert server._context_cwd_is_launch_artifact(
+        {"source": "desktop", "cwd": "/opt/hermes"}
+    ) is True
+
+
+def test_explicit_desktop_and_terminal_cwds_are_context_workspaces():
+    assert server._context_cwd_is_launch_artifact(
+        {"source": "desktop", "cwd": "/picked/repo", "explicit_cwd": True}
+    ) is False
+    assert server._context_cwd_is_launch_artifact(
+        {"source": "tui", "cwd": "/opt/hermes"}
+    ) is False
+
+
 def test_home_container_dirs_are_never_a_workspace(tmp_path):
     """`/home` and `/Users` hold homes; they are not workspaces themselves.
 

@@ -2634,6 +2634,7 @@ def _compute_host_turn_frame(
         "history_version": history_version,
         "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
+        "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
         "profile_home": session.get("profile_home") or "",
         "model_override": session.get("model_override"),
         "reasoning_config_override": session.get("create_reasoning_override"),
@@ -3566,6 +3567,15 @@ def _session_cwd(session: dict | None) -> str:
 # a workspace the user picked. Everything else is terminal-started: the process
 # runs in a directory the user deliberately cd'd into.
 _LAUNCH_CWD_NOT_A_WORKSPACE = {"desktop"}
+
+
+def _context_cwd_is_launch_artifact(session: dict | None) -> bool:
+    """Whether the session cwd came from app launch rather than user intent."""
+    return bool(
+        session
+        and not session.get("explicit_cwd")
+        and _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE
+    )
 
 
 def _persisted_session_cwd(session: dict) -> str | None:
@@ -8832,6 +8842,7 @@ def _make_agent(
     reasoning_config_override: dict | None = None,
     service_tier_override: str | None = None,
     platform_override: str | None = None,
+    context_cwd_is_launch_artifact: bool | None = None,
 ):
     # AC-4 test seam: dead unless explicitly armed by the isolated certify
     # harness. Both inline and compute-host paths construct through _make_agent,
@@ -8961,7 +8972,7 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
-    return AIAgent(
+    agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
         provider=runtime.get("provider"),
@@ -9008,6 +9019,16 @@ def _make_agent(
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
+    if context_cwd_is_launch_artifact is None:
+        with _sessions_lock:
+            context_session = _sessions.get(sid)
+        context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(
+            context_session
+        )
+    agent._context_cwd_is_launch_artifact = bool(
+        context_cwd_is_launch_artifact
+    )
+    return agent
 
 
 def _init_session(

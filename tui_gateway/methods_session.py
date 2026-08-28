@@ -945,6 +945,10 @@ def _(rid, params: dict) -> dict:
                     session_id=target,
                     session_db=db,
                     platform_override=source,
+                    context_cwd_is_launch_artifact=(
+                        source in _LAUNCH_CWD_NOT_A_WORKSPACE
+                        and not profile_resume_cwd
+                    ),
                     **stored_runtime_overrides,
                 )
             finally:
@@ -3304,6 +3308,9 @@ def _(rid, params: dict) -> dict:
                     session_id=new_key,
                     session_db=branch_db,
                     platform_override=source,
+                    context_cwd_is_launch_artifact=(
+                        _context_cwd_is_launch_artifact(session)
+                    ),
                 )
             finally:
                 _clear_session_context(tokens)

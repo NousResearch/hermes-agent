@@ -8,7 +8,8 @@ import { $gateway } from '@/store/gateway'
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
-import { type ActiveTip, showTip } from '@/store/tips'
+import { $tipsEnabled, type ActiveTip, showTip } from '@/store/tips'
+import { $toursEnabled } from '@/store/tours'
 
 import type { GatewayEventContext } from './types'
 
@@ -184,7 +185,12 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
           text: result ? JSON.stringify(result) : ''
         })
 
-      if (isActiveEvent) {
+      if (!$toursEnabled.get()) {
+        // Refused in words, not silently dropped: the agent asked for a
+        // walkthrough it isn't getting, and a no-op would leave it narrating
+        // a spotlight the user can't see.
+        void answer({ error: 'The user has turned guided tours off.', success: false })
+      } else if (isActiveEvent) {
         void import('@/lib/tour')
           .then(({ runTour }) =>
             runTour(
@@ -217,10 +223,9 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'tip.show') {
     // tip tool: point the accent bubble at something and say one line about
     // it. Fire-and-forget — a tip is not a question, and blocking the turn on
-    // one would stall the sentence the agent is in the middle of. Not behind
-    // the Appearance switch: that governs the app's own idle rotation, and
-    // this is Hermes answering the user mid-conversation, like a tour. Active
-    // session only, though: a background turn must never paint on the user's
+    // one would stall the sentence the agent is in the middle of, so there is
+    // nothing to answer and a refusal is simply a bubble that never appears.
+    // Active session only: a background turn must never paint on the user's
     // screen (desktop AGENTS.md: offer, don't hijack).
     const selector = typeof payload?.selector === 'string' ? payload.selector : ''
     const text = typeof payload?.text === 'string' ? payload.text : ''
@@ -229,7 +234,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     // already has those. Dropping it here also stops a malformed event from
     // replacing a rotation tip with a bubble that dismisses itself a frame
     // later.
-    if (isActiveEvent && selector && text) {
+    if ($tipsEnabled.get() && isActiveEvent && selector && text) {
       showTip({
         side: (payload?.side as ActiveTip['side']) ?? 'top',
         targets: [selector],

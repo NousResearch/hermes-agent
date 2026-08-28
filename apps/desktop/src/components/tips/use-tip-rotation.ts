@@ -26,7 +26,7 @@ import { resolveTipAnchor } from '@/lib/tips/anchor'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { nextTip } from '@/lib/tips/rotation'
 import { $awaitingResponse, $busy } from '@/store/session'
-import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipRotationEnabled, showTip } from '@/store/tips'
+import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipsEnabled, showTip } from '@/store/tips'
 
 const TICK_MS = 30_000
 /** Nothing in the first stretch of a launch, however long the cooldown says
@@ -75,7 +75,7 @@ export function useTipRotation(copy: Translations['tips']) {
     }
 
     const offer = () => {
-      if (!$tipRotationEnabled.get() || $activeTip.get()) {
+      if (!$tipsEnabled.get() || $activeTip.get()) {
         return
       }
 
@@ -109,10 +109,10 @@ export function useTipRotation(copy: Translations['tips']) {
       })
     }
 
-    // Turning the rotation on is its own kind of settled: the delay guards a
+    // Turning tips on is its own kind of settled: the delay guards a
     // launch you came into with a purpose, and has nothing to say about someone
     // who just asked for tips and is owed the sight of one working.
-    const unbindSwitch = $tipRotationEnabled.listen(enabled => {
+    const unbindSwitch = $tipsEnabled.listen(enabled => {
       if (enabled) {
         settledAt = Date.now()
         offer()

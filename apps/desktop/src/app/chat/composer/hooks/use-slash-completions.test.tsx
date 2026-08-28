@@ -174,6 +174,7 @@ describe('useSlashCompletions', () => {
 
     const api = harness({ request } as unknown as HermesGateway)
     const items = await completions(api, 're')
+
     const groupOf = (command: string) =>
       (items.find(item => (item.metadata as { command?: string })?.command === command)?.metadata as { group?: string })
         ?.group

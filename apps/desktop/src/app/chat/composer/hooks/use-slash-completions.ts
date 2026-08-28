@@ -15,11 +15,7 @@ import {
   rankSkillCommands,
   slashCompletionGroup
 } from '@/lib/desktop-slash-commands'
-import {
-  $slashCompletionsEpoch,
-  cachedSlashCompletion,
-  hasCachedSlashCompletion
-} from '@/lib/slash-completion-cache'
+import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'
 

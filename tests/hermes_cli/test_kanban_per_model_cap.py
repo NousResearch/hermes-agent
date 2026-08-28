@@ -56,6 +56,46 @@ def test_same_explicit_provider_model_is_capped(kanban_with_profiles):
     ]
 
 
+def test_per_model_override_tightens_below_the_global_cap(kanban_with_profiles):
+    """live incident, 2026-08-28: a global max_in_progress_per_model that
+    suits remote providers (no real concurrency limit) is unsafe for a
+    locally-hosted model served by a single-concurrency inference server
+    (llama-server -np 1) -- up to 4 tasks were dispatching concurrently
+    against the same local model and crashing each other with connection
+    timeouts. kanban.max_in_progress_by_model must be able to cap one
+    (provider, model) pair tighter than the global default without
+    affecting any other model."""
+    kb = kanban_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        first = _create_overridden(
+            kb, conn, "first", provider="ollama-launch", model="devstral-small-2:24b"
+        )
+        second = _create_overridden(
+            kb, conn, "second", provider="ollama-launch", model="devstral-small-2:24b"
+        )
+        # A different model stays capped at the global default (4), not
+        # dragged down by the override on devstral.
+        third = _create_overridden(
+            kb, conn, "third", provider="ollama-launch", model="qwen3.5:4b"
+        )
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: os.getpid(),
+            dry_run=True,
+            max_in_progress_per_model=4,
+            max_in_progress_by_model={"ollama-launch/devstral-small-2:24b": 1},
+        )
+
+    assert set(
+        task_id for task_id, _who, _workspace in result.spawned
+    ) == {first, third}
+    assert result.skipped_per_model_capped == [
+        (second, "ollama-launch", "devstral-small-2:24b", 1)
+    ]
+
+
 def test_different_provider_or_model_and_unoverridden_tasks_remain_independent(
     kanban_with_profiles,
 ):

@@ -130,6 +130,7 @@ describe('submissionCore.submitPrompt — literal submissions (startup -q querie
 
   it('literal text reaches prompt.submit verbatim', async () => {
     const submitted: string[] = []
+
     const gw = {
       request: vi.fn((method: string, params?: { text?: string }) => {
         if (method === 'prompt.submit' && params?.text) {

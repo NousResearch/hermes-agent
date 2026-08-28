@@ -2849,12 +2849,12 @@ def _status_update(sid: str, kind: str, text: str | None = None):
         return
     out_kind = kind if text is not None else "status"
     # Auto-compaction reaches us as a generic "lifecycle" status. Re-tag it so
-    # drivers (desktop app) can show an explicit "Summarizing…" indicator —
-    # otherwise a mid-turn compaction looks like the transcript reset itself.
+    # drivers (TUI / desktop) can show an explicit summarizing indicator —
+    # otherwise idle/preflight compaction looks like a hung turn (#97239).
     if out_kind == "lifecycle":
-        from agent.conversation_compression import COMPACTION_STATUS_MARKER
+        from agent.conversation_compression import is_compaction_progress_status
 
-        if COMPACTION_STATUS_MARKER in body:
+        if is_compaction_progress_status(body):
             out_kind = "compacting"
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 

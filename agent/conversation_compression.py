@@ -103,7 +103,8 @@ _SPLIT_FAILURE_COOLDOWN_SECONDS = 60
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
 # drivers like the desktop app can show an explicit "Summarizing…" indicator
 # instead of the transcript appearing to silently reset. Keep the marker phrase
-# intact if you reword COMPACTION_STATUS.
+# intact if you reword COMPACTION_STATUS. Idle/preflight/retry lines do not
+# contain this marker — ``is_compaction_progress_status`` covers those too.
 COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
@@ -211,6 +212,40 @@ ROUTINE_COMPRESSION_STATUS_SAMPLES = (
         new_ctx=120000, old_ctx=250000
     ),
 )
+
+
+def is_compaction_progress_status(text: str | None) -> bool:
+    """True for in-progress auto-compaction lifecycle lines (not the done edge).
+
+    ``tui_gateway.server._status_update`` re-tags matching ``lifecycle``
+    statuses as ``kind="compacting"`` so TUI and desktop can show a summarizing
+    indicator for the whole pause. Matching only ``COMPACTION_STATUS_MARKER``
+    left idle/preflight/retry lines looking like a hung turn (#97239).
+
+    The terminal ``COMPACTION_DONE_STATUS`` is emitted as ``kind="compacted"``
+    and must not match here.
+    """
+    if not isinstance(text, str):
+        return False
+    body = text.strip()
+    if not body:
+        return False
+    if COMPACTION_STATUS_MARKER in body:
+        return True
+    if body == COMPACTION_DONE_STATUS:
+        return False
+    lowered = body.lower()
+    if "compaction complete" in lowered:
+        return False
+    # Failure-class overflow warning mentions compression but is a blocked
+    # notice, not progress — keep it lifecycle so chat gateways stay loud.
+    if "compression is currently blocked" in lowered:
+        return False
+    return (
+        "compact" in lowered
+        or "compress" in lowered
+        or "context reduced to" in lowered
+    )
 
 
 def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
@@ -5705,6 +5740,7 @@ __all__ = [
     "COMPACTION_STATUS",
     "COMPACTION_DONE_STATUS",
     "COMPACTION_STATUS_MARKER",
+    "is_compaction_progress_status",
     "check_compression_model_feasibility",
     "replay_compression_warning",
     "compress_context",

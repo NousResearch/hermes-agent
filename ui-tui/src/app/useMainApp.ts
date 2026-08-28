@@ -909,7 +909,7 @@ export function useMainApp(gw: GatewayClient) {
       // dead/respawning gateway. recoverSidRef carries the session forward, and
       // resumeById restores sid once the fresh gateway is ready.
       recoveryAtRef.current = plan.attempts
-      patchUiState({ busy: false, sid: null, status: 'gateway exited' })
+      patchUiState({ busy: false, compacting: false, sid: null, status: 'gateway exited' })
 
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid

@@ -492,6 +492,7 @@ const StatusRulePane = memo(function StatusRulePane({
         battery={ui.battery ? ui.batteryStatus : null}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
+        compacting={ui.compacting}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
         focusView={ui.focusView}

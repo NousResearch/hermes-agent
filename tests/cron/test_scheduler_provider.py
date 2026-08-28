@@ -674,3 +674,20 @@ def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
     assert not thread.is_alive()
     assert ticked_homes == [default_home.resolve()]
     assert not deleted_home.exists()
+
+
+def test_existing_profile_homes_filters_deleted(tmp_path):
+    """The existence filter keeps live homes and drops deleted ones, whether
+    entries are (name, path) tuples or bare paths."""
+    from cron.scheduler_provider import _existing_profile_homes
+
+    live = tmp_path / "live"
+    deleted = tmp_path / "deleted"
+    live.mkdir(parents=True)
+    # deleted intentionally not created
+
+    as_tuples = _existing_profile_homes([("live", live), ("deleted", deleted)])
+    assert [p[0] for p in as_tuples] == ["live"]
+
+    as_paths = _existing_profile_homes([live, deleted])
+    assert [p for p in as_paths] == [live]

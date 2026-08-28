@@ -1628,3 +1628,73 @@ class TestCompletedOneshotRetentionSweep:
         assert updated["enabled"] is True
         assert updated["state"] == "scheduled"
         assert updated["next_run_at"] is not None
+
+
+class TestEnsureCronDirWidened:
+    """Tests for the widened _ensure_cron_dir covering all cron mkdir sites."""
+
+    def test_ensure_cron_dir_named_profile_subdir_fails_closed(self, tmp_path):
+        """A subdir under a deleted named profile's cron/ must not recreate it."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+        # cron_dir doesn't exist because the profile was deleted
+        output_dir = deleted_home / "cron" / "output" / "job_123"
+
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            jobs._ensure_cron_dir(output_dir)
+        assert not deleted_home.exists()
+
+    def test_ensure_cron_dir_default_home_creates_subdir(self, tmp_path):
+        """A subdir under a default home's cron/ should be created normally."""
+        import cron.jobs as jobs
+
+        default_home = tmp_path / "default_home"
+        default_home.mkdir()
+        output_dir = default_home / "cron" / "output" / "job_123"
+
+        jobs._ensure_cron_dir(output_dir)
+        assert output_dir.is_dir()
+
+    def test_ensure_cron_dir_named_profile_cron_dir_fails_closed(self, tmp_path):
+        """The cron dir of a deleted named profile must not be recreated."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+        cron_dir = deleted_home / "cron"
+
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            jobs._ensure_cron_dir(cron_dir)
+        assert not deleted_home.exists()
+
+    def test_ensure_cron_dir_existing_named_profile_cron_dir_works(self, tmp_path):
+        """An existing named profile's cron dir should be created normally."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        active_home = profiles_dir / "active"
+        active_home.mkdir(parents=True)
+        cron_dir = active_home / "cron"
+
+        jobs._ensure_cron_dir(cron_dir)
+        assert cron_dir.is_dir()
+
+    def test_ensure_cron_dir_scripts_dir_under_named_profile_fails_closed(self, tmp_path):
+        """A scripts dir under a deleted named profile must not be recreated."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+        scripts_dir = deleted_home / "scripts"
+
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            jobs._ensure_cron_dir(scripts_dir)
+        assert not deleted_home.exists()

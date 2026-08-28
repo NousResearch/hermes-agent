@@ -726,13 +726,30 @@ def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> No
         )
 
 
+def _is_named_profile_path(path: Path) -> bool:
+    """Return True if *path* is inside a named profile home.
+
+    Named profiles live under ``<hermes_home>/profiles/<name>/``.  The
+    default profile lives at ``<hermes_home>`` directly (no ``profiles``
+    parent), as do custom ``HERMES_HOME`` paths outside ``~/.hermes``.
+    """
+    try:
+        return "profiles" in path.resolve().parts
+    except (OSError, RuntimeError):
+        return False
+
+
 def _ensure_cron_dir(cron_dir: Path) -> None:
-    """Create a cron directory without resurrecting a deleted profile home."""
-    profile_home = cron_dir.parent
-    if profile_home.parent.name == "profiles":
-        # Named profiles are created by the profile lifecycle, not cron.  A
-        # stale multiplex scheduler may still hold this path after deletion;
-        # parents=False makes that race fail closed instead of restoring it.
+    """Create a cron directory without resurrecting a deleted profile home.
+
+    Named profiles are created by the profile lifecycle, not cron.  A stale
+    multiplex scheduler may still hold a path to a deleted profile after the
+    user removes it; ``parents=False`` makes that race fail closed
+    (FileNotFoundError) instead of silently restoring the directory tree.
+    Default and custom Hermes homes keep ``parents=True`` so first-run
+    directory creation still works.
+    """
+    if _is_named_profile_path(cron_dir):
         cron_dir.mkdir(exist_ok=True)
         return
     cron_dir.mkdir(parents=True, exist_ok=True)
@@ -1094,7 +1111,7 @@ def _record_persisted_error_recovery(job: Dict[str, Any], previous_next_run: str
     del _persisted_error_recoveries_recent[:-_PERSISTED_ERROR_RECOVERY_HISTORY]
     try:
         path = _current_cron_store().cron_dir / "persisted_error_recoveries.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_cron_dir(path.parent)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
     except Exception as exc:  # never let telemetry break a tick
@@ -3981,7 +3998,7 @@ def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
-    job_output_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_cron_dir(job_output_dir)
     _secure_dir(job_output_dir)
 
     timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")

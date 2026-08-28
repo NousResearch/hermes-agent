@@ -65,6 +65,31 @@ def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
     return 0
 
 
+def _existing_profile_homes(profile_homes: list) -> list:
+    """Drop profile homes whose directory no longer exists on disk.
+
+    The multiplex ticker's ``profile_homes`` is a snapshot taken at startup
+    (``web_server.py`` calls ``profiles_to_serve(multiplex=True)`` once, and
+    the gateway multiplex path does the same). If a profile is deleted while
+    the ticker runs — via ``hermes profile delete``, the desktop's DELETE
+    ``/api/profiles/<name>`` route, or any other path that removes the home
+    directory — that stale entry stays in the list.
+
+    Ticking or heartbeating a deleted home recreates its ``cron/`` workspace
+    (``record_ticker_heartbeat`` -> ``ensure_dirs`` -> ``mkdir(parents=True)``)
+    on every 60s cycle, so the "deleted" profile silently comes back on disk
+    and in ``hermes profile list`` (#47368). Filtering on directory existence
+    leaves a deleted profile's home untouched, which is the correct invariant:
+    a home that does not exist cannot hold jobs to fire.
+    """
+    live = []
+    for entry in profile_homes:
+        home = entry[1] if isinstance(entry, tuple) else entry
+        if Path(home).is_dir():
+            live.append(entry)
+    return live
+
+
 class CronScheduler(ABC):
     """Axis-B trigger provider. Decides WHEN a due cron job fires.
 
@@ -657,28 +682,12 @@ class InProcessCronScheduler(CronScheduler):
             [p[0] if isinstance(p, tuple) else p for p in profile_homes],
         )
 
-        removed_profiles = set()
-
-        def active_profile_homes():
-            for entry in profile_homes:
-                if isinstance(entry, tuple):
-                    name, raw_home = entry
-                    home = Path(raw_home)
-                    if name != "default" and not home.is_dir():
-                        if name not in removed_profiles:
-                            logger.info(
-                                "Skipping removed profile %r in multiplex cron scheduler",
-                                name,
-                            )
-                            removed_profiles.add(name)
-                        continue
-                    removed_profiles.discard(name)
-                else:
-                    home = Path(entry)
-                yield entry, home
-
         # Recovery + initial heartbeat for every profile.
-        for _entry, home in active_profile_homes():
+        # A profile may have been deleted since this snapshot was taken;
+        # never recreate a deleted home's cron workspace via the heartbeat
+        # below (#47368).
+        for entry in _existing_profile_homes(profile_homes):
+            home = entry[1] if isinstance(entry, tuple) else entry
             home_token = set_hermes_home_override(str(home))
             try:
                 with use_cron_store(home):
@@ -701,7 +710,8 @@ class InProcessCronScheduler(CronScheduler):
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
-                    for _entry, home in active_profile_homes():
+                    for entry in _existing_profile_homes(profile_homes):
+                        home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))
                         try:
                             with use_cron_store(home):
@@ -723,7 +733,8 @@ class InProcessCronScheduler(CronScheduler):
             else:
                 _tick_error = None
             # Record per-profile heartbeat after each tick cycle.
-            for _entry, home in active_profile_homes():
+            for entry in _existing_profile_homes(profile_homes):
+                home = entry[1] if isinstance(entry, tuple) else entry
                 home_token = set_hermes_home_override(str(home))
                 try:
                     with use_cron_store(home):

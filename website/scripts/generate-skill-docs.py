@@ -742,8 +742,39 @@ def _generated_page_roots() -> tuple[Path, Path]:
     return SKILLS_PAGES / "bundled", SKILLS_PAGES / "optional"
 
 
+def _has_symlink_component(path: Path) -> bool:
+    """Return whether an output path escapes or traverses a repository symlink."""
+    repo = REPO.absolute()
+    absolute = path.absolute()
+    try:
+        relative = absolute.relative_to(repo)
+    except ValueError:
+        return True
+    if ".." in relative.parts:
+        return True
+
+    current = repo
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            return True
+
+    try:
+        absolute.resolve(strict=False).relative_to(REPO.resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return True
+    return False
+
+
+def _symlinked_output_paths(paths: set[Path]) -> list[Path]:
+    """Return output paths that are outside the repo or traverse symlinks."""
+    return sorted(path for path in paths if _has_symlink_component(path))
+
+
 def _is_owned_generated_page(path: Path) -> bool:
-    """Return whether ``path`` carries this generator's ownership marker."""
+    """Return whether ``path`` safely carries this generator's ownership marker."""
+    if _has_symlink_component(path):
+        return False
     try:
         return GENERATED_PAGE_MARKER in path.read_text(encoding="utf-8")
     except OSError:
@@ -753,18 +784,18 @@ def _is_owned_generated_page(path: Path) -> bool:
 def _owned_generated_pages() -> set[Path]:
     pages: set[Path] = set()
     for root in _generated_page_roots():
-        if not root.exists():
+        if not root.exists() or _has_symlink_component(root):
             continue
         pages.update(
-            path.resolve()
+            path.absolute()
             for path in root.rglob("*.md")
-            if _is_owned_generated_page(path)
+            if not _has_symlink_component(path) and _is_owned_generated_page(path)
         )
     return pages
 
 
 def _stale_generated_pages(expected_page_paths: set[Path]) -> list[Path]:
-    expected = {path.resolve() for path in expected_page_paths}
+    expected = {path.absolute() for path in expected_page_paths}
     return sorted(_owned_generated_pages() - expected)
 
 
@@ -808,10 +839,15 @@ def check_generated_outputs(
 ) -> bool:
     """Check generated outputs without modifying the working tree."""
     clean = True
+    symlinked = set(_symlinked_output_paths(set(expected_outputs)))
     conflicts = set(_unowned_page_conflicts(expected_page_paths))
 
     for path in sorted(expected_outputs):
         rel = _display_path(path)
+        if path in symlinked:
+            print(f"CONFLICT (symlinked output path): {rel}")
+            clean = False
+            continue
         if path in conflicts:
             print(f"CONFLICT (not generator-owned): {rel}")
             clean = False
@@ -850,10 +886,14 @@ def _remove_stale_generated_pages(expected_page_paths: set[Path]) -> list[Path]:
 
     # Remove empty category directories left behind by moved/deleted skills.
     for root in _generated_page_roots():
-        if not root.exists():
+        if not root.exists() or _has_symlink_component(root):
             continue
         directories = sorted(
-            (path for path in root.rglob("*") if path.is_dir()),
+            (
+                path
+                for path in root.rglob("*")
+                if not _has_symlink_component(path) and path.is_dir()
+            ),
             key=lambda path: len(path.parts),
             reverse=True,
         )
@@ -899,7 +939,34 @@ def build_expected_outputs(
 def generate_skill_docs(*, check: bool = False) -> int:
     entries = discover_skills()
     print(f"Discovered {len(entries)} skills")
+
+    planned_output_paths = {page_output_path(meta) for meta, _parsed in entries}
+    planned_output_paths.update(_generated_page_roots())
+    planned_output_paths.update(
+        {
+            DOCS / "reference" / "skills-catalog.md",
+            DOCS / "reference" / "optional-skills-catalog.md",
+            REPO / "website" / "sidebars.ts",
+        }
+    )
+    symlinked = _symlinked_output_paths(planned_output_paths)
+    if symlinked:
+        for path in symlinked:
+            print(
+                "Refusing to write through symlinked output path: "
+                f"{_display_path(path)}"
+            )
+        return 1
+
     expected_outputs, expected_page_paths = build_expected_outputs(entries)
+    symlinked = _symlinked_output_paths(set(expected_outputs))
+    if symlinked:
+        for path in symlinked:
+            print(
+                "Refusing to write through symlinked output path: "
+                f"{_display_path(path)}"
+            )
+        return 1
 
     if check:
         return 0 if check_generated_outputs(

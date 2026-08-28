@@ -1669,7 +1669,7 @@ function Test-SystemNodeReady {
     if (Test-NodeVersionOk $version) {
         Ensure-NodeExeOnPath | Out-Null
     } else {
-        Write-Warn "Node.js $version is too old (Hermes requires Node >=22.22.0)"
+        Write-Warn "Node.js $version is unsupported (Hermes requires Node 22.22+, 24, or 26+)"
         return $false
     }
 

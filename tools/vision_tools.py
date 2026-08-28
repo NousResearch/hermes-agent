@@ -254,9 +254,15 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
         # Magic bytes alone are insufficient: native vision history is
         # immutable, so reject corrupt PNGs before they can be embedded.
+        # Pillow is an optional dependency — when it is missing we fall back
+        # to header-only sniffing (the full-decode gate in
+        # _validate_raster_image_decodable is likewise skipped without PIL);
+        # only an actual failed verify() rejects the bytes.
         try:
             from PIL import Image
-
+        except ImportError:
+            return "image/png"
+        try:
             with Image.open(BytesIO(data)) as image:
                 image.verify()
         except Exception:
@@ -410,7 +416,11 @@ def _validate_raster_image_decodable(image_path: Path) -> Optional[str]:
     try:
         from PIL import Image as _PILImage
         from PIL import ImageSequence as _PILImageSequence
-
+    except ImportError:
+        # Pillow is optional — without it we cannot decode-validate, so pass
+        # the image through unvalidated rather than rejecting everything.
+        return None
+    try:
         with _PILImage.open(image_path) as image:
             image.verify()
         with _PILImage.open(image_path) as image:

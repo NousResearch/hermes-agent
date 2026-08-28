@@ -22,6 +22,7 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
+import { $retiredTips, $tipRotationEnabled, resetTips, setTipRotationEnabled } from '@/store/tips'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import {
   $translucency,
@@ -355,6 +356,8 @@ export function AppearanceSettings() {
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const reactionsEnabled = useStore($reactionsEnabled)
+  const tipRotation = useStore($tipRotationEnabled)
+  const retiredTips = useStore($retiredTips)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
@@ -753,6 +756,40 @@ export function AppearanceSettings() {
             }
             description={a.reactionsDesc}
             title={a.reactionsTitle}
+          />
+
+          <ListRow
+            action={
+              <div className="flex flex-col items-end gap-1.5">
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setTipRotationEnabled(id === 'on')
+                  }}
+                  options={[
+                    { id: 'off', label: t.common.off },
+                    { id: 'on', label: t.common.on }
+                  ]}
+                  value={tipRotation ? 'on' : 'off'}
+                />
+                {/* The ✕ on a tip is permanent, so this is the only way back.
+                    It appears once there is something to bring back. */}
+                {retiredTips.length > 0 && (
+                  <Button
+                    onClick={() => {
+                      triggerHaptic('selection')
+                      resetTips()
+                    }}
+                    size="inline"
+                    variant="text"
+                  >
+                    {a.tipsReset(retiredTips.length)}
+                  </Button>
+                )}
+              </div>
+            }
+            description={a.tipsDesc}
+            title={a.tipsTitle}
           />
 
           <ListRow

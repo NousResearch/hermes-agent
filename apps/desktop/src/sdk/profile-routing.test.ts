@@ -57,7 +57,8 @@ vi.mock('@/store/session-states', async () => {
     $sessionTiles: atom([]),
     $sessionStates: atom({}),
     $stalledSessionIds: atom([]),
-    $workingSessionIds: atom([])
+    $workingSessionIds: atom([]),
+    sessionTileDelegate: vi.fn(() => null)
   }
 })
 vi.mock('@/store/profile', async () => {
@@ -143,8 +144,14 @@ const {
   setShowAllProfiles
 } = await import('@/store/profile')
 
-const { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId, $sessionStates, $sessionTiles } =
-  await import('@/store/session-states')
+const {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId,
+  $sessionStates,
+  $sessionTiles,
+  sessionTileDelegate
+} = await import('@/store/session-states')
 
 const { setWorkspaceScope } = await import('@/components/pane-shell/workspace-scope')
 
@@ -171,6 +178,7 @@ const profile = (name: string): ProfileInfo => ({
 
 afterEach(() => {
   vi.clearAllMocks()
+  vi.mocked(sessionTileDelegate).mockReturnValue(null)
   vi.mocked(activeGatewayConnectionId).mockReturnValue('local')
   $activeGatewayProfile.set('remote-worker')
   $gatewaySwapTarget.set(null)
@@ -731,6 +739,32 @@ describe('profile-aware plugin session opens', () => {
 
     await opening
     expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('refreshes an already-open Bot Chat tile instead of trusting the idle snapshot (#96183)', async () => {
+    const resumeTile = vi.fn(async () => 'runtime-bot-chat')
+
+    vi.mocked(sessionTileDelegate).mockReturnValue({ resumeTile } as never)
+    $activeGatewayProfile.set('hyoseob')
+    setMockAtom($sessionTiles, [{ storedSessionId: 'bot-chat' }] as never)
+    setMockAtom($focusedStoredSessionId, 'bot-chat')
+    setMockAtom($focusedRuntimeId, 'runtime-bot-chat')
+    setMockAtom($focusedSessionState, { messages: [{ id: 'stale-history', parts: [], role: 'assistant' }] } as never)
+
+    const opening = host.openSession('bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      forceResume: true,
+      hydrationTimeoutMs: 1_000,
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'hyoseob'
+    })
+
+    await opening
+
+    expect(resumeTile).toHaveBeenCalledWith('bot-chat', { refreshTranscript: true })
+    expect(requestSessionResume).not.toHaveBeenCalled()
   })
 
   it('forces a resume on an explicit bot switch even when a cached transcript looks healthy (#93604)', async () => {

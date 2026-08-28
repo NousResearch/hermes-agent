@@ -90,7 +90,8 @@ import {
   $focusedSessionState,
   $focusedStoredSessionId,
   $sessionStates,
-  $sessionTiles
+  $sessionTiles,
+  sessionTileDelegate
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
@@ -979,8 +980,25 @@ export const host = {
           // session-states cache kept across a bot switch (#93604). Callers
           // that represent an explicit user navigation pass forceResume to
           // skip the heuristic entirely; the resume is idempotent either way.
+          //
+          // Bot Chat opens as a tab/tile. requestSessionResume is consumed
+          // only when the MAIN route is that session, so a roster reopen of
+          // an already-mounted tile would paint the idle snapshot and never
+          // pull messages that arrived while the panel WS was down (#96183).
+          // Refresh the tile transcript in place instead.
           if (options.awaitHydration && (options.forceResume || !surfaceHealthy)) {
-            requestSessionResume(storedSessionId, ownerRoute || undefined)
+            const existingTile = $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId)
+            const tileDelegate = existingTile ? sessionTileDelegate() : null
+
+            if (tileDelegate) {
+              try {
+                await tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true })
+              } catch {
+                requestSessionResume(storedSessionId, ownerRoute || undefined)
+              }
+            } else {
+              requestSessionResume(storedSessionId, ownerRoute || undefined)
+            }
           }
 
           if (options.awaitHydration) {

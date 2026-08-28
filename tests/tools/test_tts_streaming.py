@@ -44,6 +44,22 @@ class TestSentenceChunker:
             "A paragraph without punctuation\n\n"
         ]
 
+    def test_default_min_len_buffers_short_cjk_openers(self):
+        # The documented default behavior the config knob tunes: a 6-char
+        # CJK opener is shorter than 20, so it rides with the second
+        # sentence instead of stalling as its own tiny clip (#96927).
+        c = ts.SentenceChunker()
+        assert c.feed("嗯，好的。") == []
+        assert c.feed("记得这件事。") == ["嗯，好的。记得这件事。"]
+
+    def test_lowered_min_len_speaks_short_cjk_first_sentence_immediately(self):
+        # tts.streaming.min_len lowered to 6: the same opener cuts at its own
+        # boundary, so the first audio is not delayed by a full second
+        # sentence (#96927).
+        c = ts.SentenceChunker(min_len=6)
+        assert c.feed("嗯，好的。") == ["嗯，好的。"]
+        assert c.feed("记得这件事。") == ["记得这件事。"]
+
 
 # ── Interruption latch ───────────────────────────────────────────────────
 

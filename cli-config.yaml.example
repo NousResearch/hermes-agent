@@ -1570,6 +1570,14 @@ stt:
 #     # live result.
 #     model: ""
 #     voice: "default"
+#   streaming:
+#     # First-sentence threshold for the streaming sentence chunker, in
+#     # characters. Clauses shorter than this buffer and ride with the
+#     # next sentence. The default 20 suits English; for CJK text 20
+#     # characters is one-to-two full clauses, so short openers always
+#     # buffer and the first audio is delayed by ~one LLM sentence —
+#     # lower it (e.g. 6) to speak short first sentences immediately.
+#     min_len: 20
 
 # "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
 # Full engine/provider options inherit from DEFAULT_CONFIG in

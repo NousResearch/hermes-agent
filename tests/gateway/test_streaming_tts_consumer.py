@@ -671,3 +671,32 @@ class TestGatewayOuterFinalisationNoNameError:
         # This is trivially true with a holder, but was NOT true when
         # the consumer was a run_sync local.
         _ = holder[0]
+
+
+class TestStreamingMinLenConfig:
+    """``tts.streaming.min_len`` tunes the chunker's first-sentence
+    threshold (#96927): the hard-coded 20 chars suits English but for CJK
+    is one-to-two full clauses, so short openers always buffered and the
+    first audible audio was delayed by ~one LLM sentence."""
+
+    def test_default_when_unset(self):
+        from gateway.streaming_tts_consumer import _streaming_min_len
+
+        assert _streaming_min_len({}) == 20
+        assert _streaming_min_len({"streaming": {}}) == 20
+        assert _streaming_min_len({"streaming": "not-a-dict"}) == 20
+
+    def test_configured_value_passes_through(self):
+        from gateway.streaming_tts_consumer import _streaming_min_len
+
+        assert _streaming_min_len({"streaming": {"min_len": 6}}) == 6
+
+    def test_invalid_values_fall_back_and_floor_at_one(self):
+        from gateway.streaming_tts_consumer import _streaming_min_len
+
+        assert _streaming_min_len({"streaming": {"min_len": "bogus"}}) == 20
+        assert _streaming_min_len({"streaming": {"min_len": None}}) == 20
+        # A misconfigured 0 must not disable chunking entirely (every
+        # boundary would emit, including single-char fragments).
+        assert _streaming_min_len({"streaming": {"min_len": 0}}) == 1
+        assert _streaming_min_len({"streaming": {"min_len": -5}}) == 1

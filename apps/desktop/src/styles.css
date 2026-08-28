@@ -1616,6 +1616,19 @@ body.guest-pointer-lock :is(webview, iframe) {
   container-type: inline-size;
 }
 
+/* The display lettering an empty chat is titled with. Kept here beside
+   `.fit-text` rather than as utilities on the element: the two always travel
+   together, and the face is the whole point of the treatment — it must not be
+   something a class-merge or a missed scan can quietly drop, leaving the
+   wordmark rendered in body text. */
+.wordmark {
+  font-family: 'Collapse', var(--font-sans);
+  font-weight: 700;
+  line-height: 0.9;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .fit-text > [aria-hidden] {
   visibility: hidden;
 }

@@ -1420,6 +1420,9 @@ export { McpTab } from '@/app/skills/mcp-tab'
  *  Pair it with `anchor` (spawn corner, default `'top-right'`) plus
  *  `width`/`height`. */
 export type { FloatingAnchor } from '@/components/pane-shell/tree/renderer/floating-rect'
+/** The oversized Collapse lettering an empty chat is titled with — core writes
+ *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
+export { Wordmark } from '@/components/chat/wordmark'
 export { StatusDot, type StatusTone } from '@/components/status-dot'
 export { Badge } from '@/components/ui/badge'
 export { Button } from '@/components/ui/button'
@@ -1590,6 +1593,9 @@ export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left'
  *  suffix. `relativeTime` is the bidirectional Intl form ("in 14 hr") — use it
  *  for a scheduled next-run, not for an age. */
 export { type AgoLabels, coarseElapsed, fmtDateTime, fmtDayTime, formatAgo, relativeTime } from '@/lib/time'
+/** The blank transcript as a contribution area: claim the sessions you own and
+ *  render what stands in the gap. Core's own splash keeps a fresh draft. */
+export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
 /** The transcript as a contribution area: register a named `::directive{...}`
  *  and the model can render your component inline in assistant messages. */
 export {

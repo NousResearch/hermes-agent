@@ -28,6 +28,7 @@ import types
 from unittest.mock import MagicMock, patch
 
 import hermes_cli.runtime_provider as rp
+from hermes_state import SessionDB
 
 MIMO_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 MIMO_KEY = "sk-mimo-entry-key"
@@ -702,3 +703,147 @@ class TestFollowProfileConfigRuntimeOverrides:
         }
         server._ensure_session_db_row(session)
         assert captured["model_config"].get("follow_profile_config") is None
+
+
+# --- Regression: model column vs model_config desync (stale provider) ----------
+#
+# _runtime_model_config merges the agent's CURRENT identity onto the row's
+# existing model_config. For model/provider it only SET the key when the agent
+# attribute was truthy — so a falsy agent provider (agent inherits the profile
+# default) left the PREVIOUS provider in the JSON while
+# _persist_live_session_runtime updated the model column separately. Resume
+# then read the fresh model from the column but the STALE provider/endpoint
+# from model_config, silently routing the chat to the wrong provider (e.g. a
+# VeniceAI/empero endpoint under a model that should run on Nous). The sibling
+# CLI path (_persist_model_switch_to_session) already deletes stale keys with
+# or-None; the gateway writer must drop them too, not merely omit the write.
+
+
+def _agent_like(model="deepseek/deepseek-v4-flash-0731", provider=""):
+    return types.SimpleNamespace(
+        model=model,
+        provider=provider,
+        base_url="",
+        api_mode="",
+        reasoning_config=None,
+        service_tier=None,
+    )
+
+
+class TestRuntimeModelConfigDropsStaleKeys:
+    def test_falsy_provider_drops_stale_existing_provider(self):
+        """Agent inherits the profile default (empty provider): the previously
+        persisted provider must NOT survive the merge."""
+        from tui_gateway.server import _runtime_model_config
+
+        existing = {
+            "model": "deepseek/deepseek-v4-flash-0731",
+            "provider": "stealth-ox-alpha",  # stale from an earlier state
+            "base_url": "https://api.venice.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+        config = _runtime_model_config(_agent_like(), existing)
+
+        assert config["model"] == "deepseek/deepseek-v4-flash-0731"
+        assert "provider" not in config, config
+        assert "base_url" not in config, config
+        assert "api_mode" not in config, config
+
+    def test_falsy_model_drops_stale_existing_model(self):
+        """Mirror the provider rule: an empty agent model cannot keep the row's
+        old model as its own."""
+        from tui_gateway.server import _runtime_model_config
+
+        agent = _agent_like(model="", provider="nous")
+        existing = {"model": "meituan/longcat-2.0:free", "provider": "nous"}
+        config = _runtime_model_config(agent, existing)
+
+        assert "model" not in config, config
+        assert config["provider"] == "nous"
+
+    def test_truthy_provider_overwrites_stale_existing(self):
+        from tui_gateway.server import _runtime_model_config
+
+        existing = {
+            "model": "deepseek/deepseek-v4-flash-0731",
+            "provider": "stealth-ox-alpha",
+            "base_url": "https://api.venice.ai/api/v1",
+        }
+        config = _runtime_model_config(_agent_like(provider="nous"), existing)
+
+        assert config["provider"] == "nous"
+        assert config["model"] == "deepseek/deepseek-v4-flash-0731"
+
+    def test_resume_overrides_get_no_stale_provider(self):
+        """End-to-end shape: a config merged from an empty-provider agent must
+        NOT resurrect the stale endpoint on resume — the chat falls back to
+        the row's billing provider (the profile default) instead of the stale
+        VeniceAI/empero route."""
+        from tui_gateway.server import (
+            _runtime_model_config,
+            _stored_session_runtime_overrides,
+        )
+
+        existing = {
+            "model": "deepseek/deepseek-v4-flash-0731",
+            "provider": "stealth-ox-alpha",
+            "base_url": "https://api.venice.ai/api/v1",
+        }
+        config = _runtime_model_config(_agent_like(), existing)
+        row = {
+            "model": "deepseek/deepseek-v4-flash-0731",
+            "model_config": json.dumps(config),
+            "billing_provider": "nous",
+        }
+        overrides = _stored_session_runtime_overrides(row)
+
+        assert overrides["model_override"]["model"] == "deepseek/deepseek-v4-flash-0731"
+        # The stale endpoint identity is gone; resume routes through the
+        # billing fallback to the profile's real provider.
+        assert overrides["model_override"]["provider"] == "nous"
+        assert overrides["provider_override"] == "nous"
+
+    def test_real_db_persist_heals_desynced_row(self, tmp_path, monkeypatch):
+        """A row already desynced (fresh model column + stale model_config
+        provider) self-heals on the next live metadata persist."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(session_id="desync1", source="desktop", model="old-model")
+        db.update_session_meta(
+            "desync1",
+            json.dumps(
+                {
+                    "model": "deepseek/deepseek-v4-flash-0731",
+                    "provider": "stealth-ox-alpha",
+                    "base_url": "https://api.venice.ai/api/v1",
+                }
+            ),
+            model="deepseek/deepseek-v4-flash-0731",
+        )
+
+        from tui_gateway.server import _runtime_model_config
+
+        row = db.get_session("desync1")
+        assert row is not None
+        existing = json.loads(row["model_config"])
+        merged = _runtime_model_config(_agent_like(), existing)
+        db.update_session_meta("desync1", json.dumps(merged), model="deepseek/deepseek-v4-flash-0731")
+
+        healed_row = db.get_session("desync1")
+        assert healed_row is not None
+        healed = json.loads(healed_row["model_config"])
+        assert healed["model"] == "deepseek/deepseek-v4-flash-0731"
+        assert "provider" not in healed, healed
+        assert "base_url" not in healed, healed
+
+    def test_existing_none_returns_only_agent_identity(self):
+        """First write (no existing row): the merge starts from an empty dict
+        and reflects only the agent's current identity — no stale keys, no
+        crash on the None existing_config."""
+        from tui_gateway.server import _runtime_model_config
+
+        config = _runtime_model_config(_agent_like(provider="nous"), None)
+
+        assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
+
+

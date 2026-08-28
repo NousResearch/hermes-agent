@@ -5428,6 +5428,20 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
 
 
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
+    """Merge the agent's CURRENT runtime identity onto an existing config.
+
+    ``existing`` is the row's previously-persisted ``model_config`` JSON (may
+    be absent on first write). The returned dict must mirror the agent's live
+    state: falsy agent attributes DELETE the corresponding key rather than
+    merely omit the write, so a stale value from an earlier session state can
+    never survive into the merged config. Keeping stale values here is what
+    desynced the ``sessions.model`` column (fresh) from ``model_config``
+    (stale provider/endpoint): ``_persist_live_session_runtime`` writes the
+    model column separately, and on resume ``_stored_session_runtime_overrides``
+    reads provider/endpoint from this JSON — so a stale provider would silently
+    route the resumed chat to the wrong endpoint while the model column claimed
+    the new one.
+    """
     config = dict(existing or {})
     model = str(getattr(agent, "model", "") or "").strip()
     provider = str(getattr(agent, "provider", "") or "").strip()
@@ -5438,6 +5452,8 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
 
     if model:
         config["model"] = model
+    else:
+        config.pop("model", None)
     if provider:
         if provider.strip().lower() == "custom":
             # ``agent.provider`` is the RESOLVED provider, and for any named
@@ -5468,6 +5484,8 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
                     "custom provider identity lookup failed", exc_info=True
                 )
         config["provider"] = provider
+    else:
+        config.pop("provider", None)
     if base_url:
         config["base_url"] = base_url
     else:

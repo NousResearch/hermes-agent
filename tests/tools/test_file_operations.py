@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
+from tools.environments.local import _find_bash, _msys_to_windows_path
 from tools.file_operations import (
     _is_write_denied,
     ReadResult,
@@ -256,16 +257,44 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
     env.cwd = cwd
 
     def execute(command, **kwargs):
+        shell_command = command
+        stdin_data = kwargs.get("stdin_data")
+        is_windows = os.name == "nt"
+        if is_windows:
+            # Match LocalEnvironment: commands are POSIX scripts executed by
+            # Git Bash, and stdin bytes must bypass Windows newline rewriting.
+            command = [_find_bash(), "-c", command]
         completed = subprocess.run(
             command,
-            shell=True,
-            text=True,
+            shell=not is_windows,
+            text=not is_windows,
             capture_output=True,
-            input=kwargs.get("stdin_data"),
+            input=(stdin_data.encode("utf-8", "surrogateescape")
+                   if is_windows and stdin_data is not None else stdin_data),
         )
-        output = completed.stdout
+        output = (
+            completed.stdout.decode("utf-8", "replace")
+            if is_windows else completed.stdout
+        )
+        if is_windows and shell_command.startswith("find "):
+            # GNU find echoes its MSYS-form root. Convert only find records so
+            # pathlib applies hidden-descendant filtering on the native drive.
+            normalized_lines = []
+            for line in output.splitlines(keepends=True):
+                body = line.rstrip("\r\n")
+                ending = line[len(body):]
+                prefix, separator, path = body.partition(" ")
+                if not (separator and prefix.replace(".", "").isdigit()):
+                    prefix, separator, path = "", "", body
+                if re.match(r"^/[A-Za-z]/", path):
+                    path = _msys_to_windows_path(path)
+                normalized_lines.append(f"{prefix}{separator}{path}{ending}")
+            output = "".join(normalized_lines)
         if include_stderr:
-            output += completed.stderr
+            output += (
+                completed.stderr.decode("utf-8", "replace")
+                if is_windows else completed.stderr
+            )
         return {
             "output": output,
             "returncode": completed.returncode,

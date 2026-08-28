@@ -256,7 +256,7 @@ TOOLSETS = {
             "open_preview", "close_preview", "read_preview", "drive_preview", "annotate_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
-            "setup_mcp", "tour",
+            "setup_mcp", "tour", "tip",
         ],
         "includes": []
     },

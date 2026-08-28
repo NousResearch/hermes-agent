@@ -594,6 +594,34 @@ def test_update_without_keep_stash_still_restores(monkeypatch, tmp_path):
     assert discard_calls == []
 
 
+def test_update_keep_stash_does_not_prompt_to_restore():
+    """--keep-stash must not ask a restore question it will ignore."""
+    from hermes_cli.update_cmd import _should_prompt_for_stash_restore
+
+    assert _should_prompt_for_stash_restore(
+        auto_stash_ref="abc123deadbeef",
+        keep_stash=True,
+        assume_yes=False,
+        gateway_mode=False,
+        stdin_isatty=True,
+        stdout_isatty=True,
+    ) is False
+
+
+def test_update_restore_prompt_still_appears_for_interactive_restore():
+    """Interactive updates without --keep-stash still ask before restoring."""
+    from hermes_cli.update_cmd import _should_prompt_for_stash_restore
+
+    assert _should_prompt_for_stash_restore(
+        auto_stash_ref="abc123deadbeef",
+        keep_stash=False,
+        assume_yes=False,
+        gateway_mode=False,
+        stdin_isatty=True,
+        stdout_isatty=True,
+    ) is True
+
+
 def test_update_keep_stash_failure_path_still_preserves(monkeypatch, tmp_path, capsys):
     """--keep-stash + failed update: neither restore nor park runs; the
     existing preserved-in-stash message fires (working tree unknown)."""

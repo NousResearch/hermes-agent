@@ -926,6 +926,32 @@ class TestProfileHomeGuard:
         self._link(hermes_home, fake_home / rel if rel else fake_home)
         self._constructs(work_dir, "auto")
 
+    @pytest.fixture
+    def profile_layout(self, fake_home, monkeypatch):
+        """The standard profile layout: HERMES_HOME at HOME/.hermes/profiles/<name>."""
+        default_home = fake_home / ".hermes"
+        default_home.mkdir()
+        (default_home / ".env").write_text("SECRET=1\n")
+        hh = default_home / "profiles" / "coder"
+        (hh / "home").mkdir(parents=True)
+        (default_home / "profiles" / "other" / "home").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hh))
+        return hh
+
+    def test_profile_layout_under_the_default_home_constructs_under_home_mode_profile(self, sandbox_root, work_dir, profile_layout):
+        # HOME/.hermes is hidden too, but the plain HERMES_HOME/home inside it
+        # is the designed carve-out, not a second view of a hidden tree.
+        self._constructs(work_dir, "profile")
+
+    def test_profile_home_linked_into_another_profile_is_refused(self, sandbox_root, work_dir, fake_home, profile_layout):
+        (profile_layout / "home").rmdir()
+        other = profile_layout.parent / "other" / "home"
+        self._link(profile_layout, other)
+        with _no_session(), pytest.raises(ValueError, match="terminal.home_mode") as exc:
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(home_mode="profile"))
+        assert os.path.realpath(fake_home / ".hermes") in str(exc.value)
+        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
+
 
 class TestChdirFailureDetection:
     """The retry fires only for a spawn bwrap aborted before the shell ran."""

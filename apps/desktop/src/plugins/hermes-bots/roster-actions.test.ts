@@ -72,6 +72,15 @@ vi.mock('./group-panes', () => ({ closeGroupChatMainTab: vi.fn() }))
 const chatting = (name: string, lastActive: number, preview = 'hello'): RosterRow =>
   ({ canonical_session: { id: `${name}-chat`, last_active: lastActive, preview }, name }) as RosterRow
 
+const scopedChatting = (connectionId: string, lastActive: number, preview = 'hello'): RosterRow =>
+  ({
+    canonical_session: { id: `${connectionId}-chat`, last_active: lastActive, preview },
+    connectionId,
+    name: 'default',
+    route: { connectionId, mode: 'remote', profile: 'default', targetProfile: 'default' },
+    sourceScoped: true
+  }) as RosterRow
+
 async function loadActions() {
   vi.resetModules()
 
@@ -96,6 +105,17 @@ describe('the first poll only seeds watermarks', () => {
 
     expect(markUnreadMock).not.toHaveBeenCalled()
     expect(hostMock.notify).not.toHaveBeenCalled()
+  })
+
+  it('seeds a source discovered after the first poll without badging its history', async () => {
+    const { trackInboundActivity } = await loadActions()
+
+    trackInboundActivity([scopedChatting('local', 5000)])
+    trackInboundActivity([scopedChatting('local', 5000), scopedChatting('remote', 9000)])
+    expect(markUnreadMock).not.toHaveBeenCalled()
+
+    trackInboundActivity([scopedChatting('local', 5000), scopedChatting('remote', 10_000)])
+    expect(markUnreadMock.mock.calls).toEqual([['remote-chat', 'default']])
   })
 })
 
@@ -180,19 +200,23 @@ describe('new activity after the seed', () => {
   it('tracks two same-named bots on different connections independently', async () => {
     const { trackInboundActivity } = await loadActions()
 
-    const scoped = (connectionId: string, lastActive: number) =>
-      ({
-        canonical_session: { id: `${connectionId}-chat`, last_active: lastActive },
-        connectionId,
-        name: 'default',
-        route: { connectionId, mode: 'remote', profile: 'default', targetProfile: 'default' },
-        sourceScoped: true
-      }) as RosterRow
-
-    trackInboundActivity([scoped('a', 5000), scoped('b', 5000)])
-    trackInboundActivity([scoped('a', 6000), scoped('b', 5000)])
+    trackInboundActivity([scopedChatting('a', 5000), scopedChatting('b', 5000)])
+    trackInboundActivity([scopedChatting('a', 6000), scopedChatting('b', 5000)])
 
     expect(markUnreadMock.mock.calls).toEqual([['a-chat', 'default']])
+  })
+
+  it('keeps a source watermark while the bot is temporarily absent', async () => {
+    const { trackInboundActivity } = await loadActions()
+
+    trackInboundActivity([scopedChatting('remote', 5000)])
+    trackInboundActivity([])
+    trackInboundActivity([scopedChatting('remote', 5000)])
+    trackInboundActivity([scopedChatting('remote', 4000)])
+    expect(markUnreadMock).not.toHaveBeenCalled()
+
+    trackInboundActivity([scopedChatting('remote', 6000)])
+    expect(markUnreadMock.mock.calls).toEqual([['remote-chat', 'default']])
   })
 })
 

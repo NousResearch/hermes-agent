@@ -697,8 +697,21 @@ test('registry local route: v1 REMOTE global mode forces a genuinely-local backe
   assert.notEqual(route.poolKey, backendScopeKey(LOCAL_CONNECTION_ID, 'default'))
 })
 
-test('registry local route: a per-profile remote override also forces local', () => {
+test('registry local route: a per-profile remote override delegates to the override (#90477)', () => {
+  // The per-profile SSH/remote override is the authoritative route for that
+  // profile. Forcing local here made the roster list the profile via its
+  // override but open the thread in a local child — which fails when the
+  // profile exists only on the remote. The override must win.
   const route = resolveRegistryLocalRoute('research', { profileRemoteOverride: true })
+
+  assert.deepEqual(route, { delegate: true, poolKey: 'research' })
+})
+
+test('registry local route: global remote keeps forced-local even when a profile override is absent', () => {
+  // Witness for the other half of the split: app-global remote mode still
+  // forces "This device" to spawn genuinely-local children (migration
+  // scenario above) — only the per-profile override delegates.
+  const route = resolveRegistryLocalRoute('research', { globalRemote: true })
 
   assert.deepEqual(route, { delegate: false, poolKey: 'conn:local::research' })
 })

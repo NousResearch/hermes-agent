@@ -35,18 +35,13 @@ _PARENT_HANDOFF_METADATA_STRING_MAX_BYTES = 2048
 _PARENT_HANDOFF_METADATA_MAX_ITEMS = 32
 _PARENT_HANDOFF_METADATA_MAX_DEPTH = 4
 
-# A decomposer creates leaf cards only after it has committed the scope and
-# ownership decision into the child body.  Letting such a leaf re-open that
-# decision as ``needs_input`` is a common local-model failure mode: the worker
-# asks a human which analysis to perform instead of performing the bounded
-# analysis it was assigned.  Real external access failures remain
-# ``capability`` blocks.  Keep this list aligned with dispatcher handling of
-# generated tasks in ``kanban_db.dispatch_once``.
-_GENERATED_LEAF_CREATORS = frozenset({
-    "auto-decomposer",
-    "decomposer",
-    "specialist-routing",
-})
+# A direct user/dashboard root can legitimately need a follow-up choice.  A
+# worker-, decomposer-, or cron-created card cannot: it was created only after
+# a producer had chosen its scope and owner.  Letting those cards reopen their
+# assignment as ``needs_input`` produces unblock loops from local models (and
+# lets a scheduled audit claim a prior timeout is a human prerequisite).
+# Real external access failures remain evidence-backed ``capability`` blocks.
+_NEEDS_INPUT_ROOT_CREATORS = frozenset({"user", "dashboard"})
 
 _PRIVATE_PATH_IN_TEXT = re.compile(
     r"(?<![A-Za-z0-9_])(?:"

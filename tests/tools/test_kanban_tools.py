@@ -437,8 +437,8 @@ def test_block_happy_path(worker_env):
         conn.close()
 
 
-def test_auto_decomposed_leaf_rejects_invented_needs_input(monkeypatch, worker_env):
-    """A generated leaf must execute its fixed scope rather than reopen it.
+def test_worker_created_task_rejects_invented_needs_input(monkeypatch, worker_env):
+    """A produced card must execute its fixed scope rather than reopen it.
 
     This is a lifecycle guard, not prompt-only advice: repeated local-model
     requests for a human to choose analysis metrics were previously accepted as
@@ -454,7 +454,7 @@ def test_auto_decomposed_leaf_rejects_invented_needs_input(monkeypatch, worker_e
             title="bounded generated analysis",
             body="Inspect the named source and report factual findings.",
             assignee="test-worker",
-            created_by="auto-decomposer",
+            created_by="cron-worktree-governance",
         )
         assert kb.claim_task(conn, tid) is not None
     finally:
@@ -466,7 +466,7 @@ def test_auto_decomposed_leaf_rejects_invented_needs_input(monkeypatch, worker_e
         "reason": "Please choose which metrics to analyze.",
     })
     assert "error" in json.loads(out)
-    assert "auto-decomposed leaf" in out
+    assert "worker- and cron-created" in out
 
     conn = kb.connect()
     try:
@@ -931,7 +931,7 @@ def test_kanban_guidance_resolves_board_context_before_needs_input_block():
     assert "kanban_show(task_id=...)" in KANBAN_GUIDANCE
     assert "profile roster" in KANBAN_GUIDANCE
     assert "only then block" in KANBAN_GUIDANCE.lower()
-    assert "bounded leaf assignment" in KANBAN_GUIDANCE
+    assert "producer has already fixed the scope" in KANBAN_GUIDANCE
     assert "literal argv and redacted stderr" in KANBAN_GUIDANCE
 
 

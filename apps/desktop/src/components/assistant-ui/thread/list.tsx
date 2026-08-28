@@ -112,10 +112,17 @@ export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): num
 // is a no-op. Parked panes are unmounted, so they never hit this path.
 export const shouldClampTranscriptBudget = (hidden: boolean, renderBudget: number, paneBudget: number): boolean =>
   hidden && renderBudget > paneBudget
-// Units the backfill adds per committed step (see the backfill effect). ~8-15
-// ordinary turns or 1-2 tool-heavy ones per frame — big enough to fill a page
-// in ~10 frames, small enough that no single commit approaches a frame budget.
-const BACKFILL_STEP = 60
+// Units the backfill adds per committed step (see the backfill effect). A
+// 60-unit step produced ~10 visible prepend frames after FIRST_PAINT_BUDGET
+// retune (#83681). 290 fills a 600-unit page in two interruptible commits —
+// still well under the measured 780ms single-jump freeze.
+const BACKFILL_STEP = 290
+
+export const transcriptBackfillFrameCount = (
+  firstPaint = FIRST_PAINT_BUDGET,
+  step = BACKFILL_STEP,
+  budget = RENDER_BUDGET
+): number => Math.ceil(Math.max(0, budget - firstPaint) / step)
 
 // Browsers may quantize a requested scrollTop to a nearby device-pixel
 // boundary. use-stick-to-bottom otherwise compares the lower actual value to
@@ -486,8 +493,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // backfilled turn at once — measured as a 780ms uninterruptible frame when
   // the session was revealed while other tiles streamed (the flushes kept
   // interrupting the transition, which finally landed whole, seconds later,
-  // mid-stream). Each step commits at most BACKFILL_STEP units (~40-80ms);
-  // the effect re-arms off the committed budget, so steps pace one per frame.
+  // mid-stream). Each step commits at most BACKFILL_STEP units; the effect
+  // re-arms off the committed budget, so steps pace one per frame.
   useEffect(() => {
     if (renderBudget >= paneBudget) {
       return

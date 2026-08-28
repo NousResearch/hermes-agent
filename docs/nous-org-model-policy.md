@@ -143,12 +143,17 @@ then empties the picker — strictly worse than an unfiltered list, because the
 models the org may use are the ones dropped. Fall back to the reachable set
 itself in exactly that case.
 
-Only when the intersection is empty, and only when the set is small enough to
-be an allowlist rather than a whole catalog. A jurisdiction or provider policy
-narrows the catalog without emptying the curated overlap; appending its
-remainder pushes non-curated alphabetical ids into a picker that shows a
-curated order on purpose. A size cap alone does not catch this — a region
-filter can leave few enough models to pass it.
+Only when the intersection is empty, only when the set is small enough to be
+an allowlist rather than a whole catalog, and **only for the list a user picks
+from**. Callers opt in per list. Any list whose emptiness carries meaning must
+not get the rescue: a paid-tier user's unavailable list is legitimately empty,
+and rescuing it reads that as "nothing survived" and fills the picker's
+unavailable block with the entire reachable set.
+
+A size cap alone does not make this safe — a jurisdiction filter can leave few
+enough models to pass it — and neither does gating on an empty intersection,
+because an intentionally empty input is indistinguishable from a fully filtered
+one. The opt-in is what separates them.
 
 **Do not** narrow a list on evidence that cannot support it.
 `nous_policy_allowed_ids()` returns `None` — meaning "leave the list alone" —

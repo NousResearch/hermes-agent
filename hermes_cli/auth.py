@@ -9432,7 +9432,9 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 # unauthenticated, so neither knows what the org may reach.
                 # Narrow both lists to the policy before they are shown.
                 _policy_allowed = nous_policy_allowed_ids()
-                model_ids = restrict_to_nous_policy(model_ids, _policy_allowed)
+                model_ids = restrict_to_nous_policy(
+                    model_ids, _policy_allowed, rescue_empty=True,
+                )
                 unavailable_models = restrict_to_nous_policy(
                     unavailable_models, _policy_allowed,
                 )

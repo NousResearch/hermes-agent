@@ -63,11 +63,7 @@ class TestRestrictToNousPolicy:
         ) == ["vendor/model:free"]
 
     def test_drops_a_free_sibling_whose_base_is_blocked(self):
-        """The blocked sibling goes; the model the org may actually use takes
-        its place rather than leaving the picker empty."""
-        assert restrict_to_nous_policy(["vendor/model:free"], {"other/model"}) == [
-            "other/model"
-        ]
+        assert restrict_to_nous_policy(["vendor/model:free"], {"other/model"}) == []
 
 
 class TestNousPolicyAllowedIds:
@@ -200,7 +196,7 @@ class TestAllowlistOutsideTheCuratedList:
 
     def test_surfaces_an_allowed_model_the_curated_list_lacks(self):
         assert restrict_to_nous_policy(
-            ["vendor/a", "vendor/b"], {"amazon/nova-2-lite-v1"}
+            ["vendor/a", "vendor/b"], {"amazon/nova-2-lite-v1"}, rescue_empty=True
         ) == ["amazon/nova-2-lite-v1"]
 
     def test_does_not_append_when_the_curated_overlap_is_non_empty(self):
@@ -208,7 +204,9 @@ class TestAllowlistOutsideTheCuratedList:
         emptying the curated overlap. Appending its remainder would push
         non-curated alphabetical ids into a deliberately curated order."""
         kept = restrict_to_nous_policy(
-            ["z/curated", "a/curated"], {"z/curated", "a/curated", "new/model"}
+            ["z/curated", "a/curated"],
+            {"z/curated", "a/curated", "new/model"},
+            rescue_empty=True,
         )
         assert kept == ["z/curated", "a/curated"]
 
@@ -217,19 +215,46 @@ class TestAllowlistOutsideTheCuratedList:
         the size cap, so a size-only guard let it append."""
         curated = ["vendor/one", "vendor/two", "vendor/three"]
         reachable = {"vendor/one", "vendor/two"} | {f"cn/model-{i}" for i in range(20)}
-        assert restrict_to_nous_policy(curated, reachable) == [
+        assert restrict_to_nous_policy(curated, reachable, rescue_empty=True) == [
             "vendor/one",
             "vendor/two",
         ]
 
     def test_does_not_append_a_free_sibling_already_covered(self):
-        assert restrict_to_nous_policy(["vendor/m:free"], {"vendor/m"}) == [
-            "vendor/m:free"
-        ]
+        assert restrict_to_nous_policy(
+            ["vendor/m:free"], {"vendor/m"}, rescue_empty=True
+        ) == ["vendor/m:free"]
 
     def test_a_provider_only_policy_does_not_bury_the_curated_order(self):
         """Such a policy leaves the whole catalog reachable; appending it would
         drop hundreds of alphabetical ids into the picker."""
         curated = ["vendor/one", "vendor/two"]
         catalog = {f"vendor/model-{i}" for i in range(300)} | set(curated)
-        assert restrict_to_nous_policy(curated, catalog) == curated
+        assert restrict_to_nous_policy(curated, catalog, rescue_empty=True) == curated
+
+
+class TestRescueIsOptIn:
+    """The empty-intersection rescue is meaningful only for the list a user
+    picks from. Any list whose emptiness carries meaning must not get it."""
+
+    def test_no_rescue_by_default(self):
+        assert restrict_to_nous_policy([], {"a/one", "b/two"}) == []
+
+    def test_rescue_only_when_asked(self):
+        assert restrict_to_nous_policy(
+            [], {"a/one"}, rescue_empty=True
+        ) == ["a/one"]
+
+    def test_an_already_empty_unavailable_list_is_never_filled(self):
+        """Regression: a paid-tier user has no gated models, so the
+        unavailable list is legitimately empty. Rescuing it read that as
+        "nothing survived" and pushed the whole reachable set into the picker's
+        unavailable block."""
+        reachable = {f"cn/model-{i}" for i in range(42)}
+        assert restrict_to_nous_policy([], reachable) == []
+
+    def test_rescue_does_not_resurrect_a_fully_blocked_list(self):
+        """A list whose every entry was blocked is a real filter result, not a
+        signal to show something else — unless the caller asked for the
+        rescue, which only the selectable list does."""
+        assert restrict_to_nous_policy(["x/blocked"], {"y/allowed"}) == []

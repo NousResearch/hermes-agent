@@ -2657,7 +2657,10 @@ _NOUS_POLICY_APPEND_MAX = 64
 
 
 def restrict_to_nous_policy(
-    model_ids: list[str], allowed: Optional[set[str]]
+    model_ids: list[str],
+    allowed: Optional[set[str]],
+    *,
+    rescue_empty: bool = False,
 ) -> list[str]:
     """*model_ids* narrowed to *allowed*, preserving the caller's order.
 
@@ -2681,14 +2684,17 @@ def restrict_to_nous_policy(
     # An allowlist can admit only models the curated manifest has never heard
     # of, leaving nothing to intersect and an empty picker — strictly worse than
     # the unfiltered list, because the models the org may actually use are the
-    # ones dropped. Fall back to the reachable set itself in exactly that case.
+    # ones dropped. *rescue_empty* falls back to the reachable set in exactly
+    # that case, and callers opt in per list: it is meaningful for the list a
+    # user picks from, and wrong for any list whose emptiness carries meaning.
+    # An unavailable/gated list is legitimately empty, and rescuing it would
+    # read that as "nothing survived" and fill it with the whole reachable set.
     #
-    # Only when the intersection is empty. A jurisdiction or provider policy
-    # narrows the catalog without emptying the curated overlap, and appending
-    # its remainder would push non-curated alphabetical ids into a picker that
-    # shows a curated order on purpose. Anything omitted is still reachable
-    # through the picker's custom-model entry.
-    if not kept and len(allowed) <= _NOUS_POLICY_APPEND_MAX:
+    # Bounded, because a jurisdiction or provider policy narrows the catalog
+    # without shrinking it to an allowlist, and a large alphabetical dump buries
+    # the curated order the pickers show on purpose. Anything omitted stays
+    # reachable through the picker's custom-model entry.
+    if rescue_empty and not kept and len(allowed) <= _NOUS_POLICY_APPEND_MAX:
         return sorted(allowed)
     return kept
 

@@ -7520,7 +7520,9 @@ def get_recommended_default_model(provider: str = ""):
             # Neither the curated list nor the Portal's recommendations know
             # what the org may reach, and this endpoint picks the model a user
             # lands on without choosing it.
-            model_ids = restrict_to_nous_policy(model_ids, nous_policy_allowed_ids())
+            model_ids = restrict_to_nous_policy(
+                model_ids, nous_policy_allowed_ids(), rescue_empty=True,
+            )
 
             model = pick_silent_default_model(model_ids, provider="nous")
             return {"provider": "nous", "model": model, "free_tier": bool(free_tier)}

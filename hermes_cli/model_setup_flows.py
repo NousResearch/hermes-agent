@@ -565,7 +565,9 @@ def _model_flow_nous(config, current_model="", args=None):
     from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
 
     _policy_allowed = nous_policy_allowed_ids()
-    model_ids = restrict_to_nous_policy(model_ids, _policy_allowed)
+    model_ids = restrict_to_nous_policy(
+        model_ids, _policy_allowed, rescue_empty=True,
+    )
     unavailable_models = restrict_to_nous_policy(unavailable_models, _policy_allowed)
 
     if not model_ids and not unavailable_models:

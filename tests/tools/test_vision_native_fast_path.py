@@ -165,7 +165,12 @@ class TestVisionAnalyzeNative:
         assert isinstance(result, str), "corrupt image must not return a multimodal envelope"
         payload = json.loads(result)
         assert payload["success"] is False
-        assert "decode" in payload["error"].lower()
+        # Two stacked gates can catch this: the resolver-boundary verify()
+        # (salvaged #53307) reports "not a recognized image"; the full-decode
+        # gate (salvaged #76896) reports a decode failure. Either rejection
+        # keeps the truncated bytes out of history.
+        err = payload["error"].lower()
+        assert "decode" in err or "not a recognized image" in err
 
     def test_truncated_animated_gif_frame_is_rejected_before_embedding(
         self, tmp_path, monkeypatch

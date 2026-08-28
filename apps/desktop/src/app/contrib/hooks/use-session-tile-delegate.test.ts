@@ -225,6 +225,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     const updater = updateSessionState.mock.calls[0][1] as (state: typeof stateA) => {
       messages: Array<{ parts?: Array<{ text?: string }> }>
     }
+
     const next = updater(stateA)
     const texts = next.messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
 

@@ -70,7 +70,10 @@ class TestRunCompressContextWithProgressTimeout:
             messages=original,
             system_prompt_fallback="fallback-prompt",
             idle_timeout_seconds=0.05,
-            total_ceiling_seconds=0.2,
+            # Leave enough total budget for a busy Windows runner to start the
+            # daemon worker; this case exercises inactivity cancellation, not
+            # the separate total-ceiling path.
+            total_ceiling_seconds=2.0,
             on_timeout=lambda idle, waited, since: warnings.append(
                 (idle, waited, since)
             ),

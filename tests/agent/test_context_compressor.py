@@ -4,6 +4,7 @@ import json
 import sqlite3
 import pytest
 import time
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -23,6 +24,60 @@ class StubProviderError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.response = response
+
+
+def test_lean_chunk_digests_stop_after_host_cancellation(compressor, monkeypatch):
+    """A cancelled total-deadline candidate must not dispatch another digest."""
+    import agent.context_compressor as context_compressor_module
+
+    cancelled = False
+    calls = 0
+
+    def fake_call_llm(**_kwargs):
+        nonlocal cancelled, calls
+        calls += 1
+        cancelled = True
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="digest"))]
+        )
+
+    monkeypatch.setattr(context_compressor_module, "_LEAN_DIGEST_CHUNK_CHARS", 20)
+    monkeypatch.setattr(context_compressor_module, "_LEAN_DIGEST_MAX_CHUNKS", 8)
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
+    compressor._compression_cancelled_check = lambda: cancelled
+
+    result = compressor._build_chunk_digests(
+        [{"role": "tool", "content": "x" * 200, "tool_call_id": "call-1"}]
+    )
+
+    assert calls == 1
+    assert "Segment 2/" not in result
+
+
+def test_lean_chunk_digests_do_not_start_after_deadline(compressor, monkeypatch):
+    """The shared compaction deadline is checked before the first digest."""
+    import agent.context_compressor as context_compressor_module
+    from agent.conversation_compression import CompressionCommitFence
+
+    calls = 0
+
+    def fake_call_llm(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("digest request started after total deadline")
+
+    fence = CompressionCommitFence(total_ceiling_seconds=1.0)
+    compressor._compression_cancelled_check = lambda: fence.is_cancelled
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
+
+    with patch(
+        "agent.conversation_compression.time.monotonic",
+        return_value=time.monotonic() + 2.0,
+    ):
+        assert compressor._build_chunk_digests(
+            [{"role": "user", "content": "late digest"}]
+        ) == ""
+    assert calls == 0
 
 
 @pytest.fixture()

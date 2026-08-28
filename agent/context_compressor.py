@@ -3027,6 +3027,17 @@ class ContextCompressor(ContextEngine):
         except Exception as exc:
             logger.debug("compression failure cooldown clear failed (non-sqlite): %s", exc)
 
+    def _compression_cancelled(self) -> bool:
+        """Read the host-owned cooperative cancellation signal, if installed."""
+        cancelled_check = getattr(self, "_compression_cancelled_check", None)
+        if not callable(cancelled_check):
+            return False
+        try:
+            return bool(cancelled_check())
+        except Exception:
+            logger.debug("compression cancellation check failed", exc_info=True)
+            return False
+
     def update_model(
         self,
         model: str,
@@ -4832,6 +4843,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         placeholder.
         """
         prompt_started_at = time.monotonic()
+        if self._compression_cancelled():
+            raise AuxiliaryExplicitCancellation()
         now = prompt_started_at
         if now < self._summary_failure_cooldown_until:
             logger.debug(
@@ -5210,6 +5223,8 @@ This compaction should PRIORITISE preserving all information related to the focu
                     effective_aux_context=_aux_context,
                     phase_timings=_latency_info,
                 )
+            if self._compression_cancelled():
+                raise AuxiliaryExplicitCancellation()
             # ``_validate_llm_response`` only guarantees ``choices[0].message``
             # exists, not that it's an object with ``.content``. Some
             # OpenAI-compatible proxies / local backends return a dict- or

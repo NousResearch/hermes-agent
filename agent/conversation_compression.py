@@ -637,7 +637,7 @@ class CompressionCommitFence:
     fully complete before the caller proceeds.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, total_ceiling_seconds: float | None = None) -> None:
         self._lock = threading.Lock()
         self._cancelled = False
         self._commit_started = False
@@ -672,6 +672,18 @@ class CompressionCommitFence:
         # a SLOW-but-alive summary model from a HUNG one, so slow models are
         # not killed by a fixed wall-clock deadline while tokens are moving.
         self._last_progress = time.monotonic()
+        self._progress_observed = False
+        self._deadline: float | None = None
+        self._retain_cancelled_lock_until_worker_done = False
+        if total_ceiling_seconds is not None:
+            self.set_total_ceiling_seconds(total_ceiling_seconds)
+
+    def set_total_ceiling_seconds(self, seconds: float) -> None:
+        """Arm the wall-clock deadline shared by the host and worker."""
+        seconds = float(seconds)
+        if seconds <= 0:
+            raise ValueError("total compression ceiling must be positive")
+        self._deadline = time.monotonic() + seconds
 
     def touch_progress(self) -> None:
         """Record forward progress (e.g. a streamed summary token arriving).
@@ -681,6 +693,17 @@ class CompressionCommitFence:
         CPython, so no lock is needed.
         """
         self._last_progress = time.monotonic()
+        self._progress_observed = True
+
+    @property
+    def progress_observed(self) -> bool:
+        """Whether semantic provider progress was reported for this attempt."""
+        return self._progress_observed
+
+    @property
+    def deadline_exceeded(self) -> bool:
+        deadline = self._deadline
+        return deadline is not None and time.monotonic() >= deadline
 
     def seconds_since_progress(self) -> float:
         """Seconds since the worker last reported forward progress."""
@@ -723,7 +746,7 @@ class CompressionCommitFence:
         """Atomically admit commit unless a hard cancellation already won."""
         self._lock.acquire()
         if (
-            self._cancelled
+            self.is_cancelled
             or self._admission_revoked
             or (cancel_event is not None and bool(cancel_event.is_set()))
         ):
@@ -771,7 +794,11 @@ class CompressionCommitFence:
     @property
     def is_cancelled(self) -> bool:
         """True after cancellation won before the commit boundary."""
-        return self._cancelled or self._admission_revoked
+        return self._cancelled or self._admission_revoked or self.deadline_exceeded
+
+    def retain_compression_lock_until_worker_done(self) -> None:
+        """Prevent a timed-out live worker from overlapping a retry."""
+        self._retain_cancelled_lock_until_worker_done = True
 
     def revoke_commit_admission(self) -> None:
         """Revoke FUTURE commit admission without blocking on the fence lock.
@@ -830,7 +857,7 @@ class CompressionCommitFence:
         the durable lock and making its cancellation cleanup callable.
         """
         self._lock.acquire()
-        if self._cancelled or self._admission_revoked:
+        if self.is_cancelled or self._admission_revoked:
             self._lock.release()
             return False
         return True
@@ -868,6 +895,8 @@ class CompressionCommitFence:
         publication is retained and fulfilled synchronously when the worker
         publishes the hook.
         """
+        if self._retain_cancelled_lock_until_worker_done:
+            return
         with self._lock_release_guard:
             self._cancelled_lock_release_requested = True
             release = self._cancelled_lock_release
@@ -1244,9 +1273,10 @@ def run_compress_context_with_progress_timeout(
             return system_prompt_fallback()
         return system_prompt_fallback
 
-    fence = fence if fence is not None else CompressionCommitFence()
     ceiling = max(float(total_ceiling_seconds), float(idle_timeout_seconds))
     idle = float(idle_timeout_seconds)
+    fence = fence if fence is not None else CompressionCommitFence()
+    fence.set_total_ceiling_seconds(ceiling)
     # Sync mirror of gateway session-hygiene's run_in_executor(None, ...) +
     # wait_for loop (gateway/run.py): offload compress_context onto the shared
     # daemon pool, poll with an inactivity budget + total ceiling, then
@@ -1347,6 +1377,15 @@ def run_compress_context_with_progress_timeout(
         # F6: a not-yet-started future must not linger as a stale queued job.
         # cancel() is a no-op for a running worker (fence handles that path).
         future.cancel()
+
+        total_exhausted = (
+            time.monotonic() - wait_started >= ceiling or fence.deadline_exceeded
+        )
+        if total_exhausted:
+            # A total-ceiling candidate can still be unwinding a healthy
+            # provider call. Keep its session lease until that worker exits so
+            # another automatic attempt cannot overlap the unchanged source.
+            fence.retain_compression_lock_until_worker_done()
 
         cancelled: Optional[bool] = None
         while cancelled is None:

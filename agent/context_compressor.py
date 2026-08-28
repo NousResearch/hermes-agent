@@ -1869,9 +1869,19 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     session whose images arrive from tools rather than attachments has no
     anchor to be "before" and keeps every blob forever (#89938).
 
+    The opening attachment gets the same keep-newest treatment: when the only
+    image-bearing user message is the very first one and a newer tool-result
+    image exists, the first message's images are replaced too (rule 1b) —
+    otherwise a session that opens with an attachment re-ships it forever.
+
+    Tool results are matched in both shapes: OpenAI-style content-part lists
+    and the native ``{_multimodal: True, content: [...]}`` dict envelope.
+    Image parts of all three wire shapes (Chat Completions ``image_url``,
+    Responses ``input_image``, Anthropic-native ``image``) are recognized.
+
     If no message carries images at all, the list is returned unchanged. So
     is a list whose only image-bearing user message is the very first one and
-    which has no tool-result images (nothing to strip in either rule).
+    which has no tool-result images (nothing to strip in any rule).
 
     Shallow copies of touched messages only; input is never mutated.
     Port of Kilo-Org/kilocode#9434 (adapted for the OpenAI-style message
@@ -1912,7 +1922,12 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
             continue
         if msg.get("role") != "tool":
             continue
-        if _content_has_images(msg.get("content")):
+        # ``_tool_content_has_images`` (not the bare list matcher) so the
+        # native ``{_multimodal: True, content: [...]}`` dict envelope that
+        # vision_analyze can leave in the live list anchors here too —
+        # otherwise the newest envelope-shaped result is invisible to the
+        # scan and rule 2 strips it as if it were stale (#89938/#89965 gap).
+        if _tool_content_has_images(msg.get("content")):
             tool_anchor = i
             break
 
@@ -1927,6 +1942,18 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
         # kind but still sits before that anchor keeps today's behaviour.
         if 0 < anchor and index < anchor:
             return True
+        # Rule 1b: the opening attachment ages out once something newer
+        # supersedes it. When the ONLY image-bearing user message is the very
+        # first one (``anchor == 0``) and newer tool-result images exist, the
+        # model has moved on — but the opening base64 blob used to survive
+        # every compaction forever, which is half the wedge in #89938 (the
+        # reported session opened with a ~200KB poster). The strip replaces
+        # the image with a text placeholder, so the row keeps non-empty
+        # user-role text and the zero-user-turn guard (#58753) is satisfied.
+        # When nothing newer exists the opening image IS the newest image and
+        # is kept, consistent with keep-newest everywhere else.
+        if anchor == 0 and index == 0 and tool_anchor > 0:
+            return True
         # Rule 2: a tool result whose image has been superseded by a newer
         # one. Applies inside the protected tail as well -- the tail exists to
         # preserve conversational continuity, not to pin bytes the model has
@@ -1940,6 +1967,24 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
             result.append(msg)
             continue
         content = msg.get("content")
+        # Native multimodal dict envelope ({_multimodal: True, content: [...]})
+        # — the shape vision_analyze hands back before adapters unwrap it.
+        # ``_strip_images_from_content`` only understands part lists, so route
+        # this through the tool-message stripper, which collapses the envelope
+        # to its text summary and drops the stale api_content sidecar.
+        if (
+            msg.get("role") == "tool"
+            and isinstance(content, dict)
+            and content.get("_multimodal")
+            and _tool_content_has_images(content)
+        ):
+            new_msg = _strip_images_from_tool_msg(msg)
+            if new_msg is None:
+                result.append(msg)
+                continue
+            result.append(new_msg)
+            changed = True
+            continue
         if not _content_has_images(content):
             result.append(msg)
             continue

@@ -140,10 +140,73 @@ class TestStripHistoricalMedia:
         ]
         out = _strip_historical_media(msgs)
 
-        # The opening attachment keeps today's treatment: nothing precedes it.
-        assert _content_has_images(out[0]["content"])
+        # Rule 1b: newer tool images supersede the opening attachment, so
+        # its bytes age out too — the row survives with a text placeholder.
+        assert not _content_has_images(out[0]["content"])
+        assert out[0]["role"] == "user"
         assert not _content_has_images(out[1]["content"])
         assert _content_has_images(out[2]["content"])
+
+    def test_first_message_image_kept_when_it_is_the_only_image(self):
+        """Rule 1b only fires when something newer supersedes the opener."""
+        msgs = [
+            {"role": "user", "content": [TEXT, IMG_URL]},
+            {"role": "assistant", "content": "looked"},
+            {"role": "tool", "tool_call_id": "a", "content": [TEXT]},
+        ]
+        assert _strip_historical_media(msgs) is msgs
+
+    def test_multimodal_envelope_tool_results_age_out(self):
+        """The native ``{_multimodal: True}`` dict envelope must strip too.
+
+        vision_analyze hands back this shape before adapters unwrap it; the
+        bare list matcher never saw it, so envelope-shaped results kept their
+        base64 through every compaction (#89965's shape-coverage gap).
+        """
+        env = {
+            "_multimodal": True,
+            "text_summary": "a poster",
+            "content": [TEXT, IMG_URL],
+        }
+        msgs = [
+            {"role": "user", "content": "look"},
+            {"role": "tool", "tool_call_id": "a", "content": dict(env), "api_content": "stale"},
+            {"role": "tool", "tool_call_id": "b", "content": dict(env)},
+        ]
+        out = _strip_historical_media(msgs)
+
+        # Older envelope collapses to its text summary; sidecar dropped.
+        assert isinstance(out[1]["content"], str)
+        assert "a poster" in out[1]["content"]
+        assert "api_content" not in out[1]
+        assert out[1]["tool_call_id"] == "a"
+        # Newest envelope is the anchor and survives byte-for-byte.
+        assert out[2] is msgs[2]
+
+    def test_all_three_wire_shapes_strip_in_tool_results(self):
+        """Chat Completions, Responses, and Anthropic-native parts all age."""
+        for img in (IMG_URL, INPUT_IMG, ANTHROPIC_IMG):
+            msgs = [
+                {"role": "tool", "tool_call_id": "a", "content": [TEXT, dict(img)]},
+                {"role": "tool", "tool_call_id": "b", "content": [TEXT, dict(img)]},
+            ]
+            out = _strip_historical_media(msgs)
+            assert not _content_has_images(out[0]["content"]), img["type"]
+            assert _content_has_images(out[1]["content"]), img["type"]
+
+    def test_deterministic_double_run(self):
+        """Running the strip twice yields byte-identical output."""
+        import json
+
+        msgs = [
+            {"role": "user", "content": [TEXT, IMG_URL]},
+            {"role": "tool", "tool_call_id": "a", "content": [TEXT, IMG_URL]},
+            {"role": "tool", "tool_call_id": "b", "content": [TEXT, INPUT_IMG]},
+        ]
+        first = _strip_historical_media(msgs)
+        second = _strip_historical_media(first)
+        assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+        assert second is first  # second pass is a no-op
 
     def test_newest_tool_image_survives_inside_the_protected_tail(self):
         msgs = [

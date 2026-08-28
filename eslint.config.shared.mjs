@@ -44,13 +44,9 @@ export default [
     },
     rules: {
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
-      // The base rule counts a TS overload signature as a redeclaration of its
-      // implementation. Swap in the TS-aware version, same as no-undef below.
-      '@typescript-eslint/no-redeclare': 'error',
       '@typescript-eslint/no-unused-vars': 'off',
       curly: ['error', 'all'],
       'no-fallthrough': ['error', { allowEmptyCase: true }],
-      'no-redeclare': 'off',
       'no-undef': 'off',
       'no-unused-vars': 'off',
       'padding-line-between-statements': [

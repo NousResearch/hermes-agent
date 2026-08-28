@@ -440,3 +440,38 @@ def test_timing_hooks_propagate_to_protected_call_worker_thread():
     assert result == "ok"
     assert "dispatch" in seen
     assert "response" in seen
+
+
+def test_explicit_caller_max_tokens_keeps_provider_quirk_handling():
+    """An explicit caller cap must NOT be force-injected as a wire param.
+
+    _build_call_kwargs deliberately omits max_tokens for most
+    OpenAI-compatible providers (ZAI vision 400s on it; GPT-5/Copilot need
+    max_completion_tokens). Only a cap the certified lane itself produced may
+    bypass that handling. Before this guard, a caller-passed max_tokens on
+    the compression task flowed through _compression_fast_lane_controls as a
+    passthrough and was misread as a lane cap — forcing the param onto
+    providers where the omission was intentional (pre-fast-lane behavior).
+    """
+    from agent.auxiliary_client import call_llm
+
+    config = {"provider": "auto", "model": "", "max_output_tokens": 0}
+    client = MagicMock()
+    client.base_url = "http://127.0.0.1:11434/v1"
+    response = object()
+    client.chat.completions.create.return_value = response
+
+    with (
+        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3:8b")),
+        patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+    ):
+        assert call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summary request"}],
+            max_tokens=1500,
+        ) is response
+
+    request = client.chat.completions.create.call_args.kwargs
+    assert "max_tokens" not in request
+    assert "max_completion_tokens" not in request

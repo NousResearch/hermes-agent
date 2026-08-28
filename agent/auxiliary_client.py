@@ -9890,11 +9890,15 @@ def _call_llm_impl(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url, task=task)
-    if fast_compression_cap is not None:
+    if fast_compression_cap is not None and max_tokens is None:
         # Normal auxiliary calls intentionally omit a cap on most
         # OpenAI-compatible/local providers.  This is the narrow exception:
         # the configured compression route is concrete and certified
         # non-reasoning, so a bounded summary request is intentional.
+        # ``max_tokens is None`` restricts the forced param to caps the
+        # certified lane itself produced — an explicit caller max_tokens is
+        # passed through untouched and keeps _build_call_kwargs's
+        # provider-quirk handling (same guard as the fallback path).
         kwargs.update(auxiliary_max_tokens_param(fast_compression_cap, model=final_model))
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)

@@ -294,7 +294,30 @@ def _create_overrides(params: dict) -> tuple:
 
 
 @method("session.create")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
+    create_model = _str_param(params, "model")
+    explicit_provider = _str_param(params, "provider")
+    if create_model:
+        from hermes_cli.models_validate import validate_static_model_provider_pair
+        from hermes_cli.runtime_provider import resolve_requested_provider
+
+        validation = validate_static_model_provider_pair(
+            create_model,
+            resolve_requested_provider(explicit_provider or None),
+        )
+        if not validation["accepted"]:
+            return _err(
+                rid,
+                -32602,
+                f"invalid model/provider pair: {validation['message']}",
+                {
+                    "model": create_model,
+                    "provider": validation["provider"],
+                    "suggestions": validation["suggestions"],
+                },
+            )
+
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.

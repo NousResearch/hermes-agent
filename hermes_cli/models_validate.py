@@ -303,6 +303,52 @@ _STATIC_FAMILY_PREFIXES = {
 _STATIC_LABELS = {"openai-codex": "OpenAI Codex", "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)"}
 
 
+def validate_static_model_provider_pair(
+    model_name: str,
+    provider: Optional[str],
+) -> dict[str, Any]:
+    """Validate model/provider coherence using local catalogs and families only."""
+    from hermes_cli import models as _m
+
+    requested = (model_name or "").strip()
+    normalized = _m.normalize_provider(provider)
+    accepted = {
+        "accepted": True,
+        "recognized": False,
+        "provider": normalized,
+        "suggestions": [],
+        "message": None,
+    }
+    family_prefixes = _STATIC_FAMILY_PREFIXES.get(normalized)
+    if not requested or family_prefixes is None:
+        return accepted
+
+    requested_lower = requested.lower()
+    catalog_models = _static_catalog(normalized)
+    if any(requested_lower == model.lower() for model in catalog_models):
+        return {**accepted, "recognized": True}
+    if any(requested_lower.startswith(prefix) for prefix in family_prefixes):
+        return accepted
+
+    suggestions = get_close_matches(requested, catalog_models, n=3, cutoff=0.5)
+    if not suggestions:
+        suggestions = catalog_models[:3]
+    suggestion_text = ""
+    if suggestions:
+        suggestion_text = " Try one of: " + ", ".join(f"`{model}`" for model in suggestions) + "."
+    return {
+        "accepted": False,
+        "recognized": False,
+        "provider": normalized,
+        "suggestions": suggestions,
+        "message": (
+            f"`{requested}` does not match provider `{normalized}`'s model family. Switch "
+            f"with `--provider <slug>` or select a model from the `/model` picker."
+            f"{suggestion_text}"
+        ),
+    }
+
+
 def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     """openai-codex / xai-oauth: no /v1/models probing — validate against the curated catalog.
     Returns None (fall through) when the catalog is empty."""

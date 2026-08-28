@@ -911,7 +911,7 @@ class TestSubprocessCompatHelpers:
         assert sc._node_executable(
             tmp_path / "yarn.cmd", prefer_adjacent=False, cwd=tmp_path / "project"
         ) == str(node)
-        assert probes == ["node.exe", "node"]
+        assert probes == ["node"]
 
     def test_resolve_node_command_unwraps_windows_npm_shim(
         self, tmp_path, monkeypatch

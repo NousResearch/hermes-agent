@@ -905,6 +905,29 @@ class TestShippedCatalog:
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
 
+    def test_all_shipped_bootstrap_commands_are_native_argv(self, monkeypatch):
+        """Keep shell syntax and Windows batch launchers out of the catalog."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import (
+            IS_WINDOWS,
+            _catalog_root,
+            _parse_manifest,
+            _split_bootstrap_command,
+        )
+
+        problems = []
+        for manifest in _catalog_root().glob("*/manifest.yaml"):
+            entry = _parse_manifest(manifest)
+            for command in entry.install.bootstrap if entry.install else ():
+                argv = _split_bootstrap_command(command)
+                has_shell_syntax = any(char in command for char in "&;|<>")
+                if not argv or has_shell_syntax:
+                    problems.append(f"{entry.name}: shell syntax in {command!r}")
+                elif IS_WINDOWS and argv[0].casefold().endswith((".cmd", ".bat")):
+                    problems.append(f"{entry.name}: batch launcher in {command!r}")
+
+        assert not problems, "unsafe catalog bootstrap commands:\n" + "\n".join(problems)
+
 
 # ---------------------------------------------------------------------------
 # Bootstrap execution

@@ -17,6 +17,8 @@ import sys
 from pathlib import Path, PureWindowsPath
 from typing import Mapping, NamedTuple, Sequence
 
+from hermes_constants import find_node_executable
+
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
@@ -414,7 +416,7 @@ def _node_executable(
             removes_interior_js_from_pathext=removes_interior_js_from_pathext,
         )[0]
     else:
-        node = shutil.which("node.exe") or shutil.which("node")
+        node = find_node_executable("node")
     if node is None:
         return None
     if IS_WINDOWS:

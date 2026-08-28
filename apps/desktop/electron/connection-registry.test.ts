@@ -707,13 +707,13 @@ test('registry local route: a per-profile remote override delegates to the overr
   assert.deepEqual(route, { delegate: true, poolKey: 'research' })
 })
 
-test('registry local route: global remote keeps forced-local even when a profile override is absent', () => {
-  // Witness for the other half of the split: app-global remote mode still
-  // forces "This device" to spawn genuinely-local children (migration
-  // scenario above) — only the per-profile override delegates.
-  const route = resolveRegistryLocalRoute('research', { globalRemote: true })
+test('registry local route: per-profile override wins when global remote is also active', () => {
+  const route = resolveRegistryLocalRoute('research', {
+    globalRemote: true,
+    profileRemoteOverride: true
+  })
 
-  assert.deepEqual(route, { delegate: false, poolKey: 'conn:local::research' })
+  assert.deepEqual(route, { delegate: true, poolKey: 'research' })
 })
 
 // --- shouldDeferLocalEnumeration (roster's connect-on-demand for 'local') ---

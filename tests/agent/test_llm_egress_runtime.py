@@ -441,6 +441,44 @@ def test_protected_nous_elides_bound_kanban_show_result(tmp_path, monkeypatch):
     )
 
 
+def test_protected_nous_elides_canonicalized_kanban_show_result(tmp_path, monkeypatch):
+    """Bridge-id normalization cannot turn a real board result untrusted."""
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_safe_projection")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "poolside/laguna-xs-2.1:free",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_kanban_show|fc_response_item",
+                            "type": "function",
+                            "function": {"name": "kanban_show", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_kanban_show",
+                    "content": "c2VjcmV0LXBheWxvYWQ=",
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][1]["content"].startswith(
+        "kanban_show completed locally."
+    )
+
+
 def test_protected_nous_keeps_unbound_kanban_output_blocked(tmp_path, monkeypatch):
     """Provider broadening never treats an asserted call ID as trusted."""
 

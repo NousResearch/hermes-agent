@@ -37,6 +37,7 @@ from agent.llm_egress_firewall import (
     redact_remote_unsafe_text,
     validate_tool_syntax,
 )
+from agent.message_sanitization import tool_result_id_variants
 from agent.source_provenance import DEFAULT_POLICY_DIGEST, SourceProvenanceRegistry
 
 
@@ -402,19 +403,20 @@ def _recognized_tool_call_ids(
             ):
                 call_id = item.get("call_id") or item.get("id")
                 if isinstance(call_id, str):
-                    recognized.add(call_id)
+                    recognized.update(tool_result_id_variants(call_id))
             tool_calls = item.get("tool_calls")
             if isinstance(tool_calls, list):
                 for call in tool_calls:
                     if not isinstance(call, Mapping):
                         continue
                     function = call.get("function")
+                    call_id = call.get("call_id") or call.get("id")
                     if (
                         isinstance(function, Mapping)
                         and function.get("name") in tool_names
-                        and isinstance(call.get("id"), str)
+                        and isinstance(call_id, str)
                     ):
-                        recognized.add(call["id"])
+                        recognized.update(tool_result_id_variants(call_id))
             for child in item.values():
                 visit(child)
         elif isinstance(item, (list, tuple)):

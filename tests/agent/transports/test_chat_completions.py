@@ -875,3 +875,78 @@ class TestPromptCacheKeyCapability:
             provider_profile=profile,
         )
         assert "prompt_cache_key" not in kwargs
+
+    def test_overlong_caller_top_level_key_is_bounded(self, transport):
+        """OpenAI caps prompt_cache_key at 64 chars and 400s longer values.
+
+        A caller-supplied over-length key (request_overrides) must be hashed
+        to the same pck_<sha256[:24]> shape the Responses transport uses
+        (opencode#44571 parity — clamp on every chat protocol).
+        """
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
+        long_key = "sess-" + "x" * 200
+
+        kwargs = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"prompt_cache_key": long_key},
+        )
+
+        assert kwargs["prompt_cache_key"].startswith("pck_")
+        assert len(kwargs["prompt_cache_key"]) <= 64
+        body = self._request_body(kwargs)
+        assert body["prompt_cache_key"] == kwargs["prompt_cache_key"]
+
+    def test_overlong_caller_extra_body_key_is_bounded(self, transport):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
+        long_key = "sess-" + "y" * 200
+
+        kwargs = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"extra_body": {"prompt_cache_key": long_key}},
+        )
+
+        eb_key = kwargs["extra_body"]["prompt_cache_key"]
+        assert eb_key.startswith("pck_")
+        assert len(eb_key) <= 64
+        # No duplicate top-level field competing with the caller's extra_body.
+        assert "prompt_cache_key" not in kwargs
+
+    def test_short_caller_key_passes_through_unchanged(self, transport):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
+        kwargs = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"prompt_cache_key": "caller-top-level"},
+        )
+        assert kwargs["prompt_cache_key"] == "caller-top-level"
+
+    def test_overlong_caller_key_bounded_on_legacy_path(self, transport):
+        long_key = "sess-" + "z" * 200
+        kwargs = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            supports_prompt_cache_key=True,
+            request_overrides={"prompt_cache_key": long_key},
+        )
+        assert kwargs["prompt_cache_key"].startswith("pck_")
+        assert len(kwargs["prompt_cache_key"]) <= 64
+
+    def test_whitespace_only_caller_key_is_dropped(self, transport):
+        """_bounded_prompt_cache_key returns None for blank keys — the field
+        must be removed rather than sent empty."""
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
+        kwargs = transport.build_kwargs(
+            model="cache-model", messages=self._messages(), tools=self._tools(),
+            provider_profile=profile,
+            request_overrides={"prompt_cache_key": "   "},
+        )
+        assert "prompt_cache_key" not in kwargs

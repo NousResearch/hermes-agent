@@ -66,15 +66,36 @@ def _add_prompt_cache_key(
     precedence over the physical ``session_id`` so the key survives
     context-compression session rotation (#79017).
     """
-    if not supports_prompt_cache_key:
+    # An explicit caller body field is authoritative — do not add a duplicate
+    # top-level field whose SDK merge precedence could overwrite it.  But it
+    # must still respect the wire constraint: OpenAI caps ``prompt_cache_key``
+    # at 64 chars (DeepSeek and Zai inherit the same limit via their
+    # OpenAI-compatible APIs) and rejects longer values with HTTP 400.  Bound
+    # caller keys in place with the same hash shape the Responses transport
+    # uses (``_bounded_prompt_cache_key`` in agent/transports/codex.py), so
+    # both transports behave identically for over-length keys.
+    from agent.transports.codex import _bounded_prompt_cache_key
+
+    extra_body = api_kwargs.get("extra_body")
+    caller_supplied = "prompt_cache_key" in api_kwargs or (
+        isinstance(extra_body, dict) and "prompt_cache_key" in extra_body
+    )
+    if caller_supplied:
+        if "prompt_cache_key" in api_kwargs:
+            bounded = _bounded_prompt_cache_key(api_kwargs["prompt_cache_key"])
+            if bounded:
+                api_kwargs["prompt_cache_key"] = bounded
+            else:
+                api_kwargs.pop("prompt_cache_key", None)
+        if isinstance(extra_body, dict) and "prompt_cache_key" in extra_body:
+            bounded = _bounded_prompt_cache_key(extra_body["prompt_cache_key"])
+            if bounded:
+                extra_body["prompt_cache_key"] = bounded
+            else:
+                extra_body.pop("prompt_cache_key", None)
         return
 
-    # An explicit caller body field is authoritative too.  Do not add a
-    # duplicate top-level field whose SDK merge precedence could overwrite it.
-    extra_body = api_kwargs.get("extra_body")
-    if "prompt_cache_key" in api_kwargs or (
-        isinstance(extra_body, dict) and "prompt_cache_key" in extra_body
-    ):
+    if not supports_prompt_cache_key:
         return
 
     # Reuse the Responses transport's single authoritative hash algorithm and

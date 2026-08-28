@@ -1463,6 +1463,49 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
         conn.close()
 
 
+def test_protocol_violation_gets_one_finalize_retry_despite_retry_limit_one(kanban_home):
+    """A one-retry task must still receive the terminal-call recovery turn.
+
+    ``max_retries=1`` is used by bounded scout cards to prevent expensive
+    repeated work.  A clean exit without ``kanban_complete``/``kanban_block``
+    is different: the worker may already have performed its bounded scan but
+    missed only the required terminal receipt.  Blocking it on that first
+    exit suppresses the corrective context that lets the next run finalize.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="bounded scout",
+            assignee="worker",
+            max_retries=1,
+        )
+
+        _drive_protocol_violation(conn, tid, 991004)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.last_failure_error is not None
+        assert "kanban_complete" in task.last_failure_error
+    finally:
+        conn.close()
+
+
+def test_worker_context_requires_terminal_kanban_receipt(kanban_home):
+    """Detached workers receive a profile-independent terminal-call contract."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="bounded no-op", assignee="worker")
+
+        context = kb.build_worker_context(conn, tid)
+
+        assert "## Completion contract" in context
+        assert "kanban_complete" in context
+        assert "never exit with only conversational text" in context
+    finally:
+        conn.close()
+
+
 
 
 

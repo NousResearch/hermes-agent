@@ -83,7 +83,7 @@ class CLILoopsMixin:
             cc.print(_build_compact_banner())
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
-                                         disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
+                                         disabled_toolsets=getattr(self, "disabled_toolsets", None), quiet_mode=True)
             agent = getattr(self, "agent", None)
             ctx_len = None
             if agent and hasattr(agent, "context_compressor"):

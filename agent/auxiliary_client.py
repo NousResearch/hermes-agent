@@ -8531,9 +8531,9 @@ def _compression_fast_lane_controls(
     extra_body: Dict[str, Any],
 ) -> tuple[int | None, Dict[str, Any]]:
     """Apply the certified compression controls to one resolved route."""
-    body = dict(extra_body)
     if task != "compression" or max_tokens is not None:
-        return max_tokens, body
+        return max_tokens, extra_body
+    body = dict(extra_body)
     lane = resolve_compression_fast_lane(
         actual_provider,
         actual_model,

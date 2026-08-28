@@ -1327,8 +1327,7 @@ function adoptContributedPanes(): void {
 
   const dataOf = (paneId: string) =>
     panes.find(c => c.id === paneId)?.data as
-      | { defaultCollapsed?: boolean; dock?: PaneDockHint; placement?: string }
-      | undefined
+      { defaultCollapsed?: boolean; dock?: PaneDockHint; placement?: string } | undefined
 
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id

@@ -146,7 +146,9 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   useEffect(() => {
     let alive = true
     mcpSetupSupported().then(ok => {
-      if (alive) {setSupported(ok)}
+      if (alive) {
+        setSupported(ok)
+      }
     })
 
     return () => {

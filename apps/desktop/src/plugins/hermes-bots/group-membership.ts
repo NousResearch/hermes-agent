@@ -74,7 +74,11 @@ interface GroupMembershipPatch {
   groups: string[]
 }
 
-export function groupMembershipPatch(meta: BotMeta | null | undefined, group: string, enabled: boolean): GroupMembershipPatch {
+export function groupMembershipPatch(
+  meta: BotMeta | null | undefined,
+  group: string,
+  enabled: boolean
+): GroupMembershipPatch {
   const name = String(group || '').trim()
   let groups = botGroups(meta)
 
@@ -201,7 +205,11 @@ export function groupLastActivity(room?: GroupChat | null) {
 /** Seat a group's member roster: local bots whose meta names the group, plus
  *  the room record's stored descriptors (remote members can't ride bot-meta).
  *  Prefers the LIVE roster row for a stored descriptor when present. */
-export function groupChatMemberBots(group: string, roster: RosterRow[], metaByName: Record<string, BotMeta>): RosterRow[] {
+export function groupChatMemberBots(
+  group: string,
+  roster: RosterRow[],
+  metaByName: Record<string, BotMeta>
+): RosterRow[] {
   const local = (roster || []).filter(bot => botGroups(botRosterMeta(bot, metaByName)).includes(group))
   const stored = ($groupChats.get()[group] || {}).members || []
   const seated = new Set(local.map(botRosterKey))

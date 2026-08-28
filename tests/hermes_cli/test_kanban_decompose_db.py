@@ -125,7 +125,7 @@ def test_decompose_inherits_forced_skills_to_children(kanban_home):
             conn,
             title="navigation-bound root",
             triage=True,
-            skills=["tradingbot-worktree-navigation"],
+            skills=["exampleproject-worktree-navigation"],
         )
         child_ids = kb.decompose_triage_task(
             conn,
@@ -139,7 +139,7 @@ def test_decompose_inherits_forced_skills_to_children(kanban_home):
         child = kb.get_task(conn, child_ids[0])
 
     assert child is not None
-    assert child.skills == ["tradingbot-worktree-navigation"]
+    assert child.skills == ["exampleproject-worktree-navigation"]
 
 
 def test_decompose_preserves_project_scope_and_branch_convention(kanban_home):

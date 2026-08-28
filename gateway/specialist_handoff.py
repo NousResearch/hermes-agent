@@ -11,13 +11,13 @@ from gateway.specialist_routing import SpecialistRouteDecision
 
 
 _ORCHESTRATION_GOAL_MAX_TURNS = 12
-_TRADINGBOT_NAVIGATION_SKILL = "tradingbot-worktree-navigation"
+_EXAMPLEPROJECT_NAVIGATION_SKILL = "exampleproject-worktree-navigation"
 
 
 def _required_skills(board: Optional[str]) -> Optional[list[str]]:
-    """Pin the project navigation contract on TradingBot task graphs."""
-    if board == "tradingbot-burndown":
-        return [_TRADINGBOT_NAVIGATION_SKILL]
+    """Pin the project navigation contract on ExampleProject task graphs."""
+    if board == "exampleproject-burndown":
+        return [_EXAMPLEPROJECT_NAVIGATION_SKILL]
     return None
 
 

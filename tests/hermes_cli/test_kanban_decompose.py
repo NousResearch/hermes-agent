@@ -320,7 +320,7 @@ def test_decompose_refuses_atomic_pr_automation_before_llm(
     with kb.connect() as conn:
         tid = kb.create_task(
             conn,
-            title="Repair LunaBot PR #132",
+            title="Repair ExampleApp PR #132",
             body=body,
             triage=True,
             idempotency_key=idempotency_key,
@@ -347,7 +347,7 @@ def test_decompose_refuses_governed_research_intake_before_llm(kanban_home):
                 "Choose only source-backed hypotheses and complete as "
                 "RESEARCH_LAB_IDLE when none qualify."
             ),
-            assignee="lunabot-research-lab-director",
+            assignee="exampleapp-research-lab-director",
             triage=True,
             idempotency_key="research-lab-intake-20260826-12",
         )
@@ -364,4 +364,4 @@ def test_decompose_refuses_governed_research_intake_before_llm(kanban_home):
         task = kb.get_task(conn, tid)
     assert task is not None
     assert task.status == "triage"
-    assert task.assignee == "lunabot-research-lab-director"
+    assert task.assignee == "exampleapp-research-lab-director"

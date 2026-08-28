@@ -44,7 +44,7 @@ def test_create_rejects_read_only_owner_for_atomic_pr_repair(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="read-only profile"):
         kb.create_task(
             conn,
-            title="Repair and push LunaBot PR #132",
+            title="Repair and push ExampleApp PR #132",
             body=_repair_body(),
             assignee="review-verification-steward",
             idempotency_key="github-pr-feedback:repair:132:abc",

@@ -24,7 +24,7 @@ def test_plain_english_plural_burndown_question_summarizes_all_matching_roots(
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    board = "tradingbot-burndown"
+    board = "exampleproject-burndown"
     kb.init_db(board=board)
     with kb.connect(board=board) as conn:
         first = kb.create_task(
@@ -46,14 +46,14 @@ def test_plain_english_plural_burndown_question_summarizes_all_matching_roots(
                 conn,
                 task_id=task_id,
                 platform="discord",
-                chat_id="trading-bot",
+                chat_id="example-project",
                 chat_type="group",
                 delivery_mode="notify",
             )
 
     result = resolve_progress_query(
         "How’s the burndown patches going how much more do we have to do till we can send a PR",
-        source=ProgressSource(platform="discord", chat_id="trading-bot"),
+        source=ProgressSource(platform="discord", chat_id="example-project"),
         board=board,
     )
 
@@ -72,7 +72,7 @@ def test_plain_english_spaced_burn_downs_matches_burndown_workstream(
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    board = "tradingbot-burndown"
+    board = "exampleproject-burndown"
     kb.init_db(board=board)
     with kb.connect(board=board) as conn:
         task_id = kb.create_task(
@@ -85,14 +85,14 @@ def test_plain_english_spaced_burn_downs_matches_burndown_workstream(
             conn,
             task_id=task_id,
             platform="discord",
-            chat_id="trading-bot",
+            chat_id="example-project",
             chat_type="group",
             delivery_mode="notify",
         )
 
     result = resolve_progress_query(
         "How are the burn downs going",
-        source=ProgressSource(platform="discord", chat_id="trading-bot"),
+        source=ProgressSource(platform="discord", chat_id="example-project"),
         board=board,
     )
 
@@ -117,10 +117,10 @@ def test_multiple_progress_roots_remain_available_when_vault_enrichment_is_enabl
         "    command: ['/usr/bin/true']\n"
         f"    vault_path: '{vault}'\n"
         "    projects:\n"
-        "      tradingbot-burndown: TradingBotV18\n"
+        "      exampleproject-burndown: ExampleProject\n"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
-    board = "tradingbot-burndown"
+    board = "exampleproject-burndown"
     kb.init_db(board=board)
     with kb.connect(board=board) as conn:
         for title in ("July exception burndowns", "August exception burndowns"):
@@ -134,14 +134,14 @@ def test_multiple_progress_roots_remain_available_when_vault_enrichment_is_enabl
                 conn,
                 task_id=task_id,
                 platform="discord",
-                chat_id="trading-bot",
+                chat_id="example-project",
                 chat_type="group",
                 delivery_mode="notify",
             )
 
     result = resolve_progress_query(
         "How are the burndowns going",
-        source=ProgressSource(platform="discord", chat_id="trading-bot"),
+        source=ProgressSource(platform="discord", chat_id="example-project"),
         board=board,
     )
 

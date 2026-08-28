@@ -523,7 +523,7 @@ async def test_first_cli_handoff_reuses_verified_workspace_without_binding_claim
     config.platforms[Platform.DISCORD].home_channel = HomeChannel(
         platform=Platform.DISCORD,
         chat_id="home-channel",
-        name="Trading Bot",
+        name="Example Project",
     )
     store = SessionStore(
         tmp_path / "sessions",
@@ -563,7 +563,7 @@ async def test_first_cli_handoff_reuses_verified_workspace_without_binding_claim
     destination = SessionSource(
         platform=Platform.DISCORD,
         chat_id="home-channel",
-        chat_name="Trading Bot",
+        chat_name="Example Project",
         chat_type="dm",
         user_id="system:handoff",
         user_name="Handoff",

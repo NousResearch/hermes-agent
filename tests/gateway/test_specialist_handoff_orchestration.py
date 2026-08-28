@@ -45,18 +45,18 @@ def test_specialist_handoff_creates_goal_mode_triage_root(kanban_home):
         decision=decision,
         source=source,
         request="Audit exception burndown and patch confirmed failures.",
-        board="tradingbot-burndown",
+        board="exampleproject-burndown",
     )
 
     assert result.ok, result.reason
     assert result.task_id
-    with kb.connect(board="tradingbot-burndown") as conn:
+    with kb.connect(board="exampleproject-burndown") as conn:
         task = kb.get_task(conn, result.task_id)
     assert task is not None
     assert task.status == "triage"
     assert task.goal_mode is True
     assert task.goal_max_turns == 12
-    assert task.skills == ["tradingbot-worktree-navigation"]
+    assert task.skills == ["exampleproject-worktree-navigation"]
 
 
 def test_specialist_handoff_explicit_board_ignores_database_environment_override(
@@ -76,7 +76,7 @@ def test_specialist_handoff_explicit_board_ignores_database_environment_override
         user_id="user-1",
         message_id="message-env-isolation",
     )
-    board = "tradingbot-burndown"
+    board = "exampleproject-burndown"
     with kb.connect(board=board):
         pass
     override_path = tmp_path / "override" / "kanban.db"

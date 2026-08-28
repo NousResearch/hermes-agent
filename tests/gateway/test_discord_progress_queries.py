@@ -25,7 +25,7 @@ def adapter(monkeypatch):
         extra={
             "specialist_routing": {
                 "enabled": True,
-                "board": "tradingbot-burndown",
+                "board": "exampleproject-burndown",
                 "model": "fast-router",
             }
         },
@@ -43,7 +43,7 @@ def _event(text="How did the burndown go and what else do we need to do?"):
         message_id="message-1",
         source=SessionSource(
             platform=Platform.DISCORD,
-            chat_id="trading-bot",
+            chat_id="example-project",
             chat_type="group",
             user_id="operator-1",
         ),
@@ -67,12 +67,12 @@ def test_progress_pre_router_answers_before_model_specialist_classifier(adapter,
     assert handled is True
     assert captured["request"] == "How did the burndown go and what else do we need to do?"
     assert captured["source"].platform == "discord"
-    assert captured["source"].chat_id == "trading-bot"
+    assert captured["source"].chat_id == "example-project"
     assert not hasattr(captured["source"], "session_id")
-    assert captured["board"] == "tradingbot-burndown"
+    assert captured["board"] == "exampleproject-burndown"
     adapter._classify_specialist_event.assert_not_awaited()
     adapter.send.assert_awaited_once_with(
-        "trading-bot", content="Burndown: 1 completed; next: acceptance.", reply_to="message-1"
+        "example-project", content="Burndown: 1 completed; next: acceptance.", reply_to="message-1"
     )
 
 
@@ -96,7 +96,7 @@ def test_unhandled_progress_lookup_falls_through_without_send_or_model(
 def test_specialist_routing_configuration_requires_nonempty_explicit_board(adapter):
     settings = adapter._specialist_routing_settings()
 
-    assert settings["board"] == "tradingbot-burndown"
+    assert settings["board"] == "exampleproject-burndown"
 
     adapter.config.extra["specialist_routing"]["board"] = ""
     assert adapter._specialist_routing_settings()["enabled"] is False

@@ -11,7 +11,7 @@ CONFIG = {
             "enabled": True,
             "command": ["/fixed/python", "/fixed/vault.py"],
             "vault_path": "/fixed/vault",
-            "projects": {"tradingbot-burndown": "tradingbot-v18"},
+            "projects": {"exampleproject-burndown": "exampleproject-v18"},
             "max_context_chars": 600,
             "stale_after_hours": 72,
             "timeout_seconds": 5,
@@ -26,7 +26,7 @@ def test_terminal_report_uses_fixed_command_json_stdin_and_no_shell():
         assert (
             write_terminal_report(
                 CONFIG,
-                board="tradingbot-burndown",
+                board="exampleproject-burndown",
                 root_task_id="t_root",
                 event_kind="completed",
                 title="Burndown",
@@ -47,7 +47,7 @@ def test_terminal_report_uses_fixed_command_json_stdin_and_no_shell():
     ]
     assert kwargs["shell"] is False
     assert kwargs["timeout"] == 5
-    assert json.loads(kwargs["input"])["workstream_id"] == "tradingbot-burndown--t_root"
+    assert json.loads(kwargs["input"])["workstream_id"] == "exampleproject-burndown--t_root"
 
 
 def test_disabled_or_failed_bridge_is_fail_open():
@@ -66,7 +66,7 @@ def test_disabled_or_failed_bridge_is_fail_open():
         assert (
             write_terminal_report(
                 CONFIG,
-                board="tradingbot-burndown",
+                board="exampleproject-burndown",
                 root_task_id="t_x",
                 event_kind="completed",
                 title="x",
@@ -89,7 +89,7 @@ def test_progress_context_is_exact_and_labeled():
         response = append_vault_context(
             CONFIG,
             "Live Kanban status.",
-            board="tradingbot-burndown",
+            board="exampleproject-burndown",
             root_task_ids=["t_root"],
         )
     assert response.startswith("Live Kanban status.")

@@ -69,7 +69,7 @@ def write_terminal_report(
         return False
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     payload = {
-        "schema": "lunabot_agent_report_v1",
+        "schema": "exampleapp_agent_report_v1",
         "agent": "hermes",
         "project": project,
         "workstream_id": f"{board}--{root_task_id}",

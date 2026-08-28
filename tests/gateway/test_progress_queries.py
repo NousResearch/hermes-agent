@@ -11,7 +11,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 
 
-BOARD = "tradingbot-burndown"
+BOARD = "exampleproject-burndown"
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
-def _sub(conn, task_id, *, chat_id="trading-bot", thread_id="", delivery_metadata=None):
+def _sub(conn, task_id, *, chat_id="example-project", thread_id="", delivery_metadata=None):
     kb.add_notify_sub(
         conn,
         task_id=task_id,
@@ -99,7 +99,7 @@ def _run(
 
 def _source(
     *,
-    chat_id="trading-bot",
+    chat_id="example-project",
     thread_id=None,
     reply_to_message_id=None,
 ):
@@ -162,7 +162,7 @@ def test_progress_query_isolated_to_trusted_source_subscription(kanban_home):
         _sub(conn, root, chat_id="private-audit")
 
     result = resolve_progress_query(
-        "How did the burndown go?", source=_source(chat_id="trading-bot"), board=BOARD
+        "How did the burndown go?", source=_source(chat_id="example-project"), board=BOARD
     )
 
     assert result.handled is False
@@ -244,8 +244,8 @@ def test_generic_how_did_it_go_requires_trusted_linkage(kanban_home):
     [
         "Give me an update on the burndown fix remaining failures",
         "Give me an update on the burndown frobnicate remaining failures",
-        "Status of TradingBot deploy production?",
-        "Progress on TradingBot delete credentials?",
+        "Status of ExampleProject deploy production?",
+        "Progress on ExampleProject delete credentials?",
     ],
 )
 def test_status_topic_requires_every_term_to_be_bound_to_the_subscribed_graph(
@@ -254,7 +254,7 @@ def test_status_topic_requires_every_term_to_be_bound_to_the_subscribed_graph(
     from gateway.progress_queries import is_progress_query, resolve_progress_query
 
     with kb.connect(board=BOARD) as conn:
-        root = _task(conn, "TradingBot Burndown", status="done")
+        root = _task(conn, "ExampleProject Burndown", status="done")
         _task(conn, "Repair remaining failures", parents=[root], status="done")
         _sub(conn, root)
 
@@ -270,7 +270,7 @@ def test_fully_graph_bound_burndown_topic_is_handled(kanban_home):
     from gateway.progress_queries import resolve_progress_query
 
     with kb.connect(board=BOARD) as conn:
-        root = _task(conn, "TradingBot Burndown", status="done")
+        root = _task(conn, "ExampleProject Burndown", status="done")
         _sub(conn, root)
 
     result = resolve_progress_query(
@@ -291,7 +291,7 @@ def test_generic_how_did_it_go_resolves_one_trusted_reply_linked_root(kanban_hom
             "Exception Burndown",
             status="done",
             created_by="specialist-routing",
-            idempotency_key="specialist-routing:discord::trading-bot::request-42",
+            idempotency_key="specialist-routing:discord::example-project::request-42",
         )
         _sub(conn, root, delivery_metadata={"origin_message_id": "request-42"})
 
@@ -578,14 +578,14 @@ def test_other_unbound_topic_tails_still_defer_to_graph_authority(
 @pytest.mark.parametrize(
     "request_text",
     [
-        "Give me an update on the TradingBot Phase 12 burndown",
-        "How did TradingBot Phase 12 go?",
-        "Status of TradingBot PATCH-67-7?",
-        "Progress on TradingBot card t_ab12cd?",
-        "Could you update me on the TradingBot adaptive-admission card t_ab12cd status?",
+        "Give me an update on the ExampleProject Phase 12 burndown",
+        "How did ExampleProject Phase 12 go?",
+        "Status of ExampleProject PATCH-EXAMPLE-7?",
+        "Progress on ExampleProject card t_ab12cd?",
+        "Could you update me on the ExampleProject adaptive-admission card t_ab12cd status?",
     ],
 )
-def test_strict_progress_grammar_accepts_noun_like_tradingbot_topics(request_text):
+def test_strict_progress_grammar_accepts_noun_like_exampleproject_topics(request_text):
     from gateway.progress_queries import is_progress_query
 
     assert is_progress_query(request_text) is True
@@ -654,7 +654,7 @@ def test_progress_output_is_bounded_and_redacts_secret_and_path_content(kanban_h
     from gateway.progress_queries import MAX_PROGRESS_RESPONSE_CHARS, resolve_progress_query
 
     secret = "ultra-secret-value"
-    path = "/Users/mikedemott/TradingBotV18/.env"
+    path = "/Users/example/ExampleProject/.env"
     with kb.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
         _sub(conn, root)

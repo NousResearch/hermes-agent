@@ -93,8 +93,8 @@ def enabled_merge_config(
             "protected_runtime_entry": "main.py",
             "package_argv": [
                 "python3",
-                "tools/tb.py",
-                "gui-package-macos",
+                "tools/project.py",
+                "package-desktop",
                 "--replace",
                 "--json",
             ],
@@ -240,8 +240,8 @@ def test_enabled_policy_parses_strict_merge_and_post_merge_settings(
             protected_runtime_entry="main.py",
             package_argv=(
                 "python3",
-                "tools/tb.py",
-                "gui-package-macos",
+                "tools/project.py",
+                "package-desktop",
                 "--replace",
                 "--json",
             ),
@@ -269,7 +269,7 @@ def test_enabled_policy_parses_strict_merge_and_post_merge_settings(
         ),
         lambda merge: merge["post_merge"].update({"bundle_path": "../Example.app"}),
         lambda merge: merge["post_merge"].update(
-            {"package_argv": "python3 tools/tb.py"}
+            {"package_argv": "python3 tools/project.py"}
         ),
         lambda merge: merge["post_merge"].update({"relaunch_argv": []}),
     ],

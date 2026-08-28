@@ -8,7 +8,7 @@ def test_pr_feedback_task_body_includes_resolved_receipt_worktree() -> None:
     task = KanbanTask(
         title="GitHub PR feedback: acme/widgets#17",
         instructions="Run the bounded repair.",
-        board="tradingbot-burndown",
+        board="exampleproject-burndown",
         assignee="hermes-maintenance-steward",
         repository_path=Path("/Users/example/.hermes/github-pr-feedback/worktrees/receipt"),
         head_sha="a" * 40,

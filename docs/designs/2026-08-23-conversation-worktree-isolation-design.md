@@ -225,7 +225,7 @@ new worktree with the configured timeout. Failure marks the binding `creation_fa
 the new worktree for inspection; it does not delete potentially useful diagnostics or run the agent
 without dependencies.
 
-Bootstrap must remain idempotent. For TradingBotV18 it uses `scripts/bootstrap_agent_workspace.py`,
+Bootstrap must remain idempotent. For ExampleProject it uses `scripts/bootstrap_agent_workspace.py`,
 which supplies the worktree-local/shared environment according to repository policy.
 
 ## Retention and Cleanup

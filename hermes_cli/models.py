@@ -2649,6 +2649,13 @@ def nous_policy_allowed_ids(*, force_refresh: bool = False) -> Optional[set[str]
     return set(pricing) or None
 
 
+# Above this many reachable models, an allowed set is treated as catalog-wide
+# rather than as an allowlist worth enumerating in a picker. NAS caps an
+# allowlist at 512, but a set this large is indistinguishable from the full
+# catalog for display purposes.
+_NOUS_POLICY_APPEND_MAX = 64
+
+
 def restrict_to_nous_policy(
     model_ids: list[str], allowed: Optional[set[str]]
 ) -> list[str]:
@@ -2665,11 +2672,32 @@ def restrict_to_nous_policy(
     """
     if not allowed:
         return list(model_ids)
-    return [
+    kept = [
         mid
         for mid in model_ids
         if mid in allowed or mid.split(":", 1)[0] in allowed
     ]
+
+    # An allowlist can admit models the curated manifest has never heard of, and
+    # intersecting alone would then leave the user with nothing to pick at all —
+    # strictly worse than the unfiltered list. When the reachable set is no
+    # larger than what would have been shown anyway, it IS the list: append
+    # whatever it admits that the curated list is missing.
+    #
+    # Bounded by size, which is what separates the two kinds of policy: a model
+    # allowlist is human-authored and small, while a provider-only policy leaves
+    # the whole catalog reachable. Appending several hundred alphabetical
+    # vendor-prefixed ids would bury the curated order — the regression the
+    # pickers' curated branch exists to avoid. Past the cap the intersection
+    # stands on its own, and the picker's custom-model entry remains the way to
+    # reach anything it omits.
+    if len(allowed) <= _NOUS_POLICY_APPEND_MAX:
+        covered: set[str] = set()
+        for mid in kept:
+            covered.add(mid)
+            covered.add(mid.split(":", 1)[0])
+        kept.extend(sorted(a for a in allowed if a not in covered))
+    return kept
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:

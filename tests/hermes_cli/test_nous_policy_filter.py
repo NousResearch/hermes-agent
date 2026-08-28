@@ -63,7 +63,11 @@ class TestRestrictToNousPolicy:
         ) == ["vendor/model:free"]
 
     def test_drops_a_free_sibling_whose_base_is_blocked(self):
-        assert restrict_to_nous_policy(["vendor/model:free"], {"other/model"}) == []
+        """The blocked sibling goes; the model the org may actually use takes
+        its place rather than leaving the picker empty."""
+        assert restrict_to_nous_policy(["vendor/model:free"], {"other/model"}) == [
+            "other/model"
+        ]
 
 
 class TestNousPolicyAllowedIds:
@@ -184,3 +188,35 @@ class TestNousPolicyNotice:
         notice = account_mod.nous_policy_notice()
         assert "/" not in notice, f"looks like it names a model: {notice}"
         assert len(notice.splitlines()) == 1
+
+
+class TestAllowlistOutsideTheCuratedList:
+    """An allowlist can name a model the curated manifest has never heard of.
+
+    Intersecting alone leaves the picker empty in that case — strictly worse
+    than showing an unfiltered list, because the one model the org may use is
+    the one that got dropped.
+    """
+
+    def test_surfaces_an_allowed_model_the_curated_list_lacks(self):
+        assert restrict_to_nous_policy(
+            ["vendor/a", "vendor/b"], {"amazon/nova-2-lite-v1"}
+        ) == ["amazon/nova-2-lite-v1"]
+
+    def test_keeps_curated_order_then_appends_the_rest(self):
+        kept = restrict_to_nous_policy(
+            ["z/curated", "a/curated"], {"z/curated", "a/curated", "new/model"}
+        )
+        assert kept == ["z/curated", "a/curated", "new/model"]
+
+    def test_does_not_append_a_free_sibling_already_covered(self):
+        assert restrict_to_nous_policy(["vendor/m:free"], {"vendor/m"}) == [
+            "vendor/m:free"
+        ]
+
+    def test_a_provider_only_policy_does_not_bury_the_curated_order(self):
+        """Such a policy leaves the whole catalog reachable; appending it would
+        drop hundreds of alphabetical ids into the picker."""
+        curated = ["vendor/one", "vendor/two"]
+        catalog = {f"vendor/model-{i}" for i in range(300)} | set(curated)
+        assert restrict_to_nous_policy(curated, catalog) == curated

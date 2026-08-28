@@ -135,8 +135,16 @@ entry the surface already populates, so no surface makes an extra request.
 **Do not** replace a list with the response's keys. Every surface shows the
 curated agentic list in curated order deliberately — the live catalog is a
 large alphabetical dump of vendor-prefixed models, and swapping it in is the
-regression `model_switch.py:3070` records. Recommendations should be able to
-*reveal* a newly launched model; the policy set should only ever subtract.
+regression `model_switch.py:3070` records.
+
+**Do not** treat the policy set as subtract-only either. An allowlist can name
+a model the curated manifest has never heard of, and intersecting alone then
+empties the picker — strictly worse than an unfiltered list, because the one
+model the org may use is the one dropped. When the reachable set is small
+enough to be a human-authored allowlist, append what it admits that the
+curated list lacks, after the curated entries so their order survives. Bound
+it by size: a provider-only policy leaves the whole catalog reachable, and
+appending that would bury the curated order.
 
 **Do not** narrow a list on evidence that cannot support it.
 `nous_policy_allowed_ids()` returns `None` — meaning "leave the list alone" —

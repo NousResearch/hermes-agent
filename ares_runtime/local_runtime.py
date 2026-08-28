@@ -1314,6 +1314,11 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("chat", help="Launch the selected Ares CLI")
     gateway = subparsers.add_parser("gateway", help="Manage the selected Ares gateway service")
     gateway.add_argument("action", choices=("start", "stop", "restart", "status", "foreground"))
+    specialist = subparsers.add_parser(
+        "specialist",
+        help="Submit an explicit bounded specialist run to the running Ares Desktop",
+    )
+    specialist.add_argument("specialist_args", nargs=argparse.REMAINDER)
     # Auth subcommand - delegates to hermes auth with Ares home
     auth = subparsers.add_parser("auth", help="Manage pooled provider credentials in Ares home")
     auth.add_argument("auth_action", nargs="?", default="", help="Auth action (add, list, remove, reset, status, logout, spotify)")
@@ -1381,6 +1386,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             runtime.chat(args.arguments)
         elif args.command == "gateway":
             runtime.gateway(args.action)
+        elif args.command == "specialist":
+            from .specialist_dispatch import client_main
+
+            raise SystemExit(client_main(args.specialist_args))
         elif args.command == "auth":
             runtime.auth(args, passthrough)
         else:

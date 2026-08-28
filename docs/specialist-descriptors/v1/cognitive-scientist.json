@@ -1,0 +1,79 @@
+{
+  "activation_evidence_refs": [
+    "evidence:operator-approved-contract",
+    "evidence:atomic-profile-binding",
+    "evidence:least-authority-tool-boundary",
+    "evidence:relevance-discrimination-fixture",
+    "evidence:matched-budget-comparison",
+    "evidence:negative-controls-and-abstention",
+    "evidence:raw-traces-and-receipts",
+    "evidence:independent-controller-review",
+    "evidence:live-routing-capacity-certification"
+  ],
+  "capability_classes": [
+    "construct_operationalization",
+    "competing_mechanism_analysis",
+    "task_demand_analysis",
+    "discriminating_experiment_design",
+    "human_ai_comparison_boundary_review"
+  ],
+  "descriptor_digest": "sha256:411fae1c9e6c179791d99a22d1963cdb039eb7fb4e4f8fe2173ffd4fd29dc2ed",
+  "enabled": true,
+  "explicit_exclusions": [
+    "clinical_diagnosis_or_individual_trait_attribution",
+    "psychometric_validity_or_invariance_signoff",
+    "statistical_inference_or_causal_identification",
+    "benchmark_or_harness_certification",
+    "runtime_or_profile_activation_authority"
+  ],
+  "failure_and_abstention_behavior": {
+    "generic_fallback_label": "forbidden",
+    "on_insufficient_evidence": "blocked_or_unknown",
+    "on_unavailable_or_disabled_contract": "blocked_or_unknown"
+  },
+  "handoff_rules": [
+    "handoff_requires_preserved_evidence_and_named_owner"
+  ],
+  "input_evidence_classes": [
+    "task_instructions_and_stimuli",
+    "item_level_behavior_and_protocol_metadata",
+    "evidence_lineage_records",
+    "bounded_statistical_or_measurement_results",
+    "published_theory_sources"
+  ],
+  "mandatory_deferrals": [
+    "psychometrician_for_measurement_validity",
+    "statistician_for_inference_and_uncertainty",
+    "ml-evaluation-researcher_for_harness_validity",
+    "longmemeval-bench_for_lineage_and_transform_integrity"
+  ],
+  "narrow_purpose": "Prevent behavioral observations, particularly about humans or AI systems, from being overinterpreted as a cognitive construct or internal mechanism.",
+  "profile_id": "cognitive-scientist",
+  "provenance": {
+    "semantic_registry_digest": "sha256:7a9976e45e1154039bb55baea2c18a375d97da333928b0379807b4e09922fff3",
+    "semantic_registry_ref": "docs:role-contracts/role-contracts.json",
+    "source_refs": [
+      "artifact:ares-specialist-list-research-20260827"
+    ]
+  },
+  "recorded_at": "2026-08-27T18:09:17Z",
+  "required_artifact_ids": [
+    "cognitive_interpretation"
+  ],
+  "required_outputs": [
+    "construct_boundary",
+    "alternative_mechanisms",
+    "predictions_and_falsifier",
+    "discriminating_experiment",
+    "explicit_prohibited_wording_and_limits"
+  ],
+  "schema_version": "1.0.0",
+  "semantic_role_id": "role.cognitive_scientist",
+  "tool_classes": [
+    "source_read",
+    "web_read",
+    "local_sandbox_analysis",
+    "experiment_plan_review",
+    "draft_artifact"
+  ]
+}

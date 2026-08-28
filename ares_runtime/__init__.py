@@ -43,12 +43,15 @@ from .collaboration import (
     HandoffPacketV1,
     MissionContractV1,
     RoleContractV1,
+    SpecialistDescriptorV1,
     TestRequestV1,
     dispatcher_boundary,
     evaluation_ui_projection,
     freeze_replay_corpus,
     make_artifact,
     replay_mutations,
+    specialist_descriptor_ref,
+    validate_specialist_descriptor_set,
 )
 
 __all__ = [
@@ -89,10 +92,13 @@ __all__ = [
     "HandoffPacketV1",
     "MissionContractV1",
     "RoleContractV1",
+    "SpecialistDescriptorV1",
     "TestRequestV1",
     "dispatcher_boundary",
     "evaluation_ui_projection",
     "freeze_replay_corpus",
     "make_artifact",
     "replay_mutations",
+    "specialist_descriptor_ref",
+    "validate_specialist_descriptor_set",
 ]

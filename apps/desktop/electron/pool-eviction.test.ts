@@ -170,6 +170,17 @@ test('hard admission counts fresh local reservations but not descriptors', () =>
   assert.equal(canAdmitLocalBackend(entries, 2), false)
 })
 
+test('weighted specialist reservations admit exactly four workers and reject a fifth without eviction', () => {
+  const entries: [string, PoolEvictionEntry][] = [
+    ['specialist:one', { process: null, countsTowardPoolCap: true, capacityUnits: 4, lastActiveAt: NOW }]
+  ]
+
+  assert.equal(canAdmitLocalBackend(entries, 4), false)
+  assert.equal(canAdmitLocalBackend([], 4, 4), true)
+  assert.equal(canAdmitLocalBackend([], 4, 5), false)
+  assert.deepEqual(selectPoolEvictions(entries, 3, NOW, FRESH_MS), [])
+})
+
 test('hard admission fails closed for an existing fresh over-capacity pool', () => {
   const entries: [string, PoolEvictionEntry][] = [
     ['a', { process: { pid: 1 }, countsTowardPoolCap: true, lastActiveAt: NOW }],

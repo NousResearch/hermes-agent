@@ -1,0 +1,76 @@
+{
+  "activation_evidence_refs": [
+    "evidence:operator-approved-contract",
+    "evidence:atomic-profile-binding",
+    "evidence:least-authority-tool-boundary",
+    "evidence:relevance-discrimination-fixture",
+    "evidence:matched-budget-comparison",
+    "evidence:negative-controls-and-abstention",
+    "evidence:raw-traces-and-receipts",
+    "evidence:independent-controller-review",
+    "evidence:live-routing-capacity-certification"
+  ],
+  "capability_classes": [
+    "claim_ledger_construction",
+    "evidence_gap_tracking",
+    "claim_scope_and_qualifier_design",
+    "proof_packet_review",
+    "external_draft_review"
+  ],
+  "descriptor_digest": "sha256:c8776f1d38450b0c906a68180161b5e742f30c264fe4376184dcb10335276096",
+  "enabled": true,
+  "explicit_exclusions": [
+    "publishing_or_sending_without_operator_authority",
+    "treating_internal_tests_as_external_validation",
+    "inferring_customers_revenue_compliance_or_production_maturity",
+    "source_or_runtime_authority"
+  ],
+  "failure_and_abstention_behavior": {
+    "generic_fallback_label": "forbidden",
+    "on_insufficient_evidence": "blocked_or_unknown",
+    "on_unavailable_or_disabled_contract": "blocked_or_unknown"
+  },
+  "handoff_rules": [
+    "handoff_requires_preserved_evidence_and_named_owner"
+  ],
+  "input_evidence_classes": [
+    "reproducible_source_and_test_receipts",
+    "public_primary_records",
+    "source_reported_results_with_labels",
+    "proposed_external_wording",
+    "evidence_gap_and_risk_context"
+  ],
+  "mandatory_deferrals": [
+    "longmemeval-bench_for_provenance",
+    "ml-evaluation-researcher_for_benchmark_claims",
+    "statistician_for_quantitative_claims",
+    "operator_for_release_or_publication_decision"
+  ],
+  "narrow_purpose": "Translate verified work into externally visible language whose claim strength, qualifiers, and proof boundaries match the evidence.",
+  "profile_id": "public",
+  "provenance": {
+    "semantic_registry_digest": "sha256:7a9976e45e1154039bb55baea2c18a375d97da333928b0379807b4e09922fff3",
+    "semantic_registry_ref": "docs:role-contracts/role-contracts.json",
+    "source_refs": [
+      "artifact:ares-specialist-list-research-20260827"
+    ]
+  },
+  "recorded_at": "2026-08-27T18:09:17Z",
+  "required_artifact_ids": [
+    "claim_ledger"
+  ],
+  "required_outputs": [
+    "claim_ledger_with_blocking_gaps",
+    "safer_alternative_wording",
+    "scope_qualifiers",
+    "publication_readiness_disposition"
+  ],
+  "schema_version": "1.0.0",
+  "semantic_role_id": "role.public_evidence_editor",
+  "tool_classes": [
+    "source_read",
+    "artifact_read",
+    "web_read_for_primary_records",
+    "draft_artifact"
+  ]
+}

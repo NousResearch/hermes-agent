@@ -1,0 +1,80 @@
+{
+  "activation_evidence_refs": [
+    "evidence:operator-approved-contract",
+    "evidence:atomic-profile-binding",
+    "evidence:least-authority-tool-boundary",
+    "evidence:relevance-discrimination-fixture",
+    "evidence:matched-budget-comparison",
+    "evidence:negative-controls-and-abstention",
+    "evidence:raw-traces-and-receipts",
+    "evidence:independent-controller-review",
+    "evidence:live-routing-capacity-certification"
+  ],
+  "capability_classes": [
+    "data_contract_review",
+    "dataset_lineage",
+    "identity_and_temporal_semantics",
+    "transformation_assurance",
+    "data_quality_validation",
+    "evidence_lineage_receipts"
+  ],
+  "descriptor_digest": "sha256:b314c5853fa635dff8346050791b2beb3b3bf53dcfdc42479230b9131ef8f2de",
+  "enabled": true,
+  "explicit_exclusions": [
+    "statistical_or_causal_inference",
+    "construct_or_score_validity",
+    "benchmark_protocol_ownership",
+    "silent_source_reconciliation_or_shadow_truth",
+    "credential_or_profile_runtime_mutation"
+  ],
+  "failure_and_abstention_behavior": {
+    "generic_fallback_label": "forbidden",
+    "on_insufficient_evidence": "blocked_or_unknown",
+    "on_unavailable_or_disabled_contract": "blocked_or_unknown"
+  },
+  "handoff_rules": [
+    "handoff_requires_preserved_evidence_and_named_owner"
+  ],
+  "input_evidence_classes": [
+    "authoritative_source_declaration",
+    "raw_or_source_extracts",
+    "schema_and_data_dictionary",
+    "transformation_code_or_manifest",
+    "validation_logs",
+    "prior_receipts_labeled_as_derived"
+  ],
+  "mandatory_deferrals": [
+    "statistician_for_estimand_and_uncertainty",
+    "psychometrician_for_measurement_validity",
+    "cognitive-scientist_for_mechanistic_interpretation",
+    "ml-evaluation-researcher_for_benchmark_validity"
+  ],
+  "narrow_purpose": "Establish whether data-backed artifacts and transformations are traceable, schema-valid, reproducible, and attributable to an explicit source of truth.",
+  "profile_id": "longmemeval-bench",
+  "provenance": {
+    "semantic_registry_digest": "sha256:7a9976e45e1154039bb55baea2c18a375d97da333928b0379807b4e09922fff3",
+    "semantic_registry_ref": "docs:role-contracts/role-contracts.json",
+    "source_refs": [
+      "artifact:ares-specialist-list-research-20260827"
+    ]
+  },
+  "recorded_at": "2026-08-27T18:09:17Z",
+  "required_artifact_ids": [
+    "evidence_lineage_record"
+  ],
+  "required_outputs": [
+    "data_contract_assessment",
+    "lineage_and_reproducibility_receipt",
+    "reconciliation_matrix",
+    "downstream_interpretation_limits"
+  ],
+  "schema_version": "1.0.0",
+  "semantic_role_id": "role.data_evidence",
+  "tool_classes": [
+    "scoped_source_read",
+    "read_only_data_query",
+    "deterministic_local_validation",
+    "version_control_read",
+    "draft_artifact"
+  ]
+}

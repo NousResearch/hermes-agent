@@ -9,6 +9,7 @@ import contextvars
 import hashlib
 import json
 import os
+import re
 import secrets
 import socket
 import struct
@@ -87,6 +88,7 @@ def _strict_payload(raw: Mapping[str, Any], required: set[str], allowed: set[str
 _SCHEMA_DIR = os.path.join(os.path.dirname(__file__), "schemas")
 _SCHEMA_FILES = {
     "role": "role_contract_v1.json",
+    "specialist_descriptor": "specialist_descriptor_v1.json",
     "mission": "mission_contract_v1.json",
     "finding": "finding_v1.json",
     "evidence": "evidence_item_v1.json",
@@ -146,6 +148,30 @@ class ImmutableArtifact:
 
 ROLE_REQUIRED = {"schema_version", "role_id", "role_kind", "durable_ownership", "objective", "unique_questions", "mandatory_triggers", "exclusions", "context_policy", "capability_profile", "mutation_authority", "output_schema_ref", "stop_conditions", "typed_failures", "handoff_rules", "model_eligibility", "evaluation", "recorded_at", "contract_digest"}
 ROLE_ALLOWED = ROLE_REQUIRED | {"profile_ref", "merge_prohibition", "supersedes_contract_ref"}
+SPECIALIST_DESCRIPTOR_REQUIRED = {
+    "schema_version",
+    "profile_id",
+    "semantic_role_id",
+    "enabled",
+    "narrow_purpose",
+    "capability_classes",
+    "tool_classes",
+    "required_artifact_ids",
+    "input_evidence_classes",
+    "required_outputs",
+    "explicit_exclusions",
+    "mandatory_deferrals",
+    "handoff_rules",
+    "failure_and_abstention_behavior",
+    "activation_evidence_refs",
+    "provenance",
+    "recorded_at",
+    "descriptor_digest",
+}
+SPECIALIST_DESCRIPTOR_ALLOWED = SPECIALIST_DESCRIPTOR_REQUIRED | {
+    "supersedes_descriptor_ref"
+}
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 MISSION_REQUIRED = {"schema_version", "mission_id", "kanban_root_task_ref", "objective", "source_freeze", "closure_profile", "risk_class", "effect_class", "boundaries", "required_evidence", "topology_policy", "stop_conditions", "recorded_at", "contract_digest"}
 MISSION_ALLOWED = MISSION_REQUIRED | {"session_ref", "goal_ref", "non_goals", "budget", "supersedes_contract_ref"}
 
@@ -170,6 +196,155 @@ class RoleContractV1(ImmutableArtifact):
         value = _strict_payload(raw, ROLE_REQUIRED, ROLE_ALLOWED, "contract_digest")
         _validate_schema("role", raw)
         return cls({**value, "contract_digest": raw["contract_digest"]}, "contract_digest")
+
+
+def _validate_specialist_descriptor_references(
+    value: Mapping[str, Any],
+    *,
+    profile_exists: Callable[[str], bool] | None = None,
+    semantic_role_artifacts: Mapping[str, Sequence[str]] | None = None,
+) -> None:
+    """Validate external identities without creating a second owner or router."""
+    profile_id = value.get("profile_id")
+    if not isinstance(profile_id, str) or not _PROFILE_ID_RE.fullmatch(profile_id):
+        raise ContractError("INVALID_PROFILE", "profile_id")
+    if profile_exists is not None and not profile_exists(profile_id):
+        raise ContractError("UNKNOWN_PROFILE", profile_id)
+
+    role_id = value.get("semantic_role_id")
+    if not isinstance(role_id, str) or not role_id.startswith("role."):
+        raise ContractError("INVALID_SEMANTIC_ROLE", "semantic_role_id")
+    if semantic_role_artifacts is None:
+        return
+    required = semantic_role_artifacts.get(role_id)
+    if required is None:
+        raise ContractError("UNKNOWN_SEMANTIC_ROLE", role_id)
+    actual = value.get("required_artifact_ids")
+    if (
+        not isinstance(actual, list)
+        or set(actual) != set(required)
+        or len(actual) != len(set(actual))
+    ):
+        raise ContractError("REQUIRED_ARTIFACT_MISMATCH", role_id)
+
+
+class SpecialistDescriptorV1(ImmutableArtifact):
+    """Static, content-addressed profile declaration; never a routing decision.
+
+    The descriptor is intentionally separate from ``RoleContractV1``. The
+    latter is a general collaboration artifact, while this type fixes a
+    profile-to-existing-semantic-role mapping and rejects runtime state such as
+    provider health, credentials, current capacity, reservations, cost, or
+    latency by strict field admission.
+    """
+
+    @classmethod
+    def create(
+        cls,
+        values: Mapping[str, Any],
+        *,
+        profile_exists: Callable[[str], bool] | None = None,
+        semantic_role_artifacts: Mapping[str, Sequence[str]] | None = None,
+    ) -> "SpecialistDescriptorV1":
+        value = dict(values)
+        value.setdefault("schema_version", SCHEMA_VERSION)
+        value.setdefault("recorded_at", EPOCH)
+        if value["schema_version"] != SCHEMA_VERSION:
+            raise ContractError("UNSUPPORTED_SCHEMA", "schema_version")
+        value.pop("descriptor_digest", None)
+        value = _finalize(value, "descriptor_digest")
+        _strict_payload(
+            value,
+            SPECIALIST_DESCRIPTOR_REQUIRED,
+            SPECIALIST_DESCRIPTOR_ALLOWED,
+            "descriptor_digest",
+        )
+        _validate_schema("specialist_descriptor", value)
+        _validate_specialist_descriptor_references(
+            value,
+            profile_exists=profile_exists,
+            semantic_role_artifacts=semantic_role_artifacts,
+        )
+        return cls(value, "descriptor_digest")
+
+    @classmethod
+    def parse(
+        cls,
+        raw: Mapping[str, Any],
+        *,
+        profile_exists: Callable[[str], bool] | None = None,
+        semantic_role_artifacts: Mapping[str, Sequence[str]] | None = None,
+    ) -> "SpecialistDescriptorV1":
+        value = _strict_payload(
+            raw,
+            SPECIALIST_DESCRIPTOR_REQUIRED,
+            SPECIALIST_DESCRIPTOR_ALLOWED,
+            "descriptor_digest",
+        )
+        _validate_schema("specialist_descriptor", raw)
+        _validate_specialist_descriptor_references(
+            raw,
+            profile_exists=profile_exists,
+            semantic_role_artifacts=semantic_role_artifacts,
+        )
+        return cls(
+            {**value, "descriptor_digest": raw["descriptor_digest"]},
+            "descriptor_digest",
+        )
+
+
+def specialist_descriptor_ref(descriptor: SpecialistDescriptorV1) -> str:
+    """Return an unambiguous reference without binding it to profile metadata."""
+    if not isinstance(descriptor, SpecialistDescriptorV1):
+        raise ContractError("INVALID_SPECIALIST_DESCRIPTOR")
+    return "specialist-descriptor:" + descriptor.artifact_digest.removeprefix("sha256:")
+
+
+def validate_specialist_descriptor_set(
+    raw_descriptors: Sequence[Mapping[str, Any]],
+    *,
+    profile_ids: Sequence[str],
+    semantic_role_artifacts: Mapping[str, Sequence[str]],
+    require_disabled: bool = True,
+) -> list[str]:
+    """Return stable errors for a static descriptor set, with no side effects.
+
+    This validates only profile and semantic-registry identity passed by the
+    caller. It deliberately does not look up provider/model state, live tools,
+    desktop capacity, reservations, credentials, or any router-owned evidence.
+    """
+    errors: list[str] = []
+    expected_profiles = set(profile_ids)
+    if len(expected_profiles) != len(profile_ids):
+        errors.append("profile roster contains duplicate profile_id")
+    seen_profiles: set[str] = set()
+    for index, raw in enumerate(raw_descriptors):
+        if not isinstance(raw, Mapping):
+            errors.append(f"descriptor[{index}] is not an object")
+            continue
+        try:
+            descriptor = SpecialistDescriptorV1.parse(
+                raw,
+                profile_exists=lambda profile_id: profile_id in expected_profiles,
+                semantic_role_artifacts=semantic_role_artifacts,
+            )
+        except ContractError as exc:
+            errors.append(f"descriptor[{index}] {exc}")
+            continue
+        payload = descriptor.to_dict()
+        profile_id = payload["profile_id"]
+        if profile_id in seen_profiles:
+            errors.append(f"duplicate descriptor profile_id: {profile_id}")
+        seen_profiles.add(profile_id)
+        if require_disabled and payload["enabled"] is not False:
+            errors.append(f"descriptor must remain disabled: {profile_id}")
+    missing = sorted(expected_profiles - seen_profiles)
+    unexpected = sorted(seen_profiles - expected_profiles)
+    if missing:
+        errors.append("missing descriptor profile_ids: " + ", ".join(missing))
+    if unexpected:
+        errors.append("unexpected descriptor profile_ids: " + ", ".join(unexpected))
+    return errors
 
 
 class MissionContractV1(ImmutableArtifact):

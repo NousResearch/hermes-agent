@@ -347,6 +347,9 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
+import { createSpecialistDispatchAdmission } from './specialist-dispatch-admission'
+import { createSpecialistDispatchQuiesce, SpecialistQuiesceError } from './specialist-dispatch-quiesce'
+import { startSpecialistDispatchServer } from './specialist-dispatch-server'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
@@ -10979,6 +10982,7 @@ function profileRouteOptions(profile, request?) {
 async function ensureBackend(profile) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
 
+  specialistDispatchQuiesce.assertCanStart(key)
   profileDeletionGate.assertCanStart(key)
 
   const route = resolveProfileBackendRoute(key, profileRouteOptions(key))
@@ -11162,6 +11166,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
     // the v1 route is genuinely local; otherwise spawn/reuse a forced-local
     // child pooled under the composite 'conn:local::<profile>' key so it
     // can't collide with the v1 remote descriptor cached at the bare key.
+    specialistDispatchQuiesce.assertCanStart(profileKey)
     profileDeletionGate.assertCanStart(profileKey)
 
     const localRoute = resolveRegistryLocalRoute(profileKey, {
@@ -12166,6 +12171,104 @@ const poolStopper = createPoolStopper({
   stopChild: child => stopBackendChild(child),
   waitForExit: child => waitForBackendExit(child)
 })
+
+// Electron marks a profile before stopping its pooled child so a renderer
+// reconnect cannot re-consume a specialist capacity slot during certification.
+const specialistDispatchQuiesce = createSpecialistDispatchQuiesce({
+  stopProfile: profile => teardownPoolBackendAndWait(profile)
+})
+
+const SPECIALIST_RUNNER_TIMEOUT_MS = 5 * 60_000
+let specialistDispatchServer: Awaited<ReturnType<typeof startSpecialistDispatchServer>> | null = null
+
+const specialistDispatchAdmission = createSpecialistDispatchAdmission({
+  maxCapacity: POOL_MAX_BACKENDS,
+  pool: backendPool,
+  spawnRunner: async request => {
+    // Reuse Desktop's established runtime resolver, but do not accept a caller
+    // command. The only child command is this package-local runner.
+    const backend = await ensureRuntime(resolveHermesBackend([]))
+
+    if (!backend.command) {
+      throw new Error('specialist runner runtime is unavailable')
+    }
+
+    const cwd = backend.root || resolveHermesCwd()
+
+    const child = spawn(
+      backend.command,
+      ['-m', 'ares_runtime.specialist_dispatch', 'runner'],
+      hiddenWindowsChildOptions({
+        cwd,
+        detached: true,
+        env: {
+          ...process.env,
+          ...backend.env,
+          // The runner begins in the default Ares home, then explicitly
+          // selects the one profile home per worker. A backend resolver must
+          // never override that isolation boundary through its own env map.
+          HERMES_HOME,
+          TERMINAL_CWD: cwd
+        },
+        stdio: ['pipe', 'ignore', 'ignore']
+      })
+    )
+
+    let timedOut = false
+
+    const timeout = setTimeout(() => {
+      timedOut = true
+      rememberLog(`[specialist] runner ${request.runId} exceeded the bounded deadline; stopping its owned process group`)
+      void poolStopper.stop(specialistDispatchAdmission.poolKey(request.runId))
+    }, SPECIALIST_RUNNER_TIMEOUT_MS)
+
+    timeout.unref?.()
+    child.once('error', error => {
+      clearTimeout(timeout)
+      rememberLog(`[specialist] runner ${request.runId} failed to start: ${error.message}`)
+      specialistDispatchAdmission.release(request.runId, 'runner_failed')
+    })
+    child.once('exit', code => {
+      clearTimeout(timeout)
+      specialistDispatchAdmission.release(request.runId, code === 0 && !timedOut ? 'released' : 'runner_failed')
+    })
+    child.stdin?.end(request.runnerInput || '')
+
+    return child
+  }
+})
+
+async function startSpecialistDispatchTransport() {
+  if (specialistDispatchServer) {
+    return specialistDispatchServer
+  }
+
+  specialistDispatchServer = await startSpecialistDispatchServer({
+    admission: specialistDispatchAdmission,
+    cancel: async runId => {
+      if (specialistDispatchAdmission.status(runId) !== 'running') {
+        throw new Error('specialist run is not active')
+      }
+
+      await poolStopper.stop(specialistDispatchAdmission.poolKey(runId))
+      specialistDispatchAdmission.release(runId, 'released')
+    },
+    quiesce: {
+      acquire: async profileIds => {
+        if (specialistDispatchAdmission.hasActive()) {
+          throw new SpecialistQuiesceError('QUIESCE_CONFLICT', 'An explicit specialist run is still active.')
+        }
+
+        return specialistDispatchQuiesce.acquire(profileIds)
+      },
+      release: leaseId => specialistDispatchQuiesce.release(leaseId)
+    },
+    root: HERMES_HOME
+  })
+  rememberLog('[specialist] explicit dispatch transport is listening on loopback')
+
+  return specialistDispatchServer
+}
 
 function stopPoolBackend(profile) {
   return poolStopper.stop(profile)
@@ -16537,6 +16640,7 @@ app.on('before-quit', () => {
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
   destroyKeepaliveAgents()
+  void specialistDispatchServer?.close().catch(() => undefined)
 })
 
 // Answered synchronously so preload can publish the verdict before the
@@ -17392,6 +17496,9 @@ app.whenReady().then(() => {
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
+  void startSpecialistDispatchTransport().catch(error => {
+    rememberLog(`[specialist] explicit dispatch transport unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  })
 
   ensureWslWindowsFonts()
   configureSpellChecker()

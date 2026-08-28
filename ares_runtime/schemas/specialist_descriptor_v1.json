@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/specialist_descriptor_v1.json",
+  "title": "SpecialistDescriptorV1",
+  "description": "Immutable, static declaration for a disabled or evaluated specialist profile. It is not provider health, a capacity reservation, a profile configuration, or a routing decision.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Ares profile identity + semantic role registry; descriptor bytes validated by ares_runtime.collaboration",
+  "x-storage-rule": "Immutable projection bound to an existing profile and semantic role. Profile metadata stores only a separately authorized digest pointer.",
+  "required": [
+    "schema_version",
+    "profile_id",
+    "semantic_role_id",
+    "enabled",
+    "narrow_purpose",
+    "capability_classes",
+    "tool_classes",
+    "required_artifact_ids",
+    "input_evidence_classes",
+    "required_outputs",
+    "explicit_exclusions",
+    "mandatory_deferrals",
+    "handoff_rules",
+    "failure_and_abstention_behavior",
+    "activation_evidence_refs",
+    "provenance",
+    "recorded_at",
+    "descriptor_digest"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["1.0.0"]},
+    "profile_id": {
+      "type": "string",
+      "description": "Existing canonical profile identifier; no profile configuration is embedded.",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "semantic_role_id": {
+      "type": "string",
+      "description": "Existing role identifier from docs/role-contracts/role-contracts.json.",
+      "pattern": "^role\\.[A-Za-z0-9._-]+$"
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Static evaluation state only. It does not grant routing, tool, model, profile, or runtime authority."
+    },
+    "narrow_purpose": {"type": "string", "minLength": 1},
+    "capability_classes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "tool_classes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "required_artifact_ids": {
+      "type": "array",
+      "description": "Must match the required artifact identifiers of semantic_role_id.",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "input_evidence_classes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "required_outputs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "explicit_exclusions": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "mandatory_deferrals": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "handoff_rules": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "failure_and_abstention_behavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "on_insufficient_evidence",
+        "on_unavailable_or_disabled_contract",
+        "generic_fallback_label"
+      ],
+      "properties": {
+        "on_insufficient_evidence": {"type": "string", "const": "blocked_or_unknown"},
+        "on_unavailable_or_disabled_contract": {"type": "string", "const": "blocked_or_unknown"},
+        "generic_fallback_label": {"type": "string", "const": "forbidden"}
+      }
+    },
+    "activation_evidence_refs": {
+      "type": "array",
+      "description": "References to predeclared evidence required before separate activation consideration.",
+      "items": {"type": "string", "pattern": "^[A-Za-z0-9._:/@#-]+$"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_refs", "semantic_registry_ref", "semantic_registry_digest"],
+      "properties": {
+        "source_refs": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9._:/@#-]+$"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "semantic_registry_ref": {"type": "string", "pattern": "^[A-Za-z0-9._:/@#-]+$"},
+        "semantic_registry_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "supersedes_descriptor_ref": {
+      "oneOf": [
+        {"type": "string", "pattern": "^specialist-descriptor:[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "descriptor_digest": {
+      "type": "string",
+      "description": "Canonical SHA-256 digest of the descriptor without this field.",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "descriptors": [
+    {
+      "descriptor_digest": "sha256:411fae1c9e6c179791d99a22d1963cdb039eb7fb4e4f8fe2173ffd4fd29dc2ed",
+      "path": "cognitive-scientist.json",
+      "profile_id": "cognitive-scientist"
+    },
+    {
+      "descriptor_digest": "sha256:3de197cb9fe54b775abb8222a77c435a42e2936e97896d349d3f339425434bd0",
+      "path": "explorer.json",
+      "profile_id": "explorer"
+    },
+    {
+      "descriptor_digest": "sha256:c8999e5cacb1fdb678c95460d1cab567868dc6cdf75f944eb37c592930ebad54",
+      "path": "inbox-manager.json",
+      "profile_id": "inbox-manager"
+    },
+    {
+      "descriptor_digest": "sha256:b314c5853fa635dff8346050791b2beb3b3bf53dcfdc42479230b9131ef8f2de",
+      "path": "longmemeval-bench.json",
+      "profile_id": "longmemeval-bench"
+    },
+    {
+      "descriptor_digest": "sha256:233a3e67ff3265194e5ad82d43fd30cc494d678a6c7f334685ebb89eec8b1e8c",
+      "path": "ml-evaluation-researcher.json",
+      "profile_id": "ml-evaluation-researcher"
+    },
+    {
+      "descriptor_digest": "sha256:825d7b7d857331fa538378585d8412d9723e26811607264b7f922476b9c5170a",
+      "path": "psychometrician.json",
+      "profile_id": "psychometrician"
+    },
+    {
+      "descriptor_digest": "sha256:c8776f1d38450b0c906a68180161b5e742f30c264fe4376184dcb10335276096",
+      "path": "public.json",
+      "profile_id": "public"
+    },
+    {
+      "descriptor_digest": "sha256:31ec1e3814ebb57b35eb65fe5a4dcfa3b1125cf3a1d8a2ad529069d899a89f86",
+      "path": "statistician.json",
+      "profile_id": "statistician"
+    }
+  ],
+  "manifest_digest": "sha256:eded89341a6e6562a5a45ab7c8a53ef4ff30e0b6b5f8d02ecc09255811d5627a",
+  "profile_ids": [
+    "cognitive-scientist",
+    "explorer",
+    "inbox-manager",
+    "longmemeval-bench",
+    "ml-evaluation-researcher",
+    "psychometrician",
+    "public",
+    "statistician"
+  ],
+  "schema": "AresSpecialistDescriptorManifestV1"
+}

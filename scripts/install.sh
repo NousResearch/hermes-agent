@@ -882,8 +882,9 @@ check_cxx_compiler() {
     return 1
 }
 
-# The dependency tree supports Node 22.22+, 24, and 26+. nanoid 6 excludes
-# Node 23 and 25 while its >=26 arm accepts later releases, so accepting 23/25
+# The dependency tree supports Node 22.22+, 24.11+, and 26+. nanoid 6 excludes
+# Node 23 and 25 while its >=26 arm accepts later releases, and @babel/* 8.x
+# requires ^22.18.0 || >=24.11.0 — so accepting 23/25 or an early Node 24
 # here only defers the failure to `npm ci` under engine-strict. Keep this in
 # sync with the root package.json. Anything outside the supported lines is
 # replaced with the Hermes-managed Node $NODE_VERSION.
@@ -895,7 +896,8 @@ node_satisfies_build() {
     case "$major" in ''|*[!0-9]*) return 1 ;; esac
     case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
     if [ "$major" -eq 22 ] && [ "$minor" -ge 22 ]; then return 0; fi
-    if [ "$major" -eq 24 ] || [ "$major" -ge 26 ]; then return 0; fi
+    if [ "$major" -eq 24 ] && [ "$minor" -ge 11 ]; then return 0; fi
+    if [ "$major" -ge 26 ]; then return 0; fi
     return 1
 }
 
@@ -963,7 +965,7 @@ check_node() {
     if command -v node &> /dev/null && ! command -v npm &> /dev/null; then
         log_warn "node found but npm is not on PATH (stray node symlink?) — installing Hermes-managed Node $NODE_VERSION LTS..."
     elif command -v node &> /dev/null; then
-        log_warn "Node.js $(node --version) is unsupported (Hermes requires Node 22.22+, 24, or 26+) — installing Hermes-managed Node $NODE_VERSION..."
+        log_warn "Node.js $(node --version) is unsupported (Hermes requires Node 22.22+, 24.11+, or 26+) — installing Hermes-managed Node $NODE_VERSION..."
     elif [ "$DISTRO" = "termux" ]; then
         log_info "Node.js not found — installing Node.js via pkg..."
     else

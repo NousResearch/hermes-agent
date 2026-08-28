@@ -909,6 +909,12 @@ class CompressionCommitFence:
 DEFAULT_CONTEXT_TIMEOUT_SECONDS = 120.0
 DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS = 600.0
 
+# Distinct from ``explicit_interrupt``: a /stop that arrived after the summary
+# stream had already crossed the no-progress stall window (#96775). Ordinary
+# early /stop stays cooldown-neutral; this class arms the durable backoff so
+# the next automatic turn does not re-enter the same stalled strategy.
+STALL_INTERRUPTED_FAILURE_CLASS = "stall_interrupted"
+
 # Shared daemon pool for sync compress_context timeout wraps — analogous to
 # asyncio's default executor used by gateway session hygiene's
 # ``loop.run_in_executor(None, ...)``, but daemon so a fence-cancelled hung
@@ -1028,6 +1034,101 @@ def resolve_context_compression_timeouts(
     if idle > 0:
         ceiling = max(ceiling, idle)
     return idle, ceiling
+
+
+def compression_attempt_stalled(
+    *,
+    commit_fence: Optional[CompressionCommitFence],
+    started_at: float,
+    idle_timeout_seconds: Optional[float] = None,
+) -> bool:
+    """Return whether a pre-commit cancel landed after the stall window.
+
+    An ordinary early ``/stop`` must stay cooldown-neutral. When the fence
+    (or, without a fence, the attempt clock) has already sat idle for the
+    configured compression inactivity budget, the interrupt is a stalled
+    attempt — the same condition the host timeout uses — and the next
+    automatic turn must not blindly retry that strategy (#96775).
+    """
+    idle = idle_timeout_seconds
+    if idle is None:
+        idle, _ceiling = resolve_context_compression_timeouts()
+    try:
+        idle = float(idle)
+    except (TypeError, ValueError):
+        return False
+    if idle <= 0:
+        return False
+    if commit_fence is not None:
+        try:
+            return float(commit_fence.seconds_since_progress()) >= idle
+        except Exception:
+            return False
+    try:
+        return (time.monotonic() - float(started_at)) >= idle
+    except (TypeError, ValueError):
+        return False
+
+
+def _stall_source_fingerprint(
+    agent: Any,
+    messages: Any,
+    approx_tokens: Optional[int],
+) -> str:
+    """Identity of the stalled source context + summary strategy."""
+    compressor = getattr(agent, "context_compressor", None)
+    model = (
+        getattr(compressor, "summary_model", None)
+        or getattr(agent, "model", None)
+        or ""
+    )
+    n_messages = len(messages) if isinstance(messages, list) else 0
+    try:
+        tokens = int(approx_tokens or 0)
+    except (TypeError, ValueError):
+        tokens = 0
+    return f"msgs={n_messages}:tokens={tokens}:model={model}"
+
+
+def _record_stall_interrupted_backoff(
+    agent: Any,
+    *,
+    commit_fence: Optional[CompressionCommitFence],
+    started_at: float,
+    messages: Any,
+    approx_tokens: Optional[int],
+) -> bool:
+    """Persist a stall-interrupted cooldown after snapshot restore.
+
+    Must run *after* ``_restore_compressor_attempt_state`` so rollback cannot
+    wipe the new row. Returns True when the stall backoff was recorded.
+    """
+    if not compression_attempt_stalled(
+        commit_fence=commit_fence, started_at=started_at
+    ):
+        return False
+    compressor = getattr(agent, "context_compressor", None)
+    record = getattr(compressor, "record_timeout_failure", None)
+    if not callable(record):
+        return False
+    error = (
+        f"{STALL_INTERRUPTED_FAILURE_CLASS}:"
+        f"{_stall_source_fingerprint(agent, messages, approx_tokens)}"
+    )
+    try:
+        record(error)
+    except Exception:
+        logger.debug(
+            "stall-interrupted compression cooldown persist failed",
+            exc_info=True,
+        )
+        return False
+    logger.info(
+        "Recorded stall-interrupted compression backoff (session=%s, %s)",
+        getattr(agent, "session_id", None) or "none",
+        error,
+    )
+    return True
 
 
 def resolve_compression_fallback_route() -> Optional[dict]:
@@ -3716,6 +3817,15 @@ def compress_context(
             and messages != messages_before_compression
         ):
             messages[:] = copy.deepcopy(messages_before_compression)
+        # Record after restore so rollback cannot wipe a stall backoff, and
+        # while the lease is still held so the next turn cannot race it.
+        _stall_backoff = _record_stall_interrupted_backoff(
+            agent,
+            commit_fence=commit_fence,
+            started_at=_attempt_started_at,
+            messages=messages,
+            approx_tokens=approx_tokens,
+        )
         if _activity_heartbeat is not None:
             _activity_heartbeat.stop("context compression cancelled")
             _activity_heartbeat = None
@@ -3725,7 +3835,11 @@ def compress_context(
             started_at=_attempt_started_at,
             commit_status="aborted",
             split_status="aborted",
-            failure_class="explicit_interrupt",
+            failure_class=(
+                STALL_INTERRUPTED_FAILURE_CLASS
+                if _stall_backoff
+                else "explicit_interrupt"
+            ),
         )
         _existing_sp = getattr(agent, "_cached_system_prompt", None)
         if not _existing_sp:
@@ -3870,6 +3984,13 @@ def compress_context(
                     agent.session_id or "none",
                 )
                 agent._last_compaction_in_place = False
+                _stall_backoff = _record_stall_interrupted_backoff(
+                    agent,
+                    commit_fence=commit_fence,
+                    started_at=_attempt_started_at,
+                    messages=messages,
+                    approx_tokens=approx_tokens,
+                )
                 _existing_sp = getattr(agent, "_cached_system_prompt", None)
                 if not _existing_sp:
                     _existing_sp = agent._build_system_prompt(system_message)
@@ -3878,7 +3999,11 @@ def compress_context(
                     started_at=_attempt_started_at,
                     commit_status="aborted",
                     split_status="aborted",
-                    failure_class="commit_fence_cancelled",
+                    failure_class=(
+                        STALL_INTERRUPTED_FAILURE_CLASS
+                        if _stall_backoff
+                        else "commit_fence_cancelled"
+                    ),
                 )
                 _release_lock()
                 return messages, _existing_sp

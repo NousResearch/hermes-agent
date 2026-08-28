@@ -2947,9 +2947,16 @@ class ContextCompressor(ContextEngine):
         cooldown_seconds: float,
         error: Optional[str],
     ) -> None:
-        cooldown_until = time.time() + cooldown_seconds
-        self._summary_failure_cooldown_until = time.monotonic() + cooldown_seconds
+        now_mono = time.monotonic()
+        new_mono = now_mono + float(cooldown_seconds)
+        # Never shorten a longer live deadline (#96775). A later stall or
+        # timeout records the latest error text but keeps the later of the
+        # two clocks.
+        if new_mono > self._summary_failure_cooldown_until:
+            self._summary_failure_cooldown_until = new_mono
         self._last_summary_error = error
+        remaining = max(0.0, self._summary_failure_cooldown_until - time.monotonic())
+        cooldown_until = time.time() + remaining
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -2971,12 +2978,11 @@ class ContextCompressor(ContextEngine):
             logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
 
     def record_timeout_failure(self, error: str) -> None:
-        """Record a consecutive timeout failure using the shared cooldown ladder.
+        """Record a consecutive timeout/stall failure using the shared ladder.
 
-        Used by both the summary-LLM exception handler (inline at line ~3714)
-        and the host-level ``compress_context`` timeout wrapper in
-        ``run_compress_context_with_progress_timeout``. Avoids re-implementing
-        the ladder at each call site (#62452).
+        Used by the summary-LLM exception handler, the host-level
+        ``compress_context`` timeout wrapper, and stall-interrupted
+        pre-commit cancellation (#62452, #96775).
         """
         _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
         self._consecutive_timeout_failures = (

@@ -122,3 +122,38 @@ def test_interrupt_turn_only_while_active():
     assert calls == ["lost"] and lease.interrupt_message == "lost"
     lease.deactivate_after_liveness_abort()
     assert lease.stop.is_set() and lease.is_turn_active() is False
+
+
+def test_refresh_renews_bound_closeout_claim_and_interrupts_on_loss(monkeypatch):
+    agent = _agent(
+        _Db(),
+        _current_work_id="work-1",
+        _current_work_generation=3,
+        _current_work_delivery_id="delivery-3",
+        _current_work_claim_id="claim-3",
+    )
+    interrupts = []
+    agent.interrupt = lambda message, **_kwargs: interrupts.append(message)
+    lease = DurableTurnLease(
+        agent, agent._session_db, "s1", "holder", "relay-turn"
+    )
+    lease.turn_active = True
+    renewals = []
+    monkeypatch.setattr(
+        "tools.async_delegation.renew_work_group_claim",
+        lambda *args: renewals.append(args) or True,
+    )
+
+    assert lease.refresh_tick() is None
+    assert renewals == [
+        ("work-1", 3, "delivery-3", "claim-3", "relay-turn")
+    ]
+    assert interrupts == []
+
+    monkeypatch.setattr(
+        "tools.async_delegation.renew_work_group_claim", lambda *_args: False
+    )
+    assert lease.refresh_tick() is False
+    assert interrupts == [
+        "Delegation closeout claim lost; stopping to prevent duplicate reconciliation."
+    ]

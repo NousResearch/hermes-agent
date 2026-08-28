@@ -26,6 +26,8 @@ class TurnFacadeMixin:
         persist_user_timestamp: Optional[float]=None, persist_user_display_kind: Optional[str]=None,
         persist_user_display_metadata: Optional[Dict[str, Any]]=None,
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
+        origin_work_id: str="", work_generation: int=0,
+        work_delivery_id: str="", work_claim_id: str="",
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
@@ -58,6 +60,39 @@ class TurnFacadeMixin:
             "platform": getattr(self, "platform", None) or "",
         }
         relay_turn_id = f"{session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+        # Trusted internal continuation identity is current-turn state only.
+        # External callers omit these kwargs and therefore always start clean.
+        self._current_work_id = str(origin_work_id or "")
+        self._current_work_generation = int(work_generation or 0)
+        self._current_work_delivery_id = str(work_delivery_id or "")
+        self._current_work_claim_id = str(work_claim_id or "")
+        if (
+            self._current_work_id
+            and self._current_work_delivery_id
+            and self._current_work_claim_id
+        ):
+            from tools.async_delegation import bind_work_group_closeout_turn
+
+            if not bind_work_group_closeout_turn(
+                self._current_work_id,
+                self._current_work_delivery_id,
+                self._current_work_claim_id,
+                relay_turn_id,
+            ):
+                # A trusted replay can race the original closeout or arrive after
+                # that deterministic delivery already closed. A failed exact bind
+                # is stale and must not create a second visible terminal result.
+                self._current_work_id = ""
+                self._current_work_generation = 0
+                self._current_work_delivery_id = ""
+                self._current_work_claim_id = ""
+                return {
+                    "messages": list(conversation_history or []),
+                    "final_response": "",
+                    "api_calls": 0,
+                    "completed": True,
+                    "duplicate_closeout": True,
+                }
         self._relay_pending_turn_id = relay_turn_id
         relay_parent_session_id = (
             str(getattr(self, "_parent_session_id", None) or "")
@@ -184,6 +219,48 @@ class TurnFacadeMixin:
                         reset_conversation_context(token)
                     if affinity_token is not None:
                         reset_affinity_scope(affinity_token)
+                    # A bound closeout that exits without a durable close or
+                    # replacement reopen must not stay protected merely because
+                    # this process is alive. Release only this exact turn/claim.
+                    current_work_id = str(
+                        getattr(self, "_current_work_id", "") or ""
+                    )
+                    current_delivery_id = str(
+                        getattr(self, "_current_work_delivery_id", "") or ""
+                    )
+                    current_claim_id = str(
+                        getattr(self, "_current_work_claim_id", "") or ""
+                    )
+                    if current_work_id and current_delivery_id and current_claim_id:
+                        try:
+                            from tools.async_delegation import (
+                                release_bound_work_group_closeout,
+                            )
+
+                            release_bound_work_group_closeout(
+                                current_work_id,
+                                int(
+                                    getattr(self, "_current_work_generation", 0)
+                                    or 0
+                                ),
+                                current_delivery_id,
+                                current_claim_id,
+                                relay_turn_id,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to release delegation closeout turn %s",
+                                relay_turn_id,
+                            )
+                    discard_response = getattr(
+                        self, "_discard_conversational_response", None
+                    )
+                    if callable(discard_response):
+                        discard_response()
+                    self._current_work_id = ""
+                    self._current_work_generation = 0
+                    self._current_work_delivery_id = ""
+                    self._current_work_claim_id = ""
                     # Balance note_turn_started so the idle queue's live-turn count cannot leak.
                     with suppress(Exception):
                         _review_queue.note_turn_finished()

@@ -145,9 +145,7 @@ def run_tool_round(
 
     # Flush open streaming boxes before tools so early content doesn't wrap tool feed
     # lines. Display callback only — TTS (_stream_callback) must NOT receive None (EOS).
-    if agent.stream_delta_callback:
-        with suppress(Exception):
-            agent.stream_delta_callback(None)
+    agent._close_stream_display_segment()
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 

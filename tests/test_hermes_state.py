@@ -93,6 +93,47 @@ def db(tmp_path):
     session_db.close()
 
 
+def test_sessiondb_reconciles_legacy_async_ledger_before_deferred_indexes(tmp_path):
+    db_path = tmp_path / "legacy-async.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE async_delegations (
+           delegation_id TEXT PRIMARY KEY, origin_session TEXT NOT NULL,
+           origin_ui_session_id TEXT NOT NULL DEFAULT '', parent_session_id TEXT,
+           state TEXT NOT NULL, dispatched_at REAL NOT NULL, completed_at REAL,
+           updated_at REAL NOT NULL, event_json TEXT, result_json TEXT,
+           delivery_state TEXT NOT NULL DEFAULT 'pending',
+           delivery_attempts INTEGER NOT NULL DEFAULT 0, delivered_at REAL)"""
+    )
+    conn.commit()
+    conn.close()
+
+    db = SessionDB(db_path=db_path)
+    db.close()
+    conn = sqlite3.connect(db_path)
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")
+    }
+    tables = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    indexes = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )
+    }
+    conn.close()
+    assert {"origin_work_id", "work_generation"} <= columns
+    assert "async_delegation_work_groups" in tables
+    assert {
+        "idx_async_delegations_work",
+        "idx_async_work_groups_state",
+        "idx_async_work_groups_delivery",
+    } <= indexes
+
+
 @pytest.fixture(autouse=True)
 def _no_fts_rebuild_throttle(monkeypatch):
     """Zero the FTS-rebuild inter-chunk throttle for every test in this file.

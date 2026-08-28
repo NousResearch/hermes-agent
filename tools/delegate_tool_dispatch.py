@@ -44,6 +44,11 @@ class _Batch:
     origin_owner_transport: Any
     origin_owner_session_record: Any
     overall_start: float
+    origin_work_id: str = ""
+    work_generation: int = 0
+    owner_turn_id: str = ""
+    closeout_delivery_id: str = ""
+    closeout_claim_id: str = ""
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
@@ -353,6 +358,11 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
+        origin_work_id=unit.origin_work_id,
+        work_generation=unit.work_generation,
+        owner_turn_id=unit.owner_turn_id,
+        closeout_delivery_id=unit.closeout_delivery_id,
+        closeout_claim_id=unit.closeout_claim_id,
     )
 
 def _dispatch_background(batch: _Batch) -> str:

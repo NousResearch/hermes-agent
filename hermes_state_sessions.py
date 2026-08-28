@@ -24,6 +24,27 @@ from hermes_state_common import (
 logger = logging.getLogger("hermes_state")
 
 
+def _drop_work_groups_for_sessions(conn: sqlite3.Connection, session_ids: List[str]) -> int:
+    """Close work groups owned by sessions deleted in this exact DB transaction."""
+    ids = [session_id for session_id in dict.fromkeys(session_ids) if session_id]
+    if not ids:
+        return 0
+    placeholders = _session_ids_placeholders(ids)
+    now = time.time()
+    params = [now, now, *ids, *ids, *ids]
+    cursor = conn.execute(
+        "UPDATE async_delegation_work_groups SET state='closed', "
+        "terminal_disposition='dropped', terminal_diagnostics='owning session deleted', "
+        "closed_at=?, updated_at=?, closeout_claim=NULL, closeout_claimed_at=NULL, "
+        "closeout_turn_id=NULL, closeout_owner_pid=NULL, closeout_owner_started_at=NULL "
+        "WHERE state IN ('open','sealed','closing') AND ("
+        f"origin_session IN ({placeholders}) OR origin_session_id IN ({placeholders}) "
+        f"OR parent_session_id IN ({placeholders}))",
+        params,
+    )
+    return cursor.rowcount
+
+
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
     """Workspace grouping key: git repo root, else cwd, else None (branch excluded: a checkout must not
     fragment history)."""
@@ -1459,6 +1480,7 @@ class SessionSessionsMixin:
             }:
                 return False
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
+            _drop_work_groups_for_sessions(conn, [session_id, *removed_ids])
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
             )
@@ -1492,6 +1514,7 @@ class SessionSessionsMixin:
                 (session_id,),
             )
             if cursor.rowcount > 0:
+                _drop_work_groups_for_sessions(conn, [session_id])
                 self._delete_unreferenced_system_prompts(conn)
             return cursor.rowcount > 0
         deleted = self._execute_write(_do)
@@ -1515,6 +1538,7 @@ class SessionSessionsMixin:
                 return 0
             ph = _session_ids_placeholders(existing)
             removed_ids.extend(_delete_delegate_children(conn, existing))
+            _drop_work_groups_for_sessions(conn, [*existing, *removed_ids])
             conn.execute(  # orphan children whose parent is in the kill list (FK)
                 f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", existing,
             )
@@ -1551,6 +1575,7 @@ class SessionSessionsMixin:
             ).fetchall()}
             if not session_ids:
                 return 0
+            _drop_work_groups_for_sessions(conn, list(session_ids))
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({_session_ids_placeholders(session_ids)})", list(session_ids),

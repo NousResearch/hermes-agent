@@ -50,11 +50,15 @@ class StreamDeliveryMixin:
         Flushes the think scrubber's benign tail first, routed through the context scrubber (a span
         straddling the boundary must still be caught), then the context scrubber's own tail.
         """
+        discarding_gated_response = bool(
+            getattr(self, "_conversational_response_gated", False)
+        )
+        self._discard_conversational_response()
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
 
         def deliver(tail: str) -> None:
-            if tail:
+            if tail and not discarding_gated_response:
                 self._deliver_to_stream_callbacks(tail)
                 self._record_streamed_assistant_text(tail)
 
@@ -73,6 +77,77 @@ class StreamDeliveryMixin:
         if ctx_scrubber is not None:
             deliver(ctx_scrubber.flush())
         self._current_streamed_assistant_text = ""
+        self._begin_conversational_response()
+
+    def _conversational_admission_required(self) -> bool:
+        """Whether this top-level response must await complete tool metadata."""
+        if getattr(self, "_delegate_depth", 0) > 0:
+            return False
+        if getattr(self, "_current_work_id", ""):
+            return True
+        try:
+            from gateway.session_context import closeout_delivery_supported
+            from tools.async_delegation import task_scoped_closeout_enabled
+
+            return (
+                task_scoped_closeout_enabled()
+                and closeout_delivery_supported()
+                and "delegate_task" in (getattr(self, "valid_tool_names", ()) or ())
+            )
+        except Exception:
+            return False
+
+    def _begin_conversational_response(self) -> None:
+        self._conversational_response_gated = self._conversational_admission_required()
+        self._conversational_response_events = []
+        self._conversational_stream_end = None
+        self._conversational_response_suppressed = False
+
+    def _discard_conversational_response(self) -> None:
+        self._conversational_response_events = []
+        self._conversational_response_gated = False
+        self._conversational_stream_end = None
+
+    def _admit_conversational_response(self) -> None:
+        """Release one completed no-tool response through its normal observers."""
+        events = list(getattr(self, "_conversational_response_events", ()) or ())
+        self._conversational_response_events = []
+        self._conversational_response_gated = False
+        for kind, payload in events:
+            if kind == "delta":
+                self._deliver_stream_delta(payload)
+            elif kind == "interim":
+                self._deliver_interim_assistant_message(payload)
+            elif kind == "codex_commentary":
+                self._deliver_streamed_codex_commentary(payload)
+            elif kind == "stream_end":
+                self._deliver_stream_end(**payload)
+
+    def _settle_conversational_response(self, *, has_tool_calls: bool) -> None:
+        """Settle buffering only after provider normalization is complete."""
+        if not getattr(self, "_conversational_response_gated", False):
+            return
+        think_scrubber = getattr(self, "_stream_think_scrubber", None)
+        if think_scrubber is not None:
+            tail = think_scrubber.flush()
+            if tail:
+                context_scrubber = getattr(self, "_stream_context_scrubber", None)
+                if context_scrubber is not None:
+                    tail = context_scrubber.feed(tail)
+                if tail:
+                    self._fire_stream_delta(tail)
+        context_scrubber = getattr(self, "_stream_context_scrubber", None)
+        if context_scrubber is not None:
+            tail = context_scrubber.flush()
+            if tail:
+                self._fire_stream_delta(tail)
+        stream_end = getattr(self, "_conversational_stream_end", None)
+        self._conversational_stream_end = None
+        if stream_end is not None:
+            self._conversational_response_events.append(("stream_end", stream_end))
+        if has_tool_calls:
+            self._conversational_response_suppressed = True
+            self._discard_conversational_response()
 
     @property
     def _current_streamed_assistant_text(self) -> str:
@@ -174,6 +249,12 @@ class StreamDeliveryMixin:
 
     def _fire_streamed_codex_commentary(self, text: str) -> None:
         """Deliver a completed live Codex commentary message immediately."""
+        if getattr(self, "_conversational_response_gated", False):
+            self._conversational_response_events.append(("codex_commentary", text))
+            return
+        self._deliver_streamed_codex_commentary(text)
+
+    def _deliver_streamed_codex_commentary(self, text: str) -> None:
         if getattr(self, "interim_assistant_callback", None) is None or not isinstance(text, str):
             return
         visible = self._visible_commentary(text)
@@ -182,11 +263,15 @@ class StreamDeliveryMixin:
         self._deliver_interim(visible, already_streamed=False, record=[visible])
 
     def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
-        """Surface a real mid-turn assistant commentary message to the UI layer. Does NOT set
-        ``_response_was_previewed`` ("the final response was shown") — the CLI would then suppress a
-        different final summary."""
+        """Surface a real mid-turn assistant commentary message to the UI layer."""
         if not isinstance(assistant_msg, dict):
             return
+        if getattr(self, "_conversational_response_gated", False):
+            self._conversational_response_events.append(("interim", dict(assistant_msg)))
+            return
+        self._deliver_interim_assistant_message(assistant_msg)
+
+    def _deliver_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
         commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
         # Dedup within this message and against earlier deliveries, first occurrence wins.
         pending: dict[str, str] = {}
@@ -280,6 +365,16 @@ class StreamDeliveryMixin:
         self._enqueue_stream_hook("on_stream_start")
 
     def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
+        if getattr(self, "_conversational_response_gated", False):
+            self._conversational_stream_end = {
+                "final_text": final_text,
+                "finished": finished,
+                "error": error,
+            }
+            return
+        self._deliver_stream_end(final_text=final_text, finished=finished, error=error)
+
+    def _deliver_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
         self._enqueue_stream_hook("on_stream_end", final_text=final_text, finished=finished, error=error)
 
     def _fire_stream_delta(self, text: str) -> None:
@@ -310,10 +405,31 @@ class StreamDeliveryMixin:
                 text = text.lstrip("\n")
         if not text:
             return
+        if getattr(self, "_conversational_response_gated", False):
+            self._conversational_response_events.append(("delta", text))
+            return
+        self._deliver_stream_delta(text)
+
+    def _deliver_stream_delta(self, text: str) -> None:
         delivered = self._deliver_to_stream_callbacks(text)
         self._enqueue_stream_hook("on_stream_delta", delta=text, kind="text")
         if delivered:
             self._record_streamed_assistant_text(text)
+
+    def _fire_suppressed_tool_text(self, text: str) -> None:
+        """Legacy display-only path, routed through admission while gated."""
+        if getattr(self, "_conversational_response_gated", False):
+            self._conversational_response_events.append(("delta", text))
+            return
+        if self._call_quietly(self.stream_delta_callback, text):
+            self._record_streamed_assistant_text(text)
+
+    def _close_stream_display_segment(self) -> None:
+        """Close a legacy display segment unless admission suppressed it."""
+        if getattr(self, "_conversational_response_suppressed", False):
+            self._conversational_response_suppressed = False
+            return
+        self._call_quietly(self.stream_delta_callback, None)
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered; superseded writers are fenced like content deltas."""

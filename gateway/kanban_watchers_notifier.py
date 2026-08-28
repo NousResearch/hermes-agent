@@ -52,15 +52,35 @@ MAX_SEND_FAILURES = 12
 _LOCAL_PATH_RE = re.compile(r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|" r"[A-Za-z]:\\[^\s,;]+)")
 
 
+def _mobile_excerpt(value: Any, limit: int) -> str:
+    """Return a bounded excerpt that never ends in a silent partial word."""
+    text = "" if value is None else str(value)
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit == 1:
+        return "…"
+    excerpt = text[: limit - 1].rstrip()
+    if " " in excerpt:
+        excerpt = excerpt.rsplit(" ", 1)[0]
+    return f"{excerpt}…"
+
+
+def _first_line_excerpt(value: Any, limit: int) -> str:
+    """Return a bounded excerpt from the first non-empty line."""
+    text = "" if value is None else str(value)
+    lines = text.strip().splitlines()
+    return _mobile_excerpt(lines[0] if lines else text, limit)
+
+
 def _safe_review_reason(value: Any, limit: int = 160) -> str:
     """Return a mobile-friendly review reason safe for external delivery."""
     from agent.redact import redact_sensitive_text
 
     reason = redact_sensitive_text("" if value is None else str(value), force=True, redact_url_credentials=True)
     reason = " ".join(_LOCAL_PATH_RE.sub("[local path]", reason).split())
-    if len(reason) > limit:
-        reason = reason[: limit - 1].rstrip() + "…"
-    return reason
+    return _mobile_excerpt(reason, limit)
 
 
 def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
@@ -245,15 +265,14 @@ def _payload(ev: Any, key: str) -> Any:
 def _clip(ev: Any, key: str, fmt: str, limit: int) -> str:
     """``fmt`` applied to the truncated payload value, or ``""`` when absent."""
     value = _payload(ev, key)
-    return fmt.format(str(value)[:limit]) if value else ""
+    return fmt.format(_mobile_excerpt(value, limit)) if value else ""
 
 
 _NL = "\n{}"
 
 
 def _first_line(text: str, limit: int) -> str:
-    lines = text.strip().splitlines()
-    return lines[0][:limit] if lines else text[:limit]
+    return _first_line_excerpt(text, limit)
 
 
 def _fmt_completed(ev, n) -> tuple:
@@ -275,9 +294,9 @@ def _fmt_review_requested(ev, n) -> tuple:
     wake_handoff = None
     summary = _payload(ev, "summary")
     if summary:
-        summary = str(summary)
-        handoff = f"\n{summary[:200]}"
-        wake_handoff = _first_line(summary, 200)
+        summary = _first_line_excerpt(summary, 200)
+        handoff = f"\n{summary}"
+        wake_handoff = summary
     return f"👀 {n.head} ready for review — {n.title}{handoff}", wake_handoff, None
 
 

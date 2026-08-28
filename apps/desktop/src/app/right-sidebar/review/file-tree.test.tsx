@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesReviewFile } from '@/global'
 import { I18nProvider } from '@/i18n'
 import { $sidebarWorkspaceNodeOpen } from '@/store/layout'
-import { $reviewFiles, $reviewOpen } from '@/store/review'
+import { $reviewFiles, $reviewOpen, $reviewReadOnly } from '@/store/review'
 
 import { ReviewFileTree } from './file-tree'
 
@@ -40,6 +40,7 @@ function renderTree() {
 describe('ReviewFileTree', () => {
   beforeEach(() => {
     $reviewOpen.set(true)
+    $reviewReadOnly.set(false)
     $reviewFiles.set([])
     $sidebarWorkspaceNodeOpen.set({})
 
@@ -79,6 +80,7 @@ describe('ReviewFileTree', () => {
     $reviewFiles.set([])
     $sidebarWorkspaceNodeOpen.set({})
     $reviewOpen.set(false)
+    $reviewReadOnly.set(false)
   })
 
   it('virtualizes heavy trees: only the visible window is mounted', () => {
@@ -126,5 +128,29 @@ describe('ReviewFileTree', () => {
     expect(screen.getByText('b.ts')).toBeTruthy()
     expect(screen.getByText('src')).toBeTruthy()
     expect(screen.getByText('c.ts')).toBeTruthy()
+  })
+
+  it('hides git mutation buttons for tool-diff fallback files', () => {
+    $reviewFiles.set([file('note.md')])
+    $reviewReadOnly.set(true)
+
+    renderTree()
+
+    expect(screen.getByText('note.md')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Stage' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Revert' })).toBeNull()
+  })
+
+  it('keeps read-only file actions but removes git mutations from the context menu', async () => {
+    $reviewFiles.set([file('note.md')])
+    $reviewReadOnly.set(true)
+
+    renderTree()
+    fireEvent.contextMenu(screen.getByText('note.md'))
+
+    expect(await screen.findByRole('menuitem', { name: 'Open Changes' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Open File' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'Stage' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Revert' })).toBeNull()
   })
 })

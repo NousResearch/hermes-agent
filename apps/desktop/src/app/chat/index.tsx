@@ -7,6 +7,7 @@ import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useStat
 import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
+import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
@@ -71,7 +72,7 @@ import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
-import { threadLoadingState } from './thread-loading'
+import { routedSessionIsLoading, threadLoadingState } from './thread-loading'
 import {
   backfillOlderTranscriptPage,
   mergeOlderTranscriptPage,
@@ -502,10 +503,11 @@ const ChatViewContent = memo(function ChatViewContent({
   })
 
   // Session is still loading if the route references a session we haven't
-  // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
-  // session exists — even if it has zero messages (a brand-new routed
-  // session). The flicker where `busy` flips true briefly during hydrate
-  // is handled by `threadLoadingState`'s last-visible-user gate.
+  // resumed yet. Brand-new routed drafts are empty on purpose once a runtime
+  // is bound. A session the list already knows has history must keep the
+  // loader up until a display-authoritative transcript arrives — including
+  // the unproven warm-cache hold, where the runtime is bound but messages
+  // are still suppressed.
   //
   // resumeExhausted: the bounded auto-retry in use-route-resume gave up on this
   // routed session (gateway RPC + REST fallback failed through every attempt).
@@ -513,9 +515,21 @@ const ChatViewContent = memo(function ChatViewContent({
   // spinning forever. Gated on the route matching so a stale latch from another
   // session can't blank the current one.
   const resumeExhausted = isPrimary && isRoutedSessionView && resumeExhaustedSessionId === routedSessionId
+  const routedHasHistory = Boolean(
+    routedSessionId &&
+    sessions.some(
+      session => sessionMatchesStoredId(session, routedSessionId) && sessionShouldHaveTranscript(session)
+    )
+  )
 
-  const loadingSession =
-    !resumeExhausted && isRoutedSessionView && (routeSessionMismatch || (messagesEmpty && !activeSessionId))
+  const loadingSession = routedSessionIsLoading({
+    activeSessionId,
+    knownHistory: routedHasHistory,
+    messagesEmpty,
+    resumeExhausted,
+    routeSessionMismatch,
+    routedSessionView: isRoutedSessionView
+  })
 
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
   // Hide the composer in the exhausted error state too: there's no live runtime

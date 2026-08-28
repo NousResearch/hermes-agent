@@ -19,6 +19,7 @@ A normal start or reconnect must retain the retryable conflict behavior and
 must never evict the active holder.
 """
 
+import logging
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
@@ -106,7 +107,7 @@ def test_explicit_replace_takeover_reacquires_lock_once(adapter):
     assert acquire.call_count == 2
 
 
-def test_lock_conflict_names_owning_profile(adapter):
+def test_lock_conflict_names_owning_profile(adapter, caplog):
     """OOF-3: cross-profile conflicts must name the owning profile, not just a PID."""
     existing = {
         "pid": 559,
@@ -115,6 +116,7 @@ def test_lock_conflict_names_owning_profile(adapter):
         "hermes_home": "/opt/data/profiles/lead-gen-outreach",
     }
 
+    caplog.set_level(logging.ERROR, logger="gateway.platforms.base")
     with patch(
         "gateway.status.acquire_scoped_lock",
         return_value=(False, existing),
@@ -134,6 +136,14 @@ def test_lock_conflict_names_owning_profile(adapter):
     )
     assert adapter._fatal_error_retryable is True
     assert adapter._fatal_error_code == "telegram-bot-token_lock"
+    conflict_records = [
+        record
+        for record in caplog.records
+        if "already in use by the 'lead-gen-outreach' profile gateway"
+        in record.getMessage()
+    ]
+    assert len(conflict_records) == 1
+    assert conflict_records[0].levelno == logging.ERROR
 
 
 def test_lock_conflict_infers_profile_from_legacy_hermes_home(adapter):

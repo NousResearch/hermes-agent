@@ -173,10 +173,16 @@ class TestGatewayPidState:
 class TestGatewayRuntimeStatus:
     def test_clear_profile_platforms_preserves_primary_entries(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        primary_route = {
+            "state": "connected",
+            "updated_at": "2000-01-01T00:00:00+00:00",
+            "writer_pid": os.getpid(),
+            "writer_start_time": status._get_process_start_time(os.getpid()),
+        }
         (tmp_path / "gateway_state.json").write_text(
             json.dumps({
                 "platforms": {
-                    "telegram": {"state": "connected"},
+                    "telegram": primary_route,
                     "reviewer:discord": {
                         "state": "fatal",
                         "error_code": "duplicate_credential",
@@ -189,17 +195,144 @@ class TestGatewayRuntimeStatus:
         status.write_runtime_status(clear_profile_platforms=True)
 
         payload = status.read_runtime_status()
-        assert payload["platforms"] == {"telegram": {"state": "connected"}}
+        assert payload is not None
+        assert payload["platforms"] == {"telegram": primary_route}
+
+    def test_write_prunes_expired_platform_state_from_dead_writer(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: False)
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "platforms": {
+                        "feishu": {
+                            "state": "connected",
+                            "updated_at": "2000-01-01T00:00:00+00:00",
+                            "writer_pid": 424242,
+                            "writer_start_time": 1.0,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert "feishu" not in payload["platforms"]
+
+    def test_read_filters_expired_platform_state_without_waiting_for_write(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: False)
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "platforms": {
+                        "feishu": {
+                            "state": "connected",
+                            "updated_at": "2000-01-01T00:00:00+00:00",
+                            "writer_pid": 424242,
+                            "writer_start_time": 1.0,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        payload = status.read_runtime_status()
+
+        assert payload is not None
+        assert "feishu" not in payload["platforms"]
+
+    def test_read_preserves_expired_platform_state_from_live_writer(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 4242)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 55.0)
+        route = {
+            "state": "connected",
+            "updated_at": "2000-01-01T00:00:00+00:00",
+            "writer_pid": 4242,
+            "writer_start_time": 55.0,
+        }
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({"platforms": {"telegram": route}}),
+            encoding="utf-8",
+        )
+
+        payload = status.read_runtime_status()
+
+        assert payload is not None
+        assert payload["platforms"]["telegram"] == route
+
+    def test_write_preserves_expired_platform_state_from_live_writer(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 4242)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 55.0)
+        route = {
+            "state": "connected",
+            "updated_at": "2000-01-01T00:00:00+00:00",
+            "writer_pid": 4242,
+            "writer_start_time": 55.0,
+        }
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({"platforms": {"telegram": route}}),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert payload["platforms"]["telegram"] == route
+
+    def test_write_preserves_recent_platform_state_from_dead_writer(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: False)
+        route = {
+            "state": "disconnected",
+            "updated_at": status._utc_now_iso(),
+            "writer_pid": 4343,
+            "writer_start_time": 65.0,
+        }
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({"platforms": {"discord": route}}),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert payload["platforms"]["discord"] == route
 
     def test_clear_profile_platforms_and_write_are_one_atomic_update(
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        primary_route = {
+            "state": "connected",
+            "updated_at": "2000-01-01T00:00:00+00:00",
+            "writer_pid": os.getpid(),
+            "writer_start_time": status._get_process_start_time(os.getpid()),
+        }
         (tmp_path / "gateway_state.json").write_text(
             json.dumps({
                 "platforms": {
                     "old:discord": {"state": "fatal"},
-                    "telegram": {"state": "connected"},
+                    "telegram": primary_route,
                 }
             }),
             encoding="utf-8",
@@ -211,9 +344,11 @@ class TestGatewayRuntimeStatus:
             clear_profile_platforms=True,
         )
 
-        platforms = status.read_runtime_status()["platforms"]
+        payload = status.read_runtime_status()
+        assert payload is not None
+        platforms = payload["platforms"]
         assert set(platforms) == {"telegram", "reviewer:slack"}
-        assert platforms["telegram"] == {"state": "connected"}
+        assert platforms["telegram"] == primary_route
         assert platforms["reviewer:slack"]["state"] == "connected"
 
     def test_platform_writes_are_stamped_with_writer_identity(

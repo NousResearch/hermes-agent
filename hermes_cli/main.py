@@ -650,14 +650,19 @@ def _apply_profile_override() -> None:
     # only when it already points to a specific profile directory.  The
     # distinguishing heuristic: a profile path has "profiles" as its immediate
     # parent directory name (e.g. ~/.hermes/profiles/coder or
-    # /opt/data/profiles/coder).  If HERMES_HOME points to the hermes root
-    # instead (e.g. systemd hardcodes HERMES_HOME=/root/.hermes), we must
-    # still read active_profile — the user may have switched profiles via
+    # /opt/data/profiles/coder).  The reserved ``default`` name is never a named
+    # profile: canonicalize a legacy ``profiles/default`` value back to the root
+    # without creating or using that directory.  If HERMES_HOME points to the
+    # hermes root instead (e.g. systemd hardcodes HERMES_HOME=/root/.hermes), we
+    # must still read active_profile — the user may have switched profiles via
     # `hermes profile use` and the gateway should honour that choice.
     # See issue #22502.
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env:
-        if Path(hermes_home_env).parent.name == "profiles":
+        profile_home = Path(hermes_home_env)
+        if profile_home.parent.name == "profiles":
+            if profile_home.name.casefold() == "default":
+                os.environ["HERMES_HOME"] = str(profile_home.parent.parent)
             return
 
     # 2. If no flag, check active_profile in the hermes root.

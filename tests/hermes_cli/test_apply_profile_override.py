@@ -98,6 +98,44 @@ class TestApplyProfileOverrideHermesHomeGuard:
             f"Expected HERMES_HOME to end with 'coder', got: {result!r}"
         )
 
+    def test_reserved_default_profile_path_resolves_to_root_without_creating_shell(
+        self, tmp_path, monkeypatch
+    ):
+        """A legacy ``profiles/default`` environment path means the root profile.
+
+        ``default`` is reserved and must never become a named-profile directory.
+        Canonicalizing the inherited path must not create that directory either.
+        """
+        hermes_root = tmp_path / ".hermes"
+        default_shell = hermes_root / "profiles" / "default"
+
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(default_shell),
+            active_profile=None,
+        )
+
+        assert result == str(hermes_root)
+        assert not default_shell.exists()
+
+    def test_explicit_reserved_default_profile_resolves_to_root_without_shell(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_root = tmp_path / ".hermes"
+        default_shell = hermes_root / "profiles" / "default"
+
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile=None,
+            argv=["hermes", "-p", "default", "gateway", "run"],
+        )
+
+        assert result == str(hermes_root)
+        assert sys.argv == ["hermes", "gateway", "run"]
+        assert not default_shell.exists()
 
     def test_sudo_explicit_profile_resolves_invoking_users_profile(self, tmp_path, monkeypatch):
         """sudo elias ... should resolve `-p elias` under SUDO_USER, not root."""

@@ -577,13 +577,30 @@ def _ensure_cron_dir(cron_dir: Path) -> None:
     cron_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _is_named_profile_path(path: Path) -> bool:
+    """Return True if *path* is inside a named profile home.
+
+    Named profiles live under ``<hermes_home>/profiles/<name>/``.  The
+    default profile lives at ``<hermes_home>`` directly (no ``profiles``
+    parent), as do custom ``HERMES_HOME`` paths outside ``~/.hermes``.
+    """
+    try:
+        return "profiles" in path.resolve().parts
+    except (OSError, RuntimeError):
+        return False
+
+
 def _ensure_cron_dir(cron_dir: Path) -> None:
-    """Create a cron directory without resurrecting a deleted profile home."""
-    profile_home = cron_dir.parent
-    if profile_home.parent.name == "profiles":
-        # Named profiles are created by the profile lifecycle, not cron.  A
-        # stale multiplex scheduler may still hold this path after deletion;
-        # parents=False makes that race fail closed instead of restoring it.
+    """Create a cron directory without resurrecting a deleted profile home.
+
+    Named profiles are created by the profile lifecycle, not cron.  A stale
+    multiplex scheduler may still hold a path to a deleted profile after the
+    user removes it; ``parents=False`` makes that race fail closed
+    (FileNotFoundError) instead of silently restoring the directory tree.
+    Default and custom Hermes homes keep ``parents=True`` so first-run
+    directory creation still works.
+    """
+    if _is_named_profile_path(cron_dir):
         cron_dir.mkdir(exist_ok=True)
         return
     cron_dir.mkdir(parents=True, exist_ok=True)

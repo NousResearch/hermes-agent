@@ -3281,9 +3281,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             if platform_name in relay_fronted_platforms():
                 msg = (
                     f"platform '{platform_name}' is relay-fronted and has no "
-                    "live gateway transport; start the gateway or use "
-                    "`hermes cron trigger` (the gateway ticker owns relay-"
-                    "fronted delivery)"
+                    "live gateway transport; start the gateway (its ticker "
+                    "owns relay-fronted delivery and will fire the job on "
+                    "schedule)"
                 )
                 logger.warning("Job '%s': %s", job["id"], msg)
                 delivery_errors.append(msg)

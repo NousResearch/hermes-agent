@@ -883,9 +883,8 @@ def _forward_relay_fronted_run(job: Dict[str, Any]) -> Optional[str]:
             "success": False,
             "error": (
                 "This job targets a relay-fronted platform, which has no "
-                "standalone sender. Start the gateway (it owns the live relay "
-                "adapter) or use `hermes cron trigger` so the gateway ticker "
-                "delivers it."
+                "standalone sender. Start the gateway — its ticker will "
+                "deliver the job on schedule via the live relay adapter."
             ),
         },
         indent=2,

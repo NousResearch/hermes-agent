@@ -24,7 +24,15 @@ _FAILED_EXIT_RE = re.compile(r"\[exit\s+(-?\d+)\]", re.IGNORECASE)
 _TOOL_PREFIX_RE = re.compile(r"(?:^|\s)[┊|]\s*[^$\n]*\$\s*(.+)")
 _PROVIDER_STALL_RE = re.compile(
     r"(?:waiting on .+no output yet|provider has been unresponsive|"
-    r"consecutive stale attempts|auto-reconnect)",
+    r"consecutive stale attempts|auto-reconnect|"
+    # Observed live (2026-08-28): a provider connection can drop mid-call
+    # and force a full session reinitialize instead of a clean retry --
+    # the worker restarts from a fresh "Initializing agent..." banner
+    # every time and never accumulates enough of one turn to make
+    # progress, no matter how large its runtime budget is. Distinct from
+    # the other signals here (which describe a hung request), this one
+    # is a request that gets cut off and thrown away outright.
+    r"interrupted during api call)",
     re.IGNORECASE,
 )
 _COMPACTION_START_RE = re.compile(r"pre-api compression", re.IGNORECASE)

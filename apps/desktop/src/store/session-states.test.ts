@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
-import { $workspaceMode, forgetActivePane, rememberActivePane, setWorkspaceScope, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
+import {
+  $workspaceMode,
+  forgetActivePane,
+  rememberActivePane,
+  setWorkspaceScope,
+  workspaceScopeKey
+} from '@/components/pane-shell/workspace-scope'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
@@ -381,7 +387,7 @@ describe('focusWorkspaceOwnerSessionTile', () => {
     expect(focusWorkspaceOwnerSessionTile('bot:a')).toBe('thread')
   })
 
-  it('never crosses owners: another bot\'s open tabs do not count', () => {
+  it("never crosses owners: another bot's open tabs do not count", () => {
     openSessionTile('other-bot-chat', 'center', 'workspace', undefined, botB)
 
     expect(focusWorkspaceOwnerSessionTile('bot:a')).toBeNull()

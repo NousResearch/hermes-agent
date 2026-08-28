@@ -364,7 +364,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
     """Interpreter state persists across cells; RPC authority must not."""
 
     def _recorder(self, seen):
-        def _handle(tool_name, tool_args, task_id=None):
+        def _handle(tool_name, tool_args, task_id=None, **kwargs):
             from tools.thread_context import _callback_api
 
             (get_approval, _set_a), *_rest = _callback_api()
@@ -372,6 +372,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
                 {
                     "tool": tool_name,
                     "task_id": task_id,
+                    "session_id": kwargs.get("session_id"),
                     "approval_cb": get_approval(),
                 }
             )

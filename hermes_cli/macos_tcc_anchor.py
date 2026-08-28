@@ -51,6 +51,7 @@ from pathlib import Path
 
 from hermes_constants import venv_python_path
 from hermes_cli.managed_uv import _RUNTIME_DIR_NAME
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -164,23 +165,17 @@ def _anchor_marker(venv_bin: Path) -> Path:
 
 
 def _write_marker(venv_bin: Path, source_file: Path) -> None:
-    """Write the anchor marker atomically (write-then-rename).
+    """Write the anchor marker atomically via the shared helper.
 
     A concurrent ensure (update + doctor --fix) must never observe a
     partially-written marker: a torn read would compare unequal and trigger
     a spurious reinstall, and ``write_text`` alone is not atomic.
     """
-    fd, tmp_name = tempfile.mkstemp(prefix=f"{_MARKER_NAME}.", dir=str(venv_bin))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(_marker_value(source_file))
-        os.replace(tmp_name, _anchor_marker(venv_bin))
-    except OSError:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(
+        _anchor_marker(venv_bin),
+        _marker_value(source_file),
+        tmp_prefix=f"{_MARKER_NAME}.",
+    )
 
 
 def _store_root(source_file: Path) -> Path:

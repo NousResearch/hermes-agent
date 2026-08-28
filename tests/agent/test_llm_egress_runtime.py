@@ -395,6 +395,32 @@ def test_protected_provider_route_splits_without_dispatcher_marker(
     assert json.loads(receipt.payload_bytes)["messages"][0]["content"] == text
 
 
+def test_reconstructed_kanban_worker_redacts_paths_without_marker(
+    tmp_path, monkeypatch
+):
+    """Task identity must restore protected redaction after fallback rebuild."""
+    monkeypatch.delenv("HERMES_KANBAN_PROTECTED_REMOTE", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_01234567")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.model = "tencent/hy3:free"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+    path = "/Users/private/hermes/worktree/kanban.db"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "messages": [{"role": "system", "content": f"Inspect {path}"}],
+        },
+    )
+
+    wire = json.loads(receipt.payload_bytes)
+    assert path not in authorized["messages"][0]["content"]
+    assert "<private-path>" in authorized["messages"][0]["content"]
+    assert wire["messages"][0]["content"] == authorized["messages"][0]["content"]
+
+
 @pytest.mark.parametrize(
     "identifier",
     [

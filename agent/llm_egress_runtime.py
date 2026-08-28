@@ -746,13 +746,26 @@ def authorize_agent_sdk_kwargs(
 ) -> tuple[dict[str, Any], AuthorizedEgress]:
     controls = {key: kwargs[key] for key in sdk_control_keys if key in kwargs}
     resolved_route = _route_for_agent(agent, route)
+    route_provider = _route_field(resolved_route, "provider", "")
+    protected_provider_route = provider_uses_egress_firewall(route_provider)
+    protected_remote_marker = (
+        os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
+    )
+    # The marker is deliberately process-local, but a fallback/reconstructed
+    # worker still carries its task identity. Re-derive the protected Kanban
+    # boundary from that durable identity plus the exact provider route so a
+    # fallback cannot turn private task context into a repeated egress block.
+    protected_kanban_remote = protected_remote_marker or (
+        bool(str(os.environ.get("HERMES_KANBAN_TASK") or "").strip())
+        and protected_provider_route
+    )
     sidecar = kwargs.get("_hermes_source_provenance")
     body = {
         key: value
         for key, value in kwargs.items()
         if key not in controls and key not in _INTERNAL_EGRESS_KEYS
     }
-    if os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1":
+    if protected_kanban_remote:
         body = _sanitize_protected_kanban_body(body)
     body = _restore_source_provenance_sidecar(body, sidecar)
     session_id = str(getattr(agent, "session_id", "") or "")
@@ -784,12 +797,7 @@ def authorize_agent_sdk_kwargs(
     # flag.  Without this route-derived guard, a large protected request raises
     # ValueError while typing, bypassing the firewall's content-free receipt
     # and triggering a provider fallback loop.
-    protected_remote_context = (
-        os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
-        or provider_uses_egress_firewall(
-            _route_field(resolved_route, "provider", "")
-        )
-    )
+    protected_remote_context = protected_remote_marker or protected_provider_route
     typed_body = _typed_payload(
         body,
         _grant_texts(grants),
@@ -797,12 +805,12 @@ def authorize_agent_sdk_kwargs(
         sanitized_cap=sanitized_segment_cap,
         syntax_tool_call_ids=(
             _recognized_syntax_tool_call_ids(body)
-            if os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"
+            if protected_kanban_remote
             else frozenset()
         ),
         protected_kanban_context=protected_remote_context,
         redact_generated_context=(
-            str(_route_field(resolved_route, "provider", "") or "").strip().lower()
+            str(route_provider or "").strip().lower()
             == "openai-codex"
         ),
         registry=registry if isinstance(registry, SourceProvenanceRegistry) else None,

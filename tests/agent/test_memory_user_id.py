@@ -8,6 +8,8 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
 
@@ -108,13 +110,13 @@ class TestMemoryManagerUserIdThreading:
         session_db.get_session_title_source.return_value = "llm"
 
         with patch(
-            "run_agent.get_tool_definitions",
+            "model_tools.get_tool_definitions",
             return_value=[],
         ), patch(
-            "run_agent.check_toolset_requirements",
+            "model_tools.check_toolset_requirements",
             return_value={},
         ), patch(
-            "run_agent.OpenAI",
+            "agent.process_bootstrap.OpenAI",
         ), patch(
             "hermes_cli.config.load_config_readonly",
             return_value={"memory": {"provider": "recording"}},
@@ -141,6 +143,42 @@ class TestMemoryManagerUserIdThreading:
             == "agent:main:telegram:dm:42"
         )
         assert provider._init_kwargs["cwd"] == str(tmp_path)
+        agent.close()
+
+    @pytest.mark.parametrize("cwd", [None, ""])
+    def test_cwdless_agent_still_initializes_memory_provider(self, cwd):
+        from run_agent import AIAgent
+
+        provider = RecordingProvider()
+
+        with patch(
+            "model_tools.get_tool_definitions",
+            return_value=[],
+        ), patch(
+            "model_tools.check_toolset_requirements",
+            return_value={},
+        ), patch(
+            "agent.process_bootstrap.OpenAI",
+        ), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"memory": {"provider": "recording"}},
+        ), patch(
+            "plugins.memory.load_memory_provider",
+            return_value=provider,
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                platform="cli",
+                session_id="session-without-cwd",
+                cwd=cwd,
+            )
+
+        assert agent.session_cwd is None
+        assert provider._init_session_id == "session-without-cwd"
+        assert "cwd" not in provider._init_kwargs
         agent.close()
 
 

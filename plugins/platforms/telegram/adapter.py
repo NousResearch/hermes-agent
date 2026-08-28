@@ -399,6 +399,56 @@ def _rich_normalize_linebreaks(text: str) -> str:
     return ''.join(out)
 
 
+# Markdown link syntax shared by both Telegram delivery paths: the legacy
+# MarkdownV2 formatter's link conversion and the rich-message outbound scrub
+# below.
+_MD_LINK_RE = re.compile(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)')
+
+# Bot API link targets are "HTTP or tg://" URLs (MessageEntity text_link
+# spec). Anything else — a schemeless destination like ``[Title](Title)`` or a
+# Hermes-internal ``@session:profile/id`` reference — cannot be rendered as a
+# link by Telegram and is exposed to the user as raw bracket syntax (#97497).
+_SUPPORTED_LINK_TARGET_RE = re.compile(r'(?i)^(?:https?://|tg://)\S+$')
+
+# Regions where link syntax is literal content rather than a link to degrade:
+# inline code spans, plus the fenced-code / pipe-table regions already matched
+# by _RICH_PROTECTED_REGION_RE.
+_LINK_SCRUB_PROTECT_RE = re.compile(
+    r'`[^`\n]+`|' + _RICH_PROTECTED_REGION_RE.pattern,
+    re.MULTILINE,
+)
+
+
+def _tg_link_target_supported(target: str) -> bool:
+    """True if Telegram can render *target* as a clickable link target."""
+    return bool(_SUPPORTED_LINK_TARGET_RE.match(target.strip()))
+
+
+def _degrade_unsupported_markdown_links(text: str) -> str:
+    """Degrade markdown links Telegram cannot render to their display text.
+
+    Models sometimes emit ``[Title](Title)`` or ``[Title](@session:p/id)``
+    when referencing session-search results; Telegram then shows the raw
+    bracket-and-parenthesis syntax instead of readable prose (#97497).
+    HTTP(S)/tg:// targets stay clickable; every other target degrades to the
+    label text. Code spans/blocks and table blocks are left verbatim.
+    """
+    if '[' not in text:
+        return text
+
+    def _degrade(m):
+        return m.group(0) if _tg_link_target_supported(m.group(2)) else m.group(1)
+
+    out: list[str] = []
+    pos = 0
+    for m in _LINK_SCRUB_PROTECT_RE.finditer(text):
+        out.append(_MD_LINK_RE.sub(_degrade, text[pos : m.start()]))
+        out.append(m.group(0))  # protected region kept verbatim
+        pos = m.end()
+    out.append(_MD_LINK_RE.sub(_degrade, text[pos:]))
+    return ''.join(out)
+
+
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
 # socket PTB's polling task is blocked on in epoll.
 _UPDATER_STOP_TIMEOUT = 15.0  # `await updater.stop()`, applied identically at every site
@@ -1461,8 +1511,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> Dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
-        escaping destroys table pipes."""
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        escaping destroys table pipes. Unsupported link targets degrade to their display text (#97497)."""
+        payload: Dict[str, Any] = {
+            "markdown": _degrade_unsupported_markdown_links(
+                _rich_normalize_linebreaks(content)
+            )
+        }
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload
@@ -5649,11 +5703,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # 2) Protect inline code; escape \ inside it per MarkdownV2 spec.
         text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0).replace('\\', '\\\\')), text)
         # 3) Links: escape display text; inside the URL only ')' and '\' need escaping.
+        #    Targets Telegram cannot render as links (schemeless destinations,
+        #    @session: references) degrade to the escaped display text so the
+        #    raw bracket syntax is never exposed (#97497).
         def _convert_link(m):
+            display = _escape_mdv2(m.group(1))
+            if not _tg_link_target_supported(m.group(2)):
+                return _ph(display)
             url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
             return _ph(f'[{_escape_mdv2(m.group(1))}]({url})')
 
-        text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
+        text = _MD_LINK_RE.sub(_convert_link, text)
         # 4) Headers (## Title) → bold *Title*, stripping redundant ** inside the header
         def _convert_header(m):
             inner = re.sub(r'\*\*(.+?)\*\*', r'\1', m.group(1).strip())

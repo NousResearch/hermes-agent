@@ -3852,11 +3852,20 @@ def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
     - ``missing_tool_calls``: the actual tool_call entries with no matching
       result on ANY alias (after orphaned results are excluded).
 
-    This is the single source of truth for orphan *detection*. Callers keep
-    their divergent remediation strategies — ``sanitize_api_messages``
-    inserts stubs, the context compressor strips orphans — but the
-    id-resolution and variant-expansion rules can never drift between the
-    two sites again (#58357).
+    This is the single source of truth for GLOBAL orphan *detection* (does
+    a matching id exist anywhere in the transcript). Its remaining consumer
+    is the context compressor's ``_sanitize_tool_pairs`` (strip orphans from
+    the durable history); the id-resolution and variant-expansion rules live
+    here so they can never drift between call sites again (#58357).
+
+    ``sanitize_api_messages`` no longer uses the global check: strict
+    positional providers (DeepSeek v4, Kimi) reject a call whose result is
+    not in the IMMEDIATELY-following tool run even when a matching id exists
+    elsewhere, so its pairing pass walks the transcript positionally instead
+    (#94704) — a strictly stronger invariant that subsumes the global one at
+    that site. Both share the same ``tool_call_id_variants`` /
+    ``tool_result_id_variants`` alias policy, which is the part that must
+    not fork.
     """
     assistant_call_variants: List[tuple[Any, frozenset[str]]] = []
     surviving_call_ids: set[str] = set()
@@ -4010,13 +4019,13 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
 
     # --- Drop tool results with a missing/empty tool_call_id ---
-    # The orphan-sweep below only ever adds a TRUTHY ``tool_call_id`` to
-    # ``result_call_ids``, so a message with a missing/empty id is never
-    # added to that set and can therefore never land in ``orphaned_results``
-    # (a set-difference against ``surviving_call_ids``) either — it silently
-    # passes through this chokepoint untouched and can reach the provider
-    # with no ``tool_call_id`` at all, which strict OpenAI-compatible
-    # providers reject as a schema violation. ``repair_message_sequence``'s
+    # The positional pairing walk below also catches this shape (an id-less
+    # result expands to zero variants, matches no declared call, and is
+    # dropped as a positional orphan), but keep the explicit early filter so
+    # the distinct failure mode keeps its own log line and the guarantee
+    # doesn't silently depend on the walk's internals: a result with no
+    # ``tool_call_id`` at all is a schema violation strict OpenAI-compatible
+    # providers reject outright. ``repair_message_sequence``'s
     # Pass 1 already drops this shape (`if tc_id and tc_id in
     # known_tool_ids`) when it runs first on the same list, but any caller
     # that reaches this function without going through

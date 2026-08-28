@@ -24,12 +24,12 @@ jobs:
     runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-96-core' || 'ubuntu-latest' }}
     # Standard fork runners can be reclaimed by the hosted service before a
     # larger job timeout is reached. Keep upstream's 96-core run intact, but
-    # split the identical per-file suite across three fork jobs so every
+    # split the identical per-file suite across twelve fork jobs so every
     # collected file still runs and each job stays below that external limit.
     strategy:
       fail-fast: false
       matrix:
-        slice: ${{ fromJSON(github.repository == 'NousResearch/hermes-agent' && '["1/1"]' || '["1/3", "2/3", "3/3"]') }}
+        slice: ${{ fromJSON(github.repository == 'NousResearch/hermes-agent' && '["1/1"]' || '["1/12", "2/12", "3/12", "4/12", "5/12", "6/12", "7/12", "8/12", "9/12", "10/12", "11/12", "12/12"]') }}
     timeout-minutes: 60
     steps:
       - name: Checkout code

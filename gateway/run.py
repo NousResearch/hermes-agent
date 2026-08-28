@@ -2624,7 +2624,7 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     Platforms that do not use ``PlatformConfig.token`` always return True so we
     never skip them here (Signal session paths, port-binding HTTP adapters, etc.).
     """
-    from gateway.config import PLATFORM_TOKEN_ENV_NAMES
+    from gateway.config import PLATFORM_TOKEN_ENV_NAMES, Platform
 
     if platform not in PLATFORM_TOKEN_ENV_NAMES:
         return True
@@ -2635,6 +2635,26 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     api_key = getattr(platform_config, "api_key", None) or ""
     if isinstance(api_key, str) and api_key.strip():
         return True
+    # Matrix also authenticates by password login (MATRIX_USER_ID +
+    # MATRIX_PASSWORD, no MATRIX_ACCESS_TOKEN). Those credentials land in
+    # ``extra`` rather than ``.token``, so a token-only check reads a
+    # perfectly reconnectable password-auth config as credential-less and
+    # evicts it from the retry queue on the first transient failure — after
+    # which it stays down until the gateway is restarted by hand. Mirror the
+    # adapter's own gate: homeserver + user_id + password.
+    #
+    # Read ONLY from extra, never os.getenv: build_config() already copies all
+    # three env vars onto extra, and importing this module loads ~/.hermes/.env,
+    # so an env fallback would report "has credential" for every Matrix config
+    # on the box — including the empty-primary multiplex case (#64674) this
+    # check exists to evict.
+    if platform is Platform.MATRIX:
+        extra = getattr(platform_config, "extra", None) or {}
+        if all(
+            str(extra.get(key) or "").strip()
+            for key in ("homeserver", "user_id", "password")
+        ):
+            return True
     return False
 
 

@@ -41,7 +41,7 @@ import { revealFileInTree } from '@/store/layout'
 import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
-import { $projectTree, projectNameForCwd } from '@/store/projects'
+import { $projectTree, openFolderAsProject, projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -108,6 +108,7 @@ export function useStatusbarItems({
   const copy = t.shell.statusbar
   const freeTierCopy = t.freeTier
   const fileMenu = t.fileMenu
+  const openFolderLabel = t.keybinds.actions['workspace.openFolder']
   const primaryActiveSessionId = useStore($activeSessionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   // What the button paints and flips is whether the terminal is ON SCREEN —
@@ -506,15 +507,22 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
-        hidden: !currentCwd,
+        actionId: 'workspace.openFolder',
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
-        // Prefer the named project; fall back to the cwd leaf. Hover tip uses
-        // the shared display formatter (home → ~) so statusbar and branch bar
-        // agree on how a path looks.
-        label: projectName || (currentCwd ? pathLeaf(currentCwd) : undefined),
+        // Prefer the named project; fall back to the cwd leaf, or "Open folder as project" when no workspace is active.
+        // Hover tip uses the shared display formatter (home → ~) so statusbar and branch bar agree on how a path looks.
+        label: projectName || (currentCwd ? pathLeaf(currentCwd) : openFolderLabel),
         menuItems: currentCwd
           ? [
+              {
+                actionId: 'workspace.openFolder',
+                icon: <FolderOpen className="size-3" />,
+                id: 'open-workspace-folder',
+                label: openFolderLabel,
+                onSelect: () => void openFolderAsProject(),
+                title: openFolderLabel
+              },
               {
                 id: 'copy-workspace-path',
                 label: fileMenu.copyPath,
@@ -535,9 +543,10 @@ export function useStatusbarItems({
               }
             ]
           : undefined,
-        title: currentCwd ? displayPath(currentCwd) : undefined,
+        onSelect: !currentCwd ? () => void openFolderAsProject() : undefined,
+        title: currentCwd ? displayPath(currentCwd) : openFolderLabel,
         toggleLabel: copy.toggleWorkspace,
-        variant: 'menu'
+        variant: currentCwd ? 'menu' : 'action'
       },
       {
         className: cn(
@@ -602,6 +611,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
+      openFolderLabel,
       profileRailVisible,
       projectName,
       sessionsShowing,

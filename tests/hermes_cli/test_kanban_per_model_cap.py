@@ -86,6 +86,46 @@ def test_different_provider_or_model_and_unoverridden_tasks_remain_independent(
     assert result.skipped_per_model_capped == []
 
 
+def test_local_first_profile_routes_share_model_capacity(kanban_with_profiles):
+    """Profile-selected local routes must count before the worker is spawned."""
+    kb = kanban_with_profiles
+    from pathlib import Path
+
+    root = Path(__import__("os").environ["HERMES_HOME"])
+    root.joinpath("config.yaml").write_text(
+        "kanban:\n  local_first: true\n", encoding="utf-8"
+    )
+    for profile in ("alpha", "beta"):
+        root.joinpath("profiles", profile, "config.yaml").write_text(
+            """
+model:
+  provider: nous
+  default: poolside/laguna-xs-2.1:free
+fallback_model:
+  - provider: ollama-launch
+    model: hermes-cron-fast:latest
+""".lstrip(),
+            encoding="utf-8",
+        )
+
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        first = kb.create_task(conn, title="first", assignee="alpha")
+        second = kb.create_task(conn, title="second", assignee="beta")
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: os.getpid(),
+            dry_run=True,
+            max_in_progress_per_model=1,
+        )
+
+    assert [task_id for task_id, _who, _workspace in result.spawned] == [first]
+    assert result.skipped_per_model_capped == [
+        (second, "ollama-launch", "hermes-cron-fast:latest", 1)
+    ]
+
+
 @pytest.mark.parametrize("release", ["completed", "reclaimed"])
 def test_terminal_or_reclaimed_task_releases_model_capacity(
     kanban_with_profiles, release

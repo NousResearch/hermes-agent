@@ -226,12 +226,6 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     openGroupChat(currentGroup)
   }
 
-  // The persisted half of clear-on-open. The transient dot is retired by
-  // core's own selection path once the chat lands; this retires the marker,
-  // which the selection listener alone would file against the wrong profile —
-  // a bot open deliberately leaves the gateway on the launch profile.
-  ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
-
   const fronted = focusExistingBotTab(bot)
 
   if (fronted) {
@@ -239,6 +233,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // round-trip. Both identities are recorded so the reclaim listener and
     // the roster-activity refresh treat it exactly like a registry open.
     $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
+    ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
 
     return true
   }
@@ -281,6 +276,11 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
         openedRegistryId: opened.registryId,
         openedSessionId: opened.openedId
       })
+      // Reading acknowledgement follows a successful foreground transition.
+      // A failed source lookup/open leaves the persisted marker intact so
+      // Retry still tells the truth. The owner hint is required because a bot
+      // open deliberately leaves the gateway on the launch profile.
+      ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
 
       return true
     }

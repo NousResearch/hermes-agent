@@ -31,6 +31,7 @@ import {
   Switch,
   Textarea,
   Tip,
+  translateNow,
   useI18n,
   useQuery,
   useValue
@@ -41,6 +42,7 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { $focusedBotOwner, $selectedBot, focusedRosterOwner } from './bot-state'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, botSelectionKey, isActiveRosterBot } from './data'
 import { labeled } from './dialog-parts'
+import { botsText, useBots } from './i18n'
 import { displayName } from './labels'
 import { botConnectionRoute, botRosterMeta, requestForBot } from './routing'
 import { ID } from './shared'
@@ -242,10 +244,7 @@ export function routineFilterHint(all: RoutineJob[], jobs: RoutineJob[]): null |
     return null
   }
 
-  return (
-    'Scheduled jobs exist in this profile but none are tagged for this bot. ' +
-    'Name a job "[bot:<name>] …" to show it here, or see them in Cron below.'
-  )
+  return botsText().cron.filterHint
 }
 
 export function normalizedProfileName(profile: unknown): string {
@@ -287,16 +286,17 @@ export function routinePrompt(
 }
 
 function scheduleLabel(schedule: string | undefined): string {
+  const c = botsText().cron
   const once = /^once in (.+)$/.exec(schedule || '')
 
   if (once) {
-    return `Once (${once[1]})`
+    return c.onceIn(once[1])
   }
 
   const bare = /^(\d+)([mhd])$/.exec(schedule || '')
 
   if (bare) {
-    return `Once (${bare[1]}${bare[2]})`
+    return c.onceIn(`${bare[1]}${bare[2]}`)
   }
 
   const match = /^every (\d+)m$/.exec(schedule || '')
@@ -307,16 +307,17 @@ function scheduleLabel(schedule: string | undefined): string {
     if (minutes % 1440 === 0) {
       const d = minutes / 1440
 
-      return d === 1 ? 'Daily' : `Every ${d} days`
+      // Daily/Hourly are core's own schedule vocabulary — reuse, don't retranslate.
+      return d === 1 ? translateNow('cron.scheduleLabels.daily') : c.everyNDays(d)
     }
 
     if (minutes % 60 === 0) {
       const h = minutes / 60
 
-      return h === 1 ? 'Hourly' : `Every ${h}h`
+      return h === 1 ? translateNow('cron.scheduleLabels.hourly') : c.everyNHours(h)
     }
 
-    return `Every ${minutes}m`
+    return c.everyNMinutes(minutes)
   }
 
   return schedule || ''
@@ -385,6 +386,7 @@ interface RoutineDetailDialogProps {
  *  pane already holds — no extra RPC, and no second mutation path beside the
  *  row's own switch and delete. */
 export function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
+  const b = useBots()
   const { t } = useI18n()
   const rows = job ? routineDetailRows(job) : []
   const issue = job ? routineDetailIssue(job) : null
@@ -420,7 +422,7 @@ export function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogP
           </div>
           {instruction
             ? labeled(
-                'Instruction',
+                b.cron.instruction,
                 <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs leading-5 text-(--ui-text-secondary)">
                   {instruction}
                 </div>
@@ -576,71 +578,28 @@ interface ScheduleState {
   weekday: string
 }
 
-const FREQUENCIES: Array<{ id: ScheduleFreq; label: string }> = [
-  {
-    id: 'once',
-    label: 'Once, in\u2026'
-  },
-  {
-    id: 'hourly',
-    label: 'Every hour'
-  },
-  {
-    id: 'daily',
-    label: 'Every day'
-  },
-  {
-    id: 'weekdays',
-    label: 'Weekdays'
-  },
-  {
-    id: 'weekly',
-    label: 'Every week'
-  },
-  {
-    id: 'monthly',
-    label: 'Every month'
-  },
-  {
-    id: 'interval',
-    label: 'Interval'
-  },
-  {
-    id: 'advanced',
-    label: 'Advanced\u2026'
-  }
-]
+/** Built per call, not frozen at module load: the labels are translated, and
+ *  a module const would pin whichever locale happened to be active at import. */
+function frequencies(): Array<{ id: ScheduleFreq; label: string }> {
+  const c = botsText().cron
 
-const WEEKDAYS = [
-  {
-    id: '1',
-    label: 'Monday'
-  },
-  {
-    id: '2',
-    label: 'Tuesday'
-  },
-  {
-    id: '3',
-    label: 'Wednesday'
-  },
-  {
-    id: '4',
-    label: 'Thursday'
-  },
-  {
-    id: '5',
-    label: 'Friday'
-  },
-  {
-    id: '6',
-    label: 'Saturday'
-  },
-  {
-    id: '0',
-    label: 'Sunday'
-  }
-]
+  return [
+    { id: 'once', label: c.freqOnce },
+    { id: 'hourly', label: c.freqHourly },
+    { id: 'daily', label: c.freqDaily },
+    { id: 'weekdays', label: c.freqWeekdays },
+    { id: 'weekly', label: c.freqWeekly },
+    { id: 'monthly', label: c.freqMonthly },
+    { id: 'interval', label: c.freqInterval },
+    { id: 'advanced', label: c.freqAdvanced }
+  ]
+}
+
+/** Weekday names come from core's cron section — it already ships them in
+ *  every locale, keyed by the same cron day numbers. */
+function weekdays(): Array<{ id: string; label: string }> {
+  return ['1', '2', '3', '4', '5', '6', '0'].map(id => ({ id, label: translateNow(`cron.days.${id}`) }))
+}
 
 const TIMES = (() => {
   const out = []
@@ -698,39 +657,42 @@ function composeSchedule(state: ScheduleState): string {
 }
 
 function scheduleSummary(state: ScheduleState): string {
+  const c = botsText().cron
   const t = TIMES.find(x => x.id === state.time)
   const tl = t ? t.label : '9:00 AM'
-  const unitWord = (u: string) => (u === 'm' ? 'minute(s)' : u === 'd' ? 'day(s)' : 'hour(s)')
+  const unitWord = (u: string) => (u === 'm' ? c.unitMinutes : u === 'd' ? c.unitDays : c.unitHours)
 
   const cap =
     state.freq !== 'once' && String(state.repeatN || '').trim()
-      ? `, ${Math.max(1, parseInt(state.repeatN, 10) || 1)} time(s) total`
+      ? c.timesTotal(Math.max(1, parseInt(state.repeatN, 10) || 1))
       : ''
 
   switch (state.freq) {
     case 'once':
-      return `Runs once, ${Math.max(1, parseInt(state.onceN, 10) || 1)} ${unitWord(state.onceUnit)} from now`
+      return c.runsOnce(Math.max(1, parseInt(state.onceN, 10) || 1), unitWord(state.onceUnit))
 
     case 'hourly':
-      return 'Runs at the top of every hour' + cap
+      return c.runsHourly + cap
 
     case 'daily':
-      return `Runs every day at ${tl}` + cap
+      return c.runsDaily(tl) + cap
 
     case 'weekdays':
-      return `Runs Monday\u2013Friday at ${tl}` + cap
+      return c.runsWeekdays(tl) + cap
+    case 'weekly': {
+      const days = weekdays()
 
-    case 'weekly':
-      return `Runs every ${(WEEKDAYS.find(w => w.id === state.weekday) || WEEKDAYS[0]).label} at ${tl}` + cap
+      return c.runsWeekly((days.find(w => w.id === state.weekday) || days[0]).label, tl) + cap
+    }
 
     case 'monthly':
-      return `Runs on day ${state.monthday || '1'} of each month at ${tl}` + cap
+      return c.runsMonthly(state.monthday || '1', tl) + cap
 
     case 'interval':
-      return `Runs every ${Math.max(1, parseInt(state.intervalN, 10) || 1)} ${unitWord(state.intervalUnit)}` + cap
+      return c.runsInterval(Math.max(1, parseInt(state.intervalN, 10) || 1), unitWord(state.intervalUnit)) + cap
 
     default:
-      return 'Raw schedule \u2014 every Nm/Nh/Nd or 5-field cron'
+      return c.runsRaw
   }
 }
 
@@ -761,6 +723,8 @@ interface SchedulePickerProps {
 }
 
 function SchedulePicker({ state, setState }: SchedulePickerProps) {
+  const b = useBots()
+
   const upd = (patch: Partial<ScheduleState>) =>
     setState(prev => ({
       ...prev,
@@ -778,7 +742,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             upd({
               freq: v
             }),
-          FREQUENCIES
+          frequencies()
         )}
         {needsTime
           ? pickerSelect(
@@ -833,12 +797,12 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
               upd({
                 weekday: v
               }),
-            WEEKDAYS
+            weekdays()
           )
         : null}
       {state.freq === 'monthly'
         ? labeled(
-            'Day of month',
+            b.cron.dayOfMonth,
             <Input
               className="h-8"
               onChange={event =>
@@ -944,6 +908,7 @@ interface CreateRoutineDialogProps {
 }
 
 export function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogProps) {
+  const b = useBots()
   const { t } = useI18n()
   const c = t.cron
   const [name, setName] = useState('')
@@ -1057,7 +1022,7 @@ export function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogP
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{c.createTitle}</DialogTitle>
-          <DialogDescription>{`A recurring task ${ownerLabel} runs on a schedule. Runs land in its own chat history.`}</DialogDescription>
+          <DialogDescription>{b.cron.createDesc(ownerLabel)}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-3.5">
           {labeled(
@@ -1078,23 +1043,23 @@ export function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogP
               value={instruction}
             />
           )}
-          {labeled('When to run', <SchedulePicker setState={setSched} state={sched} />)}
+          {labeled(b.cron.whenToRun, <SchedulePicker setState={setSched} state={sched} />)}
           {labeled(
-            'Send results to',
+            b.cron.sendResultsTo,
             pickerSelect(target, setTarget, [
               {
                 id: 'history',
-                label: 'Run history only'
+                label: b.cron.runHistoryOnly
               },
               {
                 id: 'bot-chat',
-                label: `${ownerLabel}\u2019s chat (bot responds)`
+                label: b.cron.botChatTarget(ownerLabel)
               }
             ])
           )}
           <label className="flex items-center gap-2 text-xs text-(--ui-text-tertiary) cursor-pointer select-none">
             <Checkbox checked={continuity} onCheckedChange={value => setContinuity(Boolean(value))} />
-            Continuity: each run sees the previous run’s output (dedupe, continue where it left off)
+            {b.cron.continuity}
           </label>
           {error ? (
             <div className="rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-accent)">
@@ -1206,6 +1171,7 @@ export function RoutinesPane() {
   const meta = owner ? botRosterMeta(owner, allMeta) : null
   const { shape, color, image } = botAppearance(bot, meta)
   const { data, error, isLoading, refetch } = useRoutines(owner)
+  const b = useBots()
   const { t } = useI18n()
   const c = t.cron
   const [createOpen, setCreateOpen] = useState(false)
@@ -1226,7 +1192,7 @@ export function RoutinesPane() {
   }
 
   if (!owner) {
-    return <PanelEmpty description="This agent has to appear in the roster first." icon="hubot" title={c.title} />
+    return <PanelEmpty description={b.cron.needsRosterFirst} icon="hubot" title={c.title} />
   }
 
   const view = selectRoutineJobs(data, error, $lastJobs.get(), bot)
@@ -1238,8 +1204,7 @@ export function RoutinesPane() {
   const jobs = view.jobs
   const detailJob = detailJobId ? jobs.find(job => job.job_id === detailJobId) || null : null
 
-  const staleNotice =
-    error && !view.live && view.all.length ? 'Could not refresh scheduled jobs. Showing the last list we had.' : null
+  const staleNotice = error && !view.live && view.all.length ? b.cron.staleNotice : null
 
   const filterHint = routineFilterHint(view.all, jobs)
 
@@ -1286,7 +1251,7 @@ export function RoutinesPane() {
               {t.common.retry}
             </Button>
           }
-          description="The list may still be there — this was a read failure, not a delete."
+          description={b.cron.readFailure}
           icon="warning"
           title={c.failedLoad}
         />

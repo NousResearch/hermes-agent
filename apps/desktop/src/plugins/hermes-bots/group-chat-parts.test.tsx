@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { translateBots } from './i18n-test-helper'
 import type { GroupMember } from './types'
 
 // Group-composer mentions (#89049): the core composer's @-completion area
@@ -23,7 +24,10 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
     RowButton: (props: React.ComponentProps<'button'>) => <button type="button" {...props} />,
     Textarea: (props: React.ComponentProps<'textarea'>) => <textarea {...props} />,
-    useI18n: () => ({ t: (_key: string, fallback: string) => fallback })
+    useI18n: () => ({ t: (_key: string, fallback: string) => fallback }),
+    // The plugin bundle normally lands via `ctx.i18n.register` at load, so
+    // without this every localized label renders empty.
+    usePluginI18n: () => translateBots
   }
 })
 

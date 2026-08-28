@@ -14,6 +14,8 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { translateBots } from './i18n-test-helper'
+
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn()
@@ -29,7 +31,13 @@ const { notify, request } = vi.hoisted(() => ({
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
-  return { ...sdk, host: { ...sdk.host, notify, request } }
+  return {
+    ...sdk,
+    host: { ...sdk.host, notify, request },
+    // The plugin bundle normally lands via `ctx.i18n.register` at load, so
+    // without this every localized label renders empty.
+    usePluginI18n: () => translateBots
+  }
 })
 
 const { $botMeta } = await import('./data')

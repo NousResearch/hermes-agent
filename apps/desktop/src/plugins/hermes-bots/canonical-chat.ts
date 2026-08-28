@@ -220,6 +220,23 @@ interface CreateCanonicalChatOptions {
   openingStillCurrent?: (() => boolean) | null
 }
 
+/** The self-introduction a brand-new bot is born with (#91827).
+ *
+ *  Localized because it is the FIRST line of the forever-chat: shipped in
+ *  English it opened every non-English user's relationship with their bot in a
+ *  foreign language, and the bot's reply followed the prompt's language, so one
+ *  hardcoded string biased the whole conversation.
+ *
+ *  It is still submitted on the user's side, which is the half of #91827 this
+ *  cannot close from here: `prompt.submit` IS the user-turn API, so an
+ *  unattributed birth needs the lazy/silent path that issue proposes — a
+ *  gateway contract change, not a rename. The intro itself is deliberate and
+ *  documented in AGENTS.md ("kicked off with the bot's intro"); what this
+ *  narrows is who has to read it in English. */
+function kickoffText(): string {
+  return getPluginCtx()?.i18n?.t('bot.kickoff') ?? 'Hey, tell me about yourself!'
+}
+
 /** Create the bot's ONE forever chat: a real session titled "Bot Chat".
  *  Adopts the existing "Bot Chat" row instead of creating when the profile
  *  already has one — minting while a "Bot Chat" row exists is always wrong
@@ -406,7 +423,7 @@ export function createCanonicalChat(
         try {
           await requestForBot(bot, 'prompt.submit', {
             session_id: runtime,
-            text: 'Hey, tell me about yourself!'
+            text: kickoffText()
           })
 
           if (!opened && sid && typeof host.openSession === 'function' && canNavigate()) {

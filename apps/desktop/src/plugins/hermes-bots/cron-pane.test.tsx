@@ -21,6 +21,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import type { atom } from 'nanostores'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { translateBots } from './i18n-test-helper'
 import type { RoutineJob } from './types'
 
 // Radix calls these on open; jsdom doesn't implement them.
@@ -44,7 +45,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       // The pane's owner ladder starts here, so it has to be a real store:
       // `$focusedBotOwner` is resolved once at bot-state module load.
       state: { ...sdk.host.state, focusedSessionOwner: nanoAtom(null) }
-    }
+    },
+    // The plugin bundle normally lands via `ctx.i18n.register` at load, so
+    // without this every localized label renders empty.
+    usePluginI18n: () => translateBots
   }
 })
 
@@ -85,13 +89,13 @@ describe('the pane follows the roster hydrating after mount', () => {
   it('starts fail-closed, then paints once the row arrives', async () => {
     renderPane()
 
-    expect(screen.getByText('This agent has to appear in the roster first.')).toBeTruthy()
+    expect(screen.getByText('This bot has to appear in the roster first.')).toBeTruthy()
 
     // The same focused bot chat now resolves to its exact roster row. Nothing
     // else changes — only a store write the pane must be subscribed to see.
     act(() => $lastRoster.set([{ connectionId: 'local', name: 'research' }]))
 
-    await waitFor(() => expect(screen.queryByText('This agent has to appear in the roster first.')).toBeNull())
+    await waitFor(() => expect(screen.queryByText('This bot has to appear in the roster first.')).toBeNull())
     expect(await screen.findByText('Report')).toBeTruthy()
     expect(screen.getByText('Scheduled jobs')).toBeTruthy()
   })
@@ -125,7 +129,7 @@ describe('identity matching stays exact', () => {
 
     act(() => $lastRoster.set([{ connectionId: 'local', name: 'research' }]))
 
-    await waitFor(() => expect(screen.getByText('This agent has to appear in the roster first.')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('This bot has to appear in the roster first.')).toBeTruthy())
     expect(request).not.toHaveBeenCalled()
   })
 })

@@ -8,7 +8,7 @@
  * controls without either surface importing the other.
  */
 
-import { Button, cn, Codicon, host, Input, RowButton, Textarea, useValue } from '@hermes/plugin-sdk'
+import { Button, cn, Codicon, host, Input, RowButton, Textarea, useI18n, useValue } from '@hermes/plugin-sdk'
 import type { ClipboardEvent } from 'react'
 import { useRef, useState } from 'react'
 
@@ -44,6 +44,7 @@ interface GroupImageControlsProps {
  *  image.generate probe) so room pictures cost the same as bot avatars. */
 export function GroupImageControls({ image, onImage, seedName, seedMembers }: GroupImageControlsProps) {
   const b = useBots()
+  const { t } = useI18n()
   const imagen = useValue($imagenAvailable)
   const [busy, setBusy] = useState(false)
 
@@ -108,12 +109,12 @@ export function GroupImageControls({ image, onImage, seedName, seedMembers }: Gr
       </Button>
       {imagen ? (
         <Button disabled={busy} onClick={generate} size="sm" type="button" variant="secondary">
-          {busy ? 'Generating…' : 'Generate'}
+          {busy ? b.avatar.generating : b.avatar.generate}
         </Button>
       ) : null}
       {image ? (
         <Button onClick={() => onImage(null)} size="sm" type="button" variant="ghost">
-          Remove
+          {t.common.remove}
         </Button>
       ) : null}
     </div>
@@ -174,6 +175,7 @@ interface GroupMentionInputProps {
  *  Enter/Tab insert (Enter falls through to submit when the popover is
  *  closed), Escape dismisses. */
 export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
+  const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const [token, setToken] = useState<MentionToken | null>(null)
@@ -185,7 +187,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
       if (pick.startsWith(token.query)) {
         options.push({
           handle: pick,
-          meta: 'Every bot in the room'
+          meta: b.group.everyoneMeta
         })
       }
     }
@@ -371,6 +373,7 @@ interface GroupClarifyCardProps {
  *    (once/session/always/deny) as buttons — no free text; approvals are a
  *    closed choice. Answer sends via the member's own source. */
 export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
+  const b = useBots()
   const { group } = entry
   const isApproval = entry.kind === 'approval'
   const member = members.find(m => groupMemberKey(m) === entry.memberKey) || members.find(m => m.name === entry.member)
@@ -429,7 +432,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
 
       // Echo the exchange into the room log so the thread reads complete.
       const summary = isApproval
-        ? `${answerFor(questions[0])} — ${entry.command || entry.question || 'command approval'}`
+        ? `${answerFor(questions[0])} — ${entry.command || entry.question || b.group.commandApproval}`
         : questions.map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q))).join('\n')
 
       appendGroupChatEntry(
@@ -444,7 +447,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
     } catch (err: any) {
       host.notify({
         kind: 'error',
-        message: `Could not send the answer to @${botHandle(entry.member, member)}: ${err?.message || err}`
+        message: b.group.answerFailed(botHandle(entry.member, member), String(err?.message || err))
       })
     } finally {
       setSending(false)
@@ -456,8 +459,8 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
       <div className="flex items-center gap-1.5 text-xs font-medium">
         <Codicon className="shrink-0 text-(--ui-accent)" name={isApproval ? 'shield' : 'question'} />
         {isApproval
-          ? `@${botHandle(entry.member, member)} wants to run a command:`
-          : `@${botHandle(entry.member, member)} asks:`}
+          ? b.group.wantsToRunCommand(botHandle(entry.member, member))
+          : b.group.asks(botHandle(entry.member, member))}
       </div>
       {isApproval && entry.command ? (
         <code className="block overflow-x-auto rounded bg-(--ui-bg-secondary,rgba(0,0,0,0.25)) px-2 py-1 font-mono text-[0.7rem] whitespace-pre-wrap break-all">
@@ -513,7 +516,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
           {/* Approvals are a closed choice set — no free-text input. */}
           {isApproval ? null : (
             <Input
-              aria-label={`Answer @${entry.member}`}
+              aria-label={b.group.answerTo(entry.member)}
               className="h-7 text-xs"
               key={`input:${q.qid}`}
               onChange={event => {

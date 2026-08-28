@@ -21,9 +21,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RosterRow } from './types'
 
-const { hostMock, persistMock, requestForBotMock, saveBotMetaMock } = vi.hoisted(() => ({
+const { hostMock, persistMock, pluginCtx, requestForBotMock, saveBotMetaMock } = vi.hoisted(() => ({
   hostMock: { openSession: vi.fn(), request: vi.fn() },
   persistMock: vi.fn(),
+  // Null unless a test installs one — the plugin ctx is genuinely absent until
+  // register() runs, which is why every read of it carries an English floor.
+  pluginCtx: { current: null as null | { i18n?: { t: (key: string) => string } } },
   requestForBotMock: vi.fn(),
   saveBotMetaMock: vi.fn()
 }))
@@ -53,7 +56,7 @@ vi.mock('./data', () => ({
   saveBotMeta: saveBotMetaMock
 }))
 
-vi.mock('./shared', () => ({ getPluginCtx: () => null }))
+vi.mock('./shared', () => ({ getPluginCtx: () => pluginCtx.current }))
 
 /** Ordered log of everything creation did — RPCs and navigations interleaved,
  *  because the ORDER between them is most of what this suite pins. */
@@ -75,10 +78,34 @@ async function loadModule() {
 beforeEach(() => {
   vi.clearAllMocks()
   events = []
+  pluginCtx.current = null
   hostMock.openSession.mockImplementation(async (id: string) => {
     events.push(`open:${id}`)
   })
 })
+
+/** Runs a kickoff creation and hands back the text the intro turn submitted. */
+async function kickoffTextSent(): Promise<string> {
+  let sent = ''
+
+  respondWith((method, params) => {
+    if (method === 'session.create') {
+      return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+    }
+
+    if (method === 'prompt.submit') {
+      sent = String(params.text ?? '')
+    }
+
+    return {}
+  })
+
+  const { createCanonicalChat } = await loadModule()
+
+  await createCanonicalChat('ops', { kickoff: true })
+
+  return sent
+}
 
 describe('the lazy row is materialized before anything else touches it', () => {
   it('titles the created row, then opens it, and sends no intro', async () => {
@@ -155,6 +182,20 @@ describe('the lazy row is materialized before anything else touches it', () => {
 
     expect(await createCanonicalChat('ops', { kickoff: true })).toBe('stored-1')
     expect(events).toEqual(['session.list', 'session.create', 'session.title', 'open:stored-1', 'prompt.submit'])
+  })
+
+  it('speaks the intro in the active locale (#91827)', async () => {
+    // The first line of the forever-chat, and the bot's reply follows its
+    // language — so a hardcoded English intro biased the whole conversation.
+    pluginCtx.current = { i18n: { t: key => (key === 'bot.kickoff' ? 'こんにちは、自己紹介をしてください！' : key) } }
+
+    expect(await kickoffTextSent()).toBe('こんにちは、自己紹介をしてください！')
+  })
+
+  it('falls back to English when the bundle has not registered yet', async () => {
+    // Creation can race plugin registration; an unresolved key must never
+    // reach the model as the literal `bot.kickoff`.
+    expect(await kickoffTextSent()).toBe('Hey, tell me about yourself!')
   })
 
   it('retries navigation after the compat kickoff when the eager title is unsupported', async () => {

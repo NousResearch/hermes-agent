@@ -94,7 +94,7 @@ import {
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
-import { useBots } from './i18n'
+import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
@@ -262,7 +262,7 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
   if (taken.has(next)) {
     host.notify({
       kind: 'error',
-      message: `A group named “${next}” already exists.`
+      message: botsText().group.nameTaken(next)
     })
 
     return null
@@ -681,12 +681,14 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             members.length > 0 && availableMembers < members.length && 'text-amber-600 dark:text-amber-300'
           )}
         >
-          {members.length > 0 && availableMembers < members.length ? availabilityLabel : `${members.length} bots`}
+          {members.length > 0 && availableMembers < members.length
+            ? availabilityLabel
+            : b.group.memberCount(members.length)}
         </span>
       </Tip>
-      <Tip label={`Group settings — rename ${group} or set a room picture`}>
+      <Tip label={b.group.settingsHint(group)}>
         <Button
-          aria-label={`Group settings for ${group}`}
+          aria-label={b.group.settingsLabel(group)}
           className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
           onClick={() => setSettingsOpen(true)}
           size="sm"
@@ -695,9 +697,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <Codicon name="gear" />
         </Button>
       </Tip>
-      <Tip label={`Disband the ${group} group chat`}>
+      <Tip label={b.group.disbandHint(group)}>
         <Button
-          aria-label={`Disband ${group}`}
+          aria-label={b.group.disbandLabel(group)}
           className="shrink-0 text-(--ui-text-tertiary) hover:text-destructive"
           onClick={() => setConfirmDisband(true)}
           size="sm"
@@ -729,7 +731,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     await stopGroupThread(group, latestActivity?.thread || null, memberDescriptors())
     host.notify({
       kind: 'success',
-      message: `Stopped ${group} — remaining turns are held until you resume`
+      message: b.group.stopped(group)
     })
   }
 
@@ -903,9 +905,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               <img alt="" className="size-6 rounded object-cover" src={img.data} />
             )}
             <span className="max-w-32 truncate text-[0.65rem] text-(--ui-text-tertiary)">{img.name || 'image'}</span>
-            <Tip label="Remove attachment">
+            <Tip label={b.group.removeAttachment}>
               <Button
-                aria-label="Remove attachment"
+                aria-label={b.group.removeAttachment}
                 onClick={() => removeImage(thread, index)}
                 size="icon-xs"
                 variant="ghost"
@@ -1114,8 +1116,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           title={b.group.openThread}
         >
           <Codicon className="shrink-0 text-[0.65rem]" name="chevron-right" />
-          <span className="min-w-0 flex-1 truncate">{headText || 'Thread'}</span>
-          <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{`${replies} ${replies === 1 ? 'reply' : 'replies'} · ${relativeTime(entries[entries.length - 1].entry.at)}`}</span>
+          <span className="min-w-0 flex-1 truncate">{headText || b.group.threadFallback}</span>
+          <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{`${b.group.replyCount(replies)} · ${relativeTime(entries[entries.length - 1].entry.at)}`}</span>
         </RowButton>
       )
 
@@ -1227,7 +1229,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-2 border-dashed border-(--ui-accent) text-sm font-medium text-(--ui-accent)"
           key={'dropzone'}
         >
-          {replyThread ? 'Drop to attach to this thread reply' : 'Drop to attach — every responding bot sees it'}
+          {replyThread ? b.group.dropToThread : b.group.dropToRoom}
         </div>
       ) : null}
       {header}
@@ -1247,10 +1249,10 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {room.running ? (
             <div className="px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)" key={'working'}>
               {roomClarifies.length
-                ? 'Waiting for your answer…'
+                ? b.group.waitingForAnswer
                 : room.turn
-                  ? `${groupSpeakerLabel(room.turn)} is thinking…`
-                  : 'The room is working…'}
+                  ? b.group.memberThinking(groupSpeakerLabel(room.turn))
+                  : b.group.roomWorking}
             </div>
           ) : null}
           {/* Scroll anchor (#89835): rooms opened at scroll position 0, mid- */
@@ -1270,12 +1272,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {attachmentRow(null)}
           <div className="flex items-center gap-1.5">
             <GroupMentionInput
-              aria-label={`Message ${group}`}
+              aria-label={b.group.messageRoom(group)}
               members={members}
               onChange={setDraft}
               onPaste={event => pasteImages(null, event)}
               onSubmitDraft={submit}
-              placeholder={`New thread in ${group}… (@name to direct, @everyone for all)`}
+              placeholder={b.group.newThreadPlaceholder(group)}
               value={draft}
             />
             {attachButton(null)}
@@ -1292,28 +1294,28 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         open={settingsOpen}
       />
       <ConfirmDialog
-        busyLabel="Disbanding…"
-        confirmLabel="Disband"
+        busyLabel={b.group.disbanding}
+        confirmLabel={b.group.disbandAction}
         description={
+          /* New rooms title member sessions by roomId, legacy rooms by name — */
+          /* so the copy names the concept, not a literal session title. The */
+          /* name is bolded mid-sentence, so the copy splits around it and the */
+          /* prefix goes empty where the name leads (core's deleteDesc* shape). */
           <span>
-            {'This removes the '}
+            {b.group.disbandDescPrefix}
             <span className="font-medium text-foreground">{group}</span>
-            {' grouping from its '}
-            {String(members.length)}
-            {/* New rooms title member sessions by roomId, legacy rooms by name — */
-            /* so the copy names the concept, not a literal session title. */}
-            {' bots and clears the shared room log. The bots themselves and their per-group sessions are kept.'}
+            {b.group.disbandDescSuffix(members.length)}
           </span>
         }
         destructive
-        doneLabel="Disbanded"
+        doneLabel={b.group.disbandDone}
         onClose={() => setConfirmDisband(false)}
         onConfirm={async () => {
           clearGroupComposerDraft(composerKeyRef.current)
           await disbandGroupChat(group, members)
           host.notify({
             kind: 'success',
-            message: `Disbanded “${group}”`
+            message: b.group.disbanded(group)
           })
         }}
         open={confirmDisband}

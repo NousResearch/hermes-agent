@@ -811,7 +811,11 @@ class CLICommandsMixin:
         print(f"  Snapshot created: {snap_id}" if snap_id else "  No state files found to snapshot.")
 
     def _snapshot_restore(self, parts) -> None:
-        from hermes_cli.backup import list_quick_snapshots, restore_quick_snapshot
+        from hermes_cli.backup import (
+            _resolve_quick_snapshot_dir,
+            list_quick_snapshots,
+            restore_quick_snapshot,
+        )
         if len(parts) < 3:
             print("  Usage: /snapshot restore <snapshot-id>")
             snaps = list_quick_snapshots(limit=1)
@@ -838,12 +842,10 @@ class CLICommandsMixin:
             _pr(f"  Restored state from: {snap_id}",
                 "  Restart recommended for gateway/dashboard processes to pick up state.db changes.")
         else:
-            from hermes_constants import get_hermes_home
-            snap_dir = get_hermes_home() / "state-snapshots" / snap_id
-            if snap_dir.is_dir():
+            if _resolve_quick_snapshot_dir(snap_id) is not None:
                 print(
-                    "  Restore refused: another process still holds state.db "
-                    "or its WAL. Stop the gateway or dashboard and retry."
+                    "  Restore failed or was refused. Check the Hermes logs "
+                    "for the specific cause, then retry."
                 )
             else:
                 print(f"  Snapshot not found: {snap_id}")

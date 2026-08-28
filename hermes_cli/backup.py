@@ -1088,6 +1088,27 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     return home / _QUICK_SNAPSHOTS_DIR
 
 
+def _resolve_quick_snapshot_dir(
+    snapshot_id: str,
+    hermes_home: Optional[Path] = None,
+) -> Optional[Path]:
+    """Return a contained quick-snapshot directory, or None when invalid."""
+    root = _quick_snapshot_root(hermes_home)
+    if (
+        not snapshot_id
+        or "/" in snapshot_id
+        or "\\" in snapshot_id
+        or snapshot_id in (".", "..")
+    ):
+        logger.error("Invalid snapshot_id: %s", snapshot_id)
+        return None
+    snap_dir = root / snapshot_id
+    if not _is_within(snap_dir, root.resolve()):
+        logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
+        return None
+    return snap_dir if snap_dir.is_dir() else None
+
+
 def create_quick_snapshot(
     label: Optional[str] = None, hermes_home: Optional[Path] = None, keep: Optional[int] = None,
     max_file_size: Optional[int] = None) -> Optional[str]:
@@ -1247,22 +1268,17 @@ def list_quick_snapshots(limit: int = 20, hermes_home: Optional[Path] = None) ->
 def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None) -> bool:
     """Restore state from a quick snapshot."""
     home = hermes_home or get_hermes_home()
-    root = _quick_snapshot_root(home)
-    # Reject ids with separators or traversal so ``root / snapshot_id`` stays inside root.
-    if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in (".", ".."):
-        logger.error("Invalid snapshot_id: %s", snapshot_id)
-        return False
-    snap_dir = root / snapshot_id
-    if not _is_within(snap_dir, root.resolve()):  # handles symlinks etc.
-        logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
+    snap_dir = _resolve_quick_snapshot_dir(snapshot_id, home)
+    if snap_dir is None:
         return False
     manifest_path = snap_dir / "manifest.json"
-    if not snap_dir.is_dir() or not manifest_path.exists():
+    if not manifest_path.exists():
         return False
     with open(manifest_path, encoding="utf-8") as f:
         meta = json.load(f)
     snap_res, home_res = snap_dir.resolve(), home.resolve()
     restored = 0
+    db_restore_failed = False
     for rel in meta.get("files", {}):
         src = snap_dir / rel
         dst = home / rel
@@ -1279,14 +1295,15 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
                 if not _safe_restore_db(src, dst):
                     # Refused (live holder) or failed: destination untouched — a failure, not a restore.
                     logger.error("Failed to restore %s: live-safe restore refused", rel)
-                    return False
+                    db_restore_failed = True
+                    continue
             else:
                 shutil.copy2(src, dst)
             restored += 1
         except (OSError, PermissionError) as exc:
             logger.error("Failed to restore %s: %s", rel, exc)
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
-    return restored > 0
+    return restored > 0 and not db_restore_failed
 
 
 # Kept in sync with ``_QUICK_STATE_FILES`` and ``cron/jobs.py``'s ``JOBS_FILE``.

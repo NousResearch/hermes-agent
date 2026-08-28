@@ -1307,6 +1307,34 @@ class TestForeignDbHolderPids:
 
         assert backup_mod._foreign_db_holder_pids(tmp_path / "state.db") is None
 
+    @pytest.mark.parametrize("race", ("process-exit", "fd-close"))
+    def test_ignores_file_not_found_races(self, tmp_path, monkeypatch, race):
+        from hermes_cli import backup as backup_mod
+
+        if not backup_mod.sys.platform.startswith("linux"):
+            pytest.skip("Linux holder scanning uses /proc")
+
+        own_pid = backup_mod.os.getpid()
+        foreign_pid = own_pid + 100_000
+
+        def _listdir(path):
+            if path == "/proc":
+                return [str(own_pid), str(foreign_pid)]
+            if path == f"/proc/{foreign_pid}/fd":
+                if race == "process-exit":
+                    raise FileNotFoundError("process exited")
+                return ["7"]
+            raise AssertionError(f"unexpected path: {path}")
+
+        def _readlink(path):
+            assert path == f"/proc/{foreign_pid}/fd/7"
+            raise FileNotFoundError("descriptor closed")
+
+        monkeypatch.setattr(backup_mod.os, "listdir", _listdir)
+        monkeypatch.setattr(backup_mod.os, "readlink", _readlink)
+
+        assert backup_mod._foreign_db_holder_pids(tmp_path / "state.db") == []
+
 
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests
@@ -1433,20 +1461,19 @@ class TestQuickSnapshot:
     def test_restore_returns_false_when_safe_restore_refuses(
         self, hermes_home, monkeypatch
     ):
-        """#95531 leftover: _safe_restore_db False must not look like success.
+        from hermes_cli import backup as backup_mod
 
-        The update helper already prints a refusal. /snapshot restore used
-        to ignore that False, increment restored, and print
-        'Restored state from:'.
-        """
-        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
-        import hermes_cli.backup as backup_mod
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        monkeypatch.setattr(
+            backup_mod, "_safe_restore_db", lambda _src, _dst: False
+        )
 
-        snap_id = create_quick_snapshot(hermes_home=hermes_home)
-        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
-        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is False
+        assert (
+            backup_mod.restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+            is False
+        )
 
-    def test_snapshot_restore_command_prints_refuse_not_success(
+    def test_snapshot_restore_command_reports_failure_not_missing(
         self, hermes_home, monkeypatch, capsys
     ):
         from hermes_cli.backup import create_quick_snapshot
@@ -1454,16 +1481,38 @@ class TestQuickSnapshot:
 
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         monkeypatch.setattr(
-            "hermes_cli.backup.restore_quick_snapshot", lambda *a, **k: False
+            "hermes_cli.backup.restore_quick_snapshot", lambda *_args, **_kwargs: False
         )
         monkeypatch.setattr(
-            "hermes_constants.get_hermes_home", lambda: hermes_home
+            "hermes_cli.backup.get_hermes_home", lambda: hermes_home
         )
+
         CLICommandsMixin()._handle_snapshot_command(f"/snapshot restore {snap_id}")
-        out = capsys.readouterr().out
-        assert "Restored state from" not in out
-        assert "Restore refused" in out
-        assert "Snapshot not found" not in out
+
+        output = capsys.readouterr().out
+        assert "Restored state from" not in output
+        assert "Restore failed or was refused" in output
+        assert "Snapshot not found" not in output
+
+    def test_snapshot_restore_command_rejects_invalid_snapshot_path(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        (hermes_home / "state-snapshots").mkdir()
+        (hermes_home / "outside").mkdir()
+        monkeypatch.setattr(
+            "hermes_cli.backup.restore_quick_snapshot", lambda *_args, **_kwargs: False
+        )
+        monkeypatch.setattr(
+            "hermes_cli.backup.get_hermes_home", lambda: hermes_home
+        )
+
+        CLICommandsMixin()._handle_snapshot_command("/snapshot restore ../outside")
+
+        output = capsys.readouterr().out
+        assert "Restore failed or was refused" not in output
+        assert "Snapshot not found: ../outside" in output
 
     def test_restore_refuses_destructive_fallback_when_holder_scan_is_unavailable(
         self, tmp_path, monkeypatch

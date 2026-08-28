@@ -12,6 +12,9 @@ from hermes_cli.profiles import _get_default_hermes_home
 
 import pytest
 
+import hermes_state_common
+from hermes_state import SessionDB
+from plugins.memory.honcho import client as honcho_client
 from plugins.memory.honcho.client import (
     HonchoClientConfig,
     get_honcho_client,
@@ -24,6 +27,19 @@ from plugins.memory.honcho.client import (
 
 
 class TestHonchoClientConfigDefaults:
+    def test_automatic_title_sources_share_state_store_vocabulary(self):
+        automatic_sources = frozenset(
+            {
+                hermes_state_common.TITLE_SOURCE_DERIVED,
+                hermes_state_common.TITLE_SOURCE_LLM,
+            }
+        )
+
+        assert honcho_client._AUTOMATIC_SESSION_TITLE_SOURCES == automatic_sources
+        assert SessionDB.TITLE_SOURCE_DERIVED == hermes_state_common.TITLE_SOURCE_DERIVED
+        assert SessionDB.TITLE_SOURCE_LLM == hermes_state_common.TITLE_SOURCE_LLM
+        assert SessionDB.TITLE_SOURCE_USER == hermes_state_common.TITLE_SOURCE_USER
+
     def test_default_values(self):
         config = HonchoClientConfig()
         assert config.host == "hermes"

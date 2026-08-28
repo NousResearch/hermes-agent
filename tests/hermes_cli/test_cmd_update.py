@@ -301,7 +301,12 @@ class TestCmdUpdateBranchFallback:
         expected_git_cmd = (
             ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
         )
-        sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
+        sync_mock.assert_called_once_with(
+            expected_git_cmd,
+            PROJECT_ROOT,
+            assume_yes=False,
+            input_fn=None,
+        )
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 

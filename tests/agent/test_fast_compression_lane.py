@@ -378,3 +378,24 @@ def test_fallback_cap_requires_independent_route_certification():
         "enabled": False,
         "effort": "none",
     }
+
+
+def test_reasoning_effort_aliases_certify_like_none():
+    """Every spelling parse_reasoning_effort treats as disabled must certify.
+
+    _get_task_extra_body uses parse_reasoning_effort to disable reasoning for
+    "false"/"disabled"/YAML False exactly like "none"; the certification
+    predicate must agree or those users silently lose the fast lane.
+    """
+    base = {"provider": "ollama", "model": "qwen3:8b", "max_output_tokens": 1400}
+
+    for alias in ("none", "false", "disabled", False):
+        lane = _resolve({**base, "reasoning_effort": alias})
+        assert lane.certified_non_reasoning is True, alias
+        assert lane.max_tokens == 1400, alias
+
+    # Empty/unset (provider default) and real efforts must NOT certify.
+    for not_disabled in ("", None, "low", "high", True):
+        lane = _resolve({**base, "reasoning_effort": not_disabled})
+        assert lane.certified_non_reasoning is False, not_disabled
+        assert lane.max_tokens is None, not_disabled

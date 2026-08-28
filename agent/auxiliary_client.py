@@ -8457,6 +8457,38 @@ class CompressionFastLane(NamedTuple):
     reasoning_config: Optional[Dict[str, Any]]
 
 
+def _fast_lane_config_fields(
+    config: Dict[str, Any],
+) -> tuple[str, str, bool, Optional[int]]:
+    """Extract the fast-lane certification fields from one task config.
+
+    Returns ``(provider, model, non_reasoning, cap)``:
+
+    - ``provider``/``model``: normalized (stripped; provider lowercased).
+    - ``non_reasoning``: True only when ``reasoning_effort`` EXPLICITLY
+      disables thinking. Delegates to ``parse_reasoning_effort`` so every
+      spelling users can write in config.yaml (``none``, ``false``,
+      ``disabled``, YAML boolean ``false``) certifies identically —
+      ``_get_task_extra_body`` already uses the same parser to disable
+      reasoning, and the two predicates must not disagree. Empty/unset
+      (provider default) is NOT non-reasoning.
+    - ``cap``: positive int from ``max_output_tokens``, else None.
+      Booleans are config drift, never a cap (``int(True) == 1``).
+    """
+    from hermes_constants import parse_reasoning_effort
+
+    provider = str(config.get("provider") or "").strip().lower()
+    model = str(config.get("model") or "").strip()
+    parsed_effort = parse_reasoning_effort(config.get("reasoning_effort"))
+    non_reasoning = parsed_effort is not None and parsed_effort.get("enabled") is False
+    raw_cap = config.get("max_output_tokens")
+    try:
+        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    return provider, model, non_reasoning, (cap if cap > 0 else None)
+
+
 def resolve_compression_fast_lane(
     actual_provider: str,
     actual_model: Optional[str],
@@ -8477,44 +8509,32 @@ def resolve_compression_fast_lane(
         if route_config is not None
         else _get_auxiliary_task_config("compression")
     )
-    provider = str(requested_provider or config.get("provider") or "").strip().lower()
-    model = str(requested_model or config.get("model") or "").strip()
-    effort = str(config.get("reasoning_effort") or "").strip().lower()
+    cfg_provider, cfg_model, non_reasoning, cap = _fast_lane_config_fields(config)
+    provider = str(requested_provider or "").strip().lower() or cfg_provider
+    model = str(requested_model or "").strip() or cfg_model
     explicit_route = provider not in {"", "auto"} and model.lower() not in {"", "auto"}
     provider_matches = _normalize_aux_provider(
         _fallback_provider_from_label(str(actual_provider or ""))
     ) == _normalize_aux_provider(provider)
     model_matches = str(actual_model or "").strip().lower() == model.lower()
-    certified = explicit_route and provider_matches and model_matches and effort == "none"
+    certified = explicit_route and provider_matches and model_matches and non_reasoning
     if not certified:
         return CompressionFastLane(False, None, None)
-    raw_cap = config.get("max_output_tokens")
-    try:
-        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap)
-    except (TypeError, ValueError):
-        cap = 0
     return CompressionFastLane(
         True,
-        cap if cap > 0 else None,
+        cap,
         {"enabled": False, "effort": "none"},
     )
 
 
 def _compression_config_claims_fast_lane(config: Dict[str, Any]) -> bool:
     """Whether task config declares fast-only controls that cannot leak."""
-    provider = str(config.get("provider") or "").strip().lower()
-    model = str(config.get("model") or "").strip().lower()
-    effort = str(config.get("reasoning_effort") or "").strip().lower()
-    raw_cap = config.get("max_output_tokens")
-    try:
-        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap or 0)
-    except (TypeError, ValueError):
-        cap = 0
+    provider, model, non_reasoning, cap = _fast_lane_config_fields(config)
     return (
         provider not in {"", "auto"}
-        and model not in {"", "auto"}
-        and effort == "none"
-        and cap > 0
+        and model.lower() not in {"", "auto"}
+        and non_reasoning
+        and cap is not None
     )
 
 

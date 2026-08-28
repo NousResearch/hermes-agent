@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Optional, Tuple
 
 from utils import is_truthy_value
@@ -127,6 +127,11 @@ class CommandDef:
     # gateway can import commands.py without prompt_toolkit and without
     # pulling in executor dependencies.
     execute: str | None = None
+    # Desktop composer: ``options`` | ``text`` | ``mixed``. ``None`` is inferred.
+    argument_mode: str | None = None
+    # Desktop availability. ``None`` = offered; ``hidden`` = runs but stays out
+    # of the popover; otherwise a reason (terminal / messaging / settings / …).
+    desktop: str | None = None
 
 
 # Valid values for CommandDef.busy_policy (see field docs above).
@@ -394,6 +399,107 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
                cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
+
+
+# Desktop composer / popover metadata. Lives next to the registry so a new
+# CommandDef can declare how desktop should treat it — the TS table is only
+# the local-action overlay (pickers, Electron actions, dedicated RPCs).
+_DESKTOP_UNAVAILABLE: dict[str, str] = {
+    "busy": "terminal",
+    "clear": "terminal",
+    "config": "terminal",
+    "copy": "terminal",
+    "cron": "terminal",
+    "density": "terminal",
+    "details": "terminal",
+    "footer": "terminal",
+    "gateway": "terminal",
+    "history": "terminal",
+    "image": "terminal",
+    "indicator": "terminal",
+    "logs": "terminal",
+    "mouse": "terminal",
+    "paste": "terminal",
+    "platforms": "terminal",
+    "plugins": "terminal",
+    "quit": "terminal",
+    "redraw": "terminal",
+    "reload": "terminal",
+    "restart": "terminal",
+    "sethome": "terminal",
+    "snapshot": "terminal",
+    "statusbar": "terminal",
+    "toolsets": "terminal",
+    "update": "terminal",
+    "verbose": "terminal",
+    "approve": "messaging",
+    "deny": "messaging",
+    "skills": "settings",
+    "pets": "settings",
+    "curator": "advanced",
+    "fast": "advanced",
+    "insights": "advanced",
+    "kanban": "advanced",
+    "reasoning": "advanced",
+    "reload-mcp": "advanced",
+    "reload-skills": "advanced",
+    "voice": "composer-voice",
+}
+
+_DESKTOP_HIDDEN: frozenset[str] = frozenset({"model"})
+
+# Only the cases ``args_hint`` / ``subcommands`` would get wrong.
+_ARGUMENT_MODE_OVERRIDES: dict[str, str] = {
+    "goal": "mixed",
+    "handoff": "options",
+    "loop": "mixed",
+    "personality": "options",
+    "resume": "mixed",
+    "skin": "options",
+    "tools": "options",
+}
+
+_TEXT_HINTS = ("<prompt>", "[text", "instructions", "[interval]", "<what", "[focus", "[review")
+
+
+def infer_argument_mode(cmd: CommandDef) -> str | None:
+    """Composer mode for a command: explicit, override, or inferred from args."""
+    if cmd.argument_mode in {"options", "text", "mixed"}:
+        return cmd.argument_mode
+    override = _ARGUMENT_MODE_OVERRIDES.get(cmd.name)
+    if override:
+        return override
+    hint = (cmd.args_hint or "").lower()
+    if cmd.subcommands and hint and any(token in hint for token in _TEXT_HINTS):
+        return "mixed"
+    if cmd.subcommands:
+        return "options"
+    if hint:
+        return "text"
+    return None
+
+
+def command_desktop_meta(cmd: CommandDef) -> dict[str, str | None]:
+    """Wire shape for ``commands.catalog`` — argument mode + desktop availability."""
+    desktop = cmd.desktop
+    if desktop is None and cmd.name in _DESKTOP_HIDDEN:
+        desktop = "hidden"
+    if desktop is None:
+        desktop = _DESKTOP_UNAVAILABLE.get(cmd.name)
+    return {"argument_mode": infer_argument_mode(cmd), "desktop": desktop}
+
+
+def _apply_desktop_fields(cmds: list[CommandDef]) -> list[CommandDef]:
+    applied: list[CommandDef] = []
+    for cmd in cmds:
+        meta = command_desktop_meta(cmd)
+        if meta["argument_mode"] != cmd.argument_mode or meta["desktop"] != cmd.desktop:
+            cmd = replace(cmd, argument_mode=meta["argument_mode"], desktop=meta["desktop"])
+        applied.append(cmd)
+    return applied
+
+
+COMMAND_REGISTRY = _apply_desktop_fields(COMMAND_REGISTRY)
 
 
 # ---------------------------------------------------------------------------

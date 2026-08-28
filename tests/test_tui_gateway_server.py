@@ -10718,6 +10718,49 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/set-home" not in canon
 
 
+def test_commands_catalog_includes_desktop_meta_without_skills():
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    commands = resp["result"]["commands"]
+    assert commands["/review"] == {"argument_mode": "text", "desktop": None}
+    assert commands["/clear"]["desktop"] == "terminal"
+    assert commands["/model"]["desktop"] == "hidden"
+    assert commands["/compact"]["argument_mode"] == commands["/compress"]["argument_mode"]
+
+    for skill in resp["result"]["skills"]:
+        assert skill not in commands
+
+
+def test_commands_catalog_includes_plugin_commands(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_commands",
+        lambda: {
+            "lcm": {
+                "description": "Latent consistency",
+                "args_hint": "<prompt>",
+                "argument_mode": "text",
+            }
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    assert resp["result"]["commands"]["/lcm"] == {
+        "argument_mode": "text",
+        "desktop": None,
+    }
+    pairs = dict(resp["result"]["pairs"])
+    assert "/lcm" in pairs
+    plugin_cat = next(
+        c for c in resp["result"]["categories"] if c["name"] == "Plugin commands"
+    )
+    assert "/lcm" in dict(plugin_cat["pairs"])
+
+
 def test_session_status_reads_live_gateway_agent(monkeypatch):
     agent = types.SimpleNamespace(
         model="live-model",

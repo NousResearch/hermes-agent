@@ -2182,6 +2182,7 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -2198,6 +2199,10 @@ class PluginContext:
         command picker. Plugin commands without ``args_hint`` register as
         parameterless in Discord and still accept trailing text when invoked
         as free-form chat.
+
+        ``argument_mode`` tells the desktop composer how text after the command
+        name behaves (``options``, ``text``, or ``mixed``). Omit it to infer
+        ``text`` whenever ``args_hint`` is set, so ``/myplugin `` stays typeable.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -2223,12 +2228,17 @@ class PluginContext:
             pass  # If commands module isn't available, skip the check
 
         previous = self._manager._plugin_commands.get(clean)
+        hint = (args_hint or "").strip()
+        mode = argument_mode if argument_mode in {"options", "text", "mixed"} else (
+            "text" if hint else None
+        )
         entry = {
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "plugin_key": self.manifest.key or self.manifest.name,
-            "args_hint": (args_hint or "").strip(),
+            "args_hint": hint,
+            "argument_mode": mode,
         }
         self._manager._plugin_commands[clean] = entry
         handle = self._track_replacement(

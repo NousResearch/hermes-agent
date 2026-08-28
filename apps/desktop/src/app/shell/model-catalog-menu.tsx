@@ -71,6 +71,7 @@ import {
   seedKnownModels,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
+import { startManualProviderOAuth } from '@/store/onboarding'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
@@ -202,6 +203,30 @@ interface ModelCatalogMenuProps {
 interface ProviderGroup {
   families: ModelFamily[]
   provider: ModelOptionProvider
+}
+
+/** The Nous Portal provider slug. Portal is Hermes' own inference product and
+ *  the path the app already steers new users down: onboarding gives it
+ *  `order: 0` in `PROVIDER_DISPLAY` and renders it through
+ *  `FeaturedProviderRow`. This menu was the one model surface that ignored
+ *  that and sorted it under whatever fell earlier in the alphabet. */
+const PORTAL_SLUG = 'nous'
+
+/** Provider order: Portal first, then alphabetical by name.
+ *
+ *  Deliberate product placement, not a neutral ranking — worth naming plainly
+ *  rather than burying. Everything below Portal keeps the stable alphabetical
+ *  order the previous sort established, so no other provider's position moves
+ *  relative to its peers and the list still cannot reshuffle on a switch. */
+function compareProviderGroups(a: ProviderGroup, b: ProviderGroup): number {
+  const aPortal = a.provider.slug.toLowerCase() === PORTAL_SLUG
+  const bPortal = b.provider.slug.toLowerCase() === PORTAL_SLUG
+
+  if (aPortal !== bPortal) {
+    return aPortal ? -1 : 1
+  }
+
+  return a.provider.name.localeCompare(b.provider.name)
 }
 
 function queryErrorMessage(error: unknown): null | string {
@@ -341,6 +366,8 @@ export function ModelCatalogMenu({
   const current = controller.current
 
   const q = normalize(search)
+  const showPortalCta =
+    !q && !loading && !error && pickerProviders.every(provider => provider.slug.toLowerCase() !== PORTAL_SLUG)
 
   // In-flight downloads render inside the Local provider group when it
   // exists, else as their own trailing 'Local' group (first download —
@@ -762,6 +789,15 @@ export function ModelCatalogMenu({
         </DropdownMenuItem>
       ) : hasList ? (
         <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
+          {showPortalCta ? (
+            <DropdownMenuItem
+              className={cn(dropdownMenuRow, 'gap-2')}
+              onSelect={() => startManualProviderOAuth(PORTAL_SLUG, profile)}
+            >
+              <Codicon className="text-(--ui-accent)" name="sparkle" size="0.75rem" />
+              <span className="min-w-0 flex-1 truncate">{copy.portalCta}</span>
+            </DropdownMenuItem>
+          ) : null}
           {/* Favorites first — the shortcut the star exists for. The section
               paints nothing with no favorites, and nothing while searching,
               where every match is listed in its provider's place instead. */}
@@ -1418,9 +1454,9 @@ function groupModels(
     }
   }
 
-  // Stable, logical group order: alphabetical by provider name. (The backend
-  // floats the current provider first, which would reshuffle on every switch.)
-  groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+  // Portal first, then alphabetical by provider name. (The backend floats the
+  // current provider first, which would reshuffle on every switch.)
+  groups.sort(compareProviderGroups)
 
   return groups
 }

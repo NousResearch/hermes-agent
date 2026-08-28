@@ -7,6 +7,7 @@ export const enModelMenu: Translations['shell']['modelMenu'] = {
   editModels: 'Edit models…',
   followDefault: 'Use Settings default',
   refreshModels: 'Refresh models',
+  portalCta: 'Connect Nous Portal',
   favorites: 'Favorites',
   addFavorite: 'Add to favorites',
   removeFavorite: 'Remove from favorites',

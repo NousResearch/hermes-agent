@@ -5,6 +5,7 @@ export const zhModelMenu = {
   editModels: '编辑模型…',
   followDefault: '使用设置中的默认模型',
   refreshModels: '刷新模型',
+  portalCta: '连接 Nous Portal',
   favorites: '收藏',
   addFavorite: '添加到收藏',
   removeFavorite: '从收藏中移除',

@@ -469,6 +469,14 @@ export default {
           // is no bot-owned surface to scope, so leave the workspace on
           // whatever the user was already looking at — the roster-hydration
           // effect in BotsPane scopes it the moment a real owner exists.
+          //
+          // This is where the Bots home used to claim the center and refuse a
+          // new chat with "Select a Bot or group first." Deleting the home
+          // deleted the dead end it was apologizing for: with nothing selected
+          // the center is an ordinary session and `+` works there. The refusal
+          // itself still stands for the cases that remain — a group room, and
+          // a selected row too orphaned to route (setBotsWorkspaceOwner's
+          // blocked target).
           if (group) {
             setBotsWorkspaceOwner(
               groupWorkspaceOwnerKey(group),

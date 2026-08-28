@@ -87,8 +87,16 @@ _SLACK_LINK_RE = re.compile(
 _SLACK_MENTION_RE = re.compile(
     r"<(@[A-Z0-9]+|#[A-Z0-9]+|!subteam\^[A-Z0-9]+|!(?:here|channel|everyone))(?:\|[^>]*)?>"
 )
-_BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
-_ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
+_HEADER_ATOM = "\ufffc"
+_HEADER_LITERAL_RE = re.compile(rf"(?:{_SLACK_MENTION_RE.pattern})|{_HEADER_ATOM}")
+# Underscore delimiters may not open or close inside an identifier. Stars
+# can still mark emphasis within a word, but cannot pair with underscores.
+_BOLD_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*\*\*(?![\s*])(.+?)(?<![\s*])\*\*\*(?!\*)")
+_BOLD_ITALIC_UNDERSCORE_RE = re.compile(r"(?<!\w)___(?![_\s])(.+?)(?<![_\s])___(?!\w)")
+_BOLD_STAR_RE = re.compile(r"(?<!\*)\*\*(?!\s)(.+?)(?<!\s)\*\*(?!\*)")
+_BOLD_UNDERSCORE_RE = re.compile(r"(?<!\w)__(?!\s)(.+?)(?<!\s)__(?!\w)")
+_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*(?![\*\s])(.+?)(?<![\*\s])\*(?!\*)")
+_ITALIC_UNDERSCORE_RE = re.compile(r"(?<!\w)_(?![_\s])(.+?)(?<![_\s])_(?!\w)")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 
 
@@ -109,11 +117,20 @@ def _mention_element(body: str) -> Optional[dict[str, Any]]:
     return None
 
 
-def _inline_elements(text: str) -> list[dict[str, Any]]:
+def _inline_elements(text: str, *, plain_text: bool = False) -> list[dict[str, Any]]:
     """Parse a run of inline markdown into rich_text section child elements.
     Produces ``text`` elements (optionally styled bold/italic/strike/code) and ``link`` elements.
-    Unmatched markup is emitted verbatim as plain text, so this never loses characters."""
+    Unmatched markup is emitted verbatim. For plain-text headers, mention
+    tokens stay visible as text instead of becoming non-text elements."""
     elements: list[dict[str, Any]] = []
+    header_parts: list[str] = []
+    header_atoms: list[str] = []
+
+    def _protect_header_text(s: str) -> str:
+        # A non-word, non-space atom lets emphasis wrap code, links or mentions
+        # without interpreting their contents. Literal occurrences are atoms too.
+        header_atoms.append(s)
+        return _HEADER_ATOM
 
     def emit_text(s: str, style: Optional[dict[str, bool]] = None) -> None:
         if not s:
@@ -131,10 +148,16 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
         # inline code is opaque — no nested styling
         for m in _INLINE_CODE_RE.finditer(s):
             _walk_links(s[pos : m.start()], style)
-            emit_text(m.group(1), {**style, "code": True})
+            if plain_text:
+                header_parts.append(_protect_header_text(m.group(1)))
+            else:
+                emit_text(m.group(1), {**style, "code": True})
             pos = m.end()
         _walk_links(s[pos:], style)
     def _emit_link(url: str, text: str, style: dict[str, bool]) -> None:
+        if plain_text:
+            header_parts.append(_protect_header_text(text))
+            return
         link_el: dict[str, Any] = {"type": "link", "url": url, "text": text}
         if style:
             link_el["style"] = dict(style)
@@ -153,27 +176,45 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
         # (works in section/mrkdwn; was literal in lists/quotes/table cells).
         # Mention labels are dropped from the element anyway; strip them first
         # so a label like |dev_ops_alerts is not split by the italic regex.
-        s = _SLACK_MENTION_RE.sub(lambda m: f"<{m.group(1)}>", s)
+        if not plain_text:
+            s = _SLACK_MENTION_RE.sub(lambda m: f"<{m.group(1)}>", s)
         pos = 0
         for m in _SLACK_LINK_RE.finditer(s):
-            _walk_emphasis(s[pos : m.start()], style)
+            _walk_text(s[pos : m.start()], style)
             url = m.group(1)
             _emit_link(url, m.group(2) or url, style)
             pos = m.end()
-        _walk_emphasis(s[pos:], style)
+        _walk_text(s[pos:], style)
+
+    def _walk_text(s: str, style: dict[str, bool]) -> None:
+        if plain_text:
+            header_parts.append(_HEADER_LITERAL_RE.sub(lambda m: _protect_header_text(m.group(0)), s))
+        else:
+            _walk_emphasis(s, style)
+
     def _walk_emphasis(s: str, style: dict[str, bool]) -> None:
         if not s:
             return
-        # Try bold, then strike, then italic, recursing into the inner span.
-        for rx, key in ((_BOLD_RE, "bold"), (_STRIKE_RE, "strike"), (_ITALIC_RE, "italic")):
+        # Try longer delimiters before shorter ones, recursing into the inner span.
+        for rx, keys in (
+            (_BOLD_ITALIC_STAR_RE, ("bold", "italic")),
+            (_BOLD_ITALIC_UNDERSCORE_RE, ("bold", "italic")),
+            (_BOLD_STAR_RE, ("bold",)),
+            (_BOLD_UNDERSCORE_RE, ("bold",)),
+            (_STRIKE_RE, ("strike",)),
+            (_ITALIC_STAR_RE, ("italic",)),
+            (_ITALIC_UNDERSCORE_RE, ("italic",)),
+        ):
             m = rx.search(s)
             if m:
                 _walk_emphasis(s[: m.start()], style)
-                inner_style = dict(style)
-                inner_style[key] = True
+                inner_style = {**style, **dict.fromkeys(keys, True)}
                 _walk_emphasis(m.group(1), inner_style)
                 _walk_emphasis(s[m.end() :], style)
                 return
+        if plain_text:
+            emit_text(s)
+            return
         # Base case: split on mention tokens at the leaf so emphasis spans
         # wrapping a mention are kept intact, while mentions themselves
         # remain unstyled (Slack rejects styled mention elements).
@@ -188,6 +229,11 @@ def _inline_elements(text: str) -> list[dict[str, Any]]:
             pos = m.end()
         emit_text(s[pos:], dict(style) if style else None)
     walk(text, {})
+    if plain_text:
+        _walk_emphasis("".join(header_parts), {})
+        visible = "".join(element["text"] for element in elements)
+        atoms = iter(header_atoms)
+        return [{"type": "text", "text": "".join(next(atoms) if ch == _HEADER_ATOM else ch for ch in visible)}]
     return elements or [{"type": "text", "text": text}]
 
 
@@ -210,9 +256,11 @@ def _nonempty_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _header_block(text: str) -> Optional[Block]:
-    # header blocks are plain_text only, 150 char cap.
-    clean = re.sub(r"[*_~`]", "", text).strip()
-    if not clean:
+    # Header blocks accept plain_text only. Reuse the inline parser so paired
+    # Markdown delimiters are removed without deleting literal identifier
+    # characters such as the underscore in ``SERVICE_US``.
+    clean = "".join(element["text"] for element in _inline_elements(text, plain_text=True)).strip()
+    if not re.sub(r"[*_~`]", "", clean).strip():
         # Emphasis-/whitespace-only header (e.g. "# ***" or "#   ") reduces to
         # empty; Slack rejects an empty plain_text with invalid_blocks. Skip it
         # (caller drops None) rather than poison the whole payload.

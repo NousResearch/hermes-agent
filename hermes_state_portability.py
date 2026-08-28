@@ -236,6 +236,17 @@ class SessionPortabilityMixin:
             "AND id >= ? AND id < ? AND substr(id, ? + 1) GLOB ? " + keep_clause
         )
 
+        # Avoid acquiring SQLite's global WAL write lock on the common path
+        # where the job is still within its retention window. The write
+        # transaction repeats this query because another process may prune or
+        # append runs between this advisory read and BEGIN IMMEDIATE.
+        with self._lock:
+            has_victim = self._conn.execute(
+                f"{select_query} LIMIT 1", params
+            ).fetchone()
+        if has_victim is None:
+            return 0
+
         def _do(conn):
             # Local import: this mixin must not import hermes_state at module
             # level (cycle); delete_session resolves the same helper lazily.
@@ -245,8 +256,8 @@ class SessionPortabilityMixin:
                 row[0] for row in conn.execute(select_query, params).fetchall()
             ]
             if not victim_ids:
-                # Common case for hot jobs under retention: zero write cost
-                # (Enough1122 review on #88331).
+                # A concurrent pruner may have removed the advisory read's
+                # victims before this transaction acquired the write lock.
                 return 0
             for victim_id in victim_ids:
                 # Same cascade shape as delete_session: delegate children die

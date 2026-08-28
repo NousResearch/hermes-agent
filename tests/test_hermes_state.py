@@ -4886,6 +4886,13 @@ class TestListCronJobRuns:
         assert db.prune_cron_job_runs("alpha", keep=0) == 4
         assert db.list_cron_job_runs("alpha", limit=20) == []
 
+    def test_prune_cron_job_runs_skips_write_when_within_retention(self, db):
+        self._seed_ts_run(db, "alpha", "20260818_120000")
+        writes_before = db._write_count
+
+        assert db.prune_cron_job_runs("alpha", keep=5) == 0
+        assert db._write_count == writes_before
+
     def test_prune_skips_underscore_extension_jobs(self, db):
         """#92133: job id `backup` must not prune `backup_weekly`'s runs —
         the bare prefix range leaks underscore-extensions; the timestamp-

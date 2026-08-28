@@ -12,6 +12,14 @@ from tools.registry import ToolRegistry
 def test_a2a_call_schema_round_trips_through_tool_describe(monkeypatch):
     registry = ToolRegistry()
 
+    # The client tools are config-gated now (test_a2a_tools_gate.py):
+    # open the gate the way a real install would — configure a peer.
+    monkeypatch.setattr(
+        a2a_tools,
+        "_load_config",
+        lambda: {"a2a_agents": {"peer": {"url": "http://localhost:9999"}}},
+    )
+
     class _Context:
         def register_tool(self, name, toolset, schema, handler, **kwargs):
             registry.register(

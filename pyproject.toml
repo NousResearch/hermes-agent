@@ -497,12 +497,44 @@ preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 # which silently corrupts any non-ASCII file content.  We had three
 # separate Windows sandbox regressions in one debug session before
 # adding the explicit encoding.  This rule keeps new code honest.
-select = ["PLW1514"]
+#
+# ASYNC210/220/221/251: blocking calls inside `async def` freeze the whole
+# gateway/uvicorn event loop — every adapter, timer, and health check stops
+# until the call returns.  Real incidents: a 17-minute getaddrinfo hang took
+# the backend down (#91912); `time.sleep` in start_gateway froze restarts
+# for 10s (#36163).  The fix pattern is `await asyncio.to_thread(...)` (or
+# `loop.run_in_executor`), `asyncio.create_subprocess_exec`, and
+# `await asyncio.sleep`.  These four are the direct freeze vectors:
+#   ASYNC210 — blocking HTTP call in async fn (urllib/requests/httpx-sync)
+#   ASYNC220 — subprocess.Popen in async fn
+#   ASYNC221 — subprocess.run / os.system in async fn
+#   ASYNC251 — time.sleep in async fn
+# ASYNC230 (blocking open()) and ASYNC240 (blocking path methods) are real
+# but ~180 legacy sites deep; they graduate to this list once the backlog
+# is burned down (see per-file-ignores below for the frozen baseline).
+select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests can intentionally exercise locale-encoding edge cases.
-"tests/**" = ["PLW1514"]
+"tests/**" = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 # Skills and plugins are partially user-authored — their own conventions.
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
+# Plugin platform adapters run ON the gateway event loop — the ASYNC gate
+# applies to them with full force; only PLW1514 stays relaxed.
 "plugins/**" = ["PLW1514"]
+# ---------------------------------------------------------------------------
+# ASYNC ratchet baseline — legacy blocking sites that predate the gate.
+# Each entry is an EXISTING violation being fixed in its own PR; do NOT add
+# new files here.  Remove the entry when the file's sites are fixed.
+# ---------------------------------------------------------------------------
+# Detached restart watchers: Popen of a fully-detached, fire-and-forget
+# process (no wait), an accepted momentary spawn cost pending a dedicated
+# async-subprocess sweep.
+"gateway/run.py" = ["ASYNC220"]
+"gateway/slash_commands.py" = ["ASYNC220"]
+# Off-loop sweep for these routers is in flight (PR #84376).
+"hermes_cli/web_routers/profiles.py" = ["ASYNC220", "ASYNC221"]
+# Legacy blocking spawn sites in platform adapters, pending their own fixes.
+"plugins/platforms/whatsapp/adapter.py" = ["ASYNC220", "ASYNC221"]
+"plugins/platforms/photon/adapter.py" = ["ASYNC220"]

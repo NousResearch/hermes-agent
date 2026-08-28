@@ -477,6 +477,25 @@ class TestHermesHomeIntegration:
         assert (hermes_home / "config.yaml").read_text() == f"# {MARKER}\n"
         assert (hermes_home / ".env").read_text() == f"HERMES_MARKER={MARKER}\n"
 
+    def test_default_home_is_hidden_when_hermes_home_is_relocated(self, work_dir, hermes_home, fake_home):
+        # With HERMES_HOME elsewhere, HOME/.hermes (the default home, with
+        # its .env and auth.json) is hidden as well; a live test read both
+        # files from inside before this.
+        default_home = fake_home / ".hermes"
+        default_home.mkdir(exist_ok=True)
+        (default_home / ".env").write_text(f"DEFAULT_MARKER={MARKER}\n")
+        (default_home / "auth.json").write_text(f'{{"token": "{MARKER}"}}\n')
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            out = env.execute(f"cat {default_home}/.env {default_home}/auth.json 2>&1; ls -A {default_home}")["output"]
+            assert MARKER not in out
+            assert env.execute(f"ls -A {default_home}")["output"].split() == []
+            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["sandboxes"]
+        finally:
+            env.cleanup()
+        assert (default_home / ".env").read_text() == f"DEFAULT_MARKER={MARKER}\n"
+        assert (default_home / "auth.json").read_text() == f'{{"token": "{MARKER}"}}\n'
+
 
 class TestHomeModeCarveOut:
     """HERMES_HOME/home is bound back over the overlay only under home_mode=profile."""
@@ -576,3 +595,51 @@ class TestHomeModeIntegration:
             assert MARKER not in out
         finally:
             env.cleanup()
+
+    @pytest.fixture
+    def profile_layout(self, fake_home, monkeypatch):
+        """The standard profile layout: HERMES_HOME at HOME/.hermes/profiles/<name>.
+
+        No TERMINAL_SANDBOX_DIR: the state dir lands in HERMES_HOME/sandboxes,
+        two overlays deep (HOME/.hermes, then HERMES_HOME inside it).
+        """
+        default_home = fake_home / ".hermes"
+        default_home.mkdir(exist_ok=True)
+        (default_home / ".env").write_text(f"DEFAULT_MARKER={MARKER}\n")
+        (default_home / "auth.json").write_text(f'{{"token": "{MARKER}"}}\n')
+        hh = default_home / "profiles" / "coder"
+        (hh / "home").mkdir(parents=True)
+        (hh / "config.yaml").write_text(f"# {MARKER}\n")
+        (hh / ".env").write_text(f"PROFILE_MARKER={MARKER}\n")
+        monkeypatch.setenv("HERMES_HOME", str(hh))
+        monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
+        return hh
+
+    def test_profile_layout_under_the_default_home_keeps_the_profile_reachable(self, work_dir, fake_home, profile_layout, monkeypatch):
+        # The profile home and the state dir are bound back through
+        # both overlays; the default home and the rest of the profile stay hidden.
+        hermes_home = profile_layout
+        profile_home = hermes_home / "home"
+        default_home = fake_home / ".hermes"
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            state_dir = Path(env.get_temp_dir())
+            assert state_dir.parent == hermes_home / "sandboxes"
+            assert env.execute("echo $HOME")["output"].strip() == str(profile_home)
+            result = env.execute("touch $HOME/probe")
+            assert result["returncode"] == 0, result["output"]
+            assert (profile_home / "probe").is_file()
+            (work_dir / "sub").mkdir()
+            assert env.execute("cd sub")["returncode"] == 0
+            assert env.execute("pwd")["output"].strip() == str(work_dir / "sub")
+            assert env.execute(f"ls -A {default_home}")["output"].split() == ["profiles"]
+            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"home", "sandboxes"}
+            out = env.execute(
+                f"cat {default_home}/.env {default_home}/auth.json {hermes_home}/config.yaml {hermes_home}/.env 2>/dev/null"
+            )["output"]
+            assert MARKER not in out
+        finally:
+            env.cleanup()
+        assert (default_home / ".env").read_text() == f"DEFAULT_MARKER={MARKER}\n"
+

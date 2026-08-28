@@ -3856,6 +3856,13 @@ def _tool_call_id_variants(tc: Any) -> set:
 # consistently whether the empty turn was caught at write time or send time.
 _INTERRUPTED_PLACEHOLDER = "[response interrupted]"
 
+# Repeated heals of the same poisoned transcript used to WARNING on every
+# send (#96870). Escalate once per session window, then stay quiet.
+_EMPTY_HEAL_ESCALATE_AFTER = 5
+_EMPTY_HEAL_WINDOW_S = 600.0
+_empty_heal_log_state: Dict[str, Dict[str, Any]] = {}
+_empty_heal_log_lock = threading.Lock()
+
 
 def _msg_has_payload(msg: Dict[str, Any]) -> bool:
     """True if ``msg`` carries anything the API treats as non-empty content.
@@ -3903,6 +3910,80 @@ def _msg_has_payload(msg: Dict[str, Any]) -> bool:
     if msg.get("codex_message_items") or msg.get("codex_reasoning_items"):
         return True
     return False
+
+
+def fill_empty_non_final_wire_payload(
+    msg: Dict[str, Any], *, is_final: bool
+) -> bool:
+    """Write the interrupted placeholder onto an empty non-final wire copy.
+
+    Used by the send-time projection so ``repair_empty_non_final_messages``
+    does not re-heal the same row on every call (#88955 hidden placeholders,
+    #96870 stream-death / host-fed empties). Pass the per-call copy only —
+    durable history must not be mutated. Returns True when *msg* was filled.
+    """
+    if is_final or not isinstance(msg, dict):
+        return False
+    if msg.get("role") not in ("user", "assistant"):
+        return False
+    if _msg_has_payload(msg):
+        return False
+    msg["content"] = _INTERRUPTED_PLACEHOLDER
+    return True
+
+
+def _session_id_for_heal_log() -> str:
+    try:
+        from hermes_logging import _session_context
+
+        return str(getattr(_session_context, "session_id", None) or "")
+    except Exception:
+        return ""
+
+
+def _log_empty_non_final_heal(healed: int) -> None:
+    """WARNING on the first heals in a window; one ERROR at the threshold.
+
+    Further heals in the same session window stay silent so a poisoned
+    transcript cannot flood ``errors.log`` (dozens of identical WARNINGs
+    per hour with no user-visible signal — #96870).
+    """
+    key = _session_id_for_heal_log() or "-"
+    now = time.monotonic()
+    with _empty_heal_log_lock:
+        state = _empty_heal_log_state.get(key)
+        if state is None or (now - state["window_start"]) > _EMPTY_HEAL_WINDOW_S:
+            state = {"count": 0, "window_start": now, "escalated": False}
+            _empty_heal_log_state[key] = state
+        state["count"] += 1
+        count = state["count"]
+        if count >= _EMPTY_HEAL_ESCALATE_AFTER and not state["escalated"]:
+            state["escalated"] = True
+            level = "error"
+        elif state["escalated"]:
+            level = "silent"
+        else:
+            level = "warning"
+
+    if level == "silent":
+        return
+    if level == "error":
+        _ra().logger.error(
+            "Pre-call sanitizer: healed %d empty non-final message(s) "
+            "(%d heals in this session window). The transcript is being "
+            "repaired on every send; /new drops the poisoned turns.",
+            healed,
+            count,
+        )
+        return
+    _ra().logger.warning(
+        "Pre-call sanitizer: healed %d empty non-final message(s) by "
+        "substituting placeholder content — an empty-content turn was in "
+        "the transcript and would 400 the request ('messages must have "
+        "non-empty content' / INVALID_REQUEST_BODY). Self-recovering the "
+        "poisoned transcript in memory; no restart needed.",
+        healed,
+    )
 
 
 def repair_empty_non_final_messages(
@@ -3961,14 +4042,7 @@ def repair_empty_non_final_messages(
             repaired.append(msg)
 
     if healed:
-        _ra().logger.warning(
-            "Pre-call sanitizer: healed %d empty non-final message(s) by "
-            "substituting placeholder content — an empty-content turn was in "
-            "the transcript and would 400 the request ('messages must have "
-            "non-empty content' / INVALID_REQUEST_BODY). Self-recovering the "
-            "poisoned transcript in memory; no restart needed.",
-            healed,
-        )
+        _log_empty_non_final_heal(healed)
         return repaired
     return messages
 

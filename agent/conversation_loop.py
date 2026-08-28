@@ -2323,7 +2323,10 @@ def run_conversation(
         # repair_message_sequence_with_cursor also recomputes the SessionDB
         # flush cursor (_last_flushed_db_idx) when repair compacts the list,
         # so the turn-end flush doesn't skip the assistant/tool chain (#44837).
-        from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+        from agent.agent_runtime_helpers import (
+            fill_empty_non_final_wire_payload,
+            repair_message_sequence_with_cursor,
+        )
         repaired_seq = repair_message_sequence_with_cursor(agent, messages)
         if repaired_seq > 0:
             request_logger.info(
@@ -2353,28 +2356,8 @@ def run_conversation(
             # from every outgoing copy so strict OpenAI-compatible backends
             # don't reject the request after a model switch or resumed typed
             # event row enters the live history.
-            _display_kind = api_msg.pop("display_kind", None)
+            api_msg.pop("display_kind", None)
             api_msg.pop("display_metadata", None)
-
-            # Legacy hidden redirect placeholders (#88955): rows persisted
-            # BEFORE the writer-side api_content stamp in
-            # _apply_active_turn_redirect are content="" with no sidecar.
-            # Once display_kind is stripped the pre-call sanitizer
-            # (repair_empty_non_final_messages) would re-heal such a row on
-            # every call forever, since the durable transcript is never
-            # mutated. Give the wire copy the same neutral payload here so
-            # old sessions converge too. Never the interrupt scaffold —
-            # replaying scaffold bytes as assistant text is #81841.
-            if (
-                _display_kind == "hidden"
-                and api_msg.get("role") == "assistant"
-                and not _api_content
-                and not (api_msg.get("content") or "").strip()
-                and not api_msg.get("tool_calls")
-            ):
-                from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
-
-                api_msg["content"] = _INTERRUPTED_PLACEHOLDER
 
             # Durable row identity stamped by _rows_to_conversation so the
             # desktop can address a specific persisted message (reactions).
@@ -2432,6 +2415,16 @@ def run_conversation(
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:
                 api_msg.pop("finish_reason")
+            # Empty non-final user/assistant turns (#88955 hidden placeholders
+            # and #96870 stream-death / host-fed empties): once display_kind
+            # and api_content are stripped, the pre-call sanitizer would
+            # re-heal the wire copy on every send and flood errors.log.
+            # Fill the WIRE copy here so the sanitizer has nothing to do.
+            # Durable history is not mutated. After reasoning copy so a
+            # thinking-only turn keeps its payload and is not rewritten.
+            fill_empty_non_final_wire_payload(
+                api_msg, is_final=(idx == len(messages) - 1)
+            )
             # _thinking_prefill survives here intentionally: the drop pass below
             # needs it. The transport strips all underscore keys before the wire.
             # Strip length-continuation marks; not every transport drops underscore keys.

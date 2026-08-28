@@ -878,7 +878,7 @@ def _resolve_ordered_environment_home(sources: list[str]) -> str | None:
         for raw in text.splitlines():
             line = raw.strip()
             if line.startswith("[") and line.endswith("]"):
-                in_service = line == "[Service]"
+                in_service = line.casefold() == "[service]"
                 continue
             if not in_service or not line:
                 continue
@@ -888,9 +888,9 @@ def _resolve_ordered_environment_home(sources: list[str]) -> str | None:
             if eq < 0:
                 continue
             directive = line[:eq].strip()
-            if directive in ("EnvironmentFile", "UnsetEnvironment"):
+            if directive.casefold() in ("environmentfile", "unsetenvironment"):
                 return None
-            if directive != "Environment":
+            if directive.casefold() != "environment":
                 continue
             body = line[eq + 1 :].strip()
             if "%" in body:
@@ -937,7 +937,6 @@ def _systemd_unit_environment_home(unit_path: Path) -> str | None:
                 except (OSError, UnicodeError):
                     return None
     except OSError:
-        dropin_names = []
         return None
     return _resolve_ordered_environment_home(ordered_sources)
 

@@ -401,6 +401,74 @@ class TestSystemdUnitParsing:
         _apply_system_gateway_home_override(unit_path=unit_path)
         assert os.environ.get("HERMES_HOME") is None
 
+    # ── P2 case-insensitive systemd directive/section matching ──────────
+
+    def test_lowercase_service_section_still_parsed(self, tmp_path, monkeypatch):
+        """systemd sections are case-insensitive; [service] must be recognised."""
+        result = self._override(
+            monkeypatch,
+            tmp_path,
+            unit_text='[service]\nEnvironment="HERMES_HOME=/srv/lower-section"\n',
+        )
+        assert result == "/srv/lower-section"
+
+    def test_lowercase_environment_directive_still_parsed(self, tmp_path, monkeypatch):
+        """systemd directives are case-insensitive; environment= must be recognised."""
+        result = self._override(
+            monkeypatch,
+            tmp_path,
+            unit_text='[Service]\nenvironment="HERMES_HOME=/srv/lower-directive"\n',
+        )
+        assert result == "/srv/lower-directive"
+
+    def test_lowercase_environmentfile_fails_closed(self, tmp_path, monkeypatch):
+        """Lowercase environmentfile= must still fail closed (unmodellable)."""
+        result = self._override(
+            monkeypatch,
+            tmp_path,
+            unit_text=(
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/base-home"\n'
+                "environmentfile=/etc/default/hermes\n"
+            ),
+        )
+        assert result is None
+
+    def test_lowercase_unsetenvironment_fails_closed(self, tmp_path, monkeypatch):
+        """Lowercase unsetenvironment= must still fail closed (unmodellable)."""
+        result = self._override(
+            monkeypatch,
+            tmp_path,
+            unit_text=(
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/base-home"\n'
+                "unsetenvironment=HERMES_HOME\n"
+            ),
+        )
+        assert result is None
+
+    def test_mixed_case_section_and_directives(self, tmp_path, monkeypatch):
+        """Mixed case [Service] with lowercase environmentfile= still fails closed."""
+        result = self._override(
+            monkeypatch,
+            tmp_path,
+            unit_text=(
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/base-home"\n'
+                "environmentfile=/etc/default/hermes\n"
+            ),
+        )
+        assert result is None
+
+    def test_uppercase_section_still_parsed(self, tmp_path, monkeypatch):
+        """[SERVICE] (all-caps) is legal per systemd case-insensitivity."""
+        result = self._override(
+            monkeypatch,
+            tmp_path,
+            unit_text='[SERVICE]\nEnvironment="HERMES_HOME=/srv/upper-section"\n',
+        )
+        assert result == "/srv/upper-section"
+
     def test_valid_unit_home_still_adopted(self, tmp_path, monkeypatch):
         """Control: the canonical single-assignment unit keeps working."""
         result = self._override(

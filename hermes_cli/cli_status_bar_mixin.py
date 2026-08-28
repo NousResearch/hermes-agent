@@ -78,6 +78,58 @@ class CLIStatusBarMixin:
             "critical": "class:status-bar-critical",
         }.get(category, _DIM)
 
+    def _vim_mode_label(self) -> str:
+        """Current vi editing mode as a short status-bar label; empty when vim mode is off
+        or the application is not running yet."""
+        if not getattr(self, "_vim_mode", False):
+            return ""
+        try:
+            from prompt_toolkit.key_binding.vi_state import InputMode
+            app = getattr(self, "_app", None)
+            if app is None:
+                return ""
+            mode = app.vi_state.input_mode
+            if mode in (InputMode.INSERT, InputMode.INSERT_MULTIPLE):
+                return "INSERT"
+            if mode == InputMode.REPLACE:
+                return "REPLACE"
+            return "NORMAL"
+        except Exception:
+            return ""
+
+    def _handle_vim_command(self, cmd_original: str) -> None:
+        """``/vim`` toggles vi keybindings in the composer, ``/vim on|off`` sets, ``/vim status``
+        reports. Persisted to ``display.vim_mode``; applied to the live prompt_toolkit
+        Application immediately, no restart needed."""
+        from cli import save_config_value
+        from prompt_toolkit.enums import EditingMode
+        parts = (cmd_original or "").split()
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if arg in ("status", "show"):
+            self._console_print(f"  Vim mode {'on' if self._vim_mode else 'off'}")
+            return
+
+        if arg in ("on", "true", "yes"):
+            target = True
+        elif arg in ("off", "false", "no"):
+            target = False
+        elif arg in ("", "toggle"):
+            target = not self._vim_mode
+        else:
+            self._console_print("  Usage: /vim [on|off|status]")
+            return
+
+        self._vim_mode = target
+        save_config_value("display.vim_mode", target)
+        app = getattr(self, "_app", None)
+        if app is not None:
+            app.editing_mode = EditingMode.VI if target else EditingMode.EMACS
+        if target:
+            self._console_print("  Vim mode on — Esc for NORMAL, i to insert")
+        else:
+            self._console_print("  Vim mode off — standard keybindings")
+
     def _handle_battery_command(self, cmd_original: str) -> None:
         """``/battery`` toggles, ``/battery on|off`` sets, ``/battery status`` reports the
         setting plus a live reading. Persisted to ``display.battery``."""
@@ -1127,6 +1179,9 @@ class CLIStatusBarMixin:
                 frags[0:0] = [(_SB, " "), (battery_style, battery_label), (_DIM, " │")]
 
             frags = self._right_align_status_title_fragments(frags, session_title, width)
+            vim_label = self._vim_mode_label()
+            if vim_label:
+                frags.extend([(_DIM, " │ "), (_STRONG, vim_label), (_SB, " ")])
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
                 plain_text = "".join(text for _, text in frags)

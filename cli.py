@@ -51,6 +51,7 @@ from agent.pet import render as pet_render
 
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
+from prompt_toolkit.enums import EditingMode
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -2943,6 +2944,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
+        # Vi/vim editing mode for the input composer (toggled via /vim, persisted to
+        # display.vim_mode). Off by default: prompt_toolkit's standard emacs bindings.
+        self._vim_mode = bool(CLI_CONFIG["display"].get("vim_mode", False))
         # Hide rules + status bar until the next input after a resize, so SIGWINCH cannot
         # stamp a fresh status bar over one the terminal just reflowed into scrollback.
         self._status_bar_suppressed_after_resize = self._resize_recovery_pending = False
@@ -3759,6 +3763,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             layout=layout,
             key_bindings=kb,
             style=style,
+            # Vi editing mode when display.vim_mode is on (toggled at runtime by /vim).
+            # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
+            editing_mode=EditingMode.VI if self._vim_mode else EditingMode.EMACS,
             full_screen=False,
             mouse_support=False,
             # 0 (default) avoids fighting terminal auto-scroll in non-fullscreen mode.

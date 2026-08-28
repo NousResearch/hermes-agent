@@ -565,11 +565,11 @@ describe('liveSessionProjectId', () => {
     const nfd = nfc.normalize('NFD')
 
     expect(nfd).not.toBe(nfc) // premise: distinct byte strings
-    expect(liveSessionProjectId(makeSession(nfd), [makeProject('p_bistand', [nfc])])).toBe('p_bistand')
+    expect(liveSessionProjectId(makeCwdSession(nfd), [makeProject('p_bistand', [nfc])])).toBe('p_bistand')
   })
 
   it('matches a Windows cwd differing in both case and normalization form (#65014)', () => {
-    const id = liveSessionProjectId(makeSession('d:/projects/sv/bist\u00e5nd'.normalize('NFD')), [
+    const id = liveSessionProjectId(makeCwdSession('d:/projects/sv/bist\u00e5nd'.normalize('NFD')), [
       makeProject('p_sv', ['D:\\Projects\\SV\\Bist\u00e5nd'.normalize('NFC')])
     ])
 

@@ -12,9 +12,11 @@ which never fires on Windows: ``_pause_windows_gateways_for_update`` /
 hoists the "should the probe have produced rows?" decision into
 ``_fleet_probe_expected_runtimes`` and keys it on the ROW-CAPABLE pre-update
 liveness signals: restart-phase bookkeeping, the pre-restart PID snapshot,
-and the pre-update plan inventory.  The Windows pause/resume token is
-deliberately NOT a signal — it is bookkeeping, not a runtime inventory, and
-its entries have no corresponding ``collect_fleet_versions()`` rows (see
+and the gateway-kind records in the pre-update plan inventory (the plan's
+serve/dashboard records are row-incapable for this probe, #97332).  The
+Windows pause/resume token is deliberately NOT a signal — it is bookkeeping,
+not a runtime inventory, and its entries have no corresponding
+``collect_fleet_versions()`` rows (see
 ``test_update_fleet_probe_resume_token.py``).  The same condition gates the
 2.0s settle sleep.
 """
@@ -24,7 +26,8 @@ from __future__ import annotations
 import inspect
 import types
 
-from hermes_cli.update_cmd import _fleet_probe_expected_runtimes
+from hermes_cli.main import _fleet_probe_expected_runtimes
+from hermes_cli.update_inventory import RuntimeRecord
 
 
 def _plan(runtimes):
@@ -34,17 +37,68 @@ def _plan(runtimes):
 class TestEmptySnapshotFailClosed:
     """Signals under which zero fleet rows means verification failure."""
 
-    def test_incomplete_when_pre_update_plan_saw_runtimes(self):
-        # (a) The plan inventoried a live runtime pre-update but the restart
-        # phase's POSIX bookkeeping is empty (e.g. Windows, or an
+    def test_incomplete_when_pre_update_plan_saw_gateway_runtimes(self):
+        # (a) The plan inventoried a live gateway runtime pre-update but the
+        # restart phase's POSIX bookkeeping is empty (e.g. Windows, or an
         # externally-supervised gateway). Zero rows must fail closed.
         assert (
             _fleet_probe_expected_runtimes(
-                _plan([object()]),
+                _plan([RuntimeRecord(kind="gateway", profile="default")]),
                 [],  # pre_restart_pids: probe saw nothing
                 None,  # no Windows resume token
                 [],  # restarted_services
                 set(),  # killed_pids
+            )
+            is True
+        )
+
+    def test_dashboard_only_plan_does_not_expect_rows(self):
+        # #97332: the plan inventory also carries kind="dashboard" records
+        # (#95576), but collect_fleet_versions() reports gateway identities
+        # only. A dashboard-only plan (gateway never started) cannot ground
+        # a rows-expected verdict — counting it made a successful update
+        # print the incomplete-verification warning and exit 1.
+        assert (
+            _fleet_probe_expected_runtimes(
+                _plan([RuntimeRecord(kind="dashboard", profile="default")]),
+                [],
+                None,
+                [],
+                set(),
+            )
+            is False
+        )
+
+    def test_serve_only_plan_does_not_expect_rows(self):
+        # Same row-incapable reasoning as the dashboard record above: a
+        # manually launched `hermes serve` backend never publishes the
+        # gateway_state.json row the fleet probe would need.
+        assert (
+            _fleet_probe_expected_runtimes(
+                _plan([RuntimeRecord(kind="serve", profile="default")]),
+                [],
+                None,
+                [],
+                set(),
+            )
+            is False
+        )
+
+    def test_mixed_plan_keys_on_gateway_record(self):
+        # A dashboard running alongside a real gateway still expects rows:
+        # the gateway record carries the expectation.
+        assert (
+            _fleet_probe_expected_runtimes(
+                _plan(
+                    [
+                        RuntimeRecord(kind="dashboard", profile="default"),
+                        RuntimeRecord(kind="gateway", profile="work"),
+                    ]
+                ),
+                [],
+                None,
+                [],
+                set(),
             )
             is True
         )
@@ -130,22 +184,14 @@ class TestCallSiteWiring:
     def _impl_source(self):
         from hermes_cli import update_cmd
 
-        # The fleet-version probe lives in the post-restart verifier that
-        # _cmd_update_impl calls; guard the wiring there.
-        return inspect.getsource(update_cmd._verify_fleet_after_update)
+        return inspect.getsource(update_cmd._cmd_update_impl)
 
     def test_settle_sleep_gated_on_expected_runtimes(self):
         src = self._impl_source()
         assert "_fleet_rows_expected = _m()._fleet_probe_expected_runtimes(" in src
         # The 2.0s settle window must key on the cross-platform signal, so a
-        # resumed Windows gateway gets its settle window too (#93406). The
-        # settle loop lives in _collect_fleet_snapshot, gated on that signal.
-        assert "_fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)" in src
-        from hermes_cli import update_cmd_fleet
-
-        snap_src = inspect.getsource(update_cmd_fleet._collect_fleet_snapshot)
-        assert "if not rows_expected:\n" in snap_src
-        assert "_time.sleep(2.0)" in snap_src
+        # resumed Windows gateway gets its settle window too (#93406).
+        assert "if _fleet_rows_expected:\n" in src
         assert "if restarted_services or killed_pids:\n                _time.sleep" not in src
 
     def test_zero_row_guard_gated_on_expected_runtimes(self):

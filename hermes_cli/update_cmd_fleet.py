@@ -1308,7 +1308,7 @@ def _fleet_probe_expected_runtimes(
     healthy, so zero rows is only proof-of-safety when NOTHING says a gateway existed
     pre-update. Signals: ``restarted_services``/``killed_pids``; ``pre_restart_pids``
     non-empty or None (same contract as ``_restart_phase_failure_is_incomplete``); plan
-    inventoried ≥1 runtime. ``windows_resume_token`` is deliberately EXCLUDED: it is
+    inventoried ≥1 ``kind == "gateway"`` runtime. ``windows_resume_token`` is deliberately EXCLUDED: it is
     pause/resume bookkeeping, not an inventory, and its entries don't map to probe rows
     (``unmapped`` Scheduled-Task gateways never publish gateway_state.json; a paused
     profile resumes DETACHED). Counting it made every Windows update that paused a
@@ -1326,7 +1326,11 @@ def _fleet_probe_expected_runtimes(
     if pre_restart_pids is None or pre_restart_pids:
         return True
     with suppress(Exception):
-        if pre_update_plan is not None and pre_update_plan.runtimes:
+        # Gateway-kind only: serve/dashboard plan records never publish a gateway_state.json
+        # row, so a dashboard-only plan cannot ground a rows-expected verdict (#97332).
+        if pre_update_plan is not None and any(
+            getattr(runtime, "kind", None) == "gateway" for runtime in pre_update_plan.runtimes
+        ):
             return True
     return False
 

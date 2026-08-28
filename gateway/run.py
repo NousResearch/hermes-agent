@@ -32559,7 +32559,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     existing_pid,
                 )
                 try:
-                    terminate_pid(existing_pid, force=True)
+                    terminate_pid(
+                        existing_pid,
+                        force=True,
+                        expected_start_time=existing_start_time,
+                    )
                 except ProcessLookupError:
                     old_gateway_exited = True
                 except (PermissionError, OSError):

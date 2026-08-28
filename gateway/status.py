@@ -302,13 +302,41 @@ def normalize_updated_at(value: Any) -> Optional[str]:
     return None
 
 
-def terminate_pid(pid: int, *, force: bool = False) -> None:
+def _assert_process_start_time_matches(
+    pid: int, expected_start_time: Optional[float]
+) -> None:
+    """Fail closed unless ``pid`` still names the recorded process object."""
+    if expected_start_time is None:
+        raise OSError(
+            f"refusing to force-kill PID {pid} without a process start-time guard"
+        )
+    current_start_time = _get_process_start_time(pid)
+    if current_start_time is None:
+        raise OSError(
+            f"refusing to force-kill PID {pid}; process start time is unavailable"
+        )
+    try:
+        expected = float(expected_start_time)
+        current = float(current_start_time)
+    except (TypeError, ValueError) as exc:
+        raise OSError(f"refusing to force-kill PID {pid}; malformed start time") from exc
+    if expected <= 0 or current <= 0 or abs(expected - current) > 0.001:
+        raise OSError(f"refusing to force-kill PID {pid}; process identity changed")
+
+
+def terminate_pid(
+    pid: int,
+    *,
+    force: bool = False,
+    expected_start_time: Optional[float] = None,
+) -> None:
     """Terminate a PID with platform-appropriate force semantics.
 
     POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
     because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
     """
     if force and _IS_WINDOWS:
+        _assert_process_start_time_matches(pid, expected_start_time)
         # CREATE_NO_WINDOW: terminate_pid runs from the windowless pythonw.exe
         # gateway/desktop backend, so a bare taskkill spawn would flash a
         # conhost window on every force-kill.
@@ -2234,7 +2262,11 @@ def _terminate_scoped_lock_owner_once(
             return None
 
         try:
-            terminate_pid(owner_pid, force=True)
+            terminate_pid(
+                owner_pid,
+                force=True,
+                expected_start_time=owner_start_time,
+            )
         except ProcessLookupError:
             return owner_pid
         except (PermissionError, OSError):

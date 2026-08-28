@@ -232,7 +232,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     monkeypatch.setattr(
         status_mod,
         "terminate_pid",
-        lambda pid, force=False: terminated.append((pid, force)),
+        lambda pid, force=False, **kwargs: terminated.append((pid, force)),
     )
 
     token = cli_main._pause_windows_gateways_for_update()
@@ -692,7 +692,7 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
     monkeypatch.setattr(
         status_mod,
         "terminate_pid",
-        lambda pid, force=False: terminated.append(int(pid)),
+        lambda pid, force=False, **kwargs: terminated.append(int(pid)),
     )
 
     cli_main._pause_windows_gateways_for_update()
@@ -1031,7 +1031,6 @@ def test_stop_service_refuses_pid_reuse_before_sc_stop(monkeypatch):
         )
 
     assert calls == []
-
 
 
 

@@ -1625,7 +1625,11 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
         return
 
     try:
-        from gateway.status import _pid_exists, terminate_pid as _terminate_pid
+        from gateway.status import (
+            _pid_exists,
+            get_process_start_time,
+            terminate_pid as _terminate_pid,
+        )
     except Exception:
         return
 
@@ -1645,7 +1649,11 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     for pid in pids:
         if _pid_exists(pid):
             try:
-                _terminate_pid(pid, force=True)
+                _terminate_pid(
+                    pid,
+                    force=True,
+                    expected_start_time=get_process_start_time(pid),
+                )
             except (ProcessLookupError, PermissionError, OSError):
                 pass
 
@@ -2007,6 +2015,11 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         # the same way taskkill /T does.
         from gateway.status import terminate_pid as _terminate_pid
         from gateway.status import _pid_exists
+        expected_start_time = data.get("start_time")
+        if expected_start_time is None:
+            from gateway.status import get_process_start_time
+
+            expected_start_time = get_process_start_time(pid)
         _terminate_pid(pid)  # graceful first
         # Wait up to 10s for graceful shutdown. On Windows, os.kill(pid, 0)
         # is NOT a no-op — use the handle-based existence check.
@@ -2017,7 +2030,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
                 return
         # Force kill
         try:
-            _terminate_pid(pid, force=True)
+            _terminate_pid(pid, force=True, expected_start_time=expected_start_time)
         except (ProcessLookupError, OSError):
             pass
         print(f"✓ Gateway force-stopped (PID {pid})")

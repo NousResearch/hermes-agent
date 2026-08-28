@@ -1570,7 +1570,7 @@ def _windows_stop_drain_timeout() -> float:
 def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
     """Force-kill known gateway PIDs without a broad process sweep."""
     try:
-        from gateway.status import _pid_exists, terminate_pid
+        from gateway.status import _pid_exists, get_process_start_time, terminate_pid
     except ImportError:
         return 0
 
@@ -1584,7 +1584,11 @@ def _force_terminate_known_gateway_pids(pids: list[int]) -> int:
         try:
             if not _pid_exists(pid):
                 continue
-            terminate_pid(pid, force=True)
+            terminate_pid(
+                pid,
+                force=True,
+                expected_start_time=get_process_start_time(pid),
+            )
             killed += 1
         except ProcessLookupError:
             continue

@@ -656,6 +656,9 @@ def _escalate_wedged_gateway(
 
     Returns True once the PID has left the process table.
     """
+    from gateway.status import get_process_start_time
+
+    expected_start_time = get_process_start_time(pid)
     try:
         terminate_pid(pid, force=False)
     except (ProcessLookupError, PermissionError, OSError):
@@ -663,7 +666,7 @@ def _escalate_wedged_gateway(
     if _wait_for_pid_exit(pid, max(float(term_grace), 0.0)):
         return True
     try:
-        terminate_pid(pid, force=True)
+        terminate_pid(pid, force=True, expected_start_time=expected_start_time)
         print(f"⚠ Gateway PID {pid} unresponsive to SIGTERM; sent SIGKILL")
     except (ProcessLookupError, PermissionError, OSError):
         pass
@@ -2148,7 +2151,12 @@ def kill_gateway_processes(
 
     for pid in pids:
         try:
-            terminate_pid(pid, force=force)
+            expected_start_time = None
+            if force:
+                from gateway.status import get_process_start_time
+
+                expected_start_time = get_process_start_time(pid)
+            terminate_pid(pid, force=force, expected_start_time=expected_start_time)
             killed += 1
         except ProcessLookupError:
             # Process already gone
@@ -5776,7 +5784,7 @@ def _wait_for_gateway_exit(
         force_after: Seconds of graceful waiting before escalating to force-kill.
     """
     import time
-    from gateway.status import get_running_pid
+    from gateway.status import get_process_start_time, get_running_pid
 
     deadline = time.monotonic() + timeout
     force_deadline = (
@@ -5796,7 +5804,11 @@ def _wait_for_gateway_exit(
         ):
             # Grace period expired — force-kill the specific PID.
             try:
-                terminate_pid(pid, force=True)
+                terminate_pid(
+                    pid,
+                    force=True,
+                    expected_start_time=get_process_start_time(pid),
+                )
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
             except (ProcessLookupError, PermissionError, OSError):
                 return True  # Already gone or we can't touch it.

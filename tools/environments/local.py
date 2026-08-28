@@ -2203,9 +2203,13 @@ class LocalEnvironment(BaseEnvironment):
         try:
             if _IS_WINDOWS:
                 try:
-                    from gateway.status import terminate_pid
+                    from gateway.status import get_process_start_time, terminate_pid
 
-                    terminate_pid(proc.pid, force=True)
+                    terminate_pid(
+                        proc.pid,
+                        force=True,
+                        expected_start_time=get_process_start_time(proc.pid),
+                    )
                 except Exception:
                     proc.kill()
                 try:

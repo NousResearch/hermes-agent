@@ -141,6 +141,10 @@
           "description": ""
         },
         {
+          "id": "qwen/qwen3.8-flash",
+          "description": ""
+        },
+        {
           "id": "moonshotai/kimi-k3",
           "description": "recommended"
         },
@@ -335,6 +339,9 @@
         },
         {
           "id": "qwen/qwen3.8-max-0902"
+        },
+        {
+          "id": "qwen/qwen3.8-flash"
         },
         {
           "id": "qwen/qwen3.8-flash"

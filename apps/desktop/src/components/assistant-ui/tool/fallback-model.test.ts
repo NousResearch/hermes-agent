@@ -186,6 +186,23 @@ describe('buildToolView file edit diffs', () => {
     expect(inlineDiffFromResult({ diff: patchDiff })).toBe(patchDiff)
   })
 
+  it('does not count concatenated multi-file headers as changed lines', () => {
+    const multiFileDiff = [
+      '--- a/one.txt',
+      '+++ b/one.txt',
+      '@@ -1 +1 @@',
+      '-old one',
+      '+new one',
+      '--- a/two.txt',
+      '+++ b/two.txt',
+      '@@ -1 +1 @@',
+      '-old two',
+      '+new two'
+    ].join('\n')
+
+    expect(countDiffLineStats(multiFileDiff)).toEqual({ added: 2, removed: 2 })
+  })
+
   it('suppresses raw patch args when a diff is available', () => {
     const view = buildToolView(
       part({

@@ -22,6 +22,7 @@ vi.mock('./syntax-diff', () => ({
   }
 }))
 
+import { deriveChangedFiles } from '@/components/assistant-ui/thread/changed-files'
 import { ErrorBoundary } from '@/components/error-boundary'
 
 import { FileDiffPanel } from './diff-lines'
@@ -68,5 +69,68 @@ describe('FileDiffPanel survives a failed lazy syntax-diff chunk', () => {
     expect(container.textContent).toContain('const b = 2')
     expect(container.textContent).toContain('const b = 3')
     expect(container.textContent).not.toContain(WORKSPACE_FALLBACK_TEXT)
+  })
+
+  it('renders repeated tool diffs as hunks without exposing later file headers', async () => {
+    const first = '--- a/note.md\n+++ b/note.md\n@@ -1 +1 @@\n-old\n+middle'
+    const second = '--- a/note.md\n+++ b/note.md\n@@ -1 +1 @@\n-middle\n+new'
+
+    const edit = (diff: string) => ({
+      args: { path: '/workspace/note.md' },
+      result: { diff },
+      toolName: 'patch',
+      type: 'tool-call'
+    })
+
+    const [changed] = deriveChangedFiles([edit(first), edit(second)])
+
+    const { container } = renderQuietly(<FileDiffPanel diff={changed!.diff} path="note.md" />)
+
+    await act(() => new Promise(resolve => setTimeout(resolve, 300)))
+
+    expect(container.textContent).toContain('old')
+    expect(container.textContent).toContain('middle')
+    expect(container.textContent).toContain('new')
+    expect(container.textContent).not.toContain('--- a/note.md')
+    expect(container.textContent).not.toContain('+++ b/note.md')
+  })
+
+  it('keeps legitimate changed lines that resemble file headers', async () => {
+    const optionDiff = '--- a/options.txt\n+++ b/options.txt\n@@ -1 +1 @@\n--- option\n+++ option'
+    const { container } = renderQuietly(<FileDiffPanel diff={optionDiff} path="options.txt" />)
+
+    await act(() => new Promise(resolve => setTimeout(resolve, 300)))
+
+    const lines = Array.from(container.querySelectorAll('span'))
+    const removed = lines.find(line => line.textContent === '-- option')
+    const added = lines.find(line => line.textContent === '++ option')
+
+    expect(removed?.className).toContain('ui-diff-remove')
+    expect(added?.className).toContain('ui-diff-add')
+    expect(lines.some(line => line.textContent === '--- option')).toBe(false)
+    expect(lines.some(line => line.textContent === '+++ option')).toBe(false)
+  })
+
+  it('does not render concatenated multi-file headers as changed content', async () => {
+    const multiFileDiff = [
+      '--- a/one.txt',
+      '+++ b/one.txt',
+      '@@ -1 +1 @@',
+      '-old one',
+      '+new one',
+      '--- a/two.txt',
+      '+++ b/two.txt',
+      '@@ -1 +1 @@',
+      '-old two',
+      '+new two'
+    ].join('\n')
+    const { container } = renderQuietly(<FileDiffPanel diff={multiFileDiff} path="combined.patch" />)
+
+    await act(() => new Promise(resolve => setTimeout(resolve, 300)))
+
+    expect(container.textContent).toContain('old one')
+    expect(container.textContent).toContain('new two')
+    expect(container.textContent).not.toContain('a/two.txt')
+    expect(container.textContent).not.toContain('b/two.txt')
   })
 })

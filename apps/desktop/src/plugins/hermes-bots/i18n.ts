@@ -156,6 +156,7 @@ type BotsMessages = {
     settingsTitle: string
     settingsDesc: string
     nameLabel: string
+    renameWait: string
     searchToAdd: string
     searchToAddPlaceholder: string
     removeFromSelection: string
@@ -380,6 +381,7 @@ const en: BotsMessages = {
     settingsTitle: 'Group settings',
     settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
     nameLabel: 'Group name',
+    renameWait: 'Wait for the current replies to finish before renaming this group chat.',
     searchToAdd: 'Search bots to add',
     searchToAddPlaceholder: 'Search bots to add…',
     removeFromSelection: 'Remove from selection',
@@ -597,6 +599,7 @@ const ja: BotsMessages = {
     settingsTitle: 'グループ設定',
     settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
     nameLabel: 'グループ名',
+    renameWait: '返信が完了するまで待ってから、このグループチャットの名前を変更してください。',
     searchToAdd: '追加するボットを検索',
     searchToAddPlaceholder: '追加するボットを検索…',
     removeFromSelection: '選択から外す',
@@ -810,6 +813,7 @@ const zh: BotsMessages = {
     settingsTitle: '群组设置',
     settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
     nameLabel: '群组名称',
+    renameWait: '请等待当前回复完成后再重命名此群聊。',
     searchToAdd: '搜索要添加的机器人',
     searchToAddPlaceholder: '搜索要添加的机器人…',
     removeFromSelection: '从选择中移除',
@@ -1023,6 +1027,7 @@ const zhHant: BotsMessages = {
     settingsTitle: '群組設定',
     settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
     nameLabel: '群組名稱',
+    renameWait: '請等待目前回覆完成後再重新命名此群組聊天。',
     searchToAdd: '搜尋要加入的機器人',
     searchToAddPlaceholder: '搜尋要加入的機器人…',
     removeFromSelection: '從選取中移除',

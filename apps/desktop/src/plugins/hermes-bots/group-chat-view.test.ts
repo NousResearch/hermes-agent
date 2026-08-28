@@ -137,6 +137,53 @@ describe('opening a room', () => {
   })
 })
 
+describe('rename', () => {
+  it('keeps the active drive on one room name', async () => {
+    const room = await loadRoom()
+
+    room.chat.$groupChats.set({
+      Old: {
+        log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'm1', text: 'keep working' }],
+        running: true,
+        watermarks: {}
+      }
+    })
+
+    expect(await room.view.renameGroupChat('Old', 'New', [])).toBeNull()
+    expect(room.chat.$groupChats.get().Old).toBeDefined()
+    expect(room.chat.$groupChats.get().New).toBeUndefined()
+    expect(host.notify).toHaveBeenCalledWith({
+      kind: 'info',
+      message: 'Wait for the current replies to finish before renaming this group chat.'
+    })
+  })
+
+  it('moves the complete idle room and its unresolved attention once', async () => {
+    const room = await loadRoom()
+
+    room.chat.$groupChats.set({
+      Old: {
+        log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'm1', text: 'keep working' }],
+        roomId: 'room-1',
+        running: false,
+        sessions: { builder: 'sid-1' },
+        stranded: { builder: { before: 1, thread: 'm1' } },
+        watermarks: {}
+      }
+    })
+    room.chat.$groupNeedsYou.set({ Old: true })
+
+    expect(await room.view.renameGroupChat('Old', 'New', [])).toBe('New')
+    expect(room.chat.$groupChats.get().Old).toBeUndefined()
+    expect(room.chat.$groupChats.get().New).toMatchObject({
+      roomId: 'room-1',
+      sessions: { builder: 'sid-1' },
+      stranded: { builder: { before: 1, thread: 'm1' } }
+    })
+    expect(room.chat.$groupNeedsYou.get()).toEqual({ New: true })
+  })
+})
+
 describe('disband', () => {
   it('removes only this membership, room log, workspace and needs-you state', async () => {
     const room = await loadRoom()

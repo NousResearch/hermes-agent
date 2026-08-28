@@ -3045,6 +3045,69 @@ class TestNewEndpoints:
         assert any(tool["tool"] == "read_file" for tool in resp.json()["tools"])
 
 # ---------------------------------------------------------------------------
+# Desktop-owned loopback backends are not gated by dashboard.public_url (#96490)
+# ---------------------------------------------------------------------------
+
+
+class TestDesktopLoopbackAuthExemption:
+    """``_desktop_loopback_auth_exempt`` decides the #96490 exemption."""
+
+    def test_exempt_with_desktop_env_and_session_token_on_loopback(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-minted")
+        assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is True
+        assert web_server._desktop_loopback_auth_exempt("::1") is True
+
+    def test_exempt_via_ssh_spawn_credentials_without_env_token(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        assert web_server._desktop_loopback_auth_exempt(
+            "127.0.0.1", ssh_session_token="tok"
+        )
+        assert web_server._desktop_loopback_auth_exempt(
+            "127.0.0.1", ssh_owner_nonce="nonce"
+        )
+
+    def test_not_exempt_without_desktop_env(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "tok")
+        assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is False
+
+    def test_not_exempt_without_any_credential(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        # HERMES_DESKTOP=1 alone is not enough: a plain serve with the env var
+        # exported must stay gated.
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is False
+
+    def test_not_exempt_on_non_loopback_bind(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "tok")
+        assert web_server._desktop_loopback_auth_exempt("0.0.0.0") is False
+        assert web_server._desktop_loopback_auth_exempt("192.168.1.10") is False
+
+    def test_public_url_engages_gate_for_non_desktop_loopback(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        # Sanity: the base behaviour is untouched — a non-Desktop loopback
+        # serve with a public_url configured stays ticket-gated.
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        assert web_server.should_require_dashboard_auth(
+            "127.0.0.1", frozenset({"dash.example.com"})
+        ) is True
+
+
+# ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info
 # ---------------------------------------------------------------------------
 

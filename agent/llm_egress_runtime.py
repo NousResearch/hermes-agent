@@ -591,7 +591,10 @@ def _typed_payload(
         is_elided_kanban_tool_result = (
             isinstance(output_call_id, str)
             and output_call_id in elided_kanban_tool_call_ids
-            and value.get("role") == "tool"
+            and (
+                value.get("role") == "tool"
+                or value.get("type") == "function_call_output"
+            )
         )
         typed: dict[Any, Any] = {}
         context_mapping = value.get("role") in {"system", "developer"}
@@ -628,7 +631,7 @@ def _typed_payload(
                     is_recognized_tool_result and key in {"content", "output"}
                 ),
                 elide_kanban_tool_content=(
-                    is_elided_kanban_tool_result and key == "content"
+                    is_elided_kanban_tool_result and key in {"content", "output"}
                 ),
                 protected_kanban_context=protected_kanban_context,
                 generated_context=(

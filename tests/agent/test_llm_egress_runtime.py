@@ -365,6 +365,43 @@ def test_protected_codex_elides_bound_kanban_show_result(tmp_path, monkeypatch):
     assert "/Users/private/source.py" not in rendered
 
 
+def test_protected_codex_elides_responses_kanban_show_output(tmp_path, monkeypatch):
+    """Responses API function output follows the same no-egress boundary."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_kanban_show_responses"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "input": [
+                {
+                    "id": call_id,
+                    "call_id": call_id,
+                    "type": "function_call",
+                    "function": {"name": "kanban_show", "arguments": "{}"},
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": "c2VjcmV0LXBheWxvYWQ= token=super-secret-value",
+                },
+            ],
+        },
+    )
+
+    rendered = authorized["input"][1]["output"]
+    assert receipt.allowed
+    assert rendered.startswith("kanban_show completed locally.")
+    assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
+    assert "super-secret-value" not in rendered
+
+
 def test_protected_codex_does_not_elide_unbound_kanban_show_result(
     tmp_path, monkeypatch
 ):
@@ -387,6 +424,35 @@ def test_protected_codex_does_not_elide_unbound_kanban_show_result(
                         "tool_name": "kanban_show",
                         "tool_call_id": "call_unbound_kanban_show",
                         "content": "c2VjcmV0LXBheWxvYWQ=",
+                    }
+                ],
+            },
+        )
+
+    assert "base64_payload" in exc_info.value.decision.reason_codes
+
+
+def test_protected_codex_does_not_elide_unbound_responses_kanban_output(
+    tmp_path, monkeypatch
+):
+    """Responses output without the actual prior call remains fail-closed."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": "gpt-5.6-terra",
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_unbound_kanban_show",
+                        "output": "c2VjcmV0LXBheWxvYWQ=",
                     }
                 ],
             },

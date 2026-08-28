@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import projects_db as pdb
 from hermes_cli.kanban_worker_watchdog import (
     WatchdogConfig,
     WatchdogTickResult,
@@ -298,6 +299,60 @@ def test_compaction_repair_uses_clean_scratch_not_conflicted_original_workspace(
         ).fetchone()
         assert repair["workspace_kind"] == "scratch"
         assert repair["workspace_path"] is None
+
+
+def test_provider_stall_repair_borrows_project_workspace_for_route_diagnosis(
+    kanban_home: Path, tmp_path: Path
+) -> None:
+    """Provider recovery needs the target checkout, but must never own it."""
+    config = WatchdogConfig(
+        enabled=True,
+        grace_seconds=0,
+        repeat_threshold=3,
+        repair_profiles={"provider_stall_loop": "route-repair"},
+    )
+    unhealthy_log = "\n".join([
+        "Provider has been unresponsive (no response received)",
+    ] * 3)
+    workspace = tmp_path / "project-worktree"
+    workspace.mkdir()
+    with pdb.connect_closing() as project_conn:
+        project_id = pdb.create_project(
+            project_conn,
+            name="Watchdog Project",
+            primary_path=str(workspace),
+        )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Original project task",
+            body="bounded work",
+            assignee="implementation-worker",
+            workspace_kind="worktree",
+            workspace_path=str(workspace),
+            project_id=project_id,
+        )
+        original = kb.claim_task(conn, task_id)
+        assert original is not None
+        kb._set_worker_pid(conn, task_id, 424242)
+
+        run_watchdog_tick(
+            conn,
+            config=config,
+            now=original.started_at + 1,
+            read_log_fn=lambda *_args, **_kwargs: unhealthy_log,
+            terminate_fn=_verified_termination,
+        )
+
+        repair = conn.execute(
+            "SELECT workspace_kind, workspace_path, project_id, branch_name FROM tasks "
+            "WHERE created_by = 'worker-health-watchdog'"
+        ).fetchone()
+        assert repair["workspace_kind"] == "dir"
+        assert repair["workspace_path"] == str(workspace)
+        assert repair["project_id"] == project_id
+        assert repair["branch_name"] is None
 
 
 def test_watchdog_waits_for_repair_then_restarts_original(

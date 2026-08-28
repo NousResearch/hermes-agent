@@ -456,14 +456,16 @@ def run_watchdog_tick(
             f"worker-watchdog:{task.id}:{task.current_run_id}:"
             f"{finding.category}:{finding.fingerprint}"
         )
-        # Only a repeated repository-tool failure needs the original checkout.
-        # Provider, reasoning, and compaction loops are infrastructure failures;
-        # dispatching their repair inside a conflicted or dirty task worktree can
-        # make the repair misclassify that expected source state as its blocker.
-        # ``dir`` is non-owning, so the one borrowed-workspace case cannot clean
-        # up or remove the original task's workspace.
+        # Provider recovery must inspect the exact profile/worktree boundary that
+        # produced the stall. Sending it to scratch turns a route/config repair
+        # into an empty-directory investigation, so the worker cannot distinguish
+        # a provider failure from a missing repository. Reasoning and compaction
+        # loops remain infrastructure-only and use a clean scratch workspace.
+        # ``dir`` is non-owning, so borrowed-workspace repairs cannot clean up or
+        # remove the original task's workspace.
         borrow_original = (
-            finding.category == "tool_failure_loop" and bool(task.workspace_path)
+            finding.category in {"tool_failure_loop", "provider_stall_loop"}
+            and bool(task.workspace_path)
         )
         repair_workspace_kind = "dir" if borrow_original else "scratch"
         repair_workspace_path = task.workspace_path if borrow_original else None
@@ -482,7 +484,7 @@ def run_watchdog_tick(
                 idempotency_key=idempotency_key,
                 max_runtime_seconds=max(1, config.repair_max_runtime_seconds),
                 max_retries=1,
-                project_id="",
+                project_id=task.project_id or "",
                 board=board,
             )
             kb.link_tasks(conn, repair_id, task.id)

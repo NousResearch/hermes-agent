@@ -194,6 +194,42 @@ class TestSearchLoopDetection(unittest.TestCase):
             self.assertNotIn("_warning", result)
             self.assertNotIn("error", result)
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_context_change_does_not_count_as_repeat(self, mock_ops):
+        """Changing only context starts a new search sequence."""
+        fake = _make_fake_file_ops()
+        dispatches = []
+        fake.search = lambda **kw: (dispatches.append(kw) or _FakeSearchResult())
+        mock_ops.return_value = fake
+
+        for _ in range(3):
+            search_tool("def main", task_id="t1")
+        result = json.loads(search_tool("def main", context=1, task_id="t1"))
+
+        self.assertNotIn("_warning", result)
+        self.assertNotIn("error", result)
+        self.assertEqual(len(dispatches), 4)
+        self.assertEqual(dispatches[-1]["context"], 1)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_output_mode_change_does_not_count_as_repeat(self, mock_ops):
+        """Changing only output_mode starts a new search sequence."""
+        fake = _make_fake_file_ops()
+        dispatches = []
+        fake.search = lambda **kw: (dispatches.append(kw) or _FakeSearchResult())
+        mock_ops.return_value = fake
+
+        for _ in range(3):
+            search_tool("def main", task_id="t1")
+        result = json.loads(
+            search_tool("def main", output_mode="count", task_id="t1")
+        )
+
+        self.assertNotIn("_warning", result)
+        self.assertNotIn("error", result)
+        self.assertEqual(len(dispatches), 4)
+        self.assertEqual(dispatches[-1]["output_mode"], "count")
+
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_read_between_searches_resets_consecutive(self, _mock_ops):
         """A read_file call between searches resets search consecutive counter."""

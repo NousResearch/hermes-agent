@@ -1351,6 +1351,16 @@ export {
  *  circle beside it — a plugin's own dot inverts core's color vocabulary the
  *  moment either side moves. */
 export { SessionStatusDot, type SessionStatusDotProps } from '@/app/chat/session-status-dot'
+/** The sidebar row's leading cell — the fixed box a dot, icon or handle sits in.
+ *  Reserve it and your label starts on the same left edge as every session row
+ *  above you; spell the classes yourself and the row drifts. The session row is
+ *  canonical; `row-geometry.ts` explains what each measurement belongs to. */
+export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
+/** One glyph per gateway kind — device, cloud, terminal, network. The statusbar
+ *  switcher, the fleet profile rail and any plugin rail listing gateways share
+ *  it, so a connection looks the same wherever it is named. */
+export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
+export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 /** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
  *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
@@ -1379,6 +1389,7 @@ export {
   PanelSectionLabel
 } from '@/app/overlays/panel'
 export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
+
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
@@ -1397,7 +1408,6 @@ export {
   type ModelMenuController
 } from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
-
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
@@ -1560,6 +1570,10 @@ export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export * as icons from '@/lib/icons'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
+/** A `Map` with a ceiling, for the module-level caches a plugin keeps across
+ *  a renderer that stays open for days. Only for values that can be
+ *  regenerated — eviction costs a recompute or a refetch, never correctness. */
+export { LruCache } from '@/lib/lru-cache'
 /** The app's deterministic identity color for a name (profiles, assignees,
  *  authors), its translucent tag fill, and the curated picker swatches — so
  *  plugin-rendered identities read the same hue as everywhere else. The

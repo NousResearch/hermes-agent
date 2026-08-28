@@ -376,6 +376,8 @@ def _run_post_turn_followups(
             _enqueue_prompt(session, steer, session.get("transport"))
     if _drain_queued_prompt(rid, sid, session):
         return
+    if _start_next_internal_continuation(rid, sid, session):
+        return
     if goal_followup:
         with session["history_lock"]:
             if session.get("running"):
@@ -392,6 +394,12 @@ def _run_post_turn_followups(
             owns_event=lambda e: _session_owns_notification_event(sid, session, e),
             skip_poll_observed=False)
         for index, (_evt, synth) in enumerate(drained):
+            if _evt.get("type") == "async_delegation_work_closeout":
+                with session["history_lock"]:
+                    session.setdefault("internal_continuations", deque()).append(
+                        _closeout_continuation(_evt, synth)
+                    )
+                continue
             with session["history_lock"]:
                 if session.get("running"):
                     for pending_evt, _pending_synth in drained[index:]:
@@ -407,6 +415,7 @@ def _run_post_turn_followups(
                 rid, sid, session, synth, "completion notification dispatch",
                 on_done=lambda: complete_event_delivery(_evt, _claim),
                 on_error=lambda: release_event_delivery(_evt, _claim))
+        _start_next_internal_continuation(rid, sid, session)
     except Exception as _drain_exc:
         _hook_failure("completion queue drain", _drain_exc)
 
@@ -506,7 +515,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
-    images: list[str], display_kind: str | None, display_metadata: dict | None) -> None:
+    images: list[str], display_kind: str | None, display_metadata: dict | None,
+    internal_continuation: _InternalContinuation | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``."""
     agent = st.agent
 
@@ -542,6 +552,13 @@ def _invoke_agent(
     if display_kind and "persist_user_display_kind" in run_params:
         run_kwargs["persist_user_display_kind"] = display_kind
         run_kwargs["persist_user_display_metadata"] = display_metadata
+    if internal_continuation is not None:
+        run_kwargs.update({
+            "origin_work_id": internal_continuation.work_id,
+            "work_generation": internal_continuation.generation,
+            "work_delivery_id": internal_continuation.delivery_id,
+            "work_claim_id": internal_continuation.claim_id,
+        })
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
@@ -754,7 +771,16 @@ def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    internal_continuation: _InternalContinuation | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
+    if internal_continuation is not None and display_kind is None:
+        display_kind = "internal_notification"
+        display_metadata = {
+            "work_id": internal_continuation.work_id,
+            "generation": internal_continuation.generation,
+            "delivery_id": internal_continuation.delivery_id,
+            "claim_id": internal_continuation.claim_id,
+        }
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
@@ -792,7 +818,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata)
+                display_metadata, internal_continuation)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)

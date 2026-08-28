@@ -175,6 +175,23 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli.agent._invalidate_system_prompt.assert_called_once()
 
 
+def test_new_command_closes_only_expiring_sessions_work_groups(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    with patch(
+        "tools.async_delegation.close_work_groups_for_session"
+    ) as close_groups:
+        cli.process_command("/reset")
+
+    close_groups.assert_called_once_with(
+        origin_session=old_session_id,
+        parent_session_id=old_session_id,
+        disposition="cancelled",
+        diagnostics="classic CLI /new reset discarded the owning session",
+    )
+
+
 
 
 
@@ -295,5 +312,4 @@ def test_new_session_with_title(capsys):
 
     captured = capsys.readouterr()
     assert "My Test Session" in captured.out
-
 

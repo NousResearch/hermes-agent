@@ -1430,6 +1430,17 @@ class TurnRunner:
                 # Internal self-injected turn: type the persisted user row so UIs render it as a
                 # timeline notice, not a user bubble (stripped from provider payloads downstream).
                 kwargs["persist_user_display_kind"] = ctx.persist_user_display_kind
+            if ctx.persist_user_display_metadata:
+                kwargs["persist_user_display_metadata"] = ctx.persist_user_display_metadata
+            if ctx.delegation_work_id:
+                kwargs.update(
+                    {
+                        "origin_work_id": ctx.delegation_work_id,
+                        "work_generation": int(ctx.delegation_work_generation or 0),
+                        "work_delivery_id": ctx.delegation_work_delivery_id or "",
+                        "work_claim_id": ctx.delegation_work_claim_id or "",
+                    }
+                )
             if ctx.moa_config is not None:
                 kwargs["moa_config"] = ctx.moa_config
             if persist_user_timestamp_override is not None:
@@ -1674,10 +1685,13 @@ class TurnRunner:
             "error": result.get("error"),
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
+            "waiting_on_delegates": result.get("waiting_on_delegates", False),
             "tools": ctx.tools_holder[0] or [],
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             **usage,
         }
+        if result.get("waiting_on_delegates"):
+            return {"final_response": None, **common}
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)

@@ -101,9 +101,17 @@ def run_task(task, model: str, provider: str, timeout_mult: float,
             enabled_toolsets=toolsets,
             max_iterations=40,
         )
-        convo = agent.run_conversation(
-            SYSTEM_SUFFIX.format(ws=ws) + "\n\nTask: " + task.prompt,
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        session_tokens = set_session_vars(
+            async_delivery=False, closeout_delivery=False
         )
+        try:
+            convo = agent.run_conversation(
+                SYSTEM_SUFFIX.format(ws=ws) + "\n\nTask: " + task.prompt,
+            )
+        finally:
+            clear_session_vars(session_tokens)
         final = convo.get("final_response") or ""
         messages = convo.get("messages") or []
         result.update(_count_metrics(messages))

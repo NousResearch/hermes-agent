@@ -405,6 +405,26 @@ class GatewaySlashCommandsMixin(
         await asyncio.to_thread(_sub)
         return True
 
+    def _cancel_work_groups_for_session_boundary(
+        self, session_key: str, *, session_entry=None, diagnostics: str
+    ) -> int:
+        """Close unresolved durable groups owned by one gateway session."""
+        if session_entry is None:
+            session_entry = getattr(self.session_store, "_entries", {}).get(session_key)
+        try:
+            from tools.async_delegation import close_work_groups_for_session
+
+            return close_work_groups_for_session(
+                origin_session=str(session_key or ""),
+                parent_session_id=str(
+                    getattr(session_entry, "session_id", "") or ""
+                ),
+                disposition="cancelled",
+                diagnostics=diagnostics,
+            )
+        except Exception:
+            return 0
+
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.  A truly hung agent (blocked thread
         never checking _interrupt_requested) is caught by the early intercept in _handle_message();
@@ -414,6 +434,11 @@ class GatewaySlashCommandsMixin(
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        self._cancel_work_groups_for_session_boundary(
+            session_key,
+            session_entry=session_entry,
+            diagnostics="gateway /stop cancelled outstanding delegation work",
+        )
 
         async def _stop(key: str, invalidation_reason: str) -> None:
             await self._interrupt_and_clear_session(
@@ -434,6 +459,10 @@ class GatewaySlashCommandsMixin(
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
         if sibling_keys and self._is_user_authorized(source):
             for sibling_key in sibling_keys:
+                self._cancel_work_groups_for_session_boundary(
+                    sibling_key,
+                    diagnostics="gateway /stop cancelled outstanding delegation work",
+                )
                 await _stop(sibling_key, "stop_command_thread_sibling")
             logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
                         session_key, len(sibling_keys), ", ".join(sibling_keys))

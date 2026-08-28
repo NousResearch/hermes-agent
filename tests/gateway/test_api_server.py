@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import asyncio
+import base64
 import json
 import os
 import stat
@@ -390,6 +391,40 @@ class TestAgentExecution:
             user_message="hello",
             conversation_history=[],
             task_id="session-123",
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_agent_hides_trusted_closeout_protocol_row(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        metadata = {
+            "work_id": "work-1",
+            "generation": 3,
+            "delivery_id": "delivery-3",
+            "claim_id": "claim-3",
+        }
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="aggregate",
+                conversation_history=[],
+                session_id="session-123",
+                internal_continuation=metadata,
+            )
+
+        mock_agent.run_conversation.assert_called_once_with(
+            user_message="aggregate",
+            conversation_history=[],
+            task_id="session-123",
+            origin_work_id="work-1",
+            work_generation=3,
+            work_delivery_id="delivery-3",
+            work_claim_id="claim-3",
+            persist_user_display_kind="internal_notification",
+            persist_user_display_metadata=metadata,
         )
 
     @pytest.mark.asyncio
@@ -2384,6 +2419,59 @@ class TestSessionIdHeader:
             # History must come from DB, not from the request body
             assert call_kwargs["conversation_history"] == db_history
             assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_trusted_self_post_binds_exact_closeout_metadata(self, auth_adapter):
+        encoded = base64.urlsafe_b64encode(json.dumps({
+            "work_id": "work-1", "generation": 3,
+            "delivery_id": "delivery-1", "claim_id": "claim-1",
+        }).encode()).decode()
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": []},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                response = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Id": "existing-session",
+                        "X-Hermes-Internal-Auth": auth_adapter._internal_self_post_token,
+                        "X-Hermes-Internal-Continuation": encoded,
+                    },
+                    json={"messages": [{"role": "user", "content": "closeout"}]},
+                )
+        assert response.status == 200
+        assert mock_run.call_args.kwargs["internal_continuation"] == {
+            "work_id": "work-1", "generation": 3,
+            "delivery_id": "delivery-1", "claim_id": "claim-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_client_cannot_forge_closeout_metadata(self, auth_adapter):
+        encoded = base64.urlsafe_b64encode(json.dumps({
+            "work_id": "forged", "delivery_id": "d", "claim_id": "c",
+        }).encode()).decode()
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                response = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Id": "existing-session",
+                        "X-Hermes-Internal-Continuation": encoded,
+                    },
+                    json={"messages": [{"role": "user", "content": "normal"}]},
+                )
+        assert response.status == 403
+        mock_run.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

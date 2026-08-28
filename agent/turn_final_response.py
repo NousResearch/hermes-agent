@@ -40,6 +40,8 @@ class FinalResponseVerdict:
     length_continue_retries: Any
     _pending_verification_response: Any
     _pending_verification_response_previewed: Any
+    delegation_waiting: Any
+    closeout_terminal_candidate: Any
     result: Optional[Dict[str, Any]] = None
 
 
@@ -50,6 +52,7 @@ def finish_text_response(
     _preflight_compression_blocked: Any, codex_ack_continuations: Any,
     truncated_response_parts: Any, length_continue_retries: Any,
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
+    delegation_waiting: Any, closeout_terminal_candidate: Any,
 ) -> FinalResponseVerdict:
     """Finish (or defer) a text-only assistant response in the original guard order. Every
     continuation path sets ``final_response = None`` so an acknowledgment never suppresses
@@ -69,6 +72,8 @@ def finish_text_response(
             length_continue_retries=length_continue_retries,
             _pending_verification_response=_pending_verification_response,
             _pending_verification_response_previewed=_pending_verification_response_previewed,
+            delegation_waiting=delegation_waiting,
+            closeout_terminal_candidate=closeout_terminal_candidate,
             result=result,
         )
 
@@ -222,6 +227,24 @@ def finish_text_response(
     if _sg.continue_turn:
         final_response = None
         return _verdict("continue")
+
+    # A work-owning turn cannot publish its own terminal candidate. It yields
+    # an intentional wait; the finalizer seals membership and persists a
+    # provider-valid hidden assistant tail. A trusted closeout continuation is
+    # the sole exception and is revealed only after durable transcript + CAS.
+    work_id = str(getattr(agent, "_current_work_id", "") or "")
+    delivery_id = str(getattr(agent, "_current_work_delivery_id", "") or "")
+    claim_id = str(getattr(agent, "_current_work_claim_id", "") or "")
+    if not work_id:
+        agent._admit_conversational_response()
+    elif not (delivery_id and claim_id):
+        agent._discard_conversational_response()
+        final_response = None
+        delegation_waiting = True
+        _turn_exit_reason = "delegation_waiting"
+        return _verdict("break")
+    else:
+        closeout_terminal_candidate = True
 
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps

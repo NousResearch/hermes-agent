@@ -612,6 +612,10 @@ class GatewayInboundMixin:
         running_agent = _ra_state.turn.agent if _ra_state else None
         if running_agent is _AGENT_PENDING_SENTINEL:  # agent still being set up
             if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
+                self._cancel_work_groups_for_session_boundary(
+                    _quick_key,
+                    diagnostics="gateway /stop cancelled outstanding delegation work",
+                )
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")

@@ -409,6 +409,12 @@ class ProcessRegistry:
             restore_undelivered_completions(self.completion_queue)
         except Exception as exc:
             logger.warning("Could not restore async delegation completions: %s", exc)
+        try:
+            from tools.async_delegation import recover_and_enqueue_work_groups
+
+            recover_and_enqueue_work_groups(target_queue=self.completion_queue)
+        except Exception as exc:
+            logger.warning("Could not restore task-scoped delegation closeouts: %s", exc)
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()

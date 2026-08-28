@@ -47,6 +47,8 @@ _MAX_DELIVERY_ATTEMPTS = 8
 # Pending completions older than this are dropped on restart replay instead of
 # re-run as a full-context turn; 48h keeps weekend results deliverable.
 _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
+_GROUP_DETAIL_RETENTION_SECONDS = 48 * 3600.0
+_MAX_GROUP_DETAIL_BYTES = 64_000
 _DB_LOCK = threading.Lock()
 
 # ── Stale-delegation detection (progress-based, on by default) ──────────────
@@ -127,6 +129,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
                            ("delivery_claim", "TEXT"), ("delivery_claimed_at", "REAL"), ("origin_session_id", "TEXT")):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+    # Import lazily: delegation_closeout shares this module's transaction/lock
+    # primitives and is re-exported below for compatibility.
+    from tools.delegation_closeout import initialize_closeout_schema
+
+    initialize_closeout_schema(conn)
 
 
 @contextmanager
@@ -146,6 +153,42 @@ def _transaction() -> Iterator[sqlite3.Connection]:
             yield conn
     finally:
         conn.close()
+
+
+# Compatibility exports: the closeout ledger has its own decomposed owner, but
+# existing integrations import this surface from async_delegation.
+from tools.delegation_closeout import (  # noqa: E402
+    _aggregate_enqueue_lock,
+    _aggregate_enqueued_delivery_ids,
+    _build_group_envelope,
+    _delivery_id,
+    _enqueue_claimed_work_group,
+    _json_bytes,
+    _status_category,
+    _unregister_unsubmitted_work_group_member,
+    bind_work_group_closeout_turn,
+    claim_and_enqueue_ready_work_group,
+    claim_ready_work_group,
+    close_work_group,
+    close_work_groups_for_session,
+    find_closeout_provisional,
+    group_is_ready,
+    persist_group_member_completion,
+    reconcile_closed_closeout_provisionals,
+    recover_and_enqueue_work_groups,
+    recover_work_groups,
+    reclaim_stale_work_group_claim,
+    register_work_group_member,
+    release_bound_work_group_closeout,
+    release_enqueued_work_group_event,
+    release_work_group_claim,
+    renew_work_group_claim,
+    reopen_work_group_with_member,
+    seal_and_enqueue_work_group,
+    seal_work_group,
+    seal_work_group_result,
+    task_scoped_closeout_enabled,
+)
 
 
 def _capture_routing_origin() -> Dict[str, Any]:
@@ -185,25 +228,59 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
 
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
-    cutoff = time.time() - _DURABLE_RETENTION_SECONDS
+    from tools.delegation_closeout import prune_grouped_details
+
+    now = time.time()
+    cutoff = now - _DURABLE_RETENTION_SECONDS
     with _DB_LOCK, _transaction() as conn:
+        prune_grouped_details(
+            conn,
+            now=now,
+            detail_retention_seconds=_GROUP_DETAIL_RETENTION_SECONDS,
+            max_detail_bytes=_MAX_GROUP_DETAIL_BYTES,
+        )
         conn.execute(
-            "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?", (cutoff,))
+            """DELETE FROM async_delegations
+               WHERE delivery_state='delivered' AND updated_at < ? AND (
+                 origin_work_id='' OR EXISTS (
+                   SELECT 1 FROM async_delegation_work_groups g
+                   WHERE g.work_id=async_delegations.origin_work_id
+                     AND g.state='closed'))""",
+            (cutoff,),
+        )
         terminal_count = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')").fetchone()[0]
+            """SELECT COUNT(*) FROM async_delegations
+               WHERE state NOT IN ('running','finalizing') AND (
+                 origin_work_id='' OR EXISTS (
+                   SELECT 1 FROM async_delegation_work_groups g
+                   WHERE g.work_id=async_delegations.origin_work_id
+                     AND g.state='closed'))"""
+        ).fetchone()[0]
         if terminal_count > _MAX_RETAINED_COMPLETED:
             conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing')
+                     WHERE state NOT IN ('running','finalizing') AND (
+                       origin_work_id='' OR EXISTS (
+                         SELECT 1 FROM async_delegation_work_groups g
+                         WHERE g.work_id=async_delegations.origin_work_id
+                           AND g.state='closed'))
                      ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
                               updated_at ASC LIMIT ?
                    )""", (terminal_count - _MAX_RETAINED_COMPLETED,))
         pending_count = conn.execute("""SELECT COUNT(*) FROM async_delegations
-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'""").fetchone()[0]
+               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                 AND (origin_work_id='' OR EXISTS (
+                   SELECT 1 FROM async_delegation_work_groups g
+                   WHERE g.work_id=async_delegations.origin_work_id
+                     AND g.state='closed'))""").fetchone()[0]
         if pending_count > _MAX_DURABLE_PENDING:
             conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
                      WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                       AND (origin_work_id='' OR EXISTS (
+                         SELECT 1 FROM async_delegation_work_groups g
+                         WHERE g.work_id=async_delegations.origin_work_id
+                           AND g.state='closed'))
                      ORDER BY updated_at ASC LIMIT ?
                    )""", (pending_count - _MAX_DURABLE_PENDING,))
 
@@ -272,7 +349,8 @@ def restore_undelivered_completions(target_queue) -> int:
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
                FROM async_delegations
-               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
+               WHERE state != 'running' AND delivery_state='pending'
+                 AND event_json IS NOT NULL AND origin_work_id=''
                ORDER BY completed_at, delegation_id""").fetchall()
         for delegation_id, payload, completed_at, dispatched_at in rows:
             age_basis = completed_at or dispatched_at
@@ -304,7 +382,11 @@ def mark_completion_delivered(delegation_id: str) -> bool:
     now = time.time()
     return _update_delivery(
         """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
-           WHERE delegation_id=? AND delivery_state!='delivered'""", (now, now, delegation_id))
+           WHERE delegation_id=? AND delivery_state!='delivered'
+             AND (origin_work_id='' OR EXISTS (
+                   SELECT 1 FROM async_delegation_work_groups g
+                   WHERE g.work_id=async_delegations.origin_work_id
+                     AND g.state='closed'))""", (now, now, delegation_id))
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -318,6 +400,7 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         cur = conn.execute("""UPDATE async_delegations SET delivery_claim=?, delivery_claimed_at=?,
                       delivery_attempts=delivery_attempts+1, updated_at=?
                WHERE delegation_id=? AND delivery_state='pending'
+                 AND origin_work_id=''
                  AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
             (claim_id, now, now, delegation_id, now - 300))
         return cur.rowcount == 1
@@ -341,7 +424,8 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         capped = conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
                       delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
                WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=? AND delivery_attempts>=?""",
+                 AND delivery_claim=? AND delivery_attempts>=?
+                 AND origin_work_id=''""",
             (now, delegation_id, claim_id, _MAX_DELIVERY_ATTEMPTS))
         if capped.rowcount == 1:
             logger.warning("Async delegation %s exhausted its %d delivery attempts; "
@@ -351,7 +435,7 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         cur = conn.execute("""UPDATE async_delegations SET delivery_claim=NULL,
                       delivery_claimed_at=NULL, updated_at=?
                WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=?""", (now, delegation_id, claim_id))
+                 AND delivery_claim=? AND origin_work_id=''""", (now, delegation_id, claim_id))
         return cur.rowcount == 1
 
 
@@ -364,7 +448,11 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                   updated_at=?, delivery_claim=NULL,
                   delivery_claimed_at=NULL
            WHERE delegation_id=? AND delivery_state='pending'
-             AND delivery_claim=?""", (time.time(), delegation_id, claim_id))
+             AND delivery_claim=?
+             AND (origin_work_id='' OR EXISTS (
+                   SELECT 1 FROM async_delegation_work_groups g
+                   WHERE g.work_id=async_delegations.origin_work_id
+                     AND g.state='closed'))""", (time.time(), delegation_id, claim_id))
 
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -374,7 +462,7 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                   delivered_at=?, updated_at=?, delivery_claim=NULL,
                   delivery_claimed_at=NULL
            WHERE delegation_id=? AND delivery_state='pending'
-             AND delivery_claim=?""", (now, now, delegation_id, claim_id))
+             AND delivery_claim=? AND origin_work_id=''""", (now, now, delegation_id, claim_id))
 
 
 def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
@@ -491,12 +579,61 @@ def _batch_status(combined: Dict[str, Any]) -> str:
     return "error" if child_results and all(r.get("status") not in ok for r in child_results) else "completed"
 
 
+def _register_grouped_dispatch(
+    record: Dict[str, Any],
+    *,
+    owner_turn_id: str,
+    closeout_delivery_id: str,
+    closeout_claim_id: str,
+) -> bool:
+    """Durably attach a unit to a new or replacement closeout generation."""
+    work_id = str(record.get("origin_work_id") or "")
+    generation = int(record.get("work_generation") or 0)
+    routing = {
+        "origin_session": record.get("session_key", ""),
+        "origin_ui_session_id": record.get("origin_ui_session_id", ""),
+        "origin_session_id": record.get("origin_session_id", ""),
+        "parent_session_id": record.get("parent_session_id"),
+        **{key: record[key] for key in _ROUTING_KEYS if record.get(key)},
+    }
+    task = {
+        key: record[key]
+        for key in ("goal", "goals", "context", "role", "model", "is_batch")
+        if key in record
+    }
+    if closeout_delivery_id and closeout_claim_id:
+        return reopen_work_group_with_member(
+            work_id=work_id,
+            generation=generation - 1,
+            delivery_id=closeout_delivery_id,
+            claim_id=closeout_claim_id,
+            closeout_turn_id=owner_turn_id,
+            delegation_id=str(record["delegation_id"]),
+            task=task,
+            dispatched_at=float(record["dispatched_at"]),
+        )
+    return register_work_group_member(
+        work_id=work_id,
+        owner_turn_id=owner_turn_id,
+        delegation_id=str(record["delegation_id"]),
+        generation=generation,
+        routing=routing,
+        task=task,
+        dispatched_at=float(record["dispatched_at"]),
+        feature_config={
+            "delegation": {"task_scoped_closeout": task_scoped_closeout_enabled()}
+        },
+    )
+
+
 def _dispatch(
     *, delegation_id: str, goal: str, goals: Optional[List[str]], context: Optional[str],
     toolsets: Optional[List[str]], role: str, model: Optional[str], session_key: str,
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str,
+    origin_work_id: str = "", work_generation: int = 0, owner_turn_id: str = "",
+    closeout_delivery_id: str = "", closeout_claim_id: str = "",
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -512,6 +649,7 @@ def _dispatch(
         "context": context, "toolsets": list(toolsets) if toolsets else None, "role": role, "model": model,
         "session_key": session_key, "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id, "parent_session_id": parent_session_id,
+        "origin_work_id": origin_work_id, "work_generation": work_generation,
         **_capture_routing_origin(),
         "status": "running", "dispatched_at": dispatched_at, "completed_at": None,
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
@@ -522,7 +660,21 @@ def _dispatch(
         if running >= max_async_children:
             return {"status": "rejected", "error": capacity_error}
         _records[delegation_id] = record
-    _persist_dispatch(record)
+    if origin_work_id:
+        if not _register_grouped_dispatch(
+            record,
+            owner_turn_id=owner_turn_id,
+            closeout_delivery_id=closeout_delivery_id,
+            closeout_claim_id=closeout_claim_id,
+        ):
+            with _records_lock:
+                _records.pop(delegation_id, None)
+            return {
+                "status": "rejected",
+                "error": "Could not durably register delegated work; no background child was submitted.",
+            }
+    else:
+        _persist_dispatch(record)
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -543,8 +695,11 @@ def _dispatch(
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         with _records_lock:
             _records.pop(delegation_id, None)
-        with _DB_LOCK, _transaction() as conn:
-            conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+        if origin_work_id:
+            _unregister_unsubmitted_work_group_member(delegation_id)
+        else:
+            with _DB_LOCK, _transaction() as conn:
+                conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
         return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
     if progress_fn is not None:
         _ensure_stale_monitor()
@@ -556,6 +711,8 @@ def dispatch_async_delegation(
     session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, progress_fn: Optional[Callable[[], tuple]] = None,
+    origin_work_id: str = "", work_generation: int = 0, owner_turn_id: str = "",
+    closeout_delivery_id: str = "", closeout_claim_id: str = "",
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
     ``session_key``/``parent_session_id`` are captured on the parent thread (the worker carries
@@ -569,6 +726,9 @@ def dispatch_async_delegation(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
+        origin_work_id=origin_work_id, work_generation=work_generation,
+        owner_turn_id=owner_turn_id, closeout_delivery_id=closeout_delivery_id,
+        closeout_claim_id=closeout_claim_id,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or run this task synchronously (background=false). "
@@ -585,6 +745,8 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    origin_work_id: str = "", work_generation: int = 0, owner_turn_id: str = "",
+    closeout_delivery_id: str = "", closeout_claim_id: str = "",
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit: ``runner`` runs the
     entire batch and returns the combined ``{"results": [...], "total_duration_seconds": N}``
@@ -599,6 +761,9 @@ def dispatch_async_delegation_batch(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
+        origin_work_id=origin_work_id, work_generation=work_generation,
+        owner_turn_id=owner_turn_id, closeout_delivery_id=closeout_delivery_id,
+        closeout_claim_id=closeout_claim_id,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
@@ -670,12 +835,30 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
+    work_id = str(record.get("origin_work_id") or "")
+    if work_id:
+        evt["origin_work_id"] = work_id
+        evt["work_generation"] = int(record.get("work_generation") or 0)
+        ready = persist_group_member_completion(
+            str(record.get("delegation_id") or ""), evt, result
+        )
+        if ready:
+            try:
+                claim_and_enqueue_ready_work_group(work_id)
+            except Exception:
+                logger.exception("Failed to enqueue ready work group %s", work_id)
+        return
     _persist_completion(evt, result)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
         logger.error(f"Async delegation{label} %s: failed to enqueue completion event; "
                      "result lost: %s", record.get("delegation_id"), exc)
+
+
+# Current code uses one completion finalizer for singles and batches. Keep the
+# historical batch name because closeout integrations and tests import it.
+_push_batch_completion_event = _push_completion_event
 
 
 # ── Stale monitor ───────────────────────────────────────────────────────────
@@ -892,6 +1075,8 @@ def _reset_for_tests() -> None:
         thread.join(timeout=2)
     with _records_lock:
         _records.clear()
+    with _aggregate_enqueue_lock:
+        _aggregate_enqueued_delivery_ids.clear()
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

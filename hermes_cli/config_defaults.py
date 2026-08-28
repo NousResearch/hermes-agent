@@ -1246,6 +1246,10 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # Experimental task-scoped closeout: aggregate detached children from one
+        # parent turn into a single durable follow-up turn. Creation is gated;
+        # recovery always drains already-existing groups.
+        "task_scoped_closeout": False,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

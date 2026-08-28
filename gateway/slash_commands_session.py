@@ -171,9 +171,23 @@ class GatewaySessionCommandsMixin:
         # In-flight async delegations end WITH the conversation: once the id rotates their
         # completions have no live owner. Expire by durable id, routing key as legacy fallback.
         with contextlib.suppress(Exception):
-            from tools.async_delegation import interrupt_for_session
-            interrupt_for_session(session_key=session_key, reason="session_reset",
-                                  parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
+            from tools.async_delegation import (
+                close_work_groups_for_session,
+                interrupt_for_session,
+            )
+
+            old_session_id = str(getattr(old_entry, "session_id", "") or "")
+            interrupt_for_session(
+                session_key=session_key,
+                reason="session_reset",
+                parent_session_id=old_session_id,
+            )
+            close_work_groups_for_session(
+                origin_session=session_key,
+                parent_session_id=old_session_id,
+                disposition="cancelled",
+                diagnostics="gateway /new reset discarded the owning session",
+            )
         _reset_process_scoped_tool_state()
 
         new_entry = await self.async_session_store.reset_session(session_key)

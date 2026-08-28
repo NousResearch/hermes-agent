@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import os
@@ -12,7 +13,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
 from tools import async_delegation as ad
@@ -4669,6 +4674,158 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         assert ("on_session_finalize", "session-key") in calls["hooks"]
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_automatic_finalize_closes_profile_group_before_ending_owned_session(
+    monkeypatch, tmp_path
+):
+    events = []
+    profile_home = tmp_path / "profiles" / "owned"
+    profile_home.mkdir(parents=True)
+
+    class _DB:
+        def get_session(self, session_id):
+            assert session_id == "session-key"
+            return {"source": "tui"}
+
+        def end_session(self, session_id, reason):
+            events.append(("end", session_id, reason))
+
+    session = _session(
+        agent=types.SimpleNamespace(session_id="session-key"),
+        _sid="owned-sid",
+        profile_home=str(profile_home),
+    )
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        server, "_session_db", lambda _session: contextlib.nullcontext(_DB())
+    )
+    monkeypatch.setattr(ad, "interrupt_for_session", lambda **_kwargs: 0)
+
+    def close_groups(**kwargs):
+        events.append(("close", Path(get_hermes_home()), kwargs))
+        return 1
+
+    monkeypatch.setattr(ad, "close_work_groups_for_session", close_groups)
+
+    server._finalize_session(session, end_reason="idle_timeout")
+
+    assert events[0][0] == "close"
+    assert events[0][1] == profile_home.resolve()
+    assert events[0][2]["origin_ui_session_id"] == "owned-sid"
+    assert events[1] == ("end", "session-key", "idle_timeout")
+
+
+def test_finalize_retry_is_not_suppressed_after_group_close_failure(monkeypatch):
+    events = []
+
+    class _DB:
+        def get_session(self, _session_id):
+            return {"source": "tui"}
+
+        def end_session(self, session_id, reason):
+            events.append(("end", session_id, reason))
+
+    attempts = 0
+
+    def close_groups(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        events.append(("close", attempts))
+        if attempts == 1:
+            raise RuntimeError("temporary ledger failure")
+        return 1
+
+    class _Lease:
+        enabled = True
+        released = False
+
+        def release(self):
+            self.released = True
+
+    lease = _Lease()
+
+    session = _session(
+        agent=types.SimpleNamespace(session_id="retry-session"),
+        _sid="retry-sid",
+        active_session_lease=lease,
+    )
+    old_stop = threading.Event()
+    new_stop = threading.Event()
+    session["_notif_stop"] = old_stop
+    restarted = []
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        server, "_session_db", lambda _session: contextlib.nullcontext(_DB())
+    )
+    monkeypatch.setattr(ad, "close_work_groups_for_session", close_groups)
+    monkeypatch.setattr(ad, "interrupt_for_session", lambda **_kwargs: 0)
+    monkeypatch.setattr(
+        server,
+        "_start_notification_poller",
+        lambda sid, restored: restarted.append((sid, restored)) or new_stop,
+    )
+
+    try:
+        server._sessions["retry-sid"] = session
+        popped = server._pop_session_by_id("retry-sid")
+        assert popped is session
+        assert server._teardown_popped_session(
+            popped, end_reason="idle_timeout"
+        ) is False
+        assert session["_finalized"] is False
+        assert server._sessions["retry-sid"] is session
+        assert session["_closing"] is False
+        assert old_stop.is_set()
+        assert session["_notif_stop"] is new_stop
+        assert restarted == [("retry-sid", session)]
+        assert lease.released is False
+        assert session["active_session_lease"] is lease
+        assert events == [("close", 1)]
+
+        popped = server._pop_session_by_id("retry-sid")
+        assert popped is session
+        assert server._teardown_popped_session(
+            popped, end_reason="idle_timeout"
+        ) is True
+        assert session["_finalized"] is True
+        assert "retry-sid" not in server._sessions
+        assert lease.released is True
+        assert "active_session_lease" not in session
+        assert events == [
+            ("close", 1),
+            ("close", 2),
+            ("end", "retry-session", "idle_timeout"),
+        ]
+    finally:
+        server._sessions.pop("retry-sid", None)
+
+
+def test_automatic_finalize_keeps_gateway_viewer_group_and_session(monkeypatch):
+    events = []
+
+    class _DB:
+        def get_session(self, _session_id):
+            return {"source": "telegram"}
+
+        def end_session(self, *_args):
+            events.append("end")
+
+    session = _session(agent=types.SimpleNamespace(session_id="gateway-session"))
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args: None)
+    monkeypatch.setattr(
+        server, "_session_db", lambda _session: contextlib.nullcontext(_DB())
+    )
+    monkeypatch.setattr(
+        ad,
+        "close_work_groups_for_session",
+        lambda **_kwargs: events.append("close") or 1,
+    )
+    monkeypatch.setattr(ad, "interrupt_for_session", lambda **_kwargs: 0)
+
+    server._finalize_session(session, end_reason="ws_orphan_reap")
+
+    assert events == []
 
 
 def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
@@ -22268,3 +22425,100 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+def test_internal_closeout_fifo_preserves_two_work_ids_and_trusted_metadata(monkeypatch):
+    from collections import deque
+
+    session = {
+        "history_lock": threading.Lock(),
+        "running": False,
+        "internal_continuations": deque([
+            server._InternalContinuation("first", "work-1", 1, "delivery-1", "claim-1"),
+            server._InternalContinuation("second", "work-2", 2, "delivery-2", "claim-2"),
+        ]),
+    }
+    calls = []
+
+    def fake_submit(rid, sid, sess, text, **kwargs):
+        calls.append((rid, sid, text, kwargs["internal_continuation"]))
+        return True
+
+    monkeypatch.setattr(server, "_run_prompt_submit", fake_submit)
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_k: None)
+
+    assert server._start_next_internal_continuation("r1", "sid", session)
+    session["running"] = False
+    assert server._start_next_internal_continuation("r2", "sid", session)
+
+    assert [(call[2], call[3].work_id) for call in calls] == [
+        ("first", "work-1"), ("second", "work-2")
+    ]
+    assert calls[0][3].delivery_id == "delivery-1"
+    assert calls[1][3].claim_id == "claim-2"
+
+
+def test_closeout_notification_requires_matching_profile_affinity(tmp_path):
+    profile_a = tmp_path / "a"
+    profile_b = tmp_path / "b"
+    event = {
+        "type": "async_delegation_work_closeout",
+        "origin_ui_session_id": "same-ui",
+        "session_key": "same-session",
+        "_ledger_profile_home": str(profile_a),
+    }
+    session = {
+        "profile_home": str(profile_b),
+        "session_key": "same-session",
+    }
+
+    assert not server._session_owns_notification_event("same-ui", session, event)
+
+
+def test_internal_closeout_handoff_failure_releases_exact_claim(monkeypatch, tmp_path):
+    from collections import deque
+    from queue import Queue
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    item = server._InternalContinuation(
+        "closeout", "work-x", 4, "delivery-x", "claim-x", str(profile_home)
+    )
+    session = {
+        "history_lock": threading.Lock(), "running": False,
+        "internal_continuations": deque([item]),
+        "profile_home": str(profile_home),
+    }
+    released = []
+    recovered = []
+    replacement_queue = Queue()
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        "tools.async_delegation.release_enqueued_work_group_event",
+        lambda event: released.append((Path(get_hermes_home()), event)) or True,
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.recover_and_enqueue_work_groups",
+        lambda **kwargs: recovered.append((Path(get_hermes_home()), kwargs)) or [],
+    )
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.completion_queue",
+        replacement_queue,
+    )
+    # Importing the singleton can legitimately run startup recovery; this test
+    # asserts only the retry scheduled by the failed handoff below.
+    recovered.clear()
+
+    with pytest.raises(RuntimeError, match="cannot resume"):
+        server._start_next_internal_continuation("rid", "sid", session)
+
+    assert released == [(profile_home.resolve(), {
+        "type": "async_delegation_work_closeout",
+        "origin_work_id": "work-x", "work_generation": 4,
+        "delivery_id": "delivery-x", "claim_id": "claim-x",
+        "_ledger_profile_home": str(profile_home),
+    })]
+    assert recovered == [(profile_home.resolve(), {
+        "consumer": "tui-closeout-retry",
+        "target_queue": replacement_queue,
+    })]
+    assert session["running"] is False

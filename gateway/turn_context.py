@@ -56,6 +56,11 @@ class TurnContext:
     # display_kind of the persisted user row for a self-injected turn; DB-only, never sent.
     # "internal_notification" for async-delegation/background notifications (#82888).
     persist_user_display_kind: Optional[str] = None
+    persist_user_display_metadata: Optional[dict] = None
+    delegation_work_id: Optional[str] = None
+    delegation_work_generation: Optional[int] = None
+    delegation_work_delivery_id: Optional[str] = None
+    delegation_work_claim_id: Optional[str] = None
     user_config: Any = None
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None

@@ -435,23 +435,96 @@ def finalize_turn(
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
     _turn_exit_reason, _pending_verification_response=None,
     _pending_verification_response_previewed=False,
+    delegation_waiting=False,
+    closeout_terminal_candidate=False,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
-    final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
-        agent, final_response=final_response, api_call_count=api_call_count,
-        interrupted=interrupted, failed=failed, messages=messages,
-        _turn_exit_reason=_turn_exit_reason,
-        _pending_verification_response=_pending_verification_response,
-        _pending_verification_response_previewed=_pending_verification_response_previewed,
-        logger=logger,
-    )
+    work_id = str(getattr(agent, "_current_work_id", "") or "")
+    delivery_id = str(getattr(agent, "_current_work_delivery_id", "") or "")
+    claim_id = str(getattr(agent, "_current_work_claim_id", "") or "")
+    delegation_diagnostic = None
+    waiting_marker = None
+    if work_id and not (delivery_id and claim_id):
+        from tools.async_delegation import seal_and_enqueue_work_group
+
+        parent_terminal_failure = bool(interrupted or failed)
+        if not parent_terminal_failure and not (
+            messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("display_kind") == "delegation_waiting"
+        ):
+            waiting_marker = {
+                "role": "assistant",
+                "content": "Delegated work remains pending; no terminal answer was issued.",
+                "display_kind": "delegation_waiting",
+                "display_metadata": {"hidden": True},
+            }
+            append_message(messages, waiting_marker)
+        seal_result = seal_and_enqueue_work_group(
+            work_id,
+            getattr(agent, "_current_turn_id", "") or turn_id,
+            consumer="failed-owner-seal" if parent_terminal_failure else "turn-seal",
+            diagnostics=(
+                f"owner turn ended before closeout: {_turn_exit_reason}"
+                if parent_terminal_failure
+                else None
+            ),
+        )
+        if (
+            isinstance(seal_result, dict)
+            and seal_result.get("type") == "async_delegation_work_seal_error"
+        ):
+            if waiting_marker is not None and messages and messages[-1] is waiting_marker:
+                messages.pop()
+            delegation_diagnostic = seal_result
+            failed = True
+            final_response = None
+            _turn_exit_reason = "delegation_work_seal_failed"
+        elif parent_terminal_failure:
+            owner_exit_reason = str(_turn_exit_reason)
+            delegation_diagnostic = {
+                "ok": True,
+                "code": "owner_failed_group_sealed",
+                "work_id": work_id,
+                "owner_exit_reason": owner_exit_reason,
+            }
+            final_response = None
+            delegation_waiting = True
+            _turn_exit_reason = "delegation_waiting_after_owner_failure"
+        discard = getattr(agent, "_discard_conversational_response", None)
+        if callable(discard):
+            discard()
+        if not parent_terminal_failure and delegation_diagnostic is None:
+            final_response = None
+            delegation_waiting = True
+            _turn_exit_reason = "delegation_waiting"
+
+    preserved_verification_fallback = False
+    if not delegation_waiting:
+        final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
+            agent, final_response=final_response, api_call_count=api_call_count,
+            interrupted=interrupted, failed=failed, messages=messages,
+            _turn_exit_reason=_turn_exit_reason,
+            _pending_verification_response=_pending_verification_response,
+            _pending_verification_response_previewed=_pending_verification_response_previewed,
+            logger=logger,
+        )
+    if delegation_waiting and final_response is not None:
+        final_response = None
+        discard = getattr(agent, "_discard_conversational_response", None)
+        if callable(discard):
+            discard()
 
     completed = (
-        final_response is not None
+        not delegation_waiting
+        and final_response is not None
         and not failed
-        and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
+        and (
+            api_call_count < agent.max_iterations
+            or str(_turn_exit_reason).startswith("text_response(")
+        )
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)
@@ -481,9 +554,97 @@ def finalize_turn(
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger)
+        if closeout_terminal_candidate and final_response:
+            if not (work_id and delivery_id and claim_id):
+                raise RuntimeError("closeout_terminal_candidate_missing_identity")
+            candidate = messages[-1] if messages else None
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("role") == "assistant"
+                and not candidate.get("tool_calls")
+            ):
+                candidate["display_kind"] = "delegation_closeout_provisional"
+                candidate["display_metadata"] = {
+                    "hidden": True,
+                    "work_id": work_id,
+                    "generation": int(
+                        getattr(agent, "_current_work_generation", 0) or 0
+                    ),
+                    "delivery_id": delivery_id,
+                    "claim_id": claim_id,
+                    "turn_id": getattr(agent, "_current_turn_id", "") or turn_id,
+                }
+                # The final text may already have been incrementally flushed. Its
+                # durable row must be rewritten with the provisional marker before
+                # the close CAS, and rewritten again when that marker is revealed.
+                candidate.pop(_DB_PERSISTED_MARKER, None)
+                agent._db_flush_scan_prefix = None
+                from tools.async_delegation import find_closeout_provisional
+
+                canonical = find_closeout_provisional(work_id, delivery_id)
+                if canonical is not None:
+                    candidate["content"] = canonical["content"]
+                    candidate["_row_id"] = canonical["row_id"]
+                    candidate.pop(_DB_PERSISTED_MARKER, None)
+                    final_response = canonical["content"]
         agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
+
+    if closeout_terminal_candidate:
+        closed = False
+        if not _cleanup_errors and work_id and delivery_id and claim_id:
+            try:
+                from tools.async_delegation import close_work_group
+
+                closed = close_work_group(
+                    work_id,
+                    int(getattr(agent, "_current_work_generation", 0) or 0),
+                    delivery_id,
+                    claim_id,
+                    getattr(agent, "_current_turn_id", "") or turn_id,
+                )
+            except Exception:
+                logger.exception("delegation closeout commit failed for %s", work_id)
+        if not closed:
+            final_response = None
+            completed = False
+            failed = True
+            _turn_exit_reason = "delegation_closeout_persistence_failed"
+            discard = getattr(agent, "_discard_conversational_response", None)
+            if callable(discard):
+                discard()
+        else:
+            provisional = messages[-1] if messages else None
+            if (
+                isinstance(provisional, dict)
+                and provisional.get("display_kind")
+                == "delegation_closeout_provisional"
+            ):
+                provisional.pop("display_kind", None)
+                provisional.pop("display_metadata", None)
+                provisional.pop(_DB_PERSISTED_MARKER, None)
+                agent._db_flush_scan_prefix = None
+            agent._current_work_id = ""
+            agent._current_work_generation = 0
+            agent._current_work_delivery_id = ""
+            agent._current_work_claim_id = ""
+            try:
+                from tools.async_delegation import (
+                    reconcile_closed_closeout_provisionals,
+                )
+
+                reconcile_closed_closeout_provisionals()
+                agent._persist_session(messages, conversation_history)
+            except Exception as reveal_err:
+                _cleanup_errors.append(f"persist_closeout_reveal: {reveal_err}")
+                logger.warning(
+                    "Delegation closeout completed but transcript reveal failed",
+                    exc_info=True,
+                )
+            admit = getattr(agent, "_admit_conversational_response", None)
+            if callable(admit):
+                admit()
 
     # Keep the gateway's separate in-memory history snapshot current even on
     # cleanup error, so a later prompt isn't sent with a pre-turn snapshot.
@@ -495,7 +656,11 @@ def finalize_turn(
     # Response transforms apply only to real, uninterrupted responses.
     if final_response and not interrupted:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
-    if not interrupted:
+    if (
+        not interrupted
+        and not delegation_waiting
+        and not (closeout_terminal_candidate and failed)
+    ):
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )
@@ -539,6 +704,7 @@ def finalize_turn(
         "messages": messages,
         "api_calls": api_call_count,
         "completed": completed,
+        "waiting_on_delegates": bool(delegation_waiting),
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
@@ -558,6 +724,8 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    if delegation_diagnostic is not None:
+        result["delegation_diagnostic"] = delegation_diagnostic
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Persistence failures already set failed=True; also stamp `error` so the gateway
@@ -583,6 +751,9 @@ def finalize_turn(
         result["interrupt_message"] = agent._interrupt_message
     agent.clear_interrupt()
     agent._stream_callback = None  # don't leak into future calls
+    discard = getattr(agent, "_discard_conversational_response", None)
+    if callable(discard):
+        discard()
 
     # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = (

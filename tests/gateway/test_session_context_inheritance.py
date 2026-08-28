@@ -33,9 +33,11 @@ import pytest
 import gateway.session_context as sc
 from gateway.session_context import (
     _SESSION_ASYNC_DELIVERY,
+    _SESSION_CLOSEOUT_DELIVERY,
     _UNSET,
     _VAR_MAP,
     async_delivery_supported,
+    closeout_delivery_supported,
     reset_session_vars,
     set_session_vars,
 )
@@ -200,3 +202,30 @@ def test_reset_session_vars_closes_async_delivery_leak():
     )
 
 
+def test_reset_session_vars_closes_closeout_delivery_leak():
+    """An API request's self-post capability cannot leak into a finite task."""
+    set_session_vars(
+        **FOREIGN,
+        async_delivery=False,
+        closeout_delivery=True,
+    )
+    assert _SESSION_CLOSEOUT_DELIVERY.get() is True
+
+    inherited = copy_context()
+
+    def finite_pre_bind_window():
+        reset_session_vars()
+        return (
+            _SESSION_ASYNC_DELIVERY.get(),
+            _SESSION_CLOSEOUT_DELIVERY.get(),
+            closeout_delivery_supported(),
+        )
+
+    assert inherited.run(finite_pre_bind_window) == (_UNSET, _UNSET, True)
+
+    # The finite runner's own bind then explicitly denies both capabilities.
+    def finite_bound():
+        set_session_vars(async_delivery=False, closeout_delivery=False)
+        return async_delivery_supported(), closeout_delivery_supported()
+
+    assert inherited.run(finite_bound) == (False, False)

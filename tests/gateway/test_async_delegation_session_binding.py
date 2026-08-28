@@ -8,6 +8,7 @@ Three invariants on the messaging-gateway surface, mirroring the TUI rules:
 3. /new interrupts the old conversation's in-flight async delegations.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -209,11 +210,47 @@ class TestGatewayPinningFailsClosed:
 
 
 class TestResetHandlerInterruptsDelegations:
-    def test_reset_command_calls_interrupt_for_session(self):
-        """The /new handler must sever the old conversation's delegations."""
-        import inspect
-        from gateway import slash_commands
+    @pytest.mark.asyncio
+    async def test_reset_command_closes_old_session_groups_before_rotation(
+        self, monkeypatch
+    ):
+        """/new must disposition the expiring session before reset rotates it."""
+        from gateway.slash_commands import GatewaySlashCommandsMixin
 
-        src = inspect.getsource(slash_commands.GatewaySlashCommandsMixin._handle_reset_command)
-        assert "interrupt_for_session" in src
-        assert "session_reset" in src
+        class _StopAfterBoundary(RuntimeError):
+            pass
+
+        runner = object.__new__(GatewaySlashCommandsMixin)
+        old_entry = SimpleNamespace(session_id="sess-old")
+        runner.session_store = SimpleNamespace(_entries={"route-key": old_entry})
+        runner.async_session_store = SimpleNamespace(
+            reset_session=AsyncMock(side_effect=_StopAfterBoundary)
+        )
+        runner._session_key_for_source = MagicMock(return_value="route-key")
+        runner._invalidate_session_run_generation = MagicMock()
+        runner._release_running_agent_state = MagicMock()
+        runner._evict_cached_agent = MagicMock()
+        runner._clear_conversation_scope = MagicMock()
+        runner._agent_cache_lock = None
+
+        interrupt = MagicMock()
+        close_groups = MagicMock()
+        monkeypatch.setattr(ad, "interrupt_for_session", interrupt)
+        monkeypatch.setattr(ad, "close_work_groups_for_session", close_groups)
+
+        event = SimpleNamespace(source=SimpleNamespace())
+        with pytest.raises(_StopAfterBoundary):
+            await runner._handle_reset_command(event)
+
+        interrupt.assert_called_once_with(
+            session_key="route-key",
+            parent_session_id="sess-old",
+            reason="session_reset",
+        )
+        close_groups.assert_called_once_with(
+            origin_session="route-key",
+            parent_session_id="sess-old",
+            disposition="cancelled",
+            diagnostics="gateway /new reset discarded the owning session",
+        )
+        runner.async_session_store.reset_session.assert_awaited_once_with("route-key")

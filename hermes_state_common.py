@@ -15,6 +15,12 @@ from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _ME
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
 
 
+# Persisted title provenance: automatic display labels are not user-selected identities.
+TITLE_SOURCE_DERIVED = "derived"
+TITLE_SOURCE_LLM = "llm"
+TITLE_SOURCE_USER = "user"
+
+
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation
 # embeds the whole skill body, so scaffolded rows take a wider excerpt (whole message under budget, else head +
 # tail where the typed instruction lands) and ``_shape_preview`` recovers ``/work — fix ...`` from it.

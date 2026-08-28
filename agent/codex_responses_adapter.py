@@ -12,6 +12,8 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
 
+import httpx
+
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
@@ -22,12 +24,27 @@ def _classify_responses_issuer(
     *, is_xai_responses: bool = False, is_github_responses: bool = False, is_codex_backend: bool = False,
     base_url: Optional[str] = None,
 ) -> str:
-    """Stable identifier for the endpoint that mints ``reasoning.encrypted_content``. Blobs are sealed to their
-    issuer (HTTP 400 ``invalid_encrypted_content``), so stamping lets replay drop foreign blobs after a model switch."""
+    """Stable issuer identity for persisted reasoning blobs and assistant message ids.
+    Provider flags take precedence; custom endpoint URLs use the SDK's canonical form."""
     for flag, kind in ((is_xai_responses, "xai_responses"), (is_github_responses, "github_responses"), (is_codex_backend, "codex_backend")):
         if flag:
             return kind
-    return f"other:{base_url}" if base_url else "other"
+    if base_url:
+        # Match OpenAI's httpx.URL normalization (host case, default ports, IDNs)
+        # so configured main routes and SDK-normalized auxiliary routes agree.
+        try:
+            normalized_base_url = str(httpx.URL(str(base_url))).rstrip("/")
+        except (httpx.InvalidURL, TypeError, UnicodeError):
+            normalized_base_url = str(base_url).rstrip("/")
+        return f"other:{normalized_base_url}" if normalized_base_url else "other"
+    return "other"
+
+
+def _canonicalize_responses_issuer_kind(issuer_kind: Any) -> Any:
+    """Normalize legacy URL-backed stamps without inferring provider identity from a host."""
+    if not isinstance(issuer_kind, str) or not issuer_kind.startswith("other:"):
+        return issuer_kind
+    return _classify_responses_issuer(base_url=issuer_kind[len("other:"):])
 
 
 # Per-process throttle for the cross-issuer skip warning.
@@ -317,11 +334,25 @@ def _message_item(
     return item
 
 
-def _assistant_message_item(raw: Dict[str, Any], content: List[Dict[str, Any]], *, is_github_responses: bool) -> Dict[str, Any]:
-    """Replayable assistant ``message`` item from a stored one. ``id`` is kept only when short enough and never for
-    GitHub Copilot (ids bind to a backend connection; stale → 401); ``phase`` is preserved per OpenAI's cache guidance."""
+def _assistant_message_item(
+    raw: Dict[str, Any], content: List[Dict[str, Any]], *, is_github_responses: bool,
+    current_issuer_kind: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Withhold foreign or invalid ids without changing assistant text, status or phase.
+    GitHub connection-bound ids never replay; unstamped legacy ids remain compatible
+    except that the Codex backend requires the ``msg`` namespace."""
     item_id, phase = raw.get("id"), raw.get("phase")
-    keep_id = not is_github_responses and _nonblank(item_id) and len(item_id.strip()) <= _MAX_RESPONSES_ITEM_ID_LENGTH
+    item_issuer = raw.get("_issuer_kind")
+    issuer_matches = (
+        current_issuer_kind is None or item_issuer is None
+        or _canonicalize_responses_issuer_kind(item_issuer) == current_issuer_kind
+    )
+    keep_id = (
+        not is_github_responses and issuer_matches and _nonblank(item_id)
+        and len(item_id.strip()) <= _MAX_RESPONSES_ITEM_ID_LENGTH
+        # Deliberately "msg", not "msg_": match the backend's namespace contract.
+        and (current_issuer_kind != "codex_backend" or item_id.strip().startswith("msg"))
+    )
     return _message_item(
         content, status=_normalize_responses_message_status(raw.get("status")),
         item_id=item_id.strip() if keep_id else None, phase=phase.strip() if _nonblank(phase) else None,
@@ -345,7 +376,10 @@ def _replay_reasoning_items(
         if (item_id and item_id in seen_item_ids) or (ri.get("type") == "compaction" and not native_compaction_eligible):
             continue
         item_issuer = ri.get("_issuer_kind")
-        if current_issuer_kind is not None and item_issuer is not None and item_issuer != current_issuer_kind:
+        if (
+            current_issuer_kind is not None and item_issuer is not None
+            and _canonicalize_responses_issuer_kind(item_issuer) != current_issuer_kind
+        ):
             if not _CROSS_ISSUER_WARN_EMITTED:
                 logger.warning(
                     "Dropping reasoning item minted by %s while calling %s — encrypted_content is sealed to "
@@ -360,7 +394,9 @@ def _replay_reasoning_items(
     return replayed
 
 
-def _replay_message_items(msg: Dict[str, Any], *, is_github_responses: bool) -> List[Dict[str, Any]]:
+def _replay_message_items(
+    msg: Dict[str, Any], *, is_github_responses: bool, current_issuer_kind: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Replay exact assistant message items (id/phase) for prefix-cache hits."""
     replayed: List[Dict[str, Any]] = []
     for raw_item in _as_list(msg.get("codex_message_items")):
@@ -372,7 +408,9 @@ def _replay_message_items(msg: Dict[str, Any], *, is_github_responses: bool) -> 
             if isinstance(part, dict) and str(part.get("type") or "").strip() in _OUTPUT_TEXT_TYPES
         ]
         if content:
-            replayed.append(_assistant_message_item(raw_item, content, is_github_responses=is_github_responses))
+            replayed.append(_assistant_message_item(
+                raw_item, content, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
+            ))
     return replayed
 
 
@@ -425,7 +463,8 @@ def _chat_messages_to_responses_input(
     ``replay_encrypted_reasoning``: per-session kill switch, threaded False by
     ``AIAgent._disable_codex_reasoning_replay`` after an ``invalid_encrypted_content`` 400.
     ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
-    ``current_issuer_kind``: cross-issuer guard; foreign-stamped items drop, legacy items replay.
+    ``current_issuer_kind``: foreign encrypted reasoning drops; foreign assistant ids are
+    withheld while their text remains. Legacy items replay, but Codex ids must start with ``msg``.
     ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
     checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
     so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:
@@ -463,6 +502,7 @@ def _chat_messages_to_responses_input(
     # `function_call_output` wrapper) that no longer carries it (#90976).
     item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
+    current_issuer_kind = _canonicalize_responses_issuer_kind(current_issuer_kind)
     def emit(new_items: List[Dict[str, Any]], msg: Dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
@@ -490,7 +530,9 @@ def _chat_messages_to_responses_input(
             native_compaction_eligible=native_compaction_eligible,
         )
         emit(reasoning_items, msg)
-        message_items = _replay_message_items(msg, is_github_responses=is_github_responses)
+        message_items = _replay_message_items(
+            msg, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
+        )
         emit(message_items, msg)
         if not message_items:
             # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback.
@@ -945,7 +987,7 @@ class _OutputScan:
                 self.has_incomplete_items = True
                 self.saw_streaming_or_item_incomplete = True
             if item_type == "message":
-                self._message(item, item_status)
+                self._message(item, item_status, issuer_kind)
             elif item_type in {"reasoning", "compaction"}:
                 if item_type == "reasoning":
                     self.saw_reasoning_item = True
@@ -964,7 +1006,7 @@ class _OutputScan:
             elif item_type == "custom_tool_call" or (item_type == "function_call" and item_status not in _INCOMPLETE_STATUSES):
                 self.tool_calls.append(_response_tool_call(item, item_type, len(self.tool_calls)))
 
-    def _message(self, item: Any, item_status: Optional[str]) -> None:
+    def _message(self, item: Any, item_status: Optional[str], issuer_kind: Optional[str]) -> None:
         normalized_phase = _lower_or_none(getattr(item, "phase", None))
         is_commentary_phase = normalized_phase in {"commentary", "analysis"}
         self.saw_commentary_phase = self.saw_commentary_phase or is_commentary_phase
@@ -976,15 +1018,18 @@ class _OutputScan:
         # to the reasoning channel; the exact item is still preserved for replay/cache.
         (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
         item_id = getattr(item, "id", None)
-        self.message_items_raw.append(_message_item(
+        raw_message_item = _message_item(
             [{"type": "output_text", "text": message_text}], status=_normalize_responses_message_status(item_status),
             item_id=item_id if isinstance(item_id, str) else None, phase=normalized_phase,
-        ))
+        )
+        if issuer_kind:
+            raw_message_item["_issuer_kind"] = issuer_kind
+        self.message_items_raw.append(raw_message_item)
 
 
 def _normalize_codex_response(response: Any, *, issuer_kind: Optional[str] = None) -> tuple[Any, str]:
     """Normalize a Responses API object to ``(assistant_message, finish_reason)``.
-    ``issuer_kind`` is stamped onto captured reasoning items for cross-issuer replay drops."""
+    ``issuer_kind`` is stamped onto captured reasoning and message items for safe cross-issuer replay."""
     response_status = _lower_or_none(getattr(response, "status", None))
     incomplete_reason = str(_field(getattr(response, "incomplete_details", None), "reason", "") or "").strip().lower()
     response_incomplete_content_filter = response_status == "incomplete" and incomplete_reason == "content_filter"

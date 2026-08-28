@@ -1312,9 +1312,10 @@ class _CodexStreamGuard:
 class _CodexCompletionsAdapter:
     """Drop-in shim routing chat.completions.create() kwargs through Codex Responses streaming."""
 
-    def __init__(self, real_client: OpenAI, model: str):
+    def __init__(self, real_client: OpenAI, model: str, *, issuer_kind: Optional[str] = None):
         self._client = real_client
         self._model = model
+        self._issuer_kind = issuer_kind
 
     def _build_responses_kwargs(self, kwargs: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Any]:
         """chat.completions kwargs → Responses API kwargs, ``(resp_kwargs, model, timeout)``; mirrors codex.py::build_kwargs."""
@@ -1328,12 +1329,18 @@ class _CodexCompletionsAdapter:
         # includes assistant tool_calls + role="tool" results). The shared converter encodes assistant tool
         # calls as `function_call` items and tool results as `function_call_output` items with a valid
         # call_id, so every Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input, _classify_responses_issuer
         model = kwargs.get("model", self._model)
         host = str(getattr(self._client, "base_url", "") or "")
         is_xai = base_url_host_matches(host, "x.ai") or base_url_host_matches(host, "api.x.ai")
         is_copilot = base_url_host_matches(host, "githubcopilot.com")
         is_github = is_copilot or base_url_host_matches(host, "models.github.ai")
+        # Explicit provider identity survives custom proxy URLs; generic clients
+        # derive it from the endpoint, just like the main Responses transport.
+        issuer_kind = self._issuer_kind or _classify_responses_issuer(
+            is_xai_responses=is_xai, is_github_responses=is_github,
+            is_codex_backend=_is_official_codex_base_url(host), base_url=host,
+        )
         # System → ``instructions``; the rest goes through the SINGLE shared chat→Responses
         # converter (a private loop here once let role="tool" leak into input[]; the shared one
         # encodes tool history as function_call/function_call_output).
@@ -1352,7 +1359,8 @@ class _CodexCompletionsAdapter:
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
         # independently. See #32716.
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=is_copilot, native_compaction_eligible=False
+            replay_messages, is_github_responses=is_github,
+            current_issuer_kind=issuer_kind, native_compaction_eligible=False,
         )
         resp_kwargs: Dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
@@ -1539,9 +1547,9 @@ _AsyncAnthropicCompletionsAdapter = _AsyncCompletionsAdapter  # imported by test
 class CodexAuxiliaryClient:
     """OpenAI-client-compatible wrapper routing through the Codex Responses API (.api_key/.base_url for introspection)."""
 
-    def __init__(self, real_client: OpenAI, model: str):
+    def __init__(self, real_client: OpenAI, model: str, *, issuer_kind: Optional[str] = None):
         self._real_client = real_client
-        self.chat = _ChatShim(_CodexCompletionsAdapter(real_client, model))
+        self.chat = _ChatShim(_CodexCompletionsAdapter(real_client, model, issuer_kind=issuer_kind))
         self.api_key = real_client.api_key
         self.base_url = real_client.base_url
 
@@ -2729,7 +2737,7 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     real_client = _create_openai_client(
         api_key=api_key, base_url=base_url, default_headers=hermes_xai_default_headers()
     )
-    return CodexAuxiliaryClient(real_client, model), model
+    return CodexAuxiliaryClient(real_client, model, issuer_kind="xai_responses"), model
 
 
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -2757,7 +2765,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         api_key=codex_token, base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
     )
-    return CodexAuxiliaryClient(real_client, model), model
+    return CodexAuxiliaryClient(real_client, model, issuer_kind="codex_backend"), model
 
 
 def _try_azure_foundry(

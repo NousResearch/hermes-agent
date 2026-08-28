@@ -58,7 +58,11 @@ class TestRestrictToNousPolicy:
         ) == ["vendor/model:free"]
 
     def test_drops_a_free_sibling_whose_base_is_blocked(self):
-        assert restrict_to_nous_policy(["vendor/model:free"], {"other/model"}) == []
+        """The blocked sibling goes; the model the org may actually use takes
+        its place rather than leaving the picker empty."""
+        assert restrict_to_nous_policy(["vendor/model:free"], {"other/model"}) == [
+            "other/model"
+        ]
 
 
 class TestNousPolicyAllowedIds:

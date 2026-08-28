@@ -49,10 +49,11 @@ class TestUpstreamPromptNonInteractive:
     ):
         p_in, p_out = _tty(True, True)
         with p_in, p_out:
-            update_cmd._sync_with_upstream_if_needed(
+            checked = update_cmd._sync_with_upstream_if_needed(
                 ["git"], fork_without_upstream.cwd, assume_yes=True
             )
 
+        assert checked is False
         fork_without_upstream.stdin_input.assert_not_called()
         fork_without_upstream.add_remote.assert_not_called()
         fork_without_upstream.mark_skip.assert_not_called()
@@ -66,10 +67,11 @@ class TestUpstreamPromptNonInteractive:
     ):
         p_in, p_out = _tty(stdin_tty, stdout_tty)
         with p_in, p_out:
-            update_cmd._sync_with_upstream_if_needed(
+            checked = update_cmd._sync_with_upstream_if_needed(
                 ["git"], fork_without_upstream.cwd
             )
 
+        assert checked is False
         fork_without_upstream.stdin_input.assert_not_called()
         fork_without_upstream.add_remote.assert_not_called()
         fork_without_upstream.mark_skip.assert_not_called()

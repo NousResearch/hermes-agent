@@ -312,6 +312,45 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_yes_on_fork_without_upstream_does_not_claim_up_to_date(
+        self, mock_run, _mock_which, capsys
+    ):
+        """#97052 review: genuine fork, no upstream remote, HEAD == origin/main,
+        --yes. The prompt is skipped without mutating remotes, and because the
+        official repo was never consulted the completion line must not claim
+        plain "Already up to date!"."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(
+            update_cmd, "_has_upstream_remote", return_value=False
+        ), patch.object(
+            update_cmd, "_should_skip_upstream_prompt", return_value=False
+        ), patch.object(
+            update_cmd, "_add_upstream_remote"
+        ) as add_remote, patch.object(
+            update_cmd, "_mark_skip_upstream_prompt"
+        ) as mark_skip, patch("builtins.input") as stdin_input:
+            cmd_update(SimpleNamespace(yes=True))
+
+        stdin_input.assert_not_called()
+        add_remote.assert_not_called()
+        mark_skip.assert_not_called()
+        captured = capsys.readouterr()
+        assert "Skipping upstream setup (non-interactive run)." in captured.out
+        assert "official repo not checked" in captured.out
+        assert "Already up to date!" not in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(
         self, mock_run, _mock_which, mock_args, capsys
     ):

@@ -2717,7 +2717,7 @@ def _sync_with_upstream_if_needed(
     *,
     assume_yes: bool = False,
     input_fn=None,
-) -> None:
+) -> bool:
     """Check if fork is behind upstream and sync if safe.
 
     This implements the fork upstream sync logic:
@@ -2725,13 +2725,19 @@ def _sync_with_upstream_if_needed(
     - Compare origin/main with upstream/main
     - If origin/main is strictly behind upstream/main, pull from upstream
     - Try to sync fork back to origin if possible
+
+    Returns True when origin/main was actually verified against the official
+    upstream/main, False when the check never happened (prompt skipped or
+    declined, remote add failed, fetch or compare failed) so the caller can
+    avoid reporting the checkout as up to date on the strength of an origin
+    comparison alone (#97052 review).
     """
     has_upstream = _has_upstream_remote(git_cmd, cwd)
 
     if not has_upstream:
         # Check if user previously declined
         if _should_skip_upstream_prompt():
-            return
+            return False
 
         print()
         print("ℹ Your fork is not tracking the official Hermes repository.")
@@ -2747,7 +2753,7 @@ def _sync_with_upstream_if_needed(
             print(
                 "  Add it later with: git remote add upstream https://github.com/NousResearch/hermes-agent.git"
             )
-            return
+            return False
 
         # Ask user if they want to add upstream
         if input_fn is not None:
@@ -2776,13 +2782,13 @@ def _sync_with_upstream_if_needed(
                 has_upstream = True
             else:
                 print("  ✗ Failed to add upstream remote. Skipping upstream sync.")
-                return
+                return False
         else:
             print(
                 "  Skipped. Run 'git remote add upstream https://github.com/NousResearch/hermes-agent.git' to add later."
             )
             _mark_skip_upstream_prompt()
-            return
+            return False
 
     # Fetch upstream main only. This sync compares upstream/main with
     # origin/main, so there's no reason to pull every upstream ref — and a bare
@@ -2798,7 +2804,7 @@ def _sync_with_upstream_if_needed(
         )
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
-        return
+        return False
 
     # Compare origin/main with upstream/main
     origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
@@ -2808,7 +2814,7 @@ def _sync_with_upstream_if_needed(
 
     if origin_ahead < 0 or upstream_ahead < 0:
         print("  ✗ Could not compare branches. Skipping upstream sync.")
-        return
+        return False
 
     # If origin/main has commits not on upstream, don't trample
     if origin_ahead > 0:
@@ -2817,12 +2823,12 @@ def _sync_with_upstream_if_needed(
         print("  Skipping upstream sync to preserve your changes.")
         print("  If you want to merge upstream changes, run:")
         print("    git pull upstream main")
-        return
+        return True
 
     # If upstream is not ahead, fork is up to date
     if upstream_ahead == 0:
         print("  ✓ Fork is up to date with upstream")
-        return
+        return True
 
     # origin/main is strictly behind upstream/main (can fast-forward)
     print()
@@ -2839,7 +2845,7 @@ def _sync_with_upstream_if_needed(
         print(
             "  ✗ Failed to pull from upstream. You may need to resolve conflicts manually."
         )
-        return
+        return False
 
     print("  ✓ Updated from upstream")
 
@@ -2852,6 +2858,7 @@ def _sync_with_upstream_if_needed(
             "  ℹ Got updates from upstream but couldn't push to fork (no write access?)"
         )
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
+    return True
 
 def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles so no banner
@@ -3737,6 +3744,7 @@ def _repair_node_deps_on_current_checkout(
     assume_yes: bool = False,
     gateway_mode: bool = False,
     pre_update_snapshot_id: str | None = None,
+    completion_message: str = "✓ Already up to date!",
 ) -> None:
     """Repair Node deps on the ``commit_count == 0`` path (#77211).
 
@@ -3767,7 +3775,7 @@ def _repair_node_deps_on_current_checkout(
         gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
     )
-    print_completion("✓ Already up to date!")
+    print_completion(completion_message)
 
 
 def _update_node_dependencies() -> list[str]:
@@ -7860,9 +7868,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # commit_count == 0 branch, which returns immediately after: an update
         # that pulled hundreds of upstream commits printed "Already up to
         # date!" and verified nothing).
+        # Non-fork checkouts have no upstream question: origin IS the official
+        # repo, so "Already up to date!" is fully verified there.
+        upstream_checked = True
         if commit_count == 0 and is_fork and branch == "main":
             pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
-            _m()._sync_with_upstream_if_needed(
+            upstream_checked = _m()._sync_with_upstream_if_needed(
                 git_cmd,
                 _m().PROJECT_ROOT,
                 assume_yes=assume_yes,
@@ -8026,6 +8037,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     assume_yes=assume_yes,
                     gateway_mode=gateway_mode,
                     pre_update_snapshot_id=pre_update_snapshot_id,
+                    completion_message=(
+                        "✓ Already up to date!"
+                        if upstream_checked
+                        else "✓ Up to date with your fork (official repo not checked)."
+                    ),
                 )
             if runtime_repaired is not None and not _m()._is_windows():
                 print()

@@ -374,15 +374,19 @@ class TestConsentGate:
 
 
 class TestIdentity:
-    def test_install_id_is_never_transmitted(self, store):
+    def test_the_stable_install_id_is_transmitted_as_is(self, store):
+        """Product decision 2026-08-27: no pseudonymization.
+
+        The wire body carries the profile-scoped install_id verbatim. This
+        test is the deliberate inversion of the pre-decision assertion that
+        the raw id never crossed the wire.
+        """
         _add_package(store, "pkg-1", "2026-08-26")
         transport = FakeTransport(FakeResponse(202))
         _sender(store, transport).send_pending()
-        raw = transport.calls[0]["payload"].decode("utf-8")
-        assert INSTALL_ID not in raw
-        assert transport.bodies[0]["install_id"] != INSTALL_ID
+        assert transport.bodies[0]["install_id"] == INSTALL_ID
 
-    def test_derived_id_is_frozen_on_the_row(self, store):
+    def test_transmitted_id_is_frozen_on_the_row(self, store):
         _add_package(store, "pkg-1", "2026-08-26")
         transport = FakeTransport(FakeResponse(503), FakeResponse(202))
         _sender(store, transport).send_pending()

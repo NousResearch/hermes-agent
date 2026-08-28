@@ -39,12 +39,6 @@ from datetime import datetime, timedelta, timezone
 
 from hermes_cli.sqlite_util import write_txn
 
-from .shared_metrics_identity import (
-    current_salt,
-    derive_install_id,
-    substitute_install_id,
-)
-
 logger = logging.getLogger(__name__)
 
 #: Contract recommends timing out at 30s and treating a timeout as retryable.
@@ -432,13 +426,17 @@ class SharedMetricsSender:
         payload_json,
         now: datetime,
     ) -> str | None:
-        """Derive and persist the transmitted id, or reject an unusable row.
+        """Record the transmitted id on the row, or reject an unusable one.
 
-        Returns None when the package can never be sent. Rejecting rather than
-        raising matters: an exception here rolls back the claim transaction
-        and blocks every healthy package behind this one.
+        The stable install_id is transmitted as-is (product decision,
+        2026-08-27 — see the doc's A.2). What remains of "freezing" is the
+        validation and the audit column: ``sent_install_id`` records exactly
+        what the wire will carry, and rejecting unusable rows here rather
+        than raising matters because an exception rolls back the claim
+        transaction and blocks every healthy package behind this one.
         """
         reason = None
+        install_id = None
         try:
             payload = json.loads(payload_json)
         except (TypeError, ValueError):
@@ -467,24 +465,26 @@ class SharedMetricsSender:
             )
             return None
 
-        salt = current_salt(connection, now=now)
-        derived = derive_install_id(payload["install_id"], salt)
         connection.execute(
             "UPDATE package_outbox SET sent_install_id = ? WHERE package_id = ?",
-            (derived, package_id),
+            (install_id, package_id),
         )
-        return derived
+        return str(install_id)
 
     # -- transmission ------------------------------------------------------
 
-    def _body(self, payload_json: str, derived: str) -> bytes:
+    def _body(self, payload_json: str, transmitted_id: str) -> bytes:
         """Rebuild the exact bytes to send.
 
         The payload is recomputed from the stored package rather than kept as
-        a second copy: json.dumps with these options is deterministic, and the
-        only mutable input (the derived id) is frozen in the row.
+        a second copy: json.dumps with these options is deterministic. The
+        install_id is written from the frozen ``sent_install_id`` column
+        rather than trusted implicitly, keeping "a resend is byte-identical"
+        anchored to one recorded value.
         """
-        payload = substitute_install_id(json.loads(payload_json), derived)
+        payload = json.loads(payload_json)
+        payload = dict(payload)
+        payload["install_id"] = transmitted_id
         return json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
 
     def _mark(

@@ -171,10 +171,12 @@ def main() -> int:
         print(f"  last_error   : {row[5]}")
         if row[1] != "sent":
             failures.append(f"{row[0]} is {row[1]}: {row[5]}")
-        if row[4] == real_install_id:
-            failures.append(f"{row[0]} LEAKED the real install_id")
-        if not row[4] or len(str(row[4])) != 64:
-            failures.append(f"{row[0]} has a malformed derived id")
+        # Product decision 2026-08-27: the stable install_id is transmitted
+        # as-is; the transmitted value must be exactly the local id.
+        if row[4] != real_install_id:
+            failures.append(
+                f"{row[0]} transmitted {row[4]!r}, expected the install_id"
+            )
         print()
 
     if failures:
@@ -183,7 +185,7 @@ def main() -> int:
             print(f"  ✗ {failure}")
         return 1
 
-    print("PASS: every package acknowledged 202 with a derived identifier.")
+    print("PASS: every package acknowledged 202 with the stable install_id.")
     print()
     print("Verify the objects in S3 with the package ids above:")
     print("  aws s3 ls --recursive "

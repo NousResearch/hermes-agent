@@ -171,12 +171,11 @@ class TestRealTransport:
             ).fetchone()[0]
         assert state == "sent"
 
-    def test_the_install_id_never_crosses_the_wire(self, store, server):
+    def test_the_stable_install_id_crosses_the_wire_as_is(self, store, server):
+        """Product decision 2026-08-27: the raw install_id is transmitted."""
         _add(store, "pkg-1", metrics=40)
         _sender(store, server).send_pending()
-        body = json.dumps(Ingest.received[0]["body"])
-        assert INSTALL_ID not in body
-        assert len(Ingest.received[0]["body"]["install_id"]) == 64
+        assert Ingest.received[0]["body"]["install_id"] == INSTALL_ID
 
     def test_content_type_is_json(self, store, server):
         _add(store, "pkg-1")

@@ -373,8 +373,9 @@ class SharedMetricsStore:
             # Earliest next attempt; enforces backoff across process restarts.
             ("next_attempt_at", "TEXT"),
             ("last_error", "TEXT"),
-            # The derived identifier actually transmitted, frozen on the first
-            # attempt so retries stay byte-identical across a salt rotation.
+            # The identifier actually transmitted, frozen on the first
+            # attempt so retries stay byte-identical. Since the 2026-08-27
+            # product decision this is the stable install_id itself.
             # Only the ~36-byte id is stored: the body is recomputed from
             # payload_json, whose serialisation is deterministic.
             ("sent_install_id", "TEXT"),

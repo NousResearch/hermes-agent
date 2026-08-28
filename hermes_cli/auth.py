@@ -9428,9 +9428,8 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing = union_with_portal_paid_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
-                # The curated list and the Portal's recommendations are both
-                # unauthenticated, so neither knows what the org may reach.
-                # Narrow both lists to the policy before they are shown.
+                # Neither the curated list nor the Portal's recommendations
+                # know what the org may reach.
                 _policy_allowed = nous_policy_allowed_ids()
                 model_ids = restrict_to_nous_policy(
                     model_ids, _policy_allowed, rescue_empty=True,

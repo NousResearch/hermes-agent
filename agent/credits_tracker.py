@@ -254,10 +254,7 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     try:
         from hermes_cli.models import _is_model_free, peek_cached_pricing
 
-        # The agent's Nous base_url is /v1-suffixed
-        # (https://inference-api.nousresearch.com/v1) but the catalog fetchers
-        # key on the pre-/v1 root, and on auth state besides; peek_cached_pricing
-        # owns both details.
+        # peek_cached_pricing owns the /v1-suffix and auth-state key details.
         pricing = peek_cached_pricing(base_url)
         if not pricing:
             return False

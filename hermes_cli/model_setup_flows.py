@@ -559,9 +559,8 @@ def _model_flow_nous(config, current_model="", args=None):
             model_ids, pricing, _nous_portal_url,
         )
 
-    # The curated list and the Portal's recommendations are both
-    # unauthenticated, so neither knows what the org may reach. Narrow both
-    # lists to the policy before they are shown.
+    # Neither the curated list nor the Portal's recommendations know what the
+    # org may reach.
     from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
 
     _policy_allowed = nous_policy_allowed_ids()

@@ -7517,9 +7517,8 @@ def get_recommended_default_model(provider: str = ""):
                     model_ids, pricing, portal_url
                 )
 
-            # Neither the curated list nor the Portal's recommendations know
-            # what the org may reach, and this endpoint picks the model a user
-            # lands on without choosing it.
+            # This endpoint picks the model a user lands on without choosing
+            # it, so an unreachable one here is worse than in a picker.
             model_ids = restrict_to_nous_policy(
                 model_ids, nous_policy_allowed_ids(), rescue_empty=True,
             )

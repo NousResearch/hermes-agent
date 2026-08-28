@@ -2255,18 +2255,16 @@ def _cache_catalog(
     return result
 
 
-# A governed endpoint answers an authenticated read with a policy-filtered
-# catalog and an anonymous read with the full one, so auth state is part of the
-# cache identity. NUL cannot appear in a URL, so the suffix cannot collide with
-# a base URL that happens to end this way.
+# NUL cannot appear in a URL, so this cannot collide with a real base URL.
 _PRICING_AUTH_KEY_SUFFIX = "\x00auth"
 
 
 def _pricing_cache_key(url_root: str, api_key: str | None) -> str:
-    """The ``_pricing_cache`` key for a read of *url_root*.
+    """Cache key for a read of *url_root*.
 
-    Only *whether* a key was supplied participates — never its value, so no
-    secret reaches the cache key.
+    A governed endpoint answers an authenticated read with a policy-filtered
+    catalog and an anonymous one with the full catalog, so the two cannot share
+    an entry. Only whether a key was supplied participates, never its value.
     """
     return url_root + _PRICING_AUTH_KEY_SUFFIX if api_key else url_root
 
@@ -2274,9 +2272,8 @@ def _pricing_cache_key(url_root: str, api_key: str | None) -> str:
 def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:
     """Pricing already cached for *base_url*, or ``{}``. Never fetches.
 
-    Accepts a ``/v1``-suffixed URL as well as the pre-``/v1`` root the
-    catalog fetchers key on. Prefers the authenticated catalog, which is the
-    one scoped to the caller's org.
+    Accepts a ``/v1``-suffixed URL as well as the pre-``/v1`` root the fetchers
+    key on, and prefers the authenticated catalog.
     """
     root = (base_url or "").rstrip("/")
     if root.endswith("/v1"):
@@ -2607,23 +2604,13 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
 def nous_policy_allowed_ids(*, force_refresh: bool = False) -> Optional[set[str]]:
     """The Nous model ids the caller's org may reach, or ``None`` to not filter.
 
-    The gateway filters ``GET /v1/models`` by the org's model policy for an
-    authenticated read, omitting blocked rows with no marker field, so the keys
-    of the authenticated pricing response are the reachable set. This reuses
-    that response rather than issuing a second round trip.
+    The gateway omits policy-blocked rows from an authenticated
+    ``GET /v1/models``, so that response's keys are the reachable set.
 
-    Returns ``None`` — meaning "leave the caller's list alone" — in three cases,
-    each of which would otherwise narrow a list on evidence that cannot support
-    it:
-
-    * the org carries no policy, or the token is too old to say (see
-      :func:`~hermes_cli.nous_account.nous_policy_present`). Filtering an
-      unrestricted org's list buys nothing and risks dropping a model the
-      Portal recommends before the gateway catalog lists it.
-    * credential resolution failed, so the read is anonymous and therefore
-      unfiltered. A full catalog must not be mistaken for a policy-filtered one.
-    * the read came back empty, which is a fetch failure rather than an org
-      that may reach nothing.
+    ``None`` means "leave the caller's list alone", for the three states that
+    cannot support narrowing one: no policy (or a token too old to say), an
+    anonymous read whose catalog is unfiltered, and an empty read, which is a
+    fetch failure rather than an org that may reach nothing.
     """
     try:
         from hermes_cli.nous_account import nous_policy_present
@@ -2638,8 +2625,8 @@ def nous_policy_allowed_ids(*, force_refresh: bool = False) -> Optional[set[str]
         return None
 
     # Same arguments as get_pricing_for_provider's nous branch, so a caller
-    # that also asks for pricing shares this cache entry instead of paying for
-    # a second request.
+    # asking for pricing too shares this entry instead of paying for a second
+    # request.
     pricing = fetch_models_with_pricing(
         api_key=api_key,
         base_url=base_url,
@@ -2649,10 +2636,8 @@ def nous_policy_allowed_ids(*, force_refresh: bool = False) -> Optional[set[str]
     return set(pricing) or None
 
 
-# Above this many reachable models, an allowed set is treated as catalog-wide
-# rather than as an allowlist worth showing in place of an empty picker. NAS
-# caps an allowlist at 512, but a set this large is indistinguishable from the
-# full catalog for display purposes.
+# Past this size an allowed set reads as a whole catalog rather than an
+# allowlist, and is not worth showing in place of an empty picker.
 _NOUS_POLICY_APPEND_MAX = 64
 
 
@@ -2664,14 +2649,12 @@ def restrict_to_nous_policy(
 ) -> list[str]:
     """*model_ids* narrowed to *allowed*, preserving the caller's order.
 
-    A ``None`` or empty *allowed* leaves the list untouched — see
-    :func:`nous_policy_allowed_ids` for when that happens.
+    A ``None`` or empty *allowed* leaves the list untouched.
 
-    A ``:free`` sibling is kept when its base model is reachable. The gateway
-    admits a row when any of its requestable ids passes, and treats anything
-    unknown as a keep on the grounds that over-listing costs a 403 from the
-    authoritative gate while hiding a row the gate would serve is unrecoverable
-    from the client. This mirrors that.
+    A ``:free`` sibling is kept when its base model is reachable, mirroring the
+    gateway, which admits a row when any of its requestable ids passes. Prefer
+    over-listing: that costs a 403 from the authoritative gate, while hiding a
+    row the gate would serve is unrecoverable from the client.
     """
     if not allowed:
         return list(model_ids)
@@ -2681,19 +2664,10 @@ def restrict_to_nous_policy(
         if mid in allowed or mid.split(":", 1)[0] in allowed
     ]
 
-    # An allowlist can admit only models the curated manifest has never heard
-    # of, leaving nothing to intersect and an empty picker — strictly worse than
-    # the unfiltered list, because the models the org may actually use are the
-    # ones dropped. *rescue_empty* falls back to the reachable set in exactly
-    # that case, and callers opt in per list: it is meaningful for the list a
-    # user picks from, and wrong for any list whose emptiness carries meaning.
-    # An unavailable/gated list is legitimately empty, and rescuing it would
-    # read that as "nothing survived" and fill it with the whole reachable set.
-    #
-    # Bounded, because a jurisdiction or provider policy narrows the catalog
-    # without shrinking it to an allowlist, and a large alphabetical dump buries
-    # the curated order the pickers show on purpose. Anything omitted stays
-    # reachable through the picker's custom-model entry.
+    # An allowlist can name only models the curated manifest lacks, leaving an
+    # empty picker — worse than no filter, since the models the org may use are
+    # the ones dropped. Opt-in per list: an already-empty list (a paid tier's
+    # gated models) means "nothing to gate", not "nothing survived".
     if rescue_empty and not kept and len(allowed) <= _NOUS_POLICY_APPEND_MAX:
         return sorted(allowed)
     return kept

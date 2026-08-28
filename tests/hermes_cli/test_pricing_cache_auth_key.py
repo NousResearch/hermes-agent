@@ -1,10 +1,8 @@
 """``_pricing_cache`` keys on auth state, not just the base URL.
 
-A governed endpoint (Nous ``/v1/models`` filtered by an org's model policy)
-answers an authenticated read with a narrower catalog than an anonymous one.
-Keyed on the base URL alone, whichever read landed first in a process answered
-every later one — so an authenticated caller could be handed the full,
-unfiltered catalog without a request going out.
+Nous ``/v1/models`` answers an authenticated read with a policy-filtered
+catalog and an anonymous one with the full catalog, so the two must not share
+a cache entry.
 """
 
 from __future__ import annotations
@@ -60,8 +58,6 @@ def catalog(monkeypatch):
 
 
 def test_authenticated_read_is_not_answered_by_an_anonymous_one(catalog):
-    """The bug: an anonymous read landing first must not answer the next
-    authenticated read out of cache."""
     anon = fetch_models_with_pricing(api_key="", base_url=BASE)
     authed = fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
 
@@ -72,7 +68,6 @@ def test_authenticated_read_is_not_answered_by_an_anonymous_one(catalog):
 
 
 def test_anonymous_read_is_not_answered_by_an_authenticated_one(catalog):
-    """And the reverse direction, so neither entry can shadow the other."""
     authed = fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
     anon = fetch_models_with_pricing(api_key="", base_url=BASE)
 
@@ -108,12 +103,11 @@ class TestPeekCachedPricing:
         assert peek_cached_pricing(BASE) == {}
 
     def test_accepts_a_v1_suffixed_url(self, catalog):
-        """The agent holds a /v1-suffixed base URL; the fetchers key on the root."""
+        """The agent holds a /v1-suffixed base URL; fetchers key on the root."""
         fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
         assert sorted(peek_cached_pricing(BASE + "/v1")) == sorted(_FILTERED)
 
     def test_prefers_the_authenticated_catalog(self, catalog):
-        """It is the one scoped to the caller's org."""
         fetch_models_with_pricing(api_key="", base_url=BASE)
         fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
         assert sorted(peek_cached_pricing(BASE)) == sorted(_FILTERED)

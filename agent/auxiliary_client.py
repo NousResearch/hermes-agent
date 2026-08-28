@@ -885,10 +885,9 @@ def _fast_model_from_catalog(provider_id: str) -> str:
             logger.debug("No credentials for %s catalog", provider_id, exc_info=True)
 
         if not api_key and provider_id.strip().lower() == "nous":
-            # Nous is OAuth, so the api-key resolver above raises for it. An
-            # anonymous read returns the full catalog rather than the one the
-            # org may reach, and a model picked from it is refused at request
-            # time with model_blocked_by_org_policy.
+            # Nous is OAuth, so the resolver above raises for it. An anonymous
+            # read returns the full catalog, and a model picked from it is
+            # refused at request time by the org's policy.
             try:
                 from hermes_cli.models import _resolve_nous_pricing_credentials
 
@@ -913,8 +912,8 @@ def _fast_model_from_catalog(provider_id: str) -> str:
 
     ids = sorted((str(m) for m in catalog), key=_model_recency_key, reverse=True)
     if provider_id.strip().lower() == "nous":
-        # The catalog's keys are a source of ids here, so the policy has to
-        # narrow them the same way it narrows the pickers' lists.
+        # The catalog's keys are a source of ids here, so the policy narrows
+        # them as it does the pickers' lists.
         try:
             from hermes_cli.models import (
                 nous_policy_allowed_ids,

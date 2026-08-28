@@ -1,9 +1,7 @@
 """Every Nous model list is narrowed to the org's policy before it is shown.
 
-Four surfaces build a Nous list from the curated manifest unioned with the
-Portal's ``recommended-models`` endpoint. Neither source is authenticated, so
-without this filter an org's hidden model is offered to the user and then
-refused at request time with ``model_blocked_by_org_policy``.
+Four surfaces build their list from the curated manifest unioned with the
+Portal's ``recommended-models`` endpoint; neither source is authenticated.
 """
 
 from __future__ import annotations
@@ -32,7 +30,6 @@ def no_policy(monkeypatch):
 
 
 class TestLoginNous:
-    """``_login_nous`` — the model picked at login is the model then used."""
 
     def _run(self, monkeypatch, tmp_path):
         import hermes_cli.auth as auth_mod
@@ -119,8 +116,7 @@ class TestModelSwitchPicker:
         assert set(CURATED) <= set(row["models"])
 
     def test_filter_survives_a_failed_recommendation_fetch(self, monkeypatch, policy):
-        """The filter sits outside the try that wraps the Portal union, so a
-        Portal outage still yields a policy-filtered curated list."""
+        """The filter sits outside the try wrapping the Portal union."""
 
         def _boom(_p):
             raise RuntimeError("portal down")
@@ -132,8 +128,7 @@ class TestModelSwitchPicker:
 
 
 class TestRecommendedDefaultEndpoint:
-    """``GET /api/model/recommended-default`` picks a model the user never sees
-    chosen, so an unreachable one there is worse than in a picker."""
+    """This endpoint picks a model the user never sees chosen."""
 
     def _call(self, monkeypatch):
         import hermes_cli.auth as auth_mod
@@ -163,8 +158,7 @@ class TestRecommendedDefaultEndpoint:
 
 
 class TestAuxiliaryFastModel:
-    """``_fast_model_from_catalog`` treats the catalog's keys as a source of
-    ids, so an anonymous read there can select a model the gateway refuses."""
+    """``_fast_model_from_catalog`` uses the catalog's keys as a source of ids."""
 
     def _pick(self, monkeypatch, *, catalog):
         import agent.auxiliary_client as aux
@@ -184,8 +178,7 @@ class TestAuxiliaryFastModel:
         return picked, seen
 
     def test_reads_the_catalog_with_nous_oauth_credentials(self, monkeypatch, no_policy):
-        """The api-key resolver raises for OAuth providers; without a fallback
-        the read goes out anonymous and returns the unfiltered catalog."""
+        """The api-key resolver raises for OAuth providers."""
         _, seen = self._pick(monkeypatch, catalog=["vendor/haiku-fast"])
         assert seen["api_key"] == "sk-nous"
 
@@ -204,8 +197,8 @@ class TestAuxiliaryFastModel:
 
 
 class TestNousPrefetch:
-    """The nous disk-cache entry is write-only: its picker branch builds from
-    the curated list, so prefetching it is a round trip for nothing."""
+    """The nous disk-cache entry is write-only, so prefetching it is a round
+    trip for nothing."""
 
     def test_nous_is_not_collected_for_prefetch(self, monkeypatch):
         import hermes_cli.auth as auth_mod
@@ -220,7 +213,6 @@ class TestNousPrefetch:
 
 
 class TestPolicyNoticeIsShown:
-    """The notice reaches the two flows where a user picks a model."""
 
     def test_login_prints_it(self, monkeypatch, tmp_path, policy, capsys):
         import hermes_cli.nous_account as account_mod

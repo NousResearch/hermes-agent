@@ -99,7 +99,6 @@ class NousPortalAccountInfo:
     subscription: Optional[NousPortalSubscriptionInfo] = None
     paid_service_access: Optional[bool] = None
     paid_service_access_info: Optional[NousPaidServiceAccessInfo] = None
-    policy_present: Optional[bool] = None
     tool_access: Optional[NousToolAccessInfo] = None
     raw_claims: Optional[dict[str, Any]] = None
     raw_account: Optional[dict[str, Any]] = None
@@ -400,17 +399,12 @@ def get_nous_portal_account_info(
 def nous_policy_present() -> Optional[bool]:
     """Whether the caller's org carries a restrictive model/provider policy.
 
-    Read from the ``policy_present`` claim on the Nous OAuth access token, so
-    this costs no request. ``/api/oauth/account`` does not carry the claim,
-    which is why this reads the token directly rather than going through
-    :func:`get_nous_portal_account_info`.
+    Reads the ``policy_present`` claim off the access token, so it costs no
+    request; ``/api/oauth/account`` does not carry it. Stamped at mint time, so
+    it goes stale until the next token refresh.
 
-    ``None`` means unknown — an older mint, an unreadable token, or a
-    non-boolean claim. Unknown is NOT "no policy": callers must not report the
-    absence of the claim as the absence of a restriction.
-
-    The claim is stamped at mint time, so it goes stale until the next token
-    refresh.
+    ``None`` is unknown — an older mint or an unreadable claim — and must not be
+    reported as the absence of a policy.
     """
     try:
         from hermes_cli.auth import get_provider_auth_state, _decode_jwt_claims
@@ -430,15 +424,9 @@ def nous_policy_present() -> Optional[bool]:
 def nous_policy_notice() -> str:
     """A one-line notice for an org that restricts model choice, else ``""``.
 
-    Under the gateway's policy filter a blocked model is omitted rather than
-    marked, which reads as "Hermes does not support this" instead of "your org
-    disallows it". This says which it is without enumerating anything: model
-    policy is an allowlist, so an org that admits a handful of models blocks
-    the whole rest of the catalog, and listing those would be a worse UI than
-    omitting them.
-
-    Silent unless the claim is explicitly true — absent means an older mint,
-    not an unrestricted org.
+    A blocked model is omitted rather than marked, which reads as "Hermes does
+    not support this". This says which it is without enumerating the blocked
+    set, which under an allowlist is most of the catalog.
     """
     if nous_policy_present() is not True:
         return ""
@@ -694,7 +682,6 @@ def _info_from_valid_jwt(
         expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
         paid_service_access=paid_access,
         paid_service_access_info=access_info,
-        policy_present=_coerce_bool(claims.get("policy_present")),
         tool_access=_tool_access_from_value(claims.get("tool_access")),
         raw_claims=dict(claims),
     )

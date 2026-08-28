@@ -1,10 +1,7 @@
 """Narrowing the Nous model lists to an org's policy.
 
-The inference gateway omits policy-blocked rows from an authenticated
-``GET /v1/models`` with no marker field, so the keys of the authenticated
-catalog read are the reachable set. These helpers turn that into a filter the
-pickers can apply without a second round trip, and — just as importantly —
-decline to filter when the evidence cannot support it.
+The gateway omits policy-blocked rows from an authenticated ``GET /v1/models``,
+so that response's keys are the reachable set.
 """
 
 from __future__ import annotations
@@ -44,15 +41,12 @@ class TestRestrictToNousPolicy:
         ) == ["a/one", "c/three"]
 
     def test_preserves_curated_order(self):
-        """The pickers show a curated order deliberately; filtering must not
-        reorder it into the catalog's alphabetical order."""
         curated = ["z/last", "a/first", "m/middle"]
         allowed = {"a/first", "m/middle", "z/last"}
         assert restrict_to_nous_policy(curated, allowed) == curated
 
     def test_keeps_a_free_sibling_when_its_base_is_reachable(self):
-        """Portal free recommendations are ``:free`` ids; the gateway admits a
-        row when any of its requestable ids passes."""
+        """Portal free recommendations are ``:free`` ids."""
         assert restrict_to_nous_policy(["vendor/model:free"], {"vendor/model"}) == [
             "vendor/model:free"
         ]
@@ -115,8 +109,7 @@ class TestNousPolicyAllowedIds:
         assert calls == []
 
     def test_declines_to_filter_on_an_anonymous_read(self, monkeypatch):
-        """An anonymous read returns the full catalog; treating it as the
-        policy-filtered set would silently widen the list to everything."""
+        """An anonymous read returns the full, unfiltered catalog."""
         self._patch(monkeypatch, policy_present=True, api_key="", pricing={"a/one": {}})
         assert nous_policy_allowed_ids() is None
 
@@ -146,7 +139,6 @@ class TestNousPolicyPresent:
         assert nous_policy_present() is None
 
     def test_non_boolean_claim_is_unknown(self, monkeypatch):
-        """The gateway refuses to read a corrupt claim as "no policy"."""
         self._patch_token(monkeypatch, _jwt({"policy_present": "yes"}))
         assert nous_policy_present() is None
 
@@ -160,8 +152,6 @@ class TestNousPolicyPresent:
 
 
 class TestNousPolicyNotice:
-    """A governed org is told its choice is restricted, rather than left to
-    read an omitted model as one Hermes does not support."""
 
     def _patch(self, monkeypatch, present):
         monkeypatch.setattr(account_mod, "nous_policy_present", lambda: present)
@@ -172,14 +162,12 @@ class TestNousPolicyNotice:
 
     @pytest.mark.parametrize("present", [False, None])
     def test_silent_otherwise(self, monkeypatch, present):
-        """Absent is an older mint, not an unrestricted org — either way there
-        is nothing truthful to say."""
+        """Absent is an older mint, not an unrestricted org."""
         self._patch(monkeypatch, present)
         assert account_mod.nous_policy_notice() == ""
 
     def test_names_no_models(self, monkeypatch):
-        """Policy is an allowlist, so the blocked set is most of the catalog;
-        the notice must not try to enumerate it."""
+        """The blocked set is most of the catalog under an allowlist."""
         self._patch(monkeypatch, True)
         notice = account_mod.nous_policy_notice()
         assert "/" not in notice, f"looks like it names a model: {notice}"
@@ -187,12 +175,8 @@ class TestNousPolicyNotice:
 
 
 class TestAllowlistOutsideTheCuratedList:
-    """An allowlist can name a model the curated manifest has never heard of.
-
-    Intersecting alone leaves the picker empty in that case — strictly worse
-    than showing an unfiltered list, because the one model the org may use is
-    the one that got dropped.
-    """
+    """An allowlist can name only models the curated manifest lacks, which
+    intersecting alone turns into an empty picker."""
 
     def test_surfaces_an_allowed_model_the_curated_list_lacks(self):
         assert restrict_to_nous_policy(
@@ -200,9 +184,6 @@ class TestAllowlistOutsideTheCuratedList:
         ) == ["amazon/nova-2-lite-v1"]
 
     def test_does_not_append_when_the_curated_overlap_is_non_empty(self):
-        """A jurisdiction or provider policy narrows the catalog without
-        emptying the curated overlap. Appending its remainder would push
-        non-curated alphabetical ids into a deliberately curated order."""
         kept = restrict_to_nous_policy(
             ["z/curated", "a/curated"],
             {"z/curated", "a/curated", "new/model"},
@@ -211,8 +192,8 @@ class TestAllowlistOutsideTheCuratedList:
         assert kept == ["z/curated", "a/curated"]
 
     def test_jurisdiction_policy_never_grows_the_list(self):
-        """Regression: a region filter leaves few enough models to slip under
-        the size cap, so a size-only guard let it append."""
+        """A region filter can slip under the size cap, so the cap alone is not
+        enough of a guard."""
         curated = ["vendor/one", "vendor/two", "vendor/three"]
         reachable = {"vendor/one", "vendor/two"} | {f"cn/model-{i}" for i in range(20)}
         assert restrict_to_nous_policy(curated, reachable, rescue_empty=True) == [
@@ -226,16 +207,13 @@ class TestAllowlistOutsideTheCuratedList:
         ) == ["vendor/m:free"]
 
     def test_a_provider_only_policy_does_not_bury_the_curated_order(self):
-        """Such a policy leaves the whole catalog reachable; appending it would
-        drop hundreds of alphabetical ids into the picker."""
         curated = ["vendor/one", "vendor/two"]
         catalog = {f"vendor/model-{i}" for i in range(300)} | set(curated)
         assert restrict_to_nous_policy(curated, catalog, rescue_empty=True) == curated
 
 
 class TestRescueIsOptIn:
-    """The empty-intersection rescue is meaningful only for the list a user
-    picks from. Any list whose emptiness carries meaning must not get it."""
+    """The rescue is meaningful only for the list a user picks from."""
 
     def test_no_rescue_by_default(self):
         assert restrict_to_nous_policy([], {"a/one", "b/two"}) == []
@@ -246,15 +224,10 @@ class TestRescueIsOptIn:
         ) == ["a/one"]
 
     def test_an_already_empty_unavailable_list_is_never_filled(self):
-        """Regression: a paid-tier user has no gated models, so the
-        unavailable list is legitimately empty. Rescuing it read that as
-        "nothing survived" and pushed the whole reachable set into the picker's
-        unavailable block."""
+        """A paid tier has no gated models, so this list is legitimately
+        empty — not a filter result to rescue."""
         reachable = {f"cn/model-{i}" for i in range(42)}
         assert restrict_to_nous_policy([], reachable) == []
 
     def test_rescue_does_not_resurrect_a_fully_blocked_list(self):
-        """A list whose every entry was blocked is a real filter result, not a
-        signal to show something else — unless the caller asked for the
-        rescue, which only the selectable list does."""
         assert restrict_to_nous_policy(["x/blocked"], {"y/allowed"}) == []

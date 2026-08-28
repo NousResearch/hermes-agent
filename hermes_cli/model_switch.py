@@ -2565,11 +2565,9 @@ def _collect_authed_provider_slugs(
             slugs.append(_cp.slug)
             seen.add(_cp.slug.lower())
 
-    # Nous is deliberately excluded. Its picker branch builds from the curated
-    # list rather than cached_provider_model_ids, and nous cannot reach the
-    # api_key-only unified pathway, so a prefetched entry is written and never
-    # read — a live authenticated /v1/models round trip per picker open for
-    # nothing.
+    # Nous excluded: its picker branch builds from the curated list and it
+    # cannot reach the api_key-only pathway, so a prefetched entry is written
+    # and never read.
     return [s for s in slugs if s != "nous"]
 
 
@@ -3101,10 +3099,8 @@ def list_authenticated_providers(
                 # curated list alone (still correct, just may lag newly
                 # launched models, exactly like an offline CLI run).
                 pass
-            # Both the curated list and the Portal's recommendations are
-            # unauthenticated, so neither knows what the org may reach. Narrow
-            # to the policy outside the try, so a failed recommendation fetch
-            # still yields a filtered curated list.
+            # Outside the try above, so a failed recommendation fetch still
+            # yields a policy-filtered curated list.
             try:
                 from hermes_cli.models import (
                     nous_policy_allowed_ids as _nous_policy,

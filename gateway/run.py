@@ -14072,6 +14072,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # parameter, and a keyword call would TypeError into the
                 # failure branch — turning a passing suite into a silent
                 # no-op watcher. Arity is probed above.
+                #
+                # INVARIANT (do not weaken): this task is created inside
+                # ``_profile_runtime_scope(profile_home)`` but typically RUNS
+                # after the scope exits. It still sees the profile's home and
+                # secret scope only because ``set_hermes_home_override`` and
+                # ``set_secret_scope`` are ContextVar-based — ensure_future
+                # copies the current Context into the Task. If either seam is
+                # ever migrated to a thread-local or module global, secondary-
+                # profile handoffs silently regress to primary-config delivery
+                # (the exact bug fixed in #91217) while still recording
+                # handoff_state='completed'.
                 inflight[session_id] = asyncio.ensure_future(
                     _dispatch(row, session_id, session_db, profile_name)
                 )

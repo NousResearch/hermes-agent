@@ -15247,6 +15247,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         try:
             return self._execute_write(_do) or []
         except Exception:
+            # Swallow but never silently: a persistently failing reclaim
+            # leaves poisonous 'running' rows in place (sessions that can
+            # never hand off again), so the operator needs a trace of it.
+            logger.warning(
+                "reclaim_stale_running_handoffs failed; stranded 'running' "
+                "handoff rows (if any) were left in place", exc_info=True,
+            )
             return []
 
 

@@ -31,7 +31,7 @@ alibaba_cn = ProviderProfile(
     aliases=("dashscope-cn", "alibaba-cloud-cn"),
     display_name="Alibaba Cloud DashScope (China)",
     description="Alibaba Cloud DashScope, mainland-China endpoint",
-    env_vars=("DASHSCOPE_API_KEY",),
+    env_vars=("DASHSCOPE_API_KEY", "DASHSCOPE_CN_BASE_URL"),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
 )
 

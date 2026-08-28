@@ -273,6 +273,7 @@ class TestAlibabaRegionalAndTokenPlanProfiles:
         assert p is not None and p.name == "alibaba-cn"
         assert p.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
         assert "DASHSCOPE_API_KEY" in p.env_vars
+        assert "DASHSCOPE_CN_BASE_URL" in p.env_vars
 
     def test_alibaba_coding_plan_cn_registered(self):
         p = get_provider_profile("alibaba-coding-plan-cn")

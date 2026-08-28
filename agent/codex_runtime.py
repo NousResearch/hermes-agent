@@ -307,6 +307,10 @@ def _record_codex_app_server_compaction(
             compressor.last_completion_tokens = 0
             compressor.awaiting_real_usage_after_compression = True
 
+    # Native compaction rewrote the provider-side context; the usage anchor's
+    # transcript snapshot no longer matches what will be sent. Invalidate it.
+    agent._usage_anchor = None
+
     agent._last_compaction_in_place = False
     try:
         if getattr(agent, "event_callback", None):

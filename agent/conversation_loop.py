@@ -72,6 +72,8 @@ _STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     _estimate_tools_tokens_rough,
+    anchored_context_tokens,
+    capture_usage_anchor,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
@@ -2593,6 +2595,18 @@ def run_conversation(
         request_pressure_tokens = approx_tokens + (
             _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
         )
+        # Usage-anchored override: when the last provider response's exact
+        # usage is still valid for the durable transcript, replace the
+        # whole-history heuristic with anchor + delta-estimate. The anchor's
+        # prompt_tokens already includes system prompt AND tool schemas as
+        # the provider counted them, so no tools add-on is needed. Falls
+        # back to the rough figures above when the anchor is stale/missing
+        # (first request, post-compaction, usage-less providers).
+        _anchored_pressure = anchored_context_tokens(
+            messages, getattr(agent, "_usage_anchor", None)
+        )
+        if _anchored_pressure is not None:
+            request_pressure_tokens = _anchored_pressure
         total_chars = approx_tokens * 4
         # Stash this request's rough estimate so update_from_response() can
         # pair it with the provider's real prompt count — the (rough, real)
@@ -4185,6 +4199,25 @@ def run_conversation(
                         )
                     )
                     agent.context_compressor.update_from_response(usage_dict)
+                    # Usage-anchored context accounting: snapshot this
+                    # response's exact provider-reported usage against the
+                    # durable transcript. Later context-size checks anchor on
+                    # this and estimate only the messages appended since,
+                    # instead of re-estimating the whole history with
+                    # heuristics. Main-loop responses ONLY — MoA advisor and
+                    # auxiliary calls never reach this site, so they cannot
+                    # pollute the anchor. A usage-less response leaves the
+                    # previous anchor in place (still valid for its base).
+                    # MoA note: use the pre-fold aggregator usage — the folded
+                    # canonical figure adds advisor fan-out tokens that were
+                    # never part of THIS conversation's prompt.
+                    _new_anchor = capture_usage_anchor(
+                        aggregator_usage.prompt_tokens,
+                        aggregator_usage.output_tokens,
+                        messages,
+                    )
+                    if _new_anchor is not None:
+                        agent._usage_anchor = _new_anchor
                     _compression_threshold = int(
                         getattr(agent.context_compressor, "threshold_tokens", 0)
                         or 0

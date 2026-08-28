@@ -339,6 +339,7 @@ export function TreeGroup({
   // the keystroke and the screen always agree about which way "toggle" points.
   const stripVisible = tabStripVisibleForZone({
     active: activeId,
+    hasCloser: id => panesWithCloser.has(id),
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,

@@ -769,6 +769,7 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
 
   return tabStripVisibleForZone({
     active: group.active,
+    hasCloser: id => Boolean(paneClosers[id]),
     isCollapsePane,
     mode: group.tabStrip,
     paneFor: (id: string) => registered.find(c => c.id === id),

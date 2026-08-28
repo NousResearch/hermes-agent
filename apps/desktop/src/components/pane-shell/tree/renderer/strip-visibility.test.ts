@@ -10,6 +10,28 @@ const workspace = (): StripPane => ({ collapsePane: false, placement: 'main', un
 const toolPanel = (): StripPane => ({ collapsePane: true, placement: 'bottom' })
 const sideChrome = (): StripPane => ({ collapsePane: false, placement: 'right' })
 
+const pluginSidePane = (): StripPane => ({
+  collapsePane: false,
+  placement: 'right',
+  source: 'plugin:custom-plugin'
+})
+
+// Bots is hide-only AND plugin-registered — the plugin stranding rung must
+// not claim it, or `never` becomes a silent no-op again (960dee7fe).
+const hideOnlyPluginPane = (): StripPane => ({
+  collapsePane: false,
+  hideOnly: true,
+  placement: 'left',
+  source: 'plugin:hermes-bots'
+})
+
+const closableWorkspace = (): StripPane => ({
+  collapsePane: false,
+  hasCloser: true,
+  placement: 'main',
+  uncloseable: true
+})
+
 describe('auto (no stored choice)', () => {
   it('gives a lone workspace no strip and a stack of two a strip', () => {
     expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(false)
@@ -44,10 +66,25 @@ describe('no dead zone', () => {
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel()] })).toBe(true)
   })
 
+  it('keeps the host-owned Close surface for a lone runtime-plugin side pane', () => {
+    expect(resolveTabStripVisible({ mode: 'never', shown: [pluginSidePane()] })).toBe(true)
+  })
+
+  it('does not let the plugin rung claim hide-only plugin chrome (Bots)', () => {
+    // 960dee7fe: hide-only chrome is not stranded — never works, ⌘⌥T
+    // recovers. The plugin-provenance rung must respect the hideOnly guard.
+    expect(resolveTabStripVisible({ mode: 'never', shown: [hideOnlyPluginPane()] })).toBe(false)
+  })
+
+  it('keeps a main tab whose app-owned closer overrides structural uncloseability', () => {
+    expect(resolveTabStripVisible({ mode: 'never', shown: [closableWorkspace()] })).toBe(true)
+  })
+
   it('still hides a zone that cannot strand anything', () => {
-    // The workspace is uncloseable, a stack is reachable by tab cycling, and
-    // hide-only chrome (sessions / Bots) keeps its panes + ⌘⌥T — the invariant
-    // protects handles, it does not veto hiding as such.
+    // The workspace is uncloseable (without an app-owned closer), a stack is
+    // reachable by tab cycling, and hide-only chrome (sessions / Bots) keeps
+    // its panes + ⌘⌥T — the invariant protects handles, it does not veto
+    // hiding as such.
     expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel(), toolPanel()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome()] })).toBe(false)
@@ -104,6 +141,7 @@ describe('tabStripVisibleForZone', () => {
   const visible = (shown: string[], mode?: 'always' | 'never') =>
     tabStripVisibleForZone({
       active: shown[0],
+      hasCloser: () => false,
       isCollapsePane: id => id === 'terminal',
       mode,
       paneFor: id => contributions[id],

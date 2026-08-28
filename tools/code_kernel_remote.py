@@ -219,6 +219,44 @@ def shutdown_remote_kernels_for_owner(owner: str) -> None:
         _kill(kernel)
 
 
+def _reap_unlocked(idle_timeout: int) -> List["RemoteKernel"]:
+    """Pop idle-expired remote kernels; caller tears them down outside the lock.
+
+    Mirrors tools.code_kernel._reap_unlocked. The remote runner itself
+    self-exits after the same idle window (REMOTE_KERNEL_RUNNER_SOURCE's
+    IDLE_EXIT_SECONDS), so this only needs to clear the HOST-side
+    bookkeeping entry — without it, _REMOTE_KERNELS grows one entry per
+    distinct (owner, env_type, task_env_id) that is never revisited, for
+    the life of the gateway process.
+    """
+    now = time.monotonic()
+    doomed = [
+        key
+        for key, kernel in _REMOTE_KERNELS.items()
+        if now - kernel.last_used > idle_timeout
+    ]
+    return [_REMOTE_KERNELS.pop(key) for key in doomed]
+
+
+def _evict_over_cap_unlocked(keep: Tuple) -> List["RemoteKernel"]:
+    """Pop least-recently-used remote kernels beyond the process-wide cap.
+
+    Mirrors tools.code_kernel._evict_over_cap_unlocked, reusing the same
+    max_session_kernels config as an independent bound on _REMOTE_KERNELS.
+    """
+    from tools.code_kernel import _lifecycle_limits
+
+    cap, _ = _lifecycle_limits()
+    if len(_REMOTE_KERNELS) <= cap:
+        return []
+    by_age = sorted(
+        (key for key in _REMOTE_KERNELS if key != keep),
+        key=lambda key: _REMOTE_KERNELS[key].last_used,
+    )
+    doomed = by_age[: len(_REMOTE_KERNELS) - cap]
+    return [_REMOTE_KERNELS.pop(key) for key in doomed]
+
+
 atexit.register(shutdown_all_remote_kernels)
 
 
@@ -329,7 +367,10 @@ def execute_in_remote_kernel(
     state_reset = False
 
     with _REMOTE_KERNELS_LOCK:
+        expired = _reap_unlocked(idle_exit)
         kernel = _REMOTE_KERNELS.get(key)
+    for doomed in expired:
+        _kill(doomed)
 
     if kernel is not None and reset:
         with _REMOTE_KERNELS_LOCK:
@@ -359,6 +400,10 @@ def execute_in_remote_kernel(
             _REMOTE_KERNELS[key] = kernel
 
     kernel.last_used = time.monotonic()
+    with _REMOTE_KERNELS_LOCK:
+        evicted = _evict_over_cap_unlocked(keep=key)
+    for doomed in evicted:
+        _kill(doomed)
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells = shlex.quote(f"{kernel.kernel_dir}/cells")

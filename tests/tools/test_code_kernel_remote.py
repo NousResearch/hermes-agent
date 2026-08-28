@@ -200,6 +200,51 @@ class TestOwnershipIsolation(RemoteKernelBase):
         self.assertEqual(remaining_owner, "owner-b")
 
 
+class TestIdleReapAndCapEviction(RemoteKernelBase):
+    """Unlike local session kernels, remote kernels had no idle-reap or
+    process-wide cap: _REMOTE_KERNELS grew one entry per distinct
+    (owner, env_type, task_env_id) that was never revisited, for the life
+    of the gateway process."""
+
+    def test_idle_expired_kernel_is_reaped_on_next_call(self):
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(), _cell()]))
+        execute_in_remote_kernel(
+            "print(1)", env=env, env_type="ssh", task_env_id="stale",
+            sandbox_tools=frozenset(), timeout=10, max_tool_calls=5,
+            reset=False, idle_exit=1800,
+        )
+        self.assertEqual(len(_REMOTE_KERNELS), 1)
+        # Backdate the kernel's last_used past the idle window — simulates
+        # a key that is never revisited again.
+        for kernel in _REMOTE_KERNELS.values():
+            kernel.last_used -= 2000
+        # A call for a DIFFERENT key must reap the stale entry on entry,
+        # without ever touching or reviving it.
+        execute_in_remote_kernel(
+            "print(1)", env=env, env_type="ssh", task_env_id="fresh",
+            sandbox_tools=frozenset(), timeout=10, max_tool_calls=5,
+            reset=False, idle_exit=1800,
+        )
+        owners = {key[0] for key in _REMOTE_KERNELS}
+        self.assertNotIn("stale", owners)
+        self.assertIn("fresh", owners)
+
+    def test_over_cap_evicts_least_recently_used(self):
+        with patch("tools.code_kernel._lifecycle_limits", return_value=(2, 1800)):
+            env = ScriptedEnv(_spawn_ok_handlers([_cell() for _ in range(10)]))
+            for i in range(3):
+                execute_in_remote_kernel(
+                    "print(1)", env=env, env_type="ssh", task_env_id=f"owner-{i}",
+                    sandbox_tools=frozenset(), timeout=10, max_tool_calls=5,
+                    reset=False, idle_exit=1800,
+                )
+            self.assertEqual(len(_REMOTE_KERNELS), 2)
+            owners = {key[0] for key in _REMOTE_KERNELS}
+            self.assertNotIn("owner-0", owners)
+            self.assertIn("owner-1", owners)
+            self.assertIn("owner-2", owners)
+
+
 class TestDispatchIntegration(unittest.TestCase):
     """_execute_remote prefers the kernel and falls open to per-call."""
 

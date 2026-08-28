@@ -31,6 +31,8 @@ import platform
 import secrets
 import stat
 import subprocess
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -101,6 +103,59 @@ class CredentialPersistError(RuntimeError):
             f"failed to durably persist rotated Anthropic credentials to {path}: {cause}"
         )
         self.path = path
+
+
+# Fingerprints of Anthropic secrets whose refresh POST succeeded (so the
+# server-side pair was rotated and the old refresh token is spent) but whose
+# replacement never reached its authoritative store.  The pre-rotation pair
+# survives on disk and is re-seeded on the next ``load_pool()``, so without an
+# explicit verdict the resolver happily hands that already-consumed credential
+# back from a later source and the caller reads a silent success.
+#
+# Kept as non-reversible digests, process-local, and bounded: a spent secret is
+# spent forever, so entries never need clearing (a re-auth mints new tokens
+# with new fingerprints).
+_SPENT_ROTATION_LOCK = threading.Lock()
+_SPENT_ROTATION_FINGERPRINTS: "OrderedDict[str, None]" = OrderedDict()
+_SPENT_ROTATION_MAX_TRACKED = 64
+
+
+def mark_rotation_consumed_uncommitted(*secrets: Any) -> None:
+    """Record secrets consumed by a refresh whose replacement never committed.
+
+    Called from every commit-failure path (the direct resolver here and
+    ``CredentialPool._fail_closed_unpersisted_rotation``).  Recording the
+    *pre-rotation* pair is what lets later resolution steps recognise the stale
+    copy they read back off disk as unusable rather than as a working token.
+    """
+    from agent.credential_persistence import fingerprint_secret_value
+
+    with _SPENT_ROTATION_LOCK:
+        for secret in secrets:
+            value = str(secret or "").strip()
+            if not value:
+                continue
+            fingerprint = fingerprint_secret_value(value)
+            if not fingerprint:
+                continue
+            _SPENT_ROTATION_FINGERPRINTS.pop(fingerprint, None)
+            _SPENT_ROTATION_FINGERPRINTS[fingerprint] = None
+            while len(_SPENT_ROTATION_FINGERPRINTS) > _SPENT_ROTATION_MAX_TRACKED:
+                _SPENT_ROTATION_FINGERPRINTS.popitem(last=False)
+
+
+def is_rotation_consumed_uncommitted(secret: Any) -> bool:
+    """True when *secret* belongs to a rotation that was spent but not committed."""
+    from agent.credential_persistence import fingerprint_secret_value
+
+    value = str(secret or "").strip()
+    if not value:
+        return False
+    fingerprint = fingerprint_secret_value(value)
+    if not fingerprint:
+        return False
+    with _SPENT_ROTATION_LOCK:
+        return fingerprint in _SPENT_ROTATION_FINGERPRINTS
 
 
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
@@ -406,6 +461,16 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
                     claude_code_credentials_path(),
                     e,
                 )
+                # The POST already spent ``refresh_token`` server-side and the
+                # replacement is gone.  The pre-rotation pair is still on disk,
+                # so mark it: without this, source 5 re-reads it through the
+                # pool and returns the consumed credential as a success.
+                mark_rotation_consumed_uncommitted(
+                    refresh_token,
+                    creds.get("accessToken", ""),
+                    (current or {}).get("accessToken", ""),
+                    (current or {}).get("refreshToken", ""),
+                )
                 return None
 
             logger.debug("Successfully refreshed Claude Code OAuth token")
@@ -498,6 +563,15 @@ def _write_claude_code_credentials(
 def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Resolve a token from Claude Code credential files, refreshing if needed."""
     creds = creds or read_claude_code_credentials()
+    if creds and is_rotation_consumed_uncommitted(creds.get("accessToken", "")):
+        # This process already rotated this pair and failed to commit the
+        # replacement.  The file still holds the spent copy; treating it as
+        # usable is exactly the silent success this transaction fails closed
+        # to prevent.
+        logger.debug(
+            "Claude Code credentials hold a rotated-but-uncommitted token - refusing"
+        )
+        return None
     if creds and is_claude_code_token_valid(creds):
         logger.debug("Using Claude Code credentials (auto-detected)")
         return creds["accessToken"]
@@ -566,8 +640,22 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
         # and crash the whole resolver, taking down the source #5 fallback too.
         # Matches the aux-client analog (auxiliary_client.py: str(key or "")).
         token = (getattr(entry, "access_token", None) or "").strip()
-        if token:
-            return token
+        if not token:
+            continue
+        # ``load_pool()`` re-seeds pool rows from the singleton files, so a
+        # rotation that was consumed upstream but never committed comes back
+        # here looking healthy.  Enumeration is deliberately read-only
+        # (refresh=False), which means nothing on this path would otherwise
+        # notice that the credential is spent.
+        if is_rotation_consumed_uncommitted(token) or is_rotation_consumed_uncommitted(
+            getattr(entry, "refresh_token", None)
+        ):
+            logger.debug(
+                "Skipping Anthropic pool entry %s: rotated-but-uncommitted credential",
+                getattr(entry, "id", "?"),
+            )
+            continue
+        return token
 
     return None
 

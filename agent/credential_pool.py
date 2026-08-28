@@ -991,12 +991,25 @@ class CredentialPool:
         ``~/.claude/.credentials.json``), this re-reads the exact persisted
         row from the credential-pool store itself
         (``~/.hermes/auth.json`` / profile equivalent), so it works for
-        every Anthropic source — ``claude_code``, ``hermes_pkce``, and
+        every *pool-owned* Anthropic source - ``hermes_pkce`` and
         dashboard-issued ``manual:dashboard_pkce`` entries alike. Called
         while the shared cross-process auth-store lock is held, mirroring
         ``_sync_xai_oauth_entry_from_pool_store``.
+
+        Borrowed sources (``claude_code``) are deliberately excluded: they
+        are reference-only rows, so ``sanitize_borrowed_credential_payload``
+        strips ``access_token``/``refresh_token`` before the row reaches
+        ``auth.json``.  Re-reading such a row yields an entry whose tokens
+        are empty, which differs from the live in-memory pair and would
+        otherwise be adopted as a rotation performed by another process --
+        replacing a usable credential with a blank one, and returning
+        before the authoritative ``~/.claude/.credentials.json`` re-read
+        ever happens.  The pool store is not token authority for those
+        sources; the singleton file is.
         """
         if self.provider != "anthropic":
+            return entry
+        if is_borrowed_credential_source(entry.source, self.provider):
             return entry
         try:
             persisted = next(
@@ -1010,6 +1023,15 @@ class CredentialPool:
             if not isinstance(persisted, dict):
                 return entry
             stored = PooledCredential.from_dict(self.provider, persisted)
+            if not (stored.access_token or "").strip() and not (
+                stored.refresh_token or ""
+            ).strip():
+                # A row carrying no token material at all cannot be a
+                # rotation performed by another process; adopting it would
+                # blank the live entry.  Belt-and-braces behind the
+                # borrowed-source refusal above, for any future source that
+                # sanitizes its secrets on write.
+                return entry
             if (
                 stored.access_token != entry.access_token
                 or stored.refresh_token != entry.refresh_token
@@ -1466,11 +1488,10 @@ class CredentialPool:
                         if not force and not self._entry_needs_refresh(entry):
                             return entry
                     return self._refresh_entry_impl(entry, force=force)
-                if (
-                    synced.access_token != entry.access_token
-                    or synced.refresh_token != entry.refresh_token
-                ):
-                    return synced
+                # claude_code first: the shared credentials file - not the
+                # pool store - is this source's token authority, so the
+                # path-keyed lock and the authoritative re-read must be
+                # entered before any adopt-and-return shortcut can fire.
                 if self.provider == "anthropic" and synced.source == "claude_code":
                     # claude_code entries are NOT profile-owned: the refresh
                     # token lives in a single shared ~/.claude/.credentials.json
@@ -1492,6 +1513,11 @@ class CredentialPool:
                         if synced.refresh_token != entry.refresh_token:
                             return synced
                         return self._refresh_entry_impl(synced, force=force)
+                if (
+                    synced.access_token != entry.access_token
+                    or synced.refresh_token != entry.refresh_token
+                ):
+                    return synced
                 return self._refresh_entry_impl(synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
 
@@ -1545,6 +1571,17 @@ class CredentialPool:
             store,
             exc,
         )
+        try:
+            from agent.anthropic_credentials import mark_rotation_consumed_uncommitted
+
+            # Quarantining the row is not enough on its own: the singleton file
+            # still holds the spent pair, ``load_pool()`` re-seeds it, and the
+            # read-only resolver (``_resolve_anthropic_pool_token``) would hand
+            # it back as a working token.  Record the fingerprints so every
+            # resolution step in this process recognises it as consumed.
+            mark_rotation_consumed_uncommitted(entry.access_token, entry.refresh_token)
+        except Exception:  # pragma: no cover - never block the quarantine
+            logger.debug("Failed to record consumed rotation fingerprints", exc_info=True)
         self._mark_exhausted(
             entry,
             None,
@@ -2244,6 +2281,14 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
+            if entry.auth_type == AUTH_TYPE_OAUTH and not (
+                entry.access_token or ""
+            ).strip():
+                # A borrowed OAuth row that failed to hydrate (or a
+                # sanitized row read straight off disk) carries no access
+                # token.  The API-key guard at the top of the loop does not
+                # cover it, and leasing it would send an empty bearer.
+                continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)

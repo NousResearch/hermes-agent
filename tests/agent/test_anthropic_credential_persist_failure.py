@@ -54,6 +54,19 @@ _ROTATED_ACCESS = "sk-ant-oat01-rotated"
 _ROTATED_REFRESH = "sk-ant-ort01-rotated"
 
 
+@pytest.fixture(autouse=True)
+def _clean_spent_registry():
+    """Isolate the process-global consumed-rotation registry between tests.
+
+    Every failure injection here records the spent pair (see
+    ``mark_rotation_consumed_uncommitted``), and those fingerprints would
+    otherwise leak into unrelated tests that reuse the same token literals.
+    """
+    AA._SPENT_ROTATION_FINGERPRINTS.clear()
+    yield
+    AA._SPENT_ROTATION_FINGERPRINTS.clear()
+
+
 @pytest.fixture
 def hermes_home(tmp_path, monkeypatch):
     """Real on-disk HERMES_HOME so ``load_pool()`` re-reads what we persisted."""

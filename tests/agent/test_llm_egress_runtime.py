@@ -467,6 +467,83 @@ def test_protected_nous_keeps_unbound_kanban_output_blocked(tmp_path, monkeypatc
     assert "base64_payload" in exc_info.value.decision.reason_codes
 
 
+def test_protected_nous_redacts_generated_kanban_system_context(tmp_path, monkeypatch):
+    """Generated worker framing may be redacted, unlike user/source content."""
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_safe_projection")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "poolside/laguna-xs-2.1:free",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Hermes framing /Users/private/worktree "
+                        "c2VjcmV0LXBheWxvYWQ="
+                    ),
+                }
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][0]["content"] == (
+        "Hermes framing <private-path> <redacted-base64>"
+    )
+
+
+def test_protected_nous_keeps_generated_kanban_secrets_blocked(tmp_path, monkeypatch):
+    """Redaction never converts secrets into remote-safe text."""
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_safe_projection")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": "poolside/laguna-xs-2.1:free",
+                "messages": [
+                    {"role": "system", "content": "token=super-secret-value"}
+                ],
+            },
+        )
+
+    assert "secret_detected" in exc_info.value.decision.reason_codes
+
+
+def test_protected_nous_keeps_user_kanban_content_blocked(tmp_path, monkeypatch):
+    """The cloud framing allowance never promotes task/source input."""
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_safe_projection")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": "poolside/laguna-xs-2.1:free",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "c2VjcmV0LXBheWxvYWQ=",
+                    }
+                ],
+            },
+        )
+
+    assert "base64_payload" in exc_info.value.decision.reason_codes
+
+
 def test_protected_codex_does_not_elide_unbound_kanban_show_result(
     tmp_path, monkeypatch
 ):

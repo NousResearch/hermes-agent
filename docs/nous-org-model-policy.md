@@ -138,13 +138,17 @@ large alphabetical dump of vendor-prefixed models, and swapping it in is the
 regression `model_switch.py:3070` records.
 
 **Do not** treat the policy set as subtract-only either. An allowlist can name
-a model the curated manifest has never heard of, and intersecting alone then
-empties the picker — strictly worse than an unfiltered list, because the one
-model the org may use is the one dropped. When the reachable set is small
-enough to be a human-authored allowlist, append what it admits that the
-curated list lacks, after the curated entries so their order survives. Bound
-it by size: a provider-only policy leaves the whole catalog reachable, and
-appending that would bury the curated order.
+only models the curated manifest has never heard of, and intersecting alone
+then empties the picker — strictly worse than an unfiltered list, because the
+models the org may use are the ones dropped. Fall back to the reachable set
+itself in exactly that case.
+
+Only when the intersection is empty, and only when the set is small enough to
+be an allowlist rather than a whole catalog. A jurisdiction or provider policy
+narrows the catalog without emptying the curated overlap; appending its
+remainder pushes non-curated alphabetical ids into a picker that shows a
+curated order on purpose. A size cap alone does not catch this — a region
+filter can leave few enough models to pass it.
 
 **Do not** narrow a list on evidence that cannot support it.
 `nous_policy_allowed_ids()` returns `None` — meaning "leave the list alone" —

@@ -203,11 +203,24 @@ class TestAllowlistOutsideTheCuratedList:
             ["vendor/a", "vendor/b"], {"amazon/nova-2-lite-v1"}
         ) == ["amazon/nova-2-lite-v1"]
 
-    def test_keeps_curated_order_then_appends_the_rest(self):
+    def test_does_not_append_when_the_curated_overlap_is_non_empty(self):
+        """A jurisdiction or provider policy narrows the catalog without
+        emptying the curated overlap. Appending its remainder would push
+        non-curated alphabetical ids into a deliberately curated order."""
         kept = restrict_to_nous_policy(
             ["z/curated", "a/curated"], {"z/curated", "a/curated", "new/model"}
         )
-        assert kept == ["z/curated", "a/curated", "new/model"]
+        assert kept == ["z/curated", "a/curated"]
+
+    def test_jurisdiction_policy_never_grows_the_list(self):
+        """Regression: a region filter leaves few enough models to slip under
+        the size cap, so a size-only guard let it append."""
+        curated = ["vendor/one", "vendor/two", "vendor/three"]
+        reachable = {"vendor/one", "vendor/two"} | {f"cn/model-{i}" for i in range(20)}
+        assert restrict_to_nous_policy(curated, reachable) == [
+            "vendor/one",
+            "vendor/two",
+        ]
 
     def test_does_not_append_a_free_sibling_already_covered(self):
         assert restrict_to_nous_policy(["vendor/m:free"], {"vendor/m"}) == [

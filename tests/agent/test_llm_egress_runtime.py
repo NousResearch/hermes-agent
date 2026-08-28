@@ -537,6 +537,32 @@ def test_protected_nous_redacts_generated_cloud_system_context(tmp_path):
     assert len(receipt.payload_bytes) > 32_768
 
 
+def test_protected_nous_generated_context_allows_numeric_output_cap(tmp_path):
+    """A numeric JSON control must not be misclassified as base64 text."""
+
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "poolside/laguna-xs-2.1:free",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Generated schema example: c2VjcmV0LXBheWxvYWQ=",
+                }
+            ],
+            "max_tokens": 4096,
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["max_tokens"] == 4096
+    assert "<redacted-base64>" in authorized["messages"][0]["content"]
+
+
 def test_protected_nous_keeps_generated_cloud_secrets_blocked(tmp_path):
     """Redaction never converts secrets into remote-safe text."""
 

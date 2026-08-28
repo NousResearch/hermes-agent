@@ -1533,8 +1533,16 @@ class LLMEgressFirewall:
                 reasons.append("non_finite_number")
                 return None
             if value is None or isinstance(value, (bool, int, float)):
+                # JSON scalar controls (for example ``max_tokens=4096``) are
+                # rendered as unquoted JSON values, never caller-supplied
+                # text.  Scanning their string representation as a standalone
+                # base64 candidate turns ordinary numeric limits into false
+                # egress blocks ("4096" is a valid four-character base64
+                # alphabet member).  Keep them policy-bound and in the secret
+                # scan, but do not apply a text-payload base64 heuristic.
                 require_static_literal(
-                    json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+                    json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":")),
+                    scan_base64=False,
                 )
                 return value
             # In particular, raw strings and bytes are not remote request

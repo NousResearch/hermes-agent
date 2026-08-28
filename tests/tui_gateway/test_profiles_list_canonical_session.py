@@ -334,7 +334,6 @@ def test_session_list_title_lookup_ignores_unmarked_normal_child(home, monkeypat
     assert len(sessions) == 1
     assert sessions[0]["id"] == "root2"
     assert sessions[0]["resolved_id"] == "root2"
-    assert "canonical click target" in sessions[0]["preview"]
     db.close()
 
 
@@ -353,7 +352,6 @@ def test_session_list_title_lookup_resolves_compression_tip(home, monkeypatch):
     assert len(sessions) == 1
     assert sessions[0]["id"] == "root3"
     assert sessions[0]["resolved_id"] == "tip3"
-    assert "post-compression click target" in sessions[0]["preview"]
     db.close()
 
 

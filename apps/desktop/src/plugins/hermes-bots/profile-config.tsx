@@ -21,7 +21,7 @@ import {
 import { useState } from 'react'
 
 import { $lastRoster, ROSTER_KEY } from './data'
-import { labeled } from './dialog-parts'
+import { labeled, ResizableFrame } from './dialog-parts'
 import { useBots } from './i18n'
 import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
@@ -247,7 +247,6 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
   const enabledSkills = state.skills.filter(s => s.enabled).length
   const enabledToolsets = state.toolsets.filter(t => t.enabled).length
   const mcpList = state.mcp || []
-  const enabledMcp = mcpList.filter(m => m.enabled).length
 
   // Newer desktop builds export the WHOLE core Capabilities surface
   // (hermes-agent#87317): Skills (installed list + one-click hub installs +
@@ -275,15 +274,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
         />
         {labeled(
           'Capabilities (applies immediately — skills, tools, MCP)',
-          <div
-            className="overflow-hidden rounded-md border border-(--ui-stroke-secondary)"
-            style={{
-              height: 460,
-              minHeight: 300,
-              resize: 'vertical',
-              overflow: 'auto'
-            }}
-          >
+          <ResizableFrame height={460} minHeight={300}>
             <SkillsView
               embedded
               fixedProfile={backendProfile}
@@ -293,7 +284,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                   }
                 : {})}
             />
-          </div>
+          </ResizableFrame>
         )}
         {labeled(
           'SOUL.md (persona + agent-messaging protocol)',

@@ -173,17 +173,12 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
           /* so the hub page starts zoomed out — we can't style the */
           /* cross-origin page itself, but scaling the frame is ours. */}
           <div
+            className="relative w-full max-w-full resize overflow-hidden border border-(--ui-stroke-secondary)"
             style={{
-              width: '100%',
               height: 560,
               minHeight: 240,
               minWidth: 320,
-              maxWidth: '100%',
-              resize: 'both',
-              overflow: 'hidden',
-              border: '1px solid var(--ui-stroke-secondary)',
-              borderRadius: 8,
-              position: 'relative'
+              borderRadius: 8
             }}
           >
             <iframe

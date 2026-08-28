@@ -169,13 +169,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
 
   if (useFreeText) {
     return (
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '8px'
-        }}
-      >
+      <div className="flex flex-col gap-2">
         <div className="grid grid-cols-2 gap-2.5">
           {labeled(
             'Provider (Custom)',

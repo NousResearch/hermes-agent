@@ -7,6 +7,7 @@
 import {
   atom,
   Button,
+  Checkbox,
   cn,
   Codicon,
   Dialog,
@@ -1092,12 +1093,7 @@ export function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogP
             ])
           )}
           <label className="flex items-center gap-2 text-xs text-(--ui-text-tertiary) cursor-pointer select-none">
-            <input
-              checked={continuity}
-              className="accent-(--ui-accent)"
-              onChange={event => setContinuity(event.target.checked)}
-              type="checkbox"
-            />
+            <Checkbox checked={continuity} onCheckedChange={value => setContinuity(Boolean(value))} />
             Continuity: each run sees the previous run’s output (dedupe, continue where it left off)
           </label>
           {error ? (

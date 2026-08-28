@@ -44,7 +44,7 @@ import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
-import { labeled } from './dialog-parts'
+import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
@@ -602,7 +602,13 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         </DialogHeader>
         <div className="grid gap-3.5">
           <div className="flex justify-center py-1">
-            <BotFace color={avatarColor(color, slug || 'agent')} image={image} name={slug || 'agent'} shape={shape} size={56} />
+            <BotFace
+              color={avatarColor(color, slug || 'agent')}
+              image={image}
+              name={slug || 'agent'}
+              shape={shape}
+              size={56}
+            />
           </div>
           <AvatarPicker
             color={color}
@@ -804,15 +810,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
                   </div>
                 ) : SkillsView ? (
-                  <div
-                    className="overflow-hidden rounded-md border border-(--ui-stroke-secondary)"
-                    style={{
-                      height: 440,
-                      minHeight: 280,
-                      resize: 'vertical',
-                      overflow: 'auto'
-                    }}
-                  >
+                  <ResizableFrame height={440} minHeight={280}>
                     <SkillsView
                       embedded
                       fixedProfile={createdForCaps}
@@ -822,7 +820,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                           }
                         : {})}
                     />
-                  </div>
+                  </ResizableFrame>
                 ) : (
                   // The tab list is gated on the same export, so this is only
                   // reachable via persisted tab state on a build that lacks it
@@ -1054,7 +1052,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle>{b.group.manageTitle}</DialogTitle>
-          <DialogDescription>{b.group.newDesc}</DialogDescription>
+          <DialogDescription>{b.group.manageDesc}</DialogDescription>
         </DialogHeader>
         {groups.length ? (
           <div className="grid gap-1.5">

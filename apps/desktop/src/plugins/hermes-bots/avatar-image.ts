@@ -50,7 +50,7 @@ export function pickImageFromDevice(): Promise<null | string> {
       if (file.size > 15_000_000) {
         host.notify({
           kind: 'error',
-          message: getPluginCtx()?.i18n.t('avatar.imageTooLarge') ?? 'Image too large (max 15MB).'
+          message: getPluginCtx()?.i18n?.t('avatar.imageTooLarge') ?? 'Image too large (max 15MB).'
         })
 
         return resolve(null)
@@ -100,7 +100,11 @@ export interface GeneratedImage {
   success?: boolean
 }
 
-export async function generateAvatarImage(bot: string, title?: string, description?: string): Promise<string | undefined> {
+export async function generateAvatarImage(
+  bot: string,
+  title?: string,
+  description?: string
+): Promise<string | undefined> {
   const who = [title || bot, description].filter(Boolean).join(' — ')
 
   const res = await host.request<GeneratedImage>('image.generate', {

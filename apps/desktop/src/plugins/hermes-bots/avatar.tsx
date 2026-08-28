@@ -125,7 +125,18 @@ export function defaultShapeFor(name: string): AvatarShape {
 // appears inside a segment. Colors come from the library's own name-derived
 // palette (contrast-guaranteed) — the classic color swatches don't apply.
 
-export const BLOB_KINDS = ['round', 'organic', 'boxy', 'capsule', 'nub', 'cloud', 'droplet', 'hexagon', 'sun', 'triangle']
+export const BLOB_KINDS = [
+  'round',
+  'organic',
+  'boxy',
+  'capsule',
+  'nub',
+  'cloud',
+  'droplet',
+  'hexagon',
+  'sun',
+  'triangle'
+]
 
 // Trait positions at the center of each silhouette band. Band thresholds are
 // frozen per blobatar major (gen2: 0.22 / 0.48 / 0.60 / 0.70 / 0.79 / 0.86 /
@@ -341,32 +352,6 @@ function shapeNode(shape: string, color: string, botName = 'agent') {
     default:
       return <circle cx={20} cy={20} fill={color} r={17.5} />
   }
-}
-
-const EYE_Y = {
-  // solids: eyes sit on the upper face region, clear of the busiest edges
-  tetrahedron: 26,
-  cube: 22.5,
-  octahedron: 14.5,
-  dodecahedron: 20,
-  icosahedron: 17.5,
-  // legacy
-  circle: 17,
-  squircle: 17,
-  pill: 20,
-  triangle: 25,
-  hexagon: 17,
-  cloud: 22,
-  drop: 24
-}
-
-// Solids draw eyes slightly tighter so they read as ON a face.
-const EYE_X = {
-  tetrahedron: [16.5, 23.5],
-  cube: [15, 25],
-  octahedron: [16, 24],
-  dodecahedron: [16.5, 23.5],
-  icosahedron: [16.5, 23.5]
 }
 
 /** One point in the 40x40 face box. */
@@ -1048,15 +1033,12 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
   return (
     <svg
       aria-hidden
+      className="block overflow-visible"
       data-bot-face={name}
       data-hb-math="1"
       data-hb-mood={working ? 'work' : 'idle'}
       data-hb-shape={shape || 'circle'}
       height={size}
-      style={{
-        overflow: 'visible',
-        display: 'block'
-      }}
       viewBox="0 0 40 44"
       width={size}
     >

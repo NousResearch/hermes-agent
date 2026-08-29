@@ -1323,6 +1323,13 @@ class SessionStore:
         # Memoized so the per-key store lookup stays a dict hit instead of a
         # profile-directory stat on every transcript append.
         self._profile_home_cache: Dict[str, Optional[Path]] = {}
+        # session_id -> owning routing key, for ids whose ownership is already
+        # proven but not yet published in ``_entries``. The compression
+        # continuation is the case that needs it: the child row is written
+        # before its reroute is published, so an index lookup would miss and
+        # fall back to the ambient store. Entries are dropped as soon as
+        # routing publishes.
+        self._session_owner_hints: Dict[str, str] = {}
         from gateway.session_db_recovery import RecoverableHandleCache
 
         self._db_handle_cache = RecoverableHandleCache(
@@ -1496,26 +1503,39 @@ class SessionStore:
             # fallback rather than taking routing down.
             return None
 
+    def _owner_key_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
+        """The routing key that owns *session_id*, or None.
+
+        The published index is authoritative; ``_session_owner_hints`` covers
+        the window where ownership is already proven but routing has not been
+        published yet.  Deliberately lock-free: several callers already hold
+        ``_lock``.
+        """
+        if not session_id:
+            return None
+        try:
+            for entry in list(self._entries.values()):
+                if entry.session_id == session_id:
+                    return entry.session_key
+        except Exception:
+            pass
+        # getattr: suites build bare stores via ``object.__new__`` and never
+        # run __init__, the same reason the other optional maps are read
+        # defensively here.
+        return (getattr(self, "_session_owner_hints", None) or {}).get(session_id)
+
     def _db_for_session_id(self, session_id: Optional[str]):
         """The SessionDB holding *session_id*'s row.
 
         Transcript, compression and rewind entry points are addressed by
-        session id rather than routing key, so recover the owning profile
-        from the in-memory index.  Deliberately lock-free: several of those
-        callers already hold ``_lock``, and a miss simply falls back to the
-        ambient store — the behavior that predates ``_db_for_key``.
+        session id rather than routing key, so the owning profile is
+        recovered from the index (or from a pre-published ownership hint).
+        An id nothing knows about still falls back to the ambient store —
+        the behavior that predates ``_db_for_key``.
         """
         if not session_id:
             return self._db
-        key = None
-        try:
-            for entry in list(self._entries.values()):
-                if entry.session_id == session_id:
-                    key = entry.session_key
-                    break
-        except Exception:
-            key = None
-        return self._db_for_key(key)
+        return self._db_for_key(self._owner_key_for_session_id(session_id))
 
     def close_all_db_handles(self) -> None:
         """Close every SessionDB handle this store opened, one per resolved path.
@@ -3938,13 +3958,38 @@ class SessionStore:
                     # ``get_compression_tip`` returns the input id when no
                     # continuation exists; adopt only a different, still-live
                     # tip, otherwise fail closed as before.
+                    #
+                    # The parent's id IS published in the routing index, so
+                    # its owner is already proven; the continuation's id is
+                    # not published until after the child write succeeds
+                    # (below), so resolving the child by id would miss and
+                    # fall back to the ambient store. Carry the proven handle
+                    # instead of re-deriving it from an id nothing points at
+                    # yet. ``_owner_db`` cannot be None here — the parent
+                    # append above just reached a real DB to raise this.
+                    _owner_key = self._owner_key_for_session_id(session_id)
+                    _owner_db = self._db_for_session_id(session_id)
                     child_id = ""
-                    tip = self._db_for_session_id(session_id).get_compression_tip(session_id)
-                    if tip and tip != session_id:
-                        tip_row = self._db_for_session_id(session_id).get_session(tip)
-                        if tip_row is not None and tip_row.get("ended_at") is None:
-                            child_id = str(tip)
+                    if _owner_db is not None:
+                        tip = _owner_db.get_compression_tip(session_id)
+                        if tip and tip != session_id:
+                            tip_row = _owner_db.get_session(tip)
+                            if tip_row is not None and tip_row.get("ended_at") is None:
+                                child_id = str(tip)
                     if child_id:
+                        # Record the child's owner BEFORE writing to it. The
+                        # reroute and the _entries update are published only
+                        # after this write succeeds — that ordering is
+                        # load-bearing for backlog order — so an index lookup
+                        # here would miss and fall back to the ambient store,
+                        # which is a live handle and would slip past the
+                        # fail-closed guard.
+                        if _owner_key:
+                            _hints = getattr(self, "_session_owner_hints", None)
+                            if _hints is None:
+                                _hints = {}
+                                self._session_owner_hints = _hints
+                            _hints[child_id] = _owner_key
                         try:
                             self._append_transcript_message(child_id, msg)
                         except Exception as reroute_exc:
@@ -3981,6 +4026,11 @@ class SessionStore:
                                     if entry.session_id == session_id:
                                         entry.session_id = child_id
                                 self._save()
+                            # Routing now points at the child, so the index is
+                            # authoritative again and the hint has no more work.
+                            _hints = getattr(self, "_session_owner_hints", None)
+                            if _hints:
+                                _hints.pop(child_id, None)
                             if not pending:
                                 return
                             msg = pending[0]
@@ -4075,8 +4125,6 @@ class SessionStore:
             # A named profile with no resolvable home yet. Defer instead of
             # writing the row into the ambient store — the caller queues the
             # message and a later attempt lands it once the profile exists.
-            # Reached via the compression-child id, which is not the id the
-            # entry-point guard in append_to_transcript already checked.
             raise RuntimeError(
                 f"no owning session store for {session_id}; deferring transcript write"
             )

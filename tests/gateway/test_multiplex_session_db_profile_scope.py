@@ -26,6 +26,7 @@ where they always did.
 
 import asyncio
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -33,7 +34,7 @@ import pytest
 
 from gateway.config import GatewayConfig
 from gateway.platforms.base import MessageEvent, Platform, SessionSource
-from gateway.session import SessionStore
+from gateway.session import SessionEntry, SessionStore
 from hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,
@@ -678,4 +679,62 @@ def test_profile_resolution_failure_fails_closed(multiplex_homes, monkeypatch):
     monkeypatch.setattr(profiles_mod, "profile_exists", _boom)
 
     assert store._db_for_key(key) is None
+    assert _session_ids(root / "state.db") == set()
+
+
+def test_compression_child_write_stays_in_the_parents_profile_store(multiplex_homes):
+    """The continuation write must not fall back to root before it is routed.
+
+    ``_append_to_transcript_serialized`` writes the compression child BEFORE
+    publishing the reroute and the ``_entries`` update — that ordering is
+    load-bearing for backlog order — so at that moment nothing in the routing
+    index points at the child id.  Resolving the child by id therefore misses
+    and lands on the ambient store, which is a live handle and slips past the
+    fail-closed guard.  The parent's owner is already proven, so it is carried
+    into the child write instead.
+
+    Physical regression: real stores on disk, no active profile scope.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+    key = "agent:fitness:telegram:dm:777"
+    parent_id = "20260830_100000_parent01"
+    child_id = "20260830_100500_child001"
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        db = store._db
+        db.create_session(parent_id, "telegram")
+        db.create_session(child_id, "telegram", parent_session_id=parent_id)
+        db.end_session(parent_id, "compression")
+    finally:
+        reset_hermes_home_override(token)
+
+    entry = SessionEntry(
+        session_key=key,
+        session_id=parent_id,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    store._entries[key] = entry
+
+    # Background surface: no profile scope installed anywhere.
+    store.append_to_transcript(parent_id, {"role": "user", "content": "after-compaction"})
+
+    # 1. the row landed on the child, in the profile store
+    token = set_hermes_home_override(str(profile))
+    try:
+        rows = store._db.get_messages(child_id)
+    finally:
+        reset_hermes_home_override(token)
+    assert [r["content"] for r in rows] == ["after-compaction"]
+
+    # 2. the pending queue drained
+    assert not store._dirty_transcripts.get(parent_id)
+
+    # 3. routing advanced onto the child
+    assert store._transcript_reroutes.get(parent_id) == child_id
+    assert store._entries[key].session_id == child_id
+
+    # 4. root was never touched
     assert _session_ids(root / "state.db") == set()

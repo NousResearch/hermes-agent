@@ -10,6 +10,7 @@ Covers:
 """
 
 import json
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -305,6 +306,14 @@ class TestProviderRouting:
 
 
 class TestKeylessPolicyConfig:
+    @pytest.fixture(autouse=True)
+    def _reset_policy_warning_throttle(self):
+        with registry._lock:
+            registry._keyless_policy_warning_at.clear()
+        yield
+        with registry._lock:
+            registry._keyless_policy_warning_at.clear()
+
     @pytest.mark.parametrize("config", [{}, {"web": {}}, {"web": None}])
     def test_valid_absent_setting_keeps_fresh_install_default(self, monkeypatch, config):
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
@@ -337,6 +346,49 @@ class TestKeylessPolicyConfig:
 
         monkeypatch.setattr("hermes_cli.config.load_config", _unreadable)
         assert registry._keyless_tier_enabled() is False
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            (None, "config root must be a mapping"),
+            ({"web": "invalid"}, "web config must be a mapping"),
+            (
+                {"web": {"keyless_fallback": "false"}},
+                "web.keyless_fallback must be boolean",
+            ),
+        ],
+    )
+    def test_malformed_policy_warning_is_throttled(
+        self, monkeypatch, caplog, config, message
+    ):
+        monotonic_values = iter((10.0, 11.0, 311.0))
+        monkeypatch.setattr(registry.time, "monotonic", lambda: next(monotonic_values))
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+
+        with caplog.at_level(logging.WARNING, logger=registry.__name__):
+            assert registry._keyless_tier_enabled() is False
+            assert registry._keyless_tier_enabled() is False
+            assert registry._keyless_tier_enabled() is False
+
+        matching = [record for record in caplog.records if message in record.message]
+        assert len(matching) == 2
+        assert all(
+            "Keyless web fallback disabled" in record.message for record in matching
+        )
+
+    def test_config_read_failure_warns_without_exposing_error_text(
+        self, monkeypatch, caplog
+    ):
+        def _unreadable():
+            raise OSError("secret path")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", _unreadable)
+        with caplog.at_level(logging.WARNING, logger=registry.__name__):
+            assert registry._keyless_tier_enabled() is False
+
+        assert "could not read configuration (OSError)" in caplog.text
+        assert "secret path" not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Registry + _get_backend resolution order

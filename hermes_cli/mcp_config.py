@@ -191,7 +191,9 @@ def _warning(text: str): print(color(f"  ⚠ {text}", Colors.YELLOW))
 def _error(text: str): print(color(f"  ✗ {text}", Colors.RED))
 
 
-def _confirm(question: str, default: bool = True) -> bool:
+def _confirm(question: str, default: bool = True, *, yes: bool = False) -> bool:
+    if yes:
+        return default
     default_str = "Y/n" if default else "y/N"
     try:
         val = input(color(f"  {question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
@@ -543,7 +545,7 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
 
 
 def _configure_http_auth(
-    name: str, url: str, auth_type: Optional[str], server_config: dict[str, Any]
+    name: str, url: str, auth_type: Optional[str], server_config: dict[str, Any], *, yes: bool = False
 ) -> bool:
     """OAuth or Bearer-token setup for an HTTP server. False when the user cancelled."""
     print()
@@ -562,18 +564,21 @@ def _configure_http_auth(
             _warning(f"OAuth error: {exc}")
         if not oauth_ok:
             _info("This server may not support OAuth.")
-            if not _confirm("Continue without authentication?", default=True):
+            if not _confirm("Continue without authentication?", default=True, yes=yes):
                 _info("Cancelled.")
                 return False
         return True
 
     _info(f"Connecting to {url}")
-    needs_auth = _confirm("Does this server require authentication?", default=True)
+    needs_auth = bool(auth_type) if yes else _confirm("Does this server require authentication?", default=True)
     if needs_auth and (auth_type == "header" or not auth_type):
         env_key = _env_key_for_server(name)
         if get_env_value(env_key):
             _success(f"{env_key}: already configured")
             server_config["headers"] = _bearer_auth_headers(name)
+        elif yes:
+            _error(f"--yes: add {env_key} to {display_hermes_home()}/.env and re-run; authentication requires a key.")
+            return False
         else:
             from hermes_cli.cli_output import prompt
             api_key = prompt("API key / Bearer token", default="", password=True)
@@ -583,13 +588,18 @@ def _configure_http_auth(
     return True
 
 
-def _choose_tools(name: str, tools: list[tuple[str, str]], server_config: dict[str, Any]) -> Optional[int]:
+def _choose_tools(
+    name: str, tools: list[tuple[str, str]], server_config: dict[str, Any], *, yes: bool = False
+) -> Optional[int]:
     """Ask enable-all / select / cancel; returns the enabled-tool count or None when cancelled."""
     print()
     _success(f"Connected! Found {len(tools)} tool(s) from '{name}':")
     print()
     _print_tools(tools, 40, 60)
     print()
+    if yes:
+        _info(f"--yes: enabling all {len(tools)} tools.")
+        return len(tools)
     try:
         choice = input(
             color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
@@ -626,6 +636,7 @@ def cmd_mcp_add(args):
         cmd_args = cmd_args[1:]
     auth_type = getattr(args, "auth", None)
     raw_connect_timeout = getattr(args, "connect_timeout", None)
+    assume_yes = getattr(args, "yes", False)
 
     server_config: dict[str, Any] = {}
     try:
@@ -651,7 +662,7 @@ def cmd_mcp_add(args):
     # Overwriting an existing server is a re-add, not an install; cancels are not recorded either.
     fresh = name not in _get_mcp_servers()
     if not fresh and not _confirm(
-        f"Server '{name}' already exists. Overwrite?", default=False
+        f"Server '{name}' already exists. Overwrite?", default=False, yes=assume_yes
     ):
         _info("Cancelled.")
         return
@@ -678,7 +689,7 @@ def cmd_mcp_add(args):
     if not _validate_or_warn(name, server_config):
         _record(False)
         return
-    if url and not _configure_http_auth(name, url, auth_type, server_config):
+    if url and not _configure_http_auth(name, url, auth_type, server_config, yes=assume_yes):
         return
 
     print()
@@ -689,7 +700,7 @@ def cmd_mcp_add(args):
         _error(f"Failed to connect: {_probe_failure_reason(exc)}")
         _info(_probe_failure_next_step(name, exc))
         saved = False
-        if _confirm("Save config anyway (you can test later)?", default=False):
+        if _confirm("Save config anyway (you can test later)?", default=False, yes=assume_yes):
             server_config["enabled"] = False
             saved = _save_mcp_server(name, server_config)
             if saved:
@@ -700,14 +711,14 @@ def cmd_mcp_add(args):
 
     if not tools:
         _warning("Server connected but reported no tools.")
-        if _confirm("Save config anyway?", default=True):
+        if _confirm("Save config anyway?", default=True, yes=assume_yes):
             saved = _save_mcp_server(name, server_config)
             _record(saved)
             if saved:
                 _success(f"Saved '{name}' to config")
         return
 
-    tool_count = _choose_tools(name, tools, server_config)
+    tool_count = _choose_tools(name, tools, server_config, yes=assume_yes)
     if tool_count is None:
         return
     server_config["enabled"] = True

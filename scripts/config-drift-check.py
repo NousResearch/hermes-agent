@@ -98,6 +98,19 @@ REQUIRED_PROFILES = (
 ) - {"root"}
 
 
+# Deployed-cron candidate roots, in priority order. The scripts-dir copy
+# deployed under HERMES_HOME/scripts has no checkout above it, so the
+# derivation falls through to the executor-provided runtime root or the
+# canonical fleet checkout before giving up (fail-closed). The is_file()
+# probe keeps candidate sys.path pollution to an actual checkout.
+_REPO_CANDIDATES = (
+    # 1. resolved by the executor for workdir'd jobs (cron contract)
+    os.environ.get("HERMES_AGENT_ROOT"),
+    # 2. canonical live checkout of this fleet deployment
+    str(Path.home() / "repos" / "KenseiAgent"),
+)
+
+
 def _derive_expected_schema_version() -> int | None:
     """Derive the expected config schema version from the live code authority.
 
@@ -105,15 +118,32 @@ def _derive_expected_schema_version() -> int | None:
     into the script's rc=2 execution-error contract rather than trusting a
     stale duplicated schema literal.
     """
+    # 1) already-importable context (in-checkout runs, tests, worktree).
     try:
-        repo_root = Path(__file__).resolve().parents[1]
-        if str(repo_root) not in sys.path:
-            sys.path.insert(0, str(repo_root))
         from hermes_cli.config_defaults import DEFAULT_CONFIG
+
         ver = DEFAULT_CONFIG.get("_config_version")
         return int(ver) if isinstance(ver, int) else None
-    except Exception:
-        return None
+    except ImportError:
+        pass
+    # 2) candidate checkout roots (deployed cron copy).
+    candidates = [Path(__file__).resolve().parents[1]]
+    for raw in _REPO_CANDIDATES:
+        if raw:
+            candidates.append(Path(raw))
+    for repo_root in candidates:
+        if not (repo_root / "hermes_cli" / "config_defaults.py").is_file():
+            continue
+        sys.path.insert(0, str(repo_root))
+        try:
+            from hermes_cli.config_defaults import DEFAULT_CONFIG
+        except Exception:
+            if str(repo_root) in sys.path:
+                sys.path.remove(str(repo_root))
+            continue
+        ver = DEFAULT_CONFIG.get("_config_version")
+        return int(ver) if isinstance(ver, int) else None
+    return None
 
 
 # Derived at import time; the test suite asserts equality with DEFAULT_CONFIG.

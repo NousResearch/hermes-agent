@@ -9,6 +9,7 @@ Verifies config-drift-check.py:
 """
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -356,6 +357,66 @@ def test_root_schema_version_drift_detected(tmp_path):
     assert r.returncode == 1
     assert "_config_version" in r.stdout
     assert "39" in r.stdout, "expected version must be named in the drift line"
+
+
+# ── R2b: deployed-cron copy (no checkout above it) still derives v39 ──────
+
+
+def test_deployed_hermes_home_copy_derives_schema_version(tmp_path, monkeypatch):
+    """The live deployment copies this script to HERMES_HOME/scripts/ and the
+    daily cron runs it from there with cwd = scripts dir. parents[1] is then
+    ~/.hermes (no hermes_cli above it). The derivation must fall through to
+    HERMES_AGENT_ROOT / the canonical checkout instead of rc=2-ing every run.
+    Contract: fail-closed stays — with NO resolvable checkout AND no cached
+    import, the script must still report execution error (rc=2), not silence.
+    """
+    # Sanity guard: the probe must never report a fabricated fallback literal.
+    import hermes_cli.config_defaults as cfg_defaults
+
+    assert not hasattr(cfg_defaults, "_KENSEI_FALLBACK_SCHEMA_VERSION")
+    # Copy the script into a bare HERMES_HOME/scripts (deployed layout) and
+    # give it a minimal healthy root config so the only open question is the
+    # schema derivation.
+    bare_home = tmp_path / "bare-hermes-home"
+    (bare_home / "scripts").mkdir(parents=True)
+    deployed = bare_home / "scripts" / "config-drift-check.py"
+    deployed.write_text(SCRIPT.read_text())
+    home, _root = _make_policy_compliant_home(tmp_path)
+    # Move the policy-compliant home's scripts copy into place: the deployed
+    # script lives under HERMES_HOME/scripts (away from any checkout).
+    (home / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SCRIPT, home / "scripts" / "config-drift-check.py")
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(home)
+    env["HERMES_AGENT_ROOT"] = str(REPO_ROOT)
+    env.pop("PYTHONPATH", None)
+    r = subprocess.run(
+        [sys.executable, str(deployed)],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path),
+    )
+    assert r.returncode == 0, (
+        f"deployed copy failed to derive schema version (rc={r.returncode}): "
+        f"{r.stdout} {r.stderr}"
+    )
+    assert r.stdout == "", f"healthy home must stay silent: {r.stdout!r}"
+
+
+def test_deployed_copy_fails_closed_without_any_checkout(tmp_path):
+    """No resolvable checkout at all → rc=2 execution error (never silent)."""
+    bare_home = tmp_path / "orphan-hermes-home"
+    (bare_home / "scripts").mkdir(parents=True)
+    deployed = bare_home / "scripts" / "config-drift-check.py"
+    deployed.write_text(SCRIPT.read_text())
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(bare_home)
+    env.pop("HERMES_AGENT_ROOT", None)
+    env.pop("PYTHONPATH", None)
+    r = subprocess.run(
+        [sys.executable, str(deployed)],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path),
+    )
+    assert r.returncode == 2, f"must fail closed, got rc={r.returncode}"
+    assert "Check failed" in r.stdout
 
 
 def test_profile_schema_version_drift_detected(tmp_path):

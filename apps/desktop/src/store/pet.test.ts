@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { createClientSessionState } from '@/lib/chat-runtime'
 
 import {
   $petActivity,
@@ -13,6 +15,8 @@ import {
   setPetActivity,
   STEADY_ACTIVITY_TTL_MS
 } from './pet'
+import { $activeSessionId, $busy } from './session'
+import { clearAllSessionStates, publishSessionState } from './session-states'
 
 describe('derivePetState', () => {
   it('rests at idle by default and uses waiting when awaiting input', () => {
@@ -149,6 +153,14 @@ describe('flashPetActivity', () => {
 describe('deriveLivePetState recency guard (#84434 / #84438)', () => {
   const now = Date.now()
 
+  afterEach(() => {
+    vi.useRealTimers()
+    clearAllSessionStates()
+    $activeSessionId.set(null)
+    $busy.set(false)
+    $petActivity.set({})
+  })
+
   it('animates a recent toolRunning flag even when $busy reads false', () => {
     $petActivity.set({ toolRunning: true, toolRunningAt: now - 5_000 })
     expect($petState.get()).toBe('run')
@@ -170,5 +182,37 @@ describe('deriveLivePetState recency guard (#84434 / #84438)', () => {
     const activity = $petActivity.get()
     expect(activity.toolRunningAt).toBeGreaterThanOrEqual(before)
     expect(activity.toolRunningAt).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('keeps a silent long-running tool active while its runtime is busy', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now + STEADY_ACTIVITY_TTL_MS * 4)
+    $activeSessionId.set('runtime-long-tool')
+    $busy.set(false)
+    publishSessionState('runtime-long-tool', {
+      ...createClientSessionState(null),
+      busy: true,
+      storedSessionId: 'stored-long-tool'
+    })
+    $petActivity.set({ toolRunning: true, toolRunningAt: now })
+
+    expect($petState.get()).toBe('run')
+
+    publishSessionState('runtime-long-tool', {
+      ...createClientSessionState(null),
+      busy: false,
+      storedSessionId: 'stored-long-tool'
+    })
+    expect($petState.get()).toBe('idle')
+  })
+
+  it('clears the matching recency stamp when a steady flag clears', () => {
+    setPetActivity({ toolRunning: true, reasoning: true })
+    expect($petActivity.get().toolRunningAt).toBeTypeOf('number')
+    expect($petActivity.get().reasoningAt).toBeTypeOf('number')
+
+    setPetActivity({ toolRunning: false, reasoning: false })
+    expect($petActivity.get().toolRunningAt).toBeUndefined()
+    expect($petActivity.get().reasoningAt).toBeUndefined()
   })
 })

@@ -147,7 +147,7 @@ class TestCreateWithProgress:
         # signal — see _create_with_progress) + 1 per substantive chunk.
         assert ticks == [1, 1, 1, 1]
 
-    def test_completed_response_without_stream_payload_does_not_tick(self):
+    def test_completed_response_ticks_only_terminal_signals(self):
         calls = []
 
         def _create(**kwargs):
@@ -285,6 +285,11 @@ class TestContentBearingProgress:
             (SimpleNamespace(type="thinking_delta", text=None, thinking="thought"), True),
             (SimpleNamespace(type="input_json_delta", partial_json=""), False),
             (SimpleNamespace(type="input_json_delta", partial_json='{"x"'), True),
+            # Signed-thinking / citation payloads the transport emits
+            # (relay_llm.py signature_delta + citations_delta).
+            (SimpleNamespace(type="signature_delta", signature="sig-1"), True),
+            (SimpleNamespace(type="signature_delta", signature=""), False),
+            (SimpleNamespace(type="citations_delta", citation={"cited": 1}), True),
         ],
     )
     def test_anthropic_requires_nonempty_delta_payload(self, delta, expected):

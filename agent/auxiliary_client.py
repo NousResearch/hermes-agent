@@ -508,7 +508,7 @@ def _anthropic_event_has_content(event: Any) -> bool:
         delta = _event_field(event, "delta")
         return any(
             bool(_event_field(delta, field))
-            for field in ("text", "thinking", "partial_json")
+            for field in ("text", "thinking", "partial_json", "signature", "citation")
         )
     if event_type == "content_block_start":
         block = _event_field(event, "content_block")
@@ -2329,10 +2329,12 @@ class _AnthropicCompletionsAdapter:
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
-            # Tick the aux forward-progress hook per streamed event so hosts
-            # watching liveness (gateway session hygiene) don't kill a
-            # slow-but-generating summary model. No-op when no hook is
-            # installed (None keeps the fast get_final_message path).
+            # Per streamed event: record provider-response timing always, but
+            # tick the forward-progress hook (hosts watching liveness —
+            # gateway session hygiene / the compression commit fence) only
+            # for substantive payloads, so keepalive pings cannot hold a
+            # stalled summary open. No-op when no hook is installed (None
+            # keeps the fast get_final_message path).
             on_stream_event=(
                 (
                     lambda event: (

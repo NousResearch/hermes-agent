@@ -713,7 +713,9 @@ class TestPromptBuilderConstants:
         ), "CLI hint should explicitly discourage MEDIA: tags."
         # Messaging hints should still advertise MEDIA: positively (sanity
         # check that this test is calibrated correctly).
-        assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
+        # Dieted (#95681): messaging hints now share the _MEDIA_NATIVE
+        # spine ("write MEDIA:/absolute/path..."), not per-hint prose.
+        assert "MEDIA:/absolute/path" in PLATFORM_HINTS["telegram"]
 
 
 

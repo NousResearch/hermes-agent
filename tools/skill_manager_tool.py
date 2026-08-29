@@ -1699,6 +1699,8 @@ def _skill_manage_batch(
                 return tool_error(f"Could not snapshot '{nm}' for atomic batch: {exc}", success=False)
         snapshots[nm] = (pre_dir, snap)
 
+    rollback_failed = False
+
     def _rollback() -> str:
         notes = []
         for nm, (pre_dir, snap) in snapshots.items():
@@ -1707,13 +1709,34 @@ def _skill_manage_batch(
                 post_dir = Path(post["path"]) if post else None
                 if snap is not None:
                     if post_dir is not None and post_dir.is_dir():
-                        shutil.rmtree(post_dir)
-                    shutil.copytree(snap, pre_dir)
+                        # Never destroy the only other copy before the
+                        # restore lands. Deleting first turned a failed
+                        # copytree (disk full, locked file) into total
+                        # skill loss once the finally below removed the
+                        # snapshot too. Move the broken state aside, and
+                        # delete it only after the snapshot is back.
+                        aside = post_dir.with_name(post_dir.name + ".rollback-broken")
+                        shutil.rmtree(aside, ignore_errors=True)
+                        post_dir.rename(aside)
+                        try:
+                            shutil.copytree(snap, pre_dir)
+                        except Exception:
+                            # Restore failed: put the broken state back so
+                            # the skill survives (half applied) rather than
+                            # leaving nothing.
+                            shutil.rmtree(pre_dir, ignore_errors=True)
+                            aside.rename(pre_dir)
+                            raise
+                        shutil.rmtree(aside, ignore_errors=True)
+                    else:
+                        shutil.copytree(snap, pre_dir)
                 elif post_dir is not None and post_dir.is_dir():
                     # Batch created this skill: remove the partial result.
                     shutil.rmtree(post_dir)
             except Exception as exc:  # noqa: BLE001
                 notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})")
+        nonlocal rollback_failed
+        rollback_failed = bool(notes)
         return "; ".join(notes) if notes else "all touched skills rolled back"
 
     # --- execute ops through the normal single-op path (gate bypassed:
@@ -1765,7 +1788,16 @@ def _skill_manage_batch(
                             "success": True})
     finally:
         _skill_gate_bypass.reset(token)
-        shutil.rmtree(snap_root, ignore_errors=True)
+        if rollback_failed:
+            # Keep the snapshots so the operator can still recover by
+            # hand. Deleting them here is what turned one failed restore
+            # into permanent skill loss.
+            logger.warning(
+                "skill_manage batch rollback failed, snapshots kept at %s",
+                snap_root,
+            )
+        else:
+            shutil.rmtree(snap_root, ignore_errors=True)
 
     return json.dumps(
         {"success": True, "operations_applied": len(results),

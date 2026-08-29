@@ -95,6 +95,9 @@ _GITHUB_API_EXTRACT_ARGUMENT_REPLAY = (
 _GITHUB_API_CURL_ARGUMENT_REPLAY = (
     '{"command":"curl GitHub REST list (details omitted)"}'
 )
+_GITHUB_PLAIN_LIST_OUTPUT_REPLAY = (
+    "GitHub list output omitted; use --json for bounded fields."
+)
 _REJECTED_TERMINAL_COMMAND_REPLAY = json.dumps(
     {"command": "<rejected terminal command omitted>"}, separators=(",", ":")
 )
@@ -818,6 +821,70 @@ def _github_api_curl_terminal_call_ids(value: Any) -> frozenset[str]:
     return frozenset(recognized)
 
 
+def _plain_github_list_terminal_call_ids(value: Any) -> frozenset[str]:
+    """Recognize bounded plain ``gh issue|pr list`` fallback output."""
+
+    recognized: set[str] = set()
+
+    def is_plain_list(arguments: Any) -> bool:
+        try:
+            parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+            command = parsed.get("command") if isinstance(parsed, Mapping) else None
+            tokens = shlex.split(command) if isinstance(command, str) else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if len(tokens) < 3 or tokens[:1] != ["gh"] or tokens[2:3] != ["list"]:
+            return False
+        if tokens[1] not in {"issue", "pr"} or "--json" in tokens:
+            return False
+        index = 3
+        limit = 30
+        while index < len(tokens):
+            token = tokens[index]
+            if token not in {"--repo", "--state", "--limit"} or index + 1 >= len(tokens):
+                return False
+            value = tokens[index + 1]
+            if token == "--repo" and not re.fullmatch(r"[^/\s]+/[^/\s]+", value):
+                return False
+            if token == "--limit":
+                try:
+                    limit = int(value)
+                except ValueError:
+                    return False
+            index += 2
+        return 0 < limit <= _GITHUB_LIST_TERMINAL_MAX_ROWS
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            direct_function = item.get("function")
+            direct_name = (
+                direct_function.get("name")
+                if isinstance(direct_function, Mapping)
+                else item.get("name")
+            )
+            arguments = (
+                direct_function.get("arguments")
+                if isinstance(direct_function, Mapping)
+                else item.get("arguments")
+            )
+            call_id = item.get("call_id") or item.get("id")
+            if (
+                item.get("type") in {"function", "function_call"}
+                and direct_name == "terminal"
+                and is_plain_list(arguments)
+                and isinstance(call_id, str)
+            ):
+                recognized.update(tool_result_id_variants(call_id))
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return frozenset(recognized)
+
+
 def _git_workspace_diagnostic_call_ids(value: Any) -> frozenset[str]:
     """Recognize one read-only workspace summary whose output is nonessential.
 
@@ -1361,6 +1428,7 @@ def _typed_payload(
     github_list_terminal_call_limits: Mapping[str, int] | None = None,
     github_api_extract_call_limits: Mapping[str, int] | None = None,
     github_api_curl_terminal_call_ids: frozenset[str] = frozenset(),
+    plain_github_list_terminal_call_ids: frozenset[str] = frozenset(),
     rejected_terminal_call_ids: frozenset[str] = frozenset(),
     redact_readonly_tool_arguments: bool = False,
     protected_tool_content: bool = False,
@@ -1491,6 +1559,11 @@ def _typed_payload(
             and value.get("type") in {"function", "function_call"}
             and direct_name == "terminal"
         )
+        is_plain_github_list_terminal_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in plain_github_list_terminal_call_ids
+            and (value.get("role") == "tool" or value.get("type") == "function_call_output")
+        )
         is_rejected_terminal_call = (
             value.get("type") in {"function", "function_call"}
             and direct_name == "terminal"
@@ -1612,6 +1685,13 @@ def _typed_payload(
                     _GITHUB_API_CURL_ARGUMENT_REPLAY
                 )
                 continue
+            if (
+                is_plain_github_list_terminal_result
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                typed[key] = GeneratedContextSegment(_GITHUB_PLAIN_LIST_OUTPUT_REPLAY)
+                continue
             if is_rejected_terminal_call and key == "arguments":
                 typed[key] = GeneratedContextSegment(_REJECTED_TERMINAL_COMMAND_REPLAY)
                 continue
@@ -1652,6 +1732,7 @@ def _typed_payload(
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 github_api_extract_call_limits=github_api_extract_call_limits,
                 github_api_curl_terminal_call_ids=github_api_curl_terminal_call_ids,
+                plain_github_list_terminal_call_ids=plain_github_list_terminal_call_ids,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=(
@@ -1693,6 +1774,7 @@ def _typed_payload(
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 github_api_extract_call_limits=github_api_extract_call_limits,
                 github_api_curl_terminal_call_ids=github_api_curl_terminal_call_ids,
+                plain_github_list_terminal_call_ids=plain_github_list_terminal_call_ids,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=protected_tool_content,
@@ -1989,6 +2071,11 @@ def authorize_agent_sdk_kwargs(
         ),
         github_api_curl_terminal_call_ids=(
             _github_api_curl_terminal_call_ids(body)
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        plain_github_list_terminal_call_ids=(
+            _plain_github_list_terminal_call_ids(body)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

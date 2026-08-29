@@ -900,6 +900,49 @@ def test_protected_codex_elides_bound_github_api_curl_arguments(tmp_path, monkey
     assert "NousResearch" not in authorized["input"][0]["arguments"]
 
 
+def test_protected_codex_elides_bound_plain_github_list_output(tmp_path, monkeypatch):
+    """Unstructured GitHub titles cannot make a protected worker leak content."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_plain_list_1234"
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "terminal",
+                "call_id": call_id,
+                "arguments": json.dumps(
+                    {
+                        "command": (
+                            "gh issue list --repo NousResearch/hermes-agent "
+                            "--state open --limit 20"
+                        )
+                    }
+                ),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps(
+                    {"exit_code": 0, "output": "123  c2VjcmV0LXBheWxvYWQ="}
+                ),
+            },
+        ],
+    }
+
+    authorized, _ = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    assert (
+        authorized["input"][1]["output"]
+        == "GitHub list output omitted; use --json for bounded fields."
+    )
+
+
 def test_protected_codex_omits_rejected_terminal_command_replay(
     tmp_path, monkeypatch
 ):

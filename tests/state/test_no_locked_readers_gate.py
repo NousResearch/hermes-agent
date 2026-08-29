@@ -50,10 +50,11 @@ _READ_RE = re.compile(r"^\s*(SELECT|PRAGMA)\b", re.IGNORECASE)
 # the reason. Keep this list SHRINKING — never add to it without the same
 # scrutiny a new blocking call would get.
 _ALLOWED_LOCKED_READERS: dict[str, str] = {
-    # _enter_fts_fail_open reads schema state under the lock as part of the
-    # fail-open WRITE transition (the writes live in sibling statements the
-    # simple statement scanner attributes to other calls).
-    "_enter_fts_fail_open": "fail-open transition; lock orders vs FTS writes",
+    # get_meta stays on the writer lock BY DESIGN (see its inline comment):
+    # fts_rebuild_step reads rebuild progress before entering a write
+    # transaction, and a pooled WAL reader sees only committed data — the
+    # writer's own just-staged meta updates would be invisible to it.
+    "get_meta": "read-your-writes: rebuild progress read before write txn",
 }
 
 
@@ -76,16 +77,41 @@ def _first_sql_text(call: ast.Call) -> str | None:
     return text.strip()
 
 
-def _is_self_conn_execute(call: ast.Call) -> bool:
+def _is_self_conn_execute(call: ast.Call, aliases: set[str]) -> bool:
+    """Match ``self._conn.execute*`` and ``<alias>.execute*`` where the
+    alias was bound from ``self._conn`` (``conn = self._conn``)."""
     f = call.func
-    return (
+    if not (
         isinstance(f, ast.Attribute)
         and f.attr in ("execute", "executemany", "executescript")
-        and isinstance(f.value, ast.Attribute)
-        and f.value.attr == "_conn"
-        and isinstance(f.value.value, ast.Name)
-        and f.value.value.id == "self"
-    )
+    ):
+        return False
+    target = f.value
+    if (
+        isinstance(target, ast.Attribute)
+        and target.attr == "_conn"
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "self"
+    ):
+        return True
+    return isinstance(target, ast.Name) and target.id in aliases
+
+
+def _collect_conn_aliases(method: ast.AST) -> set[str]:
+    """Names bound from ``self._conn`` anywhere in the method body."""
+    aliases: set[str] = set()
+    for node in ast.walk(method):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
+            v = node.value
+            if (
+                v.attr == "_conn"
+                and isinstance(v.value, ast.Name)
+                and v.value.id == "self"
+            ):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        aliases.add(t.id)
+    return aliases
 
 
 def _is_self_lock_with(item: ast.withitem) -> bool:
@@ -113,6 +139,7 @@ def _scan_locked_readers(state_py: "Path | None" = None) -> list[str]:
     for method in session_db.body:
         if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
+        aliases = _collect_conn_aliases(method)
         for node in ast.walk(method):
             if not isinstance(node, ast.With):
                 continue
@@ -120,10 +147,18 @@ def _scan_locked_readers(state_py: "Path | None" = None) -> list[str]:
                 continue
             reads, writes, unknown = 0, 0, 0
             for inner in ast.walk(node):
-                if isinstance(inner, ast.Call) and _is_self_conn_execute(inner):
+                if isinstance(inner, ast.Call) and _is_self_conn_execute(inner, aliases):
                     word_full = _first_sql_text(inner)
                     word = word_full.split(None, 1)[0].upper() if word_full else None
                     if word is None:
+                        # SQL held in a variable or built f-string: the
+                        # scanner cannot prove it reads. A lock block whose
+                        # ONLY statements are unprovable is still flagged
+                        # below — writers name their verbs in literals
+                        # throughout this file, so opacity correlates with
+                        # composed SELECTs, and silently skipping these is
+                        # how 5 readers hid from the first version of this
+                        # gate.
                         unknown += 1
                     elif _PRAGMA_WRITE_RE.match(word_full or ""):
                         writes += 1
@@ -150,12 +185,14 @@ def _scan_locked_readers(state_py: "Path | None" = None) -> list[str]:
                         )
                     ):
                         writes += 1
-            if reads > 0 and writes == 0 and unknown == 0:
+            if writes == 0 and (reads > 0 or unknown > 0):
                 if method.name not in _ALLOWED_LOCKED_READERS:
+                    kind = "pure-read" if unknown == 0 else "no-proven-write"
                     violations.append(
-                        f"{method.name} (line {node.lineno}): pure-read "
+                        f"{method.name} (line {node.lineno}): {kind} "
                         f"body under `with self._lock:` — route through "
-                        f"_read_ctx() instead"
+                        f"_read_ctx() instead (or add a justified "
+                        f"allowlist entry)"
                     )
     return violations
 
@@ -179,10 +216,22 @@ class TestNoPureReadersUnderWriterLock:
             "    def guilty_reader(self):\n"
             "        with self._lock:\n"
             "            return self._conn.execute(\"SELECT 1\").fetchone()\n"
+            "    def guilty_alias_reader(self):\n"
+            "        with self._lock:\n"
+            "            conn = self._conn\n"
+            "            return conn.execute(\"SELECT 2\").fetchone()\n"
+            "    def guilty_variable_sql(self, query):\n"
+            "        with self._lock:\n"
+            "            return self._conn.execute(query).fetchall()\n"
+            "    def innocent_variable_writer(self, query):\n"
+            "        with self._lock:\n"
+            "            self._conn.execute(query)\n"
+            "            self._conn.execute(\"UPDATE t SET x = 2\")\n"
         )
         p = tmp_path / "fake_state.py"
         p.write_text(sabotage, encoding="utf-8")
         violations = _scan_locked_readers(p)
-        assert len(violations) == 1
-        assert "guilty_reader" in violations[0]
-        assert "innocent_writer" not in violations[0]
+        flagged = {v.split(" ")[0] for v in violations}
+        assert flagged == {
+            "guilty_reader", "guilty_alias_reader", "guilty_variable_sql"
+        }, violations

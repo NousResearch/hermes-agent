@@ -6490,8 +6490,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if active_only:
             query += " AND ended_at IS NULL"
         query += " ORDER BY last_active DESC"
-        with self._lock:
-            rows = self._conn.execute(query, params).fetchall()
+        with self._read_ctx() as conn:
+            rows = conn.execute(query, params).fetchall()
         return [self._session_row_dict(r) for r in rows]
 
     def find_session_by_origin(
@@ -6524,8 +6524,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             query += " AND COALESCE(thread_id, '') = ?"
             params.append(str(thread_id))
         query += " ORDER BY started_at DESC"
-        with self._lock:
-            rows = [dict(r) for r in self._conn.execute(query, params).fetchall()]
+        with self._read_ctx() as conn:
+            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
         if not rows:
             return None
         if user_id:
@@ -7599,8 +7599,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Return the persisted deterministic-fallback streak."""
         if not session_id:
             return 0
-        with self._lock:
-            conn = self._conn
+        with self._read_ctx() as conn:
             if conn is None:
                 return 0
             row = conn.execute(
@@ -7680,8 +7679,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not session_id:
             return 0
-        with self._lock:
-            conn = self._conn
+        with self._read_ctx() as conn:
             if conn is None:
                 return 0
             row = conn.execute(
@@ -13177,8 +13175,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             params.extend(ws_params)
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         params.extend([limit, offset])
-        with self._lock:
-            cursor = self._conn.execute(
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
                 f"{select_with_last_active}"
                 f"{where_sql} "
                 "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
@@ -14283,8 +14281,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # committed data — a pending write transaction's uncommitted
         # meta writes would be invisible.  This is a cheap point lookup,
         # not the convoy bottleneck the read-path split targets.
-        with self._read_ctx() as conn:
-            row = conn.execute(
+        with self._lock:
+            row = self._conn.execute(
                 "SELECT value FROM state_meta WHERE key = ?", (key,)
             ).fetchone()
         if row is None:

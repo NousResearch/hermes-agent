@@ -426,6 +426,7 @@ declare global {
         ) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
+        attach: (id: string) => Promise<boolean>
         /** Best-effort current working directory of the live PTY child (POSIX
          *  only; null on Windows or when unavailable). Used to reopen a tab
          *  where the user last `cd`'d. */

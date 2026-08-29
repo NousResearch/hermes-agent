@@ -4989,7 +4989,8 @@ class TurnRunner:
             _sc = ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
             if _sc is not None and getattr(_sc, "accepts_tool_progress", False):
                 _duration = kwargs.get("duration", 0.0)
-                _sc.on_tool_completed(tool_name or "unknown", _duration)
+                _tool_call_id = kwargs.get("tool_call_id")
+                _sc.on_tool_completed(tool_name or "unknown", _duration, tool_call_id=_tool_call_id)
             return
 
         # Only act on tool.started events (ignore reasoning.available, etc.)
@@ -5159,7 +5160,8 @@ class TurnRunner:
             _sc = ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
             if _sc is not None and getattr(_sc, "accepts_tool_progress", False):
                 # Replace the last progress line with the dedup version
-                _sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
+                _tool_call_id = kwargs.get("tool_call_id")
+                _sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})", tool_call_id=_tool_call_id)
                 return
             # Update the last line in progress_lines with a counter
             # via a special "dedup" queue message.
@@ -5173,7 +5175,8 @@ class TurnRunner:
         # stream bubble instead of the separate progress queue.
         _sc = ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
         if _sc is not None and getattr(_sc, "accepts_tool_progress", False):
-            _sc.on_tool_progress(msg)
+            _tool_call_id = kwargs.get("tool_call_id")
+            _sc.on_tool_progress(msg, tool_call_id=_tool_call_id)
             return
 
         ctx.progress_queue.put(msg)

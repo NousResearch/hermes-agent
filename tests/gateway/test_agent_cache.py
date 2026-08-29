@@ -80,6 +80,32 @@ class TestAgentConfigSignature:
         )
 
 
+    def test_default_gateway_runtime_forwards_filtered_capabilities(self, monkeypatch):
+        """Configured provider capabilities must reach a newly created gateway agent."""
+        from gateway.run import _resolve_runtime_agent_kwargs
+        from hermes_cli import runtime_provider
+
+        monkeypatch.setattr(
+            runtime_provider,
+            "resolve_runtime_provider",
+            lambda: {
+                "api_key": "test-key",
+                "base_url": "https://trusted-proxy.example/v1",
+                "provider": "custom",
+                "requested_provider": "custom:trusted-proxy",
+                "api_mode": "responses",
+                "capabilities": {
+                    "openai_native_compaction": True,
+                    "ignore-me": "not-a-bool",
+                },
+            },
+        )
+        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+
+        runtime = _resolve_runtime_agent_kwargs()
+
+        assert runtime["capabilities"] == {"openai_native_compaction": True}
+
     # ---------------------------------------------------------------
     # cache_keys (compression/context config cache-busting)
     # ---------------------------------------------------------------

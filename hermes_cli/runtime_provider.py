@@ -707,25 +707,26 @@ def _try_resolve_from_custom_pool(
         return None
 
 
+def _filter_capabilities(value: Any) -> Dict[str, bool]:
+    """Return the string-keyed boolean capabilities accepted at runtime."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: enabled
+        for key, enabled in value.items()
+        if isinstance(key, str) and isinstance(enabled, bool)
+    }
+
+
 def _lift_model_capabilities(
     entry: Dict[str, Any], model: Optional[str], result: Dict[str, Any]
 ) -> None:
     """Copy explicit boolean per-model capabilities into the runtime."""
-    capabilities = {
-        key: value
-        for key, value in (entry.get("capabilities") or {}).items()
-        if isinstance(key, str) and isinstance(value, bool)
-    }
+    capabilities = _filter_capabilities(entry.get("capabilities"))
     models = entry.get("models")
     model_config = models.get(model) if isinstance(models, dict) and model else None
     if isinstance(model_config, dict):
-        capabilities.update(
-            {
-                key: value
-                for key, value in model_config.items()
-                if isinstance(key, str) and isinstance(value, bool)
-            }
-        )
+        capabilities.update(_filter_capabilities(model_config))
     if capabilities:
         result["capabilities"] = capabilities
 
@@ -827,7 +828,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
-                    result = {
+                    result: Dict[str, Any] = {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
@@ -855,8 +856,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     if api_mode:
                         result["api_mode"] = api_mode
                     _lift_max_output_tokens(entry, result)
-                    if isinstance(entry.get("capabilities"), dict):
-                        result["capabilities"] = dict(entry["capabilities"])
+                    capabilities = _filter_capabilities(entry.get("capabilities"))
+                    if capabilities:
+                        result["capabilities"] = capabilities
                     return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -904,8 +906,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         if model_name:
             result["model"] = model_name
         _lift_max_output_tokens(entry, result)
-        if isinstance(entry.get("capabilities"), dict):
-            result["capabilities"] = dict(entry["capabilities"])
+        capabilities = _filter_capabilities(entry.get("capabilities"))
+        if capabilities:
+            result["capabilities"] = capabilities
         return result
 
     return None

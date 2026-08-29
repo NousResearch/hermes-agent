@@ -659,6 +659,39 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["source"] == "custom_provider:Local"
 
 
+def test_named_custom_provider_filters_capabilities_at_lookup_boundary(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "local": {
+                    "name": "Local",
+                    "base_url": "http://1.2.3.4:1234/v1",
+                    "capabilities": {
+                        "openai_native_compaction": True,
+                        "invalid-value": "yes",
+                        42: True,
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    provider = rp._get_named_custom_provider("local")
+
+    assert provider["capabilities"] == {"openai_native_compaction": True}
+
+
 def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     """A request for bare ``provider="custom"`` must resolve a literal
     ``providers.custom`` entry (e.g. a cliproxy endpoint) instead of falling

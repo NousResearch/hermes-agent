@@ -118,6 +118,7 @@ const RUNTIME_SESSION_ID = 'rt-new-001'
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
   | 'archiveSession'
+  | 'branchStoredSession'
   | 'createBackendSessionForSend'
   | 'openNewSessionTile'
   | 'removeSession'
@@ -188,6 +189,71 @@ function Harness({
 
   return null
 }
+
+describe('desktop branch creation idempotency', () => {
+  afterEach(() => {
+    cleanup()
+    setSessions([])
+    vi.clearAllMocks()
+  })
+
+  it('coalesces duplicate stored-session branch attempts onto one backend child', async () => {
+    const createReady = deferred<{ session_id: string; stored_session_id: string }>()
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        return createReady.promise as never
+      }
+
+      return {} as never
+    })
+
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'parent', message_count: 2, title: 'Parent' })])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'question', role: 'user', timestamp: 1 },
+        { content: 'answer', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'parent'
+    } as never)
+
+    render(<Harness onReady={value => (actions = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    let first!: Promise<boolean>
+    let second!: Promise<boolean>
+
+    act(() => {
+      first = actions!.branchStoredSession('parent')
+      second = actions!.branchStoredSession('parent')
+    })
+
+    await waitFor(() =>
+      expect(requestGateway.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(1)
+    )
+
+    await act(async () => {
+      createReady.resolve({ session_id: 'runtime-branch', stored_session_id: 'stored-branch' })
+      await expect(Promise.all([first, second])).resolves.toEqual([true, true])
+    })
+
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(1)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.create',
+      expect.objectContaining({
+        messages: [
+          { content: 'question', role: 'user' },
+          { content: 'answer', role: 'assistant' }
+        ],
+        parent_session_id: 'parent',
+        source: 'desktop'
+      })
+    )
+    expect($sessions.get().filter(session => session.id === 'stored-branch')).toHaveLength(1)
+  })
+})
 
 describe('connection-qualified session deletion', () => {
   afterEach(() => {

@@ -204,6 +204,42 @@ interface SessionActionsOptions {
 // (NOT in this set) still legitimately drops to a draft.
 const createdThisRun = new Set<string>()
 
+const branchMessagesFingerprint = (messages: BranchMessage[]): string =>
+  JSON.stringify(messages.map(({ content, role }) => [role, content]))
+
+// Identity of one branch create, so a re-entered branch action (a retried
+// renderer transition, a double right-click) rides the create already in
+// flight instead of minting a second child. The OWNER is part of the identity:
+// the same parent id served by two connections is two different sessions.
+function branchCreateKey({
+  branchCount,
+  branchMessages,
+  cwd,
+  ownerRoute,
+  parentStoredId,
+  profile,
+  sourceSessionId
+}: {
+  branchCount?: number
+  branchMessages: BranchMessage[]
+  cwd?: string
+  ownerRoute?: SessionOwnerRoute
+  parentStoredId: null | string
+  profile?: null | string
+  sourceSessionId: null | string
+}): string {
+  return JSON.stringify({
+    branchCount: branchCount ?? null,
+    connectionId: ownerRoute?.connectionId || null,
+    cwd: cwd?.trim() || null,
+    messages: sourceSessionId ? null : branchMessagesFingerprint(branchMessages),
+    ownerProfile: ownerRoute?.profile || null,
+    parentStoredId,
+    profile: profile?.trim() || null,
+    sourceSessionId
+  })
+}
+
 // Reflect a stored row's persisted token counts into the live usage atom
 // (total is derived, so callers can't drift it out of sync with input/output).
 function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
@@ -343,6 +379,7 @@ export function useSessionActions({
   const { t } = useI18n()
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
+  const branchCreateFlightsRef = useRef(new Map<string, Promise<SessionCreateResponse>>())
 
   // Follow auto-compression's stored-id rotation only while the exact runtime,
   // selection, and route intent still belong to the rotating conversation.
@@ -1991,20 +2028,47 @@ export function useSessionActions({
             ? requestGatewayForAgent<T>(ownerRoute.connectionId, ownerRoute.profile, method, params)
             : requestGateway<T>(method, params)
 
+        // The owner is part of the identity: the same parent id on two
+        // connections is two different sessions, so a route-blind key would
+        // coalesce them onto one create.
+        const createKey = branchCreateKey({
+          branchCount,
+          branchMessages,
+          cwd,
+          ownerRoute,
+          parentStoredId,
+          profile,
+          sourceSessionId
+        })
+
+        let createFlight = branchCreateFlightsRef.current.get(createKey)
+
         // No title: the backend auto-names the branch from its parent's lineage.
-        const branched = sourceSessionId
-          ? await requestBranchGateway<SessionCreateResponse>('session.branch', {
-              session_id: sourceSessionId,
-              ...(branchCount !== undefined ? { count: branchCount } : {})
-            })
-          : await requestBranchGateway<SessionCreateResponse>('session.create', {
-              cols: 96,
-              source: 'desktop',
-              ...(cwd && { cwd }),
-              ...(profile ? { profile } : {}),
-              messages: branchMessages.map(({ content, role }) => ({ content, role })),
-              ...(parentStoredId && { parent_session_id: parentStoredId })
-            })
+        if (!createFlight) {
+          createFlight = (
+            sourceSessionId
+              ? requestBranchGateway<SessionCreateResponse>('session.branch', {
+                  session_id: sourceSessionId,
+                  ...(branchCount !== undefined ? { count: branchCount } : {})
+                })
+              : requestBranchGateway<SessionCreateResponse>('session.create', {
+                  cols: 96,
+                  source: 'desktop',
+                  ...(cwd && { cwd }),
+                  ...(profile ? { profile } : {}),
+                  messages: branchMessages.map(({ content, role }) => ({ content, role })),
+                  ...(parentStoredId && { parent_session_id: parentStoredId })
+                })
+          ).catch(err => {
+            // Drop the flight so a genuine retry re-issues the create; a
+            // resolved flight is cleared once the child is fully published.
+            branchCreateFlightsRef.current.delete(createKey)
+            throw err
+          })
+          branchCreateFlightsRef.current.set(createKey, createFlight)
+        }
+
+        const branched = await createFlight
 
         const responseBranchMessages =
           sourceSessionId && branched.messages?.length ? toBranchMessages(toChatMessages(branched.messages)) : []
@@ -2097,6 +2161,7 @@ export function useSessionActions({
           revealTreePane(`session-tile:${routedSessionId}`)
         }
 
+        branchCreateFlightsRef.current.delete(createKey)
         broadcastSessionsChanged()
 
         return true

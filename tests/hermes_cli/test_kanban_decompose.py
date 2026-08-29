@@ -275,3 +275,31 @@ def test_list_triage_ids_excludes_auto_decomposer_created(kanban_home):
     assert decision not in ids         # auto-decomposer-parked decision excluded
 
 
+# --- AC1 (t_405f7f1f): decision-verb regex tightened => no over-match ---
+
+def test_decision_regex_matches_only_decision_shaped_titles():
+    """The routing regex must match titles that demand a PM decision and NOT
+    implementation titles that merely contain an ambiguous decision verb.
+    Asserts behaviour of the regex via _is_decision_shaped, not snapshots.
+    See kanban-decompose t_405f7f1f AC1 for the source matrix.
+    """
+    cases = {
+        # Genuine decision shapes -> match (keep).
+        "Decide the X approach": True,
+        "Approve the X design": True,
+        "Spec the X interface": True,
+        "Ratify the PRD amendment": True,
+        "Amend the design doc": True,
+        # Ambiguous verbs in implementation titles -> do NOT match (the fix).
+        "Lock the report row rendering": False,
+        "Sign off on the lint config": False,
+        "Approve the merge button": False,
+        # Unrelated implementation titles -> keep no-match.
+        "Implement useCardReorder hook": False,
+        "Add photo affordance": False,
+        "Extract useCardReorder hook (GlobalAside + ActionList dedup)": False,
+    }
+    for title, expected in cases.items():
+        assert decomp._is_decision_shaped(title) is expected, title
+
+

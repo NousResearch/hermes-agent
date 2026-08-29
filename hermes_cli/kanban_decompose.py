@@ -126,11 +126,27 @@ _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 # Titles whose completion would constitute an unsigned product/PM decision.
 # The auto-decomposer routes children whose title matches this to ``triage``
 # (never ``ready``), so a ghost PM-run cannot self-complete them and lock a
-# decision the owner never signed. Keep the alternation to bare decision verbs
-# so an ordinary implementation title ("Lock the report row rendering") is not
-# misclassified — the ``\b`` word boundaries anchor each verb.
+# decision the owner never signed.
+#
+# The verbs are chosen so only deliberately decision-shaped phrasings match, not
+# incidental uses inside implementation titles. Bare ``\b`` word boundaries are
+# NOT sufficient — ``\b lock \b`` matches the standalone word "lock", so title
+# like "Lock the report row rendering" and "Sign off on the backend" would be
+# misclassified. Ambiguous verbs that appear routinely in implementation titles
+# are therefore dropped outright (lock, sign off, redefine) or gated on a
+# decision-shaped noun context: "approve" matches only before a design/plan/
+# approach/... noun, and "amend" only before a document (PRD/plan/spec/design).
+# Unambiguous decision verbs that only ever read as a decision when used bare
+# (decide, ratify) and the verb phrase "spec the" match directly.
 _DECISION_TITLE_RE = re.compile(
-    r"\b(?:decide|approve|spec the|lock|sign off|redefine|amend|ratify)\b",
+    r"\bdecide\b"
+    r"|\bapprove\s+(?:the|an?|this)\s+"
+    r"(?:(?:[a-z0-9-]+\s+)?"
+    r"(?:design|plan|approach|choice|spec|decision|model|schema|architecture|"
+    r"strategy|option|direction|source|interface)\b)"
+    r"|\bspec\s+the\b"
+    r"|\bratify\b"
+    r"|\bamend\s+the\s+(?:prd|plan|spec|design(?:\s+doc)?|roadmap|requirements)\b",
     re.IGNORECASE,
 )
 
@@ -506,5 +522,10 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     return [
         row.id for row in rows
         if (row.created_by or "") != AUTO_DECOMPOSER_AUTHOR
+        # "decomposer" is a legacy fallback author, never produced by the live
+        # dispatcher: decompose_triage_task stamps it ("decompose_triage_task"
+        # in kanban_db.py:7452 via `author or "decomposer"`) only when no author
+        # is supplied. Filter it like the auto-decomposer author so such triage
+        # can still be re-decomposed instead of being silently stranded.
         and (row.created_by or "") != "decomposer"
     ]

@@ -130,7 +130,11 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert install_env is not None and "PATH" in install_env
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
-    assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
+    launched = mock_run.call_args_list[1].args[0]
+    if sys.platform.startswith("linux"):
+        assert launched == [str(packaged_exe), "--disable-setuid-sandbox"]
+    else:
+        assert launched == [str(packaged_exe)]
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
 
 
@@ -968,7 +972,11 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 0
-    assert mock_run.call_args.args[0] == [str(packaged_exe)]
+    launched = mock_run.call_args.args[0]
+    if sys.platform.startswith("linux"):
+        assert launched == [str(packaged_exe), "--disable-setuid-sandbox"]
+    else:
+        assert launched == [str(packaged_exe)]
 
 
 @pytest.mark.macos_only

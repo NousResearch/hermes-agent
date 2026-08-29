@@ -8260,6 +8260,29 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     return True
 
 
+def _desktop_linux_needs_disable_setuid_sandbox(packaged_executable: Path) -> bool:
+    """Return True when Chromium should skip the present-but-non-setuid helper.
+
+    A user-owned ``chrome-sandbox`` still makes Chromium abort with
+    ``setuid_sandbox_host`` even when the namespace sandbox works. Passing
+    ``--disable-setuid-sandbox`` keeps the userns sandbox and avoids sudo.
+    Call only after ``_desktop_linux_sandbox_fixup`` succeeded without making
+    the helper root-owned 4755 (the userns path). Does not re-probe userns.
+    """
+    if sys.platform != "linux":
+        return False
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        sandbox_lstat = sandbox.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(sandbox_lstat.st_mode):
+        return False
+    if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
+        return False
+    return True
+
+
 _LINUX_PASSWORD_STORES = frozenset({"gnome-libsecret", "kwallet", "kwallet5", "kwallet6", "basic"})
 
 
@@ -8654,6 +8677,8 @@ def cmd_gui(args: argparse.Namespace):
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)
+    elif _desktop_linux_needs_disable_setuid_sandbox(packaged_executable):
+        launch_command.append("--disable-setuid-sandbox")
 
     launch_command.extend(config_electron_flags)
     print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")

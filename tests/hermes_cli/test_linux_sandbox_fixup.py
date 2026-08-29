@@ -114,3 +114,50 @@ class TestDesktopLinuxSandboxFixup:
              ) as probe:
             assert cli_main._desktop_linux_sandbox_fixup(exe) is True
         probe.assert_not_called()
+
+
+class TestDesktopLinuxNeedsDisableSetuidSandbox:
+    def _fake_packaged_app(self, tmp_path):
+        unpacked = tmp_path / "linux-unpacked"
+        unpacked.mkdir()
+        exe = unpacked / "Hermes"
+        exe.write_text("", encoding="utf-8")
+        sandbox = unpacked / "chrome-sandbox"
+        sandbox.write_text("", encoding="utf-8")
+        sandbox.chmod(0o755)
+        return exe
+
+    def test_true_for_user_owned_helper_when_userns_works(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        exe = self._fake_packaged_app(tmp_path)
+        with patch.object(
+            cli_main, "_desktop_linux_userns_sandbox_available", return_value=True
+        ):
+            assert cli_main._desktop_linux_needs_disable_setuid_sandbox(exe) is True
+
+    def test_false_for_root_owned_setuid_helper(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        exe = self._fake_packaged_app(tmp_path)
+        real_lstat = (exe.parent / "chrome-sandbox").lstat()
+
+        class _RootSetuidStat:
+            st_mode = stat.S_IFREG | 0o4755
+            st_uid = 0
+
+            def __getattr__(self, name):
+                return getattr(real_lstat, name)
+
+        with patch.object(cli_main.Path, "lstat", return_value=_RootSetuidStat()), \
+             patch.object(
+                 cli_main, "_desktop_linux_userns_sandbox_available", return_value=True
+             ) as probe:
+            assert cli_main._desktop_linux_needs_disable_setuid_sandbox(exe) is False
+        probe.assert_not_called()
+
+    def test_false_when_helper_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        unpacked = tmp_path / "linux-unpacked"
+        unpacked.mkdir()
+        exe = unpacked / "Hermes"
+        exe.write_text("", encoding="utf-8")
+        assert cli_main._desktop_linux_needs_disable_setuid_sandbox(exe) is False

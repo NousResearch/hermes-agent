@@ -532,3 +532,62 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_retention_reads_execution_retention_from_config(monkeypatch, tmp_path):
+    """cron.execution_retention must govern pruning, not a hardcoded constant.
+
+    Regression guard: the cap used to be hardcoded, so `hermes config set
+    cron.execution_retention` was cosmetic — `config get` echoed the new value
+    while pruning still trimmed to 1000. Assert the configured value actually
+    bounds the ledger.
+    """
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True, exist_ok=True)
+    # A distinctive cap: neither the 1000 default nor a round number, so a
+    # pass cannot be a coincidence of the old behaviour.
+    cap = 7
+    (home / "config.yaml").write_text(f"cron:\n  execution_retention: {cap}\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    assert executions._terminal_execution_retention() == cap
+
+    for index in range(cap + 13):
+        row = executions.create_execution(f"done-{index}", source="builtin")
+        executions.finish_execution(row["id"], success=True)
+
+    terminal = [
+        row for row in executions.list_executions(limit=1000)
+        if row["status"] in ("completed", "failed", "unknown")
+    ]
+    assert len(terminal) <= cap
+
+
+def test_module_level_override_still_wins_over_config(monkeypatch, tmp_path):
+    """An explicit MAX_TERMINAL_EXECUTIONS override must beat config.
+
+    Existing tests monkeypatch the module constant; that has to keep working
+    even though production now resolves the cap from config.
+    """
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("cron:\n  execution_retention: 500\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 3)
+
+    assert executions._terminal_execution_retention() == 3
+
+
+def test_config_default_matches_module_default(monkeypatch):
+    """The documented default and the code fallback must not drift apart."""
+    import cron.executions as executions
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert (
+        DEFAULT_CONFIG["cron"]["execution_retention"]
+        == executions._DEFAULT_MAX_TERMINAL_EXECUTIONS
+    )

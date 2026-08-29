@@ -242,12 +242,7 @@ function RenameBoardDialog({ board, onClose }: { board: BoardMeta | null; onClos
       open={Boolean(board)}
       title={k.renameBoardTitle}
     >
-      <BoardNameField
-        onChange={setName}
-        onEnter={() => !disabled && save.mutate()}
-        slug={slug}
-        value={name}
-      />
+      <BoardNameField onChange={setName} onEnter={() => !disabled && save.mutate()} slug={slug} value={name} />
     </BoardDialog>
   )
 }

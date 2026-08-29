@@ -127,6 +127,19 @@ def test_modified_capability_failure_is_actionable_and_not_downgraded():
     assert "ripgrep" in result.error
 
 
+@pytest.mark.parametrize("order", ["discovery", "modified"])
+def test_rg_partial_output_with_error_exit_fails_closed(order):
+    env = RecordingEnvironment(rg_output="/repo/partial.py\n", rg_code=2)
+
+    result = ShellFileOperations(env).search(
+        "*.py", path="/repo", target="files", order=order
+    )
+
+    assert result.error is not None
+    assert result.files == []
+    assert len(env.rg_commands) == 1
+
+
 def test_invalid_direct_file_order_returns_structured_error():
     env = RecordingEnvironment()
     ops = ShellFileOperations(env)

@@ -3496,23 +3496,7 @@ class ShellFileOperations(FileOperations):
                     rg_executable=resolved,
                 )
             else:
-                # find cannot accept the same cross-platform guarantees as rg;
-                # preserve per-root fallback scans, but never swallow an error
-                # and apply the caller's page once to the combined result.
-                collected: List[str] = []
-                any_truncated = False
-                fetch = offset + limit + 1
-                for root in existing:
-                    sub = self._search_files(pattern, root, fetch, 0, order)
-                    if sub.error:
-                        return sub
-                    collected.extend(sub.files)
-                    any_truncated = any_truncated or sub.truncated
-                merged = SearchResult(
-                    files=collected[offset:offset + limit],
-                    total_count=len(collected),
-                    truncated=any_truncated or len(collected) > offset + limit,
-                )
+                merged = self._search_files(pattern, existing, limit, offset, order)
         else:
             merged = SearchResult()
             for root in existing:
@@ -3641,7 +3625,7 @@ class ShellFileOperations(FileOperations):
         anchor = os.path.splitdrive(root)[0] + os.sep if os.path.splitdrive(root)[0] else os.path.abspath(os.sep)
         return root == home or common == root or root == os.path.normcase(anchor)
 
-    def _search_files(self, pattern: str, path: str, limit: int, offset: int,
+    def _search_files(self, pattern: str, path: str | List[str], limit: int, offset: int,
                       order: str = "discovery") -> SearchResult:
         """Search for files by name pattern (glob-like)."""
         # Auto-prepend **/ for recursive search if not already present
@@ -3660,7 +3644,8 @@ class ShellFileOperations(FileOperations):
         # A local find traversal rooted at/above the user's home or at a
         # filesystem root can consume minutes and prompt on protected paths.
         # Refuse before invoking find. Controller paths never classify remotes.
-        if self._is_broad_local_search_root(path):
+        roots = [path] if isinstance(path, str) else path
+        if any(self._is_broad_local_search_root(root) for root in roots):
             return SearchResult(error=(
                 "Broad local file search without ripgrep is disabled because "
                 "find cannot keep this traversal safely bounded. Install "
@@ -3677,13 +3662,15 @@ class ShellFileOperations(FileOperations):
         # Prune hidden descendant directories while still allowing an
         # explicitly selected hidden root. Hidden files are excluded too,
         # matching rg's default semantics.
-        q_path = self._escape_shell_arg(path)
+        q_roots = [self._escape_shell_arg(root) for root in roots]
+        root_exemptions = "".join(f" ! -path {root}" for root in q_roots)
         hidden_prune = (
-            f" \\( -type d -name '.*' ! -path {q_path} \\) -prune -o"
+            f" \\( -type d -name '.*'{root_exemptions} \\) -prune -o"
         )
         protected_paths = [
-            os.path.normpath(os.path.join(path, item))
-            for item in self._macos_search_exclusions(path)
+            os.path.normpath(os.path.join(root, item))
+            for root in roots
+            for item in self._macos_search_exclusions(root)
         ]
         protected_prune = ""
         if protected_paths:
@@ -3694,7 +3681,7 @@ class ShellFileOperations(FileOperations):
 
         fetch_limit = offset + limit + 1
         base = (
-            f"find {q_path}{protected_prune}{hidden_prune} -type f "
+            f"find {' '.join(q_roots)}{protected_prune}{hidden_prune} -type f "
             f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}"
         )
         if order == "modified":
@@ -3785,7 +3772,7 @@ class ShellFileOperations(FileOperations):
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
 
-        if result.exit_code not in {0, 1, 124} and not all_files:
+        if result.exit_code not in {0, 1, 124}:
             if order == "modified":
                 return SearchResult(error=(
                     "Exact modification-time order failed; ripgrep 14+ is "

@@ -102,6 +102,21 @@ class FindRecordingEnvironment:
         ]
 
 
+class MultiRootFindEnvironment(FindRecordingEnvironment):
+    def execute(self, command, **kwargs):
+        self.commands.append((command, kwargs))
+        if command.startswith("test -e "):
+            output = "not_found\n" if "'/one/.hidden /two/.cache'" in command else "exists\n"
+            return {"output": output, "returncode": 0}
+        if command.startswith("command -v find"):
+            return {"output": "yes\n", "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "", "returncode": 1}
+        if "find " in command:
+            return {"output": self.output, "returncode": self.code}
+        return {"output": "", "returncode": 1}
+
+
 def test_find_discovery_is_one_unsorted_pruned_bounded_scan():
     env = FindRecordingEnvironment("/narrow/a.py\n/narrow/b.py\n/narrow/c.py\n/narrow/d.py\n")
     result = ShellFileOperations(env)._search_files(
@@ -130,6 +145,32 @@ def test_find_modified_is_one_exact_scan_without_bsd_retry():
     assert "-printf '%T@ %p\\n'" in command
     assert "sort -rn" in command
     assert "head -n 3" in command
+
+
+def test_no_rg_multi_root_modified_is_one_globally_sorted_scan():
+    env = MultiRootFindEnvironment(
+        "30 /two/.cache/new.py\n10 /one/.hidden/old.py\n"
+    )
+
+    result = ShellFileOperations(env).search(
+        "*.py",
+        path="/one/.hidden /two/.cache",
+        target="files",
+        order="modified",
+        limit=1,
+    )
+
+    assert result.error is None
+    assert result.files == ["/two/.cache/new.py"]
+    assert result.truncated is True
+    assert len(env.find_commands) == 1
+    command, kwargs = env.find_commands[0]
+    assert "find '/one/.hidden' '/two/.cache'" in command
+    assert "sort -rn" in command
+    assert "head -n 2" in command
+    assert "! -path '/one/.hidden'" in command
+    assert "! -path '/two/.cache'" in command
+    assert kwargs["timeout"] <= 60
 
 
 def test_find_modified_capability_failure_is_actionable_without_retry():

@@ -101,6 +101,48 @@ def _cleanup(mcp_tool_module, name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_application_errors_do_not_trip_transport_breaker(monkeypatch, tmp_path):
+    """A healthy MCP RPC that returns ``isError`` is an application result.
+
+    Repeating a valid application-level error (for example, requesting a
+    missing config path) must not make Hermes label the MCP server unreachable.
+    Only transport failures belong in the server circuit breaker.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_application_error(*a, **kw):
+        call_count["n"] += 1
+        result = MagicMock()
+        result.is_error = True
+        block = MagicMock()
+        block.text = "config path not found"
+        result.content = [block]
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_application_error)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("srv", "config_get", 10.0)
+        attempts = mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 1
+
+        for _ in range(attempts):
+            parsed = json.loads(handler({"path": "missing.path"}))
+            assert parsed.get("error") == "config path not found", parsed
+
+        assert call_count["n"] == attempts, (
+            "application errors must continue reaching the healthy MCP session"
+        )
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     """After a tripped breaker's cooldown elapses, the *next* call must
     actually execute against the session (half-open probe). When the

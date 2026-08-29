@@ -980,9 +980,15 @@ def test_protected_kanban_runtime_does_not_hide_encoded_payload(tmp_path, monkey
         "b" * 64,
     ],
 )
-def test_protected_kanban_never_promotes_generic_terminal_stdout_by_shape(
+def test_protected_kanban_admits_bounded_generic_terminal_stdout(
     tmp_path, monkeypatch, output
 ):
+    """Ordinary terminal evidence must not deadlock a protected cloud worker.
+
+    The result is still typed as bounded non-source text; it is not promoted
+    to a source grant merely because its shape resembles a URL, ref, or hash.
+    """
+
     monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
     agent = _agent(tmp_path)
     kwargs = {
@@ -1006,53 +1012,78 @@ def test_protected_kanban_never_promotes_generic_terminal_stdout_by_shape(
         ],
     }
 
-    with pytest.raises(EgressBlocked) as exc_info:
-        authorize_agent_sdk_kwargs(agent, kwargs)
+    authorized, receipt = authorize_agent_sdk_kwargs(agent, kwargs)
 
-    assert "untrusted_provenance" in exc_info.value.decision.reason_codes
+    assert receipt.allowed
+    assert authorized["messages"][1]["content"] == output
+    assert receipt.decision.source_segment_count == 0
 
 
-def test_protected_terminal_file_bytes_keep_untrusted_provenance(
+def test_protected_terminal_file_bytes_are_bounded_non_source_context(
     tmp_path, monkeypatch
 ):
-    """Ungrantable terminal reads must never become sanitized by omission."""
+    """Normal terminal reads must reach the approved cloud worker.
+
+    Without a read_file grant this remains non-source context, so it cannot
+    silently acquire source authority during serialization.
+    """
 
     monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
     agent = _agent(tmp_path)
-    calls = []
     innocent_source = "def calculate_total(items):\n    return sum(items)\n"
 
-    with pytest.raises(EgressBlocked) as exc_info:
-        dispatch_authorized_agent_request(
-            agent,
+    calls = []
+    dispatch_authorized_agent_request(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_terminal_file_read",
+                            "type": "function",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": '{"command":"cat internal_source.py"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_terminal_file_read",
+                    "content": innocent_source,
+                },
+            ],
+        },
+        lambda request: calls.append(request),
+    )
+
+    assert calls == [{
+        "model": "test-model",
+        "messages": [
             {
-                "model": "test-model",
-                "messages": [
+                "role": "assistant",
+                "tool_calls": [
                     {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": "call_terminal_file_read",
-                                "type": "function",
-                                "function": {
-                                    "name": "terminal",
-                                    "arguments": '{"command":"cat internal_source.py"}',
-                                },
-                            }
-                        ],
-                    },
-                    {
-                        "role": "tool",
-                        "tool_call_id": "call_terminal_file_read",
-                        "content": innocent_source,
-                    },
+                        "id": "call_terminal_file_read",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"cat internal_source.py"}',
+                        },
+                    }
                 ],
             },
-            lambda request: calls.append(request),
-        )
-
-    assert "untrusted_provenance" in exc_info.value.decision.reason_codes
-    assert calls == []
+            {
+                "role": "tool",
+                "tool_call_id": "call_terminal_file_read",
+                "content": innocent_source,
+            },
+        ],
+    }]
 
 
 def test_exact_applied_secret_is_denied_at_final_provider_boundary(
@@ -1140,9 +1171,11 @@ def test_recognized_terminal_syntax_does_not_exempt_adjacent_base64(
         )
 
 
-def test_protected_kanban_rejects_generic_codex_function_output(
+def test_protected_kanban_admits_bounded_codex_function_output(
     tmp_path, monkeypatch
 ):
+    """Responses API tool output follows the same usable cloud path."""
+
     monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
     agent = _agent(tmp_path)
     kwargs = {
@@ -1157,15 +1190,16 @@ def test_protected_kanban_rejects_generic_codex_function_output(
             {
                 "type": "function_call_output",
                 "call_id": "call_terminal123",
-                "output": "https://github.com/acme/widget.git run_id=1129",
+                "output": "https://github.com/acme/widget.git\nworking tree clean",
             },
         ],
     }
 
-    with pytest.raises(EgressBlocked) as exc_info:
-        authorize_agent_sdk_kwargs(agent, kwargs)
+    authorized, receipt = authorize_agent_sdk_kwargs(agent, kwargs)
 
-    assert "untrusted_provenance" in exc_info.value.decision.reason_codes
+    assert receipt.allowed
+    assert authorized["input"][1]["output"] == kwargs["input"][1]["output"]
+    assert receipt.decision.source_segment_count == 0
 
 
 def test_real_read_file_wire_result_keeps_exact_source_provenance(

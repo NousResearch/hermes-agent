@@ -586,6 +586,37 @@ def _canonical_base64_candidate(candidate: str) -> bool:
     return False
 
 
+# GitHub's legacy GraphQL global node id: base64 of a fixed
+# ``<digits>:<TypeName><digits>`` grammar (e.g. "05:Issue160502814" ->
+# "MDU6SXNzdWUxNjA1MDI4MTQ0"). `gh api` / `gh issue|pr list` return these in
+# every issue/PR/label/comment object's `node_id` field, so any tool-output
+# scan that fetches GitHub issue or PR data structurally contains them. They
+# are fixed, low-entropy protocol identifiers for public object identity —
+# not caller-supplied encoded content — so they get the same treatment as
+# the other bounded protocol grammars above (call_/fc_ ids, kanban task ids,
+# prompt cache keys). Investigation for t_80e6f80b: this pattern was
+# repeatedly and falsely flagged as ``base64_payload`` on every provider
+# fallback from a local model to a REMOTE one mid-scan, permanently
+# excluding cloud fallback for any GitHub-issue-reading profile.
+_GITHUB_LEGACY_NODE_ID_GRAMMAR = re.compile(r"\A\d{1,3}:[A-Za-z]{2,40}\d{1,20}\Z")
+
+
+def _looks_like_github_legacy_node_id(candidate: str) -> bool:
+    unpadded = candidate.rstrip("=")
+    if "=" in unpadded or len(unpadded) % 4 == 1:
+        return False
+    padded = unpadded + "=" * (-len(unpadded) % 4)
+    try:
+        decoded = base64.b64decode(padded.encode("ascii"), validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    try:
+        text = decoded.decode("ascii")
+    except UnicodeDecodeError:
+        return False
+    return bool(_GITHUB_LEGACY_NODE_ID_GRAMMAR.fullmatch(text))
+
+
 def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> bool:
     if isinstance(value, str):
         # Fixed Hermes/Nous attribution tags are protocol metadata, not an
@@ -628,6 +659,9 @@ def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> b
             # Content-addressed cache routing is a fixed application protocol
             # value: the literal ``pck_`` prefix plus exactly 96 bits of hex.
             if _PROMPT_CACHE_KEY.fullmatch(candidate):
+                continue
+            # GitHub's legacy global node id (see helper docstring above).
+            if _looks_like_github_legacy_node_id(candidate):
                 continue
             if _canonical_base64_candidate(candidate):
                 return True

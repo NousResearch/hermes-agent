@@ -476,11 +476,24 @@ def _segment_protected_tool_result(
     used_grants: dict[str, SourceGrant],
     *,
     sanitized_cap: int,
-) -> UntrustedProvenanceSegment:
-    """Never infer non-source authority from generic terminal stdout shape."""
+) -> SanitizedSegment | SourceBoundSegment | OutboundText:
+    """Admit ordinary tool output without treating it as trusted source.
 
-    del grant_texts, used_grants, sanitized_cap
-    return UntrustedProvenanceSegment(sha256(text.encode("utf-8")).hexdigest())
+    Protected cloud workers need normal terminal results to make progress.
+    Provenance is therefore not a standalone deny reason for a matched tool
+    result: output takes the same bounded, source-aware path as other
+    non-source text. This does not grant source authority or bypass the final
+    secret, encoding, path, size, or receipt checks; unsafe output still fails
+    closed there.
+    """
+
+    return _segment_text(
+        text,
+        grant_texts,
+        used_grants,
+        sanitized_cap=sanitized_cap,
+        allow_line_split=True,
+    )
 
 
 def _segment_read_file_presentation(

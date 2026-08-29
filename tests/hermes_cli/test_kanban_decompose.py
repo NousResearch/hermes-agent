@@ -303,3 +303,93 @@ def test_decision_regex_matches_only_decision_shaped_titles():
         assert decomp._is_decision_shaped(title) is expected, title
 
 
+# --- dry-run: compute the graph but write nothing ---
+
+def test_dry_run_fanout_writes_nothing(kanban_home):
+    """--dry-run computes children + routing decisions but performs no DB write."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "Decide the X approach", "body": "a or b",
+             "assignee": "jobsy", "parents": []},
+            {"title": "Implement feature Y", "body": "build it",
+             "assignee": "engineer", "parents": [0]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "jobsy", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(
+                tid, author=decomp.AUTO_DECOMPOSER_AUTHOR, dry_run=True,
+            )
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    # No child ids assigned — nothing was written.
+    assert outcome.child_ids is None
+    # The plan carries the routing decisions a manual E2E needs to inspect.
+    assert outcome.dry_run_plan is not None
+    assert len(outcome.dry_run_plan) == 2
+    assert outcome.dry_run_plan[0]["title"] == "Decide the X approach"
+    assert outcome.dry_run_plan[0]["assignee"] == "jobsy"
+    assert outcome.dry_run_plan[0]["triage"] is True   # decision-shaped, parked
+    assert outcome.dry_run_plan[1]["title"] == "Implement feature Y"
+    assert outcome.dry_run_plan[1]["triage"] is False
+
+    # The board is untouched: the root is still triage, and no children exist.
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        remaining = kb.list_tasks(conn, status="triage")
+    assert root.status == "triage"
+    assert all(r.id != tid for r in remaining) is False  # root still in triage set
+    # Only the root task was ever created.
+    with kb.connect() as conn:
+        all_tasks = kb.list_tasks(conn, limit=1000)
+    assert len(all_tasks) == 1
+
+
+def test_dry_run_single_task_writes_nothing(kanban_home):
+    """--dry-run on a fanout=false response returns the spec but writes nothing."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="single thing", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "one unit",
+        "title": "Tightened title",
+        "body": "Do the one thing.",
+        "assignee": "jobsy",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "jobsy"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me", dry_run=True)
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is False
+    assert outcome.dry_run_plan is not None
+    assert outcome.dry_run_plan[0]["title"] == "Tightened title"
+
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        all_tasks = kb.list_tasks(conn, limit=1000)
+    assert root.status == "triage"
+    assert len(all_tasks) == 1
+
+

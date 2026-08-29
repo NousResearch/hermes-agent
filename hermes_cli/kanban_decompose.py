@@ -174,6 +174,7 @@ class DecomposeOutcome:
     fanout: bool = False
     child_ids: list[str] | None = None
     new_title: Optional[str] = None
+    dry_run_plan: Optional[list[dict]] = None
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -313,6 +314,7 @@ def decompose_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    dry_run: bool = False,
 ) -> DecomposeOutcome:
     """Decompose a triage task into a graph of child tasks.
 
@@ -401,6 +403,16 @@ def decompose_task(
             return DecomposeOutcome(
                 task_id, False, "decomposer returned fanout=false with no title/body",
             )
+        if dry_run:
+            return DecomposeOutcome(
+                task_id, True, "dry-run: single task (no fanout) — nothing written",
+                fanout=False, new_title=title_val,
+                dry_run_plan=[{
+                    "title": title_val,
+                    "body": body_val,
+                    "assignee": assignee_val,
+                }],
+            )
         with kb.connect_closing() as conn:
             ok = kb.specify_triage_task(
                 conn,
@@ -474,6 +486,24 @@ def decompose_task(
             # keep current behavior: they are already owner-committed.
             "triage": is_auto and _is_decision_shaped(title),
         })
+
+    if dry_run:
+        plan = [
+            {
+                "title": c["title"],
+                "body": c["body"],
+                "assignee": c["assignee"],
+                "parents": c["parents"],
+                "triage": c["triage"],
+            }
+            for c in children
+        ]
+        return DecomposeOutcome(
+            task_id, True,
+            f"dry-run: would fan out into {len(children)} children — nothing written",
+            fanout=True, child_ids=None,
+            dry_run_plan=plan,
+        )
 
     try:
         with kb.connect_closing() as conn:

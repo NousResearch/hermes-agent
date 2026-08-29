@@ -1023,6 +1023,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         action="store_true",
         help="Emit one JSON object per task on stdout",
     )
+    p_decompose.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compute the decomposition graph (LLM + routing) and print the "
+             "plan without writing anything to the board. Safe for E2E "
+             "verification against any board, including the live one.",
+    )
 
     # --- gc ---
     p_gc = sub.add_parser(
@@ -3242,6 +3249,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
     tenant = getattr(args, "tenant", None)
     author = getattr(args, "author", None) or _profile_author()
     want_json = bool(getattr(args, "json", False))
+    dry_run = bool(getattr(args, "dry_run", False))
 
     if args.task_id and all_flag:
         print(
@@ -3274,7 +3282,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
 
     ok_count = 0
     for tid in ids:
-        outcome = decomp.decompose_task(tid, author=author)
+        outcome = decomp.decompose_task(tid, author=author, dry_run=dry_run)
         if outcome.ok:
             ok_count += 1
         if want_json:
@@ -3285,7 +3293,19 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                 "fanout": outcome.fanout,
                 "child_ids": outcome.child_ids,
                 "new_title": outcome.new_title,
+                "dry_run": dry_run,
+                "plan": outcome.dry_run_plan,
             }))
+        elif outcome.ok and outcome.dry_run_plan is not None:
+            print(f"[dry-run] {outcome.task_id} → {outcome.reason}")
+            for i, c in enumerate(outcome.dry_run_plan):
+                triage_flag = " → TRIAGE" if c.get("triage") else ""
+                parents = c.get("parents") or []
+                parent_note = f" (parents={parents})" if parents else ""
+                print(
+                    f"    {i}. [{c.get('assignee')}] {c.get('title')}"
+                    f"{triage_flag}{parent_note}"
+                )
         elif outcome.ok:
             if outcome.fanout and outcome.child_ids:
                 child_summary = ", ".join(outcome.child_ids)

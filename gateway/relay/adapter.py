@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 import time
 from collections import OrderedDict
@@ -41,6 +42,12 @@ logger = logging.getLogger(__name__)
 # reader, and ws.close (~3s), the full drain path stays inside 5s.
 _RELAY_GO_IDLE_ON_DISCONNECT_TIMEOUT_S = 2.0
 _RELAY_REVOCATION_MONITOR_TEARDOWN_TIMEOUT_S = 1.0
+
+# Link detection for the fresh-final unfurl route: raw http(s) URLs, Slack
+# mrkdwn link syntax (<https://...|label>), and markdown links. Cheap and
+# permissive on purpose — a false positive costs one fresh (non-edited)
+# final message; a false negative silently loses the preview.
+_URL_RE = re.compile(r"https?://|<https?:|\]\(https?:")
 
 # How many already-answered prompt ids to remember, so a duplicate answer for
 # one of them (a double tap, or a connector redelivery of the same forward) is
@@ -334,6 +341,55 @@ class RelayAdapter(BasePlatformAdapter):
         if self._slack_unfurl_hints(platform):
             return False
         return True
+
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Deliver streamed finals as a FRESH send when Slack unfurl is forced on.
+
+        Slack evaluates link previews exactly once, at ``chat.postMessage``
+        time (live-probed 2026-08-28: URL at post + ``unfurl_links: true``
+        unfurls; a ``chat.update`` that INTRODUCES the URL never does, stamps
+        or not). Edit-based streaming posts its first frame before the model
+        has produced any URL — a tool-progress card or an early text frame —
+        so a configured ``unfurl_links/media: true`` can never surface a
+        preview through the edit lane: the only post Slack evaluates has no
+        link in it.
+
+        Returning True routes the completed reply through the consumer's
+        fresh-final path: one new ``send`` carrying the full content, which
+        ``send()`` stamps with the unfurl hints — URL and flags present at
+        the single moment Slack looks.
+
+        Scope: ONLY when the hints contain an explicit True. False-only
+        hints (the enterprise fail-closed posture) keep the edit lane —
+        suppression rides the placeholder post and an edit can never add a
+        preview afterwards, so ``false`` inherits correctly with zero
+        streaming-UX cost.
+        """
+        platform = None
+        if chat_id is not None:
+            platform = self._platform_by_chat.get(str(chat_id))
+        # The stream consumer's hook call passes (content, metadata=...) only
+        # — no chat_id — so resolve through the turn metadata's platform when
+        # present before falling back to the primary descriptor.
+        if platform is None and isinstance(metadata, dict):
+            platform = metadata.get("platform")
+        if platform is None:
+            platform = getattr(self.descriptor, "platform", None)
+        hints = self._slack_unfurl_hints(platform)
+        if not hints:
+            return False
+        if not any(v is True for v in hints.values()):
+            return False
+        # Only link-bearing finals benefit: without a URL there is nothing to
+        # unfurl, and the relay has no delete op (connector contract v1), so
+        # the streamed preview stays behind the fresh final. Keep the edit
+        # lane for linkless replies to avoid a pointless duplicate message.
+        return bool(_URL_RE.search(content or ""))
 
     def stream_is_message_for_chat(self, chat_id: str) -> bool:
         """Per-chat stream-is-the-message semantic (review r2, finding 2).

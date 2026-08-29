@@ -105,9 +105,6 @@ _GITHUB_PLAIN_LIST_OUTPUT_REPLAY = (
 _REJECTED_TERMINAL_COMMAND_REPLAY = json.dumps(
     {"command": "<rejected terminal command omitted>"}, separators=(",", ":")
 )
-_REMOTE_KANBAN_TERMINAL_COMMAND_ALLOWLIST = frozenset(
-    {"awk", "cat", "find", "gh", "git", "head", "ls", "npm", "pwd", "pytest", "python", "rg", "sed", "tail", "uv"}
-)
 _GIT_WORKSPACE_DIAGNOSTIC_REPLAY = (
     "git workspace diagnostic completed locally; raw paths and commit subjects "
     "were omitted from remote replay."
@@ -2077,29 +2074,9 @@ def _typed_payload(
 
 
 def _terminal_replay_command(arguments: str) -> str:
-    """Classify a completed terminal command without replaying its text."""
+    """Replay a local command only after strict sensitive-text redaction."""
 
-    try:
-        parsed = json.loads(arguments)
-        command = parsed.get("command") if isinstance(parsed, Mapping) else None
-        tokens = shlex.split(command) if isinstance(command, str) else []
-    except (TypeError, ValueError, json.JSONDecodeError):
-        tokens = []
-    command_classes: list[str] = []
-    is_executable = True
-    for token in tokens:
-        if token in {"&&", "||", ";", "|"}:
-            is_executable = True
-            continue
-        if not is_executable or token.startswith("-") or "=" in token:
-            continue
-        command_classes.append(
-            token if token in _REMOTE_KANBAN_TERMINAL_COMMAND_ALLOWLIST else "other"
-        )
-        is_executable = False
-    return json.dumps(
-        {"command_class": command_classes[:4] or ["other"]}, separators=(",", ":")
-    )
+    return redact_remote_unsafe_text(redact_sensitive_text(arguments, force=True))
 
 
 def _terminal_replay_result(output: str) -> str:

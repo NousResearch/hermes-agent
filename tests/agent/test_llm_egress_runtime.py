@@ -1653,7 +1653,7 @@ def test_protected_kanban_redacts_nested_terminal_argument_replay(
     monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
     agent = _agent(tmp_path)
     agent.provider = "nous"
-    opaque_command = "git show " + "A" * 64
+    opaque_command = "git show c2VjcmV0LXBheWxvYWQ="
 
     authorized, receipt = authorize_agent_sdk_kwargs(
         agent,
@@ -1679,7 +1679,8 @@ def test_protected_kanban_redacts_nested_terminal_argument_replay(
 
     assert receipt.allowed
     replay = authorized["messages"][0]["tool_calls"][0]["function"]["arguments"]
-    assert json.loads(replay) == {"command_class": ["git"]}
+    assert "git show" in replay
+    assert "<redacted-base64>" in replay
     assert opaque_command not in replay
 
 

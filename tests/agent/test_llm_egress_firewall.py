@@ -623,6 +623,28 @@ def test_sha_and_commit_references_in_prose_are_not_base64_false_positives(tmp_p
     assert "base64_payload" not in decision.reason_codes
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Use systematic-debugging when a fix keeps not sticking.",
+        "Call get_symbols_overview before reading a large file.",
+        "The 50KB cap applies per attachment; retry after 1800 seconds.",
+        "Templates live under references/templates/scripts in this skill.",
+        "Bind ids/goals/status/transcripts before writing the summary.",
+        "TODO: revisit this once the WAIT state clears; do not SKIP the check.",
+    ],
+)
+def test_tool_and_skill_identifier_shapes_are_not_base64_false_positives(tmp_path, text):
+    """live incident, 2026-08-28: moving profiles from a local (loopback)
+    provider to a remote one (Nous) exposed them to egress scanning for the
+    first time, and every one of them failed on message 1 -- the shared
+    tool/skill descriptions are full of kebab-case slugs, snake_case
+    function names, bare small numbers, and all-caps emphasis words that
+    round-trip as valid unpadded Base64 by coincidence."""
+    decision = firewall(tmp_path).preflight(_sanitized_request(text), _route())
+    assert "base64_payload" not in decision.reason_codes
+
+
 def test_bounded_kanban_show_structural_atoms_with_exact_receipt_ids_are_not_base64(
     tmp_path,
 ):

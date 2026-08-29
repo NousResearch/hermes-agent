@@ -228,8 +228,16 @@ _HERMES_TASK_ID = re.compile(r"^t_[0-9a-f]{8}$")
 _PROMPT_CACHE_KEY = re.compile(r"^pck_[0-9a-f]{24}$")
 _BOUNDED_DURATION = re.compile(r"^(?:0|[1-9][0-9]{0,6})(?:ms|s|m|h)$")
 _BOUNDED_CLI_WORD = re.compile(r"^--[a-z]+(?:-[a-z]+)*$")
+# Any-case letters + optional trailing slash: GitHub-style org/repo slugs
+# ("NousResearch/hermes") and vault/skill paths ("Memories/Shared/") use
+# mixed case; a lone directory reference ("scripts/") has nothing after
+# its final slash. Hyphens are still excluded from segments here (a
+# repo/org segment containing one, like "hermes-agent", is handled by
+# _BOUNDED_KEBAB_WORD below and by the two combining at the call site).
 _BOUNDED_SLASH_WORDS = re.compile(
-    r"^(?://[a-z]{2,}|(?:/{1,2})?[a-z]{2,}(?:/[a-z]{2,})+)$"
+    r"^(?://[A-Za-z]{2,}"
+    r"|(?:/{1,2})?[A-Za-z]{2,}(?:/[A-Za-z]{2,})+/?"
+    r"|[A-Za-z]{2,}/)$"
 )
 _MAX_BASE64_CANDIDATE_CHARS = 262_144
 _VALIDATED_TOOL_SYNTAX = {
@@ -286,6 +294,20 @@ _PROTOCOL_GRAMMAR_ATOMS = frozenset(
         "BOTH",
         "COVERAGE",
         "EPUB",
+        "FTS5",
+        "FULL",
+        "GGUF",
+        "MMLU",
+        "OPTIONAL",
+        "RELATIVE",
+        "REPLACES",
+        "REST",
+        "SKIP",
+        "THAT",
+        "TODO",
+        "UNAVAILABLE",
+        "WAIT",
+        "WHEN",
         "HERMES_KANBAN_DB",
         "HERMES_KANBAN_BRANCH",
         "HERMES_KANBAN_CLAIM_LOCK",
@@ -326,6 +348,34 @@ _PROTOCOL_GRAMMAR_ATOMS = frozenset(
         "developer",
         "doc/",
         "dispatcher_current_directory",
+        "acceptance-valid",
+        "architecture-diagram",
+        "autonomous-ai-agents",
+        "available_skills",
+        "background-first",
+        "document-to-action-items",
+        "evaluating-llms-harness",
+        "filesystem-writing",
+        "find_referencing_symbols",
+        "get_symbols_overview",
+        "github-pr-workflow",
+        "google-workspace",
+        "hermes-agent-skill-authoring",
+        "match_message_id",
+        "meeting-action-items",
+        "merge-reconciler",
+        "p5js",
+        "popular-web-designs",
+        "requesting-code-review",
+        "software-development",
+        "songwriting-and-ai-music",
+        "systematic-debugging",
+        "weekly-review-planning",
+        "50KB",
+        "1800",
+        "8787",
+        "ids/goals/status/transcripts",
+        "references/templates/scripts",
         "echo/cat",
         "echo/heredoc",
         "environment-variable",

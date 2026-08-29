@@ -746,8 +746,68 @@ def _git_grep_terminal_call_ids(value: Any) -> frozenset[str]:
     return frozenset(recognized)
 
 
-def _project_git_grep_terminal_result(text: str) -> str | None:
-    """Replace line contents from a recognized ``git grep -n`` with locations."""
+def _rg_terminal_call_ids(value: Any) -> frozenset[str]:
+    """Recognize a no-context, line-numbered ``rg`` result for projection."""
+
+    recognized: set[str] = set()
+
+    def is_line_numbered_rg(arguments: Any) -> bool:
+        try:
+            parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+            command = parsed.get("command") if isinstance(parsed, Mapping) else None
+            tokens = shlex.split(command) if isinstance(command, str) else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if len(tokens) < 4 or tokens[0] != "rg":
+            return False
+        if not any(token in {"-n", "--line-number"} for token in tokens[1:]):
+            return False
+        return not any(
+            token == "-C"
+            or token.startswith("-C")
+            or token == "--context"
+            or token.startswith("--context=")
+            or token == "--before-context"
+            or token.startswith("--before-context=")
+            or token == "--after-context"
+            or token.startswith("--after-context=")
+            or token in {"--json", "--files", "--files-with-matches"}
+            for token in tokens[1:]
+        )
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            direct_function = item.get("function")
+            direct_name = (
+                direct_function.get("name")
+                if isinstance(direct_function, Mapping)
+                else item.get("name")
+            )
+            arguments = (
+                direct_function.get("arguments")
+                if isinstance(direct_function, Mapping)
+                else item.get("arguments")
+            )
+            call_id = item.get("call_id") or item.get("id")
+            if (
+                item.get("type") in {"function", "function_call"}
+                and direct_name == "terminal"
+                and is_line_numbered_rg(arguments)
+                and isinstance(call_id, str)
+            ):
+                recognized.update(tool_result_id_variants(call_id))
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return frozenset(recognized)
+
+
+def _project_line_numbered_search_terminal_result(text: str) -> str | None:
+    """Replace matching source lines from a recognized search with locations."""
 
     try:
         wrapper = json.loads(text)
@@ -1051,6 +1111,7 @@ def _typed_payload(
     read_file_projection_tool_call_ids: frozenset[str] = frozenset(),
     git_workspace_diagnostic_call_ids: frozenset[str] = frozenset(),
     git_grep_projection_tool_call_ids: frozenset[str] = frozenset(),
+    rg_projection_tool_call_ids: frozenset[str] = frozenset(),
     github_list_terminal_call_limits: Mapping[str, int] | None = None,
     rejected_terminal_call_ids: frozenset[str] = frozenset(),
     redact_readonly_tool_arguments: bool = False,
@@ -1150,6 +1211,14 @@ def _typed_payload(
                 or value.get("type") == "function_call_output"
             )
         )
+        is_rg_projection_tool_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in rg_projection_tool_call_ids
+            and (
+                value.get("role") == "tool"
+                or value.get("type") == "function_call_output"
+            )
+        )
         github_list_limit = (
             github_list_terminal_call_limits.get(output_call_id)
             if isinstance(github_list_terminal_call_limits, Mapping)
@@ -1219,7 +1288,18 @@ def _typed_payload(
                 and key in {"content", "output"}
                 and isinstance(item, str)
             ):
-                projected = _project_git_grep_terminal_result(item)
+                projected = _project_line_numbered_search_terminal_result(item)
+                if projected is not None:
+                    typed[key] = GeneratedContextSegment(
+                        redact_remote_unsafe_text(projected)
+                    )
+                    continue
+            if (
+                is_rg_projection_tool_result
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                projected = _project_line_numbered_search_terminal_result(item)
                 if projected is not None:
                     typed[key] = GeneratedContextSegment(
                         redact_remote_unsafe_text(projected)
@@ -1278,6 +1358,7 @@ def _typed_payload(
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
+                rg_projection_tool_call_ids=rg_projection_tool_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
@@ -1316,6 +1397,7 @@ def _typed_payload(
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
+                rg_projection_tool_call_ids=rg_projection_tool_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
@@ -1593,6 +1675,11 @@ def authorize_agent_sdk_kwargs(
         ),
         git_grep_projection_tool_call_ids=(
             _git_grep_terminal_call_ids(body)
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        rg_projection_tool_call_ids=(
+            _rg_terminal_call_ids(body)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

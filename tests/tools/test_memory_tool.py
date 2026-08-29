@@ -1,6 +1,8 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
+import os
+import stat
 import pytest
 from pathlib import Path
 
@@ -105,6 +107,45 @@ def store(tmp_path, monkeypatch):
     s = MemoryStore(memory_char_limit=500, user_char_limit=300)
     s.load_from_disk()
     return s
+
+
+class TestMemoryFileLockPermissions:
+    def test_new_lock_file_is_owner_only_under_permissive_umask(self, tmp_path):
+        memory_path = tmp_path / "MEMORY.md"
+        previous_umask = os.umask(0o002)
+        try:
+            with MemoryStore._file_lock(memory_path):
+                pass
+        finally:
+            os.umask(previous_umask)
+
+        lock_path = tmp_path / "MEMORY.md.lock"
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+    def test_existing_loose_lock_file_is_tightened(self, tmp_path):
+        memory_path = tmp_path / "MEMORY.md"
+        lock_path = tmp_path / "MEMORY.md.lock"
+        lock_path.write_text("", encoding="utf-8")
+        lock_path.chmod(0o664)
+
+        with MemoryStore._file_lock(memory_path):
+            pass
+
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW unavailable")
+    def test_lock_file_symlink_is_refused(self, tmp_path):
+        memory_path = tmp_path / "MEMORY.md"
+        outside = tmp_path / "outside"
+        outside.write_text("do not touch", encoding="utf-8")
+        lock_path = tmp_path / "MEMORY.md.lock"
+        lock_path.symlink_to(outside)
+
+        with pytest.raises(OSError):
+            with MemoryStore._file_lock(memory_path):
+                pass
+
+        assert outside.read_text(encoding="utf-8") == "do not touch"
 
 
 class TestMemoryStoreAdd:

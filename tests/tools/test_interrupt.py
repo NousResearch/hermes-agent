@@ -62,6 +62,48 @@ class TestInterruptModule:
             assert other_tid in _interrupted_threads  # other thread untouched
             _interrupted_threads.discard(other_tid)
 
+    def test_run_if_not_interrupted_skips_callback_when_already_interrupted(self):
+        from tools.interrupt import run_if_not_interrupted, set_interrupt
+
+        callbacks = []
+        set_interrupt(True)
+        try:
+            assert run_if_not_interrupted(lambda: callbacks.append("claimed")) is False
+        finally:
+            set_interrupt(False)
+
+        assert callbacks == []
+
+    def test_run_if_not_interrupted_orders_callback_before_concurrent_interrupt(self):
+        from tools.interrupt import run_if_not_interrupted, set_interrupt
+
+        setter_started = threading.Event()
+        interrupt_published = threading.Event()
+        callback_observations = []
+        setters = []
+
+        def publish_interrupt():
+            setter_started.set()
+            set_interrupt(True)
+            interrupt_published.set()
+
+        def callback():
+            setter = threading.Thread(target=publish_interrupt)
+            setters.append(setter)
+            setter.start()
+            assert setter_started.wait(5)
+            callback_observations.append(interrupt_published.is_set())
+
+        assert run_if_not_interrupted(callback) is True
+        setter = setters[0]
+        setter.join(5)
+        try:
+            assert not setter.is_alive()
+            assert callback_observations == [False]
+            assert interrupt_published.is_set()
+        finally:
+            set_interrupt(False)
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: pre-tool interrupt check

@@ -123,8 +123,9 @@ def _acquire_filename_search_roots(
                 return False
         if tool_interrupt.is_interrupted():
             return False
-        _ACTIVE_FILENAME_SEARCH_ROOTS.update(keys)
-        return True
+        return tool_interrupt.run_if_not_interrupted(
+            lambda: _ACTIVE_FILENAME_SEARCH_ROOTS.update(keys)
+        )
 
 
 def _release_filename_search_roots(
@@ -3770,6 +3771,10 @@ class ShellFileOperations(FileOperations):
             search_pattern = pattern.split('/')[-1]
 
         roots = [path] if isinstance(path, str) else path
+        if not roots:
+            return SearchResult(
+                error="File search requires at least one search root in 'path'."
+            )
 
         # Prefer ripgrep: bounded parallel traversal with ignore semantics.
         # Resolve the engine and exact-order capability before admission so a

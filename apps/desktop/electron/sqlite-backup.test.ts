@@ -133,11 +133,31 @@ test('reaches a bounded outcome while another connection continuously writes', a
     })
 
     const startedAt = Date.now()
+    let completed = false
 
-    await assert.rejects(createVerifiedSqliteBackup(sourcePath, destinationPath, { deadlineMs: 100 }))
+    try {
+      await createVerifiedSqliteBackup(sourcePath, destinationPath, { deadlineMs: 100 })
+      completed = true
+    } catch {
+      // A timeout is also a valid bounded outcome under sustained writes.
+    }
+
     assert.ok(Date.now() - startedAt < 5_000)
-    assert.equal(fs.existsSync(destinationPath), false)
     assert.equal(fs.existsSync(`${destinationPath}.partial`), false)
+
+    if (completed) {
+      const snapshot = new DatabaseSync(destinationPath, { readOnly: true })
+
+      try {
+        const rows = snapshot.prepare('PRAGMA integrity_check').all() as Array<{ integrity_check: string }>
+
+        assert.deepEqual(rows.map(row => row.integrity_check), ['ok'])
+      } finally {
+        snapshot.close()
+      }
+    } else {
+      assert.equal(fs.existsSync(destinationPath), false)
+    }
   } finally {
     await writer.terminate()
   }

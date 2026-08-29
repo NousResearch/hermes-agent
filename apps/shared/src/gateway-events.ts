@@ -643,6 +643,9 @@ export interface ModelOptionProvider {
   /** Per-model option support, keyed by model id (present when the picker
    *  requested capabilities). Lets the UI gate fast/reasoning controls. */
   capabilities?: Record<string, ModelCapabilities>
+  /** Rich facts projected from Hermes' existing models.dev registry. Unknown
+   *  models are omitted rather than guessed or maintained in a second catalog. */
+  metadata?: Record<string, ModelPickerMetadata>
   /** Curated shortlist (one flagship per lab) the picker shows by default for
    *  aggregator providers that serve dozens of models across many labs. */
   featured_models?: string[]
@@ -696,6 +699,24 @@ export interface ModelCapabilities {
   can_disable_reasoning?: boolean
   fast: boolean
   reasoning: boolean
+}
+
+/**
+ * Rich per-model facts projected from Hermes' existing models.dev registry
+ * (hermes_cli/inventory.py::_picker_metadata_from_info). Unknown models are
+ * omitted rather than guessed or maintained in a second catalog.
+ */
+export interface ModelPickerMetadata {
+  context_window?: number
+  input_modalities?: string[]
+  max_input_tokens?: number
+  max_output_tokens?: number
+  output_modalities?: string[]
+  structured_output?: boolean
+  supports_audio_input?: boolean
+  supports_pdf?: boolean
+  supports_tools?: boolean
+  supports_vision?: boolean
 }
 
 export interface ModelOptionsResponse {

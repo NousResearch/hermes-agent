@@ -77,6 +77,13 @@ _VALIDATED_SYNTAX_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
 _REMOTE_KANBAN_SEARCH_PROJECTION_TOOL_NAMES = frozenset({"search_files"})
 _REMOTE_KANBAN_READ_FILE_PROJECTION_TOOL_NAMES = frozenset({"read_file"})
+_REMOTE_KANBAN_READONLY_REPLAY_TOOL_NAMES = frozenset(
+    {
+        "kanban_show",
+        "search_files",
+        "read_file",
+    }
+)
 _GITHUB_LIST_TERMINAL_MAX_ROWS = 100
 _GITHUB_LIST_TERMINAL_MAX_ITEM_BYTES = 512
 _GITHUB_LIST_TERMINAL_MAX_OUTPUT_BYTES = 10_240
@@ -956,6 +963,7 @@ def _typed_payload(
     git_workspace_diagnostic_call_ids: frozenset[str] = frozenset(),
     github_list_terminal_call_limits: Mapping[str, int] | None = None,
     rejected_terminal_call_ids: frozenset[str] = frozenset(),
+    redact_readonly_tool_arguments: bool = False,
     protected_tool_content: bool = False,
     elide_kanban_tool_content: bool = False,
     protected_kanban_context: bool = False,
@@ -1128,6 +1136,19 @@ def _typed_payload(
             if is_rejected_terminal_call and key == "arguments":
                 typed[key] = GeneratedContextSegment(_REJECTED_TERMINAL_COMMAND_REPLAY)
                 continue
+            if (
+                redact_readonly_tool_arguments
+                and key == "arguments"
+                and direct_name in _REMOTE_KANBAN_READONLY_REPLAY_TOOL_NAMES
+                and isinstance(item, str)
+            ):
+                # The local call has already run.  Its read-only arguments are
+                # replayed only as remote context, where an ordinary search
+                # term (for example "DISABLE") can look like base64.  Redact
+                # opaque or secret-shaped text here without changing the
+                # executed call or relaxing validation for write-capable tools.
+                typed[key] = GeneratedContextSegment(redact_remote_unsafe_text(item))
+                continue
             typed_key = (
                 GeneratedContextKey(key)
                 if generated_context and redact_generated_context
@@ -1149,6 +1170,7 @@ def _typed_payload(
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
+                redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=(
                     is_recognized_tool_result and key in {"content", "output"}
                 ),
@@ -1185,6 +1207,7 @@ def _typed_payload(
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
+                redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=protected_tool_content,
                 elide_kanban_tool_content=elide_kanban_tool_content,
                 protected_kanban_context=protected_kanban_context,
@@ -1466,6 +1489,9 @@ def authorize_agent_sdk_kwargs(
             _rejected_terminal_call_ids(body)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
+        ),
+        redact_readonly_tool_arguments=(
+            protected_kanban_remote and protected_provider_route
         ),
         protected_kanban_context=protected_remote_context,
         redact_generated_context=redact_protected_generated_context,

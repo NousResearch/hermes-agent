@@ -1360,6 +1360,74 @@ def test_protected_kanban_search_result_projects_source_content_to_locations(
     }
 
 
+def test_protected_kanban_redacts_readonly_search_argument_replay(
+    tmp_path, monkeypatch
+):
+    """A base64-shaped search token cannot deadlock its already-run tool call."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    arguments = json.dumps({"pattern": "DISABLE", "path": "src"})
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "search_files",
+                    "call_id": "call_search_argument123",
+                    "arguments": arguments,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert "DISABLE" not in authorized["input"][0]["arguments"]
+    assert "<redacted-base64>" in authorized["input"][0]["arguments"]
+
+
+def test_protected_kanban_redacts_nested_readonly_search_argument_replay(
+    tmp_path, monkeypatch
+):
+    """Chat-completions function arguments take the same replay-only path."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    arguments = json.dumps({"pattern": "DISABLE", "path": "src"})
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_search_argument123",
+                            "type": "function",
+                            "function": {
+                                "name": "search_files",
+                                "arguments": arguments,
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    replayed = authorized["messages"][0]["tool_calls"][0]["function"]["arguments"]
+    assert receipt.allowed
+    assert "DISABLE" not in replayed
+    assert "<redacted-base64>" in replayed
+
+
 def test_protected_kanban_projects_exact_git_workspace_diagnostic(
     tmp_path, monkeypatch
 ):

@@ -6,7 +6,7 @@ import hermes_cli.gateway as gateway_cli
 
 
 _MARKER_COMMAND = (
-    "ExecStop=-/venv/bin/python -m gateway.systemd_planned_stop $MAINPID"
+    "ExecStop=-/venv/bin/python -m hermes_systemd_planned_stop $MAINPID"
 )
 
 

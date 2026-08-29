@@ -36,6 +36,7 @@ import difflib
 import hashlib
 import json
 import logging
+import threading
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -49,6 +50,7 @@ from agent.file_safety import (
     get_write_denied_error,
     is_write_denied as _shared_is_write_denied,
 )
+from tools import interrupt as tool_interrupt
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,70 @@ _MACOS_TCC_PROTECTED_HOME_DIRS = (
     "Music",
     "Pictures",
 )
+
+
+_FILENAME_SEARCH_ADMISSION = threading.Condition()
+_ACTIVE_FILENAME_SEARCH_ROOTS: set[tuple[str, str, str]] = set()
+_FILENAME_SEARCH_WAIT_SECONDS = 0.05
+
+
+def _normalized_filename_search_root(env: Any, root: str, fallback_cwd: str) -> str:
+    """Normalize a filename-walk root without resolving remote paths locally."""
+    from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
+
+    cwd = getattr(env, "cwd", None) or fallback_cwd
+    if isinstance(env, LocalEnvironment):
+        if _IS_WINDOWS:
+            root = _msys_to_windows_path(root)
+            cwd = _msys_to_windows_path(cwd)
+        if not os.path.isabs(root):
+            root = os.path.join(cwd, root)
+        return os.path.normcase(os.path.abspath(os.path.normpath(root)))
+
+    if not posixpath.isabs(root):
+        root = posixpath.join(cwd, root)
+    return posixpath.normpath(root)
+
+
+def _filename_search_root_keys(
+    env: Any, roots: List[str], fallback_cwd: str
+) -> tuple[tuple[str, str, str], ...]:
+    """Return unique backend/root admission keys in deterministic order."""
+    env_type = type(env)
+    return tuple(sorted({
+        (
+            env_type.__module__,
+            env_type.__qualname__,
+            _normalized_filename_search_root(env, root, fallback_cwd),
+        )
+        for root in roots
+    }))
+
+
+def _acquire_filename_search_roots(
+    keys: tuple[tuple[str, str, str], ...],
+) -> bool:
+    """Atomically claim every key, polling for thread-scoped interruption."""
+    with _FILENAME_SEARCH_ADMISSION:
+        while any(key in _ACTIVE_FILENAME_SEARCH_ROOTS for key in keys):
+            if tool_interrupt.is_interrupted():
+                return False
+            _FILENAME_SEARCH_ADMISSION.wait(_FILENAME_SEARCH_WAIT_SECONDS)
+            if tool_interrupt.is_interrupted():
+                return False
+        if tool_interrupt.is_interrupted():
+            return False
+        _ACTIVE_FILENAME_SEARCH_ROOTS.update(keys)
+        return True
+
+
+def _release_filename_search_roots(
+    keys: tuple[tuple[str, str, str], ...],
+) -> None:
+    """Release a completed walk and leave no idle per-root state behind."""
+    with _FILENAME_SEARCH_ADMISSION:
+        _ACTIVE_FILENAME_SEARCH_ROOTS.difference_update(keys)
+        _FILENAME_SEARCH_ADMISSION.notify_all()
 
 
 def _macos_protected_search_exclusions(
@@ -3547,16 +3613,11 @@ class ShellFileOperations(FileOperations):
             return None
 
         if target == "files":
-            # A file search across several roots is one global rg traversal so
+            # A file search across several roots is one global traversal so
             # modified ordering and pagination are exact across the whole set.
-            if self._has_command("rg"):
-                resolved = self._resolve_command("rg") or "rg"
-                merged = self._search_files_rg(
-                    pattern.split("/")[-1], existing, limit, offset, order,
-                    rg_executable=resolved,
-                )
-            else:
-                merged = self._search_files(pattern, existing, limit, offset, order)
+            # Route every engine through _search_files so root admission wraps
+            # the actual rg/find invocation for this multi-root request.
+            merged = self._search_files(pattern, existing, limit, offset, order)
         else:
             merged = SearchResult()
             for root in existing:
@@ -3708,17 +3769,34 @@ class ShellFileOperations(FileOperations):
         else:
             search_pattern = pattern.split('/')[-1]
 
+        roots = [path] if isinstance(path, str) else path
+
         # Prefer ripgrep: bounded parallel traversal with ignore semantics.
+        # Resolve the engine and exact-order capability before admission so a
+        # queued request does not occupy a root while doing command discovery.
         if self._has_command("rg"):
-            return self._search_files_rg(
-                search_pattern, path, limit, offset, order,
-                rg_executable=self._resolve_command("rg") or "rg",
-            )
+            rg_executable = self._resolve_command("rg") or "rg"
+            if order == "modified":
+                capability_error = self._modified_rg_capability_error(rg_executable)
+                if capability_error:
+                    return SearchResult(error=capability_error)
+            keys = _filename_search_root_keys(self.env, roots, self.cwd)
+            if not _acquire_filename_search_roots(keys):
+                return SearchResult(error=(
+                    "File search was interrupted while waiting for another filename "
+                    "search on the same root. Retry when ready."
+                ))
+            try:
+                return self._search_files_rg(
+                    search_pattern, path, limit, offset, order,
+                    rg_executable=rg_executable,
+                )
+            finally:
+                _release_filename_search_roots(keys)
 
         # A local find traversal rooted at/above the user's home or at a
         # filesystem root can consume minutes and prompt on protected paths.
         # Refuse before invoking find. Controller paths never classify remotes.
-        roots = [path] if isinstance(path, str) else path
         if any(self._is_broad_local_search_root(root) for root in roots):
             return SearchResult(error=(
                 "Broad local file search without ripgrep is disabled because "
@@ -3773,7 +3851,16 @@ class ShellFileOperations(FileOperations):
                 + f" -print 2>/dev/null | head -n {fetch_limit}"
             )
 
-        result = self._exec(cmd, timeout=60)
+        keys = _filename_search_root_keys(self.env, roots, self.cwd)
+        if not _acquire_filename_search_roots(keys):
+            return SearchResult(error=(
+                "File search was interrupted while waiting for another filename "
+                "search on the same root. Retry when ready."
+            ))
+        try:
+            result = self._exec(cmd, timeout=60)
+        finally:
+            _release_filename_search_roots(keys)
         stdout, limit_reason = _search_stdout_and_limit(result)
 
         # Parse before classifying exit 141: with pipefail, a bounded producer

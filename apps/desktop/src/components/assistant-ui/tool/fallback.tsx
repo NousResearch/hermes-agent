@@ -585,10 +585,10 @@ function ToolEntry({ part }: ToolEntryProps) {
             {showDiffStats && diffStats && (
               <span className="flex shrink-0 items-center gap-1 font-mono text-[0.625rem] tabular-nums">
                 {diffStats.added > 0 && (
-                  <span className="text-emerald-600 dark:text-emerald-400">+{diffStats.added}</span>
+                  <span className="text-(--ui-diff-add-foreground)">+{diffStats.added}</span>
                 )}
                 {diffStats.removed > 0 && (
-                  <span className="text-rose-600 dark:text-rose-400">−{diffStats.removed}</span>
+                  <span className="text-(--ui-diff-remove-foreground)">−{diffStats.removed}</span>
                 )}
               </span>
             )}

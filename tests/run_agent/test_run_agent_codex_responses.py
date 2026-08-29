@@ -10,6 +10,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
 
 
 @pytest.fixture(autouse=True)
@@ -2407,3 +2408,97 @@ def test_consume_codex_stream_leaves_unindexed_reasoning_untouched():
     )
 
     assert "".join(reasoning_streamed) == "Need to inspect files."
+
+
+def _codex_compaction_checkpoint_response(blob: str = "compaction_blob_1"):
+    """A turn that returns ONLY a server-side native-compaction checkpoint.
+
+    This is what gpt-5.6 on the Codex backend sends when it compacts a long
+    conversation: a ``compaction`` output item carrying the encrypted
+    stand-in for the pruned history, with no ``message`` and no
+    ``function_call``. It normalizes to ``finish_reason="incomplete"``, and
+    the checkpoint rides the ``codex_reasoning_items`` sidecar.
+    """
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="compaction",
+                encrypted_content=blob,
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=9, output_tokens=1, total_tokens=10),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+
+def test_codex_compaction_only_continuation_gets_nudged_before_budget_runs_out(monkeypatch):
+    """A compaction-checkpoint-only turn must not burn the retry budget on
+    byte-identical continuations.
+
+    The checkpoint lands in ``codex_reasoning_items``, so the interim looks
+    "replayable" and the old gate suppressed the continuation nudge. But a
+    checkpoint carries no answer and no new instruction, and — because a
+    replayed checkpoint makes the wire converter prune every pre-checkpoint
+    item — the continuation re-sends the same checkpoint plus the same
+    retained user messages and ends on an empty assistant turn. Every attempt
+    is then identical (the provider's prefix cache reports 99-100% on the
+    repeats) and returns the same empty response, so the turn dies with
+    "Codex response remained incomplete after 3 continuation attempts" and
+    the whole turn's work is lost.
+
+    One bare retry is still allowed. Once that has also come back incomplete,
+    every remaining attempt must carry the nudge so the request differs and
+    states what is wanted.
+    """
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_compaction_checkpoint_response("blob_1"),
+        _codex_compaction_checkpoint_response("blob_2"),
+        _codex_message_response("Here is the answer."),
+    ]
+    sent_message_counts: list = []
+    original_call = agent._interruptible_api_call
+
+    def _fake_call(api_kwargs):
+        sent_message_counts.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_call)
+
+    result = agent.run_conversation("summarize the investigation")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Here is the answer."
+
+    nudges = [
+        m for m in result["messages"]
+        if m.get("role") == "user"
+        and m.get("content") == _CODEX_INCOMPLETE_NUDGE
+    ]
+    assert len(nudges) == 1, (
+        "the second continuation of a compaction-only turn must carry the "
+        "incomplete nudge so the retry is not byte-identical"
+    )
+
+
+def test_codex_first_compaction_continuation_is_still_a_bare_retry(monkeypatch):
+    """The first continuation stays bare — the model often just needs another
+    turn, and nudging it immediately would cut multi-phase work short."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_compaction_checkpoint_response("blob_1"),
+        _codex_message_response("Done."),
+    ]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+
+    result = agent.run_conversation("short turn")
+
+    assert result["completed"] is True
+    assert not [
+        m for m in result["messages"]
+        if m.get("role") == "user"
+        and m.get("content") == _CODEX_INCOMPLETE_NUDGE
+    ]

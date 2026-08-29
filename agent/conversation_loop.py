@@ -7105,7 +7105,29 @@ def run_conversation(
                         or interim_has_codex_reasoning
                         or interim_has_codex_message_items
                     )
-                    if not interim_replayable:
+                    # A replayable interim is not the same thing as a retry
+                    # that DIFFERS.  When the interim replays but carries no
+                    # new instruction, the continuation is byte-identical to
+                    # the request that just failed and returns the same empty
+                    # response until the budget is gone.  Live case (gpt-5.6
+                    # on the Codex backend, Aug 2026): the model answers with
+                    # a server-side ``compaction`` checkpoint and no message.
+                    # The checkpoint lands in ``codex_reasoning_items``, so
+                    # ``interim_replayable`` is True and no nudge is added —
+                    # meanwhile the checkpoint makes the wire converter prune
+                    # every pre-checkpoint item, so all three attempts send
+                    # the same checkpoint + retained user messages and end on
+                    # an empty assistant turn with nothing to answer.  The
+                    # provider's own prefix cache reports 99-100% on the
+                    # repeats, and the turn dies with "Codex response
+                    # remained incomplete after 3 continuation attempts",
+                    # losing the whole turn's work.
+                    #
+                    # One bare retry is still worth trying (the model often
+                    # just needs another turn).  Once THAT has also come back
+                    # incomplete, a bare retry is proven not to work for this
+                    # turn, so every remaining attempt carries the nudge.
+                    if not interim_replayable or agent._codex_incomplete_retries >= 2:
                         _last_msg = messages[-1] if messages else None
                         _already_nudged = (
                             isinstance(_last_msg, dict)

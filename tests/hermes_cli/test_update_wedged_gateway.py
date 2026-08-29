@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -28,6 +29,19 @@ from gateway.shutdown_watchdog import (
     get_loop_tick_socket_path,
     loop_heartbeat_forever,
     write_loop_heartbeat,
+)
+
+# Native Windows exposes neither ``socket.AF_UNIX`` nor an asyncio UNIX
+# server, so the witness cases that create real socket nodes
+# (``_silent_socket_node``) or run the real producer
+# (``loop_heartbeat_forever``) cannot execute there. Only those cases are
+# skipped: the witness-absent contracts (mocked probes, file-only
+# heartbeats) are platform-independent and keep running on Windows, per
+# the Windows behavior pinned alongside the product-side guarantee.
+_NEEDS_UNIX_SOCKETS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="requires real UNIX-domain sockets "
+    "(socket.AF_UNIX / asyncio.start_unix_server), unavailable on native Windows",
 )
 
 
@@ -482,6 +496,7 @@ class TestLoopTickWitness:
     witnesses agree the loop stopped scheduling.
     """
 
+    @_NEEDS_UNIX_SOCKETS
     def test_stalled_heartbeat_write_never_escalates_a_running_loop(
         self, tmp_path, monkeypatch
     ):
@@ -631,6 +646,7 @@ class TestLoopTickWitness:
             thread.join(timeout=5.0)
             assert not errors, errors
 
+    @_NEEDS_UNIX_SOCKETS
     def test_off_loop_completion_cannot_manufacture_fresh_liveness(self, tmp_path):
         """A write landing after the loop froze must not look alive.
 
@@ -650,6 +666,7 @@ class TestLoopTickWitness:
             == gateway_cli.GATEWAY_LOOP_UNKNOWN
         )
 
+    @_NEEDS_UNIX_SOCKETS
     def test_true_wedge_requires_sustained_witness_silence(self, tmp_path):
         """Stale file + armed socket silent across the whole window: WEDGED.
 
@@ -808,10 +825,16 @@ class TestLoopTickWitness:
             gateway_cli.probe_gateway_loop_liveness(pid, home=tmp_path)
             == gateway_cli.GATEWAY_LOOP_WEDGED
         )
-        # And a fresh legacy file stays safe even if a dead-listener node
-        # exists for the PID (leftover from a newer process): the silent
-        # socket denies ALIVE, and UNKNOWN never escalates — the drain path
-        # keeps the full budget either way.
+
+    @_NEEDS_UNIX_SOCKETS
+    def test_legacy_fresh_file_with_dead_node_is_unknown(self, tmp_path):
+        """A fresh legacy file stays safe under a dead-listener node.
+
+        A dead-listener node for the PID (leftover from a newer process):
+        the silent socket denies ALIVE, and UNKNOWN never escalates — the
+        drain path keeps the full budget either way.
+        """
+        pid = 4242
         _write_heartbeat(tmp_path, pid, age_s=5.0)
         _silent_socket_node(get_loop_tick_socket_path(tmp_path, pid))
         assert (
@@ -821,6 +844,7 @@ class TestLoopTickWitness:
             == gateway_cli.GATEWAY_LOOP_UNKNOWN
         )
 
+    @_NEEDS_UNIX_SOCKETS
     @pytest.mark.asyncio
     async def test_producer_rebinds_over_stale_socket_node(self, tmp_path):
         """A leftover node from a dead process must not disarm the witness.
@@ -862,6 +886,7 @@ class TestLoopTickWitness:
             except asyncio.CancelledError:
                 pass
 
+    @_NEEDS_UNIX_SOCKETS
     def test_transient_stall_below_wedge_budget_never_escalates(
         self, tmp_path, monkeypatch
     ):
@@ -914,6 +939,7 @@ class TestLoopTickWitness:
             state["thread"].join(timeout=5.0)
             assert not errors, errors
 
+    @_NEEDS_UNIX_SOCKETS
     def test_sustained_stop_above_wedge_budget_still_escalates(
         self, tmp_path
     ):

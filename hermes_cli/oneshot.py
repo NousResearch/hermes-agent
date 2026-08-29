@@ -523,6 +523,19 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
+        # Seed the task-session cwd from the invoking process directory so
+        # file/terminal tools resolve "current directory" to where the user
+        # actually ran `hermes -z`, instead of the configured default
+        # workspace (tools/terminal_tool.py:get_session_cwd documents the
+        # process-cwd seed; gateway/TUI register the same via workspace
+        # overrides - oneshot is the only surface that never seeds it).
+        try:
+            from tools.terminal_tool import record_session_cwd
+
+            record_session_cwd(getattr(agent, "session_id", None), os.getcwd())
+        except Exception:
+            logging.debug("oneshot session-cwd seed failed", exc_info=True)
+
         result = agent.run_conversation(prompt)
         return (result.get("final_response") or "", result)
     finally:

@@ -502,7 +502,17 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
-            ephemeral_system_prompt=skills_prompt,
+            # F-live-3 fix: tell the model where it is running. Without
+            # this, 'create a file in the current directory' resolves to
+            # the home root because the model invents an absolute path.
+            ephemeral_system_prompt=(
+                (skills_prompt or "")
+                + f"\n\n# Working directory\n"
+                f"Current working directory for this session: {os.getcwd()}\n"
+                "When a task says to create or modify files 'in the current "
+                "directory' or uses relative paths, resolve them against this "
+                "directory and pass absolute paths to file tools."
+            ),
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

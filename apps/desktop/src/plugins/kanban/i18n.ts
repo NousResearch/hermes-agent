@@ -390,8 +390,7 @@ export const en: KanbanMessages = {
   boardImportedAs: slug => `That name was taken — imported as ${slug}`,
   renameBoardTitle: 'Rename board',
   deleteBoardTitle: name => `Delete "${name}"?`,
-  deleteBoardConfirm:
-    'The board is archived, not erased — its tasks and attachments stay on disk and can be restored.',
+  deleteBoardConfirm: 'The board is archived, not erased — its tasks and attachments stay on disk and can be restored.',
   boardArchived: path => `Board archived to ${path}`,
   boardSettingsFor: name => `Board settings — ${name}`,
   name: 'Name',

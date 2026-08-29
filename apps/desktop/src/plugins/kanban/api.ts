@@ -269,10 +269,9 @@ export const updateBoard = (slug: string, patch: Record<string, unknown>) =>
 /** Archive a board to `boards/_archived/` — recoverable, and the backend
  *  refuses to touch `default`. (`?delete=true` hard-deletes; no caller yet.) */
 export const deleteBoard = (slug: string) =>
-  call<{ result: { action: string; new_path: string }; current: string }>(
-    `/boards/${encodeURIComponent(slug)}`,
-    { method: 'DELETE' }
-  )
+  call<{ result: { action: string; new_path: string }; current: string }>(`/boards/${encodeURIComponent(slug)}`, {
+    method: 'DELETE'
+  })
 
 // Board transfer exchanges filesystem paths, not bytes — the picker runs on
 // the machine hosting the backend, so the backend reads and writes the file.

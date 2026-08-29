@@ -206,12 +206,7 @@ function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean 
     >
       {/* Enter submits only while the scope is untouched — once a project is
           picked the choice is worth a deliberate click. */}
-      <BoardNameField
-        onChange={setName}
-        onEnter={() => slug && !project && create.mutate()}
-        slug={slug}
-        value={name}
-      />
+      <BoardNameField onChange={setName} onEnter={() => slug && !project && create.mutate()} slug={slug} value={name} />
       <ProjectPicker onChange={setProject} value={project} />
     </BoardDialog>
   )

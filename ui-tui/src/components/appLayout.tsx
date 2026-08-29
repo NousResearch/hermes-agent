@@ -26,10 +26,10 @@ import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from 
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
-import { ControlRoomAttentionBadge } from './controlRoomBadge.js'
-import { ControlRoomOverlay } from './controlRoomOverlay.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { ControlRoomAttentionBadge } from './controlRoomBadge.js'
+import { ControlRoomOverlay } from './controlRoomOverlay.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
@@ -601,8 +601,8 @@ export const AppLayout = memo(function AppLayout({
                 onApprovalChoice={actions.answerApproval}
                 onAskUserQuestionsAnswer={actions.answerAskUserQuestions}
                 onClarifyAnswer={actions.answerClarify}
-                onPromptOptimizationChoice={actions.answerPromptOptimization}
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
+                onPromptOptimizationChoice={actions.answerPromptOptimization}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
               />

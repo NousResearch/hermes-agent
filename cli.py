@@ -16928,7 +16928,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             or self._sudo_state
             or self._secret_state
             or self._model_picker_state
-            or self._command_palette_state
+            or getattr(self, "_command_palette_state", None)
             or self._auq_state  # KENSEI CUSTOM
         )
 

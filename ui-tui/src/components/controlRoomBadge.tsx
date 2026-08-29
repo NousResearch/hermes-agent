@@ -36,7 +36,8 @@ export function ControlRoomAttentionBadge({ gw, t }: { gw: GatewayClient; t: The
       gw.request<CrSnapshotBadge>('control.room.snapshot', { profile: 'default' })
         .then(raw => {
           const snap = asRpcResult<CrSnapshotBadge>(raw)
-          if (snap && !cancelled) setCounts(snap.counts ?? null)
+
+          if (snap && !cancelled) {setCounts(snap.counts ?? null)}
         })
         .catch(() => {
           // Gateway unavailable — stay silent (never render a fake zero).
@@ -45,9 +46,11 @@ export function ControlRoomAttentionBadge({ gw, t }: { gw: GatewayClient; t: The
 
     fetchCounts()
     timer = setInterval(fetchCounts, POLL_MS)
+
     return () => {
       cancelled = true
-      if (timer) clearInterval(timer)
+
+      if (timer) {clearInterval(timer)}
     }
   }, [gw])
 
@@ -63,10 +66,14 @@ export function ControlRoomAttentionBadge({ gw, t }: { gw: GatewayClient; t: The
   }
 
   const bits: string[] = []
-  if (counts.needs_you) bits.push(`● ${counts.needs_you} need you`)
-  if (counts.agents_active) bits.push(`${counts.agents_active} agents active`)
-  if (counts.messages_unread) bits.push(`${counts.messages_unread} unread`)
-  if (!bits.length) return null
+
+  if (counts.needs_you) {bits.push(`● ${counts.needs_you} need you`)}
+
+  if (counts.agents_active) {bits.push(`${counts.agents_active} agents active`)}
+
+  if (counts.messages_unread) {bits.push(`${counts.messages_unread} unread`)}
+
+  if (!bits.length) {return null}
 
   return (
     <Box>

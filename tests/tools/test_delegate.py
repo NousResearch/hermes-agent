@@ -62,13 +62,15 @@ class TestDelegateRequirements(unittest.TestCase):
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_task")
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        # tasks[] is the only advertised spawn shape (single task = one-entry
-        # array); legacy top-level goal/context/output_schema stay
-        # handler-accepted but unadvertised.
+        # Kensei keeps the single-specialist profile route while adopting the
+        # upstream tasks[] batch shape.
         self.assertIn("tasks", props)
-        self.assertNotIn("goal", props)
-        self.assertNotIn("context", props)
-        self.assertNotIn("output_schema", props)
+        self.assertIn("goal", props)
+        self.assertIn("context", props)
+        self.assertIn("output_schema", props)
+        self.assertIn("profile", props)
+        self.assertNotIn("role", props)
+        self.assertNotIn("background", props)
         task_props = props["tasks"]["items"]["properties"]
         self.assertIn("goal", task_props)
         self.assertIn("context", task_props)

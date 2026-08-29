@@ -1,12 +1,11 @@
 import { Box, Text, useInput } from '@hermes/ink'
-import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
-import { patchOverlayState } from '../app/overlayStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
-import { useMenu, type MenuRowSpec } from './overlayPrimitives.js'
+
+import { type MenuRowSpec, useMenu } from './overlayPrimitives.js'
 
 // ── Control Room snapshot wire types (mirror of control_room contract) ──
 
@@ -96,6 +95,7 @@ export function ControlRoomOverlay({ gw, onClose, t }: { gw: GatewayClient; onCl
     gw.request<CrSnapshot>('control.room.snapshot', { profile: 'default' })
       .then(raw => {
         const snap = asRpcResult<CrSnapshot>(raw)
+
         if (snap && !cancelled) {
           setSnapshot(snap)
           setError('')
@@ -104,11 +104,12 @@ export function ControlRoomOverlay({ gw, onClose, t }: { gw: GatewayClient; onCl
         }
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+        if (!cancelled) {setError(e instanceof Error ? e.message : String(e))}
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {setLoading(false)}
       })
+
     return () => {
       cancelled = true
     }
@@ -151,9 +152,9 @@ export function ControlRoomOverlay({ gw, onClose, t }: { gw: GatewayClient; onCl
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       {section ? (
-        <SectionView snapshot={snapshot} section={section} t={t} onBack={() => setSection(null)} onClose={onClose} />
+        <SectionView onBack={() => setSection(null)} onClose={onClose} section={section} snapshot={snapshot} t={t} />
       ) : (
-        <HomeView snapshot={snapshot} t={t} onOpen={setSection} onClose={onClose} />
+        <HomeView onClose={onClose} onOpen={setSection} snapshot={snapshot} t={t} />
       )}
     </Box>
   )
@@ -174,20 +175,26 @@ function HomeView({
 }) {
   const rows: MenuRowSpec[] = useMemo(() => {
     const c = snapshot.counts ?? {}
+
     const countFor = (key: SectionKey): string => {
       switch (key) {
         case 'needs-you':
           return `${c.needs_you ?? 0}`
+
         case 'agents':
           return `${c.agents_active ?? 0} active`
+
         case 'tasks':
           return `${c.tasks_running ?? 0} running`
+
         case 'messages':
           return `${c.messages_unread ?? 0} unread`
+
         case 'system':
           return snapshot.system?.state ?? 'unknown'
       }
     }
+
     return SECTIONS.map(s => ({
       label: `› ${s.label.padEnd(12)} ${countFor(s.key)}`,
       run: () => onOpen(s.key)
@@ -201,7 +208,7 @@ function HomeView({
       <Text color={t.color.primary}>KENSEI › Control Room (profile: {snapshot.profile})</Text>
       <Box marginY={1} />
       {rows.map((row, i) => (
-        <Text key={row.label} color={i === sel ? t.color.accent : t.color.text}>
+        <Text color={i === sel ? t.color.accent : t.color.text} key={row.label}>
           {i === sel ? '›' : ' '} {row.label}
         </Text>
       ))}
@@ -232,21 +239,25 @@ function SectionView({
         return snapshot.attention
           .filter(a => a.severity <= 1)
           .map(a => ({ label: `${SEVERITY_GLYPH[a.severity] ?? '·'} ${a.title}`, run: () => {} }))
+
       case 'agents':
         return snapshot.agents.map(a => ({
           label: `[${a.kind ?? 'agent'}] ${a.name ?? a.id} · ${a.status ?? ''}${a.detail ? ` · ${a.detail}` : ''}`,
           run: () => {}
         }))
+
       case 'tasks':
         return snapshot.tasks.map(task => ({
           label: `${task.id} · ${task.title ?? ''} · ${task.state ?? ''}`,
           run: () => {}
         }))
+
       case 'messages':
         return snapshot.messages.map(m => ({
           label: `[${m.state ?? 'queued'}] ${m.title ?? ''}${m.sender ? ` from ${m.sender}` : ''}`,
           run: () => {}
         }))
+
       case 'system':
         return [
           { label: `state: ${snapshot.system?.state ?? 'unknown'}`, run: () => {} },
@@ -265,7 +276,7 @@ function SectionView({
         <Text color={t.color.muted}>nothing here</Text>
       ) : (
         rows.map((row, i) => (
-          <Text key={`${section}-${i}`} color={i === sel ? t.color.accent : t.color.text}>
+          <Text color={i === sel ? t.color.accent : t.color.text} key={`${section}-${i}`}>
             {i === sel ? '›' : ' '} {row.label}
           </Text>
         ))

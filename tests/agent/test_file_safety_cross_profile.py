@@ -151,17 +151,30 @@ class TestClassifyCrossProfileTarget:
 
 
 class TestGetCrossProfileWarning:
-    """The guard is RETIRED (maintainer decision): profiles are not
-    isolated, so the warning helper is a permanent None stub — kept only
-    so external callers fail soft. The classifier itself survives for
-    the system-prompt hint and diagnostics."""
-
     def test_in_profile_returns_none(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
         from agent.file_safety import get_cross_profile_warning
         assert get_cross_profile_warning(
-            str(fake_hermes["root"] / "skills" / "a" / "SKILL.md")) is None
+            str(fake_hermes["security_home"] / "skills" / "foo" / "SKILL.md")
+        ) is None
 
-    def test_cross_profile_returns_none_guard_retired(self, fake_hermes, monkeypatch):
+    def test_cross_profile_warning_names_both_profiles(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
         from agent.file_safety import get_cross_profile_warning
-        target = fake_hermes["root"] / "profiles" / "security" / "skills" / "x" / "SKILL.md"
-        assert get_cross_profile_warning(str(target)) is None
+        warn = get_cross_profile_warning(
+            str(fake_hermes["default_home"] / "skills" / "foo" / "SKILL.md")
+        )
+        assert warn is not None
+        assert "default" in warn
+        assert "hermes-security" in warn
+        assert "cross_profile=True" in warn
+        assert "skills" in warn
+
+    def test_warning_is_defense_in_depth_not_boundary(self, fake_hermes, monkeypatch):
+        _set_active_home(monkeypatch, fake_hermes["security_home"])
+        from agent.file_safety import get_cross_profile_warning
+        warn = get_cross_profile_warning(
+            str(fake_hermes["default_home"] / "skills" / "foo" / "SKILL.md")
+        )
+        assert warn is not None
+        assert "not a security boundary" in warn.lower()

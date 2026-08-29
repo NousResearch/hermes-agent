@@ -1812,12 +1812,12 @@ def _build_child_agent(
             raise ValueError(f"Profile '{profile}' not found at {_pdir}")
         loaded_profile_cfg = {"name": profile, "config": {}, "soul_md": None, "skills": []}
         try:
-            with open(_config_path) as _f:
+            with open(_config_path, encoding="utf-8") as _f:
                 loaded_profile_cfg["config"] = _yaml.safe_load(_f) or {}
         except FileNotFoundError:
             logger.warning("Profile '%s' has no config.yaml", profile)
         if os.path.isfile(_soul_path):
-            with open(_soul_path) as _f:
+            with open(_soul_path, encoding="utf-8") as _f:
                 loaded_profile_cfg["soul_md"] = _f.read()
 
     # Tier gate: Tier-3 profiles are dormant/specialized — they cannot
@@ -4016,13 +4016,13 @@ def delegate_task(
             return tool_error(f"Profile '{profile}' not found at {_pdir}")
         _cfg = {}
         try:
-            with open(_config_path) as _f:
+            with open(_config_path, encoding="utf-8") as _f:
                 _cfg = _yaml.safe_load(_f) or {}
         except FileNotFoundError:
             return tool_error(f"Profile '{profile}' has no config.yaml")
         _soul_md = None
         if os.path.isfile(_soul_path):
-            with open(_soul_path) as _f:
+            with open(_soul_path, encoding="utf-8") as _f:
                 _soul_md = _f.read()
         profile_content = {
             "name": profile,
@@ -5178,12 +5178,9 @@ def _build_top_level_description() -> str:
     """Compose the delegate_task tool description.
 
     Deliberately carries ONLY guidance that exists nowhere else in the
-    schema. Batch/concurrency limits live in the 'tasks' parameter
-    description and the nesting clause lives in the 'role' parameter
-    description (both rebuilt per get_definitions() call with the user's
-    actual delegation.max_concurrent_children / max_spawn_depth), so the
-    top-level text stays static and duplication-free. If you add text
-    here, check it is not already stated in a parameter description.
+    schema. Batch/concurrency limits live in the 'tasks' parameter description;
+    nesting is depth-derived and rendered only when available. The top-level
+    text stays compact and duplication-free.
     """
     try:
         orchestration_available = _get_max_spawn_depth() >= 2 and _get_orchestrator_enabled()
@@ -5192,8 +5189,7 @@ def _build_top_level_description() -> str:
 
     # The child-restrictions rule renders per config: on nesting-enabled
     # installs the orchestrator clause is load-bearing; on depth-1/disabled
-    # installs (the default) it would describe an unreachable state — the
-    # role param already explains that 'orchestrator' is inert there.
+    # installs (the default) it would describe an unreachable state.
     # send_message is deliberately not named: it's gateway-internal
     # vocabulary most sessions never see. The list below is the fail-safe
     # superset; model_tools session-filters it to the tools the session
@@ -5216,8 +5212,9 @@ def _build_top_level_description() -> str:
     return (
         "Spawn subagents in isolated contexts; each gets its own conversation, "
         "terminal session, and toolset, and only its final summary returns to "
-        "you. Pass every task in `tasks` — one entry spawns one subagent, "
-        "several run in parallel (limit in the tasks description).\n\n"
+        "you. For one child, pass `goal` with optional `context`, `profile`, and "
+        "`output_schema`. For a parallel batch, pass `tasks` (limit in its "
+        "parameter description).\n\n"
         "Runs in the background: dispatch returns immediately with live "
         "transcript paths, and the completed result (one consolidated message, "
         "results in task order) re-enters the conversation on its own. Do NOT "
@@ -5255,10 +5252,10 @@ def _build_tasks_param_description() -> str:
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
-        f"The task(s), up to {max_children} in parallel for this user (set "
+        f"A parallel batch of up to {max_children} tasks for this user (set "
         "via delegation.max_concurrent_children). Each entry spawns one "
-        "subagent with isolated context and terminal session; a single task "
-        "is a one-entry array. Required when spawning."
+        "subagent with isolated context and terminal session. Use top-level "
+        "goal/context/profile for a single specialist delegation."
     )
 
 
@@ -5307,7 +5304,7 @@ def _build_dynamic_schema_overrides() -> dict:
 
 DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
-    # NOTE: description / tasks.description / role.description are placeholder
+    # NOTE: description / tasks.description are placeholder
     # values. The real text is generated per get_definitions() call by
     # _build_dynamic_schema_overrides() (registered via
     # dynamic_schema_overrides below) so the model sees the user's actual
@@ -5323,11 +5320,23 @@ DELEGATE_TASK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            # NOTE: the handler also accepts the legacy single-goal shape —
-            # top-level `goal` (string), `context` (string), `output_schema`
-            # (object) — wrapped into a one-entry batch at dispatch. Legacy,
-            # unadvertised (old transcripts/callers only); tasks=[...] is the
-            # only advertised shape. Do not re-add these to the schema.
+            # KENSEI retains the explicit single-goal/profile surface used by
+            # its lead-routing contract. Upstream's tasks-only batch interface
+            # remains available for fan-out work.
+            "goal": {
+                "type": "string",
+                "description": (
+                    "What the subagent should accomplish. Be specific and "
+                    "self-contained — it knows nothing about your conversation history."
+                ),
+            },
+            "context": {
+                "type": "string",
+                "description": (
+                    "Background information this child needs: file paths, error "
+                    "messages, project structure, constraints, language and tone."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "minItems": 1,
@@ -5369,15 +5378,6 @@ DELEGATE_TASK_SCHEMA = {
                 # No maxItems — the runtime limit is configurable via
                 # delegation.max_concurrent_children (default 3) and
                 # enforced with a clear error in delegate_task().
-                # Per-task `role` remains legacy and depth-derived upstream.
-                # KENSEI retains the top-level role field below for existing
-                # single-goal/profile routing callers; runtime depth limits
-                # still take precedence over a requested orchestrator role.
-                "description": "(rebuilt at get_definitions() time)",
-            },
-            "role": {
-                "type": "string",
-                "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
             },
             "output_schema": {
@@ -5388,18 +5388,7 @@ DELEGATE_TASK_SCHEMA = {
                     "(same semantics as tasks[].output_schema)."
                 ),
             },
-            "background": {
-                "type": "boolean",
-                "description": (
-                    "DEPRECATED / IGNORED. Top-level single and batch "
-                    "delegations run in the background automatically — you do "
-                    "not need to (and cannot) opt in or out. A single result or "
-                    "consolidated batch result re-enters the conversation when "
-                    "the work finishes; just continue working in the meantime. "
-                    "Setting this has no effect; the parameter remains only for "
-                    "backward compatibility."
-                ),
-            },
+
             # ── KENSEI CUSTOM params ──
             "synthesize": {
                 "type": "boolean",

@@ -1248,6 +1248,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       }
+
       // ── KENSEI CUSTOM: ask_user_questions.request ─────────────────
       // Per spec (2026-06-04): new mode system (plan / UltraPlan / recon)
       // sends a multi-question batched payload.  The TUI renders the

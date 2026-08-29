@@ -57,6 +57,7 @@ export function submitPrompt(
   // call shape; new callers pass a named options object.
   const opts: SubmissionOptions =
     typeof options === 'boolean' ? { skipOptimization: options } : options
+
   const skipOptimization = opts.skipOptimization ?? false
   const sid = getUiState().sid
 

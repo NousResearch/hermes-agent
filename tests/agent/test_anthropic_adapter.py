@@ -1740,14 +1740,17 @@ def _find_blank_text_blocks(messages):
                 isinstance(blk.get("text"), str) and blk["text"].strip()
             ):
                 violations.append((m_idx, msg.get("role"), "content", b_idx))
-            if blk.get("type") == "tool_result" and isinstance(blk.get("content"), list):
-                for ib_idx, iblk in enumerate(blk["content"]):
-                    if (
-                        isinstance(iblk, dict)
-                        and iblk.get("type") == "text"
-                        and not (isinstance(iblk.get("text"), str) and iblk["text"].strip())
-                    ):
-                        violations.append((m_idx, msg.get("role"), "tool_result", ib_idx))
+            if blk.get("type") == "tool_result":
+                if isinstance(blk.get("content"), list):
+                    for ib_idx, iblk in enumerate(blk["content"]):
+                        if (
+                            isinstance(iblk, dict)
+                            and iblk.get("type") == "text"
+                            and not (isinstance(iblk.get("text"), str) and iblk["text"].strip())
+                        ):
+                            violations.append((m_idx, msg.get("role"), "tool_result", ib_idx))
+                elif isinstance(blk.get("content"), str) and not blk["content"].strip():
+                    violations.append((m_idx, msg.get("role"), "tool_result_scalar", b_idx))
     return violations
 
 
@@ -1907,3 +1910,38 @@ class TestFinalPayloadHasNoBlankTextBlocks:
         )
         image_blocks = [b for b in tool_result_block["content"] if b.get("type") == "image"]
         assert len(image_blocks) == 1
+
+    def test_blank_scalar_text_in_tool_result_is_coerced_to_placeholder(self):
+        """A whitespace-only scalar tool result (e.g. from empty terminal output)
+        must be coerced to '(no output)' to prevent HTTP 400 rejection."""
+        messages = [
+            {"role": "user", "content": "run command"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_4",
+                        "function": {"name": "terminal", "arguments": '{"command": "true"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_4",
+                "content": "   \n\t  ",
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        tool_result_msg = next(
+            m
+            for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        tool_result_block = next(
+            b for b in tool_result_msg["content"] if b.get("type") == "tool_result"
+        )
+        assert tool_result_block["content"] == "(no output)"

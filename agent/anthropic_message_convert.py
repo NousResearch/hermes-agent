@@ -690,10 +690,10 @@ def _convert_tool_message_to_result(
     if multimodal_blocks:
         result_content: Any = multimodal_blocks
     elif isinstance(content, str):
-        result_content = content
+        result_content = content if content.strip() else "(no output)"
     else:
         result_content = json.dumps(content) if content else "(no output)"
-    if not result_content:
+    if not result_content or (isinstance(result_content, str) and not result_content.strip()):
         result_content = "(no output)"
     tool_result = {
         "type": "tool_result",
@@ -1136,6 +1136,11 @@ def _scrub_blank_text_blocks(result: List[Dict[str, Any]]) -> None:
                     role=role,
                     location="tool_result",
                 )
+            elif isinstance(inner, str):
+                if not inner.strip():
+                    blk["content"] = "(no output)"
+            elif not inner:
+                blk["content"] = "(no output)"
         msg["content"] = new_content
 
 

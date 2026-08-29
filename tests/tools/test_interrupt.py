@@ -74,13 +74,19 @@ class TestInterruptModule:
 
         assert callbacks == []
 
-    def test_run_if_not_interrupted_orders_callback_before_concurrent_interrupt(self):
+    @pytest.mark.parametrize("callback_should_fail", [False, True])
+    def test_run_if_not_interrupted_orders_callback_before_concurrent_interrupt(
+        self, callback_should_fail
+    ):
         from tools.interrupt import (
             _interrupted_threads,
             _lock,
             run_if_not_interrupted,
             set_interrupt,
         )
+
+        class CallbackFailure(Exception):
+            pass
 
         setter_started = threading.Event()
         interrupt_published = threading.Event()
@@ -91,8 +97,11 @@ class TestInterruptModule:
         def publish_interrupt():
             setter_tids.append(threading.get_ident())
             setter_started.set()
-            set_interrupt(True)
-            interrupt_published.set()
+            try:
+                set_interrupt(True)
+                interrupt_published.set()
+            finally:
+                set_interrupt(False)
 
         def callback():
             setter = threading.Thread(target=publish_interrupt)
@@ -100,22 +109,30 @@ class TestInterruptModule:
             setter.start()
             assert setter_started.wait(5)
             callback_observations.append(interrupt_published.is_set())
+            if callback_should_fail:
+                raise CallbackFailure
 
-        assert run_if_not_interrupted(callback) is True
-        setter = setters[0]
         try:
-            setter.join(5)
-            assert not setter.is_alive()
-            assert callback_observations == [False]
-            assert interrupt_published.is_set()
+            if callback_should_fail:
+                with pytest.raises(CallbackFailure):
+                    run_if_not_interrupted(callback)
+            else:
+                assert run_if_not_interrupted(callback) is True
         finally:
+            for setter in setters:
+                if setter.ident is not None:
+                    setter.join()
             for setter_tid in setter_tids:
                 set_interrupt(False, setter_tid)
             set_interrupt(False)
 
+        assert setters
+        assert all(not setter.is_alive() for setter in setters)
         assert setter_tids
+        assert callback_observations == [False]
+        assert interrupt_published.is_set()
         with _lock:
-            assert setter_tids[0] not in _interrupted_threads
+            assert not _interrupted_threads
 
 
 # ---------------------------------------------------------------------------

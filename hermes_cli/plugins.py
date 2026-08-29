@@ -3788,9 +3788,10 @@ class PluginManager:
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
         # In-flight / recently-timed-out hook callbacks. Keyed by
-        # (hook_name, id(cb)) so a stuck policy hook cannot spawn a new
-        # abandoned daemon thread on every subsequent fire.
-        self._hook_running_callbacks: Dict[tuple, object] = {}
+        # (hook_name, id(cb)). Ordinary concurrent invocations are allowed;
+        # only callbacks that have actually timed out suppress later fires.
+        self._hook_running_callbacks: Dict[tuple, set[object]] = {}
+        self._hook_timed_out_callbacks: Dict[tuple, set[object]] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
@@ -4185,6 +4186,7 @@ class PluginManager:
             self._context_engine = None
             with self._hook_timeout_lock:
                 self._hook_running_callbacks.clear()
+                self._hook_timed_out_callbacks.clear()
                 self._hook_timeout_suppressed_until.clear()
             self._discovered = False
         else:
@@ -5585,8 +5587,9 @@ class PluginManager:
         policy hook ``pre_tool_call`` are bounded by
         ``plugins.hook_callback_timeout`` (default 30s). On timeout the worker
         is abandoned (not joined) so we do not reintroduce the #6622 hang.
-        Timed-out or still-running ``pre_tool_call`` callbacks fail closed
-        with a block directive; other bounded hooks fail open (skip).
+        ``pre_tool_call`` callbacks that timed out (including workers still
+        unwinding after that timeout) fail closed with a block directive;
+        other bounded hooks fail open (skip).
 
         ``subagent_stop`` (and any hook in ``_HOOK_CALLER_THREAD_HOOKS``)
         always runs on the caller thread to preserve the documented parent-
@@ -5629,13 +5632,15 @@ class PluginManager:
                         suppressed_until = self._hook_timeout_suppressed_until.get(
                             callback_key
                         )
-                        running = callback_key in self._hook_running_callbacks
+                        timed_out_running = bool(
+                            self._hook_timed_out_callbacks.get(callback_key)
+                        )
                         if (
                             suppressed_until is not None and suppressed_until > now
-                        ) or running:
+                        ) or timed_out_running:
                             logger.warning(
-                                "Hook '%s' callback %s skipped after previous "
-                                "timeout or while still running",
+                                "Hook '%s' callback %s skipped after a previous "
+                                "timeout (worker still running or cooldown active)",
                                 hook_name,
                                 callback_name,
                             )
@@ -5644,7 +5649,9 @@ class PluginManager:
                             continue
                         if suppressed_until is not None:
                             self._hook_timeout_suppressed_until.pop(callback_key, None)
-                        self._hook_running_callbacks[callback_key] = token
+                        self._hook_running_callbacks.setdefault(
+                            callback_key, set()
+                        ).add(token)
 
                     context = contextvars.copy_context()
                     done = threading.Event()
@@ -5667,8 +5674,18 @@ class PluginManager:
                             failure["exc"] = exc
                         finally:
                             with self._hook_timeout_lock:
-                                if self._hook_running_callbacks.get(_key) is _token:
-                                    self._hook_running_callbacks.pop(_key, None)
+                                running_tokens = self._hook_running_callbacks.get(_key)
+                                if running_tokens is not None:
+                                    running_tokens.discard(_token)
+                                    if not running_tokens:
+                                        self._hook_running_callbacks.pop(_key, None)
+                                timed_out_tokens = self._hook_timed_out_callbacks.get(
+                                    _key
+                                )
+                                if timed_out_tokens is not None:
+                                    timed_out_tokens.discard(_token)
+                                    if not timed_out_tokens:
+                                        self._hook_timed_out_callbacks.pop(_key, None)
                             done.set()
 
                     thread = threading.Thread(
@@ -5680,6 +5697,13 @@ class PluginManager:
                     if not done.wait(timeout=timeout):
                         # Do not join — that would reintroduce the #6622 hang.
                         with self._hook_timeout_lock:
+                            running_tokens = self._hook_running_callbacks.get(
+                                callback_key, set()
+                            )
+                            if token in running_tokens:
+                                self._hook_timed_out_callbacks.setdefault(
+                                    callback_key, set()
+                                ).add(token)
                             self._hook_timeout_suppressed_until[callback_key] = (
                                 time.monotonic()
                                 + self._hook_timeout_suppression_seconds

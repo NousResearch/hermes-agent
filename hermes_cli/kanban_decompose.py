@@ -123,6 +123,30 @@ Default assignee (used when no profile fits a task): {default_assignee}
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
+# Titles whose completion would constitute an unsigned product/PM decision.
+# The auto-decomposer routes children whose title matches this to ``triage``
+# (never ``ready``), so a ghost PM-run cannot self-complete them and lock a
+# decision the owner never signed. Keep the alternation to bare decision verbs
+# so an ordinary implementation title ("Lock the report row rendering") is not
+# misclassified — the ``\b`` word boundaries anchor each verb.
+_DECISION_TITLE_RE = re.compile(
+    r"\b(?:decide|approve|spec the|lock|sign off|redefine|amend|ratify)\b",
+    re.IGNORECASE,
+)
+
+# Exactly-matched author that stamps auto-decompose children (see
+# kanban_db.decompose_triage_task's ``created_by``). Used both to (a) route
+# decision-shaped children to triage and (b) exclude auto-decomposer-created
+# triage from re-decomposition on later ticks.
+AUTO_DECOMPOSER_AUTHOR = "auto-decomposer"
+
+
+def _is_decision_shaped(title: str) -> bool:
+    """True when a child title reads as a product decision, not a task."""
+    if not title:
+        return False
+    return bool(_DECISION_TITLE_RE.search(title))
+
 
 @dataclass
 class DecomposeOutcome:
@@ -422,11 +446,17 @@ def decompose_task(
             parents = []
         # Clean parent indices: drop non-int and out-of-range.
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
+        is_auto = (audit_author == AUTO_DECOMPOSER_AUTHOR)
         children.append({
             "title": title.strip()[:200],
             "body": body.strip(),
             "assignee": chosen,
             "parents": clean_parents,
+            # AC1: an auto-decomposer-spawned child whose title is a product
+            # decision must land in ``triage`` (never ``ready``) so a ghost PM
+            # run cannot self-complete it. Manually-specified (non auto) runs
+            # keep current behavior: they are already owner-committed.
+            "triage": is_auto and _is_decision_shaped(title),
         })
 
     try:
@@ -457,7 +487,15 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids currently in the triage column.
+
+    Excludes cards that the auto-decomposer itself created in ``triage``
+    (i.e. the decision-shaped children it demoted so the PM can accept
+    them). Without this exclusion the dispatcher's auto-decompose tick
+    would re-decompose those parked decisions on the next tick, defeating
+    the AC1/AC2 gate. Genuine user-dropped triage (``created_by`` a real
+    profile/user) is still returned and decomposed as normal.
+    """
     with kb.connect_closing() as conn:
         rows = kb.list_tasks(
             conn,
@@ -465,4 +503,8 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             tenant=tenant,
             limit=1000,
         )
-    return [row.id for row in rows]
+    return [
+        row.id for row in rows
+        if (row.created_by or "") != AUTO_DECOMPOSER_AUTHOR
+        and (row.created_by or "") != "decomposer"
+    ]

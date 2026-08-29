@@ -161,3 +161,117 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+# --- AC1/AC2: auto-decomposer decision-shaped children land in triage ---
+
+def _auto_decompose(llm_payload, *, tid, profiles):
+    """Run decompose_task with author='auto-decomposer' against a mocked aux LLM."""
+    patches = _patch_list_profiles(profiles)
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            return decomp.decompose_task(tid, author=decomp.AUTO_DECOMPOSER_AUTHOR)
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_auto_decompose_decision_child_lands_in_triage(kanban_home):
+    """AC1: a decision-shaped auto-decomposer child lands in triage, not ready."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="analyze the People flow", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "split",
+        "tasks": [
+            {"title": "Decide the mention-derived People source design",
+             "body": "pick source", "assignee": "jobsy", "parents": []},
+            {"title": "Implement the chosen integration",
+             "body": "build it", "assignee": "engineer", "parents": [0]},
+        ],
+    })
+
+    profiles = ["orchestrator", "jobsy", "engineer"]
+    outcome = _auto_decompose(llm_payload, tid=tid, profiles=profiles)
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True and len(outcome.child_ids) == 2
+
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        c0 = kb.get_task(conn, outcome.child_ids[0])  # decision card
+        c1 = kb.get_task(conn, outcome.child_ids[1])   # downstream impl
+
+    # Root flips to 'todo' as usual (gated by the parked decision).
+    assert root.status == "todo"
+    # AC1: decision-shaped card -> triage, NOT ready. AC2: it must not auto-promote.
+    assert c0.status == "triage"
+    assert c0.assignee == "jobsy"
+    # Downstream depends on the decision (triage parent) -> stays 'todo' (no promote).
+    assert c1.status == "todo"
+    # created_by stamped so the re-entry guard (list_triage_ids) can exclude it.
+    assert c0.created_by == decomp.AUTO_DECOMPOSER_AUTHOR
+
+
+def test_auto_decompose_decision_child_does_not_auto_promote_on_recompute(kanban_home):
+    """AC2: recompute_ready never promotes a triage card to ready."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="parallel decision fan", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn, tid,
+            root_assignee="orch",
+            children=[
+                {"title": "Decide the data model orientation",
+                 "body": "a or b", "assignee": "jobsy", "triage": True},
+                {"title": "Then implement it",
+                 "body": "build", "assignee": "engineer", "parents": [0]},
+            ],
+            author=decomp.AUTO_DECOMPOSER_AUTHOR,
+        )
+    assert child_ids is not None and len(child_ids) == 2
+
+    with kb.connect() as conn:
+        decision = kb.get_task(conn, child_ids[0])
+        downstream = kb.get_task(conn, child_ids[1])
+    # Decision parked; never upgraded by recompute_ready (only 'todo'/'blocked' do).
+    assert decision.status == "triage"
+    # Downstream is gated on an un-promoted decision -> still todo.
+    assert downstream.status == "todo"
+
+
+def test_auto_decompose_non_decision_child_still_promotes(kanban_home):
+    """AC5: a non-decision auto-decomposer child keeps current behavior (ready)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="feature build", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn, tid,
+            root_assignee="orch",
+            children=[
+                {"title": "Implement feature Y",
+                 "body": "build", "assignee": "engineer"},
+            ],
+            author=decomp.AUTO_DECOMPOSER_AUTHOR,
+        )
+    assert child_ids is not None
+    with kb.connect() as conn:
+        c0 = kb.get_task(conn, child_ids[0])
+    assert c0.status == "ready"
+    assert c0.created_by == decomp.AUTO_DECOMPOSER_AUTHOR
+
+
+def test_list_triage_ids_excludes_auto_decomposer_created(kanban_home):
+    """Re-entry guard: auto-decomposer-created triage is not re-decomposed."""
+    with kb.connect() as conn:
+        user_triage = kb.create_task(conn, title="user dropped", triage=True, assignee="someone")
+        park_root = kb.create_task(conn, title="park me", triage=True)
+        decision = kb.decompose_triage_task(
+            conn, park_root,
+            root_assignee="orch",
+            children=[{"title": "Approve the API", "assignee": "jobsy", "triage": True}],
+            author=decomp.AUTO_DECOMPOSER_AUTHOR,
+        )[0]
+    ids = decomp.list_triage_ids()
+    assert user_triage in ids          # real user triage still decomposes
+    assert decision not in ids         # auto-decomposer-parked decision excluded
+
+

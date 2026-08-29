@@ -7400,12 +7400,19 @@ def decompose_triage_task(
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
         # sees a coherent state, and recompute_ready() at the end
-        # promotes parent-free children to 'ready'.
+        # promotes parent-free children to 'ready'. An auto-decomposer
+        # child whose title is a product decision (child["triage"]) is
+        # created as 'triage' instead — recompute_ready only promotes
+        # 'todo'/'blocked', so it stays parked for the PM to accept.
         for idx, child in enumerate(children):
             new_id = _new_task_id()
             title = child["title"].strip()
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
+            # A decision-shaped child (auto-decomposer-spawned) is parked in
+            # triage, not 'todo', so the PM must explicitly accept it before it
+            # can be dispatched as authoritative.
+            child_status = "triage" if child.get("triage") else "todo"
             # Per-child override wins; otherwise inherit the root's
             # workspace. A child that sets workspace_kind without a path
             # falls back to the root path only when kinds match (so a
@@ -7431,12 +7438,13 @@ def decompose_triage_task(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
                 " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    child_status,
                     child_ws_kind,
                     child_ws_path,
                     tenant,

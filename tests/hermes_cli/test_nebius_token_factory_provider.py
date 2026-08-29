@@ -172,6 +172,28 @@ def test_nebius_reasoning_models_emit_top_level_reasoning_effort():
     assert top_level == {"reasoning_effort": "high"}
 
 
+def test_nebius_effort_clamp_is_monotonic():
+    """Regression: the hand-rolled map sent ultra->medium while xhigh->high,
+    inverting the ladder. The canonical clamp_effort keeps stronger requests
+    at least as strong on the wire (all of xhigh/max/ultra clamp to high)."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("nebius-token-factory")
+    assert profile is not None
+
+    def wire(effort):
+        _, top = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="deepseek-ai/DeepSeek-V4-Pro",
+        )
+        return top.get("reasoning_effort")
+
+    assert wire("ultra") == "high"
+    assert wire("max") == "high"
+    assert wire("xhigh") == "high"
+    assert wire("minimal") == "low"
+
+
 def test_nebius_reasoning_defaults_to_medium_for_known_reasoning_model():
     from providers import get_provider_profile
 

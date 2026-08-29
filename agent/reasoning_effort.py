@@ -105,6 +105,9 @@ OX_ALPHA_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: Tencent TokenHub: low/medium/high.
 TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
+#: Nebius Token Factory: low/medium/high (top-level reasoning_effort knob).
+NEBIUS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+
 #: Kimi K3's vendor-documented translation quirks (platform.kimi.ai
 #: thinking-model guide): ``high`` is K3's positional middle AND server
 #: default, so ``medium`` rounds to it rather than down to ``low``; ``xhigh``

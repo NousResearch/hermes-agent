@@ -57,12 +57,12 @@ class NebiusTokenFactoryProfile(ProviderProfile):
         effort = str(raw_effort or "medium").strip().lower()
         if enabled is False or effort in {"none", "off", "disabled"}:
             return {}, {}
-        if effort in {"xhigh", "max"}:
-            effort = "high"
-        elif effort == "minimal":
-            effort = "low"
-        elif effort not in {"low", "medium", "high"}:
-            effort = "medium"
+        # Canonical clamp (nearest weaker supported level, never escalate,
+        # monotonic) — the hand-rolled map this replaces inverted the ladder:
+        # ultra fell through to medium while xhigh mapped to high.
+        from agent.reasoning_effort import NEBIUS_EFFORTS, clamp_effort
+
+        effort = clamp_effort(effort, NEBIUS_EFFORTS) or "medium"
 
         return {}, {"reasoning_effort": effort}
 

@@ -645,6 +645,11 @@ DEFAULT_CONFIG = {
         # real-profile local session even under a cloud browser backend. Toggle
         # in the desktop Settings → Browser section.
         "use_real_profile": False,
+        # Optional stable Chromium family to use as the real-profile source:
+        # chrome | edge | brave | chromium. Empty means detect the OS default.
+        # This only affects real-profile browsing; it does not change the OS
+        # default browser. Useful when an OS association API reports stale state.
+        "real_profile_browser": "",
         # When real-profile browsing needs the browser closed (Windows: a
         # running Chrome/Edge/Brave locks its cookie DB deny-all, so it must be
         # fully quit before its profile can be copied), arm the "offer to close

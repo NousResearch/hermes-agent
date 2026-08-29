@@ -1644,7 +1644,9 @@ def is_container() -> bool:
     Kubernetes/k3s) were previously missed. To cover those, also check:
       * ``KUBERNETES_SERVICE_HOST`` env var — set in every Kubernetes pod.
       * ``kubepods`` / ``containerd`` / ``crio`` markers in ``/proc/1/cgroup``.
-      * the same markers in ``/proc/self/mountinfo`` (cgroup-v2 fallback).
+      * container-runtime markers on the current root mount in
+        ``/proc/self/mountinfo`` (cgroup-v2 fallback). Host-managed runtime
+        storage mounted elsewhere must not classify the host as a container.
 
     Result is cached for the process lifetime.  Import-safe — no heavy deps.
 
@@ -1673,14 +1675,28 @@ def is_container() -> bool:
     except OSError:
         pass
     # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
-    # runtime still shows up in the mount table (overlay rootfs, runtime mount
-    # paths), so scan mountinfo as a last resort.
+    # runtime still shows up on the process's root mount. Limit the fallback
+    # to that mount: a host may legitimately mount containerd/Kubernetes
+    # storage elsewhere for containers it manages.
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
-            mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
+            for line in f:
+                fields = line.split()
+                if (
+                    len(fields) > 4
+                    and fields[4] == "/"
+                    and any(
+                        marker in line
+                        for marker in (
+                            "kubepods",
+                            "containerd",
+                            "crio",
+                            "/var/lib/docker/",
+                        )
+                    )
+                ):
+                    _container_detected = True
+                    return True
     except OSError:
         pass
     _container_detected = False

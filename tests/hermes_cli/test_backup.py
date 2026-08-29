@@ -1515,6 +1515,52 @@ class TestQuickSnapshot:
         out = capsys.readouterr().out
         assert "skipping state.db" in out.lower() or "skipping snapshot prune" in out.lower()
 
+    @pytest.mark.parametrize("incomplete_kind", ["oversized", "failed"])
+    def test_repeated_incomplete_snapshots_prune_stale_partial_copies(
+        self, hermes_home, monkeypatch, incomplete_kind
+    ):
+        """Incomplete snapshots stay bounded without losing the recovery copy."""
+        from hermes_cli import backup
+
+        complete_id = backup.create_quick_snapshot(
+            label="complete", hermes_home=hermes_home, keep=1
+        )
+        assert complete_id is not None
+
+        snapshot_kwargs = {}
+        if incomplete_kind == "oversized":
+            snapshot_kwargs["max_file_size"] = 1024
+        else:
+            monkeypatch.setattr(backup, "_safe_copy_db", lambda _src, _dst: False)
+
+        partial_ids = []
+        for index in range(3):
+            _advance_backup_clock()
+            (hermes_home / ".env").write_text(
+                f"OPENROUTER_API_KEY=rotated-test-key-{index}\n"
+            )
+            partial_id = backup.create_quick_snapshot(
+                label=f"partial-{index}",
+                hermes_home=hermes_home,
+                keep=1,
+                **snapshot_kwargs,
+            )
+            assert partial_id is not None
+            partial_ids.append(partial_id)
+
+        snapshots = backup.list_quick_snapshots(limit=100, hermes_home=hermes_home)
+        assert {snapshot["id"] for snapshot in snapshots} == {
+            complete_id,
+            partial_ids[-1],
+        }
+        assert (hermes_home / "state-snapshots" / complete_id / "state.db").exists()
+        assert not (
+            hermes_home / "state-snapshots" / partial_ids[0]
+        ).exists(), "stale partial snapshot retained an old credential copy"
+        assert not (
+            hermes_home / "state-snapshots" / partial_ids[1]
+        ).exists(), "stale partial snapshot retained an old credential copy"
+
 
 class TestQuickSnapshotProjectsKanban:
     """Regression for #52889: projects.db / kanban.db must survive an upgrade.

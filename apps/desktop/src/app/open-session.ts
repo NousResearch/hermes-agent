@@ -4,8 +4,8 @@
  * already a tile (or the main tab) is JUMPED TO instead of yanked into main.
  *
  * Intents:
- *   - `in-place` (sidebar click / Enter) — focus existing tile/main if on
- *     screen; else load into main (same as the left sessions sidebar).
+ *   - `in-place` (default non-sidebar open) — focus existing tile/main if on
+ *     screen; else load into main.
  *   - `stack` (⌘K, notifications — anything that opens a chat from outside the
  *     workspace) — like `tab`, but may spend main or an open blank draft tab
  *     when either is empty.
@@ -53,7 +53,7 @@ export function mainChatOccupied(activeSessionId: null | string, selectedStoredS
 
 /** Read modifiers the way session rows do — meta OR ctrl for tab, +shift for
  *  window. `base` is what an unmodified select means for the caller: the
- *  sidebar spends main (`in-place`), a palette-style open doesn't (`stack`). */
+ *  an inline open spends main (`in-place`), a palette-style open doesn't (`stack`). */
 export function openSessionIntentFromModifiers(
   event?: null | { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean },
   base: OpenSessionIntent = 'in-place'
@@ -96,6 +96,7 @@ export function openSession(
   markSessionRead(storedSessionId)
   setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
   const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
+  const routedWorkspaceScope = workspaceScope.ownerRoute ? workspaceScope : botWorkspaceScope
 
   let resolved: OpenSessionIntent = intent
 
@@ -156,8 +157,8 @@ export function openSession(
       return
     }
 
-    if (botWorkspaceScope) {
-      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope)
+    if (routedWorkspaceScope) {
+      openSessionTile(storedSessionId, 'center', undefined, undefined, routedWorkspaceScope)
     } else {
       openSessionTile(storedSessionId, 'center')
     }
@@ -167,19 +168,12 @@ export function openSession(
     return
   }
 
-  // Already the main session? Front its workspace tab; from a full page
-  // (artifacts, skills, …) that still has to route back: fronting the tab
-  // alone leaves the page showing.
-  //
-  // A TILE hit routes into main too (#92926): a sidebar click means "open
-  // this chat in main", and fronting a tab elsewhere in the tree reads as a
-  // dead click — the main column never changes. Routing binds the
-  // conversation to main and resumeSession closes the now-redundant tile.
-  // (`tab`/`stack` opens keep the front-only jump: those intents asked for a
-  // tab beside, not a takeover of main.)
+  // Already on screen? Front it. If the main session is hidden behind a full
+  // page, route back to the workspace; a tile hit remains front-only for the
+  // default intent used by non-sidebar callers.
   const focused = focusOpenSession(storedSessionId, workspaceScope)
 
-  if (focused === 'tile' || focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
+  if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }
 }

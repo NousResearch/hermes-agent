@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesModule from '@/hermes'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
-import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
+import { $sessionTiles, openSessionTile, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
@@ -64,11 +64,15 @@ function renderTile(
 describe('useSessionTileDelegate resumeTile', () => {
   beforeEach(() => {
     setSessions([])
+    $sessionTiles.set([])
     vi.mocked(getLatestSessionMessages).mockClear()
+    vi.mocked(requestGatewayForAgent).mockReset()
+    vi.mocked(requestGatewayForProfile).mockReset()
   })
 
   afterEach(() => {
     setSessions([])
+    $sessionTiles.set([])
   })
 
   it('carries the owning profile into a cold tile resume so it cannot fork profiles', async () => {
@@ -147,6 +151,36 @@ describe('useSessionTileDelegate resumeTile', () => {
       cols: 96,
       omit_messages: true,
       profile: 'default'
+    })
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
+
+  it('routes a Sessions tile through the clicked duplicate row owner instead of the first same-id row', async () => {
+    const clickedOwner = { connectionId: 'source-b', profile: 'profile-b' }
+
+    setSessions([
+      row({ connection_id: 'source-a', id: 'stored-shared', profile: 'profile-a' }),
+      row({ connection_id: 'source-b', id: 'stored-shared', profile: 'profile-b' })
+    ])
+    openSessionTile('stored-shared', 'center', undefined, undefined, {
+      ownerRoute: clickedOwner,
+      workspaceMode: 'sessions'
+    })
+
+    expect($sessionTiles.get()[0]?.ownerRoute).toEqual(clickedOwner)
+
+    const ambientRequest = vi.fn(async () => ({}) as never)
+
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({ session_id: 'runtime-shared' } as never)
+    renderTile(ambientRequest)
+
+    await sessionTileDelegate()!.resumeTile('stored-shared')
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('source-b', 'profile-b', 'session.resume', {
+      session_id: 'stored-shared',
+      cols: 96,
+      omit_messages: true,
+      profile: 'profile-b'
     })
     expect(ambientRequest).not.toHaveBeenCalled()
   })

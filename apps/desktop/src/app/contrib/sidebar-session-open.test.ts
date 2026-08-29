@@ -59,11 +59,17 @@ describe('openSidebarSession', () => {
       profile: 'profile-b',
       targetProfile: 'profile-b'
     })
-    expect(mocks.openSession).toHaveBeenNthCalledWith(1, 'shared-id', navigate, 'tab')
-    expect(mocks.openSession).toHaveBeenNthCalledWith(2, 'shared-id', navigate, 'tab')
+    expect(mocks.openSession).toHaveBeenNthCalledWith(1, 'shared-id', navigate, 'tab', {
+      ownerRoute: { connectionId: 'connection-a', profile: 'profile-a', targetProfile: 'profile-a' },
+      workspaceMode: 'sessions'
+    })
+    expect(mocks.openSession).toHaveBeenNthCalledWith(2, 'shared-id', navigate, 'tab', {
+      ownerRoute: { connectionId: 'connection-b', profile: 'profile-b', targetProfile: 'profile-b' },
+      workspaceMode: 'sessions'
+    })
   })
 
-  it('uses in-place intent when the persisted preference selects the main tab', () => {
+  it('uses explicit main intent when the persisted preference selects the main tab', () => {
     $sidebarSessionsOpenInNewTab.set(false)
     mocks.sessionOwnerRouteFromRow.mockReturnValue({
       connectionId: 'connection-a',
@@ -74,7 +80,10 @@ describe('openSidebarSession', () => {
     openSidebarSession('shared-id', session('profile-a', 'connection-a'), navigate)
 
     expect(mocks.requestSessionResume).toHaveBeenCalledOnce()
-    expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'in-place')
+    expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'main', {
+      ownerRoute: { connectionId: 'connection-a', profile: 'profile-a', targetProfile: 'profile-a' },
+      workspaceMode: 'sessions'
+    })
   })
 
   it('keeps untagged rows on the ambient backend after clearing stale explicit hints', () => {
@@ -86,6 +95,6 @@ describe('openSidebarSession', () => {
     expect(mocks.sessionOwnerRouteFromRow).toHaveBeenCalledWith(untagged)
     expect(mocks.forgetSessionOwnerHintsForSession).toHaveBeenCalledWith('shared-id')
     expect(mocks.requestSessionResume).toHaveBeenCalledWith('shared-id')
-    expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'tab')
+    expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'tab', { workspaceMode: 'sessions' })
   })
 })

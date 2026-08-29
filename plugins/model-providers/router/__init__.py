@@ -279,6 +279,10 @@ def _efforts_cache_only() -> Optional[dict[str, list[str]]]:
 def _warm_efforts_async() -> None:
     """Refresh the efforts cache in the background, at most once per process."""
     global _warm_started
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # Match the canonical caps warmer (hermes_cli/models.py): a mid-suite
+        # background fetch would make cache state timing-dependent in tests.
+        return
     with _efforts_lock:
         if _warm_started:
             return

@@ -7,8 +7,11 @@ streaming, or the _run_codex_stream() call path.
 
 import hashlib
 import json
+import logging
 import re
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Cron fires build session_id as ``cron_<job_id>_<YYYYMMDD_HHMMSS>`` (see
 # cron/scheduler.py). The trailing timestamp is per-fire noise; stripped so
@@ -272,7 +275,10 @@ def _profile_declared_efforts(
                 inferred_profile = get_provider_profile(inferred)
                 if inferred_profile is not None:
                     declared = inferred_profile.supported_reasoning_efforts(model)
-    except Exception:
+    except Exception as exc:
+        # Fail-open by design: a broken profile hook must never block the
+        # request — the transport falls back to its default vocabulary.
+        logger.debug("profile-declared efforts lookup failed: %s", exc)
         return None
     if declared is None:
         return None

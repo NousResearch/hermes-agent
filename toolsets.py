@@ -236,7 +236,7 @@ TOOLSETS = {
 
     "project": {
         "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
-        "tools": ["project_list", "project_create", "project_switch"],
+        "tools": ["desktop_project"],
         "includes": []
     },
 
@@ -253,7 +253,7 @@ TOOLSETS = {
         "description": "Desktop GUI affordances — in-app terminal/browser panes, pane focus, reactions (GUI sessions only)",
         "tools": [
             "read_terminal", "close_terminal",
-            "open_preview", "close_preview", "read_preview", "drive_preview", "annotate_preview",
+            "desktop_preview", "drive_preview", "annotate_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
             "setup_mcp", "tour", "tip",

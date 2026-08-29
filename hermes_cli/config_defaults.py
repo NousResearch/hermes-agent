@@ -2847,6 +2847,19 @@ DEFAULT_CONFIG = {
         "done_sub_retention_days": 30,
     },
 
+    # Async background delegation recovery. The gateway periodically checks
+    # durable delegate_task records whose original owner process exited before
+    # saving a terminal result. This only marks the outcome unknown and queues
+    # the existing completion payload. It never reruns delegated work.
+    "async_delegation": {
+        # Run recovery in long-lived gateway processes. Disable only for
+        # manual forensic handling of abandoned delegation records.
+        "orphan_recovery_in_gateway": True,
+        # Seconds between owner-liveness sweeps. Ten minutes keeps idle-gateway
+        # SQLite work negligible while recovering orphans without a restart.
+        "orphan_recovery_interval_seconds": 600,
+    },
+
     # Bot Mode cross-connection relay (tools/bot_relay.py). Envelopes queued
     # by message_agent for agents on other connections wait in an on-disk
     # outbox until the Desktop drains them.

@@ -66,6 +66,92 @@ def _drain_for(delegation_id, timeout=5.0):
     return None
 
 
+def _insert_durable_delegation(
+    ad, delegation_id, *, state="running", owner_pid=123, owner_started_at=456,
+    event_json=None,
+):
+    now = time.time()
+    with ad._DB_LOCK, ad._transaction() as conn:
+        conn.execute(
+            """INSERT INTO async_delegations
+               (delegation_id, origin_session, origin_ui_session_id,
+                parent_session_id, state, dispatched_at, updated_at,
+                delivery_state, owner_pid, owner_started_at, task_json, event_json)
+               VALUES (?, 'session-1', 'ui-1', 'parent-1', ?, ?, ?, 'pending',
+                       ?, ?, ?, ?)""",
+            (
+                delegation_id, state, now, now, owner_pid, owner_started_at,
+                json.dumps({"goal": "recover me"}), event_json,
+            ),
+        )
+
+
+def _durable_delegation_row(ad, delegation_id):
+    with ad._DB_LOCK, ad._transaction() as conn:
+        return conn.execute(
+            """SELECT state, event_json, result_json, delivery_state
+               FROM async_delegations WHERE delegation_id=?""",
+            (delegation_id,),
+        ).fetchone()
+
+
+def test_recover_abandoned_delegations_keeps_live_owner_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    _insert_durable_delegation(ad, "live-owner")
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid == 123)
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 456)
+
+    assert ad.recover_abandoned_delegations() == 0
+    assert _durable_delegation_row(ad, "live-owner") == ("running", None, None, "pending")
+
+
+def test_recover_abandoned_delegations_marks_dead_owner_unknown_and_queues_event(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    _insert_durable_delegation(ad, "dead-owner")
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+
+    assert ad.recover_abandoned_delegations() == 1
+    state, event_json, result_json, delivery_state = _durable_delegation_row(ad, "dead-owner")
+    assert state == "unknown"
+    assert delivery_state == "pending"
+    event = json.loads(event_json)
+    assert event["status"] == "unknown"
+    assert event["error"] == (
+        "Delegation owner exited before recording a terminal result; outcome unknown."
+    )
+    assert json.loads(result_json)["error"] == event["error"]
+
+    completion_queue = queue.Queue()
+    assert ad.restore_undelivered_completions(completion_queue) == 1
+    assert completion_queue.get_nowait()["delegation_id"] == "dead-owner"
+
+
+@pytest.mark.parametrize("state", ["completed", "error", "unknown"])
+def test_recover_abandoned_delegations_ignores_terminal_records(tmp_path, monkeypatch, state):
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    original_event = json.dumps({"delegation_id": "terminal", "status": state})
+    _insert_durable_delegation(ad, "terminal", state=state, event_json=original_event)
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+
+    assert ad.recover_abandoned_delegations() == 0
+    assert _durable_delegation_row(ad, "terminal") == (
+        state, original_event, None, "pending",
+    )
+
+
+def test_recover_abandoned_delegations_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    _insert_durable_delegation(ad, "repeat-owner")
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+
+    assert ad.recover_abandoned_delegations() == 1
+    first = _durable_delegation_row(ad, "repeat-owner")
+    assert ad.recover_abandoned_delegations() == 0
+    assert _durable_delegation_row(ad, "repeat-owner") == first
+
+
 def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
     """The delegation ledger is a guest in state.db, not its mode owner."""
     conn = sqlite3.connect(tmp_path / "state.db")
@@ -880,4 +966,3 @@ def test_batch_truncation_banner_marks_only_truncated_task():
     banner_pos = text.index("TRUNCATED")
     # The header banner for task 2 appears after task 1's summary.
     assert banner_pos > clean_pos
-

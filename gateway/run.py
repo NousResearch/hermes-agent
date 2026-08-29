@@ -13697,6 +13697,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # idle case where the subagent finishes with no agent turn running.
         self._spawn_supervised(self._async_delegation_watcher, "async_delegation_watcher")
 
+        # Long-lived gateways also sweep durable async delegations whose owner
+        # process died after this gateway started. The watcher only delegates
+        # state recovery to recover_abandoned_delegations(); it never reruns a
+        # child task.
+        self._spawn_supervised(
+            self._async_delegation_orphan_recovery_watcher,
+            "async_delegation_orphan_recovery_watcher",
+        )
+
         # Start background /loop wakeup watcher — scans persisted loops
         # (SessionDB loop:* rows) and injects due wakeup prompts into their
         # originating chats while the session is idle.
@@ -26545,6 +26554,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.debug("Async delegation watcher error: %s", e)
             await asyncio.sleep(interval)
+
+    async def _async_delegation_orphan_recovery_watcher(self) -> None:
+        """Periodically recover durable delegations abandoned by dead owners.
+
+        This is deliberately only a scheduling wrapper around
+        ``recover_abandoned_delegations``. That function verifies both PID
+        liveness and process start time before changing a running row to
+        ``unknown`` and preparing its normal completion payload. No delegated
+        task is claimed, dispatched, or rerun here.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            logger.warning("async delegation recovery: config loader unavailable; disabled")
+            return
+
+        try:
+            cfg = _load_config()
+        except Exception as exc:
+            logger.warning("async delegation recovery: cannot load config (%s); disabled", exc)
+            return
+        delegation_cfg = cfg.get("async_delegation", {}) if isinstance(cfg, dict) else {}
+        if not delegation_cfg.get("orphan_recovery_in_gateway", True):
+            logger.info(
+                "async delegation recovery: disabled via config "
+                "async_delegation.orphan_recovery_in_gateway=false"
+            )
+            return
+
+        try:
+            interval = float(
+                delegation_cfg.get("orphan_recovery_interval_seconds", 600) or 600
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "async delegation recovery: invalid "
+                "orphan_recovery_interval_seconds=%r, using default 600",
+                delegation_cfg.get("orphan_recovery_interval_seconds"),
+            )
+            interval = 600.0
+        interval = max(interval, 60.0)
+
+        from tools.async_delegation import recover_abandoned_delegations
+
+        while self._running:
+            try:
+                recovered = await asyncio.to_thread(recover_abandoned_delegations)
+                if recovered:
+                    logger.info(
+                        "async delegation recovery: marked %d abandoned delegation(s) unknown",
+                        recovered,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("async delegation recovery: watcher tick failed")
+
+            slept = 0.0
+            while self._running and slept < interval:
+                delay = min(1.0, interval - slept)
+                await asyncio.sleep(delay)
+                slept += delay
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """

@@ -747,7 +747,7 @@ def _git_grep_terminal_call_ids(value: Any) -> frozenset[str]:
 
 
 def _rg_terminal_call_ids(value: Any) -> frozenset[str]:
-    """Recognize a no-context, line-numbered ``rg`` result for projection."""
+    """Recognize a line-numbered ``rg`` result for location-only projection."""
 
     recognized: set[str] = set()
 
@@ -763,15 +763,7 @@ def _rg_terminal_call_ids(value: Any) -> frozenset[str]:
         if not any(token in {"-n", "--line-number"} for token in tokens[1:]):
             return False
         return not any(
-            token == "-C"
-            or token.startswith("-C")
-            or token == "--context"
-            or token.startswith("--context=")
-            or token == "--before-context"
-            or token.startswith("--before-context=")
-            or token == "--after-context"
-            or token.startswith("--after-context=")
-            or token in {"--json", "--files", "--files-with-matches"}
+            token in {"--json", "--files", "--files-with-matches"}
             for token in tokens[1:]
         )
 
@@ -820,8 +812,16 @@ def _project_line_numbered_search_terminal_result(text: str) -> str | None:
     for raw_line in raw_output.splitlines():
         if not raw_line:
             continue
+        if raw_line == "--":
+            continue
         matched = re.match(r"^(?P<path>[^:\n]+):(?P<line>[1-9]\d*):", raw_line)
         if matched is None:
+            # ``rg --context`` emits neighboring source lines as
+            # ``path-line:content``. Discard them rather than treating their
+            # content as remotely replayable; only actual match locations are
+            # useful to the follow-up read/search tools.
+            if re.match(r"^[^:\n]+-[1-9]\d*:", raw_line):
+                continue
             return None
         if len(matches) >= _GIT_GREP_TERMINAL_MAX_MATCHES:
             continue

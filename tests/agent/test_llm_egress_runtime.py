@@ -1521,6 +1521,7 @@ def test_protected_kanban_projects_readonly_rg_result_to_locations(
 
     assert receipt.allowed
     rendered = json.loads(authorized["input"][1]["output"])
+    assert "c2VjcmV0LXBheWxvYWQ=" not in receipt.payload_bytes.decode("utf-8")
     assert rendered["output"] == json.dumps(
         {
             "git_grep_locations": "locations-v1",
@@ -1528,6 +1529,58 @@ def test_protected_kanban_projects_readonly_rg_result_to_locations(
                 {"path": "README.md", "line": 42},
                 {"path": "live_runner.py", "line": 8},
             ],
+        },
+        separators=(",", ":"),
+    )
+
+
+def test_protected_kanban_projects_context_rg_result_to_locations(
+    tmp_path, monkeypatch
+):
+    """Context search output must not block a protected worker or leak source."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    arguments = json.dumps({"command": "rg -n -C 2 'paper|safety' README.md"})
+    output = json.dumps(
+        {
+            "output": (
+                "README.md-40:context c2VjcmV0LXBheWxvYWQ=\n"
+                "README.md:42:matched c2VjcmV0LXBheWxvYWQ=\n"
+                "README.md-44:more context c2VjcmV0LXBheWxvYWQ=\n"
+            ),
+            "exit_code": 0,
+        }
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": "call_context_rg_123",
+                    "arguments": arguments,
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_context_rg_123",
+                    "output": output,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert rendered["output"] == json.dumps(
+        {
+            "git_grep_locations": "locations-v1",
+            "matches": [{"path": "README.md", "line": 42}],
+            "omitted_matches": 2,
         },
         separators=(",", ":"),
     )

@@ -8,6 +8,7 @@
 import {
   Button,
   Codicon,
+  ConfirmDialog,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -25,18 +26,32 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useI18n,
   useMutation,
   useQuery,
   useQueryClient,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
-import { $boardSlug, BOARDS_KEY, createBoard, fetchBoards, fetchProjects, PROJECTS_KEY, updateBoard } from './api'
+import {
+  $boardSlug,
+  BOARDS_KEY,
+  createBoard,
+  deleteBoard,
+  fetchBoards,
+  fetchProjects,
+  pluginOs,
+  PROJECTS_KEY,
+  updateBoard
+} from './api'
+import { runExportBoardFlow, runImportBoardFlow } from './transfer'
 import type { BoardMeta } from './types'
 import { errText, FIELD_LABEL, useKanban } from './ui'
 
 const NO_PROJECT = '__none__'
+/** Mirrors `kanban_db.DEFAULT_BOARD` — the board that always exists. */
+const DEFAULT_BOARD = 'default'
 
 /** Board scope = a first-class Hermes project. Its primary repo becomes the
  *  board's default workspace root; new tasks inherit it as a worktree with a
@@ -70,9 +85,92 @@ function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; va
   )
 }
 
+/** Every board write ends the same way: refresh the switcher's list and let
+ *  the caller finish, or surface the error and leave the dialog open. */
+function useBoardWrite<T>(mutationFn: () => Promise<T>, onDone: (result: T) => void) {
+  const qc = useQueryClient()
+
+  return useMutation({
+    mutationFn,
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: result => {
+      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      onDone(result)
+    }
+  })
+}
+
+/** Shared chrome for the board dialogs — same width, same Cancel/confirm pair. */
+function BoardDialog({
+  children,
+  confirmLabel,
+  disabled,
+  onClose,
+  onConfirm,
+  open,
+  title
+}: {
+  children: ReactNode
+  confirmLabel: string
+  disabled: boolean
+  onClose: () => void
+  onConfirm: () => void
+  open: boolean
+  title: string
+}) {
+  const k = useKanban()
+
+  return (
+    <Dialog onOpenChange={o => !o && onClose()} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">{children}</div>
+        <DialogFooter>
+          <Button onClick={onClose} variant="text">
+            {k.cancel}
+          </Button>
+          <Button disabled={disabled} onClick={onConfirm}>
+            {confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Display name, with the slug it maps to shown underneath. */
+function BoardNameField({
+  onChange,
+  onEnter,
+  slug,
+  value
+}: {
+  onChange: (name: string) => void
+  onEnter: () => void
+  slug: string
+  value: string
+}) {
+  const k = useKanban()
+
+  return (
+    <label className="flex flex-col gap-1">
+      <span className={FIELD_LABEL}>{k.name}</span>
+      <Input
+        autoFocus
+        onChange={event => onChange(event.target.value)}
+        onKeyDown={event => event.key === 'Enter' && onEnter()}
+        placeholder={k.boardNamePlaceholder}
+        value={value}
+      />
+      {slug && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.slug(slug)}</span>}
+    </label>
+  )
+}
+
 function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean }) {
   const k = useKanban()
-  const qc = useQueryClient()
   const [name, setName] = useState('')
   const [project, setProject] = useState('')
 
@@ -89,106 +187,145 @@ function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean 
     }
   }, [open])
 
-  const create = useMutation({
-    mutationFn: () => createBoard(slug, name.trim(), project || undefined),
-    onError: err => host.notify({ kind: 'error', message: errText(err) }),
-    onSuccess: result => {
+  const create = useBoardWrite(
+    () => createBoard(slug, name.trim(), project || undefined),
+    result => {
       $boardSlug.set(result.board.slug)
-      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
       onClose()
     }
-  })
+  )
 
   return (
-    <Dialog onOpenChange={o => !o && onClose()} open={open}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{k.newBoard}</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1">
-            <span className={FIELD_LABEL}>{k.name}</span>
-            <Input
-              autoFocus
-              onChange={event => setName(event.target.value)}
-              onKeyDown={event => event.key === 'Enter' && slug && !project && create.mutate()}
-              placeholder={k.boardNamePlaceholder}
-              value={name}
-            />
-            {slug && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.slug(slug)}</span>}
-          </label>
-          <ProjectPicker onChange={setProject} value={project} />
-        </div>
-        <DialogFooter>
-          <Button onClick={onClose} variant="text">
-            {k.cancel}
-          </Button>
-          <Button disabled={!slug || create.isPending} onClick={() => create.mutate()}>
-            {k.createBoard}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <BoardDialog
+      confirmLabel={k.createBoard}
+      disabled={!slug || create.isPending}
+      onClose={onClose}
+      onConfirm={() => create.mutate()}
+      open={open}
+      title={k.newBoard}
+    >
+      {/* Enter submits only while the scope is untouched — once a project is
+          picked the choice is worth a deliberate click. */}
+      <BoardNameField
+        onChange={setName}
+        onEnter={() => slug && !project && create.mutate()}
+        slug={slug}
+        value={name}
+      />
+      <ProjectPicker onChange={setProject} value={project} />
+    </BoardDialog>
+  )
+}
+
+/** Name-only edit, matching how projects rename (a dedicated dialog, separate
+ *  from the settings surface that owns scope). The slug is immutable — it is
+ *  the board's directory name — so this touches the display name alone. */
+function RenameBoardDialog({ board, onClose }: { board: BoardMeta | null; onClose: () => void }) {
+  const k = useKanban()
+  const [name, setName] = useState('')
+
+  useEffect(() => {
+    if (board) {
+      setName(board.name || board.slug)
+    }
+  }, [board])
+
+  const save = useBoardWrite(() => updateBoard(board!.slug, { name: name.trim() }), onClose)
+  const disabled = !name.trim() || save.isPending
+
+  return (
+    <BoardDialog
+      confirmLabel={k.save}
+      disabled={disabled}
+      onClose={onClose}
+      onConfirm={() => save.mutate()}
+      open={Boolean(board)}
+      title={k.renameBoardTitle}
+    >
+      <BoardNameField
+        onChange={setName}
+        onEnter={() => !disabled && save.mutate()}
+        slug={board?.slug ?? ''}
+        value={name}
+      />
+    </BoardDialog>
   )
 }
 
 function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onClose: () => void }) {
   const k = useKanban()
-  const qc = useQueryClient()
-  const [name, setName] = useState('')
   const [project, setProject] = useState('')
 
   useEffect(() => {
     if (board) {
-      setName(board.name || '')
       setProject(board.project_id || '')
     }
   }, [board])
 
-  const save = useMutation({
-    // Slug is immutable; send name + project_id ('' clears the scope, which
-    // also drops the mirrored default_workdir on the backend).
-    mutationFn: () => updateBoard(board!.slug, { name: name.trim(), project_id: project }),
-    onError: err => host.notify({ kind: 'error', message: errText(err) }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
-      onClose()
-    }
-  })
+  // The name lives in the rename dialog; '' clears the scope, which also
+  // drops the mirrored default_workdir on the backend.
+  const save = useBoardWrite(() => updateBoard(board!.slug, { project_id: project }), onClose)
 
   return (
-    <Dialog onOpenChange={o => !o && onClose()} open={Boolean(board)}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{board ? k.boardSettingsFor(board.name || board.slug) : k.boardSettings}</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1">
-            <span className={FIELD_LABEL}>{k.name}</span>
-            <Input onChange={event => setName(event.target.value)} placeholder={k.boardNamePlaceholder} value={name} />
-            {board && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.slug(board.slug)}</span>}
-          </label>
-          <ProjectPicker onChange={setProject} value={project} />
-        </div>
-        <DialogFooter>
-          <Button onClick={onClose} variant="text">
-            {k.cancel}
-          </Button>
-          <Button disabled={save.isPending} onClick={() => save.mutate()}>
-            {k.save}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <BoardDialog
+      confirmLabel={k.save}
+      disabled={save.isPending}
+      onClose={onClose}
+      onConfirm={() => save.mutate()}
+      open={Boolean(board)}
+      title={board ? k.boardSettingsFor(board.name || board.slug) : k.settingsDots}
+    >
+      <ProjectPicker onChange={setProject} value={project} />
+    </BoardDialog>
   )
 }
 
 export function BoardSwitcher() {
   const k = useKanban()
+  // Delete reuses the app-wide label, the way sessions and profiles do.
+  const { t } = useI18n()
+  const qc = useQueryClient()
   const slug = useValue($boardSlug)
   const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: BOARDS_KEY, staleTime: 30_000 })
   const [adding, setAdding] = useState(false)
   const [settingsFor, setSettingsFor] = useState<BoardMeta | null>(null)
+  const [renameFor, setRenameFor] = useState<BoardMeta | null>(null)
+  const [deleteFor, setDeleteFor] = useState<BoardMeta | null>(null)
+
+  // Archive rather than erase, so a mis-click stays recoverable. The backend
+  // reverts the active board to default; drop our override to follow it.
+  const confirmDelete = async (target: BoardMeta) => {
+    const { result } = await deleteBoard(target.slug)
+
+    $boardSlug.set('')
+    void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+    host.notify({ kind: 'success', message: k.boardArchived(result.new_path) })
+  }
+
+  const runExport = async (target: string) => {
+    const os = pluginOs()
+
+    if (!os) {
+      return
+    }
+
+    await runExportBoardFlow(os, k, target)
+  }
+
+  const runImport = async () => {
+    const os = pluginOs()
+
+    if (!os) {
+      return
+    }
+
+    const imported = await runImportBoardFlow(os, k)
+
+    if (imported) {
+      $boardSlug.set(imported)
+      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+    }
+  }
 
   if (!boards) {
     return null
@@ -225,19 +362,57 @@ export function BoardSwitcher() {
           ))}
           <DropdownMenuSeparator />
           {current && (
-            <DropdownMenuItem onSelect={() => setSettingsFor(current)}>
-              <Codicon name="settings-gear" size="0.8rem" />
-              {k.boardSettings}
-            </DropdownMenuItem>
+            <>
+              <DropdownMenuItem onSelect={() => setRenameFor(current)}>
+                <Codicon name="edit" size="0.8rem" />
+                {k.renameDots}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setSettingsFor(current)}>
+                <Codicon name="settings-gear" size="0.8rem" />
+                {k.settingsDots}
+              </DropdownMenuItem>
+            </>
           )}
           <DropdownMenuItem onSelect={() => setAdding(true)}>
             <Codicon name="add" size="0.8rem" />
             {k.newBoardDots}
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {current && (
+            <DropdownMenuItem onSelect={() => void runExport(current.slug)}>
+              <Codicon name="package" size="0.8rem" />
+              {k.exportDots}
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onSelect={() => void runImport()}>
+            <Codicon name="cloud-download" size="0.8rem" />
+            {k.importDots}
+          </DropdownMenuItem>
+          {/* `default` is the fallback every board reverts to — the backend
+              refuses to remove it, so it never offers the action. */}
+          {current && current.slug !== DEFAULT_BOARD && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setDeleteFor(current)} variant="destructive">
+                <Codicon name="trash" size="0.8rem" />
+                {t.common.delete}
+              </DropdownMenuItem>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
       <NewBoardDialog onClose={() => setAdding(false)} open={adding} />
+      <RenameBoardDialog board={renameFor} onClose={() => setRenameFor(null)} />
       <BoardSettingsDialog board={settingsFor} onClose={() => setSettingsFor(null)} />
+      <ConfirmDialog
+        confirmLabel={t.common.delete}
+        description={k.deleteBoardConfirm}
+        destructive
+        onClose={() => setDeleteFor(null)}
+        onConfirm={() => confirmDelete(deleteFor!)}
+        open={Boolean(deleteFor)}
+        title={deleteFor ? k.deleteBoardTitle(deleteFor.name || deleteFor.slug) : t.common.delete}
+      />
     </>
   )
 }

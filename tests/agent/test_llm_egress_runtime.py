@@ -300,6 +300,54 @@ def test_codex_generated_context_still_hard_blocks_secrets(tmp_path):
     assert "secret_detected" in exc_info.value.decision.reason_codes
 
 
+def test_codex_reasoning_replay_encrypted_content_is_not_treated_as_a_credential(tmp_path):
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    encrypted_replay = "gAAAAABm3gZrX7xP0Yk3V8nQ2aBcD4eFgH5jKlMnOpQrStUvWxYz0123456789"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "gpt-5.6-terra",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "encrypted_content": encrypted_replay,
+                    "summary": [],
+                }
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["input"][0]["encrypted_content"] == encrypted_replay
+
+
+def test_codex_user_supplied_encrypted_token_still_blocks(tmp_path):
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": "gpt-5.6-terra",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": "gAAAAABm3gZrX7xP0Yk3V8nQ2aBcD4eFgH5jKlMnOpQrStUvWxYz0123456789",
+                    }
+                ],
+            },
+        )
+
+    assert "secret_detected" in exc_info.value.decision.reason_codes
+
+
 def test_codex_user_content_private_path_is_not_silently_redacted(tmp_path):
     agent = _agent(tmp_path)
     agent.provider = "openai-codex"

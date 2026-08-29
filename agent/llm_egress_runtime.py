@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from agent.llm_egress_firewall import (
     AuthorizedEgress,
+    CodexReasoningReplaySegment,
     EgressBlocked,
     LLMEgressFirewall,
     LiteralSegment,
@@ -586,6 +587,7 @@ def _typed_payload(
     protected_kanban_context: bool = False,
     generated_context: bool = False,
     redact_generated_context: bool = False,
+    allow_codex_reasoning_replay: bool = False,
     registry: SourceProvenanceRegistry | None = None,
     request_identity: tuple[str, str, str, str] = ("", "", "", ""),
 ) -> Any:
@@ -646,6 +648,12 @@ def _typed_payload(
         )
         typed: dict[Any, Any] = {}
         context_mapping = value.get("role") in {"system", "developer"}
+        is_codex_reasoning_replay = (
+            allow_codex_reasoning_replay
+            and value.get("type") == "reasoning"
+            and isinstance(value.get("encrypted_content"), str)
+            and isinstance(value.get("summary", []), list)
+        )
         for key, item in value.items():
             if key == "_source_provenance":
                 continue
@@ -667,6 +675,9 @@ def _typed_payload(
                 if generated_context and redact_generated_context
                 else key
             )
+            if is_codex_reasoning_replay and key == "encrypted_content":
+                typed[typed_key] = CodexReasoningReplaySegment(item)
+                continue
             typed[typed_key] = _typed_payload(
                 item,
                 grant_texts,
@@ -691,6 +702,7 @@ def _typed_payload(
                     )
                 ),
                 redact_generated_context=redact_generated_context,
+                allow_codex_reasoning_replay=allow_codex_reasoning_replay,
                 registry=registry,
                 request_identity=request_identity,
             )
@@ -710,6 +722,7 @@ def _typed_payload(
                 protected_kanban_context=protected_kanban_context,
                 generated_context=generated_context,
                 redact_generated_context=redact_generated_context,
+                allow_codex_reasoning_replay=allow_codex_reasoning_replay,
                 registry=registry,
                 request_identity=request_identity,
             )
@@ -910,6 +923,10 @@ def authorize_agent_sdk_kwargs(
         ),
         protected_kanban_context=protected_remote_context,
         redact_generated_context=redact_protected_generated_context,
+        allow_codex_reasoning_replay=(
+            str(route_provider or "").strip().lower() == "openai-codex"
+            and str(getattr(agent, "api_mode", "") or "") == "codex_responses"
+        ),
         registry=registry if isinstance(registry, SourceProvenanceRegistry) else None,
         request_identity=(session_id, turn_id, request_id, policy_digest),
     )

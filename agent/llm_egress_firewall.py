@@ -79,6 +79,13 @@ class GeneratedContextSegment:
 
 
 @dataclass(frozen=True, slots=True)
+class CodexReasoningReplaySegment:
+    """Opaque encrypted reasoning state replayed only to the Codex endpoint."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class GeneratedContextKey:
     """Application-owned JSON key for generated provider tool schemas."""
 
@@ -124,6 +131,7 @@ class OutboundText:
         LiteralSegment
         | SanitizedSegment
         | GeneratedContextSegment
+        | CodexReasoningReplaySegment
         | ValidatedToolSyntaxSegment
         | SourceBoundSegment
         | SourcePresentationSegment
@@ -226,6 +234,7 @@ _BASE64_CANDIDATE = re.compile(
 )
 _HERMES_TASK_ID = re.compile(r"^t_[0-9a-f]{8}$")
 _PROMPT_CACHE_KEY = re.compile(r"^pck_[0-9a-f]{24}$")
+_CODEX_ENCRYPTED_REASONING_REPLAY = re.compile(r"^gAAAA[A-Za-z0-9_=-]{20,}$")
 _BOUNDED_DURATION = re.compile(r"^(?:0|[1-9][0-9]{0,6})(?:ms|s|m|h)$")
 _BOUNDED_CLI_WORD = re.compile(r"^--[a-z]+(?:-[a-z]+)*$")
 # Any-case letters + optional trailing slash: GitHub-style org/repo slugs
@@ -978,6 +987,12 @@ def _is_strict_sanitized_only_payload(
         return isinstance(value.text, str), 1 if isinstance(value.text, str) else 0
     if isinstance(value, GeneratedContextKey):
         return isinstance(value.text, str), 0
+    if isinstance(value, CodexReasoningReplaySegment):
+        return (
+            isinstance(value.text, str)
+            and _CODEX_ENCRYPTED_REASONING_REPLAY.fullmatch(value.text) is not None,
+            1 if isinstance(value.text, str) else 0,
+        )
     if isinstance(value, UntrustedProvenanceSegment):
         return False, 0
     if isinstance(value, ValidatedToolSyntaxSegment):
@@ -1411,12 +1426,18 @@ class LLMEgressFirewall:
             frozenset(),
         )
 
-        def require_static_literal(text: str, *, scan_base64: bool = True) -> None:
+        def require_static_literal(
+            text: str,
+            *,
+            scan_base64: bool = True,
+            scan_secret: bool = True,
+        ) -> None:
             # Provenance authorization and content safety are independent.
             # Every rendered text atom is scanned again immediately before
             # authorization, including exact policy-bound static literals and
             # structural keys/scalars.
-            scan_values.append(text)
+            if scan_secret:
+                scan_values.append(text)
             if scan_base64:
                 base64_scan_values.append(text)
             if static_literal_sha256(text) not in allowed_static_hashes:
@@ -1427,6 +1448,7 @@ class LLMEgressFirewall:
                 LiteralSegment
                 | SanitizedSegment
                 | GeneratedContextSegment
+                | CodexReasoningReplaySegment
                 | ValidatedToolSyntaxSegment
                 | SourceBoundSegment
                 | SourcePresentationSegment
@@ -1473,6 +1495,15 @@ class LLMEgressFirewall:
                 # untrusted-text budget.
                 scan_values.append(segment.text)
                 base64_scan_values.append(segment.text)
+                return segment.text
+            if isinstance(segment, CodexReasoningReplaySegment):
+                if not _CODEX_ENCRYPTED_REASONING_REPLAY.fullmatch(segment.text):
+                    reasons.append("invalid_codex_reasoning_replay")
+                    return ""
+                # This opaque token is produced by the Codex Responses API and
+                # is typed only for a reasoning item on that route. It must be
+                # replayed verbatim for cache and reasoning continuity, but it
+                # is not an independently usable credential payload.
                 return segment.text
             if isinstance(segment, ValidatedToolSyntaxSegment):
                 try:
@@ -1545,6 +1576,7 @@ class LLMEgressFirewall:
                     LiteralSegment,
                     SanitizedSegment,
                     GeneratedContextSegment,
+                    CodexReasoningReplaySegment,
                     ValidatedToolSyntaxSegment,
                     SourceBoundSegment,
                     SourcePresentationSegment,
@@ -1589,6 +1621,7 @@ class LLMEgressFirewall:
                             LiteralSegment,
                             SanitizedSegment,
                             GeneratedContextSegment,
+                            CodexReasoningReplaySegment,
                             ValidatedToolSyntaxSegment,
                         ),
                     ):

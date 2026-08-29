@@ -1645,6 +1645,44 @@ def test_protected_kanban_keeps_opaque_tool_protocol_identifiers(tmp_path, monke
     }
 
 
+def test_protected_kanban_redacts_nested_terminal_argument_replay(
+    tmp_path, monkeypatch
+):
+    """Nested chat-completions terminal arguments cannot carry opaque text."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    opaque_command = "git show " + "A" * 64
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_terminal_nested",
+                            "type": "function",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": json.dumps({"command": opaque_command}),
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    replay = authorized["messages"][0]["tool_calls"][0]["function"]["arguments"]
+    assert json.loads(replay) == {"command_class": ["git"]}
+    assert opaque_command not in replay
+
+
 def test_protected_kanban_redacts_readonly_search_argument_replay(
     tmp_path, monkeypatch
 ):

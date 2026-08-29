@@ -1622,6 +1622,7 @@ def _typed_payload(
     combined_github_view_terminal_call_limits: Mapping[str, int] | None = None,
     rejected_terminal_call_ids: frozenset[str] = frozenset(),
     terminal_replay_tool_call_ids: frozenset[str] = frozenset(),
+    redact_terminal_arguments: bool = False,
     redact_readonly_tool_arguments: bool = False,
     protected_tool_content: bool = False,
     elide_kanban_tool_content: bool = False,
@@ -1960,6 +1961,18 @@ def _typed_payload(
                 typed[key] = GeneratedContextSegment(_terminal_replay_command(item))
                 continue
             if (
+                redact_terminal_arguments
+                and direct_name == "terminal"
+                and key == "arguments"
+                and isinstance(item, str)
+            ):
+                # Chat-completions nests tool arguments under ``function``;
+                # by that recursive pass the outer call ID is unavailable.
+                # Every protected worker terminal command is local-only, so
+                # retain its coarse command class without replaying raw text.
+                typed[key] = GeneratedContextSegment(_terminal_replay_command(item))
+                continue
+            if (
                 redact_readonly_tool_arguments
                 and key == "arguments"
                 and direct_name in _REMOTE_KANBAN_READONLY_REPLAY_TOOL_NAMES
@@ -2001,6 +2014,7 @@ def _typed_payload(
                 combined_github_view_terminal_call_limits=combined_github_view_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 terminal_replay_tool_call_ids=terminal_replay_tool_call_ids,
+                redact_terminal_arguments=redact_terminal_arguments,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=(
                     is_recognized_tool_result and key in {"content", "output"}
@@ -2046,6 +2060,7 @@ def _typed_payload(
                 combined_github_view_terminal_call_limits=combined_github_view_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 terminal_replay_tool_call_ids=terminal_replay_tool_call_ids,
+                redact_terminal_arguments=redact_terminal_arguments,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=protected_tool_content,
                 elide_kanban_tool_content=elide_kanban_tool_content,
@@ -2414,6 +2429,9 @@ def authorize_agent_sdk_kwargs(
             else frozenset()
         ),
         redact_readonly_tool_arguments=(
+            protected_kanban_remote and protected_provider_route
+        ),
+        redact_terminal_arguments=(
             protected_kanban_remote and protected_provider_route
         ),
         protected_kanban_context=protected_remote_context,

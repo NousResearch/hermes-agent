@@ -265,6 +265,74 @@ def test_find_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
     assert "Downloads" not in protected_warning
 
 
+def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkeypatch):
+    env = RecordingEnvironment("/")
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+
+    def execute(command, cwd=None, **kwargs):
+        env.commands.append(command)
+        if command.startswith("test -e"):
+            output = "not_found\n" if "'/Users/alice /repo'" in command else "exists\n"
+            return {"output": output, "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "/usr/bin/rg\n", "returncode": 0}
+        if "--version" in command:
+            return {"output": "ripgrep 14.1.1\n", "returncode": 0}
+        if "--files" in command:
+            return {
+                "output": "repo/Downloads/visible.txt\nUsers/alice/safe.txt\n",
+                "returncode": 0,
+            }
+        raise AssertionError(command)
+
+    env.execute = execute
+    result = ops.search(
+        "*.txt", path="/Users/alice /repo", target="files", order="modified"
+    )
+
+    commands = _rg_files_commands(env.commands)
+    assert len(commands) == 1
+    command = commands[0]
+    assert command.startswith("set -o pipefail; cd '/' && ")
+    assert "--sortr=modified" in command
+    assert "'!Users/alice/Downloads/**'" in command
+    assert "'!repo/Downloads/**'" not in command
+    assert "'Users/alice' 'repo'" in command
+    assert result.files == [
+        "/repo/Downloads/visible.txt",
+        "/Users/alice/safe.txt",
+    ]
+
+
+def test_rg_scoped_multi_root_handles_dot_spaces_and_overlapping_roots(monkeypatch):
+    env = RecordingEnvironment("/Users/alice/work space")
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+
+    def execute(command, cwd=None, **kwargs):
+        env.commands.append(command)
+        if command.startswith("test -e"):
+            output = "not_found\n" if "'., /Users/alice'" in command else "exists\n"
+            return {"output": output, "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "/usr/bin/rg\n", "returncode": 0}
+        if "--files" in command:
+            return {"output": "work space/local.txt\n", "returncode": 0}
+        raise AssertionError(command)
+
+    env.execute = execute
+    result = ops.search("*.txt", path="., /Users/alice", target="files")
+
+    command = _rg_files_commands(env.commands)[0]
+    assert "cd '/Users/alice' &&" in command
+    assert "'work space' '.'" in command
+    assert "'!Downloads/**'" in command
+    assert result.files == ["/Users/alice/work space/local.txt"]
+
+
 def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     safe = home / "safe"

@@ -156,10 +156,16 @@ class TestSearchResult:
         assert d["matches"][0]["path"] == "a.py"
 
 
-    def test_truncated_flag(self):
+    def test_truncated_flag_marks_total_as_lower_bound(self):
         r = SearchResult(total_count=100, truncated=True)
         d = r.to_dict()
         assert d["truncated"] is True
+        assert d["total_count_is_lower_bound"] is True
+
+    def test_untruncated_total_omits_lower_bound_flag(self):
+        r = SearchResult(total_count=100)
+        d = r.to_dict()
+        assert "total_count_is_lower_bound" not in d
 
 
 class TestSearchResultDensify:

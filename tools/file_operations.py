@@ -28,6 +28,7 @@ Usage:
 import base64
 import binascii
 import os
+import posixpath
 import re
 import secrets
 import sys
@@ -372,6 +373,7 @@ class SearchResult:
             result["counts"] = self.counts
         if self.truncated:
             result["truncated"] = True
+            result["total_count_is_lower_bound"] = True
         if self.limit_reason:
             result["limit_reason"] = self.limit_reason
         if self.warning:
@@ -3474,16 +3476,31 @@ class ShellFileOperations(FileOperations):
         self, roots: List[str]
     ) -> List[tuple[str, str, str]]:
         """Return unique exclusions without pruning an explicitly chosen root."""
-        explicit_roots = {
-            os.path.normcase(os.path.abspath(os.path.normpath(root)))
+        cwd = getattr(self.env, "cwd", None) or self.cwd
+        use_posix_paths = sys.platform == "darwin" and all(
+            not re.match(r"^[A-Za-z]:[\\/]", root) and "\\" not in root
             for root in roots
-        }
+        )
+
+        def normalized(root: str) -> str:
+            if use_posix_paths:
+                if not posixpath.isabs(root):
+                    root = posixpath.join(cwd, root)
+                return posixpath.normpath(root)
+            return os.path.normcase(os.path.abspath(os.path.normpath(root)))
+
+        normalized_roots = [normalized(root) for root in roots]
+        explicit_roots = set(normalized_roots)
         seen = set()
         effective = []
-        for root in roots:
+        for root, normalized_root in zip(roots, normalized_roots):
             for relative in self._macos_search_exclusions(root):
-                absolute = os.path.normpath(os.path.join(root, relative))
-                key = os.path.normcase(os.path.abspath(absolute))
+                if use_posix_paths:
+                    absolute = posixpath.normpath(posixpath.join(normalized_root, relative))
+                    key = absolute
+                else:
+                    absolute = os.path.normpath(os.path.join(root, relative))
+                    key = os.path.normcase(os.path.abspath(absolute))
                 if key in explicit_roots or key in seen:
                     continue
                 seen.add(key)
@@ -3809,11 +3826,34 @@ class ShellFileOperations(FileOperations):
 
         roots = [path] if isinstance(path, str) else path
         fetch_limit = limit + offset + 1
-        exclusion_terms = [
-            f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
-            for _root, relative, _absolute
-            in self._effective_macos_search_exclusions(roots)
-        ]
+        effective_exclusions = self._effective_macos_search_exclusions(roots)
+        scoped_common = None
+        command_roots = roots
+        use_posix_paths = sys.platform == "darwin" and all(
+            not re.match(r"^[A-Za-z]:[\\/]", root) and "\\" not in root
+            for root in roots
+        )
+        if len(roots) > 1 and effective_exclusions and use_posix_paths:
+            cwd = getattr(self.env, "cwd", None) or self.cwd
+            absolute_roots = [
+                posixpath.normpath(
+                    root if posixpath.isabs(root) else posixpath.join(cwd, root)
+                )
+                for root in roots
+            ]
+            scoped_common = posixpath.commonpath(absolute_roots)
+            command_roots = [
+                posixpath.relpath(root, scoped_common) for root in absolute_roots
+            ]
+            exclusion_terms = [
+                f"--glob {self._escape_shell_arg(f'!{posixpath.relpath(absolute, scoped_common)}/**')}"
+                for _root, _relative, absolute in effective_exclusions
+            ]
+        else:
+            exclusion_terms = [
+                f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
+                for _root, relative, _absolute in effective_exclusions
+            ]
         exclusion_globs = " ".join(dict.fromkeys(exclusion_terms))
         exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
         rg_executable = rg_executable or self._resolve_command("rg")
@@ -3825,14 +3865,23 @@ class ShellFileOperations(FileOperations):
                 return SearchResult(error=capability_error)
         rg = self._quote_executable(rg_executable)
         sort_arg = " --sortr=modified" if order == "modified" else ""
-        root_args = " ".join(self._escape_native_tool_arg(root) for root in roots)
+        root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
+        cd_prefix = (
+            f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
+        )
         cmd = (
-            f"set -o pipefail; {rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+            f"set -o pipefail; {cd_prefix}{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
             f"{exclusion_args} {root_args} 2>/dev/null | head -n {fetch_limit}"
         )
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
+        if scoped_common:
+            all_files = [
+                file_path if posixpath.isabs(file_path)
+                else posixpath.normpath(posixpath.join(scoped_common, file_path))
+                for file_path in all_files
+            ]
         bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
 
         if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:

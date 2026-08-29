@@ -58,6 +58,42 @@ def test_default_file_search_runs_one_bounded_unsorted_rg_command():
     assert "head -n 3" in env.rg_commands[0]
 
 
+@pytest.mark.parametrize("engine", ["rg", "find"])
+def test_bounded_filename_total_is_serialized_as_a_lower_bound(engine, monkeypatch):
+    conceptual_files = [f"/repo/file-{index:03}.py" for index in range(200)]
+    env = RecordingEnvironment()
+
+    def execute(command, **kwargs):
+        env.commands.append(command)
+        if command.startswith("test -e "):
+            return {"output": "exists\n", "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {
+                "output": "/usr/bin/rg\n" if engine == "rg" else "",
+                "returncode": 0 if engine == "rg" else 1,
+            }
+        if "--files" in command or command.startswith("set -o pipefail; find "):
+            fetch_limit = int(re.search(r"head -n (\d+)", command).group(1))
+            return {
+                "output": "\n".join(conceptual_files[:fetch_limit]) + "\n",
+                "returncode": 0,
+            }
+        return {"output": "", "returncode": 1}
+
+    env.execute = execute
+    ops = ShellFileOperations(env)
+    if engine == "find":
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+
+    result = ops.search("*.py", path="/repo", target="files", limit=50)
+    serialized = result.to_dict()
+
+    assert result.total_count == 51
+    assert len(result.files) == 50
+    assert serialized["truncated"] is True
+    assert serialized["total_count_is_lower_bound"] is True
+
+
 def test_modified_file_search_runs_one_exact_order_rg_command():
     env = RecordingEnvironment()
     ops = ShellFileOperations(env)

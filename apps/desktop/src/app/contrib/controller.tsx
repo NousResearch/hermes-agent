@@ -451,10 +451,11 @@ discoverBundledPlugins()
 watchContributedPanes()
 
 // Session + route (page) tiles: persisted splits register panes docked beside
-// main. A popped-out Browser has no layout tree — registering tiles there
-// would still run, and preview-tile watching would try to dock into a tree
-// this window never renders.
-if (!isBrowserWindow()) {
+// main. A popped-out Browser and the HUD have no layout tree — registering
+// tiles there would still run, and preview-tile watching would try to dock
+// into a tree this window never renders (and, in the HUD, paint a webview
+// into the transparent overlay).
+if (!isBrowserWindow() && !isHudWindow()) {
   watchSessionTiles()
   watchRouteTiles()
   watchPreviewTiles()
@@ -819,6 +820,7 @@ export function ContribController() {
   if (isHudWindow()) {
     return (
       <ContribWiring>
+        <AppContextMenu />
         <HudShell />
       </ContribWiring>
     )

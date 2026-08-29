@@ -310,7 +310,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("wake", "Toggle the 'Hey Hermes' wake word listener", "Configuration",
                cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),
-    CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
+    CommandDef("busy", "Control how messages behave while Hermes is working", "Configuration",
                args_hint="[queue|steer|interrupt|status]",
                subcommands=("queue", "steer", "interrupt", "status"),
                busy_policy="dispatch", desktop="terminal"),

@@ -126,6 +126,7 @@ describe('PaneTab hover close button', () => {
 
   it('reserves a close-button runway only on closeable horizontal tabs', () => {
     const onClose = vi.fn()
+
     const { rerender } = render(
       <PaneTab onClose={onClose}>
         <PaneTabLabel>BROWSER</PaneTabLabel>

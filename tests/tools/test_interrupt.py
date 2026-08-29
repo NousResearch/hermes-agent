@@ -76,38 +76,60 @@ class TestInterruptModule:
 
     @pytest.mark.parametrize("callback_should_fail", [False, True])
     def test_run_if_not_interrupted_orders_callback_before_concurrent_interrupt(
-        self, callback_should_fail
+        self, callback_should_fail, monkeypatch
     ):
-        from tools.interrupt import (
-            _interrupted_threads,
-            _lock,
-            run_if_not_interrupted,
-            set_interrupt,
-        )
+        import tools.interrupt as interrupt
 
         class CallbackFailure(Exception):
             pass
 
-        setter_started = threading.Event()
+        original_lock = interrupt._lock
+        attempting_interrupt_lock = threading.Event()
         interrupt_published = threading.Event()
+        publisher_lock_contention = []
         callback_observations = []
         setters = []
         setter_tids = []
 
+        class ObservedLock:
+            def __enter__(self):
+                if (
+                    threading.current_thread() in setters
+                    and not attempting_interrupt_lock.is_set()
+                ):
+                    acquired = original_lock.acquire(blocking=False)
+                    publisher_lock_contention.append(not acquired)
+                    attempting_interrupt_lock.set()
+                    if acquired:
+                        return self
+                original_lock.acquire()
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                original_lock.release()
+
+        interrupt.set_interrupt(False)
+        with original_lock:
+            baseline = (
+                set(interrupt._interrupted_threads),
+                dict(interrupt._interrupt_reasons),
+            )
+        monkeypatch.setattr(interrupt, "_lock", ObservedLock())
+
         def publish_interrupt():
             setter_tids.append(threading.get_ident())
-            setter_started.set()
             try:
-                set_interrupt(True)
+                interrupt.set_interrupt(True)
                 interrupt_published.set()
             finally:
-                set_interrupt(False)
+                interrupt.set_interrupt(False)
 
         def callback():
             setter = threading.Thread(target=publish_interrupt)
             setters.append(setter)
             setter.start()
-            assert setter_started.wait(5)
+            assert attempting_interrupt_lock.wait(5)
+            assert publisher_lock_contention == [True]
             callback_observations.append(interrupt_published.is_set())
             if callback_should_fail:
                 raise CallbackFailure
@@ -115,24 +137,29 @@ class TestInterruptModule:
         try:
             if callback_should_fail:
                 with pytest.raises(CallbackFailure):
-                    run_if_not_interrupted(callback)
+                    interrupt.run_if_not_interrupted(callback)
             else:
-                assert run_if_not_interrupted(callback) is True
+                assert interrupt.run_if_not_interrupted(callback) is True
+            assert interrupt_published.wait(5)
         finally:
             for setter in setters:
                 if setter.ident is not None:
-                    setter.join()
-            for setter_tid in setter_tids:
-                set_interrupt(False, setter_tid)
-            set_interrupt(False)
+                    setter.join(timeout=5)
+            interrupt.set_interrupt(False)
 
         assert setters
         assert all(not setter.is_alive() for setter in setters)
         assert setter_tids
         assert callback_observations == [False]
         assert interrupt_published.is_set()
-        with _lock:
-            assert not _interrupted_threads
+        with original_lock:
+            final_state = (
+                set(interrupt._interrupted_threads),
+                dict(interrupt._interrupt_reasons),
+            )
+        assert final_state == baseline
+        assert all(setter_tid not in final_state[0] for setter_tid in setter_tids)
+        assert all(setter_tid not in final_state[1] for setter_tid in setter_tids)
 
 
 # ---------------------------------------------------------------------------

@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       clientPlacement: hudWindowing?.clientPlacement !== false,
       controlDrag: hudWindowing?.controlDrag === true,
       nativeDrag: hudNativeDrag,
+      solid: hudWindowing?.solid === true,
       workspaceTransfer: hudWindowing?.workspaceTransfer === true
     },
     open: request => ipcRenderer.invoke('hermes:hud:open', request),

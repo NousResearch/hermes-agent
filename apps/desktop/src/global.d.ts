@@ -101,6 +101,7 @@ declare global {
           clientPlacement: boolean
           controlDrag: boolean
           nativeDrag: boolean
+          solid: boolean
           workspaceTransfer: boolean
         }
         open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>

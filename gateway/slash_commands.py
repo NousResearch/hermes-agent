@@ -4256,7 +4256,7 @@ class GatewaySlashCommandsMixin:
         """
         arg = event.get_command_args().strip().lower()
         if not arg or arg == "status":
-            mode = self._busy_input_mode
+            mode = self._effective_busy_input_mode(event.source)
             if mode == "queue":
                 behavior = "queues for next turn"
             elif mode == "steer":
@@ -4275,28 +4275,36 @@ class GatewaySlashCommandsMixin:
             )
 
         # Persist before mutate
-        try:
-            from cli import save_config_value
-            if save_config_value("display.busy_input_mode", arg):
-                self._busy_input_mode = arg
-                if arg == "queue":
-                    behavior = "Messages will be queued for the next turn while Hermes is busy."
-                elif arg == "steer":
-                    behavior = "Messages will be steered into the current run (after the next tool call)."
-                else:
-                    behavior = "Messages will interrupt the current run while Hermes is busy."
-                return EphemeralReply(
-                    f"Busy input mode set to **`{arg}`** (saved)." + "\n"
-                    f"_{behavior}_"
+        from cli import save_config_value
+        if save_config_value("display.busy_input_mode", arg):
+            profile_name = self._busy_profile_name_for_source(event.source)
+            if profile_name:
+                from gateway.run import _load_gateway_runtime_config
+
+                self._snapshot_profile_busy_modes(
+                    profile_name,
+                    _load_gateway_runtime_config(),
                 )
             else:
-                return EphemeralReply(
-                    f"Busy input mode could not be saved to config. Mode unchanged."
-                )
-        except Exception as e:
-            logger.warning("Failed to save busy_input_mode: %s", e)
+                self._busy_input_mode = arg
+
+            adapter = self._adapter_for_source(event.source)
+            if adapter is not None:
+                adapter._busy_text_mode = self._effective_busy_text_mode(event.source)
+
+            if arg == "queue":
+                behavior = "Messages will be queued for the next turn while Hermes is busy."
+            elif arg == "steer":
+                behavior = "Messages will be steered into the current run (after the next tool call)."
+            else:
+                behavior = "Messages will interrupt the current run while Hermes is busy."
             return EphemeralReply(
-                f"Could not save busy input mode: {e}. Mode unchanged."
+                f"Busy input mode set to **`{arg}`** (saved)." + "\n"
+                f"_{behavior}_"
+            )
+        else:
+            return EphemeralReply(
+                f"Busy input mode could not be saved to config. Mode unchanged."
             )
 
     async def _handle_footer_command(self, event: MessageEvent) -> str:

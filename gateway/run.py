@@ -17206,6 +17206,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "kanban": self._handle_kanban_command,
                 "subgoal": self._handle_subgoal_command,
                 "heartbeat": self._handle_heartbeat_command,
+                "busy": self._handle_busy_command,
                 "yolo": self._handle_yolo_command,
                 "verbose": self._handle_verbose_command,
                 "footer": self._handle_footer_command,

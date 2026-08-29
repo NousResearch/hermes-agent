@@ -2743,6 +2743,13 @@ def run_conversation(
         # gated on context_compressor — so orphans from session loading or
         # manual message manipulation are always caught.
         api_messages = agent._sanitize_api_messages(api_messages)
+        # Send-path vision eviction (#89296): compression only strips stale
+        # screenshots when prune fires, and the Anthropic adapter's keep-window
+        # never sees OpenAI-style tool-result image_url parts. The per-call
+        # clone is rewritten in place; persisted history is untouched.
+        from agent.context_compressor import evict_stale_outbound_tool_images
+
+        evict_stale_outbound_tool_images(api_messages)
 
         # One-time repeated-heal escalation notice (#96870): if the sanitizer
         # above just crossed the per-session heal threshold, deliver the

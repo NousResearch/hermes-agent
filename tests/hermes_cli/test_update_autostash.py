@@ -67,6 +67,24 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
     monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
+    # Keep the simulated post-pull process from evicting the gateway mocks and
+    # rediscovering this developer machine's live fleet.
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+
+    import hermes_cli.gateway as hermes_gateway
+
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda *a, **kw: [])
+    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(
+        hermes_gateway, "find_profile_gateway_processes", lambda *a, **kw: []
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions", lambda **kw: []
+    )
 
 
 

@@ -269,17 +269,22 @@ class ReplyFrame:
 
 
 class ReplyQueue:
-    """Per-req_id pending ack tracker.
+    """Per-req_id pending ack tracker with serial-send + coalesce semantics.
 
     Ensures:
-    - Intermediate frames skip if a previous frame's ack is pending
-    - Final frames wait for pending ack before sending
+    - Only one intermediate frame in-flight at a time (serial sending)
+    - New content while waiting coalesces into a single pending buffer
+    - Final frames wait for pending ack before sending (fence)
 
     Aligned with official SDK's replyStreamNonBlocking + 5s ack timeout.
     """
     def __init__(self, req_id: str):
         self.req_id = req_id
         self.pending_ack: Optional[ReplyFrame] = None
+        # Serial-coalesce state
+        self.coalesced_body: Optional[Dict[str, Any]] = None
+        self.coalesce_count: int = 0
+        self.ack_timeout_task: Optional[asyncio.Task] = None
 
 
 
@@ -1037,6 +1042,7 @@ class WeComAdapter(BasePlatformAdapter):
     # (see docs/rca-wecom-stream-final-ack-timeout-duplicate.md).
 
     _REPLY_ACK_TIMEOUT = 15.0
+    _INTERMEDIATE_ACK_TIMEOUT = 5.0  # matches official SDK's per-frame ack timeout
 
     async def _send_reply_queued(
         self,
@@ -1077,6 +1083,7 @@ class WeComAdapter(BasePlatformAdapter):
         # Final frame: wait for pending ack to drain first
         if is_final and queue.pending_ack is not None:
             pending_frame = queue.pending_ack
+            fence_start = time.monotonic()
             _pending_stream = pending_frame.body.get("stream", {}) if isinstance(pending_frame.body.get("stream"), dict) else {}
             logger.debug(
                 "[%s] _send_reply_queued: final waiting for pending ack drain — "
@@ -1103,8 +1110,20 @@ class WeComAdapter(BasePlatformAdapter):
                 )
             except Exception:
                 pass
+            fence_elapsed = time.monotonic() - fence_start
+            logger.info(
+                "[ACK-SERIAL] req_id=%s fence_wait elapsed=%.3fs",
+                normalized, fence_elapsed,
+            )
+            # Cancel the intermediate timeout watchdog — we're taking over
+            if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
+                queue.ack_timeout_task.cancel()
+                queue.ack_timeout_task = None
             # Clear pending regardless — either resolved or timed out
             queue.pending_ack = None
+            # Also clear any coalesced content — final frame supersedes
+            queue.coalesced_body = None
+            queue.coalesce_count = 0
 
         # Create future for THIS frame's ack
         future: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -1217,17 +1236,22 @@ class WeComAdapter(BasePlatformAdapter):
         frame = queue.pending_ack
         if not frame.future.done():
             _body = payload.get("body", {}) if isinstance(payload.get("body"), dict) else {}
-            logger.debug(
-                "[%s] _resolve_reply_ack: resolved req_id=%s is_final=%s "
-                "elapsed=%.2fs errcode=%s",
-                self.name, req_id, frame.is_final,
-                time.monotonic() - (frame.sent_at or time.monotonic()),
-                _body.get("errcode", "N/A"),
+            elapsed = time.monotonic() - (frame.sent_at or time.monotonic())
+            logger.info(
+                "[ACK-SERIAL] req_id=%s ack_received elapsed=%.3fs errcode=%s",
+                req_id, elapsed, _body.get("errcode", "N/A"),
             )
             frame.future.set_result(payload)
+        # Cancel the timeout watchdog for this frame
+        if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
+            queue.ack_timeout_task.cancel()
+            queue.ack_timeout_task = None
         queue.pending_ack = None
-        # Cleanup empty queue
-        if queue.pending_ack is None:
+        # Check for coalesced content to flush; if present, schedule send
+        if queue.coalesced_body is not None:
+            asyncio.get_running_loop().call_soon(self._flush_coalesced, req_id)
+        else:
+            # Cleanup empty queue
             self._reply_queues.pop(req_id, None)
         return True
 
@@ -1236,6 +1260,13 @@ class WeComAdapter(BasePlatformAdapter):
         for queue in list(self._reply_queues.values()):
             if queue.pending_ack and not queue.pending_ack.future.done():
                 queue.pending_ack.future.set_exception(error)
+            # Cancel timeout watchdog
+            if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
+                queue.ack_timeout_task.cancel()
+            queue.ack_timeout_task = None
+            # Clear coalesced buffer
+            queue.coalesced_body = None
+            queue.coalesce_count = 0
         self._reply_queues.clear()
 
     @staticmethod
@@ -2393,6 +2424,130 @@ class WeComAdapter(BasePlatformAdapter):
             return content
         return encoded[:limit].decode("utf-8", errors="ignore")
 
+    async def _send_intermediate_serial(
+        self,
+        normalized_req_id: str,
+        queue: "ReplyQueue",
+        body: Dict[str, Any],
+    ) -> None:
+        """Send an intermediate frame and register it as the in-flight pending ACK.
+
+        Also starts the ACK timeout watchdog.  Called both for fresh sends and
+        for flushing coalesced content after an ACK arrives.
+        """
+        # Create future for THIS frame's ack
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        frame = ReplyFrame(body=body, future=future, is_final=False)
+        frame.sent_at = time.monotonic()
+
+        # Register pending_ack BEFORE sending (so _resolve_reply_ack
+        # can route the ack if it arrives during the _send_json await).
+        self._reply_queues[normalized_req_id] = queue
+        queue.pending_ack = frame
+
+        logger.info(
+            "[ACK-SERIAL] req_id=%s frame_sent content_len=%d",
+            normalized_req_id,
+            len(body.get("stream", {}).get("content", "") or ""),
+        )
+
+        try:
+            await self._send_json(
+                {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized_req_id}, "body": body}
+            )
+        except Exception:
+            # Send failed — clear pending and cancel future
+            if queue.pending_ack is frame:
+                queue.pending_ack = None
+                if not self._reply_queues.get(normalized_req_id) or queue.pending_ack is None:
+                    self._reply_queues.pop(normalized_req_id, None)
+            if not future.done():
+                future.cancel()
+            raise
+
+        # Start the ACK timeout watchdog — if WeCom doesn't ACK within
+        # _INTERMEDIATE_ACK_TIMEOUT, we clear the slot and flush coalesced.
+        # Skip if the ACK already arrived during the _send_json await
+        # (e.g. synchronous mock or ultra-fast server response).
+        if not future.done():
+            if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
+                queue.ack_timeout_task.cancel()
+            queue.ack_timeout_task = asyncio.get_running_loop().create_task(
+                self._intermediate_ack_timeout_handler(normalized_req_id, frame)
+            )
+
+    async def _intermediate_ack_timeout_handler(
+        self, req_id: str, frame: "ReplyFrame",
+    ) -> None:
+        """Watchdog: if the in-flight intermediate frame's ACK doesn't arrive
+        within ``_INTERMEDIATE_ACK_TIMEOUT``, clear the slot and flush any
+        coalesced content.  Non-fatal — just advances to the next frame."""
+        try:
+            await asyncio.sleep(self._INTERMEDIATE_ACK_TIMEOUT)
+        except asyncio.CancelledError:
+            return
+
+        queue = self._reply_queues.get(req_id)
+        if queue is None:
+            return
+
+        # Only act if the timed-out frame is still the pending one
+        if queue.pending_ack is not frame:
+            return
+
+        elapsed = time.monotonic() - (frame.sent_at or time.monotonic())
+        logger.info(
+            "[ACK-SERIAL] req_id=%s ack_timeout elapsed=%.1fs — advancing to coalesced",
+            req_id, elapsed,
+        )
+
+        # Cancel the stale future and clear the slot
+        if not frame.future.done():
+            frame.future.cancel()
+        queue.pending_ack = None
+
+        # Flush coalesced content if any
+        if queue.coalesced_body is not None:
+            coalesced_body = queue.coalesced_body
+            queue.coalesced_body = None
+            queue.coalesce_count = 0
+            try:
+                await self._send_intermediate_serial(req_id, queue, coalesced_body)
+            except Exception:
+                logger.warning(
+                    "[ACK-SERIAL] req_id=%s failed to flush coalesced frame after timeout",
+                    req_id, exc_info=True,
+                )
+        else:
+            # No coalesced content and slot timed out — cleanup
+            if queue.pending_ack is None:
+                self._reply_queues.pop(req_id, None)
+
+    def _flush_coalesced(self, req_id: str) -> None:
+        """Schedule sending coalesced content after an ACK resolves.
+
+        Called from ``_resolve_reply_ack`` via ``call_soon`` so the ACK
+        resolution path stays synchronous.  The actual send is an async task.
+        """
+        queue = self._reply_queues.get(req_id)
+        if queue is None or queue.coalesced_body is None:
+            return
+
+        coalesced_body = queue.coalesced_body
+        queue.coalesced_body = None
+        queue.coalesce_count = 0
+
+        async def _do_flush():
+            try:
+                await self._send_intermediate_serial(req_id, queue, coalesced_body)
+            except Exception:
+                logger.warning(
+                    "[ACK-SERIAL] req_id=%s failed to flush coalesced frame",
+                    req_id, exc_info=True,
+                )
+
+        asyncio.get_running_loop().create_task(_do_flush())
+
     async def _send_stream_reply(
         self,
         reply_req_id: str,
@@ -2405,11 +2560,13 @@ class WeComAdapter(BasePlatformAdapter):
         Uses the per-req_id reply queue with ack tracking, aligned with the
         official WeCom SDK's replyStreamNonBlocking semantics:
 
-          * **Intermediate frames** (finish=False): sent fire-and-forget via
-            direct ``_send_json`` — every frame is sent immediately regardless
-            of whether a prior ack is pending.  The ``pending_ack`` slot on the
-            ReplyQueue is still maintained (overwriting any stale entry) so that
-            the final frame can wait for the last intermediate ack to drain.
+          * **Intermediate frames** (finish=False): serial-with-coalesce —
+            only one intermediate frame is in-flight at a time.  If an ACK
+            is still pending for a prior frame, new content is coalesced
+            into a buffer.  When the ACK arrives (or the intermediate
+            timeout fires), the coalesced content is sent as a single
+            frame.  This prevents stale ACKs from resolving the wrong
+            frame (WeCom ACKs carry only req_id, no frame identifier).
           * **Final frame** (finish=True): waits for any pending ack to drain
             before sending, then awaits its own ack. This prevents version
             conflicts (errcode 6000) between the finalize and a concurrent
@@ -2436,17 +2593,12 @@ class WeComAdapter(BasePlatformAdapter):
         }
 
         if not finish:
-            # Intermediate frame: truly fire-and-forget.
-            # We bypass _send_reply_queued's skip-if-pending gate and send
-            # every intermediate frame immediately via _send_json.  This
-            # prevents the streaming freeze where most timer frames were
-            # silently skipped because WeCom acks take longer than the 1s
-            # frame interval.
-            #
-            # We still register pending_ack on the ReplyQueue so that the
-            # finalize frame (is_final=True) can wait for the last
-            # intermediate frame's ack to drain — avoiding errcode 6000
-            # (version conflict).
+            # Serial intermediate frame with coalesce.
+            # Only one intermediate frame is in-flight at a time. If an ACK
+            # is pending for a prior frame, coalesce this content into a
+            # buffer that will be flushed when the ACK arrives (or times out).
+            # This matches the official SDK's one-in-flight semantics and
+            # prevents stale ACKs from falsely resolving later frames.
             if not self._ws or self._ws.closed:
                 raise RuntimeError("WeCom websocket is not connected")
 
@@ -2459,47 +2611,21 @@ class WeComAdapter(BasePlatformAdapter):
                 queue = ReplyQueue(normalized)
                 self._reply_queues[normalized] = queue
 
-            # If a prior intermediate frame's ack is still pending, cancel
-            # its future (it's now stale — cumulative text means the new
-            # frame supersedes it) and overwrite with the new one.
             if queue.pending_ack is not None:
-                old_frame = queue.pending_ack
-                if not old_frame.future.done():
-                    old_frame.future.cancel()
-
-            # Create future for THIS frame's ack
-            future: asyncio.Future = asyncio.get_running_loop().create_future()
-            frame = ReplyFrame(body=body, future=future, is_final=False)
-            frame.sent_at = time.monotonic()
-
-            # Register pending_ack BEFORE sending (so _resolve_reply_ack
-            # can route the ack if it arrives during the _send_json await).
-            self._reply_queues[normalized] = queue
-            queue.pending_ack = frame
-
-            logger.debug(
-                "[%s] _send_stream_reply: fire-and-forget intermediate — "
-                "req_id=%s stream_id=%s content_len=%d",
-                self.name, normalized,
-                body.get("stream", {}).get("id", "N/A"),
-                len(body.get("stream", {}).get("content", "") or ""),
-            )
-
-            try:
-                await self._send_json(
-                    {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized}, "body": body}
+                # Already one in-flight — coalesce (just update buffer)
+                queue.coalesced_body = body
+                queue.coalesce_count += 1
+                logger.info(
+                    "[ACK-SERIAL] req_id=%s coalesced frames_skipped=%d "
+                    "latest_content_len=%d",
+                    normalized, queue.coalesce_count,
+                    len(body.get("stream", {}).get("content", "") or ""),
                 )
-            except Exception:
-                # Send failed — clear pending and cancel future
-                if queue.pending_ack is frame:
-                    queue.pending_ack = None
-                    if not self._reply_queues.get(normalized) or queue.pending_ack is None:
-                        self._reply_queues.pop(normalized, None)
-                if not future.done():
-                    future.cancel()
-                raise
+                return {"errcode": 0, "errmsg": "coalesced"}
 
-            return {"errcode": 0, "errmsg": "sent_fire_and_forget"}
+            # No frame in-flight — send this one and track its ACK
+            await self._send_intermediate_serial(normalized, queue, body)
+            return {"errcode": 0, "errmsg": "sent_serial"}
 
         # Final frame: wait for any pending intermediate ack, then send
         # with ack tracking so we reliably detect 846608/6000.

@@ -976,9 +976,11 @@ class TestSendStreamFrame:
         For tests that verify frame content/ordering, we don't need actual
         ack tracking — just record what was sent and always succeed.
 
-        After the fire-and-forget fix, intermediate frames call _send_json
-        directly (bypassing _send_reply_queued), while final frames still
-        go through _send_reply_queued.  We mock both to capture all frames.
+        After the serial-with-coalesce refactor, intermediate frames call
+        _send_intermediate_serial (which uses _send_json + registers
+        pending_ack), while final frames still go through _send_reply_queued.
+        We mock _send_json to capture intermediate frames AND auto-resolve
+        the pending_ack so subsequent frames are not coalesced.
         """
         sent_frames = []
 
@@ -986,11 +988,21 @@ class TestSendStreamFrame:
             # Intermediate frames arrive here as raw WS payloads.
             # Extract the body to match the old test format.
             if payload.get("cmd") == "aibot_respond_msg":
+                req_id = (payload.get("headers") or {}).get("req_id", "")
                 sent_frames.append({
-                    "req_id": (payload.get("headers") or {}).get("req_id", ""),
+                    "req_id": req_id,
                     "body": payload.get("body", {}),
                     "is_final": False,
                 })
+                # Auto-resolve pending_ack so next frame is not coalesced
+                queue = adapter._reply_queues.get(req_id)
+                if queue and queue.pending_ack and not queue.pending_ack.future.done():
+                    queue.pending_ack.future.set_result({"errcode": 0, "errmsg": "ok"})
+                    queue.pending_ack = None
+                    if queue.ack_timeout_task and not queue.ack_timeout_task.done():
+                        queue.ack_timeout_task.cancel()
+                        queue.ack_timeout_task = None
+                    # Don't pop queue — it may be reused for next frame
 
         async def mock_send_reply_queued(reply_req_id, body, *, is_final=False, skip_if_pending=False):
             sent_frames.append({
@@ -1064,13 +1076,16 @@ class TestSendStreamFrame:
         assert ids[0].startswith("stream_")
 
     @pytest.mark.asyncio
-    async def test_intermediate_frames_always_sent_fire_and_forget(self):
-        """Intermediate frames are always sent (fire-and-forget), even when
-        a prior frame's ack is still pending.
+    async def test_intermediate_frames_serial_coalesce_when_ack_pending(self):
+        """Intermediate frames coalesce when a prior frame's ack is pending.
 
-        This is the fire-and-forget semantics: every intermediate frame is
-        sent immediately via _send_json.  The pending_ack is overwritten
-        (not gated upon) so finalize can still wait for the LAST frame's ack.
+        This is the serial-with-coalesce semantics: only one intermediate
+        frame is in-flight at a time.  If an ACK is still pending for the
+        prior frame, new content is stored in the coalesce buffer rather
+        than sent immediately.
+
+        The seed frame (empty <think></think>) is the first frame sent; its
+        ACK has not arrived yet, so subsequent content frames coalesce.
         """
         from plugins.platforms.wecom.adapter import WeComAdapter
 
@@ -1080,17 +1095,23 @@ class TestSendStreamFrame:
         adapter._ws = MagicMock(closed=False)
 
         await adapter.send_stream_frame("alpha", chat_id="chat-1")
-        # Seed frame sent. Immediately send another (no ack yet):
+        # Seed frame sent via _send_json. seed's ACK still pending,
+        # so "alpha" was coalesced (not sent as a separate frame).
+        assert adapter._send_json.await_count == 1  # only the seed
+
+        # Send another — still coalesces (overwrites previous coalesced)
         ok = await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
 
-        assert ok is True  # returns True (sent successfully)
-        # Seed + "alpha" content + "alpha beta" content = 3 calls to _send_json
-        # (fire-and-forget: no frame is ever skipped due to pending ack)
-        assert adapter._send_json.await_count == 3
+        assert ok is True  # returns True (coalesced successfully)
+        # Still only 1 call to _send_json (the seed)
+        assert adapter._send_json.await_count == 1
 
-        # accumulated_text updated in StreamTurn.
-        turn = list(adapter._stream_turns.values())[0]
-        assert turn.accumulated_text == "alpha beta"
+        # Verify coalesced buffer holds the LATEST content
+        queue = adapter._reply_queues.get("req-1")
+        assert queue is not None
+        assert queue.coalesced_body is not None
+        assert queue.coalesced_body["stream"]["content"] == "alpha beta"
+        assert queue.coalesce_count == 2  # both "alpha" and "alpha beta" coalesced
 
     @pytest.mark.asyncio
     async def test_no_intermediate_frame_cap(self):
@@ -1194,8 +1215,19 @@ class TestSendStreamFrameFailures:
         adapter._last_chat_req_ids["chat-1"] = "req-1"
         adapter._ws = MagicMock(closed=False)
 
-        # Mock _send_json for intermediate frames (fire-and-forget path)
-        adapter._send_json = AsyncMock()
+        # Mock _send_json for intermediate frames (serial path) with auto-ack
+        async def _auto_ack_send_json(payload):
+            if payload.get("cmd") == "aibot_respond_msg":
+                req_id = (payload.get("headers") or {}).get("req_id", "")
+                queue = adapter._reply_queues.get(req_id)
+                if queue and queue.pending_ack and not queue.pending_ack.future.done():
+                    queue.pending_ack.future.set_result({"errcode": 0, "errmsg": "ok"})
+                    queue.pending_ack = None
+                    if queue.ack_timeout_task and not queue.ack_timeout_task.done():
+                        queue.ack_timeout_task.cancel()
+                        queue.ack_timeout_task = None
+
+        adapter._send_json = AsyncMock(side_effect=_auto_ack_send_json)
 
         # Mock _send_reply_queued: final returns 846608
         async def mock_queued(reply_req_id, body, *, is_final=False, skip_if_pending=False):
@@ -1251,8 +1283,8 @@ class TestSendStreamFrameFailures:
         assert "chat-1" not in adapter._stream_expired_chats
 
     @pytest.mark.asyncio
-    async def test_generic_transport_error_on_intermediate_is_fire_and_forget(self):
-        """A generic transport error on an INTERMEDIATE frame is fire-and-forget.
+    async def test_generic_transport_error_on_intermediate_is_non_fatal(self):
+        """A generic transport error on an INTERMEDIATE frame is non-fatal.
 
         The seed frame here fails with a generic RuntimeError.  An intermediate
         frame failing is transient and self-healing — a later cumulative frame
@@ -1427,9 +1459,9 @@ class TestSendClosesActiveStream:
 
 
 
-class TestFireAndForgetFrameFlow:
-    """Integration: send_stream_frame pushes each distinct cumulative payload
-    immediately (pure identity-dedup), with no sentence/min-chars buffering."""
+class TestSerialCoalesceFrameFlow:
+    """Integration: send_stream_frame uses serial-with-coalesce for intermediate
+    frames (pure identity-dedup), with no sentence/min-chars buffering."""
 
     def _mock_send_json_with_immediate_ack(self, adapter):
         sent_frames = []
@@ -1437,11 +1469,20 @@ class TestFireAndForgetFrameFlow:
         async def mock_send_json(payload):
             # Intermediate frames arrive here as raw WS payloads.
             if payload.get("cmd") == "aibot_respond_msg":
+                req_id = (payload.get("headers") or {}).get("req_id", "")
                 sent_frames.append({
-                    "req_id": (payload.get("headers") or {}).get("req_id", ""),
+                    "req_id": req_id,
                     "body": payload.get("body", {}),
                     "is_final": False,
                 })
+                # Auto-resolve pending_ack so next frame is not coalesced
+                queue = adapter._reply_queues.get(req_id)
+                if queue and queue.pending_ack and not queue.pending_ack.future.done():
+                    queue.pending_ack.future.set_result({"errcode": 0, "errmsg": "ok"})
+                    queue.pending_ack = None
+                    if queue.ack_timeout_task and not queue.ack_timeout_task.done():
+                        queue.ack_timeout_task.cancel()
+                        queue.ack_timeout_task = None
 
         async def mock_send_queued(reply_req_id, body, **kwargs):
             is_final = kwargs.get("is_final", False)
@@ -1458,8 +1499,8 @@ class TestFireAndForgetFrameFlow:
 
     @pytest.mark.asyncio
     async def test_short_text_sent_immediately(self):
-        """Fire-and-forget: even a short body ships right after the seed —
-        there is no min_chars buffering anymore."""
+        """Serial-with-coalesce: even a short body ships right after the seed
+        when no prior frame is pending — there is no min_chars buffering."""
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))

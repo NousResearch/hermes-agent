@@ -678,21 +678,23 @@ class TestTeamsBotFrameworkAttachments:
         return att
 
     @pytest.mark.anyio
-    async def test_bf_host_predicate_dot_anchored(self):
-        """The host check must be dot-anchored: attacker lookalike hosts must
-        NOT receive the bot's bearer token."""
-        f = _teams_mod._is_botframework_attachment_host
-        assert f("smba.trafficmanager.net")
-        assert f("emea.smba.trafficmanager.net")
-        assert f("smba.trafficmanager.net")  # exact apex
-        assert f("api.botframework.com")
-        assert f("botframework.com")
-        # Attacker lookalikes — the pre-followup suffix check matched these
-        assert not f("evil-trafficmanager.net")
-        assert not f("notbotframework.com")
-        assert not f("trafficmanager.net.evil.com")
+    async def test_bf_url_predicate_exact_match_allowlist(self):
+        """Only exact allowlisted hosts on https default port may receive the
+        bot's bearer token — lookalikes, other schemes, and non-443 ports must
+        NOT (any Azure customer can register <name>.trafficmanager.net)."""
+        f = _teams_mod._is_botframework_attachment_url
+        assert f("https://smba.trafficmanager.net/emea/v3/attachments/x")
+        assert f("https://smba.infra.gov.teams.microsoft.us/amer/v3/attachments/x")
+        assert f("https://smba.trafficmanager.net:443/emea/v3/attachments/x")
+        # Attacker lookalikes / non-allowlisted / wrong scheme / wrong port
+        assert not f("https://evil-trafficmanager.net/steal")
+        assert not f("https://emea.smba.trafficmanager.net/v3/attachments/x")
+        assert not f("https://notbotframework.com/steal")
+        assert not f("https://trafficmanager.net.evil.com/steal")
+        assert not f("http://smba.trafficmanager.net/v3/attachments/x")
+        assert not f("https://smba.trafficmanager.net:444/v3/attachments/x")
         assert not f("")
-        assert not f("sharepoint.com")
+        assert not f("https://sharepoint.com/x")
 
     @pytest.mark.anyio
     async def test_bf_image_routes_through_authenticated_fetch(self):
@@ -745,6 +747,26 @@ class TestTeamsBotFrameworkAttachments:
 
         captured = {}
 
+        class _FakeStreamResponse:
+            def __init__(self):
+                self.headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            async def aiter_bytes(self):
+                yield b"\x89PNG fake"
+
+        class _FakeStreamCtx:
+            def __init__(self, response):
+                self._response = response
+
+            async def __aenter__(self):
+                return self._response
+
+            async def __aexit__(self, *a):
+                return None
+
         class _FakeClient:
             def __init__(self, **kw):
                 pass
@@ -755,29 +777,72 @@ class TestTeamsBotFrameworkAttachments:
             async def __aexit__(self, *a):
                 return None
 
-            async def get(self, url, headers=None):
+            def stream(self, method, url, headers=None):
                 captured["headers"] = headers or {}
-                return SimpleNamespace(
-                    status_code=200,
-                    content=b"\x89PNG fake",
-                    raise_for_status=lambda: None,
-                )
+                return _FakeStreamCtx(_FakeStreamResponse())
 
         with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
              patch("tools.url_safety.is_safe_url", lambda url: True):
             # BF host: bearer attached
-            await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/emea/v3/attachments/x")
+            data = await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/emea/v3/attachments/x")
         assert captured["headers"].get("Authorization") == "Bearer the-token"
+        assert data == b"\x89PNG fake"
 
         adapter._get_botframework_token = AsyncMock(return_value="the-token")
         with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
              patch("tools.url_safety.is_safe_url", lambda url: True):
-            # Attacker lookalike host: NO bearer (dot-anchored check)
+            # Attacker lookalike host: NO bearer (exact-match allowlist)
             await adapter._fetch_attachment_bytes("https://evil-trafficmanager.net/steal")
         assert "Authorization" not in captured["headers"], (
             "bearer token must not be sent to attacker lookalike hosts"
         )
         adapter._get_botframework_token.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_token_refresh_is_serialized_under_lock(self):
+        """Two concurrent token fetches on a cold cache share ONE POST —
+        the lock prevents a token-endpoint stampede."""
+        import asyncio as _asyncio
+
+        adapter = self._make_adapter()
+        posts = []
+        release = _asyncio.Event()
+
+        class _TokenResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"access_token": "tok-1", "expires_in": 3600}
+
+        class _SlowTokenClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def post(self, url, data=None):
+                posts.append((url, dict(data or {})))
+                await release.wait()  # hold both callers at the STS door
+                return _TokenResp()
+
+        async def release_later():
+            await _asyncio.sleep(0.05)
+            release.set()
+
+        with patch("httpx.AsyncClient", _SlowTokenClient):
+            t1 = _asyncio.create_task(adapter._get_botframework_token())
+            t2 = _asyncio.create_task(adapter._get_botframework_token())
+            await release_later()
+            tok1, tok2 = await t1, await t2
+        assert tok1 == "tok-1" and tok2 == "tok-1"
+        assert len(posts) == 1, f"concurrent cold-cache fetches must share one POST, got {len(posts)}"
 
     @pytest.mark.anyio
     async def test_token_acquisition_and_cache_reuse(self):
@@ -829,6 +894,28 @@ class TestTeamsBotFrameworkAttachments:
 
         captured = {}
 
+        class _FakeStreamResponse:
+            def __init__(self):
+                self.headers = {}
+
+            def raise_for_status(self):
+                raise _httpx.HTTPStatusError(
+                    "401", request=MagicMock(), response=MagicMock(status_code=401)
+                )
+
+            async def aiter_bytes(self):
+                yield b""
+
+        class _FakeStreamCtx:
+            def __init__(self, response):
+                self._response = response
+
+            async def __aenter__(self):
+                return self._response
+
+            async def __aexit__(self, *a):
+                return None
+
         class _FakeClient:
             def __init__(self, **kw):
                 pass
@@ -839,17 +926,9 @@ class TestTeamsBotFrameworkAttachments:
             async def __aexit__(self, *a):
                 return None
 
-            async def get(self, url, headers=None):
+            def stream(self, method, url, headers=None):
                 captured["headers"] = headers or {}
-                return SimpleNamespace(
-                    status_code=401,
-                    content=b"",
-                    raise_for_status=lambda: (_ for _ in ()).throw(
-                        _httpx.HTTPStatusError(
-                            "401", request=MagicMock(), response=SimpleNamespace(status_code=401)
-                        )
-                    ),
-                )
+                return _FakeStreamCtx(_FakeStreamResponse())
 
         with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
              patch("tools.url_safety.is_safe_url", lambda url: True):

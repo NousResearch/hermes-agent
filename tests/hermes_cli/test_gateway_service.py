@@ -1672,6 +1672,8 @@ class TestProfileArg:
             "/usr/bin/python3",
             "-m",
             "hermes_cli.stderr_timestamp",
+            "--output-log",
+            str(profile_dir / "logs" / "gateway.stdout.log"),
             "--error-log",
             str(profile_dir / "logs" / "gateway.error.log"),
             "--",
@@ -1684,6 +1686,19 @@ class TestProfileArg:
             "run",
             "--external-supervisor",
         ]
+
+    def test_launchd_plist_secures_and_delegates_stdio_capture(self, tmp_path, monkeypatch):
+        """launchd must not hold append-only handles to gateway log files."""
+        profile_dir = tmp_path / ".hermes"
+        profile_dir.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        definition = plistlib.loads(gateway_cli.generate_launchd_plist().encode())
+
+        assert definition["Umask"] == 0o77
+        assert definition["StandardOutPath"] == "/dev/null"
+        assert definition["StandardErrorPath"] == "/dev/null"
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

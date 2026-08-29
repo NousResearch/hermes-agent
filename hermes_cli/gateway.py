@@ -3576,28 +3576,40 @@ def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor:
         inner = [part for part in inner if part != "--replace"]
         if "--external-supervisor" not in inner:
             inner.append("--external-supervisor")
-    return [get_python_path(), "-m", "hermes_cli.stderr_timestamp", "--error-log", str(error_log), "--", *inner]
+    return [
+        get_python_path(),
+        "-m",
+        "hermes_cli.stderr_timestamp",
+        "--output-log",
+        str(error_log.with_name("gateway.stdout.log")),
+        "--error-log",
+        str(error_log),
+        "--",
+        *inner,
+    ]
 
 
 def _spawn_detached_gateway() -> bool:
     """Launch the gateway detached (launchd fallback for macOS 26+). CLI-managed nohup equivalent:
-    stdout → gateway.log, timestamped stderr → gateway.error.log, PID via gateway.pid so stop/status work.
+    raw stdout/stderr go through bounded capture, PID via gateway.pid so stop/status work.
 
     Used when launchctl can no longer bootstrap/kickstart the gateway on macOS 26+ (issue #23387). Mirrors
-    the `nohup hermes gateway run --replace` workaround but keeps it CLI-managed: stdout goes to
-    gateway.log, stderr is timestamped into gateway.error.log, and the PID is tracked via the gateway.pid
+    the `nohup hermes gateway run --replace` workaround but keeps it CLI-managed: raw stdout/stderr go through
+    the same bounded capture used by launchd, and the PID is tracked via the gateway.pid
     file that `run_gateway` writes, so stop/status/restart keep working.
     """
     from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    err_path = log_dir / "gateway.error.log"
     try:
-        with open(log_dir / "gateway.log", "ab") as out:
-            subprocess.Popen(
-                _timestamped_stderr_gateway_command(log_dir / "gateway.error.log"),
-                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL,
-                **windows_detach_popen_kwargs(),
-            )
+        subprocess.Popen(
+            _timestamped_stderr_gateway_command(err_path),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **windows_detach_popen_kwargs(),
+        )
     except OSError:
         return False
     return True
@@ -3715,11 +3727,16 @@ def generate_launchd_plist() -> str:
     <key>ExitTimeOut</key>
     <integer>25</integer>
 {nofile_block}
+    <!-- launchd otherwise creates append-only stdio files using the login
+         session's permissive umask.  The wrapper owns bounded, 0600 capture. -->
+    <key>Umask</key>
+    <integer>63</integer>
+
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    <string>/dev/null</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    <string>/dev/null</string>
 </dict>
 </plist>
 """

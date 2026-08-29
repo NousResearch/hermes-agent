@@ -91,6 +91,21 @@
   src: url('./fonts/JetBrainsMono-Italic.woff2') format('woff2');
 }
 
+/* Vazirmatn — bundled Persian UI font (OFL-1.1). Keeping it local avoids a
+   network request during startup and makes offline/remote installs reliable. */
+@font-face {
+  font-family: 'Vazirmatn';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/Vazirmatn-Variable.woff2') format('woff2');
+}
+
+html[lang='fa'] {
+  --dt-locale-font-sans: 'Vazirmatn', var(--dt-font-sans);
+  font-feature-settings: 'ss01' 1;
+}
+
 @theme inline {
   --color-background: var(--dt-background);
   --color-foreground: var(--dt-foreground);
@@ -115,7 +130,7 @@
   --color-midground: var(--dt-midground);
   --color-midground-foreground: var(--dt-midground-foreground);
 
-  --font-sans: var(--dt-font-sans);
+  --font-sans: var(--dt-locale-font-sans, var(--dt-font-sans));
   --font-mono: var(--dt-font-mono);
 
   --spacing-mul: var(--dt-spacing-mul, 1);
@@ -443,6 +458,7 @@
     --dt-font-sans:
       'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+    --dt-locale-font-sans: var(--dt-font-sans);
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
     /* Menlo/Monaco first — Apple's native monospace faces — so code/diff read
@@ -760,7 +776,7 @@
     margin: 0;
     background: var(--ui-chat-surface-background);
     color: var(--dt-foreground);
-    font-family: var(--dt-font-sans);
+    font-family: var(--dt-locale-font-sans, var(--dt-font-sans));
     font-size: 0.8125rem;
     line-height: var(--dt-line-height, 1.55);
     letter-spacing: var(--dt-letter-spacing, 0);

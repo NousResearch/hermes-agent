@@ -111,7 +111,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
             aria-label={sheetTitle}
             className={cn(
               "min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
-              dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
+              dropUp ? "fixed z-[100]" : "absolute z-50 end-0 top-full mt-1",
             )}
             role="listbox"
             style={
@@ -164,7 +164,7 @@ function LanguageSwitcherOptions({
           >
             <span className="truncate">{meta.name}</span>
 
-            {selected && <Check className="ml-auto h-3 w-3 shrink-0 text-midground" />}
+            {selected && <Check className="ms-auto h-3 w-3 shrink-0 text-midground" />}
           </button>
         );
       })}

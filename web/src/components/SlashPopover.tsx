@@ -133,7 +133,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
 
     return (
       <div
-        className="absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-xl text-sm"
+        className="absolute bottom-full start-0 end-0 mb-2 max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-xl text-sm"
         role="listbox"
       >
         {items.map((it, i) => {
@@ -158,7 +158,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
               </span>
 
               {it.meta && (
-                <span className="text-xs text-text-tertiary truncate ml-auto">
+                <span className="text-xs text-text-tertiary truncate ms-auto">
                   {it.meta}
                 </span>
               )}

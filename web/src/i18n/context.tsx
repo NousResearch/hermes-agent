@@ -44,6 +44,10 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 // document direction so Tailwind's logical utilities (ms-/me-, ps-/pe-) flip.
 const RTL_LOCALES = new Set<Locale>(["ar", "fa"]);
 
+export function localeDirection(locale: Locale): "ltr" | "rtl" {
+  return RTL_LOCALES.has(locale) ? "rtl" : "ltr";
+}
+
 // Display metadata for the language picker — endonym (native name) so users
 // recognize their language even if they don't speak the current UI language.
 // Exposed as a constant so the LanguageSwitcher and any future settings page
@@ -118,7 +122,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (typeof document === "undefined") return;
     document.documentElement.lang = locale;
-    document.documentElement.dir = RTL_LOCALES.has(locale) ? "rtl" : "ltr";
+    document.documentElement.dir = localeDirection(locale);
   }, [locale]);
 
   const value: I18nContextValue = {

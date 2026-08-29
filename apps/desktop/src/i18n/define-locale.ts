@@ -39,3 +39,10 @@ function mergeTranslations<T>(base: T, overrides: TranslationOverride<T> | undef
 export function defineLocale(overrides: TranslationOverrides): Translations {
   return mergeTranslations<Translations>(en, overrides)
 }
+
+/** Deeply compose independently maintained translation batches before the
+ *  final English fallback is applied. This keeps large locale updates easy to
+ *  review without allowing unknown keys through the type system. */
+export function mergeLocaleOverrides(...batches: TranslationOverrides[]): TranslationOverrides {
+  return batches.reduce<TranslationOverrides>((merged, batch) => mergeTranslations(merged, batch), {})
+}

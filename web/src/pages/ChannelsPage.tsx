@@ -373,7 +373,7 @@ export default function ChannelsPage() {
               ghost
               size="icon"
               onClick={() => setEditing(null)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
               <X />
@@ -408,7 +408,7 @@ export default function ChannelsPage() {
                     Connect a bot you already own, or create one in Telegram before
                     filling in this form.
                   </p>
-                  <ol className="grid list-decimal gap-1.5 pl-5">
+                  <ol className="grid list-decimal gap-1.5 ps-5">
                     <li>
                       Open <span className="text-foreground">@BotFather</span>, send
                       <code className="mx-1 font-courier text-xs">/newbot</code>, and
@@ -971,7 +971,7 @@ function WhatsAppOnboardingPanel({
                         : "WhatsApp device linked"}
                     </div>
                     <div className="mt-1 text-muted-foreground">{linkedAccountDetail}</div>
-                    <ol className="mt-3 list-decimal space-y-1 pl-5 text-muted-foreground">
+                    <ol className="mt-3 list-decimal space-y-1 ps-5 text-muted-foreground">
                       <li>Save and restart the gateway.</li>
                       <li>{messageInstruction}</li>
                       <li>{pairingInstruction}</li>
@@ -1271,7 +1271,7 @@ function TelegramOnboardingPanel({
       </div>
 
       <div className="mt-4 grid gap-4 sm:grid-cols-2 sm:divide-x sm:divide-border">
-        <div className="grid content-start gap-3 sm:pr-4">
+        <div className="grid content-start gap-3 sm:pe-4">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium uppercase text-foreground">
               Quick setup
@@ -1293,7 +1293,7 @@ function TelegramOnboardingPanel({
           </Button>
         </div>
 
-        <div className="grid content-start gap-3 border-t border-border pt-4 sm:border-t-0 sm:pl-4 sm:pt-0">
+        <div className="grid content-start gap-3 border-t border-border pt-4 sm:border-t-0 sm:ps-4 sm:pt-0">
           <span className="text-xs font-medium uppercase text-foreground">
             Use your own bot
           </span>

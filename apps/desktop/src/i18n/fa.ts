@@ -1,6 +1,7 @@
-import { defineLocale } from './define-locale'
+import { defineLocale, mergeLocaleOverrides } from './define-locale'
+import { faCurrent } from './fa-current'
 
-export const fa = defineLocale({
+export const fa = defineLocale(mergeLocaleOverrides({
   common: {
     apply: 'اعمال',
     back: 'بازگشت',
@@ -203,7 +204,7 @@ export const fa = defineLocale({
     enterHud: 'حالت HUD',
     exitHud: 'خروج از حالت HUD',
     layoutEditor: 'ویرایشگر چیدمان',
-    layoutEditorTitle: 'ویرایشگر چیدمان — ⌘-کلیک چیدمان را بازنشانی می‌کند'
+    layoutEditorTitle: modifier => `ویرایشگر چیدمان — کلیک با ${modifier} چیدمان را بازنشانی می‌کند`
   },
 
   keybinds: {
@@ -626,19 +627,12 @@ export const fa = defineLocale({
       envOverride: 'بازنویسی توسط env',
       intro:
         'به‌طور پیش‌فرض محلی. وقتی این برنامه باید یک بک‌اند Hermes در جای دیگر را هدایت کند، از حالت راه دور استفاده کنید. بازنویسی‌های هر پروفایل در زیر آمده است.',
-      appliesTo: 'اعمال بر',
-      allProfiles: 'همهٔ پروفایل‌ها',
-      defaultConnection: 'اتصال پیش‌فرض برای هر پروفایلی که بازنویسی مخصوص خود را ندارد.',
-      profileConnection: profile =>
-        `اتصالی که تنها وقتی «${profile}» پروفایل فعال است استفاده می‌شود. برای حذف بازنویسی آن، «استفاده از دروازهٔ پیش‌فرض» را انتخاب کنید.`,
       envOverrideTitle: 'متغیرهای محیطی این نشست دسکتاپ را کنترل می‌کنند.',
       envOverrideDesc:
         'برای استفاده از تنظیم ذخیره‌شدهٔ زیر، مقادیر HERMES_DESKTOP_REMOTE_URL و HERMES_DESKTOP_REMOTE_TOKEN را حذف کنید.',
       modeTitle: 'حالت اتصال',
       localTitle: 'دروازهٔ محلی',
       localDesc: 'یک بک‌اند خصوصی Hermes روی localhost اجرا می‌کند. این حالت پیش‌فرض است و آفلاین کار می‌کند.',
-      inheritTitle: 'استفاده از دروازهٔ پیش‌فرض',
-      inheritDesc: 'بازنویسی این پروفایل را حذف کن و از اتصال پیش‌فرض استفاده کن.',
       remoteTitle: 'دروازهٔ راه دور',
       remoteDesc: 'این پوستهٔ دسکتاپ را به یک بک‌اند Hermes راه دور متصل کنید.',
       remoteAuthHint:
@@ -750,8 +744,6 @@ export const fa = defineLocale({
       sshHermesPathTitle: 'مسیر Hermes (اختیاری)',
       sshHermesPathDesc: 'مسیر کامل باینری hermes روی میزبان راه دور. خالی = تشخیص خودکار.',
       sshHermesPathPlaceholder: 'تشخیص خودکار',
-      sshRemoteProfileTitle: 'پروفایل راه دور (اختیاری)',
-      sshRemoteProfileDesc: 'نام پروفایل روی میزبان راه دور. خالی = استفاده از نام پروفایل دسکتاپ.',
       sshTestConnection: 'آزمایش SSH',
       sshConnect: 'اتصال',
       sshButtonsHint: 'ذخیره در اجرای بعدی اعمال می‌شود. اتصال، هم‌اکنون دوباره وصل می‌کند.',
@@ -1022,7 +1014,6 @@ export const fa = defineLocale({
     tabSkills: 'مهارت‌ها',
     tabToolsets: 'ابزارها',
     tabMcp: 'MCP',
-    tabHub: 'مرور مرکز',
     all: 'همه',
     searchSkills: 'جست‌وجوی مهارت‌ها...',
     searchToolsets: 'جست‌وجوی ابزارها...',
@@ -2246,13 +2237,14 @@ export const fa = defineLocale({
       scopeLastTurn: 'نوبت آخر',
       commit: 'کامیت',
       commitAndPush: 'کامیت و ارسال',
-      commitPlaceholder: 'پیام (⌘↵ برای کامیت)',
+      commitPlaceholder: shortcut => `پیام (${shortcut} برای کامیت)`,
       generateCommitMessage: 'تولید پیام کامیت',
       stopGenerating: 'توقف تولید',
       createPr: 'ساخت PR',
       openPr: 'باز کردن PR',
       ghMissing: 'برای باز کردن PR، رابط خط فرمان GitHub (gh) را نصب کنید و وارد شوید',
       agentShip: 'از Hermes بخواهید PR باز کند',
+      agentShipUnavailable: 'گفت‌وگویی که مالک این تغییرهاست روی صفحه نیست.',
       agentShipPrompt:
         'تغییرات جاری را بازبینی کن، آن‌ها را با یک پیام کامیت متعارف و روشن کامیت کن، شاخه را ارسال کن و یک درخواست ادغام باز کن.',
       newBranch: 'شاخهٔ جدید',
@@ -2767,8 +2759,6 @@ export const fa = defineLocale({
   },
 
   zones: {
-    showHeader: 'نمایش سربرگ',
-    hideHeader: 'پنهان کردن سربرگ',
     minimize: 'کمینه کردن',
     restore: 'بازگردانی',
     closeRunningTitle: 'زبانهٔ در حال اجرا بسته شود؟',
@@ -3104,4 +3094,4 @@ export const fa = defineLocale({
       toggle: open => `${open ? 'نمایش' : 'پنهان کردن'} نوار کناری`
     }
   }
-})
+}, faCurrent))

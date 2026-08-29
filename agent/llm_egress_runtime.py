@@ -817,10 +817,10 @@ def _project_line_numbered_search_terminal_result(text: str) -> str | None:
         matched = re.match(r"^(?P<path>[^:\n]+):(?P<line>[1-9]\d*):", raw_line)
         if matched is None:
             # ``rg --context`` emits neighboring source lines as
-            # ``path-line:content``. Discard them rather than treating their
+            # ``path-line-content``. Discard them rather than treating their
             # content as remotely replayable; only actual match locations are
             # useful to the follow-up read/search tools.
-            if re.match(r"^[^:\n]+-[1-9]\d*:", raw_line):
+            if re.match(r"^[^:\n]+-[1-9]\d*-", raw_line):
                 continue
             return None
         if len(matches) >= _GIT_GREP_TERMINAL_MAX_MATCHES:

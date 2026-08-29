@@ -1546,9 +1546,9 @@ def test_protected_kanban_projects_context_rg_result_to_locations(
     output = json.dumps(
         {
             "output": (
-                "README.md-40:context c2VjcmV0LXBheWxvYWQ=\n"
+                "README.md-40-context c2VjcmV0LXBheWxvYWQ=\n"
                 "README.md:42:matched c2VjcmV0LXBheWxvYWQ=\n"
-                "README.md-44:more context c2VjcmV0LXBheWxvYWQ=\n"
+                "README.md-44-more context c2VjcmV0LXBheWxvYWQ=\n"
             ),
             "exit_code": 0,
         }

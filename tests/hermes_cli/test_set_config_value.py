@@ -307,6 +307,51 @@ class TestListNavigation:
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
 
+    def test_non_numeric_intermediate_segment_fails_cleanly(self, _isolated_hermes_home, capsys):
+        """Non-numeric segment on a list node exits with clean error and no traceback."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: provider-a\n"
+        ))
+
+        with pytest.raises(SystemExit) as exc_info:
+            set_config_value("custom_providers.notanint.api_key", "val")
+        assert exc_info.value.code == 1
+
+        err = capsys.readouterr().err
+        assert "Cannot navigate into list" in err
+        assert "not a numeric index" in err
+
+    def test_non_numeric_leaf_segment_fails_cleanly(self, _isolated_hermes_home, capsys):
+        """Non-numeric leaf segment on a list node exits with clean error and no traceback."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: provider-a\n"
+        ))
+
+        with pytest.raises(SystemExit) as exc_info:
+            set_config_value("custom_providers.api_key", "val")
+        assert exc_info.value.code == 1
+
+        err = capsys.readouterr().err
+        assert "Cannot navigate into list" in err
+        assert "not a numeric index" in err
+
+    def test_out_of_bounds_index_fails_cleanly(self, _isolated_hermes_home, capsys):
+        """Out of bounds index on list navigation exits with clean error and no traceback."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: provider-a\n"
+        ))
+
+        with pytest.raises(SystemExit) as exc_info:
+            set_config_value("custom_providers.99.api_key", "val")
+        assert exc_info.value.code == 1
+
+        err = capsys.readouterr().err
+        assert "out of bounds" in err
+        assert "length 1" in err
+
 
 # ---------------------------------------------------------------------------
 # Cron drift guard warning — regression tests for #59031

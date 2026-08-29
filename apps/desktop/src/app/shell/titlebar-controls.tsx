@@ -5,7 +5,13 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
-import { resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { isPaneActiveInLayoutGroup } from '@/components/pane-shell/tree/model'
+import {
+  $hiddenStripTabs,
+  $layoutTree,
+  resetLayoutTree
+} from '@/components/pane-shell/tree/store'
+import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
@@ -63,6 +69,25 @@ export interface TitlebarTool extends Tiered {
 
 export type TitlebarToolSide = 'left' | 'right'
 export type SetTitlebarToolGroup = (id: string, tools: readonly TitlebarTool[], side?: TitlebarToolSide) => void
+
+/** The unread count belongs only on a control proven to reveal Sessions.
+ *  Bots and Terminal can share the same sidebar group, so edge position and
+ *  visibility are not enough: Sessions must also own the active tab in the
+ *  Sessions workspace. */
+export function unreadBadgeForEdge(
+  edge: TitlebarToolSide,
+  panesFlipped: boolean,
+  edgeOpen: boolean,
+  unreadCount: number,
+  workspaceIsSessions: boolean,
+  sessionsPaneActive: boolean
+): number | undefined {
+  const sessionsEdge: TitlebarToolSide = panesFlipped ? 'right' : 'left'
+
+  return edge === sessionsEdge && !edgeOpen && workspaceIsSessions && sessionsPaneActive && unreadCount > 0
+    ? unreadCount
+    : undefined
+}
 
 interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
@@ -140,16 +165,18 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const location = useLocation()
   const modHeld = useModifierHeld()
   const fileBrowserOpen = useStore($fileBrowserOpen)
+  const hiddenStripTabs = useStore($hiddenStripTabs)
+  const layoutTree = useStore($layoutTree)
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
-  const unreadBadge = unreadCount > 0 ? unreadCount : undefined
-  const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
   // One filter for every cluster: a tool's own `hidden`, then the mode's tier.
   const shown = shownInMode(interfaceMode)
   const visibleTool = (tool: TitlebarTool) => !tool.hidden && shown(tool)
+  const workspaceMode = useStore($workspaceMode)
+  const sessionsPaneActive = isPaneActiveInLayoutGroup(layoutTree, hiddenStripTabs, 'sessions')
 
   // `titleBar.*` slot content is mount-scoped — a page's <Contribute> registers
   // only while that surface is up — so a non-empty area means a page is
@@ -169,13 +196,33 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
+  const leftUnreadBadge = unreadBadgeForEdge(
+    'left',
+    panesFlipped,
+    leftEdge.open,
+    unreadCount,
+    workspaceMode === 'sessions',
+    sessionsPaneActive
+  )
+
+  const rightUnreadBadge = unreadBadgeForEdge(
+    'right',
+    panesFlipped,
+    rightEdge.open,
+    unreadCount,
+    workspaceMode === 'sessions',
+    sessionsPaneActive
+  )
+
+  const unreadHint = (count: number | undefined) => (count ? ` · ${t.titlebar.unreadSessions(count)}` : '')
+
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
     actionId: 'view.toggleSidebar',
-    badge: panesFlipped ? undefined : unreadBadge,
+    badge: leftUnreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-left" />,
     id: 'sidebar',
-    label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
+    label: `${leftLabel}${unreadHint(leftUnreadBadge)}`,
     onSelect: () => {
       triggerHaptic('tap')
       leftEdge.toggle()
@@ -197,10 +244,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const rightSidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS['right-sidebar'],
     actionId: 'view.toggleRightSidebar',
-    badge: panesFlipped ? unreadBadge : undefined,
+    badge: rightUnreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
+    label: `${rightLabel}${unreadHint(rightUnreadBadge)}`,
     onSelect: () => {
       triggerHaptic('tap')
       rightEdge.toggle()

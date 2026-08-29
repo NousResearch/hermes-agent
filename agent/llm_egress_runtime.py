@@ -13,6 +13,7 @@ from pathlib import Path
 from types import MappingProxyType
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import parse_qs, urlsplit
 
 from agent.llm_egress_firewall import (
     AuthorizedEgress,
@@ -88,6 +89,9 @@ _GITHUB_LIST_TERMINAL_MAX_ROWS = 100
 _GITHUB_LIST_TERMINAL_MAX_ITEM_BYTES = 512
 _GITHUB_LIST_TERMINAL_MAX_OUTPUT_BYTES = 10_240
 _GIT_GREP_TERMINAL_MAX_MATCHES = 200
+_GITHUB_API_EXTRACT_ARGUMENT_REPLAY = (
+    '{"urls":["https://api.github.com/repos/<owner>/<repo>/<list>"]}'
+)
 _REJECTED_TERMINAL_COMMAND_REPLAY = json.dumps(
     {"command": "<rejected terminal command omitted>"}, separators=(",", ":")
 )
@@ -629,6 +633,79 @@ def _github_list_terminal_call_limits(value: Any) -> dict[str, int]:
     return limits
 
 
+def _github_api_extract_call_limits(value: Any) -> dict[str, int]:
+    """Bind GitHub REST list projections to exact ``web_extract`` calls.
+
+    GitHub's public REST list responses contain database and node identifiers
+    which do not help a Kanban worker assess an issue or pull request.  Admit
+    only bounded ``issues`` and ``pulls`` list endpoints, and only when every
+    URL in the extract call has that exact shape.  Arbitrary web content
+    remains fail-closed.
+    """
+
+    limits: dict[str, int] = {}
+
+    def extract_limit(arguments: Any) -> int | None:
+        try:
+            parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+            urls = parsed.get("urls") if isinstance(parsed, Mapping) else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(urls, list) or not 1 <= len(urls) <= 5:
+            return None
+        row_limits: list[int] = []
+        for url in urls:
+            if not isinstance(url, str):
+                return None
+            parts = urlsplit(url)
+            if (
+                parts.scheme != "https"
+                or parts.hostname != "api.github.com"
+                or not re.fullmatch(r"/repos/[^/]+/[^/]+/(?:issues|pulls)", parts.path)
+            ):
+                return None
+            query = parse_qs(parts.query, keep_blank_values=True)
+            raw_per_page = query.get("per_page", ["30"])
+            if len(raw_per_page) != 1:
+                return None
+            try:
+                limit = int(raw_per_page[0])
+            except (TypeError, ValueError):
+                return None
+            if not 0 < limit <= _GITHUB_LIST_TERMINAL_MAX_ROWS:
+                return None
+            row_limits.append(limit)
+        return max(row_limits)
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            direct_function = item.get("function")
+            direct_name = (
+                direct_function.get("name")
+                if isinstance(direct_function, Mapping)
+                else item.get("name")
+            )
+            if item.get("type") in {"function", "function_call"} and direct_name == "web_extract":
+                arguments = (
+                    direct_function.get("arguments")
+                    if isinstance(direct_function, Mapping)
+                    else item.get("arguments")
+                )
+                limit = extract_limit(arguments)
+                call_id = item.get("call_id") or item.get("id")
+                if limit is not None and isinstance(call_id, str):
+                    for variant in tool_result_id_variants(call_id):
+                        limits[variant] = limit
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return limits
+
+
 def _git_workspace_diagnostic_call_ids(value: Any) -> frozenset[str]:
     """Recognize one read-only workspace summary whose output is nonessential.
 
@@ -920,6 +997,63 @@ def _project_github_list_terminal_result(text: str, *, max_rows: int) -> str | N
     )
 
 
+def _project_github_api_extract_result(text: str, *, max_rows: int) -> str | None:
+    """Keep useful fields from a verified GitHub REST list extract only."""
+
+    try:
+        decoded = json.loads(text)
+        results = decoded.get("results") if isinstance(decoded, Mapping) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(results, list):
+        return None
+
+    projected_results: list[dict[str, Any]] = []
+    for result in results:
+        if not isinstance(result, Mapping):
+            return None
+        url = result.get("url")
+        content = result.get("content")
+        if not isinstance(url, str) or not isinstance(content, str):
+            return None
+        projected = _project_github_list_terminal_result(
+            json.dumps({"exit_code": 0, "output": content}), max_rows=max_rows
+        )
+        if projected is None:
+            return None
+        wrapped = json.loads(projected)
+        projection_text = wrapped.get("output") if isinstance(wrapped, Mapping) else None
+        projection = json.loads(projection_text) if isinstance(projection_text, str) else None
+        items = projection.get("items") if isinstance(projection, Mapping) else None
+        if not isinstance(items, list):
+            return None
+        candidate = {"url": url, "items": items}
+        if (
+            len(
+                json.dumps(
+                    {
+                        "github_api_extract_projection": "v1",
+                        "results": [*projected_results, candidate],
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            > _GITHUB_LIST_TERMINAL_MAX_OUTPUT_BYTES
+        ):
+            break
+        projected_results.append(candidate)
+
+    return json.dumps(
+        {
+            "github_api_extract_projection": "v1",
+            "results": projected_results,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def _rejected_terminal_call_ids(value: Any) -> frozenset[str]:
     """Return terminal calls that the local policy rejected before execution."""
 
@@ -1113,6 +1247,7 @@ def _typed_payload(
     git_grep_projection_tool_call_ids: frozenset[str] = frozenset(),
     rg_projection_tool_call_ids: frozenset[str] = frozenset(),
     github_list_terminal_call_limits: Mapping[str, int] | None = None,
+    github_api_extract_call_limits: Mapping[str, int] | None = None,
     rejected_terminal_call_ids: frozenset[str] = frozenset(),
     redact_readonly_tool_arguments: bool = False,
     protected_tool_content: bool = False,
@@ -1225,6 +1360,12 @@ def _typed_payload(
             and isinstance(output_call_id, str)
             else None
         )
+        github_api_extract_limit = (
+            github_api_extract_call_limits.get(output_call_id)
+            if isinstance(github_api_extract_call_limits, Mapping)
+            and isinstance(output_call_id, str)
+            else None
+        )
         direct_function = value.get("function")
         direct_name = (
             direct_function.get("name")
@@ -1322,6 +1463,31 @@ def _typed_payload(
                         allow_line_split=True,
                     )
                     continue
+            if (
+                isinstance(github_api_extract_limit, int)
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                projected = _project_github_api_extract_result(
+                    item, max_rows=github_api_extract_limit
+                )
+                if projected is not None:
+                    typed[key] = GeneratedContextSegment(
+                        redact_remote_unsafe_text(projected)
+                    )
+                    continue
+            if (
+                isinstance(github_api_extract_limit, int)
+                and key == "arguments"
+                and isinstance(item, str)
+            ):
+                # The bounded REST request already ran locally.  Its exact
+                # URL is not necessary for the remote reasoning turn, and
+                # repository path atoms can resemble an encoded payload.
+                typed[key] = GeneratedContextSegment(
+                    _GITHUB_API_EXTRACT_ARGUMENT_REPLAY
+                )
+                continue
             if is_rejected_terminal_call and key == "arguments":
                 typed[key] = GeneratedContextSegment(_REJECTED_TERMINAL_COMMAND_REPLAY)
                 continue
@@ -1360,6 +1526,7 @@ def _typed_payload(
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
                 rg_projection_tool_call_ids=rg_projection_tool_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
+                github_api_extract_call_limits=github_api_extract_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=(
@@ -1399,6 +1566,7 @@ def _typed_payload(
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
                 rg_projection_tool_call_ids=rg_projection_tool_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
+                github_api_extract_call_limits=github_api_extract_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=protected_tool_content,
@@ -1685,6 +1853,11 @@ def authorize_agent_sdk_kwargs(
         ),
         github_list_terminal_call_limits=(
             _github_list_terminal_call_limits(body)
+            if protected_kanban_remote and protected_provider_route
+            else None
+        ),
+        github_api_extract_call_limits=(
+            _github_api_extract_call_limits(body)
             if protected_kanban_remote and protected_provider_route
             else None
         ),

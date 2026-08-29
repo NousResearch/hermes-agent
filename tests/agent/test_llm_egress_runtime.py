@@ -788,6 +788,80 @@ def test_protected_codex_projects_bound_github_list_terminal_metadata(
     assert "c2VjcmV0LXBheWxvYWQ=" not in authorized["input"][1]["output"]
 
 
+def test_protected_codex_projects_bound_github_api_extract_metadata(
+    tmp_path, monkeypatch
+):
+    """A verified GitHub REST list fetch never replays opaque API fields."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_api_extract_1234"
+    api_url = (
+        "https://api.github.com/repos/NousResearch/hermes-agent/issues"
+        "?state=open&per_page=20"
+    )
+    raw_rows = [
+        {
+            "id": "c2VjcmV0LXBheWxvYWQ=",
+            "node_id": "c2VjcmV0LW5vZGUtYnl0ZXM=",
+            "number": 123,
+            "title": "Desktop resume reliability",
+            "state": "open",
+            "html_url": "https://github.com/NousResearch/hermes-agent/issues/123",
+            "labels": [{"id": "c2VjcmV0LWxhYmVs", "name": "desktop"}],
+            "user": {"id": 42, "login": "contributor"},
+        }
+    ]
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "web_extract",
+                "call_id": call_id,
+                "arguments": json.dumps({"urls": [api_url]}),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps(
+                    {
+                        "success": True,
+                        "results": [
+                            {
+                                "url": api_url,
+                                "content": json.dumps(raw_rows),
+                            }
+                        ],
+                    }
+                ),
+            },
+        ],
+    }
+
+    authorized, _ = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    projected = json.loads(authorized["input"][1]["output"])
+    assert projected["github_api_extract_projection"] == "v1"
+    assert projected["results"] == [
+        {
+            "url": api_url,
+            "items": [
+                {
+                    "labels": ["desktop"],
+                    "number": 123,
+                    "state": "open",
+                    "title": "Desktop resume reliability",
+                }
+            ],
+        }
+    ]
+    assert "c2VjcmV0LXBheWxvYWQ=" not in authorized["input"][1]["output"]
+
+
 def test_protected_codex_omits_rejected_terminal_command_replay(
     tmp_path, monkeypatch
 ):

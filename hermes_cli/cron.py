@@ -93,9 +93,16 @@ def _builtin_gateway_liveness() -> Optional[bool]:
             # scan below still decide instead of collapsing the whole
             # tri-state to None.
             pass
-        from hermes_cli.gateway import find_gateway_pids
+        from hermes_cli.gateway import (
+            find_gateway_pids,
+            named_profile_served_by_running_multiplexer,
+        )
 
-        return bool(find_gateway_pids())
+        if find_gateway_pids():
+            return True
+        # Satellite profile: no local gateway.pid, but the default multiplexer
+        # ticks this profile's cron store (#97120).
+        return named_profile_served_by_running_multiplexer()
     except Exception:
         return None
 

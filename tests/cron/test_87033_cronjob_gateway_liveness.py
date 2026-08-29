@@ -201,6 +201,12 @@ class _LivenessPatches:
         )
         self._stack.enter_context(
             patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=False,
+            )
+        )
+        self._stack.enter_context(
+            patch(
                 "gateway.status.is_gateway_runtime_lock_active",
                 return_value=self._lock_active,
             )
@@ -258,6 +264,10 @@ class TestRuntimeLockFirstLiveness:
             patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=False,
+            ),
         ):
             assert cron_cli._builtin_gateway_liveness() is False
 
@@ -278,6 +288,39 @@ class TestRuntimeLockFirstLiveness:
             patch("hermes_cli.gateway.find_gateway_pids", return_value=[424242]),
         ):
             assert cron_cli._builtin_gateway_liveness() is True
+
+    def test_running_multiplexer_counts_as_alive_for_named_profile(self):
+        """A satellite profile has no own PID; the default multiplexer ticks it."""
+        from unittest.mock import patch
+
+        import hermes_cli.cron as cron_cli
+
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=True,
+            ),
+        ):
+            assert cron_cli._builtin_gateway_liveness() is True
+
+    def test_no_multiplexer_and_no_pids_is_still_false(self):
+        from unittest.mock import patch
+
+        import hermes_cli.cron as cron_cli
+
+        with (
+            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch(
+                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                return_value=False,
+            ),
+        ):
+            assert cron_cli._builtin_gateway_liveness() is False
 
 
 class TestCronStatusLockFirst:

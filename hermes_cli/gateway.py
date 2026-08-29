@@ -6048,6 +6048,82 @@ def _running_under_gateway_supervisor() -> bool:
     return is_gateway_supervisor_process()
 
 
+def named_profile_served_by_running_multiplexer() -> bool:
+    """True when a live default multiplexer already ticks this named profile.
+
+    Shared by the named-profile start guard and cron liveness: a satellite
+    profile has no gateway.pid of its own, but the default multiplexer's
+    ticker still fires its jobs (#97120).
+    """
+    try:
+        suffix = _profile_suffix()
+    except Exception:
+        return False
+    if not suffix:
+        return False
+
+    try:
+        from hermes_constants import get_default_hermes_root
+        default_root = get_default_hermes_root()
+    except Exception:
+        return False
+
+    try:
+        from gateway.status import _read_pid_record
+
+        default_pid_path = default_root / "gateway.pid"
+        rec = _read_pid_record(default_pid_path)
+        if not rec:
+            return False
+        from gateway.status import _pid_exists, _pid_from_record
+        pid = _pid_from_record(rec)
+        if not pid or not _pid_exists(pid):
+            return False
+
+        from gateway.config import _env_multiplex_profiles_override
+
+        cfg_path = default_root / "config.yaml"
+        cfg = {}
+        if cfg_path.exists():
+            from hermes_cli.config import read_user_config_raw
+
+            cfg = read_user_config_raw(cfg_path)
+
+        env_multiplex = _env_multiplex_profiles_override()
+        if env_multiplex is False:
+            return False
+        if env_multiplex is True:
+            multiplex = True
+        else:
+            if not cfg_path.exists():
+                return False
+            multiplex = bool(
+                cfg.get("multiplex_profiles")
+                or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
+            )
+        if not multiplex:
+            return False
+
+        gateway_cfg = cfg.get("gateway", {}) or {}
+        if "multiplex_profile_allowlist" in cfg:
+            raw_allowlist = cfg.get("multiplex_profile_allowlist")
+        else:
+            raw_allowlist = gateway_cfg.get("multiplex_profile_allowlist")
+        from gateway.config import _normalize_multiplex_profile_allowlist
+        from hermes_cli.profiles import normalize_profile_name
+
+        profile_allowlist = _normalize_multiplex_profile_allowlist(raw_allowlist)
+        if (
+            profile_allowlist is not None
+            and normalize_profile_name(suffix) not in profile_allowlist
+        ):
+            return False
+        return True
+    except Exception:
+        logger.debug("Multiplexer-serving probe failed", exc_info=True)
+        return False
+
+
 def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     """Refuse a named-profile gateway when a multiplexer is already serving it.
 
@@ -6063,85 +6139,11 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     """
     if force:
         return
-    # (a) Are we a named profile? Default/custom-hash homes return "".
     try:
         suffix = _profile_suffix()
     except Exception:
         return
-    if not suffix:
-        return  # default profile (or unrecognized) — this guard doesn't apply
-
-    try:
-        from hermes_constants import get_default_hermes_root
-        default_root = get_default_hermes_root()
-        # (b) Is the default-profile gateway running?
-        from gateway.status import get_running_pid as _default_running_pid  # noqa
-    except Exception:
-        return
-
-    try:
-        import yaml as _yaml
-        from gateway.status import _read_pid_record  # type: ignore
-
-        # (b) default gateway PID file present + alive
-        default_pid_path = default_root / "gateway.pid"
-        rec = _read_pid_record(default_pid_path)
-        if not rec:
-            return
-        from gateway.status import _pid_exists, _pid_from_record
-        pid = _pid_from_record(rec)
-        if not pid or not _pid_exists(pid):
-            return
-
-        # (c) multiplexing is on for the default gateway. Precedence mirrors
-        # gateway.config: the GATEWAY_MULTIPLEX_PROFILES env override wins over
-        # config.yaml when set to a recognized value, so a hosted gateway that
-        # forces multiplex on via env (with no multiplex_profiles in config.yaml)
-        # still trips this guard. A blank/unrecognized env value falls through
-        # to config.yaml.
-        from gateway.config import _env_multiplex_profiles_override
-
-        cfg_path = default_root / "config.yaml"
-        cfg = {}
-        if cfg_path.exists():
-            # Raw read of the DEFAULT root's config (not the active profile
-            # home, so load_config() is the wrong owner here); whole probe is
-            # fail-open via the enclosing except.
-            from hermes_cli.config import read_user_config_raw
-
-            cfg = read_user_config_raw(cfg_path)
-
-        env_multiplex = _env_multiplex_profiles_override()
-        if env_multiplex is False:
-            return  # explicitly forced OFF by the operator env override
-        if env_multiplex is True:
-            multiplex = True
-        else:
-            if not cfg_path.exists():
-                return
-            multiplex = bool(
-                cfg.get("multiplex_profiles")
-                or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
-            )
-        if not multiplex:
-            return
-
-        gateway_cfg = cfg.get("gateway", {}) or {}
-        if "multiplex_profile_allowlist" in cfg:
-            raw_allowlist = cfg.get("multiplex_profile_allowlist")
-        else:
-            raw_allowlist = gateway_cfg.get("multiplex_profile_allowlist")
-        from gateway.config import _normalize_multiplex_profile_allowlist
-        from hermes_cli.profiles import normalize_profile_name
-
-        profile_allowlist = _normalize_multiplex_profile_allowlist(raw_allowlist)
-        if (
-            profile_allowlist is not None
-            and normalize_profile_name(suffix) not in profile_allowlist
-        ):
-            return
-    except Exception:
-        logger.debug("Multiplexer-conflict probe failed", exc_info=True)
+    if not named_profile_served_by_running_multiplexer():
         return
 
     print_error(

@@ -247,6 +247,7 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "retry",
     "resets at",
     "reset in",
+    "reset at",
     "resets in",
     "reset after",
     "available in",

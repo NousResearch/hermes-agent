@@ -309,7 +309,7 @@ class TestChatCompletionsBuildKwargs:
             model="mistral-small-latest",
             messages=msgs,
             provider_profile=profile,
-            reasoning_config={"effort": "none"},
+            reasoning_config={"enabled": False, "effort": "none"},
             base_url="https://api.mistral.ai/v1",
         )
         assert kw.get("extra_body", {}).get("think") is None

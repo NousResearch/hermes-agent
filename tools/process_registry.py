@@ -2960,19 +2960,21 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" if m == 0 else f"{h}h{m}m"
 
 
-# Model-not-found phrases lifted from agent/error_classifier.py so the
-# delegation batch renderer can spot a config-level rejection without pulling
-# the classifier's failover machinery. Kept in sync by hand.
-_MODEL_NOT_FOUND_PATTERNS = (
-    "is not a valid model",
-    "invalid model",
-    "model not found",
-    "model_not_found",
-    "does not exist",
-    "no such model",
-    "unknown model",
-    "unsupported model",
-)
+def _model_not_found_patterns() -> "list[str]":
+    """Model-not-found phrases from the failover classifier.
+
+    Imported from ``agent.error_classifier`` so the batch renderer applies
+    the SAME classification the failover path consumes — no hand-copied
+    pattern list to drift. Fails open to a minimal built-in set so a
+    classifier import problem never hides the per-task blocks.
+    (Import approach from PR #97667 by @liuhao1024.)
+    """
+    try:
+        from agent.error_classifier import _MODEL_NOT_FOUND_PATTERNS
+
+        return list(_MODEL_NOT_FOUND_PATTERNS)
+    except Exception:
+        return ["is not a valid model", "model not found", "model_not_found"]
 
 
 def _delegation_config() -> dict:
@@ -3009,7 +3011,7 @@ def _delegation_model_not_found(results, config) -> bool:
         ).lower()
         if not text or model not in text:
             continue
-        if any(p in text for p in _MODEL_NOT_FOUND_PATTERNS):
+        if any(p in text for p in _model_not_found_patterns()):
             return True
     return False
 
@@ -3105,6 +3107,9 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append("--- ERROR ---")
             lines.append(f"The batch did not complete successfully: {error}")
             return "\n".join(lines)
+        # Config-level rejection notice BEFORE the per-task wall — a rejected
+        # delegation model fails every task identically before doing any
+        # work, and that signal must not stay buried in the task blocks.
         _notice = _delegation_model_not_found_notice(results)
         if _notice:
             lines.append("")

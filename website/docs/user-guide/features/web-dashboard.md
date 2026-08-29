@@ -1154,23 +1154,45 @@ The dashboard reads and writes your `.env` (API keys, secrets) and can run agent
 The `hermes dashboard --host 0.0.0.0` bind exposes the dashboard on **all** host interfaces. Without a firewall rule, any network the host can reach can reach the dashboard. Restrict it to your LAN:
 
 ```bash
-# Find your LAN interface and subnet:
-ip -4 addr show | grep inet
-
-# Allow only your LAN subnet (replace IFACE, LAN_SUBNET, PORT):
-sudo ufw allow in on IFACE to any port PORT proto tcp from LAN_SUBNET comment 'Hermes Remote Backend (LAN only)'
-
-# Verify from a host on a DIFFERENT subnet (should time out):
-curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://SERVER_LAN_IP:PORT/api/status
-# Expected: 000
+# Find your LAN interface and subnet (replace IFACE, LAN_SUBNET):
+ip -4 route get <LAN-CLIENT-IP>  # shows the interface and src IP used for that client
+# OR: ip -4 addr show scope global | grep -v '127.0.0.1'
 ```
-
-Or with iptables:
 
 ```bash
-sudo iptables -A INPUT -i IFACE -p tcp -s LAN_SUBNET --dport PORT -j ACCEPT
-sudo iptables -A INPUT -p tcp --dport PORT -j DROP
+# UFW: remove any existing broad allow for this port first, then add LAN-scoped rule
+sudo ufw status numbered | grep 'PORT/tcp'
+# If a broad "ALLOW Anywhere" rule exists for this port, note its number and delete it:
+# sudo ufw delete <RULE_NUMBER>
+
+# Add LAN-only allow (replace IFACE, LAN_SUBNET, PORT):
+sudo ufw allow in on IFACE to any port PORT proto tcp from LAN_SUBNET comment 'Hermes Remote Backend (LAN only)'
+
+# Verify effective policy:
+sudo ufw status verbose
+# Default incoming policy should be "deny" (or "reject"); the new rule should be the only ALLOW for PORT/tcp
+
+# Verify from a host on a DIFFERENT subnet (should time out / connection refused):
+curl -s -o /dev/null -w "%{http_code}
+" --max-time 5 --noproxy '*' http://SERVER_LAN_IP:PORT/api/status
+# Expected: 000 (or curl exit code 28/7)
 ```
+
+```bash
+# iptables (temporary — rules disappear on reboot unless persisted via your distro's mechanism):
+# 1. Accept from LAN on the specific interface
+sudo iptables -I INPUT -i IFACE -p tcp -s LAN_SUBNET --dport PORT -j ACCEPT
+# 2. Allow localhost (loopback) explicitly so local verification still works
+sudo iptables -I INPUT -i lo -p tcp --dport PORT -j ACCEPT
+# 3. Drop everything else for this port on all other interfaces
+sudo iptables -A INPUT -p tcp --dport PORT -j DROP
+
+# Verify:
+sudo iptables -L INPUT -n -v --line-numbers | grep 'dpt:PORT'
+# Expected order: ACCEPT lo → ACCEPT IFACE/LAN_SUBNET → DROP (all other)
+```
+
+> **Note:** iptables rules above are not persistent across reboot. On Debian/Ubuntu use `netfilter-persistent save` or `iptables-save > /etc/iptables/rules.v4`; on RHEL/Fedora use `iptables-save > /etc/sysconfig/iptables` or firewalld equivalents.
 
 
 ### In Hermes Desktop
@@ -1201,24 +1223,30 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 
 ### End-to-end verification
 
-After setup, confirm everything works:
+After setup, confirm everything works. Replace `PORT=9119` (or your chosen port) and run each check; every command must exit 0.
 
 ```bash
-# Port listening on non-loopback:
-ss -tlnp | grep 'PORT'
-# → LISTEN on 0.0.0.0:PORT
+PORT=9119
 
-# Auth gate engaged:
-curl -s http://127.0.0.1:PORT/api/status | jq '.auth_required, .auth_providers'
-# → true, ["basic"]
+# 1. Port listening on non-loopback (wildcard or specific LAN address):
+ss -tlnp | awk -v p=":$PORT" '$4 ~ p && $4 !~ /^127\.0\.0\.1/ {found=1} END{exit !found}'
+# Exit 0 = listening on a non-loopback address
 
-# Unauthenticated request rejected:
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:PORT/api/agents
-# → 401
+# 2. Auth gate engaged on /api/status (public endpoint):
+curl -s --noproxy '*' --max-time 5 "http://127.0.0.1:$PORT/api/status" | jq -e '.auth_required == true and (.auth_providers | index("basic"))'
+# Exit 0 = auth_required true, "basic" in auth_providers
 
-# Firewall rule present:
-sudo ufw status | grep 'PORT/tcp'
-# → ALLOW LAN_SUBNET
+# 3. Unauthenticated request to a protected endpoint is rejected (401):
+curl -s -o /dev/null -w "%{http_code}
+" --noproxy '*' --max-time 5 "http://127.0.0.1:$PORT/api/profiles" | grep -q '^401$'
+# Exit 0 = 401 returned (middleware intercepts before routing)
+
+# 4. Firewall rule present and effective (UFW):
+sudo ufw status numbered | awk -v p=":$PORT" '$0 ~ p && /ALLOW/ && /LAN_SUBNET/ {found=1} END{exit !found}'
+# Exit 0 = a LAN-scoped ALLOW rule exists for this port
+# Also verify no broad "ALLOW Anywhere" rule remains for this port:
+! sudo ufw status numbered | awk -v p=":$PORT" '$0 ~ p && /ALLOW/ && /Anywhere/ {found=1} END{exit found}'
+# Exit 0 = no broad allow rule for this port
 ```
 
 

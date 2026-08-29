@@ -20,6 +20,7 @@ from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from plugins.memory.honcho.client import _host_block, _HostLookup, spawn_context_thread
 from plugins.memory.honcho.dialectic import DialecticMixin
+from plugins.memory.honcho.session_context import usable_honcho_summary
 from plugins.memory.honcho.tool_schemas import ALL_TOOL_SCHEMAS
 from tools.registry import tool_error
 
@@ -392,7 +393,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         return frozenset(str(x) for x in listed)
 
     def _format_first_turn_context(self, ctx: dict) -> str:
-        """Render the prefetch context, keeping only the ``injection.sessionStart`` components when pinned."""
+        """Render the prefetch context, keeping only the ``injection.sessionStart`` components when pinned.
+        The summary passes usable_honcho_summary here, so a contaminated one never reaches _base_context_cache."""
+        ctx = {**ctx, "summary": usable_honcho_summary(ctx.get("summary")) or ""}
         allowed = self._session_start_components
         parts, suppressed = [], []
         for name, key, header in _CONTEXT_SECTIONS:
@@ -821,9 +824,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         ctx = self._manager.get_session_context(self._session_key, peer=args.get("peer", "user"))
         if not ctx:
             return json.dumps({"result": "No context available yet."})
-        parts = [f"## {header}\n{ctx[key]}"
-                 for key, header in (("summary", "Summary"), ("representation", "Representation"), ("card", "Card"))
-                 if ctx.get(key)]
+        sections = (("Summary", usable_honcho_summary(ctx.get("summary"))),
+                    ("Representation", ctx.get("representation")), ("Card", ctx.get("card")))
+        parts = [f"## {header}\n{value}" for header, value in sections if value]
         if recent := ctx.get("recent_messages"):
             parts.append("## Recent messages\n" + "\n".join(f"  [{m['role']}] {m['content'][:200]}" for m in recent[-5:]))
         return json.dumps({"result": "\n\n".join(parts) or "No context available."})

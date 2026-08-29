@@ -5680,6 +5680,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
+        # Cache-hit ratio baseline — reset on model switch and on
+        # context compression so the bar reflects the *current* cache
+        # regime, not a lifetime average that survives invalidation.
+        self._cache_hit_baseline_prompt = 0
+        self._cache_hit_baseline_read = 0
+        self._cache_hit_baseline_model: Optional[str] = None
+        self._cache_hit_baseline_compressions = 0
+
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
         """Claim a global active-session slot for this CLI process."""
         if self._active_session_lease is not None:
@@ -6183,7 +6191,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         Centralises the cache-hit-rate computation so both the plain-text
         status bar and the prompt-toolkit fragment path share one formula.
+        Prefers the baseline-delta percentage computed in
+        ``_get_status_bar_snapshot`` (resets on model switch / compression,
+        so it reflects the *current* cache regime); falls back to the
+        session-lifetime ratio when no delta is available.
         """
+        delta_pct = snapshot.get("cache_hit_pct")
+        if delta_pct is not None:
+            return float(delta_pct), f"◎ {float(delta_pct):.{precision}f}%"
         cache_read = snapshot.get("session_cache_read_tokens", 0)
         prompt_total = snapshot.get("session_prompt_tokens", 0)
         if cache_read > 0 and prompt_total > 0:
@@ -6198,6 +6213,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if cache_pct >= 40:
             return "class:status-bar-warn"
         return "class:status-bar-bad"
+
 
     @staticmethod
     def _battery_status_style(category: str) -> str:
@@ -6493,6 +6509,96 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+
+        # -- Cache-hit ratio (delta since last reset) --
+        # Reset baseline on model switch and on compression — both invalidate
+        # the prompt cache. Formula verified against live logs:
+        #   hit = cache_read / prompt_tokens  (prompt = input+cache_read+cache_write)
+        #   see agent/conversation_loop.py:4314  cache=read/prompt (87%)
+        #   and CanonicalUsage.prompt_tokens = input+read+write
+        try:
+            base_model = getattr(self, "_cache_hit_baseline_model", None)
+            base_prompt = int(getattr(self, "_cache_hit_baseline_prompt", 0) or 0)
+            base_read = int(getattr(self, "_cache_hit_baseline_read", 0) or 0)
+            base_comps = int(getattr(self, "_cache_hit_baseline_compressions", 0) or 0)
+            cur_model = snapshot.get("model_name") or model_name
+            cur_comps = int(snapshot.get("compressions", 0) or 0)
+            cur_prompt = int(snapshot.get("session_prompt_tokens", 0) or 0)
+            cur_read = int(snapshot.get("session_cache_read_tokens", 0) or 0)
+            if base_model is None:
+                self._cache_hit_baseline_model = cur_model
+                self._cache_hit_baseline_compressions = cur_comps
+                base_model = cur_model
+                base_comps = cur_comps
+            if cur_model != base_model:
+                self._cache_hit_baseline_model = cur_model
+                self._cache_hit_baseline_prompt = cur_prompt
+                self._cache_hit_baseline_read = cur_read
+                self._cache_hit_baseline_compressions = cur_comps
+                base_prompt = cur_prompt
+                base_read = cur_read
+                base_comps = cur_comps
+            if cur_comps != base_comps:
+                self._cache_hit_baseline_compressions = cur_comps
+                self._cache_hit_baseline_prompt = cur_prompt
+                self._cache_hit_baseline_read = cur_read
+                base_prompt = cur_prompt
+                base_read = cur_read
+            delta_prompt = cur_prompt - base_prompt
+            delta_read = cur_read - base_read
+            if delta_prompt > 0 and delta_read >= 0:
+                pct = int(round((delta_read / delta_prompt) * 100))
+                pct = max(0, min(100, pct))
+                snapshot["cache_hit_pct"] = pct
+                snapshot["cache_hit_label"] = f"{pct}%"
+            elif cur_prompt > 0 and cur_read >= 0 and base_prompt == 0 and base_read == 0:
+                pct = int(round((cur_read / cur_prompt) * 100)) if cur_prompt else 0
+                pct = max(0, min(100, pct))
+                snapshot["cache_hit_pct"] = pct
+                snapshot["cache_hit_label"] = f"{pct}%"
+            else:
+                snapshot["cache_hit_pct"] = None
+                snapshot["cache_hit_label"] = ""
+        except Exception:
+            snapshot["cache_hit_pct"] = None
+            snapshot["cache_hit_label"] = ""
+
+        # -- Rolling avg latency / velocity (last 10 calls) --
+        # Reads the deque maintained in agent/conversation_loop.py (and
+        # agent_init). Codex app-server has no latency, so it stays hidden there.
+        try:
+            agent_obj = getattr(self, "agent", None)
+            lhist = list(getattr(agent_obj, "_api_latency_history", []) or []) if agent_obj else []
+            ohist = list(getattr(agent_obj, "_api_output_history", []) or []) if agent_obj else []
+            # Keep the two histories aligned (they are appended together).
+            n = min(len(lhist), len(ohist))
+            if n:
+                lhist = lhist[-n:]
+                ohist = ohist[-n:]
+                # Simple mean for latency; sum/sum for velocity (true throughput, not mean of ratios).
+                avg_lat = sum(lhist) / len(lhist) if lhist else None
+                total_out = sum(ohist)
+                total_lat = sum(lhist)
+                avg_vel = (total_out / total_lat) if total_lat > 0 else None
+                # Guard against NaN / inf from weird provider timings (e.g. -0.8s in logs).
+                if avg_lat is not None and (avg_lat != avg_lat or avg_lat < 0 or avg_lat > 1e6):
+                    avg_lat = None
+                if avg_vel is not None and (avg_vel != avg_vel or avg_vel < 0 or avg_vel > 1e6):
+                    avg_vel = None
+                snapshot["avg_latency"] = float(avg_lat) if avg_lat is not None else None
+                snapshot["avg_latency_label"] = f"{avg_lat:.1f}s" if avg_lat is not None else ""
+                snapshot["avg_velocity"] = float(avg_vel) if avg_vel is not None else None
+                snapshot["avg_velocity_label"] = f"{avg_vel:.0f} t/s" if avg_vel is not None else ""
+            else:
+                snapshot["avg_latency"] = None
+                snapshot["avg_latency_label"] = ""
+                snapshot["avg_velocity"] = None
+                snapshot["avg_velocity_label"] = ""
+        except Exception:
+            snapshot["avg_latency"] = None
+            snapshot["avg_latency_label"] = ""
+            snapshot["avg_velocity"] = None
+            snapshot["avg_velocity_label"] = ""
 
         return snapshot
 
@@ -7200,9 +7306,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         bar (use built-in defaults, i.e. show everything), or a
         ``frozenset`` of field names when the list is non-empty.
 
-        Available fields: model, context_detail, context_pct, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, duration,
-        prompt_elapsed, idle_since, focus, yolo, total_tokens.
+        Available fields: model, context_detail, context_pct, cache_hit,
+        latency, tps, compressions, bg_tasks, bg_processes, bg_subagents,
+        goal, duration, prompt_elapsed, idle_since, focus, yolo, stash,
+        battery, title, total_tokens.
         ``total_tokens`` is opt-in only (never shown by default).
         The field order is fixed; the config controls visibility only.
         """
@@ -7240,6 +7347,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             def _ok(name: str) -> bool:
                 return field_set is None or name in field_set
+
+            if not _ok("title"):
+                session_title = ""
 
             if not _ok("goal"):
                 goal_segment = ""
@@ -7313,6 +7423,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             cache = self._cache_hit_rate(snapshot)
             if cache and _ok("cache_hit"):
                 parts.append(cache[1])
+            _avg_lat = snapshot.get("avg_latency_label") or ""
+            if _avg_lat and _ok("latency"):
+                parts.append(f"◷ {_avg_lat}")
+            _avg_vel = snapshot.get("avg_velocity_label") or ""
+            if _avg_vel and _ok("tps"):
+                parts.append(f"↑ {_avg_vel}")
             if compressions and _ok("compressions"):
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -7371,6 +7487,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             def _ok(name: str) -> bool:
                 return field_set is None or name in field_set
+
+            if not _ok("title"):
+                session_title = ""
 
             if not _ok("goal"):
                 goal_segment = ""
@@ -7469,6 +7588,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     cache = self._cache_hit_rate(snapshot)
                     if cache and _ok("cache_hit"):
                         _append(frags, " │ ", (self._cache_hit_rate_style(cache[0]), cache[1]))
+                    _avg_lat = snapshot.get("avg_latency_label") or ""
+                    if _avg_lat and _ok("latency"):
+                        _append(frags, " │ ", ("class:status-bar-dim", f"◷ {_avg_lat}"))
+                    _avg_vel = snapshot.get("avg_velocity_label") or ""
+                    if _avg_vel and _ok("tps"):
+                        _append(frags, " │ ", ("class:status-bar-dim", f"↑ {_avg_vel}"))
                     if compressions and _ok("compressions"):
                         _append(frags, " │ ", (self._compression_count_style(compressions), f"🗜️ {compressions}"))
                     if bg_count and _ok("bg_tasks"):
@@ -7516,7 +7641,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 stash_indicator = self._prompt_stash.indicator()
             except Exception:
                 stash_indicator = ""
-            if stash_indicator:
+            if stash_indicator and _ok("stash"):
                 # Insert before the trailing pad fragment so the bar keeps its
                 # one-cell right margin.
                 if frags and frags[-1] == ("class:status-bar", " "):
@@ -7530,7 +7655,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Battery is the first status-bar element when enabled: prepend it
             # ahead of the leading ⚕ marker in whichever width tier ran above.
-            if battery_label:
+            if battery_label and _ok("battery"):
                 frags[0:0] = [
                     ("class:status-bar", " "),
                     (battery_style, battery_label),

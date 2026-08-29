@@ -2972,6 +2972,12 @@ def init_agent(
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
+    # Rolling history for status-bar avg latency / velocity (last 10 calls).
+    # Stored on the agent so both conversation_loop and codex_runtime share it
+    # and the CLI snapshot can read it without extra IPC.
+    from collections import deque as _deque
+    agent._api_latency_history = _deque(maxlen=10)
+    agent._api_output_history = _deque(maxlen=10)
     
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.

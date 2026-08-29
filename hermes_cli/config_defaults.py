@@ -1607,8 +1607,9 @@ DEFAULT_CONFIG = {
         # only the listed fields appear; the built-in order is preserved
         # (the config controls visibility, not ordering). Empty = show the
         # default set. Available: model, context_detail, context_pct,
-        # compressions, bg_tasks, bg_processes, bg_subagents, goal,
-        # duration, prompt_elapsed, idle_since, focus, yolo, total_tokens.
+        # cache_hit, latency, tps, compressions, bg_tasks, bg_processes,
+        # bg_subagents, goal, duration, prompt_elapsed, idle_since, focus,
+        # yolo, stash, battery, title, total_tokens.
         # total_tokens (session Σ) is opt-in only — it never shows unless
         # listed here. Narrow terminals still drop wide-mode-only fields
         # (context_detail, prompt_elapsed, idle_since) regardless of config.

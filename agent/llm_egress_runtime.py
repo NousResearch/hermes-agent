@@ -51,6 +51,9 @@ from agent.source_provenance import DEFAULT_POLICY_DIGEST, SourceProvenanceRegis
 _SDK_CONTROL_KEYS = frozenset({"timeout"})
 _INTERNAL_EGRESS_KEYS = frozenset({"_hermes_source_provenance"})
 _PROTOCOL_LITERAL_FIELDS = frozenset({"role", "type"})
+_TOOL_PROTOCOL_IDENTIFIER_FIELDS = frozenset(
+    {"id", "call_id", "tool_call_id", "response_item_id"}
+)
 _PROTOCOL_LITERAL_VALUES = frozenset({
     "assistant",
     "computer_call_output",
@@ -1784,6 +1787,10 @@ def _typed_payload(
         )
         typed: dict[Any, Any] = {}
         context_mapping = value.get("role") in {"system", "developer"}
+        is_tool_protocol_mapping = (
+            value.get("role") in {"assistant", "tool"}
+            or value.get("type") in {"function", "function_call", "function_call_output"}
+        )
         is_codex_reasoning_replay = (
             allow_codex_reasoning_replay
             and value.get("type") == "reasoning"
@@ -1792,6 +1799,18 @@ def _typed_payload(
         )
         for key, item in value.items():
             if key == "_source_provenance":
+                continue
+            if (
+                key in _TOOL_PROTOCOL_IDENTIFIER_FIELDS
+                and is_tool_protocol_mapping
+                and isinstance(item, str)
+            ):
+                # Provider-issued call IDs are transport linkage, not model
+                # content.  Keep them exact so opaque IDs cannot be mistaken
+                # for a base64 payload and sever a function result from its call.
+                typed[key] = ValidatedToolSyntaxSegment(
+                    item, "tool_protocol_identifier"
+                )
                 continue
             if is_read_file_result and key == "content" and isinstance(item, str):
                 typed[key] = _segment_read_file_presentation(

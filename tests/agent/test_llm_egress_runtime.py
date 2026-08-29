@@ -1600,6 +1600,51 @@ def test_protected_kanban_search_result_projects_source_content_to_locations(
     }
 
 
+def test_protected_kanban_keeps_opaque_tool_protocol_identifiers(tmp_path, monkeypatch):
+    """Opaque provider call IDs are protocol linkage, not remote text."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    opaque_id = "A" * 64
+    result = json.dumps({"total_count": 1, "files": [".git/FETCH_HEAD"]})
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": opaque_id,
+                            "type": "function",
+                            "function": {
+                                "name": "search_files",
+                                "arguments": '{"pattern":"needle"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": opaque_id,
+                    "content": result,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][0]["tool_calls"][0]["id"] == opaque_id
+    assert authorized["messages"][1]["tool_call_id"] == opaque_id
+    assert json.loads(authorized["messages"][1]["content"]) == {
+        "search_files_projection": "locations-v1",
+        "total_count": 1,
+    }
+
+
 def test_protected_kanban_redacts_readonly_search_argument_replay(
     tmp_path, monkeypatch
 ):

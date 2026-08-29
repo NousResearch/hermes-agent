@@ -4362,71 +4362,77 @@ async function preflightStateDb(hermesHome, rememberLog) {
   try {
     const stat = fs.statSync(stateDbPath)
 
-    if (stat.size > 100) {
-      const fd = fs.openSync(stateDbPath, 'r')
-      const header = Buffer.alloc(16)
-
-      fs.readSync(fd, header, 0, 16, 0)
-      fs.closeSync(fd)
-
-      const expectedHeader = Buffer.from('SQLite format 3\0')
-      const headerOk = header.equals(expectedHeader)
-
-      rememberLog(
-        `[updates] state.db pre-flight: size=${stat.size}, ` +
-          `headerOk=${headerOk}, headerHex=${header.toString('hex')}`
-      )
-
-      if (!headerOk) {
-        rememberLog(
-          '[updates] state.db header is INVALID before update — ' +
-            'this indicates pre-existing corruption or a concurrent write issue'
-        )
-      }
-
-      // Emergency timestamped backup, separate from the Python-level snapshot.
-      const ts = new Date().toISOString().replace(/[:.]/g, '-')
-
-      const emergencyPath = path.join(hermesHome, `state.db.pre-update-emergency-${ts}.bak`)
-
-      try {
-        await createVerifiedSqliteBackup(stateDbPath, emergencyPath)
-        const emergStat = fs.statSync(emergencyPath)
-
-        rememberLog(`[updates] emergency state.db backup: ${emergencyPath} ` + `(${emergStat.size} bytes)`)
-
-        // Prune to the 2 most recent emergency backups.
-        try {
-          const homeDir = fs.readdirSync(hermesHome)
-
-          const backups = homeDir
-            .filter(
-              f =>
-                f.startsWith('state.db.pre-update-emergency-') &&
-                f.endsWith('.bak') &&
-                f !== path.basename(emergencyPath)
-            )
-            .sort()
-            .reverse()
-
-          for (const old of backups.slice(2)) {
-            try {
-              fs.unlinkSync(path.join(hermesHome, old))
-            } catch {
-              void 0
-            }
-          }
-        } catch {
-          void 0
-        }
-      } catch (copyErr) {
-        rememberLog(`[updates] emergency state.db backup failed: ${copyErr.message}`)
-      }
-    } else {
-      rememberLog(`[updates] state.db too small (${stat.size} bytes) for a valid SQLite database`)
+    if (stat.size <= 100) {
+      throw new Error(`state.db is too small (${stat.size} bytes) to snapshot safely`)
     }
-  } catch (statErr) {
-    rememberLog(`[updates] could not stat state.db before update: ${statErr.message}`)
+
+    const fd = fs.openSync(stateDbPath, 'r')
+    const header = Buffer.alloc(16)
+
+    try {
+      fs.readSync(fd, header, 0, 16, 0)
+    } finally {
+      fs.closeSync(fd)
+    }
+
+    const expectedHeader = Buffer.from('SQLite format 3\0')
+    const headerOk = header.equals(expectedHeader)
+
+    rememberLog(
+      `[updates] state.db pre-flight: size=${stat.size}, ` +
+        `headerOk=${headerOk}, headerHex=${header.toString('hex')}`
+    )
+
+    if (!headerOk) {
+      throw new Error('state.db has an invalid SQLite header before update')
+    }
+
+    const homeDir = fs.readdirSync(hermesHome)
+
+    for (const stalePartial of homeDir.filter(
+      f => f.startsWith('state.db.pre-update-emergency-') && f.endsWith('.bak.partial')
+    )) {
+      try {
+        fs.rmSync(path.join(hermesHome, stalePartial), { force: true })
+      } catch (error) {
+        rememberLog(`[updates] could not remove stale emergency backup partial ${stalePartial}: ${error.message}`)
+      }
+    }
+
+    // Emergency timestamped backup, separate from the Python-level snapshot.
+    const ts = new Date().toISOString().replace(/[:.]/g, '-')
+    const emergencyPath = path.join(hermesHome, `state.db.pre-update-emergency-${ts}.bak`)
+    const backupResult = await createVerifiedSqliteBackup(stateDbPath, emergencyPath)
+
+    rememberLog(
+      `[updates] emergency state.db backup: ${emergencyPath} (${backupResult.size} bytes, ` +
+        `${backupResult.verification}, ${backupResult.durationMs}ms)`
+    )
+
+    // Prune to the 2 most recent emergency backups.
+    const backups = homeDir
+      .filter(
+        f =>
+          f.startsWith('state.db.pre-update-emergency-') &&
+          f.endsWith('.bak') &&
+          f !== path.basename(emergencyPath)
+      )
+      .sort()
+      .reverse()
+
+    for (const old of backups.slice(1)) {
+      try {
+        fs.unlinkSync(path.join(hermesHome, old))
+      } catch {
+        void 0
+      }
+    }
+  } catch (error) {
+    const message = `Update aborted: could not create a verified emergency state.db backup: ${error.message}`
+
+    rememberLog(`[updates] ${message}`)
+    emitUpdateProgress({ stage: 'error', message, percent: null })
+    throw new Error(message, { cause: error })
   }
 }
 

@@ -31,6 +31,7 @@ PROFILES_DIR = BASE / "profiles"
 STATE_FILE = SKILLS_DIR / ".curator_state"
 GOVERNANCE_LOG = BASE / "governance" / "logboard"
 LOCK_FILE = BASE / ".curator_governance_hook.lock"
+DELIVERY_STATE_FILE = BASE / ".curator_governance_delivery.json"
 
 # P13 isolation: when --dry-run is passed, every write path (re-pin
 # subprocess calls, add_skill_to_enabled, set_adoption_status,
@@ -38,6 +39,12 @@ LOCK_FILE = BASE / ".curator_governance_hook.lock"
 # (load_profile_skills, read_curator_report, classify_skill) run
 # unchanged so the governance decisions are still computed and printed.
 _DRY_RUN = False
+
+# --direct mode (set by the gateway housekeeping helper, NOT by the weekly
+# cron): run governance now on a fresh curator report and store actionable
+# output in DELIVERY_STATE_FILE with pending_delivery instead of printing it.
+# The weekly cron then replays the stored output exactly once.
+_DIRECT = False
 
 # ── Classification rules: category path → lead profile ──
 CATEGORY_TO_LEAD = {
@@ -345,10 +352,70 @@ def log_event(event_type: str, payload: dict) -> None:
         warn(f"Failed to write governance log: {e}")
 
 
+def _write_delivery_state(data: dict) -> None:
+    """Atomic write of the delivery-state marker (never in --dry-run)."""
+    if _DRY_RUN:
+        return
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=DELIVERY_STATE_FILE.parent, prefix=".tmp_del_", suffix=".json")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, DELIVERY_STATE_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _read_delivery_state() -> dict:
+    try:
+        with open(DELIVERY_STATE_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 def main():
-    global _DRY_RUN
+    global _DRY_RUN, _DIRECT
     if "--dry-run" in sys.argv:
         _DRY_RUN = True
+    if "--direct" in sys.argv:
+        _DIRECT = True
+
+    # ── Weekly fast path (no --direct): replay or skip already-governed ──
+    # If the gateway already governed this exact report:
+    #   - pending actionable output → print it EXACTLY ONCE, clear the
+    #     pending flag, repeat no mutation/log event;
+    #   - nothing pending → skip governance entirely (idempotent).
+    # Falls through to fresh processing when the direct run was missed.
+    if not _DIRECT:
+        state = _read_delivery_state()
+        pending = state.get("pending_delivery")
+        if pending:
+            # Deliver every accumulated alert before examining the newest
+            # report. A second direct curator pass must never overwrite an
+            # undelivered alert from the previous week.
+            print(str(pending).rstrip("\n"))
+            state["pending_delivery"] = None
+            _write_delivery_state(state)
+        _probe = read_curator_report()
+        report_key = (_probe or {}).get("started_at")
+        if _probe is not None and report_key is not None \
+                and state.get("processed_started_at") == report_key:
+            return
+        del _probe  # re-read below in the normal path
+    elif not _DRY_RUN:
+        # ── Direct mode: skip an already-governed report (idempotent) ──
+        _probe = read_curator_report()
+        report_key = (_probe or {}).get("started_at")
+        if _probe is not None and report_key is not None \
+                and _read_delivery_state().get("processed_started_at") == report_key:
+            return
+
     # Routine status goes to stderr (not delivered). Only genuinely actionable
     # findings (blocked archivals, skills needing manual review) reach Discord
     # stdout; an uneventful run is [SILENT].
@@ -364,8 +431,9 @@ def main():
         status("No curator report found - curator may not have run yet (expected on first run).")
         return  # silent
 
+    started_at = report.get("started_at")
     c = report.get("counts", {}) or {}
-    status(f"Curator report {report.get('started_at', 'unknown')}: "
+    status(f"Curator report {started_at or 'unknown'}: "
            f"checked={c.get('checked', 0)} archived={c.get('archived_this_run', 0)} added={c.get('added_this_run', 0)}")
 
     actionable = []  # Discord-bound lines
@@ -444,18 +512,50 @@ def main():
         actionable.append(f"📦 NEW SKILLS NEED MANUAL REVIEW ({len(pending_lines)}):")
         actionable.extend(pending_lines)
 
-    # ── Deliver only when there is something to act on ──
+    # ── Deliver ──
     if actionable:
         sev = "🔴" if archival_overrides else "🟡"
-        print(f"{sev} Curator governance - {len(archival_overrides)} blocked archival(s), "
-              f"{len(pending_lines)} skill(s) need review")
-        print("\n".join(actionable))
-    # else: silent — no actionable items
+        output = (f"{sev} Curator governance - {len(archival_overrides)} blocked "
+                  f"archival(s), {len(pending_lines)} skill(s) need review\n"
+                  + "\n".join(actionable))
+        if _DIRECT and not _DRY_RUN:
+            # Store for the weekly cron to deliver exactly once. Append rather
+            # than overwrite so two curator passes before the weekly delivery
+            # cannot lose the older actionable finding.
+            state = _read_delivery_state()
+            pending = state.get("pending_delivery")
+            if pending:
+                output = str(pending).rstrip("\n") + "\n\n" + output
+            state["processed_started_at"] = started_at
+            state["pending_delivery"] = output
+            _write_delivery_state(state)
+        else:
+            # Weekly (or dry-run) prints live; weekly also marks processed
+            # below via the shared fresh-run epilogue.
+            print(output)
+            if not _DRY_RUN and started_at:
+                _state = _read_delivery_state()
+                _state["processed_started_at"] = started_at
+                _state["pending_delivery"] = None
+                _write_delivery_state(_state)
+        return
+
+    # Governance ran fresh on this report (any mode): mark it processed so a
+    # later run of the other mode never repeats the mutations.
+    if not _DRY_RUN and started_at:
+        state = _read_delivery_state()
+        state["processed_started_at"] = started_at
+        if not _DIRECT:
+            # fresh weekly run delivered live: never pend a replay
+            state["pending_delivery"] = None
+        _write_delivery_state(state)
 
 
 if __name__ == "__main__":
     if "--dry-run" in sys.argv:
         _DRY_RUN = True
+    if "--direct" in sys.argv:
+        _DIRECT = True
     if not acquire_lock():
         sys.exit(1)
     try:

@@ -31450,6 +31450,56 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
+def _spawn_curator_governance_hook(summary: str, on_summary: Callable[[str], None]) -> None:
+    """Best-effort post-curator governance hook (gateway housekeeping).
+
+    Replaces the former bare ``on_summary`` lambda so each completed curator
+    pass ALSO runs the Kensei governance validation layer in ``--direct``
+    mode: the hook governs the fresh report immediately and stores any
+    actionable output for the weekly cron to deliver exactly once.
+
+    Best-effort by contract:
+
+    - Still logs the curator summary via ``on_summary`` first.
+    - If ``$HERMES_HOME/scripts/curator-governance-hook.py`` does not exist
+      (specialist homes, upstream installs), this is a no-op — nothing is
+      spawned and nothing is logged beyond debug.
+    - The CLI curator / dry-run path is NOT wired — the hook fires only from
+      the gateway housekeeping loop after a real curator pass.
+    - Every failure (missing interpreter, Popen error, unexpected exception)
+      is logged at DEBUG and never propagates into housekeeping.
+    """
+    try:
+        on_summary(summary)
+    except Exception as e:  # summary logging must never break housekeeping
+        logger.debug("curator summary delivery failed: %s", e)
+    _spawn_curator_governance_hook_process(summary)
+
+
+def _spawn_curator_governance_hook_process(summary: str) -> None:
+    """Spawn the governance hook detached; failures log at debug only."""
+    try:
+        hook_path = get_hermes_home() / "scripts" / "curator-governance-hook.py"
+        if not hook_path.is_file():
+            logger.debug(
+                "curator governance hook not present at %s — skipping",
+                hook_path,
+            )
+            return
+        import subprocess
+
+        subprocess.Popen(
+            [sys.executable, str(hook_path), "--direct"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # detached: survives gateway restarts
+        )
+        logger.debug("spawned curator governance hook (--direct)")
+    except Exception as e:  # pragma: no cover - defensive containment
+        logger.debug("curator governance hook spawn failed: %s", e)
+
+
 def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, cron_provider=None):
     """Background thread for gateway-only periodic chores (NOT cron).
 
@@ -31573,7 +31623,10 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                 from agent.curator import maybe_run_curator
                 maybe_run_curator(
                     idle_for_seconds=float("inf"),
-                    on_summary=lambda msg: logger.info("curator: %s", msg),
+                    on_summary=lambda msg: _spawn_curator_governance_hook(
+                        msg,
+                        lambda m: logger.info("curator: %s", m),
+                    ),
                 )
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)

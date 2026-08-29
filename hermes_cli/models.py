@@ -7077,12 +7077,11 @@ def validate_requested_model(
                         _resolve_nous_portal_url()
                     )
                     portal_model_names = {
-                        str(entry.get("modelName", "")).strip().lower()
+                        name.lower()
                         for tier in ("freeRecommendedModels", "paidRecommendedModels")
                         for entry in (portal_payload.get(tier) or [])
-                        if isinstance(entry, dict)
+                        if (name := _extract_model_name(entry))
                     }
-                    portal_model_names.discard("")
                 except Exception:
                     portal_model_names = set()
                 if requested_for_lookup.lower() in portal_model_names:

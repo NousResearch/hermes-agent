@@ -749,6 +749,26 @@ class TestValidateRequestedModelNousPortalRecommendations:
         )
         assert result["accepted"] is False  # fails closed, doesn't crash
 
+    def test_non_string_model_name_entries_ignored(self):
+        """Malformed Portal entries (non-string / empty modelName) must be
+        skipped via _extract_model_name -- never stringified into garbage
+        matches (e.g. an int modelName 5 must not accept a model named "5")."""
+        payload = {
+            "freeRecommendedModels": [
+                {"modelName": 5},
+                {"modelName": ""},
+                {"modelName": None},
+                "not-a-dict",
+                {"modelName": "inclusionai/ling-3.0-flash:free"},
+            ],
+            "paidRecommendedModels": [],
+        }
+        assert self._validate_nous("5", portal_payload=payload)["accepted"] is False
+        result = self._validate_nous(
+            "inclusionai/ling-3.0-flash:free", portal_payload=payload
+        )
+        assert result["accepted"] is True
+
     def test_non_nous_provider_does_not_consult_portal_feed(self):
         """This fallback tier is Nous-specific; a non-Nous provider must
         not have its rejection changed by (or trigger a call to) the Nous

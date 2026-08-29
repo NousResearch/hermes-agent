@@ -324,6 +324,31 @@ class _FolderIndex:
         return None, -1
 
 
+def project_id_for_session(
+    session_id: str, assignments: dict[str, str], mobile_to_stored: dict[str, str]
+) -> Optional[str]:
+    """Explicit project assignment for a session row id, resolving mobile aliases.
+
+    ``assignments`` maps an id (as stored by ``projects.assign_session``) to a
+    project id. A session row's id is the durable stored id, but new Project
+    chats are assigned by their *mobile* id before ``session.open`` creates the
+    mobile->stored binding, so the stored-id row would never match the
+    assignment key. ``mobile_to_stored`` maps mobile id -> stored id; reverse it
+    to find the mobile alias of a stored row and look the assignment up under
+    that. A direct stored-id match always wins over the alias.
+    """
+    if not session_id:
+        return None
+    explicit = assignments.get(session_id)
+    if explicit is not None:
+        return explicit
+    stored_to_mobile = {stored: mobile for mobile, stored in mobile_to_stored.items()}
+    mobile = stored_to_mobile.get(session_id)
+    if mobile is not None:
+        return assignments.get(mobile)
+    return None
+
+
 def _project_for_session(
         session: dict, index: _FolderIndex, resolve: Optional[Resolve]) -> Optional[dict]:
     # User-assigned ownership is authoritative and intentionally independent

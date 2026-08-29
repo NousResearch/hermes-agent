@@ -106,6 +106,18 @@ class TurnRecoveryRuntime:
         tmp.write_text(payload, encoding="utf-8")
         os.replace(tmp, self.bindings_path)
 
+    def mobile_to_stored(self) -> dict[str, str]:
+        """Copy of the mobile->stored session binding map.
+
+        Read live under the lock so consumers (the project tree's assignment
+        projection) see bindings injected at runtime, not a startup snapshot.
+        """
+        with self._lock:
+            return {
+                mobile: entry["stored_session_id"]
+                for mobile, entry in self._bindings.items()
+            }
+
     def install(self) -> None:
         if self._original_prompt_submit is not None:
             return

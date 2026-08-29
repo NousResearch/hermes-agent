@@ -969,3 +969,46 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
+
+def test_assign_session_by_mobile_id_surfaces_in_project_sessions(tmp_path):
+    """New Project chats are committed by their mobile id BEFORE session.open
+    creates the mobile->stored binding, so the tree must resolve the alias or
+    the project reads as empty even though the assignment row exists."""
+    home = tmp_path / "home"
+    folder = tmp_path / "repo"
+    unrelated_cwd = tmp_path / "random-chat-cwd"
+    folder.mkdir(parents=True)
+    unrelated_cwd.mkdir(parents=True)
+    project = _create_project(home, "Android", folder)
+    stored = "20260829_181311_bc031d"
+    mobile = "mob-1788027191027-1433e529-73a9-41f1-9fed-9eaf7095e355"
+    # The chat's cwd deliberately does NOT match the project folder: only the
+    # explicit assignment can place it, which is what Projects are for.
+    _create_session(home, stored, unrelated_cwd)
+
+    with _serving_launch_profile(home):
+        runtime = server._turn_recovery_runtime
+        assert runtime is not None
+        runtime._bindings[mobile] = {
+            "stored_session_id": stored,
+            "binding_version": 1,
+        }
+        try:
+            _call(
+                "projects.assign_session",
+                {"project_id": project["id"], "session_id": mobile},
+            )
+            result = _call(
+                "projects.project_sessions",
+                {"project_id": project["id"]},
+            )["project"]
+            assert result["sessionCount"] == 1
+            nested = [
+                session
+                for repo in result["repos"]
+                for group in repo["groups"]
+                for session in group["sessions"]
+            ]
+            assert [session["id"] for session in nested] == [stored]
+        finally:
+            runtime._bindings.pop(mobile, None)

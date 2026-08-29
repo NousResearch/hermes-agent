@@ -376,11 +376,21 @@ def _project_tree_inputs(
         # Explicit user ownership wins over cwd/repo inference. Keep the
         # assignment in projects.db (the server-authoritative project store),
         # then project it onto the session rows consumed by the pure tree
-        # builder.
+        # builder. New Project chats may be assigned under their *mobile* id
+        # before session.open binds it to a stored id, so resolve aliases via
+        # the turn-recovery runtime when present.
+        from tui_gateway import project_tree
+        from tui_gateway.turn_recovery_runtime import get_runtime
+
+        runtime = get_runtime()
+        mobile_to_stored = runtime.mobile_to_stored() if runtime is not None else {}
         for session in sessions:
             session_id = str(session.get("id") or "")
-            if session_id in assignments:
-                session["project_id"] = assignments[session_id]
+            project_id = project_tree.project_id_for_session(
+                session_id, assignments, mobile_to_stored
+            )
+            if project_id is not None:
+                session["project_id"] = project_id
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = []
         if include_discovered:

@@ -657,3 +657,43 @@ def test_equivalent_windows_spellings_derive_one_lane_key():
     b = pt._place_by_heuristic("C:\\work\\notes\\")
     assert a is not None and b is not None
     assert pt._lane_key(a["lane_key"]) == pt._lane_key(b["lane_key"])
+
+
+def test_project_id_for_session_matches_stored_id_directly():
+    """A session assigned by its stored id resolves without a binding map."""
+    assert pt.project_id_for_session("s1", {"s1": "p1"}, {}) == "p1"
+
+
+def test_project_id_for_session_resolves_mobile_id_to_stored():
+    """New Project chats are assigned by their mobile id before session.open
+    creates the mobile->stored binding; the stored-id row must still surface
+    through the alias."""
+    assignments = {"mob-1788027191027-1433e529-73a9-41f1-9fed-9eaf7095e355": "p1"}
+    bindings = {
+        "mob-1788027191027-1433e529-73a9-41f1-9fed-9eaf7095e355": "20260829_181311_bc031d",
+    }
+    assert (
+        pt.project_id_for_session("20260829_181311_bc031d", assignments, bindings)
+        == "p1"
+    )
+
+
+def test_project_id_for_session_mobile_alias_requires_the_binding():
+    """Without the mobile->stored binding there is no way to bridge the ids."""
+    assignments = {"mob-1": "p1"}
+    assert pt.project_id_for_session("stored-1", assignments, {}) is None
+
+
+def test_project_id_for_session_prefers_a_direct_stored_match():
+    """When both ids are assigned, the stored id wins over the mobile alias."""
+    assignments = {"s1": "p1", "mob-1": "p2"}
+    bindings = {"mob-1": "s1"}
+    assert pt.project_id_for_session("s1", assignments, bindings) == "p1"
+
+
+def test_project_id_for_session_unknown_id_returns_none():
+    assert pt.project_id_for_session("nope", {"s1": "p1"}, {}) is None
+
+
+def test_project_id_for_session_blank_id_returns_none():
+    assert pt.project_id_for_session("", {"s1": "p1"}, {}) is None

@@ -75,14 +75,21 @@ class TestInterruptModule:
         assert callbacks == []
 
     def test_run_if_not_interrupted_orders_callback_before_concurrent_interrupt(self):
-        from tools.interrupt import run_if_not_interrupted, set_interrupt
+        from tools.interrupt import (
+            _interrupted_threads,
+            _lock,
+            run_if_not_interrupted,
+            set_interrupt,
+        )
 
         setter_started = threading.Event()
         interrupt_published = threading.Event()
         callback_observations = []
         setters = []
+        setter_tids = []
 
         def publish_interrupt():
+            setter_tids.append(threading.get_ident())
             setter_started.set()
             set_interrupt(True)
             interrupt_published.set()
@@ -96,13 +103,19 @@ class TestInterruptModule:
 
         assert run_if_not_interrupted(callback) is True
         setter = setters[0]
-        setter.join(5)
         try:
+            setter.join(5)
             assert not setter.is_alive()
             assert callback_observations == [False]
             assert interrupt_published.is_set()
         finally:
+            for setter_tid in setter_tids:
+                set_interrupt(False, setter_tid)
             set_interrupt(False)
+
+        assert setter_tids
+        with _lock:
+            assert setter_tids[0] not in _interrupted_threads
 
 
 # ---------------------------------------------------------------------------

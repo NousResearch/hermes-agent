@@ -606,3 +606,22 @@ def test_pinned_handle_still_wins_over_key_resolution(multiplex_homes):
     store._db = sentinel
     assert store._db_for_key("agent:fitness:telegram:dm:1") is sentinel
     assert store._db_for_session_id("whatever") is sentinel
+
+
+def test_profile_home_is_not_memoized_before_the_profile_exists(multiplex_homes):
+    """A profile provisioned after startup must not stay pinned to the root store.
+
+    The enrollment bridge creates ``profiles/<name>/`` at runtime, so a key can
+    be seen before its directory exists.  Memoizing that miss would pin the
+    profile to the ambient store for the life of the process — the exact bug
+    this helper exists to prevent.
+    """
+    root, _profile = multiplex_homes
+    store = _multiplex_store(root)
+    key = "agent:latecomer:telegram:dm:9"
+
+    assert store._profile_home_for_key(key) is None
+
+    (root / "profiles" / "latecomer").mkdir(parents=True)
+
+    assert store._profile_home_for_key(key) == root / "profiles" / "latecomer"

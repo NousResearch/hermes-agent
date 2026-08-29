@@ -1425,7 +1425,14 @@ class SessionStore:
                 "Could not resolve profile home for %r: %s", session_key, exc
             )
             home = None
-        cache[profile] = home
+        # Only a hit is memoized. A profile directory can appear *after* the
+        # gateway started — the enrollment bridge provisions profiles/<name>/
+        # at runtime — and caching the miss would pin that profile's rows to
+        # the ambient store for the life of the process, which is the bug
+        # this helper exists to prevent. A miss costs one profile_exists()
+        # stat and only recurs for profiles that genuinely do not exist.
+        if home is not None:
+            cache[profile] = home
         return home
 
     def _db_for_key(self, session_key: Optional[str]):

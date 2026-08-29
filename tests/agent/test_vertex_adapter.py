@@ -207,18 +207,20 @@ def test_sa_file_rotation_invalidates_creds_cache(vertex_adapter, monkeypatch, t
     assert vertex_adapter._creds_cache[key2][0] is not creds_obj_1
 
 
-def test_creds_cache_stat_failure_falls_back_to_path_key(vertex_adapter, monkeypatch):
-    """If the credentials file cannot be stat'ed the key degrades to the bare
-    path — same behavior as the pre-signature cache, never an exception."""
-    key = vertex_adapter._creds_cache_key("/nonexistent/sa.json")
+def test_creds_cache_read_failure_falls_back_to_path_key(vertex_adapter, monkeypatch):
+    """If the credentials file cannot be read the key degrades to the bare
+    path (no bytes) — same behavior as the pre-signature cache, never an
+    exception."""
+    raw, key = vertex_adapter._sa_snapshot("/nonexistent/sa.json")
+    assert raw is None
     assert key == ("/nonexistent/sa.json",)
 
 
 def test_adc_cache_key_is_stable_sentinel(vertex_adapter):
     """ADC has no file to fingerprint; both None and empty resolve to the
     same sentinel so repeated ADC calls share one cache entry."""
-    assert vertex_adapter._creds_cache_key(None) == ("__adc__",)
-    assert vertex_adapter._creds_cache_key("") == ("__adc__",)
+    assert vertex_adapter._sa_snapshot(None) == (None, ("__adc__",))
+    assert vertex_adapter._sa_snapshot("") == (None, ("__adc__",))
 
 
 def test_adc_failure_retries_with_late_added_sa_file(vertex_adapter, monkeypatch, tmp_path):

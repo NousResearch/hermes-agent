@@ -132,24 +132,23 @@ def _read_sa_file(resolved_path: str) -> Tuple[bytes, Tuple[Any, ...]]:
     return raw, (resolved_path, digest)
 
 
-def _creds_cache_key(resolved_path: Optional[str]) -> Tuple[Any, ...]:
-    """Cache key for the Credentials object backing *resolved_path*.
+def _sa_snapshot(resolved_path: Optional[str]) -> Tuple[Optional[bytes], Tuple[Any, ...]]:
+    """Resolve (bytes-or-None, cache key) for one credential attempt.
 
-    Content-digest keyed via _read_sa_file (see there for why stat
-    signatures are not enough for credential identity). ADC has no file
-    to fingerprint; it keeps a plain sentinel key and its existing
-    refresh/expiry handling.
-
-    A read failure falls back to the bare path: worst case we serve the
-    cached credentials exactly as the pre-signature code did.
+    - No path (ADC): (None, ("__adc__",)) — sentinel key, existing
+      refresh/expiry handling.
+    - Readable file: (bytes, (path, sha256)) via _read_sa_file — the
+      caller builds credentials from the SAME bytes the key fingerprints.
+    - Unreadable file: (None, (path,)) — bare-path key, and the caller
+      falls back to the SDK's own file read: byte-for-byte the
+      pre-signature behavior.
     """
     if not resolved_path:
-        return ("__adc__",)
+        return None, ("__adc__",)
     try:
-        _, key = _read_sa_file(resolved_path)
-        return key
+        return _read_sa_file(resolved_path)
     except OSError:
-        return (resolved_path,)
+        return None, (resolved_path,)
 
 
 def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
@@ -163,17 +162,10 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
         return None, None
 
     resolved_path = _resolve_credentials_path(credentials_path)
-    sa_raw: Optional[bytes] = None
-    if resolved_path:
-        try:
-            # One read serves both the cache key and (on a miss) credential
-            # construction, so the credentials always match the bytes the
-            # key fingerprints — no stat/read or read/read TOCTOU.
-            sa_raw, cache_key = _read_sa_file(resolved_path)
-        except OSError:
-            cache_key = (resolved_path,)
-    else:
-        cache_key = ("__adc__",)
+    # One read serves both the cache key and (on a miss) credential
+    # construction, so the credentials always match the bytes the key
+    # fingerprints — no stat/read or read/read TOCTOU.
+    sa_raw, cache_key = _sa_snapshot(resolved_path)
 
     try:
         cached = _creds_cache.get(cache_key)

@@ -62,6 +62,45 @@ _AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+
+
+def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k") -> "str | None":
+    """Best-effort ffmpeg transcode of any audio file to Ogg/Opus (voip-tuned).
+
+    The shared engine behind native voice-bubble delivery for platforms whose
+    voice channel only accepts Opus/OGG (Telegram sendVoice, Feishu opus
+    audio, Matrix MSC3245, WhatsApp voice notes). Returns the path of a NEW
+    temp ``.ogg`` file (caller owns cleanup), or ``None`` when ffmpeg is
+    missing or the conversion fails — callers keep their previous fallback
+    (document/attachment delivery). Blocking; call via ``asyncio.to_thread``
+    from async code.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import tempfile as _tempfile
+
+    ffmpeg = _shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+
+    fd, ogg_path = _tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
+    os.close(fd)
+    try:
+        result = _subprocess.run(
+            [ffmpeg, "-v", "error", "-y", "-i", str(path),
+             "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
+             "-application", "voip", "-compression_level", "10", ogg_path],
+            capture_output=True, timeout=60, stdin=_subprocess.DEVNULL,
+        )
+        if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
+            return ogg_path
+    except Exception:
+        logger.debug("voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
+    try:
+        os.unlink(ogg_path)
+    except OSError:
+        pass
+    return None
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 # Delivery-time history is best-effort dedup metadata, not canonical state.
 # Keep this comfortably below the Discord heartbeat watchdog window and fail
@@ -184,6 +223,12 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     if normalized_ext not in _AUDIO_EXTS:
         return False
     if _platform_name(platform) == "telegram":
+        if is_voice:
+            # Explicit [[audio_as_voice]] intent: ANY audio format routes to
+            # the voice sender — the adapter transcodes non-Opus input to
+            # Ogg/Opus on the fly (transcode_to_ogg_opus), so the intent no
+            # longer dead-ends into document delivery for .mp3/.wav/etc.
+            return True
         if normalized_ext in _TELEGRAM_VOICE_EXTS:
             return is_voice
         return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
@@ -6881,6 +6926,7 @@ class BasePlatformAdapter(ABC):
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
                                 metadata=_final_thread_metadata,
+                                is_voice=is_voice,
                             )
                         elif ext in _VIDEO_EXTS:
                             logger.info(

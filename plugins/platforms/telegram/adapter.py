@@ -7728,10 +7728,34 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
+        _transcoded_voice_path: Optional[str] = None
         try:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
+
+            # Telegram sendVoice only accepts Ogg/Opus. When the caller
+            # explicitly asked for a voice bubble ([[audio_as_voice]] →
+            # is_voice=True in kwargs), transcode any other audio format
+            # (mp3/wav/flac/...) to Ogg/Opus on the fly via the shared
+            # ffmpeg engine — previously that intent dead-ended into
+            # document delivery. Without the explicit intent, extension
+            # behavior is unchanged (.mp3/.m4a → sendAudio; .ogg → here
+            # only when flagged; others → document fallback below).
+            _voice_ext = os.path.splitext(audio_path)[1].lower()
+            if kwargs.get("is_voice") and _voice_ext not in (".ogg", ".opus"):
+                from gateway.platforms.base import transcode_to_ogg_opus
+                _transcoded_voice_path = await asyncio.to_thread(
+                    transcode_to_ogg_opus, audio_path
+                )
+                if _transcoded_voice_path:
+                    audio_path = _transcoded_voice_path
+                else:
+                    logger.warning(
+                        "[%s] voice transcode unavailable for %s — sending "
+                        "original format (install ffmpeg for voice bubbles)",
+                        self.name, os.path.basename(audio_path),
+                    )
             
             # Compute duration locally — Telegram drops it for long clips
             # (~5 min+), which then show 0:00 in the player.
@@ -7866,6 +7890,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
+        finally:
+            if _transcoded_voice_path:
+                try:
+                    os.unlink(_transcoded_voice_path)
+                except OSError:
+                    pass
 
     async def send_multiple_images(
         self,

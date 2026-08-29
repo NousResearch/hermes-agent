@@ -884,3 +884,116 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+# ── display_name-aware identity (attribution + inbound resolution) ───────────
+
+
+def _named_home(tmp_path, display_name):
+    home = tmp_path / ".hermes-named"
+    home.mkdir(exist_ok=True)
+    (home / "profile.yaml").write_text(f"display_name: {display_name}\n", encoding="utf-8")
+    return home
+
+
+def test_display_handle_slugs_display_name(tmp_path):
+    home = _named_home(tmp_path, "CTO")
+    assert bot_mode_probe._display_handle(home) == "cto"
+
+
+def test_display_handle_rejects_reserved_and_empty(tmp_path):
+    # A profile renamed "Hermes" must not be able to impersonate the default's
+    # @hermes alias — same reserved list the Desktop's mentionNameForms uses.
+    assert bot_mode_probe._display_handle(_named_home(tmp_path, "Hermes")) == ""
+    empty = tmp_path / ".hermes-empty"
+    empty.mkdir()
+    assert bot_mode_probe._display_handle(empty) == ""
+
+
+def test_handle_reads_the_named_profile_not_the_running_one(tmp_path):
+    """The handle belongs to the profile being NAMED, so it must come from that profile's
+    own directory. Resolving it from the running process's home instead renames every
+    teammate in a roster to whatever the local agent is called — the roster line, the
+    delivery label and the relay envelope all pass a teammate, not self."""
+    me = _named_home(tmp_path, "CTO")
+    teammate = tmp_path / "profiles" / "researcher"
+    teammate.mkdir(parents=True)
+    (teammate / "profile.yaml").write_text("display_name: Research Lead\n", encoding="utf-8")
+
+    assert bot_mode_probe._handle("default", me) == "cto"
+    assert bot_mode_probe._handle("researcher", teammate) == "research-lead"
+    # Passing no directory keeps the canonical mapping — never a read of some other profile.
+    assert bot_mode_probe._handle("default") == "hermes"
+    assert bot_mode_probe._handle("researcher") == "researcher"
+
+
+def test_handle_falls_back_to_canonical_without_a_display_name(tmp_path):
+    plain = tmp_path / ".hermes-plain"
+    plain.mkdir()
+    assert bot_mode_probe._handle("default", plain) == "hermes"
+    assert bot_mode_probe._handle("researcher", plain) == "researcher"
+
+
+def test_resolve_local_name_accepts_display_slug(tmp_path):
+    home = _named_home(tmp_path, "CTO")
+    dirs = {"default": home, "researcher": tmp_path / "researcher"}
+    assert bot_mode_dm._resolve_local_name("cto", list(dirs), dirs) == "default"
+    # Canonical forms keep working exactly as before, with or without the dirs.
+    assert bot_mode_dm._resolve_local_name("hermes", ["default"], dirs) == "default"
+    assert bot_mode_dm._resolve_local_name("researcher", list(dirs), dirs) == "researcher"
+    assert bot_mode_dm._resolve_local_name("researcher", list(dirs)) == "researcher"
+
+
+def test_canonical_name_outranks_a_colliding_display_slug(tmp_path):
+    """A real profile must stay addressable by its own name even when another profile's
+    display_name slugs to the same thing."""
+    renamed_default = _named_home(tmp_path, "CTO")
+    real_cto = tmp_path / "profiles" / "cto"
+    real_cto.mkdir(parents=True)
+    dirs = {"default": renamed_default, "cto": real_cto}
+
+    assert bot_mode_probe._display_handle(renamed_default) == "cto"
+    assert bot_mode_dm._resolve_local_name("cto", list(dirs), dirs) == "cto"
+    # With no competing profile, the slug still answers.
+    no_rival = {"default": renamed_default, "researcher": tmp_path / "researcher"}
+    assert bot_mode_dm._resolve_local_name("cto", list(no_rival), no_rival) == "default"
+
+
+def test_reserved_handles_match_the_desktop_source():
+    """Drift between the two reserved lists must fail CI, not surprise a user.
+
+    `_RESERVED_HANDLES` mirrors the Desktop's `mentionNameForms` filter. If
+    they diverge, the two surfaces disagree about who may claim a tag — a
+    profile renamed "Hermes" could stamp @hermes on one side while the other
+    still refuses it. Parse the list out of the real JS rather than restating
+    it here, so this test cannot drift either.
+    """
+    import re
+    from pathlib import Path
+
+    js = (
+        Path(__file__).resolve().parents[2]
+        / "apps"
+        / "desktop"
+        / "src"
+        / "plugins"
+        / "hermes-bots"
+        # mentionNameForms moved here when Bot Mode was converted to TSX
+        # (upstream b2e5b1d42 split the old single plugin.js into modules).
+        / "data.ts"
+    )
+    if not js.is_file():  # source-only checkout (packaged wheel) — nothing to compare
+        pytest.skip("desktop plugin source not present")
+
+    src = js.read_text(encoding="utf-8")
+    start = src.index("function mentionNameForms(")
+    body = src[start : src.index("\n}", start)]
+    listed = re.search(r"!\[([^\]]+)\]\.includes\(form\)", body)
+    assert listed, "mentionNameForms no longer filters a reserved-token array — update both sides"
+
+    desktop_reserved = set(re.findall(r"'([a-z0-9_-]+)'", listed.group(1)))
+
+    assert desktop_reserved == set(bot_mode_probe._RESERVED_HANDLES), (
+        "reserved handle lists diverged — daemon "
+        f"{sorted(bot_mode_probe._RESERVED_HANDLES)} vs desktop {sorted(desktop_reserved)}"
+    )

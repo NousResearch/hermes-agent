@@ -81,6 +81,8 @@ def _install_agent_stubs(monkeypatch, observed: dict):
             observed["prompts"].append(prompt)
             if observed.get("raise_error"):
                 raise RuntimeError(str(observed["raise_error"]))
+            if "result" in observed:
+                return dict(observed["result"])
             return {
                 "final_response": observed.get("final_response", "agent done"),
                 "messages": [],
@@ -976,6 +978,99 @@ def test_after_delivery_commit_stays_linearized_through_terminal_mark(
     sched._monitor_commit_in_progress.discard(execution_token)
 
     assert protected_at_mark == [True]
+
+
+@pytest.mark.parametrize(
+    "agent_result",
+    [
+        {
+            "failed": True,
+            "completed": False,
+            "error": "HTTP 429",
+            "final_response": "",
+            "messages": [],
+        },
+        {
+            "completed": False,
+            "turn_exit_reason": "interrupted",
+            "final_response": "",
+            "messages": [],
+        },
+    ],
+    ids=("reported-failure", "interrupted-result"),
+)
+def test_after_delivery_retries_agent_reported_failure_results(
+    hermes_env, monkeypatch, agent_result
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+    from cron.monitor import _read_last_output
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    observed = {"result": agent_result}
+    _install_agent_stubs(monkeypatch, observed)
+
+    # A failure RESULT (not a raised exception) must leave the observation
+    # unacknowledged so the identical next tick runs the agent again.
+    assert sched.run_one_job(get_job(job["id"])) is True
+    failed = get_job(job["id"])
+    assert failed.get("monitor_state") is None
+    assert _read_last_output(job["id"]) == ""
+    assert failed["last_status"] == "error"
+    assert observed["agent_runs"] == 1
+
+    observed["result"] = {
+        "failed": False,
+        "completed": True,
+        "final_response": "handled",
+        "messages": [],
+    }
+    assert sched.run_one_job(get_job(job["id"])) is True
+    committed = get_job(job["id"])
+    assert committed["monitor_state"]["last_output_hash"]
+    assert _read_last_output(job["id"]) == "state A"
+    assert observed["agent_runs"] == 2
+
+    # Once the retry succeeds, the next identical observation suppresses.
+    assert sched.run_one_job(get_job(job["id"])) is True
+    assert observed["agent_runs"] == 2
+
+
+def test_after_delivery_failed_change_preserves_prior_hash_and_snapshot(
+    hermes_env, monkeypatch
+):
+    import cron.scheduler as sched
+    from cron.jobs import get_job, update_job
+    from cron.monitor import _read_last_output
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    assert sched.run_one_job(get_job(job["id"])) is True
+    committed_a = get_job(job["id"])
+    hash_a = committed_a["monitor_state"]["last_output_hash"]
+    assert _read_last_output(job["id"]) == "state A"
+
+    _write_script(hermes_env, "mon.sh", "echo 'state B'\n")
+    observed["raise_error"] = "HTTP 429"
+    assert sched.run_one_job(get_job(job["id"])) is True
+    failed_b = get_job(job["id"])
+    assert failed_b["monitor_state"]["last_output_hash"] == hash_a
+    assert _read_last_output(job["id"]) == "state A"
+    assert observed["agent_runs"] == 2
+
+    observed.pop("raise_error")
+    assert sched.run_one_job(get_job(job["id"])) is True
+    committed_b = get_job(job["id"])
+    assert committed_b["monitor_state"]["last_output_hash"] != hash_a
+    assert _read_last_output(job["id"]) == "state B"
+    assert observed["agent_runs"] == 3
+
+    assert sched.run_one_job(get_job(job["id"])) is True
+    assert observed["agent_runs"] == 3
 
 
 def test_after_delivery_policy_does_not_commit_on_agent_failure(

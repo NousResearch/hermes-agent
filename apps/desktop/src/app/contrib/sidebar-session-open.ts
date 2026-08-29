@@ -1,5 +1,6 @@
 import type { SessionInfo } from '@/hermes'
 import { forgetSessionOwnerHintsForSession, requestSessionResume, sessionOwnerRouteFromRow } from '@/store/session'
+import { prepareSessionOwnerRetarget } from '@/store/session-states'
 import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
 
 import { openSession, type OpenSessionNavigate } from '../open-session'
@@ -15,14 +16,15 @@ export function openSidebarSession(
 ): void {
   const ownerRoute = sessionOwnerRouteFromRow(session)
 
+  const intent = $sidebarSessionsOpenInNewTab.get() ? 'tab' : 'main'
+
   if (ownerRoute) {
+    prepareSessionOwnerRetarget(sessionId, ownerRoute, intent === 'main')
     requestSessionResume(sessionId, ownerRoute)
   } else {
     forgetSessionOwnerHintsForSession(sessionId)
     requestSessionResume(sessionId)
   }
-
-  const intent = $sidebarSessionsOpenInNewTab.get() ? 'tab' : 'main'
 
   openSession(
     sessionId,

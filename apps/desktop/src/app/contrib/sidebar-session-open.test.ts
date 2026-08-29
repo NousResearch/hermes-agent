@@ -6,6 +6,7 @@ import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
 const mocks = vi.hoisted(() => ({
   forgetSessionOwnerHintsForSession: vi.fn(),
   openSession: vi.fn(),
+  prepareSessionOwnerRetarget: vi.fn(),
   requestSessionResume: vi.fn(),
   sessionOwnerRouteFromRow: vi.fn()
 }))
@@ -20,6 +21,10 @@ vi.mock('../open-session', () => ({
   openSession: (...args: unknown[]) => mocks.openSession(...args)
 }))
 
+vi.mock('@/store/session-states', () => ({
+  prepareSessionOwnerRetarget: (...args: unknown[]) => mocks.prepareSessionOwnerRetarget(...args)
+}))
+
 import { openSidebarSession } from './sidebar-session-open'
 
 const navigate = vi.fn()
@@ -31,6 +36,7 @@ describe('openSidebarSession', () => {
   beforeEach(() => {
     mocks.forgetSessionOwnerHintsForSession.mockReset()
     mocks.openSession.mockReset()
+    mocks.prepareSessionOwnerRetarget.mockReset()
     mocks.requestSessionResume.mockReset()
     mocks.sessionOwnerRouteFromRow.mockReset()
     navigate.mockReset()
@@ -59,6 +65,18 @@ describe('openSidebarSession', () => {
       profile: 'profile-b',
       targetProfile: 'profile-b'
     })
+    expect(mocks.prepareSessionOwnerRetarget).toHaveBeenNthCalledWith(
+      1,
+      'shared-id',
+      { connectionId: 'connection-a', profile: 'profile-a', targetProfile: 'profile-a' },
+      false
+    )
+    expect(mocks.prepareSessionOwnerRetarget).toHaveBeenNthCalledWith(
+      2,
+      'shared-id',
+      { connectionId: 'connection-b', profile: 'profile-b', targetProfile: 'profile-b' },
+      false
+    )
     expect(mocks.openSession).toHaveBeenNthCalledWith(1, 'shared-id', navigate, 'tab', {
       ownerRoute: { connectionId: 'connection-a', profile: 'profile-a', targetProfile: 'profile-a' },
       workspaceMode: 'sessions'
@@ -80,6 +98,11 @@ describe('openSidebarSession', () => {
     openSidebarSession('shared-id', session('profile-a', 'connection-a'), navigate)
 
     expect(mocks.requestSessionResume).toHaveBeenCalledOnce()
+    expect(mocks.prepareSessionOwnerRetarget).toHaveBeenCalledWith(
+      'shared-id',
+      { connectionId: 'connection-a', profile: 'profile-a', targetProfile: 'profile-a' },
+      true
+    )
     expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'main', {
       ownerRoute: { connectionId: 'connection-a', profile: 'profile-a', targetProfile: 'profile-a' },
       workspaceMode: 'sessions'
@@ -93,6 +116,7 @@ describe('openSidebarSession', () => {
     openSidebarSession('shared-id', untagged, navigate)
 
     expect(mocks.sessionOwnerRouteFromRow).toHaveBeenCalledWith(untagged)
+    expect(mocks.prepareSessionOwnerRetarget).not.toHaveBeenCalled()
     expect(mocks.forgetSessionOwnerHintsForSession).toHaveBeenCalledWith('shared-id')
     expect(mocks.requestSessionResume).toHaveBeenCalledWith('shared-id')
     expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'tab', { workspaceMode: 'sessions' })

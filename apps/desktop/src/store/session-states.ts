@@ -50,9 +50,11 @@ import {
   markSessionRead,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
+  setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
+  setMessages,
   setSessions
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
@@ -1257,6 +1259,66 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
   return true
 }
 
+function sessionOwnerRoutesEqual(a: SessionOwnerRoute | undefined, b: SessionOwnerRoute | undefined): boolean {
+  // `mode` is informational, and an omitted target means the route's own
+  // profile. Neither representational difference is an owner change.
+  return (
+    a?.connectionId === b?.connectionId &&
+    a?.profile === b?.profile &&
+    (a?.targetProfile || a?.profile) === (b?.targetProfile || b?.profile)
+  )
+}
+
+let ordinaryMainSessionOwner: null | { ownerRoute: SessionOwnerRoute; storedSessionId: string } = null
+
+/** Retire one stored id's live presentation before an ordinary sidebar open
+ *  moves its sole surface to a different exact owner. The pane id stays stable,
+ *  but the old runtime and warm cache must not satisfy the new owner's open. */
+export function prepareSessionOwnerRetarget(
+  storedSessionId: string,
+  ownerRoute: SessionOwnerRoute,
+  willUseMain = false
+): boolean {
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+  const selectedInMain = storedSessionId === $selectedStoredSessionId.get()
+
+  const previousMainOwner =
+    selectedInMain && ordinaryMainSessionOwner?.storedSessionId === storedSessionId
+      ? ordinaryMainSessionOwner.ownerRoute
+      : undefined
+
+  const previousOwner = tile?.ownerRoute ?? previousMainOwner ?? getSessionOwnerHint(storedSessionId)
+
+  if (willUseMain || selectedInMain) {
+    ordinaryMainSessionOwner = { ownerRoute: { ...ownerRoute }, storedSessionId }
+  }
+
+  if (!previousOwner || sessionOwnerRoutesEqual(previousOwner, ownerRoute)) {
+    return false
+  }
+
+  const invalidatedRuntimeId = sessionTileDelegate()?.invalidateRuntimeBinding?.(storedSessionId)
+  const tileRuntimeId = tile?.runtimeId
+  const mainRuntimeId = selectedInMain ? $activeSessionId.get() : null
+
+  for (const runtimeId of new Set([invalidatedRuntimeId, tileRuntimeId, mainRuntimeId].filter(Boolean) as string[])) {
+    dropSessionState(runtimeId)
+  }
+
+  if (tile) {
+    patchSessionTile(storedSessionId, { error: undefined, runtimeId: undefined })
+  }
+
+  if (selectedInMain) {
+    setActiveSessionId(null)
+    setAwaitingResponse(false)
+    setBusy(false)
+    setMessages([])
+  }
+
+  return true
+}
+
 /** Drop live runtime bindings so every tile re-resumes — used on gateway
  *  reconnect, where a respawned backend re-mints (recycles) runtime ids.
  *  Also invalidates the wiring cache's stored→runtime map: clearing only the
@@ -1380,6 +1442,10 @@ export interface SessionTileDelegate {
    *  warm path re-binds tiles to dead runtime ids (the sleep/wake "empty
    *  right pane" bug). Bindings re-record from live post-reconnect events. */
   invalidateRuntimeBindings?(preserveStoredSessionIds?: ReadonlySet<string>): void
+  /** Drop one stored session's warm runtime/cache binding before its surface is
+   *  deliberately retargeted to a different exact owner. Returns the detached
+   *  runtime id so the presentation mirror can be removed too. */
+  invalidateRuntimeBinding?(storedSessionId: string): null | string
   /** Bind a live runtime id for a stored session (resume without touching
    *  the main view). Returns the runtime id, or throws.
    *  `refreshTranscript` forces a REST merge even when a warm cached

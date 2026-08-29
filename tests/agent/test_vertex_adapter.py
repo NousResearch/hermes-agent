@@ -213,3 +213,32 @@ def test_adc_cache_key_is_stable_sentinel(vertex_adapter):
     same sentinel so repeated ADC calls share one cache entry."""
     assert vertex_adapter._creds_cache_key(None) == ("__adc__",)
     assert vertex_adapter._creds_cache_key("") == ("__adc__",)
+
+
+def test_adc_failure_retries_with_late_added_sa_file(vertex_adapter, monkeypatch, tmp_path):
+    """ADC failure must fall back to a service-account file that appeared
+    after startup. The signature-keyed cache turned keys into tuples and the
+    old `cache_key == "__adc__"` string comparison silently disabled this
+    retry (caught in review); the guard is now `not resolved_path`."""
+    sa_file = tmp_path / "late_sa.json"
+    sa_file.write_text('{"project_id": "late-identity"}')
+
+    calls = {"n": 0}
+
+    def _resolve(explicit=None):
+        # First resolution (entry): nothing configured -> ADC attempt.
+        # Second resolution (retry after ADC failure): the file has appeared.
+        calls["n"] += 1
+        return None if calls["n"] == 1 else str(sa_file)
+
+    monkeypatch.setattr(vertex_adapter, "_resolve_credentials_path", _resolve)
+    # Make the ADC attempt itself raise.
+    monkeypatch.setattr(
+        vertex_adapter.google.auth, "default",
+        lambda scopes=None: (_ for _ in ()).throw(RuntimeError("ADC expired")),
+    )
+
+    token, project = vertex_adapter.get_vertex_credentials()
+    assert token == "ya29.FAKE"
+    assert project == "sa-project"
+    assert calls["n"] >= 2

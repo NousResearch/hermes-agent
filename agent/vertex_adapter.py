@@ -211,7 +211,11 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
 
         # If ADC failed (e.g. expired refresh token), try the SA file
         # before giving up — it may have been added after initial startup.
-        if cache_key == "__adc__":
+        # Keyed on the RESOLVED PATH being absent (i.e. this attempt was
+        # ADC), not on the cache-key literal: the signature-keyed cache
+        # made keys tuples, and a tuple never equals the old "__adc__"
+        # string (that comparison silently killed this retry path).
+        if not resolved_path:
             sa_path = _resolve_credentials_path(credentials_path)
             if sa_path:
                 logger.info("ADC failed, retrying with service account: %s", sa_path)

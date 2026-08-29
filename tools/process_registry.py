@@ -2960,6 +2960,93 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" if m == 0 else f"{h}h{m}m"
 
 
+# Model-not-found phrases lifted from agent/error_classifier.py so the
+# delegation batch renderer can spot a config-level rejection without pulling
+# the classifier's failover machinery. Kept in sync by hand.
+_MODEL_NOT_FOUND_PATTERNS = (
+    "is not a valid model",
+    "invalid model",
+    "model not found",
+    "model_not_found",
+    "does not exist",
+    "no such model",
+    "unknown model",
+    "unsupported model",
+)
+
+
+def _delegation_config() -> dict:
+    """Load the active delegation config (model/provider/fallbacks), fail-open.
+
+    Mirrors ``tools.delegate_tool._load_config`` so the renderer sees the same
+    ``model`` / ``provider`` the dispatcher used, without importing the heavy
+    delegation module at import time. Returns ``{}`` on any error so callers
+    fail open to "no notice" rather than dropping the per-task blocks.
+    """
+    try:
+        from tools.delegate_tool import _load_config as _cfg
+
+        return _cfg() or {}
+    except Exception:
+        return {}
+
+
+def _delegation_model_not_found(results, config) -> bool:
+    """True when a result entry reflects a config-level model_not_found rejection.
+
+    Matches when at least one entry's error/summary text contains both a
+    model-not-found phrase AND the name of the currently-configured delegation
+    model — so a stale task failing on a *different* (removed) model is not
+    mis-attributed to the config-level root cause.
+    """
+    model = (config or {}).get("model")
+    if not model:
+        return False
+    model = str(model).lower()
+    for r in results or []:
+        text = " ".join(
+            str(part) for part in (r.get("error"), r.get("summary")) if part
+        ).lower()
+        if not text or model not in text:
+            continue
+        if any(p in text for p in _MODEL_NOT_FOUND_PATTERNS):
+            return True
+    return False
+
+
+def _delegation_model_not_found_notice(results) -> "list[str] | None":
+    """Build the config-level model_not_found notice lines, or None.
+
+    Returns ``None`` unless at least one result entry shows the configured
+    delegation model being rejected by its provider, in which case a short
+    actionable block is returned. Every failure path fails open to ``None`` so
+    a config hiccup never hides the per-task blocks. Emit once per batch.
+    """
+    config = _delegation_config()
+    if not _delegation_model_not_found(results, config):
+        return None
+    model = config.get("model") or "?"
+    provider = config.get("provider") or "configured provider"
+    lines = [
+        "⚠ SUBAGENT MODEL REJECTED: the configured Subagent Model "
+        f'"{model}" was rejected by provider "{provider}" '
+        "(HTTP 400: not a valid model ID).",
+        "Every task in this batch failed for this reason before doing any work.",
+        "Check Settings → Advanced → Subagent Model (or: "
+        "hermes config get delegation.model).",
+    ]
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        if not get_fallback_chain(config):
+            lines.append(
+                "No fallback chain is configured, so no failover was attempted."
+            )
+    except Exception:
+        pass
+    return lines
+
+
 def _format_async_delegation(evt: dict) -> str:
     """Format an async-delegation completion into a self-contained re-injection.
 
@@ -3018,6 +3105,10 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append("--- ERROR ---")
             lines.append(f"The batch did not complete successfully: {error}")
             return "\n".join(lines)
+        _notice = _delegation_model_not_found_notice(results)
+        if _notice:
+            lines.append("")
+            lines.extend(_notice)
         for r in sorted(results, key=lambda x: x.get("task_index", 0)):
             idx = r.get("task_index", 0)
             r_status = r.get("status", "?")
@@ -3085,6 +3176,10 @@ def _format_async_delegation(evt: dict) -> str:
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
     lines.append(f"Role: {role}   Model: {model}")
+    _notice = _delegation_model_not_found_notice([evt])
+    if _notice:
+        lines.append("")
+        lines.extend(_notice)
     _trunc = " [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""
     lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s{_trunc}")
     lines.append("--- RESULT ---")

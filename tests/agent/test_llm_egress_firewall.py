@@ -687,6 +687,31 @@ def test_representative_kanban_worker_evidence_is_not_mistaken_for_base64(tmp_pa
     assert "secret_detected" not in decision.reason_codes
 
 
+def test_response_item_id_structural_key_is_not_mistaken_for_base64(tmp_path):
+    request = TypedOutboundRequest(
+        payload={
+            "messages": [
+                {
+                    "role": LiteralSegment("user"),
+                    "content": SanitizedSegment("continue the assigned work"),
+                }
+            ],
+            "response_item_id": LiteralSegment("item-1"),
+        },
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="req-1",
+        policy_digest="policy-1",
+    )
+
+    decision = firewall(
+        tmp_path,
+        static_literals=("response_item_id", "item-1"),
+    ).preflight(request, _route())
+
+    assert "base64_payload" not in decision.reason_codes
+
+
 def test_similar_unrecognized_underscore_atom_remains_base64_blocked(tmp_path):
     with pytest.raises(EgressBlocked) as exc_info:
         firewall(tmp_path).preflight(

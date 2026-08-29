@@ -1609,7 +1609,11 @@ class LLMEgressFirewall:
                         require_static_literal(rendered_key, scan_base64=False)
                     elif isinstance(key, str):
                         rendered_key = key
-                        require_static_literal(rendered_key)
+                        # Mapping keys are policy-bound request structure, not
+                        # caller-supplied payload.  Scanning them as Base64
+                        # turns legitimate protocol fields such as
+                        # ``response_item_id`` into false-positive payloads.
+                        require_static_literal(rendered_key, scan_base64=False)
                     else:
                         reasons.append("invalid_request_key")
                         continue

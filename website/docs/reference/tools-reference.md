@@ -278,7 +278,7 @@ hours of quiet from the rotation.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `todo` | Manage your task list for the current session. Use for complex tasks with 3+ steps or when the user provides multiple tasks. Call with no parameters to read the current list. Writing: - Provide 'todos' array to create/update items - merge=… | — |
+| `todo` | Manage your task list for the current session. Use for complex tasks with 3+ steps or when the user provides multiple tasks. Call with no parameters to read the current list. Items may nest: an item's optional `parent` field points at another item's id, making it a subtask — surfaces render the tree indented. | — |
 
 ## `vision` toolset
 

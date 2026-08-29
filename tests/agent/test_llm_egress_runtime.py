@@ -717,6 +717,61 @@ def test_protected_codex_does_not_elide_unbound_responses_kanban_output(
     assert "base64_payload" in exc_info.value.decision.reason_codes
 
 
+def test_protected_codex_projects_bound_github_list_terminal_metadata(
+    tmp_path, monkeypatch
+):
+    """A bounded GitHub list retains review fields, not opaque API identifiers."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_snapshot_1234"
+    command = (
+        "gh issue list --repo NousResearch/hermes-agent --state open "
+        "--limit 20 --json number,title,url,labels"
+    )
+    raw_rows = [
+        {
+            "id": "c2VjcmV0LXBheWxvYWQ=",
+            "number": 123,
+            "title": "Desktop resume reliability",
+            "url": "https://github.com/NousResearch/hermes-agent/issues/123",
+            "labels": [{"id": "c2VjcmV0LWxhYmVs", "name": "desktop"}],
+        }
+    ]
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "terminal",
+                "call_id": call_id,
+                "arguments": json.dumps({"command": command}),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps({"exit_code": 0, "output": json.dumps(raw_rows)}),
+            },
+        ],
+    }
+
+    authorized, _ = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    projected = json.loads(json.loads(authorized["input"][1]["output"])["output"])
+    assert projected["items"] == [
+        {
+            "labels": ["desktop"],
+            "number": 123,
+            "title": "Desktop resume reliability",
+            "url": "https://github.com/NousResearch/hermes-agent/issues/123",
+        }
+    ]
+    assert "c2VjcmV0LXBheWxvYWQ=" not in authorized["input"][1]["output"]
+
+
 def test_runtime_does_not_manufacture_boundaries_for_oversized_sanitized_text(
     tmp_path,
 ):

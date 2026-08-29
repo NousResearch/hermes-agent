@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import shlex
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
@@ -74,6 +75,9 @@ logger = logging.getLogger(__name__)
 
 _VALIDATED_SYNTAX_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
+_GITHUB_LIST_TERMINAL_MAX_ROWS = 100
+_GITHUB_LIST_TERMINAL_MAX_ITEM_BYTES = 512
+_GITHUB_LIST_TERMINAL_MAX_OUTPUT_BYTES = 10_240
 _REMOTE_KANBAN_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,}\"']+"
 )
@@ -477,6 +481,146 @@ def _recognized_syntax_tool_call_ids(value: Any) -> frozenset[str]:
     return _recognized_tool_call_ids(value, _VALIDATED_SYNTAX_TOOL_NAMES)
 
 
+def _github_list_terminal_call_limits(value: Any) -> dict[str, int]:
+    """Bind a small GitHub list projection to an exact preceding terminal call.
+
+    GitHub list JSON contains opaque database identifiers that are neither
+    useful to a Kanban worker nor safe to replay remotely.  This deliberately
+    recognizes only the bounded, literal ``gh issue|pr list --json --limit``
+    form used by the White-Knight intake; every other terminal result follows
+    the normal fail-closed path.
+    """
+
+    limits: dict[str, int] = {}
+
+    def command_limit(arguments: Any) -> int | None:
+        try:
+            parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+            command = parsed.get("command") if isinstance(parsed, Mapping) else None
+            tokens = shlex.split(command) if isinstance(command, str) else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if len(tokens) < 5 or tokens[:3] not in (["gh", "issue", "list"], ["gh", "pr", "list"]):
+            return None
+        if "--json" not in tokens:
+            return None
+        for index, token in enumerate(tokens):
+            raw_limit = (
+                token.split("=", 1)[1]
+                if token.startswith("--limit=")
+                else tokens[index + 1]
+                if token == "--limit" and index + 1 < len(tokens)
+                else None
+            )
+            if raw_limit is None:
+                continue
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                return None
+            return limit if 0 < limit <= _GITHUB_LIST_TERMINAL_MAX_ROWS else None
+        return None
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            direct_function = item.get("function")
+            direct_name = (
+                direct_function.get("name")
+                if isinstance(direct_function, Mapping)
+                else item.get("name")
+            )
+            if item.get("type") in {"function", "function_call"} and direct_name == "terminal":
+                arguments = (
+                    direct_function.get("arguments")
+                    if isinstance(direct_function, Mapping)
+                    else item.get("arguments")
+                )
+                limit = command_limit(arguments)
+                call_id = item.get("call_id") or item.get("id")
+                if limit is not None and isinstance(call_id, str):
+                    for variant in tool_result_id_variants(call_id):
+                        limits[variant] = limit
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return limits
+
+
+def _bounded_remote_text(value: str) -> str:
+    """Keep a display field UTF-8 bounded before remote GitHub replay."""
+
+    raw = value.encode("utf-8")
+    if len(raw) > _GITHUB_LIST_TERMINAL_MAX_ITEM_BYTES:
+        value = raw[:_GITHUB_LIST_TERMINAL_MAX_ITEM_BYTES].decode("utf-8", "ignore") + "…"
+    return redact_remote_unsafe_text(value)
+
+
+def _project_github_list_terminal_result(text: str, *, max_rows: int) -> str | None:
+    """Retain bounded GitHub review evidence while dropping opaque metadata."""
+
+    try:
+        wrapper = json.loads(text)
+        raw_rows = wrapper.get("output") if isinstance(wrapper, Mapping) else None
+        rows = json.loads(raw_rows) if isinstance(raw_rows, str) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(rows, list):
+        return None
+
+    items: list[dict[str, Any]] = []
+    for row in rows[:max_rows]:
+        if not isinstance(row, Mapping):
+            continue
+        projected: dict[str, Any] = {}
+        if isinstance(row.get("number"), int):
+            projected["number"] = row["number"]
+        for key in ("title", "url", "state", "createdAt", "updatedAt", "reviewDecision"):
+            if isinstance(row.get(key), str):
+                projected[key] = _bounded_remote_text(row[key])
+        if isinstance(row.get("isDraft"), bool):
+            projected["isDraft"] = row["isDraft"]
+        labels = row.get("labels")
+        if isinstance(labels, list):
+            projected_labels = [
+                _bounded_remote_text(label["name"])
+                for label in labels
+                if isinstance(label, Mapping) and isinstance(label.get("name"), str)
+            ]
+            if projected_labels:
+                projected["labels"] = projected_labels
+        for key in ("author", "assignees"):
+            raw_people = row.get(key)
+            people = raw_people if isinstance(raw_people, list) else [raw_people]
+            logins = [
+                _bounded_remote_text(person["login"])
+                for person in people
+                if isinstance(person, Mapping) and isinstance(person.get("login"), str)
+            ]
+            if logins:
+                projected[key] = logins if isinstance(raw_people, list) else logins[0]
+        if not projected:
+            continue
+        candidate = {"github_list_projection": "v1", "items": [*items, projected]}
+        if len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > _GITHUB_LIST_TERMINAL_MAX_OUTPUT_BYTES:
+            break
+        items.append(projected)
+
+    projection: dict[str, Any] = {"github_list_projection": "v1", "items": items}
+    omitted = max(0, min(len(rows), max_rows) - len(items)) + max(0, len(rows) - max_rows)
+    if omitted:
+        projection["omitted_items"] = omitted
+    exit_code = wrapper.get("exit_code") if isinstance(wrapper.get("exit_code"), int) else None
+    return json.dumps(
+        {"exit_code": exit_code, "output": json.dumps(projection, ensure_ascii=False, separators=(",", ":"))},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def _segment_protected_tool_result(
     text: str,
     grant_texts: Sequence[tuple[str, SourceGrant]],
@@ -614,6 +758,7 @@ def _typed_payload(
     field_name: str | None = None,
     syntax_tool_call_ids: frozenset[str] = frozenset(),
     elided_kanban_tool_call_ids: frozenset[str] = frozenset(),
+    github_list_terminal_call_limits: Mapping[str, int] | None = None,
     protected_tool_content: bool = False,
     elide_kanban_tool_content: bool = False,
     protected_kanban_context: bool = False,
@@ -678,6 +823,12 @@ def _typed_payload(
                 or value.get("type") == "function_call_output"
             )
         )
+        github_list_limit = (
+            github_list_terminal_call_limits.get(output_call_id)
+            if isinstance(github_list_terminal_call_limits, Mapping)
+            and isinstance(output_call_id, str)
+            else None
+        )
         typed: dict[Any, Any] = {}
         context_mapping = value.get("role") in {"system", "developer"}
         is_codex_reasoning_replay = (
@@ -702,6 +853,23 @@ def _typed_payload(
                     policy_digest=request_identity[3],
                 )
                 continue
+            if (
+                isinstance(github_list_limit, int)
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                projected = _project_github_list_terminal_result(
+                    item, max_rows=github_list_limit
+                )
+                if projected is not None:
+                    typed[key] = _segment_text(
+                        projected,
+                        grant_texts,
+                        used_grants,
+                        sanitized_cap=sanitized_cap,
+                        allow_line_split=True,
+                    )
+                    continue
             typed_key = (
                 GeneratedContextKey(key)
                 if generated_context and redact_generated_context
@@ -718,6 +886,7 @@ def _typed_payload(
                 field_name=key,
                 syntax_tool_call_ids=syntax_tool_call_ids,
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
+                github_list_terminal_call_limits=github_list_terminal_call_limits,
                 protected_tool_content=(
                     is_recognized_tool_result and key in {"content", "output"}
                 ),
@@ -749,6 +918,7 @@ def _typed_payload(
                 field_name=field_name,
                 syntax_tool_call_ids=syntax_tool_call_ids,
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
+                github_list_terminal_call_limits=github_list_terminal_call_limits,
                 protected_tool_content=protected_tool_content,
                 elide_kanban_tool_content=elide_kanban_tool_content,
                 protected_kanban_context=protected_kanban_context,
@@ -952,6 +1122,11 @@ def authorize_agent_sdk_kwargs(
             _recognized_tool_call_ids(body, _REMOTE_KANBAN_PROJECTION_TOOL_NAMES)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
+        ),
+        github_list_terminal_call_limits=(
+            _github_list_terminal_call_limits(body)
+            if protected_kanban_remote and protected_provider_route
+            else None
         ),
         protected_kanban_context=protected_remote_context,
         redact_generated_context=redact_protected_generated_context,

@@ -254,6 +254,67 @@ def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+def test_successful_command_boundary_receipt_without_fleet_does_not_retrigger(
+    monkeypatch,
+):
+    """A normal command-boundary stop is not an interrupted update."""
+    disk_sha = "n" * 40
+    old_sha = "o" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "exit_code": 0,
+                "outcome": "success",
+                "stop_reason": "completed at command boundary",
+                "plan": {
+                    "expected_sha": old_sha,
+                    "runtimes": [
+                        {
+                            "kind": "gateway",
+                            "profile": "default",
+                            "pid": 1,
+                            "code_sha": old_sha,
+                        }
+                    ],
+                },
+                "fleet": [],
+                "gateway_restart": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {"outcome": "success", "exit_code": 0, "stop_reason": "sys.exit(0)"},
+        {"outcome": "success", "stop_reason": "KeyboardInterrupt: "},
+        {"exit_code": 0, "stop_reason": "sys.exit(0)"},
+    ],
+)
+def test_successful_non_boundary_stop_reasons_are_finished(receipt):
+    """Successful sys.exit(0)/KeyboardInterrupt must not look unfinished."""
+    assert update_cmd._receipt_looks_unfinished(receipt) is False
+
+
+def test_failed_interrupt_stop_reason_is_unfinished():
+    assert update_cmd._receipt_looks_unfinished(
+        {
+            "outcome": "failed",
+            "exit_code": 1,
+            "stop_reason": "KeyboardInterrupt: ",
+        }
+    ) is True
+
+
 def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
     disk_sha = "n" * 40
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)

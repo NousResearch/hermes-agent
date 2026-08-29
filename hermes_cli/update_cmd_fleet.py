@@ -78,14 +78,27 @@ def _current_checkout_sha() -> str | None:
 
 
 def _receipt_looks_unfinished(receipt: dict) -> bool:
-    """True when *receipt* is from an update that did not finish cleanly."""
+    """True when *receipt* is from an update that did not finish cleanly.
+
+    ``stop_reason`` records *how* the command boundary closed the receipt
+    (``completed at command boundary``, ``sys.exit(0)``, even KeyboardInterrupt
+    on an otherwise successful run). A truthy stop_reason must not make a
+    successful receipt look unfinished, or the next ``hermes update`` retriggers
+    ``fleet_restart_pending`` from pre-pull plan SHAs.
+    """
+    exit_code = receipt.get("exit_code")
+    outcome = receipt.get("outcome")
+    if exit_code not in (0, None):
+        return True
+    if outcome in ("failed", "partial", "running"):
+        return True
     gateway_restart = receipt.get("gateway_restart")
-    return bool(
-        receipt.get("stop_reason")
-        or receipt.get("exit_code") not in (0, None)
-        or receipt.get("outcome") in ("failed", "partial", "running")
-        or (isinstance(gateway_restart, dict) and gateway_restart.get("incomplete"))
-    )
+    if isinstance(gateway_restart, dict) and gateway_restart.get("incomplete"):
+        return True
+    stop_reason = receipt.get("stop_reason")
+    if stop_reason and outcome != "success" and exit_code != 0:
+        return True
+    return False
 
 
 def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:

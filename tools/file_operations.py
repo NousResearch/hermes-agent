@@ -3736,7 +3736,11 @@ class ShellFileOperations(FileOperations):
         # Prune hidden descendant directories while still allowing an
         # explicitly selected hidden root. Hidden files are excluded too,
         # matching rg's default semantics.
-        q_roots = [self._escape_shell_arg(root) for root in roots]
+        find_roots = [
+            f"./{root}" if root.startswith("-") else root
+            for root in roots
+        ]
+        q_roots = [self._escape_shell_arg(root) for root in find_roots]
         root_exemptions = "".join(f" ! -path {root}" for root in q_roots)
         hidden_prune = (
             f" \\( -type d -name '.*'{root_exemptions} \\) -prune -o"

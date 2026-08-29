@@ -1,3 +1,4 @@
+import shlex
 from unittest.mock import MagicMock
 
 import pytest
@@ -171,6 +172,40 @@ def test_no_rg_multi_root_modified_is_one_globally_sorted_scan():
     assert "! -path '/one/.hidden'" in command
     assert "! -path '/two/.cache'" in command
     assert kwargs["timeout"] <= 60
+
+
+def test_find_dash_prefixed_relative_root_is_an_explicit_operand(
+    tmp_path, monkeypatch
+):
+    dash_root = tmp_path / "--version"
+    ordinary_root = tmp_path / "ordinary"
+    dash_root.mkdir()
+    ordinary_root.mkdir()
+    (dash_root / "dash.py").write_text("", encoding="utf-8")
+    (ordinary_root / "plain.py").write_text("", encoding="utf-8")
+
+    ops = ShellFileOperations(LocalEnvironment(str(tmp_path)))
+    monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+    executed = []
+    real_exec = ops._exec
+
+    def recording_exec(command, **kwargs):
+        if command.startswith("set -o pipefail; find "):
+            executed.append(command)
+        return real_exec(command, **kwargs)
+
+    monkeypatch.setattr(ops, "_exec", recording_exec)
+    result = ops._search_files(
+        "*.py", ["--version", "ordinary"], limit=10, offset=0
+    )
+
+    assert result.error is None
+    assert sorted(result.files) == ["./--version/dash.py", "ordinary/plain.py"]
+    assert len(executed) == 1
+    command_tokens = shlex.split(executed[0].removeprefix("set -o pipefail; "))
+    assert "./--version" in command_tokens
+    assert "--version" not in command_tokens
+    assert all("find (GNU findutils)" not in path for path in result.files)
 
 
 def test_find_modified_capability_failure_is_actionable_without_retry():

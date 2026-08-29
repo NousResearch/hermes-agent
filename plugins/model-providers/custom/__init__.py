@@ -6,16 +6,39 @@ Volcengine ARK, vLLM, llama.cpp). Key quirks:
   - ollama_num_ctx → extra_body.options.num_ctx (local context window)
   - reasoning_config disabled → top-level reasoning_effort="none"
     (Ollama /v1/chat/completions ignores think=False — ollama#14820)
-    + extra_body.think = False for /api/chat and proxies
+    + extra_body.think = False only on Ollama URLs (/api/chat and proxies)
   - reasoning_config enabled + effort → top-level reasoning_effort
     (the native OpenAI-compatible format GLM/ARK expect; unset omits it
     so the endpoint's server default applies)
 """
 
 from typing import Any
+from urllib.parse import urlparse
 
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
+    """True when ``base_url`` is an Ollama host, not a generic OpenAI-compat relay.
+
+    ``think`` is an Ollama-native extra_body field. Strict hosts (Mistral
+    ``extra=forbid``, Groq, …) reject it with HTTP 422. Match only explicit
+    Ollama signatures — default port 11434, or ``ollama`` as a hostname
+    label — not arbitrary localhost (llama.cpp / vLLM / LM Studio).
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    if parsed.port == 11434:
+        return True
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    if host == "ollama.com" or host.endswith(".ollama.com"):
+        return True
+    return "ollama" in host.split(".")
 
 
 class CustomProfile(ProviderProfile):
@@ -40,7 +63,8 @@ class CustomProfile(ProviderProfile):
         # Reasoning / thinking control for custom OpenAI-compatible endpoints
         # (GLM-5.2 on Volcengine ARK, vLLM, Ollama, llama.cpp, …).
         #
-        #   - disabled  → extra_body.think = False (Ollama's thinking-off flag)
+        #   - disabled  → top-level reasoning_effort="none"; extra_body.think
+        #     = False only on Ollama URLs (Ollama's thinking-off flag)
         #   - enabled + effort set → TOP-LEVEL reasoning_effort string, the
         #     format GLM-5.2/ARK and other OpenAI-compatible reasoning APIs
         #     expect (GLM documents "high" and "max"; "max" is its default).
@@ -50,19 +74,22 @@ class CustomProfile(ProviderProfile):
         # We deliberately do NOT emit ``think=True`` on enable: it is an
         # Ollama-only flag and thinking is already server-default-on for these
         # backends, so forcing it risks a 400 on GLM/vLLM endpoints that don't
-        # recognize it. Mirrors the DeepSeek/Zai profile precedent.
+        # recognize it. Mirrors the DeepSeek/Zai profile precedent. The same
+        # constraint applies to ``think=False`` on disable — Mistral/Groq
+        # reject unknown fields (HTTP 422 extra_forbidden) rather than ignoring
+        # them, so that flag stays Ollama-URL-gated.
         if reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
                 # Ollama's /v1/chat/completions silently ignores
                 # extra_body.think (only /api/chat honours it — ollama#14820)
-                # but respects the top-level reasoning_effort field, so both
-                # are needed to actually stop a thinking-capable model from
-                # reasoning (#25758). Endpoints that recognize neither simply
-                # ignore them.
+                # but respects the top-level reasoning_effort field (#25758).
+                # Always emit reasoning_effort="none"; only add think=False
+                # when the URL is actually Ollama.
                 top_level["reasoning_effort"] = "none"
-                extra_body["think"] = False
+                if _looks_like_ollama_endpoint(ctx.get("base_url")):
+                    extra_body["think"] = False
             elif _effort:
                 # Clamp the internal ladder onto the widest OpenAI-compatible
                 # wire vocabulary (shared policy in agent.reasoning_effort) —

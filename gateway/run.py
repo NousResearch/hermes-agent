@@ -14964,14 +14964,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # The watcher already entered _profile_runtime_scope for this
             # profile, so a fresh load resolves that profile's config.yaml
             # and .env (home channel, tokens) rather than the primary's.
+            # Fail closed on a load error: self.config is the primary's, so
+            # falling back would deliver through the right bot to the
+            # WRONG chat and report completed. A failed row the CLI can
+            # retry beats a wrong delivery.
             try:
                 handoff_config = load_gateway_config()
-            except Exception:
-                logger.warning(
+            except Exception as exc:
+                logger.error(
                     "Handoff: could not load config for profile %s; "
-                    "falling back to the primary's config",
+                    "failing the handoff instead of delivering via the "
+                    "primary's config",
                     profile_name, exc_info=True,
                 )
+                raise RuntimeError(
+                    f"could not load config for profile '{profile_name}': {exc}"
+                ) from exc
 
         # Adapter must be live. A relay-fronted gateway registers ONE adapter
         # under Platform.RELAY that fronts N logical platforms — so a literal

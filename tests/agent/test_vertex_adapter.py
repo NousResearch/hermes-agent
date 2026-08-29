@@ -52,6 +52,12 @@ def _install_fake_google_auth(monkeypatch, *, adc_ok=True, adc_project="adc-proj
             c.project_id = sa_project
             return c
 
+        @staticmethod
+        def from_service_account_info(info, scopes=None):
+            c = _Creds()
+            c.project_id = sa_project
+            return c
+
     gsa.Credentials = _SA
     go.service_account = gsa
     gp.auth = ga
@@ -242,3 +248,36 @@ def test_adc_failure_retries_with_late_added_sa_file(vertex_adapter, monkeypatch
     assert token == "ya29.FAKE"
     assert project == "sa-project"
     assert calls["n"] >= 2
+
+
+def test_metadata_preserving_rotation_invalidates_creds_cache(vertex_adapter, monkeypatch, tmp_path):
+    """Atomic replacement that keeps SIZE and MTIME identical (deployment
+    tools that restore metadata; equal-length JSON) must still be picked up.
+    Review finding on #97701: a (path, mtime_ns, size) stat signature keyed
+    the cache, so this replacement served the old private key; the key is
+    now a content digest."""
+    import os as _os
+
+    sa_file = tmp_path / "sa.json"
+    sa_file.write_text('{"project_id": "AAAA-identity"}')
+    monkeypatch.setattr(
+        vertex_adapter, "_resolve_credentials_path", lambda explicit=None: str(sa_file)
+    )
+
+    vertex_adapter.get_vertex_credentials()
+    (key1,) = vertex_adapter._creds_cache
+    creds_obj_1 = vertex_adapter._creds_cache[key1][0]
+
+    # Same-length content, mtime restored, atomic replace.
+    st = _os.stat(sa_file)
+    new = tmp_path / "sa.json.new"
+    new.write_text('{"project_id": "BBBB-identity"}')  # equal length
+    _os.utime(new, ns=(st.st_atime_ns, st.st_mtime_ns))
+    _os.replace(new, sa_file)
+    st2 = _os.stat(sa_file)
+    assert st2.st_size == st.st_size and st2.st_mtime_ns == st.st_mtime_ns
+
+    vertex_adapter.get_vertex_credentials()
+    (key2,) = vertex_adapter._creds_cache
+    assert key2 != key1, "content change must produce a new cache key"
+    assert vertex_adapter._creds_cache[key2][0] is not creds_obj_1

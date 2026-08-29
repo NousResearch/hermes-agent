@@ -16,6 +16,8 @@ Non-secret routing settings (project_id, region) also live in config.yaml
 under the ``vertex:`` section; env vars take precedence over config.yaml.
 """
 
+import hashlib
+import json
 import logging
 import os
 import time
@@ -108,26 +110,44 @@ def _refresh_credentials(creds) -> None:
     creds.refresh(auth_req)
 
 
+def _read_sa_file(resolved_path: str) -> Tuple[bytes, Tuple[Any, ...]]:
+    """Read the service-account file once, returning (bytes, cache key).
+
+    The cache key fingerprints the file CONTENT (sha256), not stat
+    metadata. A (path, mtime_ns, size) signature — the idiom used for
+    config caches — is not sufficient here: metadata-preserving atomic
+    replacement (deployment tools that restore mtime; equal-length JSON)
+    produces a different private key under an identical stat signature,
+    and this cache guards an identity, not a parse (review finding on
+    #97701, reproduced: inode/content changed, stat key equal). Reading
+    the bytes also lets the caller construct credentials from the SAME
+    snapshot the key was computed from, closing the stat->read TOCTOU.
+
+    The file is a few KB of JSON; one read + sha256 per cache PROBE is
+    noise next to the OAuth token mint the cache exists to avoid.
+    """
+    with open(resolved_path, "rb") as fh:
+        raw = fh.read()
+    digest = hashlib.sha256(raw).hexdigest()
+    return raw, (resolved_path, digest)
+
+
 def _creds_cache_key(resolved_path: Optional[str]) -> Tuple[Any, ...]:
     """Cache key for the Credentials object backing *resolved_path*.
 
-    Keyed on the service-account file's (path, mtime_ns, size) signature —
-    the house idiom (agent/skill_utils.py, hermes_cli/config.py,
-    agent/models_dev.py) — so rotating the file on disk (new key, re-issued
-    service account) is picked up on the next call instead of serving
-    tokens minted from the old identity for the life of the process
-    (Pattern D: stale cache after out-of-band change). ADC has no file to
-    fingerprint; it keeps a plain sentinel key and its existing
+    Content-digest keyed via _read_sa_file (see there for why stat
+    signatures are not enough for credential identity). ADC has no file
+    to fingerprint; it keeps a plain sentinel key and its existing
     refresh/expiry handling.
 
-    A stat failure falls back to the bare path: worst case we serve the
+    A read failure falls back to the bare path: worst case we serve the
     cached credentials exactly as the pre-signature code did.
     """
     if not resolved_path:
         return ("__adc__",)
     try:
-        st = os.stat(resolved_path)
-        return (resolved_path, st.st_mtime_ns, st.st_size)
+        _, key = _read_sa_file(resolved_path)
+        return key
     except OSError:
         return (resolved_path,)
 
@@ -143,16 +163,34 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
         return None, None
 
     resolved_path = _resolve_credentials_path(credentials_path)
-    cache_key = _creds_cache_key(resolved_path)
+    sa_raw: Optional[bytes] = None
+    if resolved_path:
+        try:
+            # One read serves both the cache key and (on a miss) credential
+            # construction, so the credentials always match the bytes the
+            # key fingerprints — no stat/read or read/read TOCTOU.
+            sa_raw, cache_key = _read_sa_file(resolved_path)
+        except OSError:
+            cache_key = (resolved_path,)
+    else:
+        cache_key = ("__adc__",)
 
     try:
         cached = _creds_cache.get(cache_key)
         if cached is None:
             if resolved_path:
-                creds = service_account.Credentials.from_service_account_file(
-                    resolved_path,
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
-                )
+                if sa_raw is not None:
+                    creds = service_account.Credentials.from_service_account_info(
+                        json.loads(sa_raw),
+                        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                    )
+                else:
+                    # Unreadable at key time (bare-path key): let the SDK
+                    # try the file directly — pre-signature behavior.
+                    creds = service_account.Credentials.from_service_account_file(
+                        resolved_path,
+                        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                    )
                 project_id = creds.project_id
             else:
                 # google.auth.default() reads GOOGLE_APPLICATION_CREDENTIALS

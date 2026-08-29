@@ -813,50 +813,72 @@ class TestOpenCodeGoOneHourPrecedence:
 
     # -- call-site coverage --------------------------------------------------
 
-    def test_every_marker_emitting_call_site_goes_through_the_central_clamp(self):
-        """M4: CLI and scheduled paths must not diverge.
+    def test_destination_planner_emits_1h_marker_on_opencode_go(self):
+        """M4 (behavior form): the shared destination planner honours the tier.
 
-        Enumerates every production call of the two marker-emitting entry
-        points — :func:`build_prompt_cache_plan` and
-        :func:`apply_anthropic_cache_control` — and requires each to receive
-        its TTL from ``effective_cache_ttl(...)``.
-
-        Stated as a *closed* set rather than a presence count: a new sender
-        that hands a raw configured TTL straight to either entry point fails
-        the membership assertion, and un-clamping an existing one fails the
-        proximity assertion. ``auxiliary_client`` and the MoA aggregator plan
-        are absent by design — they reach the wire through
-        ``plan_cache_sections_for_destination``, which clamps internally, so
-        the helper's own call site covers them.
+        ``plan_cache_sections_for_destination`` is the fan-in for the MoA
+        aggregator and auxiliary senders; the conversation-loop and moa_loop
+        call sites clamp through :func:`effective_cache_ttl` themselves (their
+        emitted plans are covered by the marker tests above). Driving the
+        planner end-to-end asserts the *wire artifact* — the marker's ``ttl``
+        — instead of regex-scanning source files for the clamp call.
         """
-        import pathlib
-        import re
+        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
-        root = pathlib.Path(__file__).resolve().parents[2]
-        entry_points = re.compile(r"\b(?:build_prompt_cache_plan|apply_anthropic_cache_control)\(")
+        def _markers(messages, tools):
+            found = []
+            for msg in messages:
+                if isinstance(msg.get("cache_control"), dict):
+                    found.append(msg["cache_control"])
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and isinstance(
+                            part.get("cache_control"), dict
+                        ):
+                            found.append(part["cache_control"])
+            for tool in tools or []:
+                if isinstance(tool, dict) and isinstance(
+                    tool.get("cache_control"), dict
+                ):
+                    found.append(tool["cache_control"])
+            return found
 
-        expected = {
-            # (path, must be clamped at the call site)
-            ("agent/agent_runtime_helpers.py", True),
-            ("agent/conversation_loop.py", True),
-            ("agent/moa_loop.py", True),
-            # The planner forwarding an already-clamped ttl to the applier.
-            ("agent/prompt_caching.py", False),
-        }
+        history = [
+            {"role": "system", "content": "sys prompt"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
 
-        found = {}
-        for path in sorted(root.glob("agent/*.py")) + [root / "run_agent.py"]:
-            lines = path.read_text(encoding="utf-8").splitlines()
-            for i, line in enumerate(lines):
-                if not entry_points.search(line) or line.lstrip().startswith(("#", "def ", "*", '"')):
-                    continue
-                rel = path.relative_to(root).as_posix()
-                window = "\n".join(lines[i : i + 14])
-                found.setdefault(rel, []).append("cache_ttl=effective_cache_ttl(" in window)
-
-        assert {(rel, all(flags)) for rel, flags in found.items()} == expected, (
-            f"marker-emitting call sites changed: {found}"
+        planned_messages, planned_tools = plan_cache_sections_for_destination(
+            history,
+            [],
+            provider="opencode-go",
+            base_url="",
+            api_mode="chat_completions",
+            model=self.DEPLOYED_MODEL,
+            cache_disabled=False,
+            cache_ttl="1h",
         )
-        # Pin the count too, so a second unclamped call inside an already
-        # listed file cannot hide behind its clamped sibling.
-        assert sum(len(v) for v in found.values()) == 5, found
+        markers = _markers(planned_messages, planned_tools)
+        assert markers, "opencode-go/qwen must stay cache-eligible"
+        assert all(m.get("ttl") == "1h" for m in markers), markers
+
+        # Clamped-route negative control through the same production path:
+        # ``opencode`` is cache-eligible (alibaba family) but unmeasured, so
+        # the central clamp strips the 1h tier and the emitted markers carry
+        # no ttl key at all (5m is the wire default).
+        planned_messages, planned_tools = plan_cache_sections_for_destination(
+            history,
+            [],
+            provider="opencode",
+            base_url="",
+            api_mode="chat_completions",
+            model=self.DEPLOYED_MODEL,
+            cache_disabled=False,
+            cache_ttl="1h",
+        )
+        markers = _markers(planned_messages, planned_tools)
+        assert markers, "opencode/qwen stays cache-eligible"
+        assert all("ttl" not in m for m in markers), markers

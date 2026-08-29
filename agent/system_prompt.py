@@ -273,6 +273,70 @@ def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
     return [block] if block else []
 
 
+def _session_start_like(agent: Any, now: Any) -> Any:
+    """Best-known conversation start time, or ``now`` as a fallback.
+
+    ``Conversation started:`` must reference when the conversation actually
+    began, not when the system prompt was last (re)built.  The prompt is
+    rebuilt on compression, fresh-agent gateway turns, and resume paths, and
+    stamping build time made the date drift forward across midnight (a chat
+    that started on Wednesday read as "Conversation started: Thursday" after
+    a Thursday-morning resume), contradicting the fresh per-turn time hint.
+    Prefer, in order:
+
+    1. the timestamp embedded in ``session_id`` (``YYYYMMDD_HHMMSS_...``) —
+       immutable for the life of the session, so the line is byte-stable
+       across every rebuild boundary (preserving prefix-cache KV);
+    2. ``agent.session_start`` (session-creation stamp);
+    3. ``now`` (initial/legacy build without either).
+
+    Session-id and ``session_start`` stamps are recorded in the box's local
+    wall-clock; attach that zone first, then convert to the configured /
+    rendered zone (``now``'s tzinfo) so the displayed date is consistent with
+    the per-turn clock even when the box's TZ differs from the configured one.
+    """
+    from datetime import datetime
+
+    try:
+        machine_local_tz = datetime.now().astimezone().tzinfo
+    except (ValueError, OSError):
+        machine_local_tz = None
+
+    def _to_display_tz(dt: Any) -> Any:
+        if machine_local_tz is not None and dt.tzinfo is None:
+            try:
+                dt = dt.replace(tzinfo=machine_local_tz)
+            except ValueError:
+                pass
+        if getattr(now, "tzinfo", None) is not None and dt.tzinfo is not None:
+            try:
+                dt = dt.astimezone(now.tzinfo)
+            except (ValueError, OSError):
+                pass
+        return dt
+
+    # 1. Session id embeds the true start as YYYYMMDD_HHMMSS.
+    session_id = getattr(agent, "session_id", None)
+    if isinstance(session_id, str) and session_id:
+        m = re.match(r"^(\d{8})_(\d{6})", session_id)
+        if m:
+            try:
+                embedded = datetime.strptime(
+                    f"{m.group(1)}_{m.group(2)}", "%Y%m%d_%H%M%S"
+                )
+                return _to_display_tz(embedded)
+            except ValueError:
+                pass
+
+    # 2. Session-creation stamp set by the runner.
+    session_start = getattr(agent, "session_start", None)
+    if hasattr(session_start, "astimezone"):
+        return _to_display_tz(session_start)
+
+    # 3. Fallback: build time.
+    return now
+
+
 def _agent_home(agent: Any) -> Optional[Path]:
     """The agent's OWN profile home.
 
@@ -888,9 +952,26 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _offset:  # '-0400' -> 'UTC-04:00'
         _zone_bits.append(f"UTC{_offset[:3]}:{_offset[3:]}")
     _zone_suffix = f" ({', '.join(_zone_bits)})" if _zone_bits else ""
+    _start = _session_start_like(agent, now)
     timestamp_line = (
-        f"Conversation started: {now.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+        f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
     )
+    # Second line (maintainer design, salvaging #96224's anchor): long-lived
+    # sessions — Bot Mode forever-chats, messenger channels people never
+    # close — span many days and many compactions. A lone birth date leads
+    # the model to believe it is still living in that old day. The prompt is
+    # rebuilt at every compaction boundary, so stamp the rebuild day too:
+    # 'started' stays anchored and byte-stable, 'as of' refreshes exactly
+    # when the cache prefix is already being invalidated (compaction), so
+    # the added line costs no extra cache churn. Same-day sessions skip the
+    # second line entirely — nothing to correct, and the single-line shape
+    # stays byte-identical for the day (prefix-cache safe).
+    if now.strftime("%Y%m%d") != _start.strftime("%Y%m%d"):
+        timestamp_line += (
+            f"\nToday's date (as of the last context rebuild): "
+            f"{now.strftime('%A, %B %d, %Y')} — trust this over the start "
+            f"date for what day it is now; query tools for exact time."
+        )
     # Bot Chat sessions are effectively eternal — a birth date frozen in the
     # prompt becomes confidently-wrong misinformation within days. Timeless
     # prompts keep the identity lines but drop the date (the timezone still

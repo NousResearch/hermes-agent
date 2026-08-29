@@ -28,27 +28,14 @@ When the work should run **unattended** — overnight, on a real schedule, survi
 What you'll see:
 
 1. **Loop accepted** — `↻ Loop set (every 5m): check the deploy status…`
-2. **First wakeup in 5m** — while the session is idle, Hermes injects the wakeup and runs a normal turn against current state.
-3. **Repeat** — every 5 minutes, until a stop condition fires or you stop it.
+2. **First wakeup fires right away** — on the next idle poll (gateway: the next 15s watcher scan), Hermes injects the wakeup and runs a normal turn against current state.
+3. **Repeat** — every 5 minutes after that, until a stop condition fires or you stop it.
 
 Loop a slash command just as easily:
 
 ```
 /loop 10m /recap
 ```
-
-### Run the first iteration immediately
-
-By default the first wakeup waits one full interval. Pass `--start-now` to run
-the first iteration right away, then continue on the cadence:
-
-```
-/loop 1h --start-now check the deploy status and tell me if it's live yet
-```
-
-The first wakeup fires on the next idle poll (gateway: the next 15s watcher
-scan); subsequent wakeups follow the interval as usual. Works in both cadence
-modes and with `/proactive`.
 
 ## The two cadence modes
 
@@ -89,7 +76,7 @@ Examples:
 
 | Command | What it does |
 |---|---|
-| `/loop [interval] <prompt> [--times N] [--until <cond>] [--start-now]` | Start (or replace) the loop for this session. `--start-now` fires the first wakeup immediately. |
+| `/loop [interval] <prompt> [--times N] [--until <cond>]` | Start (or replace) the loop for this session. The first wakeup fires immediately; later ones follow the cadence. |
 | `/loop` or `/loop status` | Show cadence, ticks fired, and time to the next wakeup. |
 | `/loop pause` | Stop firing without losing the loop. |
 | `/loop resume` | Pick it back up. |

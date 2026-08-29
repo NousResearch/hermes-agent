@@ -596,6 +596,10 @@ class GatewayInboundMixin:
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
 
+        plugin_handled, plugin_result = await self._dispatch_busy_plugin_command(event, source)
+        if plugin_handled:
+            return True, plugin_result
+
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:

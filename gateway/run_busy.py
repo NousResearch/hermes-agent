@@ -11,6 +11,8 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
+import contextvars
+import inspect
 import json
 import os
 import time
@@ -475,13 +477,21 @@ class GatewayBusySessionMixin:
             else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
         )
 
-    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
+    async def _send_busy_reply(
+        self, event: MessageEvent, adapter, content: str, *,
+        plain_anchor: bool = False, notify: bool = False,
+    ) -> None:
         """Send a busy-path reply anchored to the event (thread metadata included)."""
         reply_anchor = self._reply_anchor_for_event(event)
+        metadata = self._thread_metadata_for_source(event.source, reply_anchor)
+        if notify:
+            from gateway.platforms.base import _mark_notify_metadata
+
+            metadata = _mark_notify_metadata(metadata)
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
             reply_to=reply_anchor if plain_anchor else self._busy_reply_to(event, reply_anchor),
-            metadata=self._thread_metadata_for_source(event.source, reply_anchor),
+            metadata=metadata,
         )
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
@@ -764,6 +774,67 @@ class GatewayBusySessionMixin:
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
+    async def _dispatch_busy_plugin_command(
+        self, event: MessageEvent, source: SessionSource
+    ) -> Tuple[bool, Optional[str]]:
+        """Dispatch one explicitly opted-in plugin command on a busy session.
+
+        Discovery uncertainty fails closed so slash arguments cannot fall into
+        queue/steer/interrupt/model routing. Commands without an explicit
+        ``busy_safe_subcommands`` declaration retain the legacy busy path.
+        """
+        plugin_name = (event.get_command() or "").strip().lower().replace("_", "-")
+        if not plugin_name:
+            return False, None
+        try:
+            from hermes_cli.plugins import get_plugin_command_entry
+
+            plugin_entry = get_plugin_command_entry(plugin_name)
+        except Exception:
+            logger.warning(
+                "Plugin command metadata lookup failed for /%s",
+                plugin_name,
+                exc_info=True,
+            )
+            return True, "Plugin command unavailable."
+
+        busy_safe = tuple((plugin_entry or {}).get("busy_safe_subcommands") or ())
+        if not plugin_entry or not busy_safe:
+            return False, None
+
+        denied = self._check_slash_access(source, plugin_name)
+        if denied is not None:
+            return True, denied
+
+        plugin_args = (event.get_command_args() or "").strip()
+        plugin_verb = plugin_args.split(None, 1)[0].lower() if plugin_args else ""
+        if plugin_verb not in busy_safe:
+            return True, (
+                f"⏳ Agent is running — `/{plugin_name}` can't run mid-turn. "
+                "Wait for the current response or `/stop` first."
+            )
+
+        handler = plugin_entry.get("handler")
+        if not callable(handler):
+            logger.warning("Plugin command /%s has no callable handler", plugin_name)
+            return True, "Plugin command failed."
+        try:
+            if inspect.iscoroutinefunction(handler):
+                result = await handler(plugin_args)
+            else:
+                ctx = contextvars.copy_context()
+                result = await asyncio.to_thread(ctx.run, handler, plugin_args)
+                if inspect.isawaitable(result):
+                    result = await result
+        except Exception:
+            logger.warning(
+                "Busy-safe plugin command dispatch failed for /%s",
+                plugin_name,
+                exc_info=True,
+            )
+            return True, "Plugin command failed."
+        return True, str(result) if result else None
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
@@ -805,6 +876,22 @@ class GatewayBusySessionMixin:
         # queue them through the FIFO (security metadata kept apart).
         if getattr(event, "internal", False):
             self._queue_or_replace_pending_event(session_key, event)
+            return True
+        plugin_handled, plugin_response = await self._dispatch_busy_plugin_command(
+            event, event.source
+        )
+        if plugin_handled:
+            if plugin_response:
+                try:
+                    await self._send_busy_reply(
+                        event, adapter, plugin_response, notify=True
+                    )
+                except Exception:
+                    # Already executed or denied: never replay it through the ordinary busy path.
+                    logger.warning(
+                        "Busy plugin reply delivery failed; event remains consumed",
+                        exc_info=True,
+                    )
             return True
         if (
             event.message_type == MessageType.TEXT

@@ -1294,6 +1294,7 @@ ctx.register_command(
     description: str = "",
     args_hint: str = "",
     argument_mode: str | None = None,
+    *,
     busy_safe_subcommands: Iterable[str] = (),
 )
 ```

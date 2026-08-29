@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { latestSessionTodos, parseTodos, todoTree } from './todos'
+import { latestSessionTodos, mergeTodoItems, nextTodosFromToolEvent, parseTodoPatch, parseTodos, todoTree } from './todos'
 
 describe('todoTree', () => {
   it('orders parents before children with depths', () => {
@@ -121,5 +121,79 @@ describe('latestSessionTodos', () => {
   it('returns null when no todo tool calls exist', () => {
     expect(latestSessionTodos([{ parts: [{ type: 'text', text: 'hi' }] }])).toBeNull()
     expect(latestSessionTodos([])).toBeNull()
+  })
+})
+
+describe('mergeTodoItems', () => {
+  const list = [
+    { content: 'Fix C', id: 'c', status: 'in_progress' as const },
+    { content: 'Fix D', id: 'd', status: 'pending' as const },
+    { content: 'Fix A', id: 'a', status: 'pending' as const }
+  ]
+
+  it('updates status by id and keeps the rest of the list', () => {
+    expect(mergeTodoItems(list, [{ id: 'c', status: 'completed' }])).toEqual([
+      { content: 'Fix C', id: 'c', status: 'completed' },
+      { content: 'Fix D', id: 'd', status: 'pending' },
+      { content: 'Fix A', id: 'a', status: 'pending' }
+    ])
+  })
+
+  it('appends a new item and fills missing content', () => {
+    expect(mergeTodoItems(list, [{ id: 'v', status: 'pending' }])).toEqual([
+      ...list,
+      { content: '(no description)', id: 'v', status: 'pending' }
+    ])
+  })
+})
+
+describe('nextTodosFromToolEvent', () => {
+  const current = [
+    { content: 'Fix C', id: 'c', status: 'pending' as const },
+    { content: 'Fix D', id: 'd', status: 'pending' as const }
+  ]
+
+  it('replaces from the full tool result', () => {
+    expect(
+      nextTodosFromToolEvent(current, {
+        todos: [
+          { content: 'Fix C', id: 'c', status: 'completed' },
+          { content: 'Fix D', id: 'd', status: 'in_progress' }
+        ]
+      })
+    ).toEqual([
+      { content: 'Fix C', id: 'c', status: 'completed' },
+      { content: 'Fix D', id: 'd', status: 'in_progress' }
+    ])
+  })
+
+  it('merges a status-only start payload instead of replacing the list', () => {
+    expect(
+      nextTodosFromToolEvent(current, {
+        args: { merge: true, todos: [{ id: 'c', status: 'completed' }] }
+      })
+    ).toEqual([
+      { content: 'Fix C', id: 'c', status: 'completed' },
+      { content: 'Fix D', id: 'd', status: 'pending' }
+    ])
+  })
+
+  it('does not wipe the list when a merge payload has no usable items', () => {
+    expect(nextTodosFromToolEvent(current, { args: { merge: true, todos: [] } })).toBeNull()
+  })
+
+  it('still replaces when merge is off', () => {
+    expect(
+      nextTodosFromToolEvent(current, {
+        args: { todos: [{ content: 'Only this', id: 'c', status: 'completed' }] }
+      })
+    ).toEqual([{ content: 'Only this', id: 'c', status: 'completed' }])
+  })
+})
+
+describe('parseTodoPatch', () => {
+  it('keeps status-only items that parseTodos would drop', () => {
+    expect(parseTodos([{ id: 'c', status: 'completed' }])).toEqual([])
+    expect(parseTodoPatch([{ id: 'c', status: 'completed' }])).toEqual([{ id: 'c', status: 'completed' }])
   })
 })

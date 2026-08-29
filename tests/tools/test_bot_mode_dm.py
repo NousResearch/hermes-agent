@@ -390,6 +390,36 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     assert not dm_file.exists()
 
 
+def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
+    tmp_path, monkeypatch
+):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    calls = []
+    responses = [
+        subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 429 rate limit"),
+        subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    ]
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return responses.pop(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    returncode = bot_mode_dm._run_delivery(
+        ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
+    )
+
+    assert returncode == 0
+    assert len(calls) == 2
+    assert [kwargs["stdin"] for _argv, kwargs in calls] == [
+        subprocess.DEVNULL,
+        subprocess.DEVNULL,
+    ]
+    assert not dm_file.exists()
+
+
 @pytest.mark.parametrize("args", [[], ["--run-delivery"], ["--run-delivery", "bad", "x"]])
 def test_delivery_main_rejects_invalid_cli(args):
     assert bot_mode_dm._delivery_main(args) == 2

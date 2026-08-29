@@ -4,6 +4,7 @@ Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) s
 in ``tools.memory_tool`` and is read lazily."""
 
 import logging
+import os
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -151,7 +152,22 @@ class MemoryStore:
         if fcntl is None and msvcrt is None:
             yield
             return
-        with open(lock_path, "a+", encoding="utf-8") as fd:
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        raw_fd = os.open(lock_path, flags, 0o600)
+        try:
+            # The creation mode is filtered through the process umask and does
+            # not repair a lock left loose by an older Hermes process. Tighten
+            # the opened inode before acquiring the lock so both cases are
+            # owner-only. Operating on the fd avoids a path-swap window.
+            if hasattr(os, "fchmod"):
+                os.fchmod(raw_fd, 0o600)
+            fd = os.fdopen(raw_fd, "r+", encoding="utf-8")
+        except Exception:
+            os.close(raw_fd)
+            raise
+        with fd:
             def _flock(unlock: bool):
                 if fcntl:
                     fcntl.flock(fd, fcntl.LOCK_UN if unlock else fcntl.LOCK_EX)

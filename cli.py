@@ -62,7 +62,6 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
-from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer, WindowAlign
 from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
 from prompt_toolkit.filters import Condition
@@ -6963,7 +6962,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return payload
 
     def _pet_queue_kitty_frame(self, state: str | None = None) -> None:
-        """Queue one virtual Kitty frame for the next prompt_toolkit render."""
+        """Queue one virtual Kitty frame for the next prompt_toolkit render.
+
+        No-op when the pet pane was never initialized (``__new__`` fixtures
+        and ``_force_full_redraw`` / resize recovery on a pet-less CLI).
+        """
+        if not getattr(self, "_pet_enabled", False):
+            return
         if state is None:
             state = self._derive_pet_state()
         payload = self._pet_kitty_payload_for(state)
@@ -20373,6 +20378,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # placeholder-capable terminals (kitty/Ghostty) use 24-bit color for
         # the whole prompt_toolkit application — quantizing only that pane
         # is not supported. WezTerm is excluded: it is not placeholder-capable.
+        # ColorDepth is imported here (not at module load) so tests that stub
+        # ``prompt_toolkit`` as a MagicMock can still import cli.
+        color_depth_kw = {}
+        if pet_render.supports_kitty_placeholders():
+            from prompt_toolkit.output import ColorDepth
+
+            color_depth_kw = {"color_depth": ColorDepth.DEPTH_24_BIT}
         app = Application(
             layout=layout,
             key_bindings=kb,
@@ -20380,11 +20392,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             full_screen=False,
             mouse_support=False,
             **({"output": _cpr_disabled_output} if _cpr_disabled_output is not None else {}),
-            **(
-                {"color_depth": ColorDepth.DEPTH_24_BIT}
-                if pet_render.supports_kitty_placeholders()
-                else {}
-            ),
+            **color_depth_kw,
             # Read from display.cli_refresh_interval (default 0 = disabled).
             # When non-zero, prompt_toolkit redraws the UI on this cadence
             # during idle, keeping wall-clock status-bar read-outs ticking.

@@ -656,7 +656,7 @@ def _gateway_provider_error_reply(text: str) -> str:
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
 _PROVIDER_ERROR_MARKERS = (
     r"api\s+(?:call\s+)?failed", r"provider\s+authentication\s+failed", r"non-retryable\s+error",
-    r"rate\s+limited\s+after\s+\d+\s+retries", r"error\s+code\s*:", r"http\s*\d{3}\b",
+    r"rate\s+limited\s+after\s+\d+\s+(?:retries|attempts?)\b", r"error\s+code\s*:", r"http\s*\d{3}\b",
     r"incorrect\s+api\s+key", r"invalid\s+api\s+key")
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
@@ -734,7 +734,14 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     ):
         return None
     if _looks_like_gateway_provider_error(text):
-        return _gateway_provider_error_reply(text)
+        # A provider error also reaches the chat as the failed turn's final
+        # response, which _sanitize_gateway_final_response rewrites to the
+        # same user-safe text — delivering the rewrite here too means two
+        # identical persistent messages (#72131). Failed runs are exempted
+        # from progress-bubble cleanup, so even adapters that implement
+        # send_or_update_status keep the status copy. Suppress the transient
+        # copy; the final response still reports the failure.
+        return None
     return text
 
 

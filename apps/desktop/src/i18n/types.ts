@@ -526,6 +526,8 @@ export interface Translations {
       composerPopoutDesc: string
       vibeHeartsTitle: string
       vibeHeartsDesc: string
+      turnPerfTitle: string
+      turnPerfDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string
@@ -3035,6 +3037,12 @@ export interface Translations {
       thoughtBriefly: string
       thoughtFor: (duration: string) => string
       turnDuration: (duration: string) => string
+      turnPerfCount: (tokens: string) => string
+      turnPerfRate: (rate: string) => string
+      turnPerfTooltipDuration: (duration: string) => string
+      turnPerfTooltipTokens: (tokens: string) => string
+      turnPerfTooltipTokensEst: (tokens: string) => string
+      turnPerfTooltipThinking: (duration: string) => string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string

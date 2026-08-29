@@ -484,6 +484,10 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
         ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
+        // Exact provider token counts for the completed turn (carried to the
+        // assistant footer's token-rate readout). Absent when the gateway
+        // didn't report usage for this turn.
+        ...(message.usage !== undefined ? { usage: message.usage } : {}),
         // Structured failure layer for the error card (see lib/error-surface).
         ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
         ...reactionMeta

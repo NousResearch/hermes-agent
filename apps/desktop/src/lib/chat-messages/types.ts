@@ -36,6 +36,10 @@ export type ChatMessage = {
    *  stamped by the desktop when it watched the turn run. Absent for
    *  messages hydrated from history — the backend doesn't persist it. */
   durationS?: number
+  /** Exact provider token counts for the completed turn (input/output/total),
+   *  when the gateway reported usage. Surfaces in the assistant footer's
+   *  token-rate readout; absent when the backend didn't report it. */
+  usage?: Partial<UsageStats>
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */

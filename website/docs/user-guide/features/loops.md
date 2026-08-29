@@ -37,6 +37,19 @@ Loop a slash command just as easily:
 /loop 10m /recap
 ```
 
+### Run the first iteration immediately
+
+By default the first wakeup waits one full interval. Pass `--start-now` to run
+the first iteration right away, then continue on the cadence:
+
+```
+/loop 1h --start-now check the deploy status and tell me if it's live yet
+```
+
+The first wakeup fires on the next idle poll (gateway: the next 15s watcher
+scan); subsequent wakeups follow the interval as usual. Works in both cadence
+modes and with `/proactive`.
+
 ## The two cadence modes
 
 **Fixed interval — you set the clock.** Give an interval (`30s`, `5m`, `2h`, `1h30m`) and the loop fires on that schedule. Use it when the thing you're watching changes on its own timeline:
@@ -76,7 +89,7 @@ Examples:
 
 | Command | What it does |
 |---|---|
-| `/loop [interval] <prompt> [--times N] [--until <cond>]` | Start (or replace) the loop for this session. |
+| `/loop [interval] <prompt> [--times N] [--until <cond>] [--start-now]` | Start (or replace) the loop for this session. `--start-now` fires the first wakeup immediately. |
 | `/loop` or `/loop status` | Show cadence, ticks fired, and time to the next wakeup. |
 | `/loop pause` | Stop firing without losing the loop. |
 | `/loop resume` | Pick it back up. |

@@ -149,11 +149,14 @@ def parse_loop_args(text: str) -> Dict[str, Any]:
         /loop keep fixing the failing test until the suite passes
         /loop 2m poll CI --times 30
         /loop 5m watch the queue --until queue depth reaches zero
+        /loop 1h --start-now check the deploy status
 
     Returns ``{"interval_seconds": int|None, "prompt": str, "times": int,
-    "until": str, "error": str|None}``. ``interval_seconds`` None means
-    self-paced. ``error`` is set for unusable input (empty prompt,
-    interval-only, bad --times).
+    "until": str, "start_now": bool, "error": str|None}``.
+    ``interval_seconds`` None means self-paced. ``start_now`` is True when
+    the user passed ``--start-now`` (first wakeup fires immediately).
+    ``error`` is set for unusable input (empty prompt, interval-only,
+    bad --times).
     """
     raw = (text or "").strip()
     result: Dict[str, Any] = {
@@ -161,6 +164,7 @@ def parse_loop_args(text: str) -> Dict[str, Any]:
         "prompt": "",
         "times": 0,
         "until": "",
+        "start_now": False,
         "error": None,
     }
     if not raw:
@@ -170,9 +174,16 @@ def parse_loop_args(text: str) -> Dict[str, Any]:
     # Pull trailing flags first so an interval-looking token inside the
     # --until clause can't confuse the front parse. Flags may appear in
     # either order at the end of the line; --until consumes to end-of-line
-    # (or to a following --times).
+    # (or to a following --times). --start-now is a bare boolean flag.
     times = 0
     until = ""
+    start_now = False
+
+    # --start-now is a bare boolean flag; it may lead the args or trail.
+    m_start_now = re.search(r"(?:^|\s)--start-now\b", raw)
+    if m_start_now:
+        start_now = True
+        raw = (raw[: m_start_now.start()] + raw[m_start_now.end():]).strip()
 
     m_times = re.search(r"\s--times\s+(\S+)", raw)
     if m_times:
@@ -211,6 +222,7 @@ def parse_loop_args(text: str) -> Dict[str, Any]:
     result["prompt"] = raw
     result["times"] = times
     result["until"] = until
+    result["start_now"] = start_now
     return result
 
 
@@ -295,6 +307,7 @@ class LoopState:
     current_delay: float = 0.0        # live cadence (self-paced backoff)
     times: int = 0                    # user cap (--times N); 0 = none
     until: str = ""                   # judged stop condition; "" = none
+    start_now: bool = False           # --start-now: first wakeup fires immediately
     max_ticks: int = DEFAULT_MAX_TICKS  # config backstop; 0 = unlimited
     ticks_fired: int = 0
     created_at: float = 0.0
@@ -329,6 +342,7 @@ class LoopState:
             current_delay=float(data.get("current_delay", 0.0) or 0.0),
             times=int(data.get("times", 0) or 0),
             until=str(data.get("until", "") or ""),
+            start_now=bool(data.get("start_now", False)),
             max_ticks=int(data.get("max_ticks", DEFAULT_MAX_TICKS) or 0),
             ticks_fired=int(data.get("ticks_fired", 0) or 0),
             created_at=float(data.get("created_at", 0.0) or 0.0),
@@ -597,9 +611,14 @@ class LoopManager:
         interval_seconds: Optional[int] = None,
         times: int = 0,
         until: str = "",
+        start_now: bool = False,
         route: Optional[Dict[str, str]] = None,
     ) -> LoopState:
-        """Start a new loop (replaces any existing one for the session)."""
+        """Start a new loop (replaces any existing one for the session).
+
+        With ``start_now=True`` the first wakeup is due immediately (next
+        idle poll / gateway watcher scan) instead of one interval out.
+        """
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("loop prompt is empty")
@@ -612,7 +631,7 @@ class LoopManager:
                 mode="interval",
                 interval_seconds=float(interval),
                 current_delay=float(interval),
-                next_due_at=now + interval,
+                next_due_at=now if start_now else now + interval,
             )
         else:
             floor = self_paced_floor_seconds()
@@ -621,10 +640,11 @@ class LoopManager:
                 mode="self_paced",
                 interval_seconds=0.0,
                 current_delay=float(floor),
-                next_due_at=now + floor,
+                next_due_at=now if start_now else now + floor,
             )
         state.times = max(0, int(times or 0))
         state.until = (until or "").strip()
+        state.start_now = bool(start_now)
         state.max_ticks = max_ticks_default()
         state.created_at = now
         state.route = dict(route or {})
@@ -890,12 +910,13 @@ def dispatch_loop_command(
     if lower in {"help", "--help", "-h"}:
         return {
             "output": (
-                "Usage: /loop [interval] <prompt> [--times N] [--until <condition>]\n"
+                "Usage: /loop [interval] <prompt> [--times N] [--until <condition>] [--start-now]\n"
                 "  /loop 5m check the deploy status      — fixed cadence\n"
                 "  /loop every 10m /recap                — loop a slash command\n"
                 "  /loop keep fixing tests until green   — self-paced (backs off while output is unchanged)\n"
                 "  /loop 2m poll CI --times 30           — stop after 30 runs\n"
                 "  /loop 5m watch the queue --until queue is empty\n"
+                "  /loop 1h --start-now check deploy     — first wakeup fires immediately\n"
                 "Controls: /loop status · /loop pause · /loop resume · /loop stop\n"
                 "The loop also stops itself when the agent replies with "
                 f"{LOOP_COMPLETE_MARKER}."
@@ -916,6 +937,7 @@ def dispatch_loop_command(
             interval_seconds=parsed["interval_seconds"],
             times=parsed["times"],
             until=parsed["until"],
+            start_now=parsed["start_now"],
             route=route,
         )
     except ValueError as exc:
@@ -938,7 +960,10 @@ def dispatch_loop_command(
         lines.append(f"Stops when: {state.until}")
     if not state.times and state.max_ticks:
         lines.append(f"Backstop budget: {state.max_ticks} ticks (loops.max_ticks; 0 = unlimited).")
-    lines.append(f"First wakeup {state.remaining_label()}. Controls: /loop status · pause · resume · stop.")
+    if state.start_now and state.status == "active":
+        lines.append("First wakeup fires now (--start-now), then on the cadence above.")
+    else:
+        lines.append(f"First wakeup {state.remaining_label()}. Controls: /loop status · pause · resume · stop.")
     if replacing:
         lines.insert(1, "(replaced the previous loop for this session)")
     return {"output": "\n".join(lines), "created": True}

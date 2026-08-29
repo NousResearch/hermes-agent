@@ -28,7 +28,7 @@ KNOWN_ROLES = frozenset(
     {ROLE_IMPLEMENTATION, ROLE_ARCHITECTURE, ROLE_REVIEW, ROLE_NONCRITICAL}
 )
 
-SECOND_OPINION_PROFILES = frozenset({"reviewer-grok", "architect-grok"})
+SECOND_OPINION_PROFILES = frozenset({"reviewer-grok", "architect-grok", "reviewer-claude"})
 
 REASON_DENIED = "ROUTING_DENIED"
 REASON_UNAVAILABLE = "ROUTING_UNAVAILABLE"

@@ -36,7 +36,7 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     authorized = {
         "engineer-grok", "architect-sol", "reviewer", "reviewer-grok",
-        "architect-grok", "engineer", "engineer38",
+        "architect-grok", "reviewer-claude", "engineer", "engineer38",
     }
     monkeypatch.setattr(
         "hermes_cli.profiles.profile_exists",
@@ -549,6 +549,109 @@ def test_second_opinion_reviewer_grok_requires_explicit_flag(kanban_home):
         )
         assert kb.get_task(conn, tid).assignee == "reviewer-grok"
         assert kb.get_task(conn, tid).routing_second_opinion is True
+
+
+def test_critical_review_reviewer_claude_allowed_with_explicit_second_opinion_flag(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="claude second look",
+            assignee="reviewer-claude",
+            routing_role="review",
+            routing_second_opinion=True,
+        )
+        task = kb.get_task(conn, tid)
+        assert task.assignee == "reviewer-claude"
+        assert task.routing_second_opinion is True
+        assert task.routing_role == "review"
+
+
+def test_critical_review_reviewer_claude_denied_without_second_opinion_flag(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(_guard_error()) as exc:
+            kb.create_task(
+                conn,
+                title="claude sole certifier",
+                assignee="reviewer-claude",
+                routing_role="review",
+            )
+        assert exc.value.code == routing.REASON_DENIED
+
+
+def test_reviewer_claude_infers_review_role_like_other_second_opinion_profiles():
+    assert routing.infer_role_from_assignee("reviewer-claude") == routing.ROLE_REVIEW
+    assert routing.infer_role_from_assignee("reviewer-grok") == routing.ROLE_REVIEW
+    assert routing.infer_role_from_assignee("architect-grok") == routing.ROLE_REVIEW
+
+
+def test_reviewer_claude_is_policy_profile_but_not_primary_or_default_reviewer():
+    names = routing.policy_profile_names()
+    assert "reviewer-claude" in names
+    assert "reviewer-grok" in names
+    assert "architect-grok" in names
+    primary_review = routing.DEFAULT_ROUTING_CONFIG["critical"][routing.ROLE_REVIEW]
+    assert "reviewer-claude" not in primary_review
+    assert "reviewer-grok" not in primary_review
+    assert "reviewer" in primary_review
+    allowed_without_flag = routing.allowed_critical_assignees(routing.ROLE_REVIEW)
+    assert "reviewer-claude" not in allowed_without_flag
+    assert "reviewer" in allowed_without_flag
+    allowed_with_flag = routing.allowed_critical_assignees(
+        routing.ROLE_REVIEW, second_opinion=True,
+    )
+    assert "reviewer-claude" in allowed_with_flag
+    assert "reviewer-grok" in allowed_with_flag
+
+
+def test_critical_review_unknown_installed_profile_denied(kanban_home, monkeypatch):
+    authorized = {
+        "engineer-grok", "architect-sol", "reviewer", "reviewer-grok",
+        "architect-grok", "reviewer-claude", "engineer", "engineer38",
+        "installed-unknown",
+    }
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profile_exists",
+        lambda name: str(name).strip() in authorized,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_routing.profile_is_available",
+        lambda name: str(name or "").strip() in authorized,
+    )
+    with kb.connect() as conn:
+        with pytest.raises(_guard_error()) as exc:
+            kb.create_task(
+                conn,
+                title="unknown installed review",
+                assignee="installed-unknown",
+                routing_role="review",
+            )
+        assert exc.value.code == routing.REASON_DENIED
+
+
+def test_primary_reviewer_and_reviewer_grok_second_opinion_unchanged(kanban_home):
+    with kb.connect() as conn:
+        primary = kb.create_task(
+            conn, title="primary review", assignee="reviewer", routing_role="review",
+        )
+        assert kb.get_task(conn, primary).assignee == "reviewer"
+        assert kb.get_task(conn, primary).routing_second_opinion is False
+        with pytest.raises(_guard_error()) as exc:
+            kb.create_task(
+                conn,
+                title="grok without flag",
+                assignee="reviewer-grok",
+                routing_role="review",
+            )
+        assert exc.value.code == routing.REASON_DENIED
+        grok = kb.create_task(
+            conn,
+            title="grok with flag",
+            assignee="reviewer-grok",
+            routing_role="review",
+            routing_second_opinion=True,
+        )
+        assert kb.get_task(conn, grok).assignee == "reviewer-grok"
+        assert kb.get_task(conn, grok).routing_second_opinion is True
 
 
 def _plant_review_task(

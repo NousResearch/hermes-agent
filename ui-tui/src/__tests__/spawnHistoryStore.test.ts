@@ -27,6 +27,41 @@ describe('spawnHistoryStore status normalization', () => {
     expect(statuses).toEqual(['timeout', 'error'])
   })
 
+  it('preserves logical outcomes and schema evidence from disk snapshots', () => {
+    pushDiskSnapshot(
+      {
+        finished_at: 1_700_000_021,
+        label: 'outcome test',
+        session_id: 'sess-3',
+        started_at: 1_700_000_020,
+        subagents: [
+          {
+            error: 'Final answer does not satisfy the declared output_schema.',
+            errorAuthoritative: true,
+            goal: 'schema failure',
+            id: 'sa-failed',
+            index: 0,
+            outcome: 'failed',
+            schemaErrors: ["'city' is a required property"],
+            schemaRetries: 1,
+            schemaValid: false,
+            status: 'completed'
+          }
+        ]
+      },
+      '/tmp/snap-outcome.json'
+    )
+
+    expect(getSpawnHistory()[0]?.subagents[0]).toMatchObject({
+      errorAuthoritative: true,
+      outcome: 'failed',
+      schemaErrors: ["'city' is a required property"],
+      schemaRetries: 1,
+      schemaValid: false,
+      status: 'completed'
+    })
+  })
+
   it('falls back unknown disk statuses to completed', () => {
     pushDiskSnapshot(
       {

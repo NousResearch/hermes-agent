@@ -1,7 +1,7 @@
 import type { BillingBlock, UsageModelData } from '@hermes/shared/billing'
 import type { HermesSkin } from '@hermes/shared/skin'
 
-import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
+import type { SessionInfo, SlashCategory, SubagentOutcome, SubagentStatus, Usage } from './types.js'
 
 /** The cross-surface skin contract (canonical shape in `@hermes/shared`).
  *  Includes the paired light_colors/dark_colors overlays from #20379. */
@@ -549,16 +549,24 @@ export interface SubagentEventPayload {
   delegation_id?: string
   depth?: number
   duration_seconds?: number
+  error?: string
+  error_authoritative?: boolean
+  exit_reason?: string
   files_read?: string[]
   files_written?: string[]
   goal: string
   input_tokens?: number
+  interrupted?: boolean
   iteration?: number
   model?: string
+  outcome?: SubagentOutcome
   output_tail?: { is_error?: boolean; preview?: string; tool?: string }[]
   output_tokens?: number
   parent_id?: null | string
   reasoning_tokens?: number
+  schema_errors?: string[]
+  schema_retries?: number
+  schema_valid?: boolean
   status?: SubagentStatus
   subagent_id?: string
   summary?: string
@@ -566,6 +574,7 @@ export interface SubagentEventPayload {
   task_index: number
   text?: string
   tool_count?: number
+  tool_error_count?: number
   tool_name?: string
   tool_preview?: string
   toolsets?: string[]

@@ -21,7 +21,7 @@ def _fresh_ordinals(monkeypatch):
 def test_format_batch_tag_assigns_stable_ordinals_per_batch():
     assert format_batch_tag("deleg_6a664903") == "set 1"
     assert format_batch_tag("deleg_b2ac1234") == "set 2"
-    assert format_batch_tag("deleg_6a664903") == "set 1"  # same batch, same label
+    assert format_batch_tag("deleg_6a664903") == "set 1"
     assert format_batch_tag(None) == ""
     assert format_batch_tag("") == ""
 
@@ -80,7 +80,7 @@ def test_child_tree_prefix_without_batch_id_is_unchanged():
 
 
 def test_batch_completion_lines_are_attributable_across_two_batches(monkeypatch, tmp_path):
-    """Two interleaved batches: every ✓ line names its own ``set N``."""
+    """Two interleaved batches: every completion line names its own ``set N``."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
     lines = []
@@ -111,9 +111,15 @@ def test_batch_completion_lines_are_attributable_across_two_batches(monkeypatch,
         assert "error" not in str(res)[:20], res
     headers = [re.match(r"\s*🔀 \[(set \d+)\] delegating (\d+) tasks", l) for l in lines]
     headers = [m for m in headers if m]
-    assert [(m.group(1), int(m.group(2))) for m in headers] == [("set 1", 3), ("set 2", 9)]
+    assert [(m.group(1), int(m.group(2))) for m in headers] == [
+        ("set 1", 3),
+        ("set 2", 9),
+    ]
 
-    done = [l for l in lines if "✓ [" in l]
+    # This PR deliberately has no verified-success outcome, so completed
+    # lifecycle rows with unverified summaries remain warning-colored.
+    done = [l for l in lines if "⚠ [" in l]
     assert len(done) == 12
-    assert sum(1 for l in done if "✓ [set 1 · " in l and "/3]" in l) == 3
-    assert sum(1 for l in done if "✓ [set 2 · " in l and "/9]" in l) == 9
+    assert not any("✓ [" in l for l in lines)
+    assert sum(1 for l in done if "⚠ [set 1 · " in l and "/3]" in l) == 3
+    assert sum(1 for l in done if "⚠ [set 2 · " in l and "/9]" in l) == 9

@@ -231,6 +231,71 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_single_async_runner_crash_emits_failed_logical_envelope():
+    def runner():
+        raise RuntimeError("boom")
+
+    ad.dispatch_async_delegation(
+        goal="crash",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="test-model",
+        session_key="",
+        runner=runner,
+        max_async_children=3,
+    )
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["status"] == "error"
+    assert evt["outcome"] == "failed"
+    assert evt["exit_reason"] == "error"
+    assert evt["interrupted"] is False
+    assert evt["tool_error_count"] == 0
+
+
+def test_async_schema_failure_preserves_authoritative_evidence():
+    schema_errors = ["'city' is a required property"]
+
+    def runner():
+        return {
+            "status": "completed",
+            "outcome": "failed",
+            "summary": "{}",
+            "error": "Final answer does not satisfy the declared output_schema.",
+            "error_authoritative": True,
+            "schema_valid": False,
+            "schema_errors": schema_errors,
+            "schema_retries": 1,
+        }
+
+    ad.dispatch_async_delegation(
+        goal="structured answer",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="test-model",
+        session_key="",
+        runner=runner,
+        max_async_children=3,
+    )
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["status"] == "completed"
+    assert evt["outcome"] == "failed"
+    assert evt["schema_valid"] is False
+    assert evt["schema_errors"] == schema_errors
+    assert evt["schema_retries"] == 1
+    assert evt["error_authoritative"] is True
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "Outcome: failed" in text
+    assert "schema_valid=false" in text
+    assert "schema_error='city' is a required property" in text
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",
@@ -609,6 +674,40 @@ assert ad.mark_completion_delivered({delegation_id!r})
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"
+
+
+def test_recovered_abandoned_delegation_is_unknown_not_failed(tmp_path, monkeypatch):
+    """An owner that died mid-flight yields an explicitly *unknown* logical
+    outcome — never a failure and never a success. The synthesized error text
+    is not authoritative, so consumers must not present it as a verdict."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ad._persist_dispatch({
+        "delegation_id": "deleg_abandoned",
+        "session_key": "owner",
+        "origin_ui_session_id": "",
+        "parent_session_id": None,
+        "dispatched_at": 1.0,
+    })
+    with ad._DB_LOCK, ad._connect() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET owner_pid=?, owner_started_at=NULL WHERE delegation_id=?",
+            (99999999, "deleg_abandoned"),
+        )
+
+    assert ad.recover_abandoned_delegations() == 1
+    restored = queue.Queue()
+    assert ad.restore_undelivered_completions(restored) == 1
+    restored_event = restored.get_nowait()
+    assert restored_event["status"] == "unknown"
+    assert restored_event["outcome"] == "unknown"
+    assert restored_event["exit_reason"] == "unknown"
+    assert restored_event["error_authoritative"] is False
+    with ad._DB_LOCK, ad._connect() as conn:
+        result_json = conn.execute(
+            "SELECT result_json FROM async_delegations WHERE delegation_id=?",
+            ("deleg_abandoned",),
+        ).fetchone()[0]
+    assert json.loads(result_json)["exit_reason"] == "unknown"
 
 
 # ---------------------------------------------------------------------------

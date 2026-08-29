@@ -1,5 +1,5 @@
 import { firstStringField, normalize } from '@/lib/text'
-import type { SubagentProgress, SubagentStatus } from '@/store/subagents'
+import { isFailedSubagent, type SubagentOutcome, type SubagentProgress, type SubagentStatus } from '@/store/subagents'
 
 import { numberValue, parseMaybeObject } from './fallback-model'
 
@@ -13,9 +13,19 @@ export interface DelegateRow {
   /** Latest relayed activity, oldest → newest. The card tickers the tail. */
   activity: string[]
   durationSeconds?: number
+  error?: string
+  errorAuthoritative?: boolean
   goal: string
   id: string
   model?: string
+  /**
+   * The child's *logical* result, which is a different claim from `status`.
+   * Absent on envelopes that predate the field — and absence is not success.
+   */
+  outcome?: SubagentOutcome
+  schemaErrors?: string[]
+  schemaRetries?: number
+  schemaValid?: boolean
   /** The child's own session id, when it reported one — opens its window. */
   sessionId?: string
   status: DelegateRowStatus
@@ -28,6 +38,45 @@ export interface DelegateRow {
  * must not spin.
  */
 export type DelegateRowStatus = SubagentStatus | 'dispatched'
+
+/**
+ * How a row is allowed to read, once lifecycle and logical result are kept
+ * apart.
+ *
+ * `status: 'completed'` says the child's loop ended and nothing more; the
+ * delegate envelope carries no `success` outcome by design, because the
+ * strongest thing the backend can assert about returned work is `unverified` —
+ * a request for the parent to check the evidence, not a verdict on it. So a
+ * settled row is failed, or it is outstanding. It is never done.
+ */
+export type DelegateRowTone = 'failed' | 'live' | 'parked' | 'partial' | 'unverified'
+
+export const isDelegateRowLive = (status: DelegateRowStatus): boolean => status === 'running' || status === 'queued'
+
+/**
+ * The one place that decides whether a delegated child reads as a success.
+ *
+ * Both the card and the Spawn-tree panel answer this question, and they must
+ * not drift, so the failure half defers to the store's `isFailedSubagent`.
+ */
+export function delegateRowTone(row: Pick<DelegateRow, 'outcome' | 'status'>): DelegateRowTone {
+  if (isDelegateRowLive(row.status)) {
+    return 'live'
+  }
+
+  if (row.status === 'dispatched') {
+    return 'parked'
+  }
+
+  if (isFailedSubagent({ outcome: row.outcome, status: row.status })) {
+    return 'failed'
+  }
+
+  // `partial` proves the loop ran out of budget or was cut short; every other
+  // settled shape — `unverified`, `unknown`, or an envelope too old to say —
+  // is output nobody has checked. Neither one earns a green check.
+  return row.outcome === 'partial' ? 'partial' : 'unverified'
+}
 
 const field = (record: Record<string, unknown>, key: string): string => firstStringField(record, [key])
 
@@ -43,6 +92,15 @@ export function delegateGoals(args: unknown): string[] {
   const goal = field(record, 'goal')
 
   return goal ? [goal] : []
+}
+
+/** Logical outcome words a settled result may report, apart from lifecycle. */
+const OUTCOMES = new Set<string>(['failed', 'partial', 'unknown', 'unverified'])
+
+const settledOutcome = (entry: Record<string, unknown>): SubagentOutcome | undefined => {
+  const outcome = field(entry, 'outcome')
+
+  return OUTCOMES.has(outcome) ? (outcome as SubagentOutcome) : undefined
 }
 
 function resultRows(result: unknown): Record<string, unknown>[] {
@@ -92,21 +150,41 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
     return {
       activity: summary ? [summary] : [],
       durationSeconds: entry ? (numberValue(entry.duration_seconds) ?? undefined) : undefined,
+      error: entry ? field(entry, 'error') || undefined : undefined,
+      errorAuthoritative:
+        entry && typeof entry.error_authoritative === 'boolean' ? entry.error_authoritative : undefined,
       goal,
       id: `${toolCallId}:${index}`,
       model: entry ? field(entry, 'model') || undefined : undefined,
+      outcome: entry ? settledOutcome(entry) : undefined,
+      schemaErrors:
+        entry && Array.isArray(entry.schema_errors)
+          ? entry.schema_errors.filter((error): error is string => typeof error === 'string')
+          : undefined,
+      schemaRetries: entry ? (numberValue(entry.schema_retries) ?? undefined) : undefined,
+      schemaValid: entry && typeof entry.schema_valid === 'boolean' ? entry.schema_valid : undefined,
       status: entry ? settledRowStatus(field(entry, 'status')) : idle
     }
   })
 }
 
-function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: string): DelegateRow {
+function fromSubagent(live: SubagentProgress, row: DelegateRow): DelegateRow {
   return {
     activity: live.stream.map(entry => entry.text).filter(Boolean),
     durationSeconds: live.durationSeconds,
-    goal: live.goal || fallbackGoal,
-    id: live.id || fallbackId,
+    error: live.error ?? row.error,
+    errorAuthoritative: live.errorAuthoritative ?? row.errorAuthoritative,
+    goal: live.goal || row.goal,
+    id: live.id || row.id,
     model: live.model,
+    // Merge, don't clobber. The store's lifecycle events carry no logical
+    // outcome of their own, and letting one of those blank out a `partial` or
+    // `failed` the result envelope already proved would repaint a known
+    // non-success row as merely unverified — the false green, one layer up.
+    outcome: live.outcome ?? row.outcome,
+    schemaErrors: live.schemaErrors ?? row.schemaErrors,
+    schemaRetries: live.schemaRetries ?? row.schemaRetries,
+    schemaValid: live.schemaValid ?? row.schemaValid,
     sessionId: live.sessionId,
     status: live.status
   }
@@ -151,8 +229,6 @@ export function mergeDelegateRows(
   return rows.map((row, index) => {
     const matched = byGoal[index] ?? (sameShape ? claim(c => c.taskIndex === index) : undefined)
 
-    return matched ? fromSubagent(matched, row.id, row.goal) : row
+    return matched ? fromSubagent(matched, row) : row
   })
 }
-
-export const isDelegateRowLive = (status: DelegateRowStatus): boolean => status === 'running' || status === 'queued'

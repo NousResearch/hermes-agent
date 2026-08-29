@@ -59,7 +59,11 @@ def lifecycle(monkeypatch):
             time.sleep(0.002)
         return {
             "status": "completed",
+            "outcome": "unverified",
             "summary": "safe summary",
+            "exit_reason": "completed",
+            "interrupted": False,
+            "tool_error_count": 0,
             "api_calls": 1,
             "duration_seconds": 0.01,
         }
@@ -126,7 +130,11 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
         lambda *_args, **_kwargs: {
             "task_index": 0,
             "status": "completed",
+            "outcome": "unverified",
             "summary": "aggregated",
+            "exit_reason": "completed",
+            "interrupted": False,
+            "tool_error_count": 0,
             "api_calls": 1,
             "duration_seconds": 0.25,
             "_child_role": "leaf",
@@ -150,6 +158,15 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
         child_role="leaf",
         child_summary="aggregated",
         child_status="completed",
+        child_outcome="unverified",
+        child_schema_valid=None,
+        child_schema_errors=None,
+        child_schema_retries=None,
+        child_error_authoritative=False,
+        child_exit_reason="completed",
+        child_interrupted=False,
+        child_tool_error_count=0,
+        child_terminal_tool_error_count=None,
         # Redacted tool history rides the shared finalization pipeline
         # (#62011/#72403); empty here because the fabricated result carries
         # no tool_trace.
@@ -159,6 +176,70 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
     assert parent.session_estimated_cost_usd == 3.5
     assert parent.session_cost_source == "subagent"
     assert parent.session_cost_status == "estimated"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "extra", "expected_state", "expected_classification"),
+    [
+        (
+            "failed",
+            {
+                "schema_valid": False,
+                "schema_errors": ["'city' is required"],
+                "error_authoritative": True,
+                "error": "output schema rejected",
+            },
+            SubagentState.FAILED,
+            "SCHEMA_INVALID",
+        ),
+        ("partial", {}, SubagentState.SUCCEEDED, None),
+        ("unverified", {}, SubagentState.SUCCEEDED, None),
+        ("unknown", {}, SubagentState.SUCCEEDED, None),
+    ],
+)
+def test_public_lifecycle_preserves_logical_outcome_boundary(
+    monkeypatch, outcome, extra, expected_state, expected_classification
+):
+    parent = SimpleNamespace(session_id=f"parent-{outcome}", enabled_toolsets=["file"])
+    child = FakeChild(f"sa-boundary-{outcome}")
+    raw = {
+        "task_index": 0,
+        "status": "completed",
+        "outcome": outcome,
+        "summary": "bounded result",
+        "exit_reason": "completed",
+        "interrupted": False,
+        "tool_error_count": 1,
+        "api_calls": 2,
+        "duration_seconds": 0.5,
+        **extra,
+    }
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
+    monkeypatch.setattr(
+        "tools.delegate_tool._run_single_child", lambda *_args, **_kwargs: dict(raw)
+    )
+
+    service = SubagentLifecycleService(lambda: parent)
+    handle = service.launch(SubagentLaunchRequest(goal="exercise public boundary"))
+    assert service.wait(handle, timeout_seconds=1).state is expected_state
+    result = service.result(handle)
+
+    assert result.contract_version == handle.contract_version
+    assert result.terminal_state is expected_state
+    assert result.lifecycle_status == "completed"
+    assert result.outcome == outcome
+    assert result.exit_reason == "completed"
+    assert result.interrupted is False
+    assert result.tool_error_count == 1
+    assert result.error_classification == expected_classification
+    assert result.structured_payload is not None
+    assert result.structured_payload["outcome"] == outcome
+    if outcome == "failed":
+        assert result.schema_valid is False
+        assert result.schema_errors == ("'city' is required",)
+        assert result.error_authoritative is True
+        assert result.structured_payload["schema_valid"] is False
 
 
 

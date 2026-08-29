@@ -220,6 +220,44 @@ class TestBatchMode:
 
 
 class TestPayloadShape:
+    @pytest.mark.parametrize("outcome", ["failed", "partial", "unverified", "unknown"])
+    def test_carries_logical_outcome_and_supporting_evidence(self, outcome):
+        captured = _register_capturing_hook()
+        entry = {
+            "task_index": 0,
+            "status": "completed",
+            "outcome": outcome,
+            "summary": "bounded result",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "exit_reason": "completed",
+            "interrupted": False,
+            "tool_error_count": 1,
+            "_child_role": "leaf",
+        }
+        if outcome == "failed":
+            entry.update(
+                schema_valid=False,
+                schema_errors=["'city' is required"],
+                schema_retries=1,
+                error_authoritative=True,
+            )
+
+        with patch("tools.delegate_tool._run_single_child", return_value=entry):
+            delegate_task(goal="exercise hook boundary", parent_agent=_make_parent())
+
+        payload = captured[0]
+        assert payload["child_status"] == "completed"
+        assert payload["child_outcome"] == outcome
+        assert payload["child_exit_reason"] == "completed"
+        assert payload["child_interrupted"] is False
+        assert payload["child_tool_error_count"] == 1
+        if outcome == "failed":
+            assert payload["child_schema_valid"] is False
+            assert payload["child_schema_errors"] == ["'city' is required"]
+            assert payload["child_schema_retries"] == 1
+            assert payload["child_error_authoritative"] is True
+
     def test_includes_redacted_tool_call_history(self):
         captured = _register_capturing_hook()
 

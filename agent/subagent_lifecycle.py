@@ -126,6 +126,16 @@ class SubagentResult:
     usage_metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     tool_execution_summary: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     result_hash: Optional[str] = None
+    contract_version: int = PUBLIC_CONTRACT_VERSION
+    lifecycle_status: Optional[str] = None
+    outcome: Optional[str] = None
+    schema_valid: Optional[bool] = None
+    schema_errors: tuple[str, ...] = ()
+    error_authoritative: bool = False
+    exit_reason: Optional[str] = None
+    interrupted: bool = False
+    tool_error_count: int = 0
+    terminal_tool_error_count: Optional[int] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -420,8 +430,60 @@ class SubagentLifecycleService:
             status = (
                 str(raw.get("status", "error")) if isinstance(raw, dict) else "error"
             )
+            outcome_value = raw.get("outcome") if isinstance(raw, dict) else None
+            outcome = (
+                str(outcome_value).strip().lower()[:64]
+                if outcome_value is not None
+                else None
+            ) or None
+            schema_valid_value = raw.get("schema_valid") if isinstance(raw, dict) else None
+            schema_valid = (
+                schema_valid_value if isinstance(schema_valid_value, bool) else None
+            )
+            schema_errors: tuple[str, ...] = ()
+            raw_schema_errors = raw.get("schema_errors") if isinstance(raw, dict) else None
+            if isinstance(raw_schema_errors, (list, tuple)):
+                schema_errors = tuple(
+                    str(item)[:1_024] for item in raw_schema_errors[:32]
+                )
+            exit_reason_value = raw.get("exit_reason") if isinstance(raw, dict) else None
+            exit_reason = (
+                str(exit_reason_value)[:256]
+                if exit_reason_value is not None
+                else None
+            )
+            interrupted = bool(raw.get("interrupted", False)) if isinstance(raw, dict) else False
+            raw_tool_error_count = raw.get("tool_error_count") if isinstance(raw, dict) else None
+            tool_error_count = (
+                raw_tool_error_count
+                if isinstance(raw_tool_error_count, int)
+                and not isinstance(raw_tool_error_count, bool)
+                and raw_tool_error_count >= 0
+                else 0
+            )
+            raw_terminal_tool_error_count = (
+                raw.get("terminal_tool_error_count") if isinstance(raw, dict) else None
+            )
+            terminal_tool_error_count = (
+                raw_terminal_tool_error_count
+                if isinstance(raw_terminal_tool_error_count, int)
+                and not isinstance(raw_terminal_tool_error_count, bool)
+                and raw_terminal_tool_error_count >= 0
+                else None
+            )
+            error_authoritative = (
+                bool(raw.get("error_authoritative", False))
+                if isinstance(raw, dict)
+                else False
+            )
             if status == "completed":
-                state = SubagentState.SUCCEEDED
+                # A completed child loop can still carry an authoritative
+                # negative task verdict (for example schema_valid=false).
+                state = (
+                    SubagentState.FAILED
+                    if outcome == "failed"
+                    else SubagentState.SUCCEEDED
+                )
             elif status == "interrupted":
                 state = (
                     SubagentState.CANCELLED
@@ -433,16 +495,34 @@ class SubagentLifecycleService:
             summary = raw.get("summary") if isinstance(raw, dict) else None
             summary = str(summary)[:_MAX_RESULT_CHARS] if summary is not None else None
             error = raw.get("error") if isinstance(raw, dict) else None
+            evidence_payload = {
+                "lifecycle_status": status,
+                "outcome": outcome,
+                "schema_valid": schema_valid,
+                "schema_errors": schema_errors,
+                "error_authoritative": error_authoritative,
+                "exit_reason": exit_reason,
+                "interrupted": interrupted,
+                "tool_error_count": tool_error_count,
+                "terminal_tool_error_count": terminal_tool_error_count,
+            }
             result = SubagentResult(
                 record.handle,
                 state,
                 True,
                 summary=summary,
+                structured_payload=evidence_payload,
                 completed_at=time.time(),
                 started_at=record.started_at,
-                error_classification=None
-                if state == SubagentState.SUCCEEDED
-                else status.upper(),
+                error_classification=(
+                    None
+                    if state == SubagentState.SUCCEEDED
+                    else "SCHEMA_INVALID"
+                    if status == "completed" and schema_valid is False
+                    else "OUTCOME_FAILED"
+                    if status == "completed" and outcome == "failed"
+                    else status.upper()
+                ),
                 error_message=str(error)[:_MAX_RESULT_CHARS] if error else None,
                 usage_metadata={"api_calls": raw.get("api_calls", 0)}
                 if isinstance(raw, dict)
@@ -452,6 +532,15 @@ class SubagentLifecycleService:
                 }
                 if isinstance(raw, dict)
                 else {},
+                lifecycle_status=status,
+                outcome=outcome,
+                schema_valid=schema_valid,
+                schema_errors=schema_errors,
+                error_authoritative=error_authoritative,
+                exit_reason=exit_reason,
+                interrupted=interrupted,
+                tool_error_count=tool_error_count,
+                terminal_tool_error_count=terminal_tool_error_count,
             )
         except Exception as exc:
             result = SubagentResult(

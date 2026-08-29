@@ -2,13 +2,15 @@ import { atom } from 'nanostores'
 
 import { capitalize } from '@/lib/text'
 
-export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
+export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
+export type SubagentOutcome = 'failed' | 'partial' | 'unknown' | 'unverified'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
 export interface SubagentStreamEntry {
   at: number
   isError?: boolean
   kind: SubagentStreamKind
+  outcome?: SubagentOutcome
   text: string
 }
 
@@ -22,6 +24,12 @@ export interface SubagentProgress {
    *  so concurrent/nested batches never merge into one group. */
   delegationId?: string
   model?: string
+  outcome?: SubagentOutcome
+  schemaValid?: boolean
+  schemaErrors?: string[]
+  schemaRetries?: number
+  error?: string
+  errorAuthoritative?: boolean
   status: SubagentStatus
   taskCount: number
   taskIndex: number
@@ -46,7 +54,7 @@ export interface SubagentNode extends SubagentProgress {
 
 export type SubagentPayload = Record<string, unknown>
 
-const TERMINAL: ReadonlySet<SubagentStatus> = new Set(['completed', 'failed', 'interrupted'])
+const TERMINAL: ReadonlySet<SubagentStatus> = new Set(['completed', 'error', 'failed', 'interrupted', 'timeout'])
 const MAX_STREAM = 24
 const PREVIEW_MAX = 220
 const TOOL_PREVIEW_MAX = 96
@@ -81,6 +89,9 @@ const asStatus = (v: unknown, terminalEvent = false): SubagentStatus => {
 
   return v === 'queued' ? v : 'running'
 }
+
+const asOutcome = (v: unknown): SubagentOutcome | undefined =>
+  v === 'failed' || v === 'partial' || v === 'unknown' || v === 'unverified' ? v : undefined
 
 const compact = (text: string, max = PREVIEW_MAX) => {
   const line = text.replace(/\s+/g, ' ').trim()
@@ -123,7 +134,12 @@ const idOf = (p: SubagentPayload) =>
 const appendStream = (stream: SubagentStreamEntry[], entry: SubagentStreamEntry) => {
   const last = stream.at(-1)
 
-  if (last?.kind === entry.kind && last.text === entry.text && last.isError === entry.isError) {
+  if (
+    last?.kind === entry.kind &&
+    last.text === entry.text &&
+    last.isError === entry.isError &&
+    last.outcome === entry.outcome
+  ) {
     return stream
   }
 
@@ -173,7 +189,10 @@ function streamFromPayload(
   const summary = compact(str(payload.summary) || str(payload.text) || timeoutSummary(payload))
 
   if (TERMINAL.has(status) && summary) {
-    out.push({ at, isError: status === 'failed', kind: 'summary', text: summary })
+    const outcome = asOutcome(payload.outcome)
+    const isError = status === 'error' || status === 'failed' || status === 'timeout' || outcome === 'failed'
+
+    out.push({ at, isError, kind: 'summary', outcome, text: summary })
   }
 
   return out
@@ -194,6 +213,13 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     sessionId: str(payload.child_session_id) || prev?.sessionId,
     delegationId: str(payload.delegation_id) || prev?.delegationId,
     model: str(payload.model) || prev?.model,
+    outcome: asOutcome(payload.outcome) ?? prev?.outcome,
+    schemaValid: typeof payload.schema_valid === 'boolean' ? payload.schema_valid : prev?.schemaValid,
+    schemaErrors: Array.isArray(payload.schema_errors) ? strList(payload.schema_errors) : prev?.schemaErrors,
+    schemaRetries: num(payload.schema_retries) ?? prev?.schemaRetries,
+    error: str(payload.error) || prev?.error,
+    errorAuthoritative:
+      typeof payload.error_authoritative === 'boolean' ? payload.error_authoritative : prev?.errorAuthoritative,
     status,
     taskCount: num(payload.task_count) ?? prev?.taskCount ?? 1,
     taskIndex: num(payload.task_index) ?? prev?.taskIndex ?? 0,
@@ -322,8 +348,11 @@ export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentN
 export const activeSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter(item => item.status === 'queued' || item.status === 'running').length
 
+export const isFailedSubagent = (item: Pick<SubagentProgress, 'outcome' | 'status'>) =>
+  item.outcome === 'failed' || item.status === 'error' || item.status === 'failed' || item.status === 'timeout'
+
 export const failedSubagentCount = (items: readonly SubagentProgress[]) =>
-  items.filter(item => item.status === 'failed' || item.status === 'interrupted').length
+  items.filter(isFailedSubagent).length
 
 /** Flatten every session's subagents — the scope the Spawn-tree panel and the
  *  status-bar indicator must agree on. */

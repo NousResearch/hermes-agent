@@ -10,7 +10,8 @@ import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS } from 
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { DELEGATION_STATUS_COPY } from '@/i18n/delegation-status'
+import { AlertCircle } from '@/lib/icons'
 import { displayModelName } from '@/lib/model-status-label'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -20,8 +21,8 @@ import { openSessionInNewWindow } from '@/store/windows'
 import {
   type DelegateRow,
   delegateRowsFromCall,
-  type DelegateRowStatus,
-  isDelegateRowLive,
+  delegateRowTone,
+  type DelegateRowTone,
   mergeDelegateRows
 } from './delegate-model'
 import { formatDurationSeconds, type ToolPart } from './fallback-model'
@@ -32,25 +33,28 @@ import { ToolRunTicker } from './run-ticker'
 // in the DOM per subagent.
 const TICKER_DEPTH = 6
 
-function statusGlyph(status: DelegateRowStatus, label: string): ReactNode {
-  if (isDelegateRowLive(status)) {
+function statusGlyph(tone: DelegateRowTone, label: string): ReactNode {
+  if (tone === 'live') {
     return (
       <GlyphSpinner ariaLabel={label} className="size-3.5 text-[0.95rem] text-(--ui-text-tertiary)" spinner="breathe" />
     )
   }
 
-  if (status === 'failed' || status === 'interrupted') {
+  if (tone === 'failed') {
     return <AlertCircle aria-label={label} className="size-3.5 text-destructive" />
   }
 
-  if (status === 'dispatched') {
+  if (tone === 'parked') {
     // Parked, not watched: the children outlived the turn that spawned them
     // and nothing in this transcript is streaming their progress. A spinner
     // here would claim a liveness we can't back up.
-    return <span aria-hidden className="size-1.5 rounded-full bg-(--ui-text-tertiary)" />
+    return <span aria-label={label} className="size-1.5 rounded-full bg-(--ui-text-tertiary)" />
   }
 
-  return <CheckCircle2 aria-label={label} className="size-3.5 text-emerald-600/85 dark:text-emerald-400/85" />
+  // Outstanding, not done. A green check here would read the child's lifecycle
+  // as task acceptance — the one thing the envelope never says. Amber is the
+  // same claim the Spawn-tree panel makes about the same child.
+  return <AlertCircle aria-label={label} className="size-3.5 text-amber-500/85" />
 }
 
 /**
@@ -64,18 +68,22 @@ function statusGlyph(status: DelegateRowStatus, label: string): ReactNode {
  * whatever they get up to.
  */
 function DelegateRowView({ row }: { row: DelegateRow }) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const copy = t.assistant.tool
+  const outcomeCopy = DELEGATION_STATUS_COPY[locale]
   const { sessionId } = row
-  const live = isDelegateRowLive(row.status)
+  const tone = delegateRowTone(row)
+  const live = tone === 'live'
   const elapsed = useElapsedSeconds(live, `delegate:${row.id}`)
   const activity = row.activity.slice(-TICKER_DEPTH)
 
-  const statusLabel = live
-    ? copy.statusRunning
-    : row.status === 'failed' || row.status === 'interrupted'
-      ? copy.statusError
-      : copy.statusDone
+  const statusLabel: Record<DelegateRowTone, string> = {
+    failed: copy.statusError,
+    live: copy.statusRunning,
+    parked: outcomeCopy.dispatched,
+    partial: outcomeCopy.partial,
+    unverified: outcomeCopy.unverified
+  }
 
   const meta = [
     row.model ? displayModelName(row.model) : '',
@@ -88,7 +96,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
   return (
     <div className="grid min-w-0 max-w-full gap-0.5" data-conversation-scaffold="">
       <div className="flex min-w-0 max-w-full items-center gap-1.5">
-        <span className={SCAFFOLD_GLYPH_CLASS}>{statusGlyph(row.status, statusLabel)}</span>
+        <span className={SCAFFOLD_GLYPH_CLASS}>{statusGlyph(tone, statusLabel[tone])}</span>
         <button
           className={cn(
             SCAFFOLD_LABEL_CLASS,

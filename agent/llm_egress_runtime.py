@@ -75,11 +75,16 @@ logger = logging.getLogger(__name__)
 
 _VALIDATED_SYNTAX_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
+_REMOTE_KANBAN_SEARCH_PROJECTION_TOOL_NAMES = frozenset({"search_files"})
 _GITHUB_LIST_TERMINAL_MAX_ROWS = 100
 _GITHUB_LIST_TERMINAL_MAX_ITEM_BYTES = 512
 _GITHUB_LIST_TERMINAL_MAX_OUTPUT_BYTES = 10_240
 _REJECTED_TERMINAL_COMMAND_REPLAY = json.dumps(
     {"command": "<rejected terminal command omitted>"}, separators=(",", ":")
+)
+_GIT_WORKSPACE_DIAGNOSTIC_REPLAY = (
+    "git workspace diagnostic completed locally; raw paths and commit subjects "
+    "were omitted from remote replay."
 )
 _REMOTE_KANBAN_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,}\"']+"
@@ -122,6 +127,59 @@ def _project_bound_kanban_show(value: str) -> GeneratedContextSegment:
     return GeneratedContextSegment(
         "kanban_show completed locally. Bounded sanitized task projection:\n" + safe
     )
+
+
+def _project_bound_search_files(value: str) -> GeneratedContextSegment:
+    """Retain search locations without replaying matched source bytes.
+
+    ``search_files`` necessarily returns excerpts of local source.  A protected
+    worker may use the count and (when compact) the file/line locations to
+    choose a narrow ``read_file`` request, whose exact bytes are independently
+    source-provenance bound.  Never parse or replay ``matches_text``: it is a
+    dense display format containing source content.
+    """
+
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = None
+    if not isinstance(payload, Mapping):
+        return GeneratedContextSegment(
+            "search_files completed locally. Its raw result was omitted from the "
+            "remote replay; narrow the search or use read_file for a known path."
+        )
+
+    projection: dict[str, Any] = {"search_files_projection": "locations-v1"}
+    total_count = payload.get("total_count")
+    if isinstance(total_count, int) and not isinstance(total_count, bool):
+        projection["total_count"] = max(0, min(total_count, 1_000_000))
+    if payload.get("truncated") is True:
+        projection["truncated"] = True
+
+    raw_matches = payload.get("matches")
+    if isinstance(raw_matches, list):
+        matches: list[dict[str, Any]] = []
+        for raw_match in raw_matches[:100]:
+            if not isinstance(raw_match, Mapping):
+                continue
+            path = raw_match.get("path")
+            line = raw_match.get("line")
+            if not isinstance(path, str) or not isinstance(line, int) or isinstance(line, bool):
+                continue
+            safe_path = redact_remote_unsafe_text(
+                redact_sensitive_text(path, force=True)
+            )
+            matches.append({"path": safe_path, "line": max(1, min(line, 10_000_000))})
+        if matches:
+            projection["matches"] = matches
+
+    safe = redact_remote_unsafe_text(
+        redact_sensitive_text(
+            json.dumps(projection, ensure_ascii=False, separators=(",", ":")),
+            force=True,
+        )
+    )
+    return GeneratedContextSegment(safe)
 _APPLICATION_IDENTIFIER_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_-])(?:t_[0-9a-f]{8}|[0-9a-f]{40}|[0-9a-f]{64}|"
     r"[a-z][a-z0-9]{0,31}(?:[_-][a-z][a-z0-9]{0,31}){1,7}"
@@ -505,7 +563,7 @@ def _github_list_terminal_call_limits(value: Any) -> dict[str, int]:
             return None
         if "--json" not in tokens:
             return None
-        if tokens[:3] == ["gh", "issue", "view"]:
+        if tokens[:3] in (["gh", "issue", "view"], ["gh", "pr", "view"]):
             return 1
         if len(tokens) < 5 or tokens[:3] not in (
             ["gh", "issue", "list"],
@@ -556,6 +614,71 @@ def _github_list_terminal_call_limits(value: Any) -> dict[str, int]:
 
     visit(value)
     return limits
+
+
+def _git_workspace_diagnostic_call_ids(value: Any) -> frozenset[str]:
+    """Recognize one read-only workspace summary whose output is nonessential.
+
+    The command's final component prints arbitrary commit subjects, so even a
+    benign worktree check must not turn those strings into remote context.
+    Keep this exact rather than treating general ``git`` output as safe.
+    """
+
+    recognized: set[str] = set()
+
+    def is_workspace_diagnostic(tokens: list[str]) -> bool:
+        # Git supports more than one no-argument ``--show-*`` rev-parse
+        # selector.  Its value is omitted either way; the rest of the command
+        # remains an exact read-only status/branch/log sequence.
+        if tokens[0:2] != ["git", "rev-parse"]:
+            return False
+        try:
+            separator = tokens.index("&&", 2)
+        except ValueError:
+            return False
+        return (
+            separator > 2
+            and all(
+                token.startswith("--") or token == "HEAD"
+                for token in tokens[2:separator]
+            )
+            and tokens[separator:] == [
+                "&&", "git", "branch", "--show-current", "&&",
+                "git", "log", "--oneline", "-5",
+            ]
+        )
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            direct_function = item.get("function")
+            direct_name = (
+                direct_function.get("name")
+                if isinstance(direct_function, Mapping)
+                else item.get("name")
+            )
+            arguments = (
+                direct_function.get("arguments")
+                if isinstance(direct_function, Mapping)
+                else item.get("arguments")
+            )
+            if item.get("type") in {"function", "function_call"} and direct_name == "terminal":
+                try:
+                    parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+                    command = parsed.get("command") if isinstance(parsed, Mapping) else None
+                    tokens = shlex.split(command) if isinstance(command, str) else []
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    tokens = []
+                call_id = item.get("call_id") or item.get("id")
+                if is_workspace_diagnostic(tokens) and isinstance(call_id, str):
+                    recognized.update(tool_result_id_variants(call_id))
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return frozenset(recognized)
 
 
 def _bounded_remote_text(value: str) -> str:
@@ -823,6 +946,8 @@ def _typed_payload(
     field_name: str | None = None,
     syntax_tool_call_ids: frozenset[str] = frozenset(),
     elided_kanban_tool_call_ids: frozenset[str] = frozenset(),
+    search_projection_tool_call_ids: frozenset[str] = frozenset(),
+    git_workspace_diagnostic_call_ids: frozenset[str] = frozenset(),
     github_list_terminal_call_limits: Mapping[str, int] | None = None,
     rejected_terminal_call_ids: frozenset[str] = frozenset(),
     protected_tool_content: bool = False,
@@ -889,6 +1014,22 @@ def _typed_payload(
                 or value.get("type") == "function_call_output"
             )
         )
+        is_search_projection_tool_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in search_projection_tool_call_ids
+            and (
+                value.get("role") == "tool"
+                or value.get("type") == "function_call_output"
+            )
+        )
+        is_git_workspace_diagnostic_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in git_workspace_diagnostic_call_ids
+            and (
+                value.get("role") == "tool"
+                or value.get("type") == "function_call_output"
+            )
+        )
         github_list_limit = (
             github_list_terminal_call_limits.get(output_call_id)
             if isinstance(github_list_terminal_call_limits, Mapping)
@@ -932,6 +1073,20 @@ def _typed_payload(
                 )
                 continue
             if (
+                is_search_projection_tool_result
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                typed[key] = _project_bound_search_files(item)
+                continue
+            if (
+                is_git_workspace_diagnostic_result
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                typed[key] = GeneratedContextSegment(_GIT_WORKSPACE_DIAGNOSTIC_REPLAY)
+                continue
+            if (
                 isinstance(github_list_limit, int)
                 and key in {"content", "output"}
                 and isinstance(item, str)
@@ -967,6 +1122,8 @@ def _typed_payload(
                 field_name=key,
                 syntax_tool_call_ids=syntax_tool_call_ids,
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
+                search_projection_tool_call_ids=search_projection_tool_call_ids,
+                git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 protected_tool_content=(
@@ -1000,6 +1157,8 @@ def _typed_payload(
                 field_name=field_name,
                 syntax_tool_call_ids=syntax_tool_call_ids,
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
+                search_projection_tool_call_ids=search_projection_tool_call_ids,
+                git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 protected_tool_content=protected_tool_content,
@@ -1203,6 +1362,18 @@ def authorize_agent_sdk_kwargs(
         ),
         elided_kanban_tool_call_ids=(
             _recognized_tool_call_ids(body, _REMOTE_KANBAN_PROJECTION_TOOL_NAMES)
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        search_projection_tool_call_ids=(
+            _recognized_tool_call_ids(
+                body, _REMOTE_KANBAN_SEARCH_PROJECTION_TOOL_NAMES
+            )
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        git_workspace_diagnostic_call_ids=(
+            _git_workspace_diagnostic_call_ids(body)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

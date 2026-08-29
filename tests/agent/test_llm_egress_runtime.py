@@ -371,6 +371,7 @@ def test_protected_codex_elides_bound_kanban_show_result(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
     agent = _agent(tmp_path)
+    agent.provider = "nous"
     agent.provider = "openai-codex"
     agent.base_url = "https://chatgpt.com/backend-api/codex"
     agent.api_mode = "codex_responses"
@@ -875,6 +876,67 @@ def test_protected_codex_projects_bound_github_issue_view_metadata(
     assert "live-secret-value" not in authorized["input"][1]["output"]
 
 
+def test_protected_codex_projects_bound_github_pr_view_metadata(
+    tmp_path, monkeypatch
+):
+    """A pull-request view has the same opaque-id/body replay boundary."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_pr_view_1234"
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "terminal",
+                "call_id": call_id,
+                "arguments": json.dumps(
+                    {
+                        "command": (
+                            "gh pr view 123 --repo NousResearch/hermes-agent "
+                            "--json number,title,url,labels,body"
+                        )
+                    }
+                ),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps(
+                    {
+                        "exit_code": 0,
+                        "output": json.dumps(
+                            {
+                                "id": "c2VjcmV0LXBheWxvYWQ=",
+                                "number": 123,
+                                "title": "Desktop resume reliability",
+                                "url": "https://github.com/NousResearch/hermes-agent/pull/123",
+                                "body": "token=live-secret-value",
+                            }
+                        ),
+                    }
+                ),
+            },
+        ],
+    }
+
+    authorized, _ = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    projected = json.loads(json.loads(authorized["input"][1]["output"])["output"])
+    assert projected["items"] == [
+        {
+            "number": 123,
+            "title": "Desktop resume reliability",
+            "url": "https://github.com/NousResearch/hermes-agent/pull/123",
+        }
+    ]
+    assert "live-secret-value" not in authorized["input"][1]["output"]
+
+
 def test_runtime_does_not_manufacture_boundaries_for_oversized_sanitized_text(
     tmp_path,
 ):
@@ -1223,6 +1285,114 @@ def test_protected_kanban_admits_bounded_generic_terminal_stdout(
     assert receipt.allowed
     assert authorized["messages"][1]["content"] == output
     assert receipt.decision.source_segment_count == 0
+
+
+def test_protected_kanban_search_result_projects_source_content_to_locations(
+    tmp_path, monkeypatch
+):
+    """Remote workers get bounded search locations, then exact reads.
+
+    A repository search can validly match base64-like fixture/code text.  That
+    must not be replayed as untrusted provider input, but the file and line
+    location remain enough for the worker to request a provenance-bound read.
+    """
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    result = json.dumps({
+        "total_count": 1,
+        "matches": [{
+            "path": "tests/fixture.py",
+            "line": 42,
+            "content": "encoded = 'c2VjcmV0LXBheWxvYWQ='",
+        }],
+    })
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_search123",
+                            "type": "function",
+                            "function": {
+                                "name": "search_files",
+                                "arguments": '{"pattern":"encoded"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_search123",
+                    "content": result,
+                },
+            ],
+        },
+    )
+
+    rendered = json.loads(authorized["messages"][1]["content"])
+    assert receipt.allowed
+    assert rendered == {
+        "search_files_projection": "locations-v1",
+        "total_count": 1,
+        "matches": [{"path": "tests/fixture.py", "line": 42}],
+    }
+
+
+def test_protected_kanban_projects_exact_git_workspace_diagnostic(
+    tmp_path, monkeypatch
+):
+    """Commit subjects are not replayed as trusted cloud context."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    output = "/private/worktree\nfix: c2VjcmV0LXBheWxvYWQ=\n"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_git_workspace123",
+                            "type": "function",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": json.dumps({
+                                    "command": (
+                                        "git rev-parse --show-toplevel && "
+                                        "git branch --show-current && "
+                                        "git log --oneline -5"
+                                    )
+                                }),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_git_workspace123",
+                    "content": output,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][1]["content"] == (
+        "git workspace diagnostic completed locally; raw paths and commit "
+        "subjects were omitted from remote replay."
+    )
 
 
 def test_protected_terminal_file_bytes_are_bounded_non_source_context(

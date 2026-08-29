@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import { backup, DatabaseSync } from 'node:sqlite'
 
 const DEFAULT_BACKUP_DEADLINE_MS = 30_000
-const DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30
+const DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 * 1024 * 1024 * 1024
 const BACKUP_RATE_PAGES = 100
 
 export interface SqliteBackupResult {
@@ -14,6 +14,13 @@ export interface SqliteBackupResult {
 interface SqliteBackupOptions {
   deadlineMs?: number
   integrityCheckMaxBytes?: number
+}
+
+export function sqliteVerificationMode(
+  size: number,
+  integrityCheckMaxBytes = DEFAULT_INTEGRITY_CHECK_MAX_BYTES
+): SqliteBackupResult['verification'] {
+  return integrityCheckMaxBytes > 0 && size > integrityCheckMaxBytes ? 'schema-probe' : 'integrity-check'
 }
 
 export async function createVerifiedSqliteBackup(
@@ -74,11 +81,13 @@ function verifySqliteSnapshot(
   const snapshot = new DatabaseSync(snapshotPath, { readOnly: true })
 
   try {
-    if (integrityCheckMaxBytes > 0 && size > integrityCheckMaxBytes) {
+    const verification = sqliteVerificationMode(size, integrityCheckMaxBytes)
+
+    if (verification === 'schema-probe') {
       snapshot.prepare('PRAGMA schema_version').get()
       snapshot.prepare('SELECT count(*) FROM sqlite_master').get()
 
-      return 'schema-probe'
+      return verification
     }
 
     const rows = snapshot.prepare('PRAGMA integrity_check').all() as Array<Record<string, unknown>>
@@ -87,7 +96,7 @@ function verifySqliteSnapshot(
       throw new Error('SQLite integrity_check failed for emergency backup')
     }
 
-    return 'integrity-check'
+    return verification
   } finally {
     snapshot.close()
   }

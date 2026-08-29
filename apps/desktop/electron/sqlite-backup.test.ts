@@ -7,7 +7,7 @@ import { Worker } from 'node:worker_threads'
 
 import { afterEach, test } from 'vitest'
 
-import { createVerifiedSqliteBackup } from './sqlite-backup'
+import { createVerifiedSqliteBackup, sqliteVerificationMode } from './sqlite-backup'
 
 const tempDirs: string[] = []
 
@@ -32,6 +32,11 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('uses the default 2 GiB boundary for deep verification', () => {
+  assert.equal(sqliteVerificationMode(2 * 1024 * 1024 * 1024), 'integrity-check')
+  assert.equal(sqliteVerificationMode(2 * 1024 * 1024 * 1024 + 1), 'schema-probe')
 })
 
 test('includes committed WAL transactions and publishes only the verified snapshot', async () => {

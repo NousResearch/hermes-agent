@@ -120,6 +120,30 @@ class TestCustomReasoningWireShape:
         assert tl == {"reasoning_effort": "none"}
 
     @pytest.mark.parametrize(
+        "base_url",
+        [
+            "http://myhost:99999/v1",  # out-of-range port: OpenAI client accepts it
+            "http://localhost:80a/v1",  # non-integer port
+            "http://localhost:11434./v1",  # trailing-dot port
+        ],
+    )
+    def test_malformed_port_does_not_raise(self, custom_profile, base_url):
+        """Malformed ports must not raise — urlparse's ``port`` is ValueError-happy.
+
+        The OpenAI client accepts ``http://myhost:99999/v1`` at construction
+        (only httpx fails later), so these URLs reach ``build_api_kwargs_extras``
+        in production. The heuristic must treat them as non-Ollama rather than
+        killing the kwargs build.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="qwen3",
+            base_url=base_url,
+        )
+        assert "think" not in eb
+        assert tl == {"reasoning_effort": "none"}
+
+    @pytest.mark.parametrize(
         "effort", ["minimal", "low", "medium", "high", "xhigh", "max"]
     )
     def test_enabled_effort_goes_top_level(self, custom_profile, effort):

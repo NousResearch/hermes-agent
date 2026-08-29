@@ -31,8 +31,16 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     if not raw:
         return False
     parsed = urlparse(raw if "://" in raw else f"//{raw}")
-    if parsed.port == 11434:
-        return True
+    # urlparse raises ValueError for non-integer / out-of-range ports
+    # ("http://host:99999/v1" parses fine in the OpenAI client, so the URL
+    # is reachable here). Treat a malformed port as "not Ollama" instead of
+    # killing the whole kwargs build — mirrors the same guard around the
+    # 11434 check in hermes_cli/models.py should_use_ollama_native_catalog.
+    try:
+        if parsed.port == 11434:
+            return True
+    except ValueError:
+        return False
     host = (parsed.hostname or "").lower().rstrip(".")
     if not host:
         return False

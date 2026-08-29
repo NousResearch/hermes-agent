@@ -1316,6 +1316,10 @@ def run_compress_context_with_progress_timeout(
         # (worker slot freed late). Check the fence BEFORE any expensive
         # summary work so a stale job never burns an LLM call; its return
         # value is discarded by the already-departed host.
+        if worker_fence.deadline_exceeded:
+            raise concurrent.futures.TimeoutError(
+                "compression deadline expired before worker start"
+            )
         if worker_fence.is_cancelled:
             logger.info(
                 "Skipping stale compression job: fence cancelled before start"
@@ -1362,7 +1366,11 @@ def run_compress_context_with_progress_timeout(
             except concurrent.futures.TimeoutError:
                 waited = time.monotonic() - wait_started
                 since_progress = fence.seconds_since_progress()
-                if since_progress < idle and waited < ceiling:
+                if (
+                    not fence.deadline_exceeded
+                    and since_progress < idle
+                    and waited < ceiling
+                ):
                     logger.info(
                         "Context compression still streaming after %.0fs "
                         "(last progress %.1fs ago) — extending wait "

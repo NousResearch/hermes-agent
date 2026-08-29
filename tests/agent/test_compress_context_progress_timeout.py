@@ -8,12 +8,14 @@ for the owned wrapper used when callers do not pass a ``commit_fence``.
 
 from __future__ import annotations
 
+import concurrent.futures
 import threading
 import time
 from unittest.mock import MagicMock
 
 import pytest
 
+import agent.conversation_compression as cc
 from agent.conversation_compression import (
     CompressionCommitFence,
     resolve_context_compression_timeouts,
@@ -46,6 +48,46 @@ class TestResolveContextCompressionTimeouts:
 
 
 class TestRunCompressContextWithProgressTimeout:
+    def test_deadline_before_worker_start_uses_timeout_fallback(self, monkeypatch):
+        original = [{"role": "user", "content": "keep-me"}]
+        worker = MagicMock()
+        fallback = MagicMock(return_value="fallback-prompt")
+        timeouts = []
+
+        class _ExpiredBeforeStartExecutor:
+            def submit(self, fn, fence):
+                fence._deadline = time.monotonic() - 1.0
+                future = concurrent.futures.Future()
+                try:
+                    future.set_result(fn(fence))
+                except BaseException as exc:
+                    future.set_exception(exc)
+                return future
+
+        monkeypatch.setattr(
+            cc,
+            "_get_compress_timeout_executor",
+            _ExpiredBeforeStartExecutor,
+        )
+
+        result_msgs, result_prompt = run_compress_context_with_progress_timeout(
+            worker=worker,
+            messages=original,
+            system_prompt_fallback=fallback,
+            idle_timeout_seconds=1.0,
+            total_ceiling_seconds=1.0,
+            on_timeout=lambda idle, waited, since: timeouts.append(
+                (idle, waited, since)
+            ),
+            stall_fallback=False,
+        )
+
+        worker.assert_not_called()
+        fallback.assert_called_once_with()
+        assert result_msgs is original
+        assert result_prompt == "fallback-prompt"
+        assert len(timeouts) == 1
+
     def test_silent_worker_times_out_and_preserves_messages(self):
         original = [{"role": "user", "content": "keep-me"}]
         started = threading.Event()

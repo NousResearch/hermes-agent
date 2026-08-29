@@ -392,15 +392,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
-    # Pointer to the hermes-agent skill + docs for user questions about Hermes
-    # itself. When the session has no skill tools (Blank Slate with the skills
-    # toolset off), skill_view() would be a dangling reference — inject the
-    # docs-only variant instead. Toolset is fixed per-session, so cache-safe.
+    # Pointer to the docs (and, when it exists, the hermes-agent skill) for
+    # user questions about Hermes itself. The skill_view() pointer is a
+    # dangling reference in two cases — no skill tools in the toolset
+    # (Blank Slate) OR the hermes-agent skill not installed — so the
+    # variant is chosen AFTER the skills index is built (see below) and
+    # this slot holds its position. Toolset and skill set are fixed
+    # per-session, so cache-safe either way.
     _has_skill_view = "skill_view" in (agent.valid_tool_names or set())
-    stable_parts.append(
-        HERMES_AGENT_HELP_GUIDANCE if _has_skill_view
-        else HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
-    )
+    _help_guidance_slot = len(stable_parts)
+    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -551,6 +552,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         )
     else:
         skills_prompt = ""
+
+    # Resolve the help-guidance variant now that the skills index exists:
+    # the skill-pointer variant requires BOTH skill_view in the toolset AND
+    # the hermes-agent skill actually present in the index (gating on the
+    # rendered index line keeps this a pure string check — no second
+    # filesystem scan, and it inherits the index cache's stability).
+    if _has_skill_view and "- hermes-agent:" in skills_prompt:
+        stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt

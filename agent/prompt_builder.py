@@ -158,14 +158,19 @@ DEFAULT_AGENT_IDENTITY = (
 )
 
 HERMES_AGENT_HELP_GUIDANCE = (
+    # "when the two differ" was cut (#95681): a model that just read the
+    # skill won't ALSO fetch the docs to diff them, so the clause was dead
+    # weight — the docs-are-authoritative sentence already carries the
+    # precedence. Injected only when skill_view exists AND the hermes-agent
+    # skill is actually installed (see system_prompt.py slot resolution).
     "You run on Hermes Agent (by Nous Research). When the user needs help with "
     "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
     "it — or when you need to understand your own features, tools, or capabilities, "
     "the documentation at https://hermes-agent.nousresearch.com/docs is your "
     "authoritative reference and always holds the latest, most up-to-date "
-    "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "for additional guidance and proven workflows, but treat the docs as the source "
-    "of truth when the two differ."
+    "information. The `hermes-agent` skill has the actual commands and proven "
+    "workflows — load it with skill_view(name='hermes-agent') before configuring, "
+    "modifying, or troubleshooting Hermes so you don't guess or invent workarounds."
 )
 
 # Variant injected when the skill tools are not in the session's toolset
@@ -2074,7 +2079,7 @@ def _build_skills_system_prompt_inner(
                     index_lines.append(f"    - {name}")
 
         result = (
-            "## Skills (mandatory)\n"
+            "## Skills\n"
             "Before replying, scan the skills below. If a skill matches or is even partially relevant "
             "to your task, you MUST load it with skill_view(name) and follow its instructions. "
             "Err on the side of loading — it is always better to have context you don't need "
@@ -2085,11 +2090,6 @@ def _build_skills_system_prompt_inner(
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
-            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
-            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
             "If a skill has issues, fix it with skill_manage(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "

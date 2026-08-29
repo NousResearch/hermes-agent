@@ -1658,6 +1658,10 @@ DEFAULT_CONFIG = {
         # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning
         # (for externally managed cleanup).
         "output_retention": 50,
+        # Maximum terminal rows kept in cron/executions.db. Claimed/running
+        # rows are always preserved. 0 removes terminal rows after each
+        # terminal write. Default 1000.
+        "execution_retention": 1000,
         # Timeout (seconds) for a no-agent cron script. Env: HERMES_CRON_SCRIPT_TIMEOUT. Keep in
         # sync with cron.scheduler._DEFAULT_SCRIPT_TIMEOUT.
         "script_timeout_seconds": 3600,

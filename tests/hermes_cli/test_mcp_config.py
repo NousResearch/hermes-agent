@@ -141,21 +141,61 @@ class TestMcpList:
         assert "1 selected" in out
         assert "all" not in out
 
-    def test_list_scalar_exclude_shows_one_excluded(self, tmp_path, capsys):
-        """Scalar exclude mirrors the same normalization shape (#93313)."""
-        _seed_config(tmp_path, {
-            "ink": {
-                "url": "https://mcp.ml.ink/mcp",
-                "enabled": True,
-                "tools": {"exclude": "debug_tool"},
+    def test_list_scalar_exclude_counts_as_one_pattern(self, tmp_path, capsys):
+        """#93313: scalar exclude mirrors the same normalization shape —
+        one configured pattern. #98067: an exclude count must say
+        "patterns", never imply a blocked-tool count."""
+        _seed_config(
+            tmp_path,
+            {
+                "ink": {
+                    "url": "https://mcp.ml.ink/mcp",
+                    "enabled": True,
+                    "tools": {"exclude": "debug_tool"},
+                },
             },
-        })
+        )
         from hermes_cli.mcp_config import cmd_mcp_list
 
         cmd_mcp_list()
         out = capsys.readouterr().out
-        assert "-1 excluded" in out
+        assert "1 pattern" in out
+        assert "1 patterns" not in out
         assert "all" not in out
+        assert "excluded" not in out
+
+    def test_list_exclude_counts_patterns_not_tools(self, tmp_path, capsys):
+        """#98067: offline list can't know blocked-tool counts; a 9-pattern
+        config that matches nothing must not read as "9 tools excluded"."""
+        _seed_config(
+            tmp_path,
+            {
+                "betterstack": {
+                    "url": "https://mcp.betterstack.com",
+                    "enabled": True,
+                    "tools": {
+                        "exclude": [
+                            "execute_query",
+                            "Execute query",
+                            "search_documentation",
+                            "*instructions*",
+                            "create_cloud_connection",
+                            "*team_member*",
+                            "monitors",
+                            "docs",
+                            "*radar*",
+                        ]
+                    },
+                },
+            },
+        )
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "betterstack" in out
+        assert "9 patterns" in out
+        assert "excluded" not in out
 
 
 # ---------------------------------------------------------------------------

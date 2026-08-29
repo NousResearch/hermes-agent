@@ -4287,6 +4287,12 @@ class GatewaySlashCommandsMixin:
                 )
             else:
                 self._busy_input_mode = arg
+                # busy_input_mode is the source of truth for the text mode
+                # too (run.py:_load_busy_text_mode) — re-derive it so the
+                # adapter refresh below doesn't read a stale value and keep
+                # interrupting after e.g. /busy queue (config IS saved; only
+                # the live session lagged until restart).
+                self._busy_text_mode = self._load_busy_text_mode()
 
             adapter = self._adapter_for_source(event.source)
             if adapter is not None:

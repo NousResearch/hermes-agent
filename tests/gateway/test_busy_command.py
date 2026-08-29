@@ -68,11 +68,26 @@ class TestBusyCommandPersistence:
     async def test_set_mode_persists(self, monkeypatch, initial_mode, new_mode):
         """Each supported /busy mode is saved and applied."""
         runner = _make_runner(busy_mode=initial_mode)
+        runner._busy_text_mode = "interrupt"
         monkeypatch.setattr("cli.save_config_value", lambda k, v: True)
+        # The handler re-derives _busy_text_mode from the saved config;
+        # emulate the write that the mocked save_config_value skipped.
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_runtime_config",
+            lambda: {"display": {"busy_input_mode": new_mode}},
+        )
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
         event = _make_event(f"/busy {new_mode}")
         result = await runner._handle_busy_command(event)
         assert new_mode in str(result).lower()
         assert runner._busy_input_mode == new_mode
+        # busy_input_mode is the source of truth for the text mode: /busy
+        # queue must stop live text messages from interrupting (#97932).
+        assert runner._busy_text_mode == (
+            "queue" if new_mode == "queue" else "interrupt"
+        )
 
     @pytest.mark.asyncio
     async def test_save_failure_preserves_mode(self, monkeypatch):

@@ -32,6 +32,17 @@ PROTECTED_NAMES = {
 }
 
 
+def _rg_files_commands(commands):
+    return [command for command in commands if "--files" in command]
+
+
+def _find_commands(commands):
+    return [
+        command for command in commands
+        if command.startswith("find ") or "; find " in command
+    ]
+
+
 def test_broad_home_search_excludes_macos_protected_folders(tmp_path):
     home = tmp_path / "Users" / "alice"
 
@@ -72,7 +83,7 @@ def test_broad_file_search_passes_protected_globs_to_ripgrep(tmp_path, monkeypat
 
     result = ops.search("*.txt", path=str(home), target="files")
 
-    rg_command = next(command for command in env.commands if command.startswith("rg --files"))
+    rg_command = _rg_files_commands(env.commands)[0]
     for dirname in PROTECTED_NAMES:
         assert f"!{dirname}/**" in rg_command
     assert result.warning is not None
@@ -94,7 +105,7 @@ def test_broad_content_search_passes_protected_globs_to_ripgrep(tmp_path, monkey
         assert f"!{dirname}/**" in rg_command
 
 
-def test_legacy_ripgrep_file_fallback_keeps_protected_globs(tmp_path, monkeypatch):
+def test_empty_ripgrep_file_search_is_one_scan_with_protected_globs(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     home.mkdir(parents=True)
     env = RecordingEnvironment(home)
@@ -104,8 +115,8 @@ def test_legacy_ripgrep_file_fallback_keeps_protected_globs(tmp_path, monkeypatc
 
     ops.search("*.txt", path=str(home), target="files")
 
-    rg_commands = [command for command in env.commands if command.startswith("rg --files")]
-    assert len(rg_commands) == 2
+    rg_commands = _rg_files_commands(env.commands)
+    assert len(rg_commands) == 1
     for command in rg_commands:
         assert "!Downloads/**" in command
 
@@ -128,7 +139,7 @@ def test_grep_fallback_prunes_by_path_not_basename(tmp_path, monkeypatch):
     for dirname in PROTECTED_NAMES:
         # Path-scoped pruning: full protected path present, no basename-wide
         # --exclude-dir for protected names.
-        assert str(home / dirname) in pruned_command
+        assert ops._escape_shell_arg(str(home / dirname)) in pruned_command
         assert f"--exclude-dir={dirname}" not in pruned_command
         assert f"--exclude-dir='{dirname}'" not in pruned_command
 
@@ -169,7 +180,7 @@ def test_remote_backend_never_prunes(tmp_path, monkeypatch):
 
     result = ops.search("*.txt", path=str(home), target="files")
 
-    rg_command = next(command for command in env.commands if command.startswith("rg --files"))
+    rg_command = _rg_files_commands(env.commands)[0]
     assert "!Downloads/**" not in rg_command
     assert result.warning is None
 
@@ -185,10 +196,10 @@ def test_find_fallback_prunes_protected_directories(tmp_path, monkeypatch):
 
     ops.search("*.txt", path=str(home), target="files")
 
-    find_commands = [command for command in env.commands if command.startswith("find ")]
+    find_commands = _find_commands(env.commands)
     assert find_commands
     for command in find_commands:
-        assert str(home / "Downloads") in command
+        assert ops._escape_shell_arg(str(home / "Downloads")) in command
         assert "-prune" in command
 
 

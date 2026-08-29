@@ -25,6 +25,8 @@ class RecordingEnvironment:
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v rg"):
             return {"output": "/opt/Rip Grep/rg\n", "returncode": 0}
+        if "--version" in command:
+            return {"output": "ripgrep 14.1.1\n", "returncode": 0}
         if "--files" in command:
             return {"output": self.rg_output, "returncode": self.rg_code}
         return {"output": "", "returncode": 1}
@@ -53,7 +55,7 @@ def test_default_file_search_runs_one_bounded_unsorted_rg_command():
     assert result.files == ["/repo/two.py"]
     assert len(env.rg_commands) == 1
     assert "--sortr" not in env.rg_commands[0]
-    assert "head -n 2" in env.rg_commands[0]
+    assert "head -n 3" in env.rg_commands[0]
 
 
 def test_modified_file_search_runs_one_exact_order_rg_command():
@@ -65,6 +67,40 @@ def test_modified_file_search_runs_one_exact_order_rg_command():
     assert result.error is None
     assert len(env.rg_commands) == 1
     assert "--sortr=modified" in env.rg_commands[0]
+
+
+def test_modified_zero_match_exit_one_is_valid_without_capability_error():
+    env = RecordingEnvironment(rg_output="", rg_code=1)
+    result = ShellFileOperations(env).search(
+        "*.missing", path="/repo", target="files", order="modified"
+    )
+    assert result.error is None
+    assert result.files == []
+    assert len(env.rg_commands) == 1
+
+
+@pytest.mark.parametrize("version", ["ripgrep 13.0.0\n", "ripgrep unknown\n"])
+def test_modified_requires_parseable_ripgrep_14_before_search(version):
+    env = RecordingEnvironment()
+
+    def execute(command, **kwargs):
+        env.commands.append(command)
+        if command.startswith("test -e "):
+            return {"output": "exists\n", "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "/opt/Rip Grep/rg\n", "returncode": 0}
+        if "--version" in command:
+            return {"output": version, "returncode": 0}
+        raise AssertionError(f"search must not run: {command}")
+
+    env.execute = execute
+    ops = ShellFileOperations(env)
+    first = ops.search("*.py", path="/repo", target="files", order="modified")
+    second = ops.search("*.py", path="/repo", target="files", order="modified")
+    assert "ripgrep 14" in (first.error or "").lower()
+    assert second.error == first.error
+    assert env.rg_commands == []
+    assert len([c for c in env.commands if "--version" in c]) == 1
 
 
 def test_empty_discovery_output_is_zero_matches_without_retry():
@@ -142,6 +178,8 @@ class RipgrepInvocationEnvironment(RecordingEnvironment):
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v rg"):
             return {"output": "/opt/Rip Grep/rg\n", "returncode": 0}
+        if "--version" in command:
+            return {"output": "ripgrep 14.1.1\n", "returncode": 0}
         if "--files" in command:
             return {"output": "/repo/a.py\n", "returncode": 0}
         if "--line-number" in command:
@@ -167,6 +205,15 @@ def test_resolved_executable_with_spaces_is_used_by_every_rg_invocation():
     assert all("'/opt/Rip Grep/rg'" in command for command in invocations)
     assert all(not re.search(r"(?:^|[; ])rg\s", command) for command in invocations)
     assert len([c for c in env.commands if c.startswith("command -v rg")]) == 1
+
+
+def test_non_rg_command_cache_keeps_cached_misses_and_bool_values():
+    env = RecordingEnvironment()
+    ops = ShellFileOperations(env)
+    assert ops._has_command("find") is False
+    assert ops._has_command("find") is False
+    assert ops._command_cache == {"find": False}
+    assert len([c for c in env.commands if c.startswith("command -v find")]) == 1
 
 
 @pytest.mark.windows_only
@@ -248,8 +295,10 @@ def test_modified_multi_path_search_preserves_exact_order_request():
             return {"output": "exists\n", "returncode": 0}
         if command.startswith("command -v rg"):
             return {"output": "/usr/bin/rg\n", "returncode": 0}
+        if "--version" in command:
+            return {"output": "ripgrep 14.1.1\n", "returncode": 0}
         if "--files" in command:
-            return {"output": "found.py\n", "returncode": 0}
+            return {"output": "/two/new.py\n/one/old.py\n", "returncode": 0}
         return {"output": "", "returncode": 1}
 
     env.execute = execute
@@ -257,9 +306,33 @@ def test_modified_multi_path_search_preserves_exact_order_request():
         "*.py", path="/one /two", target="files", order="modified"
     )
 
-    assert result.error is None
-    assert len(env.rg_commands) == 2
-    assert all("--sortr=modified" in command for command in env.rg_commands)
+    assert result.files == ["/two/new.py", "/one/old.py"]
+    assert len(env.rg_commands) == 1
+    assert "--sortr=modified" in env.rg_commands[0]
+    assert "'/one'" in env.rg_commands[0]
+    assert "'/two'" in env.rg_commands[0]
+
+
+def test_multi_path_modified_capability_error_propagates():
+    env = RecordingEnvironment()
+
+    def execute(command, **kwargs):
+        env.commands.append(command)
+        if command.startswith("test -e "):
+            output = "not_found\n" if "'/one /two'" in command else "exists\n"
+            return {"output": output, "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "/usr/bin/rg\n", "returncode": 0}
+        if "--version" in command:
+            return {"output": "ripgrep 13.0.0\n", "returncode": 0}
+        raise AssertionError(command)
+
+    env.execute = execute
+    result = ShellFileOperations(env).search(
+        "*.py", path="/one /two", target="files", order="modified"
+    )
+    assert "ripgrep 14" in (result.error or "").lower()
+    assert env.rg_commands == []
 
 
 def test_modified_timeout_preserves_partial_results_and_limit_reason():

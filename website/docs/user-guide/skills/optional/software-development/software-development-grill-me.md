@@ -14,8 +14,8 @@ Adversarial plan interview before implementation.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/software-development/grill-me` |
+| Source | Optional — install with `hermes skills install official/software-development/grill-me` |
+| Path | `optional-skills/software-development/grill-me` |
 | Version | `1.0.0` |
 | Author | Rafael Zendron (rafaumeu) |
 | License | MIT |

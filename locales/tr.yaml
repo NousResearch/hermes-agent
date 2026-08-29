@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Komutlar onaylandı (desen kalıcı olarak onaylandı) ({count} komut). Ajan devam ediyor..."
 
   background:
-    usage:                 "Kullanım: /background <prompt>\nÖrnek: /background Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."
+    usage:                 "Kullanım: /bg <prompt>\nÖrnek: /bg Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."
     started:               "🔄 Arka plan görevi başlatıldı: \"{preview}\"\nGörev kimliği: {task_id}\nSohbete devam edebilirsin — sonuçlar tamamlandığında burada görünecek."
+
+  btw:
+    usage:                 "Kullanım: /btw <soru>\nÖrnek: /btw o hata hangi dosyadaydı?\n\nBu konuşma hakkında hızlı bir yan soruyu, konuşmayı kesmeden yanıtlar. Bağımsız bir arka plan görevi için /bg <prompt> kullan."
+    no_history:            "Henüz konuşma yok — sorunu normal bir mesaj olarak gönder."
+    no_provider:           "❌ Yan soru yanıtlanamıyor: sağlayıcı kimlik bilgileri yapılandırılmamış."
+    started:               "💬 Yan soru: \"{preview}\"\nBu konuşmanın anlık görüntüsünden yanıtlanıyor — mevcut çalışma devam ediyor."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw başarısız oldu: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Oturum veritabanı kullanılamıyor."

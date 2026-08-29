@@ -5148,7 +5148,7 @@ class DiscordAdapter(BasePlatformAdapter):
     # historically ran with NO authorization check — bypassing every gate
     # ``on_message`` enforces (DISCORD_ALLOWED_USERS, DISCORD_ALLOWED_ROLES,
     # DISCORD_ALLOWED_CHANNELS, DISCORD_IGNORED_CHANNELS). Any guild member
-    # could invoke ``/background``, ``/restart``, ``/sethome``, etc. as the
+    # could invoke ``/bg``, ``/restart``, ``/sethome``, etc. as the
     # operator. ``_check_slash_authorization`` mirrors the on_message gates
     # one-for-one so the slash surface honors the same trust boundary.
     #
@@ -6007,10 +6007,15 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_queue(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
 
-        @tree.command(name="background", description="Run a prompt in the background")
+        @tree.command(name="bg", description="Run a prompt in a separate background session")
         @discord.app_commands.describe(prompt="The prompt to run in the background")
         async def slash_background(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
+            await self._run_simple_slash(interaction, f"/bg {prompt}", "Background task started~")
+
+        @tree.command(name="btw", description="Ask a side question about the current conversation")
+        @discord.app_commands.describe(question="The side question to answer without interrupting")
+        async def slash_btw(interaction: discord.Interaction, question: str):
+            await self._run_simple_slash(interaction, f"/btw {question}", "Side question dispatched~")
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in

@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Commandes approuvées (modèle approuvé de manière permanente) ({count} commandes). L'agent reprend..."
 
   background:
-    usage:                 "Usage : /background <prompt>\nExemple : /background Résume les meilleures histoires HN d'aujourd'hui\n\nExécute le prompt dans une session séparée. Vous pouvez continuer à discuter — le résultat apparaîtra ici une fois terminé."
+    usage:                 "Usage : /bg <prompt>\nExemple : /bg Résume les meilleures histoires HN d'aujourd'hui\n\nExécute le prompt dans une session séparée. Vous pouvez continuer à discuter — le résultat apparaîtra ici une fois terminé."
     started:               "🔄 Tâche d'arrière-plan démarrée : « {preview} »\nID de tâche : {task_id}\nVous pouvez continuer à discuter — les résultats apparaîtront ici une fois terminés."
+
+  btw:
+    usage:                 "Usage : /btw <question>\nExemple : /btw dans quel fichier était cette erreur ?\n\nRépond à une question rapide sur cette conversation sans l'interrompre. Pour une tâche d'arrière-plan indépendante, utilisez /bg <prompt>."
+    no_history:            "Pas encore de conversation — envoyez plutôt votre question comme un message normal."
+    no_provider:           "❌ Impossible de répondre : aucun identifiant de fournisseur configuré."
+    started:               "💬 Question annexe : « {preview} »\nRéponse à partir d'un instantané de cette conversation — le travail en cours continue."
+    answer:                "💬 /btw : « {preview} »\n\n{answer}"
+    failed:                "❌ /btw a échoué : « {preview} »\n{error}"
 
   branch:
     db_unavailable:        "Base de données des sessions indisponible."

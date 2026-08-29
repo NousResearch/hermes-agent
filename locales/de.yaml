@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Befehle genehmigt (Muster dauerhaft genehmigt) ({count} Befehle). Der Agent wird fortgesetzt..."
 
   background:
-    usage:                 "Verwendung: /background <prompt>\nBeispiel: /background Fasse die Top-HN-Storys von heute zusammen\n\nFührt den Prompt in einer separaten Sitzung aus. Sie können weiter chatten — das Ergebnis erscheint hier, wenn es fertig ist."
+    usage:                 "Verwendung: /bg <prompt>\nBeispiel: /bg Fasse die Top-HN-Storys von heute zusammen\n\nFührt den Prompt in einer separaten Sitzung aus. Sie können weiter chatten — das Ergebnis erscheint hier, wenn es fertig ist."
     started:               "🔄 Hintergrund-Aufgabe gestartet: \"{preview}\"\nAufgaben-ID: {task_id}\nSie können weiter chatten — die Ergebnisse erscheinen hier, wenn sie fertig sind."
+
+  btw:
+    usage:                 "Verwendung: /btw <Frage>\nBeispiel: /btw in welcher Datei war dieser Fehler?\n\nBeantwortet eine kurze Nebenfrage zu dieser Konversation, ohne sie zu unterbrechen. Für eine unabhängige Hintergrundaufgabe /bg <prompt> verwenden."
+    no_history:            "Noch keine Konversation — senden Sie Ihre Frage stattdessen als normale Nachricht."
+    no_provider:           "❌ Nebenfrage kann nicht beantwortet werden: keine Anbieter-Zugangsdaten konfiguriert."
+    started:               "💬 Nebenfrage: \"{preview}\"\nAntwort aus einem Schnappschuss dieser Konversation — die aktuelle Arbeit läuft weiter."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw fehlgeschlagen: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Sitzungsdatenbank nicht verfügbar."

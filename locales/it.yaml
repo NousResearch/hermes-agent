@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Comandi approvati (modello approvato in modo permanente) ({count} comandi). L'agente sta riprendendo..."
 
   background:
-    usage:                 "Uso: /background <prompt>\nEsempio: /background Riassumi le principali notizie di HN di oggi\n\nEsegue il prompt in una sessione separata. Puoi continuare a chattare — il risultato apparirà qui al termine."
+    usage:                 "Uso: /bg <prompt>\nEsempio: /bg Riassumi le principali notizie di HN di oggi\n\nEsegue il prompt in una sessione separata. Puoi continuare a chattare — il risultato apparirà qui al termine."
     started:               "🔄 Attività in background avviata: \"{preview}\"\nID attività: {task_id}\nPuoi continuare a chattare — i risultati appariranno al termine."
+
+  btw:
+    usage:                 "Uso: /btw <domanda>\nEsempio: /btw in quale file era quell'errore?\n\nRisponde a una rapida domanda su questa conversazione senza interromperla. Per un'attività in background indipendente usa /bg <prompt>."
+    no_history:            "Nessuna conversazione ancora — invia la domanda come messaggio normale."
+    no_provider:           "❌ Impossibile rispondere: nessuna credenziale del provider configurata."
+    started:               "💬 Domanda a margine: \"{preview}\"\nRispondo da uno snapshot di questa conversazione — il lavoro attuale continua."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw non riuscito: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Database delle sessioni non disponibile."

@@ -72,8 +72,16 @@ gateway:
     always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
 
   background:
-    usage:                 "Úsáid: /background <leid>\nSampla: /background Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
+    usage:                 "Úsáid: /bg <leid>\nSampla: /bg Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
     started:               "🔄 Tasc cúlra tosaithe: \"{preview}\"\nAitheantas an tasc: {task_id}\nIs féidir leat leanúint leis an gcomhrá — taispeánfar na torthaí nuair a bheidh sé críochnaithe."
+
+  btw:
+    usage:                 "Úsáid: /btw <ceist>\nSampla: /btw cén comhad ina raibh an earráid sin?\n\nFreagraíonn ceist thaobhach ghasta faoin gcomhrá seo gan cur isteach air. Le haghaidh tasc cúlra neamhspleách, úsáid /bg <leid>."
+    no_history:            "Níl aon chomhrá ann fós — seol do cheist mar ghnáth-theachtaireacht ina ionad."
+    no_provider:           "❌ Ní féidir an cheist a fhreagairt: níl dintiúir sholáthraí cumraithe."
+    started:               "💬 Ceist thaobhach: \"{preview}\"\nÁ freagairt ó léargas ar an gcomhrá seo — leanann an obair reatha ar aghaidh."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ Theip ar /btw: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."

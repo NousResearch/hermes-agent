@@ -83,8 +83,16 @@ gateway:
     always_plural:         "✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming..."
 
   background:
-    usage:                 "Usage: /background <prompt>\nExample: /background Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
+    usage:                 "Usage: /bg <prompt>\nExample: /bg Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
     started:               "🔄 Background task started: \"{preview}\"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done."
+
+  btw:
+    usage:                 "Usage: /btw <question>\nExample: /btw which file was that error in?\n\nAnswers a quick side question about this conversation without interrupting it. For an independent background task, use /bg <prompt>."
+    no_history:            "No conversation yet — send your question as a normal message instead."
+    no_provider:           "❌ Cannot answer side question: no provider credentials configured."
+    started:               "💬 Side question: \"{preview}\"\nAnswering from a snapshot of this conversation — the current work continues."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw failed: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Session database not available."

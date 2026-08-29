@@ -136,7 +136,7 @@ A persistent status bar sits above the input area, updating in real time:
 | Context bar | Visual fill indicator with color-coded thresholds |
 | Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
 | 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
-| ▶ N | **Active background tasks** — how many `/background` prompts are still running in the current session. Appears whenever at least one task is in flight. |
+| ▶ N | **Active background tasks** — how many `/bg` prompts are still running in the current session. Appears whenever at least one task is in flight. |
 | Duration | Elapsed session time |
 | Session title | Once the session has a title, it appears as a gold badge pinned to the far-right edge. Long titles truncate before displacing the essential model and context fields. |
 | ⚠ YOLO | **YOLO mode warning** — shown whenever `HERMES_YOLO_MODE` is on (either `hermes --yolo` at launch or `/yolo` toggled mid-session). Mirrors the banner-line warning so you can't forget you're in auto-approve mode. |
@@ -213,7 +213,8 @@ Common examples:
 | `/model` | Show or change the current model |
 | `/tools` | List currently available tools |
 | `/skills browse` | Browse the skills hub and official optional skills |
-| `/background <prompt>` | Run a prompt in a separate background session |
+| `/bg <prompt>` | Run a prompt in a separate background session |
+| `/btw <question>` | Ask a side question about the current conversation without interrupting it |
 | `/skin` | Show or switch the active CLI skin |
 | `/voice on` | Enable CLI voice mode (press `Ctrl+B` to record) |
 | `/voice tts` | Toggle spoken playback for Hermes replies |
@@ -487,7 +488,7 @@ When compression triggers, middle turns are summarized while the first 3 and las
 Run a prompt in a separate background session while continuing to use the CLI for other work:
 
 ```
-/background Analyze the logs in /var/log and summarize any errors from today
+/bg Analyze the logs in /var/log and summarize any errors from today
 ```
 
 Hermes immediately confirms the task and gives you back the prompt:
@@ -499,7 +500,7 @@ Hermes immediately confirms the task and gives you back the prompt:
 
 ### How It Works
 
-Each `/background` prompt spawns a **completely separate agent session** in a daemon thread:
+Each `/bg` prompt spawns a **completely separate agent session** in a daemon thread:
 
 - **Isolated conversation** — the background agent has no knowledge of your current session's history. It receives only the prompt you provide.
 - **Same configuration** — the background agent inherits your model, provider, toolsets, reasoning settings, and fallback model from the current session.
@@ -523,8 +524,8 @@ If the task fails, you'll see an error notification instead. If `display.bell_on
 
 ### Use Cases
 
-- **Long-running research** — "/background research the latest developments in quantum error correction" while you work on code
-- **File processing** — "/background analyze all Python files in this repo and list any security issues" while you continue a conversation
+- **Long-running research** — "/bg research the latest developments in quantum error correction" while you work on code
+- **File processing** — "/bg analyze all Python files in this repo and list any security issues" while you continue a conversation
 - **Parallel investigations** — start multiple background tasks to explore different angles simultaneously
 
 :::info

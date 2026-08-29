@@ -56,7 +56,8 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/redraw` | 强制完整重绘 UI（在 tmux 调整大小、鼠标选择产生残影等导致终端错位后恢复）。 |
 | `/status` | 显示会话信息——模型、提供商、profile、会话 ID、工作目录、标题、创建/更新时间戳、token 总量、agent 运行状态——随后显示本地**会话摘要**块（近期用户/助手轮次数、工具结果数、最常用工具、最近访问的文件、最新用户 prompt 和最新助手回复）。摘要从内存中的对话本地计算，不调用 LLM，不影响 prompt 缓存。 |
 | `/agents`（别名：`/tasks`） | 显示当前会话中的活动 agent 和运行中的任务。 |
-| `/background <prompt>`（别名：`/bg`、`/btw`） | 在独立的后台会话中运行 prompt。agent 独立处理你的 prompt——当前会话保持空闲可继续其他工作。任务完成后结果以面板形式显示。见 [CLI 后台会话](/user-guide/cli#background-sessions)。 |
+| `/bg <prompt>` | 在独立的后台会话中运行 prompt。agent 独立处理你的 prompt——当前会话保持空闲可继续其他工作。任务完成后结果以面板形式显示。见 [CLI 后台会话](/user-guide/cli#background-sessions)。 |
+| `/btw <question>` | 在不打断当前工作的情况下，就**当前对话**提出一个快速的顺带问题。由一次一次性辅助 LLM 调用根据对话快照作答——实时会话的历史和提示缓存不受影响，当前回合继续运行。需要全新上下文的独立任务请使用 `/bg`。 |
 | `/branch [name]`（别名：`/fork`） | 分支当前会话（探索不同路径） |
 | `/handoff <platform>` | **仅限 CLI。** 将当前会话移交给消息平台（Telegram、Discord、Slack、WhatsApp、Signal、Matrix）。gateway 立即接管，在支持线程的平台上创建新线程（Telegram 话题、Discord 文字频道线程、Slack 消息锚定线程），将目标重新绑定到你的 CLI session_id 以重放完整的角色感知转录，并伪造一条合成用户轮次让 agent 确认已在新位置工作。成功后 CLI 干净退出并提示 `/resume`；随时可用 `/resume <title>` 在本地恢复。轮次进行中拒绝执行。需要 gateway 正在运行且目标平台已配置 home 频道（从目标聊天中执行 `/sethome`）。见 [跨平台移交](/user-guide/sessions#cross-platform-handoff)。 |
 
@@ -220,7 +221,8 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/reasoning [level\|show\|hide]` | 更改推理力度或切换推理显示。 |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | 控制聊天中的语音回复。`join`/`channel`/`leave` 管理 Discord 语音频道模式。 |
 | `/rollback [number]` | 列出或恢复文件系统检查点。 |
-| `/background <prompt>` | 在独立的后台会话中运行 prompt。任务完成后结果投递回同一聊天。见 [消息平台后台会话](/user-guide/messaging/#background-sessions)。 |
+| `/bg <prompt>` | 在独立的后台会话中运行 prompt。任务完成后结果投递回同一聊天。见 [消息平台后台会话](/user-guide/messaging/#background-sessions)。 |
+| `/btw <question>` | 在不打断当前对话的情况下，就当前对话提出顺带问题。根据对话快照作答；答案就绪后发送到聊天中。 |
 | `/queue <prompt>`（别名：`/q`） | 将 prompt 加入队列等待下一轮处理，不中断当前轮次。 |
 | `/steer <prompt>` | 在下一次工具调用后注入一条消息，不中断——模型在下一次迭代时获取，而非作为新轮次。 |
 | `/goal <text>` | 设置一个持续目标，Hermes 将跨轮次持续推进——这是我们对 Ralph loop 的实现。裁判模型在每轮后检查；若未完成，Hermes 自动继续，直到完成、你暂停/清除，或达到轮次预算（默认 20）。子命令：`/goal status`、`/goal pause`、`/goal resume`、`/goal clear`。agent 运行中可安全执行 status/pause/clear；设置新目标需先执行 `/stop`。见 [持续目标](/user-guide/features/goals)。 |
@@ -249,7 +251,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 - `/skills` **仅在搜索/浏览/安装时属于 CLI-only**；其写入审批子命令（`pending`、`approve`、`reject`、`diff`、`approval`）在 `skills.write_approval` 开启时也可在消息平台使用。`/memory` 可在**两个表面**使用。
 - `/verbose` **默认仅限 CLI**，但可通过在 `config.yaml` 中设置 `display.tool_progress_command: true` 为消息平台启用。启用后，它会循环切换 `display.tool_progress` 模式并保存到配置。
 - `/sethome`、`/update`、`/restart`、`/approve`、`/deny`、`/topic`、`/platform` 和 `/commands` 是**仅限消息平台**的命令。
-- `/status`、`/version`、`/background`、`/queue`、`/steer`、`/voice`、`/reload-mcp`、`/reload-skills`、`/rollback`、`/debug`、`/fast`、`/footer`、`/curator`、`/kanban`、`/credits`、`/suggestions`、`/blueprint`、`/sessions` 和 `/yolo` 在 **CLI 和消息 gateway 中均可使用**。
+- `/status`、`/version`、`/bg`、`/btw`、`/queue`、`/steer`、`/voice`、`/reload-mcp`、`/reload-skills`、`/rollback`、`/debug`、`/fast`、`/footer`、`/curator`、`/kanban`、`/credits`、`/suggestions`、`/blueprint`、`/sessions` 和 `/yolo` 在 **CLI 和消息 gateway 中均可使用**。
 - `/voice join`、`/voice channel` 和 `/voice leave` 仅在 Discord 上有意义。
 
 ## 破坏性命令的确认提示

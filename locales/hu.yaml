@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Parancsok jóváhagyva (minta véglegesen jóváhagyva) ({count} parancs). Az ügynök folytatja..."
 
   background:
-    usage:                 "Használat: /background <prompt>\nPélda: /background Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
+    usage:                 "Használat: /bg <prompt>\nPélda: /bg Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
     started:               "🔄 Háttérfeladat elindítva: \"{preview}\"\nFeladatazonosító: {task_id}\nFolytathatod a beszélgetést — az eredmények itt jelennek meg, amint elkészülnek."
+
+  btw:
+    usage:                 "Használat: /btw <kérdés>\nPélda: /btw melyik fájlban volt az a hiba?\n\nGyors mellékkérdésre válaszol erről a beszélgetésről anélkül, hogy megszakítaná. Független háttérfeladathoz használd a /bg <prompt> parancsot."
+    no_history:            "Még nincs beszélgetés — küldd el a kérdésed normál üzenetként."
+    no_provider:           "❌ A mellékkérdés nem válaszolható meg: nincs szolgáltatói hitelesítő adat beállítva."
+    started:               "💬 Mellékkérdés: \"{preview}\"\nA beszélgetés pillanatképéből válaszolunk — a jelenlegi munka folytatódik."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ A /btw sikertelen: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "A munkamenet-adatbázis nem érhető el."

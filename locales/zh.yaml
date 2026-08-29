@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…"
 
   background:
-    usage:                 "用法：/background <提示>\n示例：/background 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
+    usage:                 "用法：/bg <提示>\n示例：/bg 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
     started:               "🔄 后台任务已启动：「{preview}」\n任务 ID：{task_id}\n你可以继续聊天 — 完成后结果将在此显示。"
+
+  btw:
+    usage:                 "用法：/btw <问题>\n示例：/btw 那个错误在哪个文件？\n\n在不打断当前工作的情况下，回答关于此对话的快速问题。要运行独立的后台任务，请使用 /bg <提示>。"
+    no_history:            "还没有对话 — 请将问题作为普通消息发送。"
+    no_provider:           "❌ 无法回答问题：未配置提供商凭据。"
+    started:               "💬 顺便一问：「{preview}」\n正根据此对话的快照回答 — 当前工作继续进行。"
+    answer:                "💬 /btw:「{preview}」\n\n{answer}"
+    failed:                "❌ /btw 失败：「{preview}」\n{error}"
 
   branch:
     db_unavailable:        "会话数据库不可用。"

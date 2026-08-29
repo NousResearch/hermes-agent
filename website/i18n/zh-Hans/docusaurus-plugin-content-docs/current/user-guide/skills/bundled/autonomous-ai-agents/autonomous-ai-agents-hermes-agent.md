@@ -260,7 +260,7 @@ hermes uninstall            Uninstall Hermes
 /stop                Kill background processes
 /rollback [N]        Restore filesystem checkpoint
 /snapshot [sub]      Create or restore state snapshots of Hermes config/state (CLI)
-/background <prompt> Run prompt in background
+/bg <prompt> Run prompt in background
 /queue <prompt>      Queue for next turn
 /steer <prompt>      Inject a message after the next tool call without interrupting
 /agents (/tasks)     Show active agents and running tasks

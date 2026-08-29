@@ -197,8 +197,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
                gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch",
                desktop="messaging"),
-    CommandDef("background", "Run a prompt in the background", "Session",
-               aliases=("bg", "btw"), args_hint="<prompt>", busy_policy="dispatch"),
+    CommandDef("bg", "Run a prompt in a separate background session", "Session",
+               args_hint="<prompt>", busy_policy="dispatch"),
+    CommandDef("btw", "Ask a side question about the current conversation without interrupting it", "Session",
+               args_hint="<question>", busy_policy="dispatch"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",), busy_policy="dispatch"),
     CommandDef("journey", "Open the learning journey timeline",
@@ -507,7 +509,7 @@ HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
         "compress", "compact", "context", "ctx", "status",
     ),
     "Background & Automation": (
-        "background", "bg", "btw", "agents", "tasks", "queue", "q", "steer",
+        "bg", "btw", "agents", "tasks", "queue", "q", "steer",
         "goal", "subgoal", "heartbeat", "hb", "refine", "loop", "proactive",
         "moa", "journey", "learning", "memory-graph",
     ),
@@ -719,7 +721,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
     canonical command.
 
-    Built-in commands that require arguments (e.g. /queue, /steer, /background)
+    Built-in commands that require arguments (e.g. /queue, /steer, /bg)
     are **included** because their handlers return usage text when selected
     without a payload, making them discoverable via autocomplete.
 
@@ -775,7 +777,8 @@ _TELEGRAM_MENU_PRIORITY = (
     "deny",
     "queue",
     "steer",
-    "background",
+    "bg",
+    "btw",
     # Lower-priority but still useful operational built-ins.
     "reasoning",
     "usage",
@@ -1365,7 +1368,9 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # would otherwise get, and the Telegram-parity test fails when a canonical
 # gets clamped ("reset" was unpinned for exactly that — /new keeps its
 # native slot, the alias spelling stays reachable via /hermes reset).
-_SLACK_PRIORITY_ALIASES = ("btw", "bg")
+# (Currently empty: /bg and /btw were promoted from aliases of /background
+# to canonical commands, so they win first-pass slots on their own.)
+_SLACK_PRIORITY_ALIASES: tuple[str, ...] = ()
 
 # Canonical commands intentionally NOT given a native Slack slash slot. Slack
 # caps apps at 50 slash commands and the registry is at that ceiling; rather
@@ -1435,7 +1440,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     first-class slash and not a ``/hermes <verb>`` subcommand.
 
     Both canonical names and aliases are included so users can type any
-    documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
+    documented form; aliases are surfaced alongside canonical names.
     Plugin-registered slash commands are included too.
 
     Commands whose sanitized name collides with a Slack built-in
@@ -1538,7 +1543,7 @@ def slack_subcommand_map() -> dict[str, str]:
     """Return subcommand -> /command mapping for Slack /hermes handler.
 
     Maps both canonical names and aliases so /hermes bg do stuff works
-    the same as /hermes background do stuff.
+    the same as /hermes bg do stuff.
 
     Plugin-registered slash commands are included so ``/hermes <plugin-cmd>``
     routes through the plugin handler.

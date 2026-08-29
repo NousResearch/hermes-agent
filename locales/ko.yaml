@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ 명령이 승인되었습니다 (패턴 영구 승인됨) ({count}개). 에이전트가 재개됩니다..."
 
   background:
-    usage:                 "사용법: /background <prompt>\n예시: /background 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
+    usage:                 "사용법: /bg <prompt>\n예시: /bg 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
     started:               "🔄 백그라운드 작업이 시작되었습니다: \"{preview}\"\n작업 ID: {task_id}\n계속 대화하실 수 있습니다 — 완료되면 결과가 여기에 표시됩니다."
+
+  btw:
+    usage:                 "사용법: /btw <질문>\n예시: /btw 그 오류가 어느 파일에 있었지?\n\n현재 작업을 중단하지 않고 이 대화에 대한 간단한 질문에 답합니다. 독립적인 백그라운드 작업은 /bg <prompt>를 사용하세요."
+    no_history:            "아직 대화가 없습니다 — 질문을 일반 메시지로 보내주세요."
+    no_provider:           "❌ 질문에 답할 수 없습니다: 공급자 자격 증명이 설정되지 않았습니다."
+    started:               "💬 사이드 질문: \"{preview}\"\n이 대화의 스냅샷을 바탕으로 답변합니다 — 현재 작업은 계속됩니다."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw 실패: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."

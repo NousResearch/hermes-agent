@@ -301,7 +301,7 @@ Then in Slack:
 ### Legacy `/hermes <subcommand>` still works
 
 For backward compatibility with older manifests, you can still type
-`/hermes btw run the tests` — Hermes routes it the same way as `/btw
+`/hermes bg run the tests` — Hermes routes it the same way as `/bg
 run the tests`. Free-form questions also work: `/hermes what's the
 weather?` is treated as a regular message.
 

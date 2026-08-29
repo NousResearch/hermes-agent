@@ -1296,6 +1296,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
 
         return
+      case 'btw.complete':
+        sys(`[btw${ev.payload.question ? ` "${ev.payload.question}"` : ''}] ${ev.payload.text}`)
+
+        return
       case 'review.summary': {
         // Self-improvement background review emitted a persistent summary
         // of what it saved to memory/skills. Surface it as a system line

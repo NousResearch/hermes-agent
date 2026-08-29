@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Opdragte goedgekeur (patroon permanent goedgekeur) ({count} opdragte). Die agent gaan voort..."
 
   background:
-    usage:                 "Gebruik: /background <prompt>\nVoorbeeld: /background Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
+    usage:                 "Gebruik: /bg <prompt>\nVoorbeeld: /bg Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
     started:               "🔄 Agtergrondtaak begin: \"{preview}\"\nTaak-ID: {task_id}\nJy kan aanhou gesels — resultate verskyn hier wanneer dit klaar is."
+
+  btw:
+    usage:                 "Gebruik: /btw <vraag>\nVoorbeeld: /btw in watter lêer was daardie fout?\n\nBeantwoord 'n vinnige newevraag oor hierdie gesprek sonder om dit te onderbreek. Vir 'n onafhanklike agtergrondtaak, gebruik /bg <prompt>."
+    no_history:            "Nog geen gesprek nie — stuur jou vraag eerder as 'n gewone boodskap."
+    no_provider:           "❌ Kan nie newevraag beantwoord nie: geen verskaffer-geloofsbriewe opgestel nie."
+    started:               "💬 Newevraag: \"{preview}\"\nBeantwoord vanaf 'n momentopname van hierdie gesprek — die huidige werk gaan voort."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw het misluk: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."

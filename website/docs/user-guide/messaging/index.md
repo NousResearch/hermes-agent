@@ -210,7 +210,8 @@ platform network disconnect as an event-loop failure.
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
 | `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |
 | `/rollback [number]` | List or restore filesystem checkpoints |
-| `/background <prompt>` | Run a prompt in a separate background session |
+| `/bg <prompt>` | Run a prompt in a separate background session |
+| `/btw <question>` | Ask a side question about the current conversation without interrupting it |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |
@@ -495,7 +496,7 @@ When enabled, the bot sends status messages as it works:
 Run a prompt in a separate background session so the agent works on it independently while your main chat stays responsive:
 
 ```
-/background Check all servers in the cluster and report any that are down
+/bg Check all servers in the cluster and report any that are down
 ```
 
 Hermes confirms immediately:
@@ -507,7 +508,7 @@ Hermes confirms immediately:
 
 ### How It Works
 
-Each `/background` prompt spawns a **separate agent instance** that runs asynchronously:
+Each `/bg` prompt spawns a **separate agent instance** that runs asynchronously:
 
 - **Isolated session** — the background agent has its own session with its own conversation history. It has no knowledge of your current chat context and receives only the prompt you provide.
 - **Same configuration** — inherits your model, provider, toolsets, reasoning settings, and provider routing from the current gateway setup.
@@ -539,10 +540,10 @@ HERMES_BACKGROUND_NOTIFICATIONS=result
 
 ### Use Cases
 
-- **Server monitoring** — "/background Check the health of all services and alert me if anything is down"
-- **Long builds** — "/background Build and deploy the staging environment" while you continue chatting
-- **Research tasks** — "/background Research competitor pricing and summarize in a table"
-- **File operations** — "/background Organize the photos in ~/Downloads by date into folders"
+- **Server monitoring** — "/bg Check the health of all services and alert me if anything is down"
+- **Long builds** — "/bg Build and deploy the staging environment" while you continue chatting
+- **Research tasks** — "/bg Research competitor pricing and summarize in a table"
+- **File operations** — "/bg Organize the photos in ~/Downloads by date into folders"
 
 :::tip
 Background tasks on messaging platforms are fire-and-forget — you don't need to wait or check on them. Results arrive in the same chat automatically when the task finishes.

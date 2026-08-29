@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Comandos aprovados (padrão aprovado permanentemente) ({count} comandos). O agente está a retomar..."
 
   background:
-    usage:                 "Uso: /background <prompt>\nExemplo: /background Resume as principais histórias do HN de hoje\n\nExecuta o prompt numa sessão separada. Podes continuar a conversar — o resultado aparecerá aqui quando estiver concluído."
+    usage:                 "Uso: /bg <prompt>\nExemplo: /bg Resume as principais histórias do HN de hoje\n\nExecuta o prompt numa sessão separada. Podes continuar a conversar — o resultado aparecerá aqui quando estiver concluído."
     started:               "🔄 Tarefa em segundo plano iniciada: \"{preview}\"\nID da tarefa: {task_id}\nPodes continuar a conversar — os resultados aparecerão aqui quando estiverem prontos."
+
+  btw:
+    usage:                 "Uso: /btw <pergunta>\nExemplo: /btw em que ficheiro estava aquele erro?\n\nResponde a uma pergunta rápida sobre esta conversa sem a interromper. Para uma tarefa independente em segundo plano, usa /bg <prompt>."
+    no_history:            "Ainda não há conversa — envia a tua pergunta como mensagem normal."
+    no_provider:           "❌ Não é possível responder: nenhuma credencial de fornecedor configurada."
+    started:               "💬 Pergunta à parte: \"{preview}\"\nA responder a partir de um instantâneo desta conversa — o trabalho atual continua."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw falhou: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Base de dados de sessões indisponível."

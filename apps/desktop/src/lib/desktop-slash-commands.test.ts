@@ -49,7 +49,8 @@ const REGISTRY_CATALOG = registryCatalog(
     '/agents': null,
     '/steer': 'text',
     '/stop': null,
-    '/background': 'text',
+    '/bg': 'text',
+    '/btw': 'text',
     '/debug': null,
     '/goal': 'mixed',
     '/personality': 'options',
@@ -61,7 +62,7 @@ const REGISTRY_CATALOG = registryCatalog(
     '/loop': 'mixed',
     '/lcm': 'text'
   },
-  { '/tasks': '/agents', '/bg': '/background', '/q': '/queue', '/proactive': '/loop' }
+  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
 )
 
 describe('desktop slash command curation', () => {
@@ -93,9 +94,11 @@ describe('desktop slash command curation', () => {
   it('treats registry and plugin commands as exec when the catalog says so', () => {
     expect(resolveDesktopCommand('/refine')?.argumentMode).toBe('text')
     expect(isDesktopSlashSuggestion('/refine')).toBe(true)
-    expect(isDesktopSlashSuggestion('/bg')).toBe(false)
-    expect(isDesktopSlashCommand('/background')).toBe(true)
-    expect(desktopSlashCommandArgumentMode('/background')).toBe('text')
+    expect(isDesktopSlashSuggestion('/background')).toBe(false)
+    expect(isDesktopSlashCommand('/bg')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/bg')).toBe('text')
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/btw')).toBe('text')
     expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
     expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
   })
@@ -230,7 +233,8 @@ describe('desktop slash command curation', () => {
 
   it('still routes commands without dedicated RPCs through exec()', () => {
     const execNames = [
-      '/background',
+      '/bg',
+      '/btw',
       '/debug',
       '/goal',
       '/personality',

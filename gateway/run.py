@@ -17201,7 +17201,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "deny": self._handle_deny_command,
                 "pause": self._handle_pause_command,
                 "agents": self._handle_agents_command,
-                "background": self._handle_background_command,
+                "bg": self._handle_background_command,
+                "btw": self._handle_btw_command,
                 "kanban": self._handle_kanban_command,
                 "subgoal": self._handle_subgoal_command,
                 "heartbeat": self._handle_heartbeat_command,
@@ -18587,8 +18588,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "diff":
             return await self._handle_diff_command(event)
 
-        if canonical == "background":
+        if canonical == "bg":
             return await self._handle_background_command(event)
+
+        if canonical == "btw":
+            return await self._handle_btw_command(event)
 
         if canonical == "queue":
             queue_payload = event.get_command_args().strip()

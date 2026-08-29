@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ 指令已批准（永久允許該模式）（{count} 條指令）。代理正在恢復…"
 
   background:
-    usage:                 "用法：/background <提示>\n範例：/background 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"
+    usage:                 "用法：/bg <提示>\n範例：/bg 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"
     started:               "🔄 背景任務已啟動：「{preview}」\n任務 ID：{task_id}\n你可以繼續聊天 — 完成後結果將顯示於此。"
+
+  btw:
+    usage:                 "用法：/btw <問題>\n範例：/btw 那個錯誤在哪個檔案？\n\n在不打斷目前工作的情況下，回答關於此對話的快速問題。若要執行獨立的背景任務，請使用 /bg <提示>。"
+    no_history:            "尚無對話 — 請將問題作為一般訊息傳送。"
+    no_provider:           "❌ 無法回答問題：未設定供應商憑證。"
+    started:               "💬 順帶一問：「{preview}」\n正根據此對話的快照回答 — 目前的工作繼續進行。"
+    answer:                "💬 /btw:「{preview}」\n\n{answer}"
+    failed:                "❌ /btw 失敗：「{preview}」\n{error}"
 
   branch:
     db_unavailable:        "工作階段資料庫無法使用。"

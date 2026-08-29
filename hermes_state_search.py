@@ -191,9 +191,9 @@ class SessionSearchMixin:
         comparison, so they keep the legacy chunked ``LIMIT`` delete —
         those shadow tables are small by construction.
         """
-        with self._lock:
+        with self._read_ctx() as conn:
             trash = [
-                r[0] for r in self._conn.execute(
+                r[0] for r in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
                     "AND name LIKE ? ESCAPE '\\'",
                     (self._FTS_TRASH_PREFIX.replace("_", "\\_") + "%",),
@@ -651,15 +651,15 @@ class SessionSearchMixin:
         unavailable)."""
         if not self._fts_enabled or self.read_only:
             return False
-        with self._lock:
-            if self._db_has_legacy_inline_fts(self._conn):
+        with self._read_ctx() as conn:
+            if self._db_has_legacy_inline_fts(conn):
                 return True
             # Interrupted optimize: demotion already removed the legacy
             # vtables (so the check above is False), but the transition is
             # unfinished until the backfill markers are cleared and the
             # demoted trash tables are torn down. Search stays complete
             # through the gap supplement meanwhile; re-running resumes.
-            if self._conn.execute(
+            if conn.execute(
                 "SELECT 1 FROM state_meta "
                 "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
             ).fetchone():
@@ -667,17 +667,17 @@ class SessionSearchMixin:
             # CJK-bigram index work — only offerable when THIS process can
             # tokenize: a pending backfill (markers set at creation on a
             # populated DB) or a stale index awaiting a from-scratch rebuild.
-            if self._fts_cjk_loaded and self._conn.execute(
+            if self._fts_cjk_loaded and conn.execute(
                 "SELECT 1 FROM state_meta WHERE key IN "
                 f"('fts_cjk_rebuild_high_water', '{FTS_CJK_STALE_KEY}') LIMIT 1"
             ).fetchone():
                 return True
-            if self._has_fts_trash(self._conn):
+            if self._has_fts_trash(conn):
                 return True
             # Pre-fix crash window: empty external-content index with
             # messages still present, no markers, no trash (teardown already
             # finished or never needed). Re-run seeds markers and backfills.
-            return self._fts_external_index_empty_with_messages(self._conn)
+            return self._fts_external_index_empty_with_messages(conn)
 
     def _demote_legacy_fts_to_trash(self) -> int:
         """Demote the legacy inline FTS vtables and stage their shadow tables
@@ -876,13 +876,13 @@ class SessionSearchMixin:
         # still empty against a non-empty messages table. Pre-fix code could
         # tear down trash and settle after a no-op backfill when markers were
         # missing — permanent search-index loss for historical rows.
-        with self._lock:
-            still_pending = self._conn.execute(
+        with self._read_ctx() as conn:
+            still_pending = conn.execute(
                 "SELECT 1 FROM state_meta "
                 "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
             ).fetchone() is not None
-            still_trash = self._has_fts_trash(self._conn)
-            empty_index = self._fts_external_index_empty_with_messages(self._conn)
+            still_trash = self._has_fts_trash(conn)
+            empty_index = self._fts_external_index_empty_with_messages(conn)
         if still_pending or still_trash or empty_index:
             reason = (
                 "backfill_incomplete" if still_pending or empty_index
@@ -1131,8 +1131,8 @@ class SessionSearchMixin:
         # excludes handoffs with a DB pick that includes them, soft-deleting
         # the wrong turn.
         fetch_limit = int(limit) * 2 + 5
-        with self._lock:
-            cursor = self._conn.execute(
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
                 "SELECT id, timestamp, content FROM messages "
                 "WHERE session_id = ? AND role = 'user'"
                 f"{active_clause}{display_clause} "

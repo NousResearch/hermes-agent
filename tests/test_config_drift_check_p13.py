@@ -305,7 +305,7 @@ def test_absent_root_enabled_skills_does_not_skip_other_checks(tmp_path):
         f"(rc={r.returncode}) stdout={r.stdout!r}"
     )
     assert "[DRIFT]" in r.stdout
-    assert "_config_version" in r.stdout
+    assert "schema:" in r.stdout
 
 
 def test_absent_root_skills_healthy_home_stays_silent(tmp_path):
@@ -368,7 +368,8 @@ def test_profile_schema_version_drift_detected(tmp_path):
     _write_yaml(stale_cfg, data)
     r = _run_step6(home)
     assert r.returncode == 1, "deferred profile migration was not flagged"
-    assert "profiles/remii/config.yaml" in r.stdout
+    assert "schema:" in r.stdout
+    assert "v23=1" in r.stdout
 
 
 def test_profile_schema_version_missing_detected(tmp_path):
@@ -379,7 +380,40 @@ def test_profile_schema_version_missing_detected(tmp_path):
     _write_yaml(missing_cfg, data)
     r = _run_step6(home)
     assert r.returncode == 1
-    assert "profiles/wesker/config.yaml" in r.stdout
+    assert "schema:" in r.stdout
+    assert "missing=1" in r.stdout
+
+
+def test_schema_drift_is_one_aggregated_line(tmp_path):
+    """A fleet-wide version lag must not emit one #ops line per profile."""
+    home, _root = _make_policy_compliant_home(tmp_path)
+    for name, version in (("remii", 23), ("wesker", 33)):
+        cfg = home / "profiles" / name / "config.yaml"
+        data = _yaml6.safe_load(cfg.read_text())
+        data["_config_version"] = version
+        _write_yaml(cfg, data)
+    missing_cfg = home / "profiles" / "gojo" / "config.yaml"
+    missing = _yaml6.safe_load(missing_cfg.read_text())
+    del missing["_config_version"]
+    _write_yaml(missing_cfg, missing)
+
+    r = _run_step6(home)
+    schema_lines = [line for line in r.stdout.splitlines()
+                    if line.startswith("[DRIFT] schema:")]
+    assert r.returncode == 1
+    assert len(schema_lines) == 1, r.stdout
+    assert "3 config(s)" in schema_lines[0]
+    assert "missing=1" in schema_lines[0]
+    assert "v23=1" in schema_lines[0]
+    assert "v33=1" in schema_lines[0]
+
+
+def test_missing_required_profile_config_is_drift(tmp_path):
+    home, _root = _make_policy_compliant_home(tmp_path)
+    (home / "profiles" / "remii" / "config.yaml").unlink()
+    r = _run_step6(home)
+    assert r.returncode == 1
+    assert "required profile config missing: remii" in r.stdout
 
 
 def test_healthy_fleet_fixture_is_silent_rc0(tmp_path):
@@ -450,6 +484,20 @@ def test_mrhermagi_curator_enabled_false_required(tmp_path):
 
 
 # ── budgets ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("path,value", [
+    (("agent", "max_turns"), 90),
+    (("delegation", "max_iterations"), 90),
+    (("delegation", "max_concurrent_children"), 3),
+])
+def test_root_budgets_are_enforced(tmp_path, path, value):
+    home, root = _make_policy_compliant_home(tmp_path)
+    root.setdefault(path[0], {})[path[1]] = value
+    _write_yaml(home / "config.yaml", root)
+    r = _run_step6(home)
+    assert r.returncode == 1
+    assert ".".join(path) in r.stdout
 
 
 @pytest.mark.parametrize("profile", sorted(_BUDGET_PROFILE_MAX_TURNS_NONE))

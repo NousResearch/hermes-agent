@@ -395,20 +395,18 @@ def main():
     if not _DIRECT:
         state = _read_delivery_state()
         pending = state.get("pending_delivery")
+        if pending:
+            # Deliver every accumulated alert before examining the newest
+            # report. A second direct curator pass must never overwrite an
+            # undelivered alert from the previous week.
+            print(str(pending).rstrip("\n"))
+            state["pending_delivery"] = None
+            _write_delivery_state(state)
         _probe = read_curator_report()
         report_key = (_probe or {}).get("started_at")
         if _probe is not None and report_key is not None \
                 and state.get("processed_started_at") == report_key:
-            if pending:
-                print(pending.rstrip("\n"))
-                state["pending_delivery"] = None
-                _write_delivery_state(state)
             return
-        # suppressed pending for a DIFFERENT report: drop silently (its
-        # report is gone; the new one governs fresh below)
-        if pending:
-            state["pending_delivery"] = None
-            _write_delivery_state(state)
         del _probe  # re-read below in the normal path
     elif not _DRY_RUN:
         # ── Direct mode: skip an already-governed report (idempotent) ──
@@ -521,8 +519,13 @@ def main():
                   f"archival(s), {len(pending_lines)} skill(s) need review\n"
                   + "\n".join(actionable))
         if _DIRECT and not _DRY_RUN:
-            # Store for the weekly cron to deliver exactly once.
+            # Store for the weekly cron to deliver exactly once. Append rather
+            # than overwrite so two curator passes before the weekly delivery
+            # cannot lose the older actionable finding.
             state = _read_delivery_state()
+            pending = state.get("pending_delivery")
+            if pending:
+                output = str(pending).rstrip("\n") + "\n\n" + output
             state["processed_started_at"] = started_at
             state["pending_delivery"] = output
             _write_delivery_state(state)

@@ -274,6 +274,58 @@ def test_duplicate_direct_run_is_noop(monkeypatch, fake_home, tmp_path):
         "duplicate direct run rewrote the delivery state")
 
 
+def test_two_direct_reports_before_weekly_preserve_both_outputs(
+        monkeypatch, fake_home, tmp_path):
+    """A new weekly curator pass must not overwrite an older undelivered alert."""
+    mod = _load_module(monkeypatch, fake_home)
+
+    class R:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    real_run = subprocess.run
+
+    def spy_run(cmd, *args, **kwargs):
+        return R() if cmd and cmd[0] == "hermes" else real_run(
+            cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    mod._DIRECT = True
+
+    _seed_report(
+        fake_home, tmp_path, archived=["my-skill"],
+        started_at="2026-08-22T00:00:00Z",
+    )
+    mod.main()
+
+    _seed_report(
+        fake_home, tmp_path, archived=["other-skill"],
+        started_at="2026-08-29T00:00:00Z",
+    )
+    profile_cfg = fake_home / "profiles" / "octacon" / "config.yaml"
+    profile_cfg.write_text(
+        "skills:\n  enabled_skills:\n    - my-skill\n    - other-skill\n"
+    )
+    mod.main()
+
+    state = _read_delivery_state(fake_home)
+    pending = state.get("pending_delivery") or ""
+    assert "my-skill" in pending
+    assert "other-skill" in pending
+
+    import contextlib
+    import io
+
+    mod._DIRECT = False
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        mod.main()
+    assert "my-skill" in out.getvalue()
+    assert "other-skill" in out.getvalue()
+    assert not _read_delivery_state(fake_home).get("pending_delivery")
+
+
 def test_weekly_replays_pending_exactly_once(monkeypatch, fake_home, tmp_path):
     mod = _load_module(monkeypatch, fake_home)
     info = _seed_report(fake_home, tmp_path, archived=["my-skill"])

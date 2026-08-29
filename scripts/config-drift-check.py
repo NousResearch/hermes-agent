@@ -12,9 +12,10 @@ arbitrary changes under those surfaces must keep the exit at 0 (proven by
 tests/test_config_drift_check_p13.py::test_provider_surface_mutations_*).
 
 Schema-version expectations are DERIVED from the KenseiAgent code
-(hermes_cli.config_defaults.DEFAULT_CONFIG) when importable, falling back to
-the literal below in bare cron environments. Root config.yaml and every
-HERMES_HOME/profiles/*/config.yaml must carry the current version — deferred
+(hermes_cli.config_defaults.DEFAULT_CONFIG). Failure to import that authority
+is an execution error, never permission to use a stale copied literal. Root
+config.yaml and every HERMES_HOME/profiles/*/config.yaml must carry the current
+version — deferred
 profile migrations are flagged intentionally (tracked as a separate migration
 backlog; no exemptions here).
 """
@@ -51,7 +52,6 @@ expected = {
 }
 
 # Approved step-6 governance policy. Only these surfaces are read.
-FALLBACK_SCHEMA_VERSION = 39
 CURATOR_REQUIRED = {
     "enabled": True,
     "stale_after_days": 45,
@@ -69,11 +69,11 @@ CURATOR_ENABLED_PROFILES = [
 CURATOR_DISABLED_PROFILES = ["mrhermagi"]
 
 MAX_TURNS_NONE_PROFILES = {
-    "octacon", "remii", "wesker", "quan", "dezzy", "denji", "light",
+    "root", "octacon", "remii", "wesker", "quan", "dezzy", "denji", "light",
     "kensei-review", "orchestrator",
 }
 DELEGATION_CAP_PROFILES = {
-    "dezzy", "gojo", "kensei-review", "light", "octacon", "remii", "wesker",
+    "root", "dezzy", "gojo", "kensei-review", "light", "octacon", "remii", "wesker",
 }
 MAX_ITERATIONS = 250
 MAX_CONCURRENT_CHILDREN = 10
@@ -89,23 +89,31 @@ ROOT_CLI_TOOLSETS_REQUIRED = [
     "memory", "session_search", "cronjob", "todo",
 ]
 
+REQUIRED_PROFILES = (
+    set(CURATOR_ENABLED_PROFILES)
+    | set(CURATOR_DISABLED_PROFILES)
+    | MAX_TURNS_NONE_PROFILES
+    | DELEGATION_CAP_PROFILES
+    | set(PERSONALITY_PROFILES)
+) - {"root"}
 
-def _derive_expected_schema_version() -> int:
-    """Derive the expected config schema version from the KenseiAgent code.
 
-    Defensive: when hermes_cli is not importable (bare cron env), fall back
-    to FALLBACK_SCHEMA_VERSION.
+def _derive_expected_schema_version() -> int | None:
+    """Derive the expected config schema version from the live code authority.
+
+    Return None when hermes_cli cannot be imported. run_checks() converts that
+    into the script's rc=2 execution-error contract rather than trusting a
+    stale duplicated schema literal.
     """
-    fallback = FALLBACK_SCHEMA_VERSION
     try:
         repo_root = Path(__file__).resolve().parents[1]
         if str(repo_root) not in sys.path:
             sys.path.insert(0, str(repo_root))
         from hermes_cli.config_defaults import DEFAULT_CONFIG
         ver = DEFAULT_CONFIG.get("_config_version")
-        return int(ver) if isinstance(ver, int) else fallback
+        return int(ver) if isinstance(ver, int) else None
     except Exception:
-        return fallback
+        return None
 
 
 # Derived at import time; the test suite asserts equality with DEFAULT_CONFIG.
@@ -135,7 +143,9 @@ def _load_yaml(path: Path) -> dict:
             data = yaml.safe_load(f)
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         raise DriftCheckFatal(f"failed to parse {path}: {e}")
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        raise DriftCheckFatal(f"config is not a YAML mapping: {path}")
+    return data
 
 
 def _check_root_skills(drift: Drift, cfg: dict) -> None:
@@ -165,16 +175,24 @@ def _check_root_skills(drift: Drift, cfg: dict) -> None:
         drift.add(f"Unexpected skills: {', '.join(sorted(extra))}")
 
 
-def _check_schema_version(drift: Drift, label: str, cfg: dict) -> None:
+def _record_schema_mismatch(mismatches: list[object], cfg: dict) -> None:
     actual = cfg.get("_config_version")
-    if actual == EXPECTED_SCHEMA_VERSION:
+    if actual != EXPECTED_SCHEMA_VERSION:
+        mismatches.append(actual)
+
+
+def _flush_schema_mismatches(drift: Drift, mismatches: list[object]) -> None:
+    if not mismatches:
         return
-    if actual is None:
-        drift.add(f"{label}: missing _config_version "
-                  f"(expected {EXPECTED_SCHEMA_VERSION})")
-    else:
-        drift.add(f"{label}: _config_version {actual} != expected "
-                  f"{EXPECTED_SCHEMA_VERSION} (deferred migration)")
+    buckets: dict[str, int] = {}
+    for value in mismatches:
+        key = "missing" if value is None else f"v{value}"
+        buckets[key] = buckets.get(key, 0) + 1
+    detail = ", ".join(f"{key}={buckets[key]}" for key in sorted(buckets))
+    drift.add(
+        f"schema: {len(mismatches)} config(s) have _config_version != "
+        f"v{EXPECTED_SCHEMA_VERSION} ({detail})"
+    )
 
 
 def _check_curator_safety(drift: Drift, label: str, curator: object) -> None:
@@ -242,34 +260,41 @@ def _check_root_cli_toolsets(drift: Drift, cfg: dict) -> None:
 
 def run_checks(home: Path, drift: Drift) -> None:
     """Populate `drift`. Raises DriftCheckFatal on parse errors (→ rc 2)."""
+    if EXPECTED_SCHEMA_VERSION is None:
+        raise DriftCheckFatal(
+            "cannot derive current _config_version from hermes_cli.config_defaults"
+        )
+
     root_path = home / "config.yaml"
     if not root_path.is_file():
         raise DriftCheckFatal(f"root config.yaml not found at {root_path}")
     root_cfg = _load_yaml(root_path)
+    schema_mismatches: list[object] = []
 
     # Order matters for the fail-safe property: the skills check runs FIRST
     # but can never short-circuit the remaining checks.
     _check_root_skills(drift, root_cfg)
-    _check_schema_version(drift, "config.yaml", root_cfg)
+    _record_schema_mismatch(schema_mismatches, root_cfg)
     _check_curator_safety(drift, "config.yaml", root_cfg.get("curator"))
     _check_budgets(drift, "config.yaml", root_cfg, profile="root")
     _check_root_cli_toolsets(drift, root_cfg)
 
     profiles_dir = home / "profiles"
-    if not profiles_dir.is_dir():
-        return
-    for profile_dir in sorted(profiles_dir.iterdir()):
+    seen_profiles: set[str] = set()
+    profile_dirs = sorted(profiles_dir.iterdir()) if profiles_dir.is_dir() else []
+    for profile_dir in profile_dirs:
         if not profile_dir.is_dir() or profile_dir.name.startswith((".", "_")):
             continue
         name = profile_dir.name
         cfg_path = profile_dir / "config.yaml"
         if not cfg_path.is_file():
             continue
+        seen_profiles.add(name)
         cfg = _load_yaml(cfg_path)
         label = f"profiles/{name}/config.yaml"
 
         # Schema version: every profile config on disk must match the code.
-        _check_schema_version(drift, label, cfg)
+        _record_schema_mismatch(schema_mismatches, cfg)
 
         if name in CURATOR_ENABLED_PROFILES:
             _check_curator_safety(drift, label, cfg.get("curator"))
@@ -285,6 +310,11 @@ def run_checks(home: Path, drift: Drift) -> None:
 
         if name in PERSONALITY_PROFILES:
             _check_personality_and_soul(drift, label, cfg, name, home)
+
+    if profiles_dir.is_dir():
+        for name in sorted(REQUIRED_PROFILES - seen_profiles):
+            drift.add(f"required profile config missing: {name}")
+    _flush_schema_mismatches(drift, schema_mismatches)
 
 
 def main() -> int:

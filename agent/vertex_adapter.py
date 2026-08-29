@@ -19,7 +19,7 @@ under the ``vertex:`` section; env vars take precedence over config.yaml.
 import logging
 import os
 import time
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 
@@ -108,6 +108,30 @@ def _refresh_credentials(creds) -> None:
     creds.refresh(auth_req)
 
 
+def _creds_cache_key(resolved_path: Optional[str]) -> Tuple[Any, ...]:
+    """Cache key for the Credentials object backing *resolved_path*.
+
+    Keyed on the service-account file's (path, mtime_ns, size) signature —
+    the house idiom (agent/skill_utils.py, hermes_cli/config.py,
+    agent/models_dev.py) — so rotating the file on disk (new key, re-issued
+    service account) is picked up on the next call instead of serving
+    tokens minted from the old identity for the life of the process
+    (Pattern D: stale cache after out-of-band change). ADC has no file to
+    fingerprint; it keeps a plain sentinel key and its existing
+    refresh/expiry handling.
+
+    A stat failure falls back to the bare path: worst case we serve the
+    cached credentials exactly as the pre-signature code did.
+    """
+    if not resolved_path:
+        return ("__adc__",)
+    try:
+        st = os.stat(resolved_path)
+        return (resolved_path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (resolved_path,)
+
+
 def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """Return a (fresh access_token, project_id) pair or (None, None) on failure.
 
@@ -119,7 +143,7 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
         return None, None
 
     resolved_path = _resolve_credentials_path(credentials_path)
-    cache_key = resolved_path or "__adc__"
+    cache_key = _creds_cache_key(resolved_path)
 
     try:
         cached = _creds_cache.get(cache_key)
@@ -153,6 +177,15 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
                     scopes=["https://www.googleapis.com/auth/cloud-platform"]
                 )
             _creds_cache[cache_key] = (creds, project_id)
+            # A rotation leaves the old signature's entry behind; drop any
+            # other entries for the same path so the cache holds at most one
+            # Credentials per file (bounded, and stale identities don't
+            # linger for surprise reuse via an old key).
+            for k in [
+                k for k in _creds_cache
+                if k is not cache_key and k != cache_key and k[0] == cache_key[0]
+            ]:
+                _creds_cache.pop(k, None)
         else:
             creds, project_id = cached
 

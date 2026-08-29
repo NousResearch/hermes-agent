@@ -56,6 +56,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import { groupWorkspaceOwnerKey } from './group-membership'
+import { activeGroupChat } from './group-panes'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
@@ -469,7 +470,7 @@ export default {
         $botsPaneVisible.set(Boolean(visible))
 
         if (visible) {
-          const group = $groupChatWorkspace.get()
+          const group = activeGroupChat()
           const selected = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
 
           // Owner routing only. With neither a group nor a selected bot there

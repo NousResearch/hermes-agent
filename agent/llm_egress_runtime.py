@@ -76,6 +76,7 @@ logger = logging.getLogger(__name__)
 _VALIDATED_SYNTAX_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
 _REMOTE_KANBAN_SEARCH_PROJECTION_TOOL_NAMES = frozenset({"search_files"})
+_REMOTE_KANBAN_READ_FILE_PROJECTION_TOOL_NAMES = frozenset({"read_file"})
 _GITHUB_LIST_TERMINAL_MAX_ROWS = 100
 _GITHUB_LIST_TERMINAL_MAX_ITEM_BYTES = 512
 _GITHUB_LIST_TERMINAL_MAX_OUTPUT_BYTES = 10_240
@@ -85,6 +86,10 @@ _REJECTED_TERMINAL_COMMAND_REPLAY = json.dumps(
 _GIT_WORKSPACE_DIAGNOSTIC_REPLAY = (
     "git workspace diagnostic completed locally; raw paths and commit subjects "
     "were omitted from remote replay."
+)
+_READ_FILE_REPLAY_ELISION = (
+    "read_file completed locally, but its raw content cannot be replayed on "
+    "this protected route. Request only the needed narrow range again."
 )
 _REMOTE_KANBAN_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,}\"']+"
@@ -947,6 +952,7 @@ def _typed_payload(
     syntax_tool_call_ids: frozenset[str] = frozenset(),
     elided_kanban_tool_call_ids: frozenset[str] = frozenset(),
     search_projection_tool_call_ids: frozenset[str] = frozenset(),
+    read_file_projection_tool_call_ids: frozenset[str] = frozenset(),
     git_workspace_diagnostic_call_ids: frozenset[str] = frozenset(),
     github_list_terminal_call_limits: Mapping[str, int] | None = None,
     rejected_terminal_call_ids: frozenset[str] = frozenset(),
@@ -1022,6 +1028,14 @@ def _typed_payload(
                 or value.get("type") == "function_call_output"
             )
         )
+        is_read_file_projection_tool_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in read_file_projection_tool_call_ids
+            and (
+                value.get("role") == "tool"
+                or value.get("type") == "function_call_output"
+            )
+        )
         is_git_workspace_diagnostic_result = (
             isinstance(output_call_id, str)
             and output_call_id in git_workspace_diagnostic_call_ids
@@ -1071,6 +1085,14 @@ def _typed_payload(
                     request_id=request_identity[2],
                     policy_digest=request_identity[3],
                 )
+                continue
+            if (
+                is_read_file_projection_tool_result
+                and source_metadata is None
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
                 continue
             if (
                 is_search_projection_tool_result
@@ -1123,6 +1145,7 @@ def _typed_payload(
                 syntax_tool_call_ids=syntax_tool_call_ids,
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
+                read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
@@ -1158,6 +1181,7 @@ def _typed_payload(
                 syntax_tool_call_ids=syntax_tool_call_ids,
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
+                read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
@@ -1368,6 +1392,13 @@ def authorize_agent_sdk_kwargs(
         search_projection_tool_call_ids=(
             _recognized_tool_call_ids(
                 body, _REMOTE_KANBAN_SEARCH_PROJECTION_TOOL_NAMES
+            )
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        read_file_projection_tool_call_ids=(
+            _recognized_tool_call_ids(
+                body, _REMOTE_KANBAN_READ_FILE_PROJECTION_TOOL_NAMES
             )
             if protected_kanban_remote and protected_provider_route
             else frozenset()

@@ -487,6 +487,41 @@ def test_unblock_with_pending_parents_returns_todo(monkeypatch, tmp_path):
         conn.close()
 
 
+def test_unblock_accepts_triage_card(monkeypatch, tmp_path):
+    """A parked triage task (auto-decomposer decision child) is accepted —
+    triage -> todo — by kanban_unblock, the same tool a PM uses to accept it."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="Decide the X approach", assignee="jobsy")
+        conn.execute("UPDATE tasks SET status='triage' WHERE id=?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({"task_id": tid})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "todo"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "todo"
+    finally:
+        conn.close()
+
+
 def test_worker_lifecycle_through_tools(worker_env):
     """Drive the full claim -> heartbeat -> comment -> complete lifecycle
     exclusively through the tools, then verify the DB state matches what

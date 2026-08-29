@@ -1629,7 +1629,9 @@ def _handle_unblock(args: dict, **kw) -> str:
         try:
             ok = kb.unblock_task(conn, str(tid))
             if not ok:
-                return tool_error(f"could not unblock {tid} (not blocked or unknown)")
+                return tool_error(
+                    f"could not unblock/accept {tid} (not blocked/scheduled/triage or unknown)"
+                )
             task = kb.get_task(conn, str(tid))
             return _ok(task_id=str(tid), status=task.status if task else None)
         finally:
@@ -2312,10 +2314,12 @@ KANBAN_CREATE_SCHEMA = {
 KANBAN_UNBLOCK_SCHEMA = {
     "name": "kanban_unblock",
     "description": (
-        "Unblock a Kanban task. It moves to ready when all parents are done, "
-        "or todo while any parent remains open. Orchestrator-only — only "
-        "profiles with the kanban toolset can unblock routed work; "
-        "dispatcher-spawned task workers never see this tool."
+        "Unblock or accept a Kanban task. A blocked/scheduled task moves to "
+        "ready when all parents are done, or todo while any parent remains "
+        "open. A triage task (a parked decision) is accepted: triage -> todo, "
+        "then lifted to ready. Orchestrator-only — only profiles with the "
+        "kanban toolset can unblock/accept routed work; dispatcher-spawned "
+        "task workers never see this tool."
     ),
     "parameters": {
         "type": "object",

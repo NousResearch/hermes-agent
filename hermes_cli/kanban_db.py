@@ -6899,7 +6899,15 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked``/``scheduled`` to its safe resumable phase.
+    """Transition ``blocked``/``scheduled``/``triage`` to a resumable phase.
+
+    ``blocked``/``scheduled`` return to their prior phase (or ``ready``).
+    ``triage`` is *accepted*: parked triage tasks (e.g. decision-shaped
+    children the auto-decomposer routed to triage) promote ``triage -> todo``,
+    and ``recompute_ready`` lifts them to ``ready`` on the next tick (or
+    immediately if parent-free). This is the acceptance primitive for a parked
+    decision — deliberately body-less, so a PM ratifies the decision without an
+    LLM fabricating one (the phantom-PM-decision class).
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -6914,6 +6922,27 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             "SELECT status FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
+        if current is not None and current["status"] == "triage":
+            # Accept a parked triage task: promote triage -> todo (parent
+            # gating + ready promotion handled by recompute_ready). No resume
+            # phase to reconstruct — a triage card has no prior lane.
+            _reclaim_dangling_run(
+                conn, task_id, statuses=("triage",), now=now,
+                note="invariant recovery on triage accept",
+            )
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'todo', current_run_id = NULL, "
+                "consecutive_failures = 0, last_failure_error = NULL "
+                "WHERE id = ? AND status = 'triage'",
+                (task_id,),
+            )
+            if cur.rowcount != 1:
+                return False
+            _append_event(
+                conn, task_id, "accepted",
+                {"status": "todo", "resume_status": "triage"},
+            )
+            return True
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if current and current["status"] == "blocked"

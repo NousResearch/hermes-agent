@@ -1107,8 +1107,13 @@ class ShellFileOperations(FileOperations):
         quoted = self._quote_executable(executable)
         result = self._exec(f"{quoted} --version", timeout=10)
         match = re.search(
-            r"(?im)^ripgrep\s+(\d+)\.\d+\.\d+"
-            r"(?:[-+][0-9A-Za-z.-]+)?(?:\s|$)",
+            r"(?m)^ripgrep\s+((?:0|[1-9]\d*))\."
+            r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+            r"(?:-(?:(?:0|[1-9]\d*)|(?:[0-9A-Za-z-]*[A-Za-z-]"
+            r"[0-9A-Za-z-]*))(?:\.(?:(?:0|[1-9]\d*)|"
+            r"(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?"
+            r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+            r"(?:\s+\(rev [^)]+\))?\s*$",
             result.stdout or "",
         )
         if result.exit_code == 0 and match and int(match.group(1)) >= 14:
@@ -3828,8 +3833,9 @@ class ShellFileOperations(FileOperations):
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
+        bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
 
-        if result.exit_code not in {0, 1, 124}:
+        if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:
             if order == "modified":
                 return SearchResult(error=(
                     "Exact modification-time order failed; ripgrep 14+ is "

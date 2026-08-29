@@ -81,7 +81,21 @@ def test_modified_zero_match_exit_one_is_valid_without_capability_error():
 
 @pytest.mark.parametrize(
     "version",
-    ["ripgrep 13.0.0\n", "ripgrep unknown\n", "ripgrep 14 garbage\n"],
+    [
+        "ripgrep 13.0.0\n",
+        "ripgrep unknown\n",
+        "ripgrep 14 garbage\n",
+        "ripgrep 14\n",
+        "ripgrep 14.1\n",
+        "ripgrep 14.1.1-\n",
+        "ripgrep 14.1.1+\n",
+        "ripgrep 14.1.1-alpha..1\n",
+        "ripgrep 14.1.1+build..2\n",
+        "ripgrep 14.1.1-01\n",
+        "ripgrep 014.1.1\n",
+        "ripgrep 14.01.1\n",
+        "ripgrep 14.1.01\n",
+    ],
 )
 def test_modified_requires_parseable_ripgrep_14_before_search(version):
     env = RecordingEnvironment()
@@ -114,6 +128,28 @@ def test_modified_accepts_complete_ripgrep_semver_with_revision_text():
         if "--version" in command:
             env.commands.append(command)
             return {"output": "ripgrep 14.1.1 (rev abc123)\n", "returncode": 0}
+        return original_execute(command, **kwargs)
+
+    env.execute = execute
+    result = ShellFileOperations(env).search(
+        "*.py", path="/repo", target="files", order="modified"
+    )
+
+    assert result.error is None
+    assert len(env.rg_commands) == 1
+
+
+def test_modified_accepts_ripgrep_semver_with_prerelease_and_build_metadata():
+    env = RecordingEnvironment()
+    original_execute = env.execute
+
+    def execute(command, **kwargs):
+        if "--version" in command:
+            env.commands.append(command)
+            return {
+                "output": "ripgrep 14.1.1-alpha.1+build.2\n",
+                "returncode": 0,
+            }
         return original_execute(command, **kwargs)
 
     env.execute = execute
@@ -160,6 +196,33 @@ def test_rg_partial_output_with_error_exit_fails_closed(order):
     assert result.error is not None
     assert result.files == []
     assert len(env.rg_commands) == 1
+
+
+@pytest.mark.parametrize("order", ["discovery", "modified"])
+def test_rg_sigpipe_is_benign_only_after_fetch_limit_paths(order):
+    output = "".join(f"/repo/{name}.py\n" for name in ("a", "b", "c", "d"))
+    env = RecordingEnvironment(rg_output=output, rg_code=141)
+
+    result = ShellFileOperations(env).search(
+        "*.py", path="/repo", target="files", limit=2, offset=1, order=order
+    )
+
+    assert result.error is None
+    assert result.files == ["/repo/b.py", "/repo/c.py"]
+    assert result.truncated is True
+
+
+@pytest.mark.parametrize("order", ["discovery", "modified"])
+def test_rg_sigpipe_with_fewer_than_fetch_limit_paths_fails_closed(order):
+    env = RecordingEnvironment(rg_output="/repo/partial.py\n", rg_code=141)
+
+    result = ShellFileOperations(env).search(
+        "*.py", path="/repo", target="files", limit=2, offset=1, order=order
+    )
+
+    assert result.error is not None
+    assert result.files == []
+    assert result.total_count == 0
 
 
 def test_invalid_direct_file_order_returns_structured_error():

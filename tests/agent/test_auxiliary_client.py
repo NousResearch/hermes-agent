@@ -2118,6 +2118,70 @@ class TestTransientTransportRetry:
         assert primary.chat.completions.create.call_count == 1
         assert fb_client.chat.completions.create.call_count == 1
 
+    def test_vision_skips_same_provider_retry_on_timeout(self):
+        """Vision is on the interactive critical path: the turn holding the
+        image cannot answer, and because turns are serialised the following
+        user messages stall behind it. A full-budget timeout must therefore
+        fall straight through to fallback rather than spending a second
+        ``timeout`` window on the same provider (same reasoning as #54465).
+        """
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create.side_effect = _Timeout("Request timed out.")
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://api.openai.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            # Vision resolves its client through resolve_vision_provider_client(),
+            # not _get_cached_client(); the retry block under test is shared.
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                return_value=("openrouter", primary, "some-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(fb_client, "fb-model", "openai"),
+            ),
+        ):
+            result = call_llm(task="vision", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"fallback": True}
+        assert primary.chat.completions.create.call_count == 1
+        assert fb_client.chat.completions.create.call_count == 1
+
+    def test_non_critical_task_still_retries_same_provider_on_timeout(self):
+        """The skip is scoped to critical-path tasks. Everything else keeps the
+        existing one-shot same-provider retry, so this is not a blanket change.
+        """
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create.side_effect = [
+            _Timeout("Request timed out."),
+            {"retried": True},
+        ]
+
+        p1, p2, p3 = self._patches(primary)
+        with p1, p2, p3:
+            result = call_llm(task="title", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"retried": True}
+        # Same provider was retried once — unchanged behaviour off the critical path.
+        assert primary.chat.completions.create.call_count == 2
+
     def test_timeout_forwards_failed_model_to_configured_chain(self):
         """A timeout is model-specific, so call_llm must forward the failed
         model to the configured chain (failed_model=<model>, not None). This

@@ -631,6 +631,251 @@ class TestTeamsAttachmentClassification:
         assert len(event.media_urls) == 2
 
 
+# ── Bot Framework connector attachments (pasted images) ──────────────────
+
+
+class TestTeamsBotFrameworkAttachments:
+    """Pasted/inline images arrive on smba.trafficmanager.net hosts and need
+    the bot's own bearer token (unlike SharePoint downloadUrls). These tests
+    pin the auth routing, the token cache, the attacker-host block, and the
+    failure fallbacks of that path."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _make_activity(self, attachments):
+        activity = MagicMock()
+        activity.text = "see attached"
+        activity.id = "activity-att-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:abc@thread.v2"
+        activity.conversation.conversation_type = "personal"
+        activity.conversation.name = "Test Chat"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = attachments
+        return activity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _bf_image_attachment(self, url=None):
+        att = MagicMock()
+        att.content_type = "image/png"
+        att.content_url = url or "https://smba.trafficmanager.net/emea/b1/v3/attachments/0-abc/views/original"
+        att.name = "pasted.png"
+        return att
+
+    @pytest.mark.anyio
+    async def test_bf_host_predicate_dot_anchored(self):
+        """The host check must be dot-anchored: attacker lookalike hosts must
+        NOT receive the bot's bearer token."""
+        f = _teams_mod._is_botframework_attachment_host
+        assert f("smba.trafficmanager.net")
+        assert f("emea.smba.trafficmanager.net")
+        assert f("smba.trafficmanager.net")  # exact apex
+        assert f("api.botframework.com")
+        assert f("botframework.com")
+        # Attacker lookalikes — the pre-followup suffix check matched these
+        assert not f("evil-trafficmanager.net")
+        assert not f("notbotframework.com")
+        assert not f("trafficmanager.net.evil.com")
+        assert not f("")
+        assert not f("sharepoint.com")
+
+    @pytest.mark.anyio
+    async def test_bf_image_routes_through_authenticated_fetch(self):
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG fake")
+        adapter._get_botframework_token = AsyncMock(return_value="tok")
+
+        def fake_cache_media_bytes(data, **kwargs):
+            return SimpleNamespace(
+                path="/tmp/img.png", media_type="image/png", kind="image"
+            )
+
+        with patch.object(_teams_mod, "cache_media_bytes", fake_cache_media_bytes):
+            activity = self._make_activity([self._bf_image_attachment()])
+            await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["image/png"]
+        # URL was fetched with auth (via _fetch_attachment_bytes, which the
+        # token routing test below exercises end-to-end)
+        adapter._fetch_attachment_bytes.assert_awaited_once_with(
+            "https://smba.trafficmanager.net/emea/b1/v3/attachments/0-abc/views/original"
+        )
+
+    @pytest.mark.anyio
+    async def test_non_bf_image_uses_generic_cache_helper(self):
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(side_effect=AssertionError("must not be called"))
+
+        async def fake_cache_image(url, *a, **kw):
+            return "/tmp/img.jpg"
+
+        with patch.object(_teams_mod, "cache_image_from_url", fake_cache_image):
+            activity = self._make_activity(
+                [self._bf_image_attachment(url="https://contoso.sharepoint.com/img.png")]
+            )
+            await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0] == "/tmp/img.jpg"
+
+    @pytest.mark.anyio
+    async def test_fetch_attachment_bytes_sends_bearer_for_bf_host(self):
+        """End-to-end over _fetch_attachment_bytes: BF host → token acquired
+        and Authorization attached; non-BF host → no token call."""
+        adapter = self._make_adapter()
+        adapter._get_botframework_token = AsyncMock(return_value="the-token")
+
+        captured = {}
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def get(self, url, headers=None):
+                captured["headers"] = headers or {}
+                return SimpleNamespace(
+                    status_code=200,
+                    content=b"\x89PNG fake",
+                    raise_for_status=lambda: None,
+                )
+
+        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("tools.url_safety.is_safe_url", lambda url: True):
+            # BF host: bearer attached
+            await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/emea/v3/attachments/x")
+        assert captured["headers"].get("Authorization") == "Bearer the-token"
+
+        adapter._get_botframework_token = AsyncMock(return_value="the-token")
+        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("tools.url_safety.is_safe_url", lambda url: True):
+            # Attacker lookalike host: NO bearer (dot-anchored check)
+            await adapter._fetch_attachment_bytes("https://evil-trafficmanager.net/steal")
+        assert "Authorization" not in captured["headers"], (
+            "bearer token must not be sent to attacker lookalike hosts"
+        )
+        adapter._get_botframework_token.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_token_acquisition_and_cache_reuse(self):
+        adapter = self._make_adapter()
+
+        posts = []
+
+        class _TokenResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"access_token": "tok-1", "expires_in": 3600}
+
+        class _TokenClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def post(self, url, data=None):
+                posts.append((url, dict(data or {})))
+                return _TokenResp()
+
+        with patch("httpx.AsyncClient", _TokenClient):
+            tok1 = await adapter._get_botframework_token()
+            tok2 = await adapter._get_botframework_token()
+        assert tok1 == "tok-1" and tok2 == "tok-1"
+        assert len(posts) == 1, "second call must hit the cache"
+        assert posts[0][0] == "https://login.microsoftonline.com/tenant/oauth2/v2.0/token"
+        assert posts[0][1]["scope"] == "https://api.botframework.com/.default"
+        assert posts[0][1]["client_id"] == "bot-id"
+        assert posts[0][1]["client_secret"] == "secret"
+
+    @pytest.mark.anyio
+    async def test_token_acquisition_failure_degrades_to_unauthenticated_fetch(self):
+        """Token failure must not break the fetch: warning + fetch without
+        Authorization (same net behavior as the pre-fix path)."""
+        import httpx as _httpx
+
+        adapter = self._make_adapter()
+        adapter._get_botframework_token = AsyncMock(side_effect=ValueError("no creds"))
+
+        captured = {}
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def get(self, url, headers=None):
+                captured["headers"] = headers or {}
+                return SimpleNamespace(
+                    status_code=401,
+                    content=b"",
+                    raise_for_status=lambda: (_ for _ in ()).throw(
+                        _httpx.HTTPStatusError(
+                            "401", request=MagicMock(), response=SimpleNamespace(status_code=401)
+                        )
+                    ),
+                )
+
+        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("tools.url_safety.is_safe_url", lambda url: True):
+            with pytest.raises(_httpx.HTTPStatusError):
+                await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/v3/attachments/x")
+        assert "Authorization" not in captured["headers"]
+
+    @pytest.mark.anyio
+    async def test_bf_image_invalid_bytes_logs_warning(self):
+        """Non-image bytes from the BF endpoint must not be silently dropped
+        — the else branch warns (regression guard for the silent-drop)."""
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"<html>error page</html>")
+
+        with patch.object(_teams_mod, "cache_media_bytes", lambda *a, **kw: None):
+            with patch.object(_teams_mod.logger, "warning") as warn:
+                activity = self._make_activity([self._bf_image_attachment()])
+                await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+        assert warn.called, "silent drop of invalid BF image bytes must log a warning"
+        logged = " ".join(str(c) for c in warn.call_args_list)
+        assert "image validation" in logged or "failed image validation" in logged
+
+
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
 
 

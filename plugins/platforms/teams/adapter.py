@@ -513,6 +513,22 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({
     "smba.infra.gov.teams.microsoft.us",
 })
 
+
+def _is_botframework_attachment_host(host: str) -> bool:
+    """True if ``host`` (lowercased) is a Bot Framework connector host.
+
+    Dot-anchored suffix match so attacker hosts like
+    ``evil-trafficmanager.net`` / ``notbotframework.com`` never receive the
+    bot's bearer token (same threat model as _ALLOWED_TEAMS_SERVICE_HOSTS:
+    the token must only ever be sent to Bot Framework infrastructure).
+    """
+    return (
+        host == "trafficmanager.net"
+        or host.endswith(".trafficmanager.net")
+        or host == "botframework.com"
+        or host.endswith(".botframework.com")
+    )
+
 # Conservative pattern for Bot Framework conversation IDs.  Real values
 # combine digits, colons, hyphens, dots, '@', and the ``thread.skype`` /
 # ``thread.tacv2`` suffixes; reject anything outside this set so a hostile
@@ -780,6 +796,8 @@ class TeamsAdapter(BasePlatformAdapter):
         self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
         self._client_secret = extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET", "")
         self._tenant_id = extra.get("tenant_id") or os.getenv("TEAMS_TENANT_ID", "")
+        # (token, expiry unix ts) for Bot Framework connector attachment auth
+        self._bf_token_cache: Optional[tuple] = None
         self._port = _coerce_port(
             extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT))
         )
@@ -909,7 +927,7 @@ class TeamsAdapter(BasePlatformAdapter):
         import time
         import httpx
 
-        cached = getattr(self, "_bf_token_cache", None)
+        cached = self._bf_token_cache
         if cached and cached[1] > time.time() + 300:
             return cached[0]
 
@@ -955,7 +973,7 @@ class TeamsAdapter(BasePlatformAdapter):
 
         headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
         host = (urlparse(url).hostname or "").lower()
-        if host.endswith("trafficmanager.net") or host.endswith("botframework.com"):
+        if _is_botframework_attachment_host(host):
             try:
                 headers["Authorization"] = f"Bearer {await self._get_botframework_token()}"
             except Exception as e:
@@ -1072,7 +1090,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 try:
                     from urllib.parse import urlparse as _urlparse
                     _host = (_urlparse(content_url).hostname or "").lower()
-                    if _host.endswith("trafficmanager.net") or _host.endswith("botframework.com"):
+                    if _is_botframework_attachment_host(_host):
                         # Bot Framework connector URL: needs the bot's own
                         # bearer token; the generic cache helper sends none.
                         data = await self._fetch_attachment_bytes(content_url)
@@ -1084,8 +1102,13 @@ class TeamsAdapter(BasePlatformAdapter):
                         )
                         if cached_m:
                             media_urls.append(cached_m.path)
-                            media_types.append(content_type)
+                            media_types.append(cached_m.media_type)
                             media_kinds.append("image")
+                        else:
+                            logger.warning(
+                                "[teams] Bot Framework attachment '%s' returned data that failed image validation, skipping",
+                                att_name or content_url,
+                            )
                     else:
                         cached = await cache_image_from_url(content_url)
                         if cached:

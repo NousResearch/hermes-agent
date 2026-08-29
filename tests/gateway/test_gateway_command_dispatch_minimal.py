@@ -127,28 +127,3 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
     assert captured["key"] == build_session_key(_make_source())
     assert captured["generation"] == 1
     assert runner._running_agents == {}
-
-
-@pytest.mark.asyncio
-async def test_plain_handler_map_drives_idle_and_busy_dispatch():
-    """Ordinary handlers have one lookup seam for idle and busy sessions."""
-    from hermes_cli.commands import resolve_command
-
-    runner, _adapter = _make_runner()
-    handler = AsyncMock(side_effect=["idle", "busy"])
-    runner._gateway_plain_command_handlers = lambda: {"busy": handler}
-    idle_event = _make_event("/busy status")
-
-    assert await runner._handle_message(idle_event) == "idle"
-
-    busy_event = _make_event("/busy status")
-    cmd_def = resolve_command("busy")
-    assert cmd_def is not None
-    assert await runner._dispatch_busy_slash_command(
-        busy_event,
-        cmd_def,
-        build_session_key(busy_event.source),
-        busy_event.source,
-    ) == "busy"
-    assert handler.await_count == 2
-

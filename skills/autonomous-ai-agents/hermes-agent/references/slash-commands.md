@@ -42,7 +42,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 /verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
 /voice [on|off|tts]      Voice mode
 /yolo                    Toggle approval bypass
-/busy [queue|steer|interrupt] What Enter does while working (CLI)
+/busy [queue|steer|interrupt] How messages behave while working (CLI + gateway)
 /indicator [style]       TUI busy indicator: kaomoji|emoji|unicode|ascii (CLI)
 /footer [on|off]         Gateway runtime-metadata footer on replies
 /skin [name]             Change theme (CLI)

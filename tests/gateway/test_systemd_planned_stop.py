@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+from pathlib import Path
 
-from gateway import status, systemd_planned_stop
+from gateway import status
+import hermes_systemd_planned_stop as systemd_planned_stop
 
 
 def test_main_writes_consumable_marker_for_target_pid(tmp_path, monkeypatch):
@@ -37,3 +41,21 @@ def test_main_reports_marker_write_failure(monkeypatch, capsys):
 
     assert systemd_planned_stop.main(["1234"]) == 1
     assert "could not write the marker" in capsys.readouterr().err
+
+
+def test_helper_imports_without_optional_dependencies():
+    """ExecStop must work even when application dependencies are unavailable."""
+    project_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(project_root)
+
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", "import hermes_systemd_planned_stop"],
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr

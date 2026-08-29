@@ -213,7 +213,10 @@ export const $statusItemsBySession = computed(
     }
 
     for (const [sid, list] of Object.entries(todos)) {
-      push(sid, todoTree(list).map(([t, depth]) => todoToItem(t, depth)))
+      push(
+        sid,
+        todoTree(list).map(([t, depth]) => todoToItem(t, depth))
+      )
     }
 
     for (const [sid, goal] of Object.entries(goals)) {

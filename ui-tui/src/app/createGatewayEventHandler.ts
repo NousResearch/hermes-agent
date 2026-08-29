@@ -1296,6 +1296,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
 
         return
+
       case 'btw.complete':
         sys(`[btw${ev.payload.question ? ` "${ev.payload.question}"` : ''}] ${ev.payload.text}`)
 

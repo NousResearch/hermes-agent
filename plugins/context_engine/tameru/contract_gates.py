@@ -6,6 +6,7 @@ Stdlib only. No I/O. Do not import compress_context.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 GENERIC_WORDS = frozenset(
     {
@@ -143,9 +144,6 @@ def query_has_distinctive_selectors(query: str) -> bool:
     """True when the query names something specific enough to crush on."""
     return bool(distinctive_query_terms(query))
 
-
-from dataclasses import dataclass, field
-
 @dataclass
 class SemanticContractVerdict:
     passed: bool
@@ -153,18 +151,23 @@ class SemanticContractVerdict:
     missing_evidence: list[str] = field(default_factory=list)
     forbidden_hits: tuple[str, ...] = field(default_factory=tuple)
 
+
 def evaluate_semantic_contract(text: str, spec: dict) -> SemanticContractVerdict:
     answers = spec.get("answers", [])
     required_evidence = spec.get("required_evidence", [])
     forbidden_distractors = spec.get("forbidden_distractors", [])
-    
+
     missing_evidence = [ev for ev in required_evidence if ev not in text]
     forbidden_hits = tuple(d for d in forbidden_distractors if d in text)
-    
+
     answer_hits = sum(1 for a in answers if a in text)
     answer_recall = (answer_hits / len(answers)) if answers else 1.0
-    
-    passed = (len(missing_evidence) == 0) and (len(forbidden_hits) == 0) and (answer_recall >= 1.0)
+
+    passed = (
+        len(missing_evidence) == 0
+        and len(forbidden_hits) == 0
+        and answer_recall >= 1.0
+    )
     return SemanticContractVerdict(
         passed=passed,
         answer_recall=answer_recall,

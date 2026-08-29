@@ -143,7 +143,9 @@ class TestCreateWithProgress:
         assert result.choices[0].message.reasoning == "thinking..."
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.total_tokens == 7
-        assert ticks == [1, 1, 1]
+        # 1 dispatch tick (preserved for the watchdog's historical liveness
+        # signal — see _create_with_progress) + 1 per substantive chunk.
+        assert ticks == [1, 1, 1, 1]
 
     def test_completed_response_without_stream_payload_does_not_tick(self):
         calls = []
@@ -162,7 +164,11 @@ class TestCreateWithProgress:
 
         assert calls[0]["stream"] is True
         assert result is _COMPLETE
-        assert ticks == []
+        # A completed response object carries the full summary payload, and
+        # the dispatch tick is the watchdog's historical liveness signal:
+        # both are one-shot terminal ticks, not per-frame keepalives, so
+        # neither can defeat an inactivity timeout.
+        assert ticks == [1, 1]
 
     def test_streaming_rejected_falls_back_to_plain_call(self):
         client = _FakeClient(
@@ -422,6 +428,56 @@ class TestContentBearingProgress:
             adapter.create(messages=[{"role": "user", "content": "summarize"}])
 
         assert touches == [1, 1]
+
+    def test_keepalive_chunks_do_not_reset_the_compression_fence(self):
+        """End-to-end bug pin (#96707): content-free frames must not refresh
+        CompressionCommitFence._last_progress.
+
+        The waiter in conversation_compression charges its idle budget from
+        seconds_since_progress(); before the fix, every keepalive chunk fed
+        through _ChatStreamAccumulator ticked the fence, so a stalled
+        summary stream never hit the inactivity timeout."""
+        fence = CompressionCommitFence()
+        accumulator = _ChatStreamAccumulator()
+        keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
+        empty_role_chunk = _chunk(content="", reasoning="")
+
+        with aux_progress_hook(fence.touch_progress):
+            for _ in range(5):
+                accumulator.feed(keepalive)
+                accumulator.feed(empty_role_chunk)
+        # No substantive payload arrived: the fence must have stayed stale.
+        assert fence.seconds_since_progress() > 0.0
+
+        with aux_progress_hook(fence.touch_progress):
+            accumulator.feed(_chunk(content="token"))
+        assert fence.seconds_since_progress() < 0.05
+
+    def test_content_free_frames_still_record_ttfp_timing(self):
+        """The fast-lane telemetry contract (#96945/#96963) survives the
+        gating: time_to_first_progress_ms must record on the FIRST frame of
+        any kind (transport liveness), not only on the first token."""
+        from agent.auxiliary_client import (
+            _aux_provider_response,
+            _aux_timing_hook,
+            _notify_aux_timing_response,
+        )
+
+        timings: dict = {}
+
+        def _timed_response() -> None:
+            timings.setdefault("time_to_first_progress_ms", 42)
+
+        keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
+        accumulator = _ChatStreamAccumulator()
+
+        with (
+            _aux_timing_hook(_aux_provider_response, _timed_response),
+            aux_progress_hook(lambda: None),
+        ):
+            accumulator.feed(keepalive)
+
+        assert timings["time_to_first_progress_ms"] == 42
 
 
 # ---------------------------------------------------------------------------

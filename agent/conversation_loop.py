@@ -7353,7 +7353,7 @@ def run_conversation(
                 # This classification is needed regardless of whether the turn has visible content,
                 # because a substantive tool-only turn must invalidate any older housekeeping fallback.
                 _HOUSEKEEPING_TOOLS = frozenset({
-                    "memory", "todo", "skill_manage", "session_search",
+                    "memory", "todo_list", "skill_manage", "session_search",
                 })
                 _all_housekeeping = all(
                     tc.function.name in _HOUSEKEEPING_TOOLS

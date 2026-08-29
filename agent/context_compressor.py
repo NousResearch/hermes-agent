@@ -2172,7 +2172,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
         target = args.get("target", "?")
         return f"[memory] {action} on {target}"
 
-    if tool_name == "todo":
+    if tool_name == "todo_list":
         return "[todo] updated task list"
 
     if tool_name == "clarify":
@@ -2225,11 +2225,11 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     if tool_name == "text_to_speech":
         return f"[text_to_speech] generated audio ({content_len:,} chars)"
 
-    if tool_name == "cronjob":
+    if tool_name == "cronjob_manage":
         action = args.get("action", "?")
         return f"[cronjob] {action}"
 
-    if tool_name == "process":
+    if tool_name == "process_manage":
         action = args.get("action", "?")
         sid = args.get("session_id", "?")
         return f"[process] {action} session={sid}"

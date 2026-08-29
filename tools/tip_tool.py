@@ -60,7 +60,7 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
 
 
 TIP_SCHEMA = {
-    "name": "tip",
+    "name": "show_tip",
     "description": (
         "Point at one thing in the desktop UI with a small arrow bubble (no "
         "dimming, no tour chrome) — for when a sentence is clearer with a "
@@ -96,7 +96,7 @@ TIP_SCHEMA = {
 
 
 registry.register(
-    name="tip",
+    name="show_tip",
     toolset="desktop_ui",
     schema=TIP_SCHEMA,
     handler=lambda args, **kw: tip_tool(

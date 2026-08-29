@@ -352,7 +352,7 @@ def check_todo_requirements() -> bool:
 # static tool schema (cached, never changes mid-conversation).
 
 TODO_SCHEMA = {
-    "name": "todo",
+    "name": "todo_list",
     # Dieted (#95681): the item shape and merge semantics live ONLY in the
     # parameter schema below — the description teaches behavior, not
     # structure the params already define.
@@ -414,7 +414,7 @@ TODO_SCHEMA = {
 from tools.registry import registry, tool_error
 
 registry.register(
-    name="todo",
+    name="todo_list",
     toolset="todo",
     schema=TODO_SCHEMA,
     handler=lambda args, **kw: todo_tool(

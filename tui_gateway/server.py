@@ -7659,7 +7659,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         result_text = _tool_result_text(result)
         if result_text:
             payload["result_text"] = result_text
-    if name == "todo":
+    if name == "todo_list":
         try:
             data = json.loads(result)
             if isinstance(data, dict) and isinstance(data.get("todos"), list):

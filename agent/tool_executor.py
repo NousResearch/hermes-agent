@@ -1151,6 +1151,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     parsed_calls = []
     for tool_call in tool_calls:
         function_name = tool_call.function.name
+        # Legacy tool-name aliases (2026-08 renames) — map BEFORE the
+        # agent-loop branches (todo_list etc. dispatch above the registry).
+        from model_tools import _LEGACY_TOOL_ALIASES as _lta
+        function_name = _lta.get(function_name, function_name)
 
         function_args, malformed_args_result = _parse_tool_arguments(
             tool_call.function.arguments
@@ -2007,6 +2011,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             break
 
         function_name = tool_call.function.name
+        # Legacy tool-name aliases (2026-08 renames) — map BEFORE the
+        # agent-loop branches (todo_list etc. dispatch above the registry).
+        from model_tools import _LEGACY_TOOL_ALIASES as _lta
+        function_name = _lta.get(function_name, function_name)
 
         function_args, malformed_args_result = _parse_tool_arguments(
             tool_call.function.arguments
@@ -2081,7 +2089,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
-        if function_name == "todo":
+        if function_name == "todo_list":
             def _execute(next_args: dict) -> Any:
                 from tools.todo_tool import todo_tool as _todo_tool
                 return _todo_tool(
@@ -2101,7 +2109,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             ))
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+                agent._vprint(f"  {_get_cute_tool_message_impl('todo_list', function_args, tool_duration, result=function_result)}")
         elif function_name == "message_agent":
             # Bot Mode teammate DM (tools/bot_mode_dm.py) — injected, not
             # registered: only a canonical Bot Chat session carries the
@@ -2336,7 +2344,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_window_below', function_args, tool_duration, result=function_result)}")
-        elif function_name == "tour":
+        elif function_name == "gui_tour":
             def _execute(next_args: dict) -> Any:
                 from tools.tour_tool import tour_tool as _tour_tool
                 return _tour_tool(
@@ -2362,7 +2370,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             ))
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('tour', function_args, tool_duration, result=function_result)}")
+                agent._vprint(f"  {_get_cute_tool_message_impl('gui_tour', function_args, tool_duration, result=function_result)}")
         elif function_name == "setup_mcp":
             def _execute(next_args: dict) -> Any:
                 from tools.setup_mcp_tool import setup_mcp_tool as _setup_mcp_tool

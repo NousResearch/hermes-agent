@@ -331,7 +331,7 @@ class WeComAdapter(BasePlatformAdapter):
     # the gateway streaming consumer treats as a transport that bypasses the
     # edit-based path. See ``send_stream_frame`` and ``supports_native_streaming``.
     SUPPORTS_NATIVE_STREAMING = True
-    SUPPORTS_TOOL_TIMER = True  # Can be overridden by extra.tool_timer_enabled
+    SUPPORTS_TOOL_TIMER = False  # Opt-in: set extra.tool_timer_enabled: true to enable
     MAX_STREAM_CONTENT_LENGTH = MAX_STREAM_CONTENT_LENGTH
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
@@ -420,9 +420,11 @@ class WeComAdapter(BasePlatformAdapter):
             "stream_keepalive_interval_seconds", STREAM_KEEPALIVE_INTERVAL_SECONDS
         )
 
-        # Tool timer animation in native stream bubble (default: on).
-        # Set tool_timer_enabled: false in extra to disable.
-        _tool_timer_raw = extra.get("tool_timer_enabled", True)
+        # Tool timer animation in native stream bubble (default: off).
+        # Tool timer: opt-in (default off). Maintainer standard: features
+        # disabled unless explicitly enabled.
+        # Set tool_timer_enabled: true in extra to enable.
+        _tool_timer_raw = extra.get("tool_timer_enabled", False)
         self.SUPPORTS_TOOL_TIMER = bool(_tool_timer_raw) if not isinstance(_tool_timer_raw, str) else _tool_timer_raw.lower() not in ("false", "0", "no", "off")
 
         self._device_id = uuid.uuid4().hex

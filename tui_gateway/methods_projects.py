@@ -118,6 +118,25 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"active_id": pdb.get_active_id(conn)})
 
 
+@_projects_method("projects.assign_session")
+def _(rid, params, pdb, conn) -> dict:
+    """Persist explicit conversation ownership, independent of its cwd.
+
+    ``project_id: null`` moves the conversation back to the unassigned/Home
+    bucket. Requiring the target before writing ensures a typo cannot erase a
+    valid prior binding.
+    """
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        raise ValueError("session_id must not be empty")
+    raw_project_id = params.get("project_id")
+    project_id = None
+    if raw_project_id is not None:
+        project_id = _require_project(pdb, conn, {"id": raw_project_id}).id
+    pdb.assign_session(conn, session_id, project_id)
+    return _ok(rid, {"session_id": session_id, "project_id": project_id})
+
+
 @_projects_method("projects.for_cwd")
 def _(rid, params, pdb, conn) -> dict:
     cwd = _completion_cwd(
@@ -353,6 +372,15 @@ def _project_tree_inputs(
                 conn, policy_key, preserve_unversioned=_repo_discovery_policy_is_default(policy))
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
         active_id = pdb.get_active_id(conn)
+        assignments = pdb.list_session_assignments(conn)
+        # Explicit user ownership wins over cwd/repo inference. Keep the
+        # assignment in projects.db (the server-authoritative project store),
+        # then project it onto the session rows consumed by the pure tree
+        # builder.
+        for session in sessions:
+            session_id = str(session.get("id") or "")
+            if session_id in assignments:
+                session["project_id"] = assignments[session_id]
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = []
         if include_discovered:

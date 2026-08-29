@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS project_folders (
 CREATE INDEX IF NOT EXISTS idx_project_folders_path
     ON project_folders(path);
 
+CREATE TABLE IF NOT EXISTS project_session_assignments (
+    session_id   TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    assigned_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_session_assignments_project
+    ON project_session_assignments(project_id);
+
 CREATE TABLE IF NOT EXISTS project_meta (
     key    TEXT PRIMARY KEY,
     value  TEXT
@@ -377,6 +386,58 @@ def restore_project(conn: sqlite3.Connection, project_id: str) -> bool:
 def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
     """Hard-delete a project and its folders (cascade)."""
     return _execute_rowcount(conn, "DELETE FROM projects WHERE id = ?", (project_id,)) > 0
+
+
+# --- Explicit session ownership ----------------------------------------------
+# Conversations are Project members by explicit assignment, independent of their
+# cwd. The session database stays independent from projects.db; a session can
+# disappear through retention without making project metadata invalid. The
+# project side *is* foreign-keyed so deleting a Project clears its bindings
+# atomically (ON DELETE CASCADE).
+
+
+def assign_session(
+    conn: sqlite3.Connection, session_id: str, project_id: Optional[str]
+) -> None:
+    """Bind a conversation to a Project, or clear the binding with ``None``."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        raise ValueError("session_id must not be empty")
+    if project_id is None:
+        conn.execute(
+            "DELETE FROM project_session_assignments WHERE session_id = ?", (sid,)
+        )
+    else:
+        pid = str(project_id).strip()
+        if not pid:
+            raise ValueError("project_id must not be empty")
+        conn.execute(
+            """INSERT INTO project_session_assignments(session_id, project_id, assigned_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET
+                   project_id = excluded.project_id,
+                   assigned_at = excluded.assigned_at""",
+            (sid, pid, _now()),
+        )
+    conn.commit()
+
+
+def get_session_project(conn: sqlite3.Connection, session_id: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT project_id FROM project_session_assignments WHERE session_id = ?",
+        (str(session_id or "").strip(),),
+    ).fetchone()
+    return str(row["project_id"]) if row else None
+
+
+def list_session_assignments(conn: sqlite3.Connection) -> dict[str, str]:
+    """Every explicit session → project binding for one profile."""
+    return {
+        str(row["session_id"]): str(row["project_id"])
+        for row in conn.execute(
+            "SELECT session_id, project_id FROM project_session_assignments"
+        ).fetchall()
+    }
 
 
 # --- Active-project pointer + discovery policy (project_meta KV) --------------

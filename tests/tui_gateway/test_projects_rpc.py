@@ -58,6 +58,7 @@ def test_methods_registered():
         "projects.set_primary",
         "projects.archive",
         "projects.set_active",
+        "projects.assign_session",
         "projects.for_cwd",
     ):
         assert m in server._methods
@@ -696,6 +697,86 @@ def _create_session(home: Path, session_id: str, cwd: Path) -> None:
         db.append_message(session_id, "user", f"hello from {session_id}")
     finally:
         db.close()
+
+
+def test_explicit_session_assignment_overrides_cwd_and_can_be_cleared(tmp_path):
+    """Projects are conversation groups, not only filesystem-folder matches."""
+    home = tmp_path / "home"
+    project_folder = tmp_path / "project-repo"
+    unrelated_cwd = tmp_path / "random-chat-cwd"
+    project_folder.mkdir(parents=True)
+    unrelated_cwd.mkdir(parents=True)
+    project = _create_project(home, "Android", project_folder)
+    _create_session(home, "chat-1", unrelated_cwd)
+
+    with _serving_launch_profile(home):
+        before = _call(
+            "projects.project_sessions", {"project_id": project["id"]}
+        )["project"]
+        assert before["sessionCount"] == 0
+
+        assigned = _call(
+            "projects.assign_session",
+            {"project_id": project["id"], "session_id": "chat-1"},
+        )
+        assert assigned == {"session_id": "chat-1", "project_id": project["id"]}
+
+        after = _call(
+            "projects.project_sessions", {"project_id": project["id"]}
+        )["project"]
+        assert after["sessionCount"] == 1
+        nested_sessions = [
+            session
+            for repo in after["repos"]
+            for group in repo["groups"]
+            for session in group["sessions"]
+        ]
+        assert [session["id"] for session in nested_sessions] == ["chat-1"]
+
+        cleared = _call(
+            "projects.assign_session",
+            {"project_id": None, "session_id": "chat-1"},
+        )
+        assert cleared == {"session_id": "chat-1", "project_id": None}
+        final = _call(
+            "projects.project_sessions", {"project_id": project["id"]}
+        )["project"]
+        assert final["sessionCount"] == 0
+
+
+def test_assign_session_rejects_unknown_project_without_losing_prior_binding(tmp_path):
+    home = tmp_path / "home"
+    folder = tmp_path / "repo"
+    folder.mkdir(parents=True)
+    project = _create_project(home, "Keep", folder)
+
+    with _serving_launch_profile(home):
+        _call(
+            "projects.assign_session",
+            {"project_id": project["id"], "session_id": "chat-1"},
+        )
+        response = server._methods["projects.assign_session"](
+            1, {"project_id": "missing", "session_id": "chat-1"}
+        )
+        assert response["error"]["code"] == 5062
+
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing(home / "projects.db") as conn:
+            assert pdb.get_session_project(conn, "chat-1") == project["id"]
+
+
+def test_assign_session_requires_a_non_empty_session_id(tmp_path):
+    home = tmp_path / "home"
+    folder = tmp_path / "repo"
+    folder.mkdir(parents=True)
+    project = _create_project(home, "Demo", folder)
+
+    with _serving_launch_profile(home):
+        response = server._methods["projects.assign_session"](
+            1, {"project_id": project["id"], "session_id": "  "}
+        )
+        assert response["error"]["code"] == 5063
 
 
 @contextlib.contextmanager

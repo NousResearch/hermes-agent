@@ -1,5 +1,5 @@
 ---
-name: plan-interrogation
+name: grill-me
 description: "Adversarial plan interview before implementation."
 version: 2.0.0
 author: "Rafael Zendron (rafaumeu) + Matt Pocock (mattpocock/skills, grilling) + Hermes Agent"
@@ -11,19 +11,19 @@ metadata:
     related_skills: [plan, requesting-code-review, subagent-driven-development, test-driven-development]
 ---
 
-# Plan Interrogation
+# Grill Me
 
 Stress-tests a plan through structured adversarial questioning before any
 code is written. Models the plan as a **design tree** — every decision
 branches into the decisions that hang off it — and interviews the user in
 rounds until every branch is resolved and nothing is silently assumed.
 
-Formerly `grill-me`. Combines the phase discipline of the original with the
-frontier-rounds mechanic from mattpocock/skills' `grilling`.
+Combines the phase discipline of the original with the frontier-rounds
+mechanic from mattpocock/skills' `grilling`.
 
 ## When to Use
 
-- User says "interrogate my plan", "grill me", "stress test this idea"
+- User says "grill me", "interview my plan", "stress test this idea"
 - Before complex work: auth flows, schema changes, migrations, payments
 - A plan has unresolved decisions or seems vague
 - Before `subagent-driven-development` decomposition

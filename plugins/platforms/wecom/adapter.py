@@ -27,7 +27,13 @@ AIOHTTP_AVAILABLE = aiohttp is not None
 HTTPX_AVAILABLE = httpx is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    greedy_pack_blocks,
+    is_table_atom,
+    split_markdown_atoms,
+    text_ends_with_table_row,
+)
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
@@ -66,6 +72,114 @@ DEDUP_MAX_SIZE = 1000
 
 def check_wecom_requirements() -> bool:
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
+
+
+# Reserve for " (XX/XX)" chunk indicators appended to multi-chunk output
+# (mirrors BasePlatformAdapter.truncate_message's INDICATOR_RESERVE).
+# Wide enough for "(9999/9999)"; the base splitter's reserve of 10 only
+# covers two-digit chunk counts.
+_INDICATOR_RESERVE = 12
+
+# Real markdown headings only: "#" plus whitespace. A bare startswith("#")
+# also matches color codes and ticket ids like "#ffffff" / "#123".
+_HEADING_RE = re.compile(r"^#{1,6}\s")
+
+
+def _split_table_atom(table: str, limit: int) -> List[str]:
+    """Split an oversized GFM table into multiple tables, each self-rendering.
+
+    WeCom only renders a ``|...|`` block as a table when its first two lines
+    are the header row and the separator row. A mid-table split (what a
+    plain line-based splitter does) turns the continuation into literal pipe
+    text. So each part repeats the original header + separator before its
+    share of body rows.
+    """
+    lines = table.split("\n")
+    if len(lines) <= 2:
+        # Header + separator only (no body rows): nothing to split off.
+        # Returning it whole prevents an oversized 2-line table from
+        # vanishing in the packing below.
+        return [table]
+    header_lines = lines[:2]
+    body = lines[2:]
+    header_len = sum(len(h) for h in header_lines) + 2 * len(header_lines)
+
+    parts: List[str] = []
+    current: List[str] = []
+    current_len = header_len
+    for row in body:
+        row_len = len(row) + 1
+        if current and current_len + row_len > limit:
+            parts.append("\n".join(header_lines + current))
+            current = []
+            current_len = header_len
+        current.append(row)
+        current_len += row_len
+    if current:
+        parts.append("\n".join(header_lines + current))
+    return parts
+
+
+def split_message_for_wecom(content: str, limit: int) -> List[str]:
+    """Split long markdown into WeCom-safe chunks (table- and fence-aware).
+
+    The base ``truncate_message()`` splitter only understands code fences:
+    a split landing inside a markdown table leaves the second chunk starting
+    with bare ``|...|`` data rows and no header row, which WeCom renders as
+    literal pipe text — the exact symptom that broke the DB storage report's
+    AWS section. This splitter keeps every table contiguous within one
+    message, or splits oversized tables by repeating their header on every
+    part, so each delivered message renders standalone.
+
+    Returns a single-element list when *content* already fits *limit*.
+    """
+    if len(content) <= limit:
+        return [content]
+
+    pack_limit = limit - _INDICATOR_RESERVE  # headroom for " (XX/XX)"
+
+    def _overflow(block: str) -> List[str]:
+        if is_table_atom(block):
+            return _split_table_atom(block, pack_limit)
+        # Headroom so the "(i/N)" indicator appended below can't push a
+        # chunk past the platform limit.
+        return BasePlatformAdapter.truncate_message(block, pack_limit)
+
+    atoms = split_markdown_atoms(content)
+    chunks = greedy_pack_blocks(atoms, pack_limit, overflow=_overflow)
+
+    # Cosmetic fix: when a split lands right after a heading, the heading is
+    # left orphaned at the end of the head chunk ("### AWS … (1/2)") while
+    # its section content opens the next one. Move the trailing heading to
+    # the next chunk when it still fits the limit.
+    if len(chunks) > 1:
+        moved: List[str] = []
+        for i, chunk in enumerate(chunks):
+            if i + 1 < len(chunks):
+                lines = chunk.split("\n")
+                last = lines[-1]
+                if _HEADING_RE.match(last.lstrip()) and not last.strip().startswith("|"):
+                    nxt = chunks[i + 1]
+                    if len(last) + 1 + len(nxt) <= pack_limit:
+                        chunk = "\n".join(lines[:-1]).rstrip("\n")
+                        chunks[i + 1] = last + "\n" + nxt
+            moved.append(chunk)
+        chunks = [c for c in moved if c.strip()]
+
+    if len(chunks) > 1:
+        total = len(chunks)
+        tagged: List[str] = []
+        for i, chunk in enumerate(chunks):
+            indicator = f"({i + 1}/{total})"
+            if text_ends_with_table_row(chunk):
+                # Appending inline would extend the last table row with a
+                # stray cell — put the indicator on its own paragraph.
+                tagged.append(f"{chunk}\n\n{indicator}")
+            else:
+                tagged.append(f"{chunk} {indicator}")
+        chunks = tagged
+    return chunks
+
 
 
 def _coerce_list(value: Any) -> List[str]:
@@ -116,6 +230,12 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
     SUPPORTS_MESSAGE_EDITING = False
     SUPPORTS_NATIVE_STREAMING = True  # msgtype "stream" via aibot_respond_msg, not edit-based
     MAX_STREAM_CONTENT_LENGTH = MAX_STREAM_CONTENT_LENGTH
+    # send() chunks oversized content via split_message_for_wecom() so
+    # replies longer than the 4000-char WeCom markdown limit arrive as
+    # multiple messages instead of being silently truncated. Declaring the
+    # flag also makes gateway/delivery.py skip its own truncation of cron
+    # output and hand the full payload to the adapter.
+    splits_long_messages = True
     _SPLIT_THRESHOLD = 3900  # chunks near the 4000-char client split are almost certainly continued
 
     def __init__(self, config: PlatformConfig):
@@ -622,7 +742,13 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         return {"msgtype": "markdown", "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]}}
 
     async def _send_reply_markdown(self, reply_req_id: str, content: str) -> Dict[str, Any]:
-        response = await self._send_reply_request(reply_req_id, self._markdown_body(content))
+        response = await self._send_reply_request(
+            reply_req_id,
+            {
+                "msgtype": "markdown",
+                "markdown": {"content": content},
+            },
+        )
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
@@ -641,29 +767,93 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         return await self._enqueue_chat_send(chat_id, lambda: self._send_inner(chat_id, content, reply_to, force_proactive=force_proactive), is_control=is_control)
 
     async def _send_inner(self, chat_id: str, content: str, reply_to: Optional[str] = None, *, force_proactive: bool = False) -> SendResult:
-        """Send under the per-chat queue; force_proactive skips passive reply except in groups."""
-        try:
-            reply_req_id = None if force_proactive and chat_id not in self._group_chat_ids else self._cached_reply_req_id(chat_id, reply_to)
-            if reply_req_id:
-                try:
-                    response = await self._send_reply_markdown(reply_req_id, content)
-                except (asyncio.TimeoutError, RuntimeError) as passive_err:
-                    # req_id may be stale after a reconnect — proactive send needs none.
-                    logger.warning("[%s] Passive reply failed (%s), falling back to proactive send", self.name, passive_err)
-                    response = await self._send_proactive_markdown(chat_id, content)
-            elif chat_id in self._group_chat_ids:
-                logger.warning("[%s] No cached req_id for group chat %s — cannot send (groups require passive reply via req_id)", self.name, chat_id)
-                return SendResult(success=False, error="No req_id available for group chat (passive reply required)")
-            else:
-                response = await self._send_proactive_markdown(chat_id, content)
-        except asyncio.TimeoutError:
-            return SendResult(success=False, error="Timeout sending message to WeCom")
-        except Exception as exc:
+        """Send under the per-chat queue; force_proactive skips passive reply except in groups.
+
+        Content longer than ``MAX_MESSAGE_LENGTH`` (4000 chars) is split into
+        multiple messages via ``split_message_for_wecom()`` (table- and
+        fence-aware, with ``(1/N)`` indicators) instead of being silently
+        truncated. When a reply req_id is available every chunk is sent as an
+        ``aibot_respond_msg`` reply frame — WeCom AI Bots cannot initiate
+        ``aibot_send_msg`` in group chats (errcode 600039), so the reply path
+        is the only one that works everywhere.
+        """
+        if not content:
+            return SendResult(success=False, error="content is empty")
+
+        chunks = split_message_for_wecom(content, self.MAX_MESSAGE_LENGTH)
+        total = len(chunks)
+
+        reply_req_id = None if force_proactive and chat_id not in self._group_chat_ids else self._cached_reply_req_id(chat_id, reply_to)
+
+        if not reply_req_id and chat_id in self._group_chat_ids:
+            # Group chats cannot use APP_CMD_SEND (WeCom blocks it), so fail
+            # early with a clear error instead of making a doomed request.
+            logger.warning("[%s] No cached req_id for group chat %s — cannot send (groups require passive reply via req_id)", self.name, chat_id)
+            return SendResult(success=False, error="No req_id available for group chat (passive reply required)")
+
+        last_response: Optional[Dict[str, Any]] = None
+        last_message_id: Optional[str] = None
+
+        async def _send_proactive(chunk: str) -> Dict[str, Any]:
+            return await self._send_request(
+                APP_CMD_SEND,
+                {"chatid": chat_id, "msgtype": "markdown", "markdown": {"content": chunk}},
+            )
+
+        async def _handle_send_exc(exc: Exception, idx: int) -> SendResult:
             logger.error("[%s] Send failed: %s", self.name, exc)
-            return self._send_failure(str(exc), str(STREAM_NOT_SUBSCRIBED_ERRCODE) in str(exc))
-        if error := self._response_error(response):
-            return self._send_failure(error, response.get("errcode", 0) == STREAM_NOT_SUBSCRIBED_ERRCODE)
-        return SendResult(success=True, message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12], raw_response=response)
+            exc_str = str(exc)
+            if str(STREAM_NOT_SUBSCRIBED_ERRCODE) in exc_str:
+                asyncio.ensure_future(
+                    self._force_reconnect_on_stale_subscription(STREAM_NOT_SUBSCRIBED_ERRCODE)
+                )
+            if isinstance(exc, asyncio.TimeoutError):
+                return SendResult(success=False, error=f"chunk {idx}/{total} failed: Timeout sending message to WeCom")
+            return SendResult(success=False, error=f"chunk {idx}/{total} failed: {exc}")
+
+        for idx, chunk in enumerate(chunks, start=1):
+            try:
+                # Directly send without touching active streams:
+                # GatewayStreamConsumer owns its stream lifecycle.
+                if reply_req_id:
+                    try:
+                        response = await self._send_reply_markdown(reply_req_id, chunk)
+                    except (asyncio.TimeoutError, RuntimeError) as passive_err:
+                        # If the reply raised on a WeCom errcode (not a stale-req
+                        # transport failure), abort with index context, no fallback.
+                        err_text = str(passive_err)
+                        if "failed:" in err_text and "errcode" in err_text:
+                            return SendResult(success=False, error=f"chunk {idx}/{total} failed: {err_text}")
+                        # req_id may be stale after a WS reconnect — remaining
+                        # chunks stay on the proactive path.
+                        logger.warning("[%s] Passive reply failed (%s), falling back to proactive send", self.name, passive_err)
+                        reply_req_id = None
+                        if chat_id in self._group_chat_ids:
+                            return SendResult(success=False, error=f"chunk {idx}/{total} failed: No req_id available for group chat (passive reply required)")
+                        response = await _send_proactive(chunk)
+                else:
+                    response = await _send_proactive(chunk)
+            except asyncio.TimeoutError:
+                return SendResult(success=False, error=f"chunk {idx}/{total} failed: Timeout sending message to WeCom")
+            except Exception as exc:
+                return await _handle_send_exc(exc, idx)
+
+            error = self._response_error(response)
+            if error:
+                errcode = response.get("errcode", 0)
+                if errcode == STREAM_NOT_SUBSCRIBED_ERRCODE:
+                    asyncio.ensure_future(self._force_reconnect_on_stale_subscription(errcode))
+                return SendResult(success=False, error=f"chunk {idx}/{total} failed: {error}")
+            last_response = response
+            last_message_id = self._payload_req_id(response)
+
+        # Mark delivered so _keep_typing cannot open an orphan stream after
+        # this turn's reply already landed (regardless of which path was taken).
+        return SendResult(
+            success=True,
+            message_id=last_message_id or uuid.uuid4().hex[:12],
+            raw_response=last_response,
+        )
 
     def _send_failure(self, error: str, subscription_lost: bool) -> SendResult:
         """Failed SendResult; on 846609 schedule the stale-req_id purge so later sends recover."""

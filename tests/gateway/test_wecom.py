@@ -1554,3 +1554,327 @@ class TestFinalFrameAckTimeoutSemantics:
                 {"msgtype": "stream", "stream": {"id": "stream_x", "content": "x", "finish": True}},
                 is_final=True,
             )
+
+
+class TestSendChunking:
+    """Regression: WeCom replies over 4000 chars were silently truncated
+    (content[:MAX_MESSAGE_LENGTH]) — a 6828-char report lost its entire tail
+    section. send() must chunk via truncate_message() like the Telegram /
+    Teams / Weixin adapters do, delivering every character."""
+
+    @pytest.mark.asyncio
+    async def test_send_declares_native_chunking(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        assert WeComAdapter.splits_long_messages is True
+
+    @pytest.mark.asyncio
+    async def test_long_content_is_chunked_not_truncated(self):
+        from plugins.platforms.wecom.adapter import MAX_MESSAGE_LENGTH, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # 6828 chars ≈ the real incident report size; the AWS section lived
+        # past char 3848 and used to vanish in the silent truncation.
+        content = "\n".join(f"line {i}: {'x' * 60}" for i in range(100))
+        assert len(content) > MAX_MESSAGE_LENGTH
+
+        sent_contents = []
+
+        async def fake_send_request(cmd, body, timeout=None):
+            sent_contents.append(body["markdown"]["content"])
+            return {"headers": {"req_id": f"req-{len(sent_contents)}"}, "errcode": 0}
+
+        adapter._send_request = fake_send_request
+
+        result = await adapter.send("chat-1", content)
+
+        assert result.success is True
+        assert len(sent_contents) >= 2
+        # Every chunk must respect the platform limit.
+        assert all(len(c) <= MAX_MESSAGE_LENGTH for c in sent_contents)
+        # No content loss: concatenating chunk bodies (minus indicators and
+        # split newlines) must cover the original text.
+        rejoined = "".join(sent_contents)
+        for line in content.splitlines():
+            assert line in rejoined, f"lost content: {line[:40]}..."
+
+    @pytest.mark.asyncio
+    async def test_short_content_still_single_message(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        sent = []
+
+        async def fake_send_request(cmd, body, timeout=None):
+            sent.append(body["markdown"]["content"])
+            return {"headers": {"req_id": "req-1"}, "errcode": 0}
+
+        adapter._send_request = fake_send_request
+
+        result = await adapter.send("chat-1", "small report")
+
+        assert result.success is True
+        assert sent == ["small report"]
+
+    @pytest.mark.asyncio
+    async def test_long_content_chunked_on_reply_path(self):
+        """Group chats route through aibot_respond_msg (errcode 600039 on
+        proactive send) — the reply path must chunk too."""
+        from plugins.platforms.wecom.adapter import MAX_MESSAGE_LENGTH, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-inbound"
+        content = "段" * 5000  # > 4000 chars
+        assert len(content) > MAX_MESSAGE_LENGTH
+
+        sent_contents = []
+
+        async def fake_send_reply_request(reply_req_id, body, cmd=None, timeout=None):
+            sent_contents.append(body["markdown"]["content"])
+            return {"headers": {"req_id": reply_req_id}, "errcode": 0}
+
+        adapter._send_reply_request = fake_send_reply_request
+
+        result = await adapter.send("group-1", content, reply_to="msg-1")
+
+        assert result.success is True
+        assert len(sent_contents) >= 2
+        assert all(len(c) <= MAX_MESSAGE_LENGTH for c in sent_contents)
+        assert "".join(sent_contents).count("段") == 5000
+
+    @pytest.mark.asyncio
+    async def test_chunk_failure_stops_send(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        content = "\n".join(f"line {i}: {'y' * 60}" for i in range(100))
+        calls = {"n": 0}
+
+        async def fake_send_request(cmd, body, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                return {"errcode": 600039, "errmsg": "no permission"}
+            return {"headers": {"req_id": f"req-{calls['n']}"}, "errcode": 0}
+
+        adapter._send_request = fake_send_request
+
+        result = await adapter.send("chat-1", content)
+
+        assert result.success is False
+        assert "600039" in (result.error or "")
+        assert calls["n"] == 2  # no further chunks after failure
+
+    @pytest.mark.asyncio
+    async def test_chunk_failure_error_names_chunk_index(self):
+        """A failed chunk must surface WHICH chunk failed, not just the
+        raw WeCom error — a 5-chunk report dying on chunk 2 needs an
+        operator-visible index."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        content = "\n".join(f"line {i}: {'y' * 60}" for i in range(100))
+        calls = {"n": 0}
+
+        async def fake_send_request(cmd, body, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                return {"errcode": 600039, "errmsg": "no permission"}
+            return {"headers": {"req_id": f"req-{calls['n']}"}, "errcode": 0}
+
+        adapter._send_request = fake_send_request
+
+        result = await adapter.send("chat-1", content)
+
+        assert result.success is False
+        assert "chunk 2/" in (result.error or "")
+        assert "600039" in (result.error or "")
+        assert calls["n"] == 2  # no further chunks after failure
+
+    @pytest.mark.asyncio
+    async def test_chunk_failure_error_names_chunk_index_on_reply_path(self):
+        """Same chunk-index context on the aibot_respond_msg reply path
+        (group chats cannot use the proactive aibot_send_msg)."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-inbound"
+        content = "\n".join(f"line {i}: {'z' * 60}" for i in range(100))
+        calls = {"n": 0}
+
+        async def fake_send_reply_request(reply_req_id, body, cmd=None, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                return {"errcode": 600039, "errmsg": "no permission"}
+            return {"headers": {"req_id": reply_req_id}, "errcode": 0}
+
+        adapter._send_reply_request = fake_send_reply_request
+
+        result = await adapter.send("group-1", content, reply_to="msg-1")
+
+        assert result.success is False
+        assert "chunk 2/" in (result.error or "")
+        assert "600039" in (result.error or "")
+        assert calls["n"] == 2  # no further chunks after failure
+
+
+class TestSplitMessageForWecom:
+    """Regression: a mid-table split left the second message starting with
+    bare ``|...|`` data rows and no header row, so WeCom rendered the whole
+    table continuation as literal pipe text (the AWS section of the DB
+    storage report). Every chunk must be a self-rendering table or contain
+    no orphaned table rows."""
+
+    TABLE_HEADER = "| 状态 | 实例 | 使用率 | 剩余(GB) |"
+    TABLE_SEP = "|------|------|--------|----------|"
+
+    @staticmethod
+    def _table_rows(n, pad=60):
+        return [f"| 🟢 | instance-{i} | {i}% | {'x' * pad} |" for i in range(n)]
+
+    def _assert_no_orphan_rows(self, chunk):
+        """A chunk containing table rows must start its table with a header."""
+        lines = chunk.split("\n")
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not (stripped.startswith("|") and stripped.endswith("|")):
+                continue
+            # Find the first table line of this block and walk back to its start
+            block_start = i
+            while block_start > 0:
+                prev = lines[block_start - 1].strip()
+                if prev.startswith("|") and prev.endswith("|"):
+                    block_start -= 1
+                else:
+                    break
+            first = lines[block_start].strip()
+            second = lines[block_start + 1].strip() if block_start + 1 < len(lines) else ""
+            assert first.startswith("| 状态"), (
+                f"table block starts without header: {first[:50]!r}"
+            )
+            assert set(second.replace("|", "").replace("-", "").strip()) == set(), (
+                f"second table line is not a separator row: {second[:50]!r}"
+            )
+
+    def test_short_content_single_chunk(self):
+        from plugins.platforms.wecom.adapter import split_message_for_wecom
+
+        assert split_message_for_wecom("short", 4000) == ["short"]
+
+    def test_table_split_repeats_header(self):
+        """An oversized single table must be split into tables that each
+        repeat the header + separator so every part renders standalone."""
+        from plugins.platforms.wecom.adapter import split_message_for_wecom
+
+        rows = self._table_rows(60, pad=80)
+        content = "## 存储巡检\n\n" + "\n".join(
+            [self.TABLE_HEADER, self.TABLE_SEP] + rows
+        )
+        assert len(content) > 4000
+
+        chunks = split_message_for_wecom(content, 4000)
+        assert len(chunks) >= 2
+        for chunk in chunks:
+            assert len(chunk) <= 4000
+            self._assert_no_orphan_rows(chunk)
+        # All 60 body rows survive across chunks.
+        joined = "\n".join(chunks)
+        for row in rows:
+            assert row in joined
+
+    def test_table_not_split_when_section_boundary_fits(self):
+        """Two tables with a heading between them: the split must land on
+        the section boundary, never inside either table."""
+        from plugins.platforms.wecom.adapter import split_message_for_wecom
+
+        t1 = "\n".join([self.TABLE_HEADER, self.TABLE_SEP] + self._table_rows(30, pad=70))
+        t2 = "\n".join([self.TABLE_HEADER, self.TABLE_SEP] + self._table_rows(30, pad=70))
+        content = "### 腾讯云\n\n" + t1 + "\n\n### AWS\n\n" + t2
+        assert len(content) > 4000
+
+        chunks = split_message_for_wecom(content, 4000)
+        assert len(chunks) >= 2
+        for chunk in chunks:
+            assert len(chunk) <= 4000
+            self._assert_no_orphan_rows(chunk)
+
+    def test_orphaned_heading_moves_to_next_chunk(self):
+        """When the split lands right after a section heading, the heading
+        must not be left dangling at the end of the head chunk — it belongs
+        with its section content in the next chunk."""
+        from plugins.platforms.wecom.adapter import split_message_for_wecom
+
+        t1 = "\n".join([self.TABLE_HEADER, self.TABLE_SEP] + self._table_rows(32, pad=70))
+        t2 = "\n".join([self.TABLE_HEADER, self.TABLE_SEP] + self._table_rows(32, pad=70))
+        content = "### 腾讯云\n\n" + t1 + "\n\n### AWS RDS\n\n" + t2
+        assert len(content) > 4000
+
+        chunks = split_message_for_wecom(content, 4000)
+        assert len(chunks) >= 2
+        # The head chunk must not end with a bare heading.
+        for chunk in chunks[:-1]:
+            body = chunk.rstrip()
+            # Strip the trailing indicator line/paragraph for the check.
+            last_content = [l for l in body.split("\n") if l.strip()][-1]
+            assert not last_content.startswith("#"), (
+                f"orphaned heading at chunk end: {last_content!r}"
+            )
+        # The AWS heading travels with its table.
+        aws_idx = next(i for i, c in enumerate(chunks) if "### AWS RDS" in c)
+        aws_chunk = chunks[aws_idx]
+        assert self.TABLE_HEADER in aws_chunk
+
+    def test_all_content_preserved_with_indicators(self):
+        from plugins.platforms.wecom.adapter import split_message_for_wecom
+
+        rows = self._table_rows(50, pad=80)
+        content = "# 报告\n\n" + "\n".join(
+            [self.TABLE_HEADER, self.TABLE_SEP] + rows
+        ) + "\n\n尾部说明文字"
+        chunks = split_message_for_wecom(content, 4000)
+        assert len(chunks) >= 2
+        # Indicators appended in order — never fused into a table row.
+        for i, chunk in enumerate(chunks):
+            last_line = chunk.rstrip().splitlines()[-1]
+            assert last_line.strip().endswith(f"({i + 1}/{len(chunks)})")
+            assert not (last_line.strip().startswith("|") and last_line.strip().endswith("|"))
+        joined = "\n".join(chunks)
+        for row in rows:
+            assert row in joined
+        assert "尾部说明文字" in joined
+
+    def test_two_line_table_does_not_vanish(self):
+        """An oversized table with only header + separator (no body rows)
+        must survive: previously _split_table_atom returned [] for it (body
+        empty → nothing packed) and the whole table silently vanished."""
+        from plugins.platforms.wecom.adapter import split_message_for_wecom
+
+        header = "| " + "x" * 4100 + " |"
+        sep = "|---|"
+        table = "\n".join([header, sep])
+        assert len(table) > 4000
+
+        chunks = split_message_for_wecom(table, 4000)
+
+        assert len(chunks) >= 1
+        joined = "\n".join(chunks)
+        assert header in joined
+        assert sep in joined
+
+    @pytest.mark.parametrize("marker", ["#123", "#ffffff"])
+    def test_hash_marker_at_chunk_boundary_not_relocated(self, marker):
+        """Orphaned-heading relocation must only move real markdown
+        headings (^#{1,6} + whitespace). Lines like ticket ids (#123) or
+        color codes (#ffffff) that end a chunk must stay where they are."""
+        from plugins.platforms.wecom.adapter import split_message_for_wecom
+
+        first_para = "intro " + "x" * 3000 + "\n" + marker
+        tail = "y" * 2000
+        content = first_para + "\n\n" + tail
+        assert len(content) > 4000
+
+        chunks = split_message_for_wecom(content, 4000)
+
+        assert len(chunks) >= 2
+        assert marker in chunks[0], "marker must stay in its original chunk"
+        assert marker not in chunks[1]
+

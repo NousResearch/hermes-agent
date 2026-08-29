@@ -109,6 +109,7 @@ class CIAuditReceipt:
                 "actions_enabled": self.actions_state.actions_enabled,
                 "all_green": self.actions_state.all_green,
                 "check_count": self.actions_state.check_count,
+                "billing_blocked": self.actions_state.billing_blocked,
             },
             "commands": [
                 {
@@ -150,6 +151,7 @@ class CIAuditReceipt:
                 actions_enabled=bool(actions["actions_enabled"]),
                 all_green=bool(actions["all_green"]),
                 check_count=int(actions["check_count"]),
+                billing_blocked=bool(actions.get("billing_blocked", False)),
             ),
             commands=tuple(
                 CommandEvidence(

@@ -26,10 +26,21 @@ from .merge_controller import (
     CanonicalMergeEvidenceSource,
     MergeController,
     MergeDecision,
+    _codex_reviewed_head,
 )
-from .policy import FeedbackReceipt, PluginPolicy, load_policy
+from .policy import (
+    CODEX_REVIEW_TRIGGER,
+    FeedbackReceipt,
+    PluginPolicy,
+    hermes_attribution_line,
+    load_policy,
+)
 from .post_merge import PostMergeExecutor
-from .repair_controller import RepairController
+from .repair_controller import (
+    PR_REPAIR_ATTRIBUTION_PREFIX,
+    RepairController,
+    pr_repair_attribution_required,
+)
 from .release_maintenance import (
     FINAL_LANE,
     MaintenanceGitHub,
@@ -296,11 +307,7 @@ class KanbanSubprocessClient:
 
 def _kanban_create_argv(task: KanbanTask) -> list[str]:
     body = (
-        f"{task.instructions}\n\n"
-        f"Canonical receipt worktree: {task.repository_path}\n\n"
-        "The worker starts in this directory. Do not search for the worktree; "
-        "run the required preflight commands here first.\n\n"
-        f"{task.evidence_heading}:\n"
+        f"{task.instructions}\n\n{task.evidence_heading}:\n"
         f"{json.dumps(task.evidence, sort_keys=True)}"
     )
     argv = [
@@ -465,6 +472,14 @@ def _scan(ctx: Any) -> int:
         repair_payload: dict[str, object] | None = None
         maintenance_payload: dict[str, object] | None = None
         try:
+            try:
+                PooledLocalGitRepository(
+                    ledger, ledger.path.parent / "worktree-pool"
+                ).reconcile_leases(KanbanSubprocessClient())
+            except Exception:  # noqa: BLE001 - proactive release is an optimization,
+                # never allowed to block the scan it runs ahead of; a slot left
+                # leased simply falls back to its lease timeout.
+                pass
             result = _controller(policy, ledger).scan()
             if policy.repair_steward is not None:
                 repair = RepairController(
@@ -605,6 +620,11 @@ def _complete_feedback(ctx: Any, args: argparse.Namespace) -> int:
             json.dumps({"status": "invalid_or_raced_feedback_action"}, sort_keys=True)
         )
         return 1
+    if receipt.feedback_kind in _MARKER_REQUIRED_FEEDBACK_KINDS and _factual_reply_is_missing(
+        github, receipt, resolved_head_sha=str(args.resolved_head_sha)
+    ):
+        print(json.dumps({"status": "factual_reply_missing"}, sort_keys=True))
+        return 1
     ledger = FeedbackLedger.for_current_profile()
     try:
         ledger.begin_feedback_action(
@@ -636,6 +656,11 @@ def _complete_feedback(ctx: Any, args: argparse.Namespace) -> int:
         print(json.dumps({"status": "feedback_action_not_recorded"}, sort_keys=True))
         return_code = 1
     else:
+        codex_retrigger_status = "not_applicable"
+        if receipt.feedback_kind in _MARKER_REQUIRED_FEEDBACK_KINDS:
+            codex_retrigger_status = _retrigger_codex_review(
+                github, receipt.repository, receipt.pr_number, str(args.resolved_head_sha)
+            )
         local_ci_status = _controller(policy, ledger).dispatch_local_ci_after_feedback(
             current
         )
@@ -650,6 +675,7 @@ def _complete_feedback(ctx: Any, args: argparse.Namespace) -> int:
                     "resolved_head_sha": str(args.resolved_head_sha).casefold(),
                     "review_thread_resolved": review_thread_resolved,
                     "local_ci_status": local_ci_status,
+                    "codex_retrigger_status": codex_retrigger_status,
                 },
                 sort_keys=True,
             )
@@ -804,8 +830,14 @@ def _ci_audit_comment(receipt: CIAuditReceipt) -> str:
         f"({command.classification}, {command.duration_ms / 1000:.2f}s)"
         for command in receipt.commands
     )
+    attribution = (
+        f"{hermes_attribution_line('pr-local-ci-auditor', action='CI audit')}\n\n"
+        if pr_repair_attribution_required(receipt.identity.repository)
+        else ""
+    )
     body = (
-        f"Addressed local CI audit for exact head `{receipt.identity.head_sha}` "
+        attribution
+        + f"Addressed local CI audit for exact head `{receipt.identity.head_sha}` "
         f"(base `{receipt.identity.base_sha}`). Commands: {commands}. "
         f"Authoritative receipt: `{receipt.receipt_id}`. "
         + (

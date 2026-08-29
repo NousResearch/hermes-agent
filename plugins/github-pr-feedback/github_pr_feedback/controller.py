@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 import subprocess
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -15,10 +16,18 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from .github_client import MAX_FEEDBACK_BODY_CHARS, Feedback
-from .ledger import ClaimLease, FeedbackLedger, LedgerStateError
+from .github_client import MAX_FEEDBACK_BODY_CHARS, CheckState, Feedback
+from .ledger import ClaimLease, FeedbackLedger, LedgerStateError, WorktreeSlotLease
 from .intent_review import classify_feedback, pending_intent_comment_ids
-from .policy import FeedbackReceipt, PluginPolicy, PullRequest, RepositoryTarget, RoutingDecision
+from .policy import (
+    FeedbackReceipt,
+    PluginPolicy,
+    PullRequest,
+    RepositoryTarget,
+    RoutingDecision,
+    pr_repair_attribution_line,
+    pr_repair_attribution_required,
+)
 
 MAX_ADMISSIONS_PER_SCAN = 128
 # Each PR snapshot already overlaps its three independent GitHub endpoints.
@@ -26,6 +35,14 @@ MAX_ADMISSIONS_PER_SCAN = 128
 # without turning a rate-limited GitHub API into an unbounded fan-out.
 MAX_PARALLEL_PR_READS = 6
 LOCAL_CI_FEEDBACK_ID = "local-ci-audit-v2"
+# Additional venv roots trusted as "governed" besides a repository's own
+# tree. This repo's worktrees deliberately symlink .venv to one shared,
+# operator-owned install (see repo CLAUDE.md and scripts/bootstrap_agent_
+# workspace.py's additive-only guard) rather than each carrying a private
+# copy, so a repository-local root alone is too strict for the normal case.
+# Kept as an explicit allowlist -- an arbitrary symlink target introduced by
+# an untrusted PR branch must still be rejected.
+_ADDITIONAL_GOVERNED_VENV_ROOTS = (Path("/Users/mikedemott/TradingBotV18/.venv"),)
 _SHA = re.compile(r"^[0-9a-fA-F]{40,64}$")
 DEFAULT_CLAIM_LEASE = timedelta(minutes=5)
 _SELF_RESOLUTION_PREFIXES = (
@@ -114,6 +131,8 @@ class GitHubReader(Protocol):
 
     def get_branch_head(self, repository: str, branch: str) -> str: ...
 
+    def get_check_state(self, repository: str, head_sha: str) -> CheckState: ...
+
 
 class LocalGit(Protocol):
     def prepare_receipt_worktree(
@@ -133,6 +152,7 @@ class KanbanClient(Protocol):
 class GitCommandResult:
     returncode: int
     stdout: str
+    stderr: str = ""
 
 
 class GitCommandRunner(Protocol):
@@ -154,13 +174,13 @@ class SubprocessGitRunner:
                 check=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=10,
+                timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeError("local Git verification failed") from error
-        return GitCommandResult(completed.returncode, completed.stdout)
+        return GitCommandResult(completed.returncode, completed.stdout, completed.stderr)
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +205,22 @@ class ScanResult:
     created: int
     skipped: Mapping[str, int]
     degraded: bool = False
+
+
+def _bind_pooled_worktree_task(
+    local_git: object, receipt: FeedbackReceipt, task_id: str, board: str
+) -> None:
+    """Best-effort: if local_git is a worktree pool, record which Kanban task
+
+    now owns its leased slot, so reconcile_leases can release it the moment
+    that task goes terminal instead of waiting out the full lease timeout.
+    A plain (non-pooled) LocalGitRepository simply has no such method, so
+    this is a silent no-op for it.
+    """
+
+    bind_task = getattr(local_git, "bind_task", None)
+    if callable(bind_task):
+        bind_task(receipt, task_id, board)
 
 
 def _claim_with_orphan_recovery(
@@ -400,6 +436,7 @@ class LocalGitRepository:
         self._worktree_root.mkdir(parents=True, exist_ok=True)
         if workspace.is_symlink():
             raise RuntimeError("maintenance worktree path must not be a symlink")
+        created = False
         if not workspace.exists():
             self._run(
                 [
@@ -412,6 +449,13 @@ class LocalGitRepository:
                     str(workspace),
                     branch,
                 ]
+            )
+            created = True
+        if created:
+            from hermes_cli.worktree_environment import bootstrap_worktree_environments
+
+            bootstrap_worktree_environments(
+                Path(repository_path), workspace, environment_names=(".venv",)
             )
         self._verify_worktree(workspace, head_sha)
         return workspace.resolve()
@@ -441,7 +485,259 @@ class LocalGitRepository:
     def _run(self, argv: list[str], *, missing_ok: bool = False) -> str:
         result = self._runner.run(argv)
         if result.returncode != 0 and not (missing_ok and result.returncode == 1):
-            raise RuntimeError("local Git verification failed")
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(
+                f"local Git verification failed: {shlex.join(argv)} "
+                f"(exit {result.returncode}): {detail}"
+            )
+        return result.stdout
+
+
+class WorktreePoolExhausted(RuntimeError):
+    """Every worktree-pool slot is currently leased and not yet stale."""
+
+
+# Longer than the longest observed dispatched-task max_runtime_seconds (local
+# CI audits run up to 8 hours), with margin. A slot must never look reclaimable
+# while its dispatched agent task could still legitimately be running.
+DEFAULT_WORKTREE_POOL_LEASE = timedelta(hours=10)
+_WORKTREE_POOL_TERMINAL_TASK_STATUSES = frozenset({"done", "archived"})
+
+
+class PooledLocalGitRepository:
+    """Same LocalGit protocol as LocalGitRepository, backed by a fixed-size
+
+    pool of reused worktree slots instead of one `git worktree add` per exact
+    head. A slot's working tree persists across many receipts over time:
+    `git checkout --force --detach` swaps which commit is checked out, and
+    `git clean -fdx -e .venv` clears whatever the previous occupant left
+    behind (build artifacts, node_modules, stray files) without touching the
+    linked virtualenv.
+
+    Preserves the isolation guarantee `ci_coordinator.py` depends on -- a
+    slot only ever has one commit checked out at a time, enforced by the
+    ledger-backed lease in `FeedbackLedger.claim_worktree_slot`. This class
+    only changes whether the working tree gets torn down between uses, not
+    the one-commit-at-a-time invariant itself.
+    """
+
+    def __init__(
+        self,
+        ledger: FeedbackLedger,
+        worktree_root: Path | None = None,
+        runner: GitCommandRunner | None = None,
+        *,
+        slot_count: int = 8,
+        owner_pid: Callable[[], int] | None = None,
+        clock: Callable[[], datetime] | None = None,
+        lease_timeout: timedelta = DEFAULT_WORKTREE_POOL_LEASE,
+    ) -> None:
+        if slot_count < 1:
+            raise ValueError("slot_count must be positive")
+        self._ledger = ledger
+        self._worktree_root = Path(
+            worktree_root or Path.cwd() / ".github-pr-feedback-worktree-pool"
+        )
+        self._runner = runner or SubprocessGitRunner()
+        self._slot_count = slot_count
+        self._owner_pid = owner_pid or os.getpid
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._lease_timeout = lease_timeout
+
+    def prepare_receipt_worktree(
+        self, path: Path, receipt: FeedbackReceipt
+    ) -> PreparedWorktree:
+        if not _SHA.fullmatch(receipt.head_sha):
+            raise ValueError("head SHA is not a full Git object ID")
+        self._ensure_exact_head(path, receipt)
+
+        now = self._clock()
+        owner_pid = self._owner_pid()
+        lease: WorktreeSlotLease | None = None
+        for slot_id in range(self._slot_count):
+            lease = self._ledger.claim_worktree_slot(
+                slot_id,
+                owner_pid=owner_pid,
+                head_sha=receipt.head_sha,
+                claimed_at=now,
+                stale_before=now - self._lease_timeout,
+            )
+            if lease is not None:
+                break
+        if lease is None:
+            raise WorktreePoolExhausted(
+                f"all {self._slot_count} worktree-pool slots are leased and not yet stale"
+            )
+
+        try:
+            workspace = self._prepare_slot(path, lease.slot_id, receipt)
+        except BaseException:
+            # Never strand a slot on a failed prepare -- release it so the
+            # next caller (or a retry of this same dispatch) can reclaim it
+            # immediately instead of waiting out the full lease timeout.
+            self._ledger.finish_worktree_slot(lease)
+            raise
+        return PreparedWorktree(workspace, _receipt_branch(receipt), receipt.head_sha)
+
+    def release(self, lease: WorktreeSlotLease) -> None:
+        """Return a previously acquired slot to the free pool."""
+
+        self._ledger.finish_worktree_slot(lease)
+
+    def bind_task(self, receipt: FeedbackReceipt, task_id: str, board: str) -> None:
+        """Record which dispatched Kanban task now owns this receipt's slot.
+
+        Called opportunistically (duck-typed, see `getattr(local_git,
+        "bind_task", None)` at each dispatch call site) right after the
+        Kanban task is actually created, so `reconcile_leases` can release
+        the slot the moment that task finishes instead of waiting out the
+        full lease timeout.
+        """
+
+        self._ledger.bind_worktree_slot_task(receipt.head_sha, task_id, board)
+
+    def reconcile_leases(self, kanban: KanbanClient) -> int:
+        """Release any leased slot whose bound Kanban task has gone terminal.
+
+        Best-effort proactive reclaim, meant to be called once per scan tick
+        before acquiring new slots. Any slot this can't confidently resolve
+        (task_status errors, or no binding recorded yet -- still mid-dispatch)
+        is left alone; it remains protected by its lease timeout regardless.
+        Returns the number of slots released.
+        """
+
+        task_status = getattr(kanban, "task_status", None)
+        if not callable(task_status):
+            return 0
+        released = 0
+        for slot in self._ledger.leased_worktree_slots():
+            try:
+                status = task_status(slot["board"], slot["task_id"])
+            except RuntimeError:
+                continue
+            # A task the board no longer knows about provides no positive
+            # evidence anything is still using this slot -- same "missing is
+            # not active" interpretation _has_active_base_refresh_binding
+            # already uses elsewhere in this codebase. Anything OTHER than
+            # an explicit terminal status is treated as still active and
+            # left alone; this only ever short-circuits the lease timeout
+            # early, never overrides it.
+            if status is not None and status not in _WORKTREE_POOL_TERMINAL_TASK_STATUSES:
+                continue
+            self._ledger.finish_worktree_slot(
+                WorktreeSlotLease(slot["slot_id"], slot["lease_version"], slot["owner_pid"])
+            )
+            released += 1
+        return released
+
+    def _prepare_slot(self, path: Path, slot_id: int, receipt: FeedbackReceipt) -> Path:
+        self._worktree_root.mkdir(parents=True, exist_ok=True)
+        workspace = self._worktree_root / f"slot-{slot_id}"
+        if workspace.is_symlink():
+            raise RuntimeError("worktree pool slot path must not be a symlink")
+        if workspace.exists() and not self._slot_belongs_to(path, workspace):
+            # Slot IDs are reused across whichever configured repository last
+            # claimed them (the pool has no per-repository slot space), so an
+            # existing slot directory can still be linked to a DIFFERENT
+            # repository's object database from its previous occupant. A
+            # commit that only exists in the current repository can never
+            # resolve there no matter how many times it is re-fetched --
+            # discard the stale link and re-register it against this repo.
+            # The old repository's now-dangling worktree entry self-heals via
+            # its own `git worktree prune` and is otherwise harmless.
+            shutil.rmtree(workspace)
+        if not workspace.exists():
+            self._run(
+                [
+                    "git", "-C", str(path), "worktree", "add", "--quiet",
+                    "--detach", str(workspace),
+                ]
+            )
+        self._run(
+            [
+                "git", "-C", str(workspace), "checkout", "--quiet", "--force",
+                "--detach", receipt.head_sha,
+            ]
+        )
+        # -f twice (not once): a single -f leaves any untracked directory that
+        # contains its own .git alone (git's nested-repo safety guard). A prior
+        # occupant's leftover nested clone would otherwise wedge this slot's
+        # dirty check forever -- every future receipt keeps re-claiming the
+        # same permanently-dirty slot ID first and failing, starving the pool.
+        self._run(["git", "-C", str(workspace), "clean", "-ffdx", "-e", ".venv"])
+        self._verify_worktree(workspace, receipt.head_sha)
+        LocalGitRepository._link_governed_venv(path, workspace)
+        return workspace.resolve()
+
+    def _slot_belongs_to(self, path: Path, workspace: Path) -> bool:
+        """Whether ``workspace`` is a live worktree of the repository at ``path``."""
+
+        listed = self._runner.run(
+            ["git", "-C", str(path), "worktree", "list", "--porcelain"]
+        )
+        if listed.returncode != 0:
+            return False
+        resolved = str(workspace.resolve())
+        for line in listed.stdout.splitlines():
+            if line.startswith("worktree ") and line[len("worktree "):] == resolved:
+                return True
+        return False
+
+    def _ensure_exact_head(self, path: Path, receipt: FeedbackReceipt) -> None:
+        object_argv = [
+            "git", "-C", str(path), "cat-file", "-e", f"{receipt.head_sha}^{{commit}}",
+        ]
+        if self._runner.run(object_argv).returncode == 0:
+            return
+        fetch = self._runner.run(
+            [
+                "git", "-C", str(path), "fetch", "--quiet", "--no-tags",
+                "--no-recurse-submodules",
+                f"https://github.com/{receipt.repository}.git",
+                f"refs/pull/{receipt.pr_number}/head",
+            ]
+        )
+        if fetch.returncode != 0:
+            raise ExactHeadUnavailable("exact head is unavailable in configured repository")
+        fetched_head = self._runner.run(
+            ["git", "-C", str(path), "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"]
+        )
+        if (
+            fetched_head.returncode != 0
+            or fetched_head.stdout.strip().casefold() != receipt.head_sha.casefold()
+            or self._runner.run(object_argv).returncode != 0
+        ):
+            raise ExactHeadUnavailable("exact head is unavailable in configured repository")
+
+    def _verify_worktree(self, workspace: Path, expected_sha: str) -> None:
+        top = self._run(["git", "-C", str(workspace), "rev-parse", "--show-toplevel"]).strip()
+        if not top or Path(top).resolve() != workspace.resolve():
+            raise RuntimeError("worktree pool slot is invalid")
+        head = self._run(["git", "-C", str(workspace), "rev-parse", "HEAD"]).strip()
+        if head.casefold() != expected_sha.casefold():
+            raise RuntimeError("worktree pool slot HEAD does not match expected SHA")
+        # A reused slot's linked .venv symlink is deliberately excluded from
+        # `git clean` between occupants (see _prepare_slot), so it is expected
+        # to still be present and untracked here -- exclude it from the dirty
+        # check the same way, via a pathspec rather than text-filtering the
+        # porcelain output.
+        dirty = self._run(
+            [
+                "git", "-C", str(workspace), "status", "--porcelain",
+                "--untracked-files=all", "--", ".", ":!.venv",
+            ]
+        )
+        if dirty:
+            raise RuntimeError("worktree pool slot is not clean after checkout")
+
+    def _run(self, argv: list[str], *, missing_ok: bool = False) -> str:
+        result = self._runner.run(argv)
+        if result.returncode != 0 and not (missing_ok and result.returncode == 1):
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(
+                f"local Git verification failed: {shlex.join(argv)} "
+                f"(exit {result.returncode}): {detail}"
+            )
         return result.stdout
 
 
@@ -465,8 +761,8 @@ class ScanController:
         self._ledger = ledger
         self._github = github
         self._kanban = kanban
-        self._local_git = local_git or LocalGitRepository(
-            ledger.path.parent / "worktrees"
+        self._local_git = local_git or PooledLocalGitRepository(
+            ledger, ledger.path.parent / "worktree-pool"
         )
         default_control_home = (
             ledger.path.parent.parent
@@ -509,6 +805,22 @@ class ScanController:
             except Exception:  # noqa: BLE001 - an adapter failure must not admit work.
                 skipped["github_error"] += 1
                 continue
+            if actions_enabled and pull_requests:
+                # actions_enabled is only the repo-level Actions on/off toggle;
+                # it stays True through a billing lockout, where every job
+                # fails immediately without running. Sample one open PR's
+                # check state -- the lockout is account-wide, not per-PR, so
+                # one sample is representative for the whole repository this
+                # tick -- and treat a confirmed lockout the same as Actions
+                # being off, so local CI still gets dispatched below.
+                try:
+                    sample_checks = self._github.get_check_state(
+                        repository, pull_requests[0].head_sha
+                    )
+                    if sample_checks.billing_blocked:
+                        actions_enabled = False
+                except Exception:  # noqa: BLE001 - uncertain sample keeps prior gate value.
+                    pass
             admitted_pull_requests: list[PullRequest] = []
             for pull_request in pull_requests:
                 pull_request_admission = self._policy.admit_pull_request(pull_request)
@@ -727,7 +1039,10 @@ class ScanController:
         if audit_policy is None or not audit_policy.applies_to(current.base_repository):
             return "local_ci_disabled"
         try:
-            if self._github.actions_enabled(current.base_repository):
+            checks = self._github.get_check_state(
+                current.base_repository, current.head_sha
+            )
+            if checks.actions_enabled and not checks.billing_blocked:
                 return "github_ci_enabled"
             feedback_items = self._github.list_feedback(
                 current.base_repository, current.number
@@ -792,7 +1107,7 @@ class ScanController:
         )
         if not isinstance(latest, CIAuditReceipt) or latest.receipt_id != audit.receipt_id:
             return "superseded_ci_receipt"
-        if audit.actions_state.actions_enabled:
+        if audit.actions_state.actions_enabled and not audit.actions_state.billing_blocked:
             return "github_ci_enabled"
         assignee = _ci_failure_assignee(audit)
         if assignee is None:
@@ -870,8 +1185,17 @@ class ScanController:
                     control_home=self._control_home,
                 )
             )
+            _bind_pooled_worktree_task(
+                self._local_git, receipt, task_id, self._policy.board or ""
+            )
             self._ledger.finalize(receipt, task_id, lease)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
+            if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+                print(
+                    f"DEBUG ci-repair dispatch fail pr={receipt.pr_number}: "
+                    f"{type(error).__name__}: {error}",
+                    file=sys.stderr,
+                )
             try:
                 self._ledger.fail(receipt, str(error) or "CI repair dispatch failed", lease)
             except LedgerStateError:
@@ -952,8 +1276,17 @@ class ScanController:
                     post_results=audit_policy.post_results,
                 )
             )
+            _bind_pooled_worktree_task(
+                self._local_git, receipt, task_id, self._policy.board or ""
+            )
             self._ledger.finalize(receipt, task_id, lease)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
+            if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+                print(
+                    f"DEBUG task-create dispatch fail pr={receipt.pr_number}: "
+                    f"{type(error).__name__}: {error}",
+                    file=sys.stderr,
+                )
             try:
                 self._ledger.fail(receipt, str(error) or "task creation failed", lease)
             except LedgerStateError:
@@ -1056,6 +1389,8 @@ class ScanController:
             return "invalid_feedback_timestamp"
         if _is_non_actionable_review_container(feedback):
             return "non_actionable_review_container"
+        if _is_codex_review_summary_tracker(feedback):
+            return "codex_review_summary_tracker"
         if _is_self_resolution_receipt(feedback, owner_login=owner_login):
             return "self_resolution_receipt"
         return None
@@ -1150,8 +1485,17 @@ class ScanController:
                     labels=labels,
                 )
             )
+            _bind_pooled_worktree_task(
+                self._local_git, receipt, task_id, self._policy.board or ""
+            )
             self._ledger.finalize(receipt, task_id, lease)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
+            if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+                print(
+                    f"DEBUG task-create dispatch fail pr={receipt.pr_number}: "
+                    f"{type(error).__name__}: {error}",
+                    file=sys.stderr,
+                )
             try:
                 self._ledger.fail(receipt, str(error) or "task creation failed", lease)
             except LedgerStateError:
@@ -1548,6 +1892,27 @@ def _is_non_actionable_review_container(feedback: Feedback) -> bool:
     )
 
 
+_CODEX_REVIEW_SUMMARY_MARKER = "codex-pull-request-review-summary"
+
+
+def _is_codex_review_summary_tracker(feedback: Feedback) -> bool:
+    """Codex's own running review-status tracker is never itself a finding.
+
+    Posted as a plain issue comment (not a GitHub "review", so
+    _is_non_actionable_review_container above never sees it), it only ever
+    reports which review ran, when, and against which commit -- a markdown
+    table, nothing else. An actual Codex suggestion or finding, if any,
+    arrives as a separate ordinary review/issue comment without this marker
+    and is admitted normally. Dispatching this tracker as if it were
+    actionable feedback wastes a repair attempt on a comment that never
+    asked for anything, and its unicode-heavy table content has been
+    observed tripping a fallback provider's egress secret-scanner as a
+    false positive.
+    """
+
+    return feedback.is_bot and _CODEX_REVIEW_SUMMARY_MARKER in feedback.body
+
+
 def _receipt_branch(receipt: FeedbackReceipt) -> str:
     digest = sha256("\x00".join(map(str, receipt.key)).encode("utf-8")).hexdigest()
     return f"hermes/github-pr-feedback/{digest}"
@@ -1611,9 +1976,19 @@ def _task(
         "literal repository-owned command or stop with its exact blocker. Validate the reported issue "
         "against the exact receipt worktree before editing. If confirmed, make only the bounded fix, "
         "run focused verification, commit and push to the verified PR head branch, and post a factual "
-        "PR reply with the commit and test evidence. "
-        + _worker_write_contract()
-        + "Do not merge; merge remains controlled by deterministic safety gates. After the verified "
+        "PR reply with the commit and test evidence"
+        + (
+            f", starting with the exact line `{pr_repair_attribution_line(routing.assignee)}` "
+            "on its own line so this repository can always tell an automated Hermes reply apart "
+            "from a manual comment,"
+            if pr_repair_attribution_required(receipt.repository)
+            else ""
+        )
+        + " ending with the neutral marker `<!-- pr-maintenance-receipt:v1 status=completed "
+        f"kind={receipt.feedback_kind} head=<full literal resolved head SHA> -->`. "
+        "Before any GitHub write, re-read the canonical PR "
+        "and require that its head still equals the expected receipt SHA; otherwise stop fail-closed. "
+        "Do not merge; merge remains controlled by deterministic safety gates. After the verified "
         "push and factual reply, acknowledge this exact feedback with `"
         f"{_governed_command_prefix(control_home)} complete-feedback "
         f"--repository {shlex.quote(receipt.repository)} --pr-number "
@@ -1654,7 +2029,12 @@ def _task(
         # create_task resolves that to a ready card until a worker claims it.
         initial_status="running" if auto_dispatch else "blocked",
         max_retries=2 if auto_dispatch else 1,
-        max_runtime_seconds=900 if auto_dispatch else None,
+        # 900s had no real margin: three separate PR-feedback repair tasks
+        # observed live (2026-08-28) landed at 901-905s and were blocked as
+        # "timed out" after doing real, near-complete work. Matches the same
+        # margin fix already applied to the other kanban timeout budgets
+        # this session.
+        max_runtime_seconds=1200 if auto_dispatch else None,
     )
 
 
@@ -1795,7 +2175,15 @@ def _ci_failure_task(
         "failed lane from the repository-owned runner, make the smallest confirmed fix, and run "
         "focused verification plus the affected CI lane. Keep all required checks, tests, validation, "
         "and safety gates intact. Commit and push normally to the existing verified PR head branch, "
-        "then post one factual reply with commit and test evidence. Do not approve or merge the pull "
+        "then post one factual reply with commit and test evidence"
+        + (
+            f", starting with the exact line `{pr_repair_attribution_line(assignee)}` "
+            "on its own line so this repository can always tell an automated Hermes fix apart "
+            "from a manual comment"
+            if pr_repair_attribution_required(receipt.repository)
+            else ""
+        )
+        + ". Do not approve or merge the pull "
         "request, delete branches, change repository settings, force-push, or rewrite published "
         "history. Stop fail-closed if identity changes or the repair is ambiguous or broad. After the "
         "verified push and factual reply, acknowledge this exact repair with `"
@@ -1852,7 +2240,7 @@ def _local_ci_task(
         "Audit this pull request read-only from the exact receipt worktree. Re-read the canonical "
         "PR first and require its head to equal expected_head_sha; otherwise stop fail-closed. "
         "Confirm repository GitHub Actions remain disabled before running. Do not edit source files. "
-        "Do not push, approve, or merge. Bootstrap only the worktree-local ignored environment if "
+        "Do not publish, approve, or merge any change. Bootstrap only the worktree-local ignored environment if "
         "needed. Do not manually duplicate the CI lane commands. Create the authoritative typed "
         "receipt by running exactly: "
         f"{_governed_command_prefix(control_home)} audit-pr --repository "
@@ -1866,7 +2254,8 @@ def _local_ci_task(
         "Record exact commands and classify failures as logic regression, diagnostic-only, or "
         "environment-blocked. Ensure the tracked worktree remains unchanged. "
         + comment_scope
-        + "A failing audit may recommend a separate repair card, but this worker must not repair it."
+        + "A failing audit may recommend a separate follow-up card for the failure, but this worker "
+        "must not attempt to correct the code itself."
     )
     evidence = {
         "repository": receipt.repository,

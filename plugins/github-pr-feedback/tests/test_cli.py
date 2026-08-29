@@ -15,10 +15,18 @@ from pathlib import Path
 
 import pytest
 
+from github_pr_feedback.ci_runner import CIAuditIdentity, CIAuditReceipt
+from github_pr_feedback.cli import (
+    _ci_audit_comment,
+    _factual_reply_is_missing,
+    _retrigger_codex_review,
+)
 from github_pr_feedback.controller import KanbanTask
+from github_pr_feedback.github_client import CheckState, Feedback
 from github_pr_feedback.ledger import FeedbackLedger
 from github_pr_feedback.merge_controller import MergeDecision
-from github_pr_feedback.policy import FeedbackReceipt, PullRequest
+from github_pr_feedback.policy import CODEX_REVIEW_TRIGGER, FeedbackReceipt, PullRequest, Reviewer
+from github_pr_feedback.repair_controller import pr_repair_attribution_line
 
 
 def _plugin_module():
@@ -1786,3 +1794,260 @@ def test_ci_audit_handoff_terminates_only_a_task_scoped_parent(
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_exact")
     _terminate_current_ci_worker()
     assert signals == [(4321, signal.SIGTERM)]
+
+
+def _feedback_comment(body: str) -> Feedback:
+    return Feedback(
+        kind="issue_comment",
+        feedback_id="1",
+        reviewer=Reviewer("pr-repair-steward"),
+        body=body,
+        created_at=datetime(2026, 8, 28, 12, 0, tzinfo=UTC),
+        is_bot=True,
+    )
+
+
+class _FakeGitHubComments:
+    def __init__(self, bodies: list[str]) -> None:
+        self._bodies = bodies
+        self.posted: list[tuple[str, int, str]] = []
+
+    def list_feedback(self, repository: str, number: int):
+        return tuple(_feedback_comment(body) for body in self._bodies)
+
+    def post_issue_comment(self, repository: str, number: int, body: str) -> None:
+        self.posted.append((repository, number, body))
+
+
+class _FakeGitHubCommentsUnavailable(_FakeGitHubComments):
+    def list_feedback(self, repository: str, number: int):
+        from github_pr_feedback.github_client import GitHubClientError
+
+        raise GitHubClientError("boom")
+
+
+def _repair_receipt(repository: str = "mrkillbob/luna-bot") -> FeedbackReceipt:
+    return FeedbackReceipt(repository, 17, "pr_repair", "repair:actions_not_green", "a" * 40)
+
+
+def _feedback_receipt(
+    feedback_kind: str, repository: str = "mrkillbob/luna-bot"
+) -> FeedbackReceipt:
+    return FeedbackReceipt(repository, 17, feedback_kind, "123456", "a" * 40)
+
+
+def test_factual_reply_is_required_for_ordinary_admitted_feedback_kinds_too() -> None:
+    """Same gate as pr_repair: this used to only cover repair receipts, letting an
+
+    ordinary review-comment-driven push complete with no trace a reply was skipped.
+    """
+
+    github = _FakeGitHubComments(["looks good to me"])
+
+    for kind in ("issue_comment", "review_comment", "review"):
+        assert _factual_reply_is_missing(
+            github, _feedback_receipt(kind), resolved_head_sha="a" * 40
+        )
+
+
+def test_factual_reply_for_ordinary_feedback_is_satisfied_by_its_own_marker_kind() -> None:
+    reply = (
+        f"{pr_repair_attribution_line('runtime-correctness-steward')}\n"
+        "Fixed the reported issue; focused tests pass.\n"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=review_comment head={'a' * 40} -->"
+    )
+    github = _FakeGitHubComments([reply])
+
+    assert not _factual_reply_is_missing(
+        github, _feedback_receipt("review_comment"), resolved_head_sha="a" * 40
+    )
+
+
+def test_factual_reply_for_ordinary_feedback_is_satisfied_by_an_earlier_receipts_marker() -> (
+    None
+):
+    """A second admitted feedback item resolving to the same already-fixed head
+
+    is satisfied by the earlier reply -- no duplicate comment required.
+    """
+
+    reply = (
+        f"{pr_repair_attribution_line('runtime-correctness-steward')}\n"
+        "Already fixed by an earlier receipt.\n"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=issue_comment head={'a' * 40} -->"
+    )
+    github = _FakeGitHubComments([reply])
+
+    assert not _factual_reply_is_missing(
+        github, _feedback_receipt("review_comment"), resolved_head_sha="a" * 40
+    )
+
+
+def test_factual_reply_is_missing_when_no_comment_carries_the_receipt_marker() -> None:
+    github = _FakeGitHubComments(["looks good to me"])
+
+    assert _factual_reply_is_missing(
+        github, _repair_receipt(), resolved_head_sha="a" * 40
+    )
+
+
+def test_factual_reply_is_missing_when_the_marker_head_does_not_match() -> None:
+    other_head_marker = (
+        "Fixed it.\n"
+        "<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair "
+        f"head={'b' * 40} -->"
+    )
+    github = _FakeGitHubComments([other_head_marker])
+
+    assert _factual_reply_is_missing(
+        github, _repair_receipt(), resolved_head_sha="a" * 40
+    )
+
+
+def test_factual_reply_is_missing_on_our_repo_without_the_attribution_line() -> None:
+    """Our repo requires self-identification -- the marker alone is not enough."""
+
+    marker_only = (
+        "Fixed the conflict.\n"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair head={'a' * 40} -->"
+    )
+    github = _FakeGitHubComments([marker_only])
+
+    assert _factual_reply_is_missing(
+        github, _repair_receipt("mrkillbob/luna-bot"), resolved_head_sha="a" * 40
+    )
+
+
+def test_pr_repair_reply_is_satisfied_by_a_marker_and_attribution_on_our_repo() -> None:
+    reply = (
+        f"{pr_repair_attribution_line('pr-repair-steward')}\n"
+        "Fixed the conflict; focused tests pass.\n"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair head={'a' * 40} -->"
+    )
+    github = _FakeGitHubComments([reply])
+
+    assert not _factual_reply_is_missing(
+        github, _repair_receipt("mrkillbob/luna-bot"), resolved_head_sha="a" * 40
+    )
+
+
+def test_pr_repair_reply_on_the_upstream_repo_does_not_require_attribution() -> None:
+    """NousResearch/hermes-agent stays brand-neutral -- the marker alone suffices."""
+
+    marker_only = (
+        "Fixed the conflict.\n"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair head={'a' * 40} -->"
+    )
+    github = _FakeGitHubComments([marker_only])
+
+    assert not _factual_reply_is_missing(
+        github,
+        _repair_receipt("NousResearch/hermes-agent"),
+        resolved_head_sha="a" * 40,
+    )
+
+
+def test_pr_repair_reply_accepts_the_ci_failure_typed_fixers_own_marker_kind() -> None:
+    """_ci_failure_task's own instructions require `kind=ci_repair`, not `kind=pr_repair`,
+
+    even though its receipt's feedback_kind is 'pr_repair' like every other repair
+    dispatch. Both must satisfy the same completion gate.
+    """
+
+    reply = (
+        f"{pr_repair_attribution_line('ci-static-fixer')}\n"
+        "Fixed the static-lane failure; focused tests pass.\n"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=ci_repair head={'a' * 40} -->"
+    )
+    github = _FakeGitHubComments([reply])
+
+    assert not _factual_reply_is_missing(
+        github, _repair_receipt("mrkillbob/luna-bot"), resolved_head_sha="a" * 40
+    )
+
+
+def _passed_ci_receipt(repository: str) -> CIAuditReceipt:
+    return CIAuditReceipt(
+        receipt_id="d" * 64,
+        identity=CIAuditIdentity(repository, 17, "b" * 40, "a" * 40),
+        manifest_digest="e" * 64,
+        status="passed",
+        started_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 25, 12, 1, tzinfo=UTC),
+        actions_state=CheckState(False, True, 0),
+        commands=(),
+    )
+
+
+def test_ci_audit_comment_self_identifies_as_hermes_on_our_own_repository() -> None:
+    body = _ci_audit_comment(_passed_ci_receipt("mrkillbob/luna-bot"))
+
+    assert body.startswith("Hermes automated CI audit (pr-local-ci-auditor)")
+
+
+def test_ci_audit_comment_stays_brand_neutral_on_the_upstream_repository() -> None:
+    body = _ci_audit_comment(_passed_ci_receipt("NousResearch/hermes-agent"))
+
+    assert "Hermes automated" not in body
+    assert body.startswith("Addressed local CI audit")
+
+
+def _codex_summary_body(status: str, sha: str) -> str:
+    return (
+        "<!-- codex-pull-request-review-summary -->\n\n"
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+        f"| Code Review | {status} "
+        '<relative-time datetime="2026-08-25T20:00:00Z"></relative-time> | '
+        f"`{sha}` | PR opened |"
+    )
+
+
+def _codex_feedback(body: str) -> Feedback:
+    return Feedback(
+        "issue_comment",
+        "1",
+        Reviewer("chatgpt-codex-connector[bot]", None),
+        body,
+        datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+        True,
+    )
+
+
+class _FakeGitHubCodex(_FakeGitHubComments):
+    def __init__(self, codex_feedback: tuple[Feedback, ...]) -> None:
+        super().__init__([])
+        self._codex_feedback = codex_feedback
+
+    def list_feedback(self, repository: str, number: int):
+        return self._codex_feedback
+
+
+def test_retrigger_codex_review_mentions_codex_when_its_review_is_stale() -> None:
+    head = "a" * 40
+    github = _FakeGitHubCodex(
+        (_codex_feedback(_codex_summary_body("Completed", ("f" * 40)[:7])),)
+    )
+
+    status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
+
+    assert status == "triggered"
+    assert github.posted == [("mrkillbob/luna-bot", 17, CODEX_REVIEW_TRIGGER)]
+
+
+def test_retrigger_codex_review_is_a_noop_when_codex_already_reviewed_this_head() -> None:
+    head = "a" * 40
+    github = _FakeGitHubCodex((_codex_feedback(_codex_summary_body("Completed", head[:7])),))
+
+    status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
+
+    assert status == "already_current"
+    assert github.posted == []
+
+
+def test_retrigger_codex_review_reports_unavailable_without_raising() -> None:
+    github = _FakeGitHubCommentsUnavailable([])
+
+    status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, "a" * 40)
+
+    assert status == "unavailable"
+    assert github.posted == []

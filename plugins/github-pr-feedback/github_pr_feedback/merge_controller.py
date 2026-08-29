@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Callable, Mapping, Protocol
 from .ci_runner import CIAuditReceipt
 from .github_client import (
     CheckState,
+    Feedback,
     GitHubClient,
     GitHubClientError,
     PullRequestMergeState,
@@ -36,6 +38,7 @@ class MergeSnapshot:
     feedback_clear: bool
     base_head_sha: str
     intent_review_pending: bool = False
+    codex_review_pending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +105,43 @@ class MergeEvidenceSource(Protocol):
     def snapshot(self, number: int) -> MergeSnapshot: ...
 
 
+# The Codex GitHub App (chatgpt-codex-connector[bot]) edits one running
+# summary comment in place rather than posting a new comment per review; each
+# row names the short commit SHA it reviewed and whether that review has
+# finished. Matching on this is what actually waits for Codex to weigh in on
+# the exact current head, instead of merging the instant CI goes green while
+# Codex is still queued or only reviewed an earlier push. If Codex found
+# something worth flagging, it leaves an ordinary review/issue comment
+# alongside this summary -- admitted as feedback like any other reviewer's,
+# so the existing feedback_clear gate below is what actually blocks on a
+# real Codex finding; this gate only enforces that Codex has weighed in
+# at all before merge is even considered.
+_CODEX_REVIEW_LOGIN = "chatgpt-codex-connector[bot]"
+_CODEX_REVIEW_MARKER = "codex-pull-request-review-summary"
+_CODEX_REVIEW_ROW = re.compile(
+    r"\|\s*[^|\n]*\|\s*(?P<status>[^<|]*?)\s*<relative-time[^>]*>.*?</relative-time>\s*"
+    r"\|\s*`(?P<sha>[0-9a-fA-F]{7,40})`\s*\|",
+    re.DOTALL,
+)
+
+
+def _codex_reviewed_head(feedback: tuple[Feedback, ...], head_sha: str) -> bool:
+    short_head = head_sha[:7].casefold()
+    for item in feedback:
+        if (
+            item.reviewer.login.casefold() != _CODEX_REVIEW_LOGIN
+            or _CODEX_REVIEW_MARKER not in item.body
+        ):
+            continue
+        for match in _CODEX_REVIEW_ROW.finditer(item.body):
+            if (
+                match.group("sha").casefold() == short_head
+                and "completed" in match.group("status").casefold()
+            ):
+                return True
+    return False
+
+
 def _allowed_merge_method(
     policy: MergeMaintainerPolicy, repository_policy: RepositoryMergePolicy
 ) -> str | None:
@@ -162,7 +202,16 @@ def evaluate_merge(
             blockers.append("ci_manifest_mismatch")
         if receipt.completed_at < now - timedelta(seconds=policy.receipt_max_age_seconds):
             blockers.append("ci_receipt_stale")
-    if snapshot.check_state.actions_enabled and not snapshot.check_state.all_green:
+    if snapshot.check_state.actions_enabled and snapshot.check_state.action_required:
+        # A distinct, more precise code than github_checks_not_green: no CI
+        # receipt or repair commit can clear this, only a human approving the
+        # gated workflow run (or otherwise resolving it) on GitHub itself.
+        blockers.append("action_required")
+    elif (
+        snapshot.check_state.actions_enabled
+        and not snapshot.check_state.all_green
+        and not snapshot.check_state.billing_blocked
+    ):
         blockers.append("github_checks_not_green")
     if snapshot.review_state.review_decision == "CHANGES_REQUESTED":
         blockers.append("changes_requested")
@@ -180,6 +229,8 @@ def evaluate_merge(
         blockers.append("feedback_unprocessed")
     if snapshot.intent_review_pending:
         blockers.append("intent_review_required")
+    if snapshot.codex_review_pending:
+        blockers.append("codex_review_pending")
     method = _allowed_merge_method(policy, snapshot.repository_merge_policy)
     if method is None:
         blockers.append("merge_method_unavailable")
@@ -398,6 +449,7 @@ class CanonicalMergeEvidenceSource:
         feedback_clear = self._feedback_clear(pull)
         feedback = self._github.list_feedback(policy.repository, number)
         intent_pending = pending_intent_review(feedback, owner_login=target.owner_login)
+        codex_pending = not _codex_reviewed_head(feedback, pull.head_sha)
         return MergeSnapshot(
             repository_private=self._github.repository_is_private(policy.repository),
             pull_request=pull,
@@ -416,11 +468,13 @@ class CanonicalMergeEvidenceSource:
                 policy.repository, policy.base_branch
             ),
             intent_review_pending=intent_pending,
+            codex_review_pending=codex_pending,
         )
 
     def _feedback_clear(self, pull: PullRequestMergeState) -> bool:
         from .controller import (
             _ci_receipt_feedback_reason,
+            _is_codex_review_summary_tracker,
             _is_non_actionable_review_container,
             _is_self_resolution_receipt,
         )
@@ -439,8 +493,10 @@ class CanonicalMergeEvidenceSource:
         for feedback in self._github.list_feedback(pull.repository, pull.number):
             if policy.not_before is not None and feedback.created_at < policy.not_before:
                 continue
-            if _is_non_actionable_review_container(feedback) or _is_self_resolution_receipt(
-                feedback, owner_login=target.owner_login
+            if (
+                _is_non_actionable_review_container(feedback)
+                or _is_codex_review_summary_tracker(feedback)
+                or _is_self_resolution_receipt(feedback, owner_login=target.owner_login)
             ):
                 continue
             receipt = FeedbackReceipt(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import subprocess
@@ -82,11 +83,18 @@ class Workspaces:
         return self.root / lane
 
 
-def controller(tmp_path: Path, *, github: GitHub, kanban: Kanban, now: datetime):
+def controller(
+    tmp_path: Path,
+    *,
+    github: GitHub,
+    kanban: Kanban,
+    now: datetime,
+    policy: ReleaseMaintenancePolicy | None = None,
+):
     from github_pr_feedback.release_maintenance import ReleaseMaintenanceController
 
     return ReleaseMaintenanceController(
-        maintenance_policy(),
+        policy or maintenance_policy(),
         target(tmp_path),
         FeedbackLedger(tmp_path / "ledger.sqlite3"),
         github,
@@ -108,6 +116,34 @@ def test_open_pull_requests_pause_release_maintenance_before_head_or_workspace_r
     assert result.status == "waiting_open_prs"
     assert result.tasks_created == 0
     assert kanban.tasks == []
+
+
+def test_require_zero_open_prs_false_lets_a_continuous_burndown_reach_the_quiet_gate(
+    tmp_path: Path,
+) -> None:
+    """An always-busy burndown repository can carry dozens of open PRs forever.
+
+    quiet_period_seconds (re-armed per new base SHA) is what actually protects
+    against auditing mid-churn; require_zero_open_prs=False lets maintenance
+    run without waiting for the entire backlog to close first.
+    """
+
+    policy = replace(maintenance_policy(), require_zero_open_prs=False)
+    github = GitHub(open_prs=(object(), object()))
+    kanban = Kanban()
+
+    first = controller(tmp_path, github=github, kanban=kanban, now=NOW, policy=policy).scan()
+    ready = controller(
+        tmp_path,
+        github=github,
+        kanban=kanban,
+        now=NOW + timedelta(seconds=901),
+        policy=policy,
+    ).scan()
+
+    assert first.status == "waiting_quiet"
+    assert ready.status == "auditing"
+    assert ready.tasks_created == 2
 
 
 def test_quiet_exact_head_dispatches_each_read_only_specialist_once(

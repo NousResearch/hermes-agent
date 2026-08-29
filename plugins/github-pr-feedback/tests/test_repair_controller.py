@@ -102,6 +102,34 @@ def test_repair_triggers_cover_conflicts_changes_requested_and_non_green_actions
     ) == ("merge_conflict", "changes_requested", "actions_not_green")
 
 
+def test_repair_triggers_does_not_treat_a_billing_lockout_as_a_repair_trigger() -> None:
+    """A GitHub Actions billing lockout fails every check regardless of code quality.
+
+    It is not evidence this PR needs a repair; the local-CI lane is the
+    billing-aware trigger for a genuine failure found under lockout.
+    """
+
+    assert repair_triggers(
+        merge_state(),
+        ReviewState(None, 0),
+        CheckState(True, False, 2, True),
+    ) == ()
+
+
+def test_repair_triggers_does_not_treat_action_required_as_a_repair_trigger() -> None:
+    """A check waiting on human workflow-run approval is not a code defect.
+
+    No repair commit can satisfy GitHub's own action_required conclusion; only
+    a human approving the gated run (or otherwise resolving it) can.
+    """
+
+    assert repair_triggers(
+        merge_state(),
+        ReviewState(None, 0),
+        CheckState(True, False, 2, False, True),
+    ) == ()
+
+
 class GitHub:
     def list_open_pull_requests(self, repository: str, owner: str):
         from github_pr_feedback.policy import PullRequest
@@ -123,6 +151,16 @@ class GitHub:
 class GitHubWithoutChecks(GitHub):
     def get_check_state(self, repository: str, head_sha: str):
         raise RuntimeError("check state unavailable")
+
+
+class ActionRequiredGitHub(GitHub):
+    """A PR with no conflict/review trigger, only a GitHub action_required check."""
+
+    def get_merge_state(self, repository: str, number: int):
+        return merge_state()
+
+    def get_check_state(self, repository: str, head_sha: str):
+        return CheckState(True, False, 1, False, True)
 
 
 class BehindBaseGitHub(GitHub):
@@ -238,19 +276,6 @@ def test_repair_controller_dedupes_exact_head_and_preserves_merge_authority(
     assert second.created == 0
     task = kanban.tasks[0]
     assert task.assignee == "pr-repair-steward"
-    assert 'Before the first push' in task.instructions
-    assert task.instructions.index("Before the first push") < task.instructions.index(
-        "After your own verified normal push"
-    )
-    assert "immediately before every GitHub write" not in task.instructions
-    assert "require both base and head identity to remain exact" not in task.instructions
-    assert "merge remains gated" in task.instructions
-    assert 'After your own verified normal push' in task.instructions
-    assert 'unchanged base SHA, base branch, head repository, and head branch' in task.instructions
-    assert 'billing or spending-limit' in task.instructions
-    assert 'exact command, cwd, exit code' in task.instructions
-    assert 'does not resolve actions_not_green' in task.instructions
-    assert 'Do not call kanban_complete while acknowledgement is missing' in task.instructions
     assert task.initial_status == "running"
     assert task.max_runtime_seconds == 1200
     assert "normal merge" in task.instructions

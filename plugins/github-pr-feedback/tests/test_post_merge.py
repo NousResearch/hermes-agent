@@ -25,7 +25,7 @@ def policy(root: Path) -> PostMergePolicy:
     return PostMergePolicy(
         deployment_path=root,
         protected_runtime_entry="main.py",
-        package_argv=("python3", "tools/project.py", "package-desktop", "--replace", "--json"),
+        package_argv=("python3", "tools/tb.py", "gui-package-macos", "--replace", "--json"),
         bundle_path="desktop/macos/Example/build/Example.app",
         bundle_identifier="com.example.local.operator",
         relaunch_argv=("/usr/bin/open", "-n"),

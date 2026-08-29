@@ -7,6 +7,7 @@ import threading
 import pytest
 
 from github_pr_feedback.github_client import (
+    MAX_DISCOVERED_PULL_REQUESTS,
     MAX_FEEDBACK_BODY_CHARS,
     CheckState,
     GitHubClient,
@@ -97,7 +98,7 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
         "--author",
         "owner",
         "--limit",
-        "100",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
         "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
     )
@@ -356,7 +357,7 @@ def test_github_client_fails_closed_when_filtered_pr_list_lacks_canonical_fields
         "--author",
         "owner",
         "--limit",
-        "100",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
         "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
     )
@@ -378,12 +379,17 @@ def test_github_client_fails_closed_if_owned_pr_query_hits_coverage_cap() -> Non
         "--author",
         "owner",
         "--limit",
-        "100",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
         "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
     )
     runner = RecordingRunner(
-        {argv: [canonical_list_pull(number=number) for number in range(1, 101)]}
+        {
+            argv: [
+                canonical_list_pull(number=number)
+                for number in range(1, MAX_DISCOVERED_PULL_REQUESTS + 1)
+            ]
+        }
     )
 
     with pytest.raises(GitHubClientError, match="coverage cap"):
@@ -400,7 +406,7 @@ def test_github_client_reads_all_open_prs_and_exact_base_head_for_maintenance() 
         "--state",
         "open",
         "--limit",
-        "100",
+        str(MAX_DISCOVERED_PULL_REQUESTS),
         "--json",
         "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
     )
@@ -677,6 +683,145 @@ def test_github_client_treats_disabled_actions_as_a_distinct_known_state() -> No
 
     assert state == CheckState(actions_enabled=False, all_green=True, check_count=0)
     assert runner.calls == [permissions_argv]
+
+
+def test_github_client_detects_a_billing_lockout_from_check_run_annotations() -> None:
+    permissions_argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
+    checks_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?per_page=100",
+    )
+    statuses_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/status?per_page=100",
+    )
+    annotations_argv = (
+        "gh",
+        "api",
+        "--paginate",
+        "--slurp",
+        "repos/acme/widgets/check-runs/98764105373/annotations",
+    )
+    runner = RecordingRunner(
+        {
+            permissions_argv: {"enabled": True},
+            checks_argv: {
+                "total_count": 1,
+                "check_runs": [
+                    {
+                        "id": 98764105373,
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "output": {"annotations_count": 1},
+                    }
+                ],
+            },
+            statuses_argv: {"state": "failure", "statuses": []},
+            annotations_argv: [
+                [
+                    {
+                        "message": (
+                            "The job was not started because recent account "
+                            "payments have failed or your spending limit needs "
+                            "to be increased. Please check the 'Billing & "
+                            "plans' section in your settings"
+                        )
+                    }
+                ]
+            ],
+        }
+    )
+
+    state = GitHubClient(runner).get_check_state("acme/widgets", "a" * 40)
+
+    assert state == CheckState(
+        actions_enabled=True, all_green=False, check_count=1, billing_blocked=True
+    )
+
+
+def test_github_client_does_not_flag_a_genuine_test_failure_as_billing_blocked() -> None:
+    permissions_argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
+    checks_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?per_page=100",
+    )
+    statuses_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/status?per_page=100",
+    )
+    annotations_argv = (
+        "gh",
+        "api",
+        "--paginate",
+        "--slurp",
+        "repos/acme/widgets/check-runs/1/annotations",
+    )
+    runner = RecordingRunner(
+        {
+            permissions_argv: {"enabled": True},
+            checks_argv: {
+                "total_count": 1,
+                "check_runs": [
+                    {
+                        "id": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "output": {"annotations_count": 1},
+                    }
+                ],
+            },
+            statuses_argv: {"state": "failure", "statuses": []},
+            annotations_argv: [
+                [{"message": "AssertionError: expected 200, got 500"}]
+            ],
+        }
+    )
+
+    state = GitHubClient(runner).get_check_state("acme/widgets", "a" * 40)
+
+    assert state == CheckState(
+        actions_enabled=True, all_green=False, check_count=1, billing_blocked=False
+    )
+
+
+def test_github_client_flags_a_check_run_waiting_on_human_approval_as_action_required() -> None:
+    permissions_argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
+    checks_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?per_page=100",
+    )
+    statuses_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/status?per_page=100",
+    )
+    runner = RecordingRunner(
+        {
+            permissions_argv: {"enabled": True},
+            checks_argv: {
+                "total_count": 1,
+                "check_runs": [
+                    {"id": 1, "status": "completed", "conclusion": "action_required"}
+                ],
+            },
+            statuses_argv: {"state": "failure", "statuses": []},
+        }
+    )
+
+    state = GitHubClient(runner).get_check_state("acme/widgets", "a" * 40)
+
+    assert state == CheckState(
+        actions_enabled=True,
+        all_green=False,
+        check_count=1,
+        billing_blocked=False,
+        action_required=True,
+    )
 
 
 @pytest.mark.parametrize(

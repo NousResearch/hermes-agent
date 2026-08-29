@@ -12,8 +12,48 @@ from typing import Mapping, Sequence
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _FEEDBACK_KINDS = frozenset(
-    {"issue_comment", "review_comment", "review", "pr_local_ci", "pr_repair"}
+    {
+        "issue_comment",
+        "review_comment",
+        "review",
+        "pr_local_ci",
+        "pr_repair",
+        "pr_actions_needed",
+    }
 )
+# NousResearch/hermes-agent is a foreign upstream repository (its issue
+# tracker is the hermes-white-knight flow's own "assistant-brand-neutral"
+# public surface); every other configured repository is ours, so a completed
+# repair reply or audit comment there must self-identify as automated instead
+# of reading like an ordinary human comment.
+_BRAND_NEUTRAL_REPOSITORIES = frozenset({"NousResearch/hermes-agent"})
+HERMES_ATTRIBUTION_PREFIX = "Hermes automated"
+PR_REPAIR_ATTRIBUTION_PREFIX = f"{HERMES_ATTRIBUTION_PREFIX} repair"
+
+
+def pr_repair_attribution_required(repository: str) -> bool:
+    return repository not in _BRAND_NEUTRAL_REPOSITORIES
+
+
+def pr_repair_attribution_line(assignee: str) -> str:
+    return f"{PR_REPAIR_ATTRIBUTION_PREFIX} ({assignee})"
+
+
+def hermes_attribution_line(assignee: str, *, action: str) -> str:
+    """A generic 'Hermes automated <action> (<assignee>)' line for non-repair comments."""
+
+    return f"{HERMES_ATTRIBUTION_PREFIX} {action} ({assignee})"
+
+
+# Codex's GitHub App only re-reviews on PR-opened, marked-ready, or an
+# explicit "@codex review" mention -- never on an ordinary push. Every path
+# that pushes a new commit to an already-open PR (a worker's repair push, or
+# the deterministic base-refresh merge-forward) must mention this after
+# pushing, or the merge maintainer's codex_review_pending gate would wait
+# forever for a re-review nothing ever asks for.
+CODEX_REVIEW_TRIGGER = "@codex review"
+
+
 MAX_ASSIGNEE_RULES = 32
 MAX_MATCH_TERMS_PER_RULE = 32
 MAX_COMMAND_ARGUMENTS = 32
@@ -318,6 +358,13 @@ class ReleaseMaintenancePolicy:
     quiet_period_seconds: int
     max_runtime_seconds: int
     lanes: tuple[ReleaseMaintenanceLane, ...]
+    # Default preserves the original design: never run while any PR remains
+    # open repository-wide. A continuously-active burndown repository can
+    # legitimately carry dozens of open PRs indefinitely, so that condition
+    # alone would mean maintenance never runs at all. quiet_period_seconds
+    # already re-arms per new base SHA and is the gate that actually matters
+    # for "don't run mid-churn" -- set this false to rely on it alone.
+    require_zero_open_prs: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -804,7 +851,7 @@ def _parse_release_maintenance(
         if set(raw) != {"enabled"}:
             raise ValueError("disabled release_maintenance has unknown fields")
         return None
-    expected = {
+    required = {
         "enabled",
         "assignee",
         "repository",
@@ -813,8 +860,13 @@ def _parse_release_maintenance(
         "max_runtime_seconds",
         "lanes",
     }
-    if set(raw) != expected:
+    if not required.issubset(raw) or set(raw) - (
+        required | {"require_zero_open_prs"}
+    ):
         raise ValueError("release_maintenance has missing or unknown fields")
+    require_zero_open_prs = raw.get("require_zero_open_prs", True)
+    if not isinstance(require_zero_open_prs, bool):
+        raise ValueError("release_maintenance require_zero_open_prs must be a boolean")
     repository = _repository(raw["repository"], "release_maintenance repository")
     target = targets.get(repository)
     if target is None or target.head_repository != repository:
@@ -885,6 +937,7 @@ def _parse_release_maintenance(
         quiet_period_seconds=quiet_period_seconds,
         max_runtime_seconds=max_runtime_seconds,
         lanes=tuple(lanes),
+        require_zero_open_prs=require_zero_open_prs,
     )
 
 

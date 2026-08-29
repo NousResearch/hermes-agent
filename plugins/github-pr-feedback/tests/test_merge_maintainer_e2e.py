@@ -24,6 +24,31 @@ HEAD_SHA = "a" * 40
 MERGE_SHA = "c" * 40
 
 
+def codex_review_comment(head_sha: str = HEAD_SHA) -> Feedback:
+    """A completed chatgpt-codex-connector[bot] review summary for this head.
+
+    Every e2e fixture includes this by default so these tests exercise the
+    *other* merge gates -- a test specifically about the codex_review_pending
+    gate itself lives in test_merge_controller.py.
+    """
+
+    return Feedback(
+        "issue_comment",
+        "codex-summary-1",
+        Reviewer("chatgpt-codex-connector[bot]", None),
+        (
+            "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n"
+            "| Review | Status | Commit | Review trigger |\n"
+            "| --- | --- | --- | --- |\n"
+            "| Code Review | Completed "
+            '<relative-time datetime="2026-08-25T20:00:00Z"></relative-time> | '
+            f"`{head_sha[:7]}` | PR opened |"
+        ),
+        datetime(2026, 8, 25, 20, 0, tzinfo=UTC),
+        True,
+    )
+
+
 class CanonicalFakeGitHub:
     def __init__(
         self,
@@ -31,8 +56,9 @@ class CanonicalFakeGitHub:
         feedback: tuple[Feedback, ...] = (),
     ) -> None:
         self.states = states
-        self.feedback = feedback
+        self.feedback = (codex_review_comment(), *feedback)
         self.merge_calls: list[tuple[str, int, str, str]] = []
+        self.comments: list[tuple[str, int, str]] = []
 
     def list_open_pull_requests(self, repository: str, owner: str) -> tuple[PullRequest, ...]:
         return (
@@ -72,6 +98,20 @@ class CanonicalFakeGitHub:
         self, repository: str, number: int, head_sha: str, *, method: str
     ) -> None:
         self.merge_calls.append((repository, number, head_sha, method))
+
+    def post_issue_comment(self, repository: str, number: int, body: str) -> None:
+        self.comments.append((repository, number, body))
+        self.feedback = (
+            *self.feedback,
+            Feedback(
+                "issue_comment",
+                str(len(self.feedback) + 1),
+                Reviewer("github-pr-feedback-bot", None),
+                body,
+                datetime(2026, 8, 25, 21, 0, tzinfo=UTC),
+                True,
+            ),
+        )
 
 
 class RecordingKanban:
@@ -208,6 +248,11 @@ def test_end_to_end_report_only_creates_readiness_task_without_a_write(tmp_path:
     assert github.merge_calls == []
     assert len(kanban.tasks) == 1
     assert kanban.tasks[0].evidence["eligible"] is True
+    assert len(github.comments) == 1
+    posted_repository, posted_number, posted_body = github.comments[0]
+    assert (posted_repository, posted_number) == ("acme/widgets", 17)
+    assert "Ready to merge" in posted_body
+    assert f"<!-- pr-ready-to-merge-receipt:v1 head={HEAD_SHA} -->" in posted_body
     ledger.close()
 
 
@@ -242,6 +287,37 @@ def test_superseded_owner_ci_status_comment_does_not_block_merge(tmp_path: Path)
 
     assert payload["merged"][0]["pr_number"] == 17
     assert github.merge_calls == [("acme/widgets", 17, HEAD_SHA, "rebase")]
+    ledger.close()
+
+
+def test_codexs_own_review_summary_tracker_does_not_block_merge(tmp_path: Path) -> None:
+    """Codex's running review-status comment never itself blocks feedback_unprocessed.
+
+    It only ever reports which review ran and when -- never a finding -- so
+    admitting it as pending feedback would block every otherwise-eligible PR
+    on a comment that never asked for anything.
+    """
+
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    prepare_receipt(repository, ledger)
+    tracker = Feedback(
+        "issue_comment",
+        "codex-tracker",
+        Reviewer("chatgpt-codex-connector[bot]", None),
+        "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary",
+        datetime(2026, 8, 25, 20, 18, tzinfo=UTC),
+        True,
+    )
+    merged = replace(open_state(), state="CLOSED", merged=True, merge_commit_oid=MERGE_SHA)
+    github = CanonicalFakeGitHub([open_state(), open_state(), merged], feedback=(tracker,))
+
+    payload = _run_merge_scan(
+        configured_policy(repository), ledger, github=github, kanban=RecordingKanban()
+    )
+
+    assert payload["merged"][0]["pr_number"] == 17
     ledger.close()
 
 

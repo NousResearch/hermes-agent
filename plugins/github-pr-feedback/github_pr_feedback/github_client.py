@@ -19,8 +19,23 @@ class GitHubClientError(RuntimeError):
     """Canonical GitHub data was unavailable or did not have the required shape."""
 
 
+class MergeStateStillComputingError(GitHubClientError):
+    """GitHub has not finished computing this PR's mergeability yet.
+
+    Distinct from GitHubClientError proper: this is expected, self-resolving
+    eventual-consistency lag on a PR that has not been touched recently, not
+    evidence that GitHub reads are actually failing. Callers should treat it
+    as a benign "try again next cycle" skip, not a hard failure.
+    """
+
+
 MAX_FEEDBACK_BODY_CHARS = 16_384
-MAX_DISCOVERED_PULL_REQUESTS = 100
+# Bumped from 100: a single-operator repo generating many PRs in parallel
+# (burndown-phase branches, PR-repair follow-ups) can genuinely exceed 100
+# open PRs at once, and the discovery-cap check must fail closed rather than
+# silently operate on a truncated page -- so this has to stay ahead of real
+# volume, not just today's count.
+MAX_DISCOVERED_PULL_REQUESTS = 300
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _MERGE_FLAGS = {"squash": "--squash", "rebase": "--rebase", "merge": "--merge"}
@@ -51,9 +66,18 @@ class SubprocessCommandRunner:
                     stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
-                    timeout=30,
+                    timeout=60,
                 )
-            except (OSError, subprocess.TimeoutExpired) as error:
+            except subprocess.TimeoutExpired as error:
+                # A concurrent burst of `gh` invocations (this client is called
+                # from a 6-worker thread pool) can contend on the OS credential
+                # store on the first call after a idle period and blow the 30s
+                # budget even though gh itself is healthy; one retry clears it.
+                if attempt == 0:
+                    self._sleeper(self._rate_limit_backoff)
+                    continue
+                raise GitHubClientError("GitHub command failed") from error
+            except OSError as error:
                 raise GitHubClientError("GitHub command failed") from error
             if completed.returncode == 0:
                 return completed.stdout
@@ -121,6 +145,20 @@ class CheckState:
     actions_enabled: bool
     all_green: bool
     check_count: int
+    # GitHub Actions is enabled as a repository setting and reporting check
+    # runs, but every job fails immediately with the account-payment/spending
+    # -limit annotation rather than actually executing. Distinct from
+    # actions_enabled=False (Actions turned off entirely): here Actions is on
+    # but structurally unable to run anything until billing is resolved.
+    billing_blocked: bool = False
+    # At least one check run's canonical conclusion is GitHub's own
+    # "action_required" -- a workflow waiting on a human (first-time
+    # contributor approval to run, a required workflow that never started, a
+    # third-party app requesting manual follow-up). No code change can
+    # satisfy this: it is not a failing test or a lint error, so the repair
+    # steward must not spend a repair attempt on it and the merge maintainer
+    # must never treat it as a transient red check to wait out.
+    action_required: bool = False
 
 
 class GitHubClient:
@@ -160,7 +198,7 @@ class GitHubClient:
                 "--author",
                 owner_login,
                 "--limit",
-                "100",
+                str(MAX_DISCOVERED_PULL_REQUESTS),
                 "--json",
                 "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
             ]
@@ -191,7 +229,7 @@ class GitHubClient:
                 "--state",
                 "open",
                 "--limit",
-                "100",
+                str(MAX_DISCOVERED_PULL_REQUESTS),
                 "--json",
                 "number,state,headRepository,author,headRefName,headRefOid,updatedAt",
             ]
@@ -255,6 +293,22 @@ class GitHubClient:
         repository = _validated_repository(repository)
         number = _positive_number(number)
         row = self._read_object(f"repos/{repository}/pulls/{number}")
+        # GitHub computes mergeability lazily: a PR that hasn't been touched
+        # recently reports mergeable=null / mergeable_state="unknown" on the
+        # first read and only starts the real computation as a side effect of
+        # that read. A second read a few seconds later almost always has the
+        # real value, so poll once before treating this as unavailable --
+        # without this, a stale-but-perfectly-normal open PR is
+        # indistinguishable from a genuine API failure.
+        for delay in (3.0, 6.0):
+            if row.get("mergeable") is not None or row.get("mergeable_state") != "unknown":
+                break
+            time.sleep(delay)
+            row = self._read_object(f"repos/{repository}/pulls/{number}")
+        if row.get("mergeable") is None and row.get("mergeable_state") == "unknown":
+            raise MergeStateStillComputingError(
+                "GitHub has not finished computing mergeability for this PR yet"
+            )
         try:
             base = row["base"]
             head = row["head"]
@@ -406,11 +460,55 @@ class GitHubClient:
             )
         except (KeyError, TypeError) as error:
             raise GitHubClientError("GitHub check state was unavailable") from error
+        all_green = check_green and status_state == "success"
+        billing_blocked = False if all_green else self._billing_blocked(
+            repository, check_runs
+        )
+        action_required = any(
+            isinstance(run, dict) and run.get("conclusion") == "action_required"
+            for run in check_runs
+        )
         return CheckState(
             actions_enabled=True,
-            all_green=check_green and status_state == "success",
+            all_green=all_green,
             check_count=total_count + len(statuses),
+            billing_blocked=billing_blocked,
+            action_required=action_required,
         )
+
+    def _billing_blocked(
+        self, repository: str, check_runs: list[dict[str, Any]]
+    ) -> bool:
+        """Return whether a failing run carries GitHub's billing-lockout annotation.
+
+        Only one annotated, non-passing run needs to be inspected: the billing
+        lockout is an account-wide condition, not a per-job failure, so every
+        job in an affected run carries the identical annotation.
+        """
+
+        for run in check_runs:
+            if (
+                not isinstance(run, dict)
+                or run.get("status") != "completed"
+                or run.get("conclusion") in {"success", "neutral", "skipped"}
+            ):
+                continue
+            run_id = run.get("id")
+            output = run.get("output")
+            annotations_count = (
+                output.get("annotations_count") if isinstance(output, dict) else None
+            )
+            if not isinstance(run_id, int) or not annotations_count:
+                continue
+            try:
+                annotations = self._read_pages(
+                    f"repos/{repository}/check-runs/{run_id}/annotations"
+                )
+            except GitHubClientError:
+                continue
+            if any(_is_billing_lockout_message(a.get("message")) for a in annotations):
+                return True
+        return False
 
     def merge_pull_request(
         self, repository: str, number: int, head_sha: str, *, method: str
@@ -669,6 +767,21 @@ def _feedback(kind: str, row: dict[str, Any], *, timestamp_key: str) -> Feedback
         raise GitHubClientError(
             "GitHub feedback has missing required fields"
         ) from error
+
+
+_BILLING_LOCKOUT_PHRASES = (
+    "recent account payments have failed",
+    "spending limit needs to be increased",
+)
+
+
+def _is_billing_lockout_message(message: object) -> bool:
+    """Match GitHub's literal check-run annotation for an Actions billing lockout."""
+
+    if not isinstance(message, str):
+        return False
+    lowered = message.casefold()
+    return any(phrase in lowered for phrase in _BILLING_LOCKOUT_PHRASES)
 
 
 def _timestamp(value: object) -> datetime:

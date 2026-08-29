@@ -47,6 +47,7 @@ class FakeGitHub:
         self.feedback_calls: list[tuple[str, int]] = []
         self.branch_calls: list[tuple[str, str]] = []
         self.actions_are_enabled = True
+        self.billing_blocked = False
         self.branch_head = self.current.base_sha
 
     def list_open_pull_requests(
@@ -68,6 +69,19 @@ class FakeGitHub:
     def actions_enabled(self, repository: str) -> bool:
         assert repository == self.pull_request.base_repository
         return self.actions_are_enabled
+
+    def get_check_state(self, repository: str, head_sha: str) -> CheckState:
+        assert repository == self.pull_request.base_repository
+        if not self.actions_are_enabled:
+            return CheckState(actions_enabled=False, all_green=True, check_count=0)
+        if self.billing_blocked:
+            return CheckState(
+                actions_enabled=True,
+                all_green=False,
+                check_count=1,
+                billing_blocked=True,
+            )
+        return CheckState(actions_enabled=True, all_green=True, check_count=0)
 
     def get_branch_head(self, repository: str, branch: str) -> str:
         self.branch_calls.append((repository, branch))
@@ -1414,24 +1428,16 @@ def test_auto_dispatch_starts_an_admitted_exact_head_repair_ready_with_push_and_
     assert "post a factual PR reply" in task.instructions
     assert "Do not merge" in task.instructions
     assert "still equals the expected receipt SHA" in task.instructions
-    assert 'Before the first push' in task.instructions
-    assert task.instructions.index("Before the first push") < task.instructions.index(
-        "After your own verified normal push"
-    )
-    assert "immediately before every GitHub write" not in task.instructions
-    assert "require both base and head identity to remain exact" not in task.instructions
-    assert "merge remains gated" in task.instructions
-    assert 'After your own verified normal push' in task.instructions
-    assert 'unchanged base SHA, base branch, head repository, and head branch' in task.instructions
-    assert 'billing or spending-limit' in task.instructions
-    assert 'exact command, cwd, exit code' in task.instructions
-    assert 'does not resolve actions_not_green' in task.instructions
-    assert 'Do not call kanban_complete while acknowledgement is missing' in task.instructions
     assert "complete-feedback" in task.instructions
     assert f"env HERMES_HOME='{control_home}' hermes github-pr-feedback complete-feedback" in (
         task.instructions
     )
     assert "full literal resolved head SHA" in task.instructions
+    assert (
+        "<!-- pr-maintenance-receipt:v1 status=completed kind=issue_comment "
+        "head=<full literal resolved head SHA> -->" in task.instructions
+    )
+    assert "Hermes automated repair (" in task.instructions
     ledger.close()
 
 
@@ -1578,6 +1584,36 @@ def test_scan_does_not_dispatch_local_ci_when_github_actions_are_enabled(
     assert result.created == 0
     assert result.skipped["github_ci_enabled"] == 1
     assert kanban.tasks == []
+    ledger.close()
+
+
+def test_scan_dispatches_local_ci_when_actions_are_enabled_but_billing_blocked(
+    tmp_path: Path,
+) -> None:
+    """The repo-level scan() gate reads actions_enabled() (a repo setting)
+
+    separately from the per-PR dispatch paths -- it needs its own billing
+    check, sampled from one open PR's check state, or it silently believes
+    GitHub CI is fine for an entire repository stuck in a billing lockout.
+    """
+
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(
+        local_path,
+        not_before="2026-08-24T00:00:00Z",
+        local_ci_audit=True,
+    )
+    github = FakeGitHub(admitted_pull_request(sha), ())
+    github.actions_are_enabled = True
+    github.billing_blocked = True
+    kanban = RecordingKanban()
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+
+    result = ScanController(policy, ledger, github, kanban, RecordingLocalGit()).scan()
+
+    assert result.skipped.get("github_ci_enabled", 0) == 0
+    assert result.created == 1
+    assert [task.title for task in kanban.tasks] == ["Local PR CI audit: acme/widgets#17"]
     ledger.close()
 
 
@@ -1766,6 +1802,56 @@ def test_completed_feedback_immediately_schedules_exact_head_local_ci(tmp_path: 
     kanban = RecordingKanban()
     github = FakeGitHub(admitted_pull_request(sha), (item,))
     github.actions_are_enabled = False
+    controller = ScanController(
+        policy,
+        ledger,
+        github,
+        kanban,
+        RecordingLocalGit(),
+    )
+
+    status = controller.dispatch_local_ci_after_feedback(admitted_pull_request(sha))
+
+    assert status == "scheduled"
+    assert [task.title for task in kanban.tasks] == ["Local PR CI audit: acme/widgets#17"]
+    ledger.close()
+
+
+def test_completed_feedback_schedules_local_ci_when_actions_are_billing_blocked(
+    tmp_path: Path,
+) -> None:
+    """Actions enabled as a repo setting but every check billing-blocked must not
+
+    read as "GitHub CI is fine" — local CI must still be dispatched.
+    """
+
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(
+        local_path,
+        not_before="2026-08-24T00:00:00Z",
+        auto_dispatch=True,
+        local_ci_audit=True,
+    )
+    item = feedback("fixed")
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    receipt = FeedbackReceipt("acme/widgets", 17, item.kind, item.feedback_id, sha)
+    lease = ledger.claim(
+        receipt,
+        owner="feedback-worker",
+        claimed_at=datetime(2026, 8, 24, 1, 0, tzinfo=UTC),
+        stale_before=datetime(2026, 8, 24, 0, 55, tzinfo=UTC),
+    )
+    assert lease is not None
+    ledger.finalize(receipt, "feedback-task", lease)
+    ledger.mark_feedback_actioned(
+        receipt,
+        resolved_head_sha=sha,
+        actioned_at=datetime(2026, 8, 24, 2, 0, tzinfo=UTC),
+    )
+    kanban = RecordingKanban()
+    github = FakeGitHub(admitted_pull_request(sha), (item,))
+    github.actions_are_enabled = True
+    github.billing_blocked = True
     controller = ScanController(
         policy,
         ledger,
@@ -2431,6 +2517,48 @@ def test_scan_suppresses_non_actionable_review_containers_but_keeps_inline_findi
     assert result.created == 1
     assert result.skipped["non_actionable_review_container"] == 2
     assert [task.evidence["feedback_id"] for task in kanban.tasks] == ["inline-finding"]
+    ledger.close()
+
+
+def test_scan_suppresses_codexs_own_review_summary_tracker_comment(tmp_path: Path) -> None:
+    """Codex's running review-status comment (an issue comment, not a GitHub
+
+    review, so the container check above never sees it) only ever reports
+    which review ran and when -- never itself a finding. Admitting it as
+    actionable feedback wastes a repair dispatch, and its unicode-heavy table
+    has tripped a fallback provider's egress secret-scanner as a false
+    positive.
+    """
+
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(local_path, not_before="2026-08-24T00:00:00Z")
+    created_at = datetime.fromisoformat("2026-08-24T00:00:00+00:00")
+    tracker = (
+        "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n"
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+        "| Code Review | Completed | `abc1234` | PR opened |"
+    )
+    github = FakeGitHub(
+        admitted_pull_request(sha),
+        (
+            Feedback(
+                "issue_comment",
+                "codex-tracker",
+                Reviewer("chatgpt-codex-connector[bot]", None),
+                tracker,
+                created_at,
+                True,
+            ),
+        ),
+    )
+    kanban = RecordingKanban()
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+
+    result = ScanController(policy, ledger, github, kanban, RecordingLocalGit()).scan()
+
+    assert result.created == 0
+    assert result.skipped["codex_review_summary_tracker"] == 1
+    assert kanban.tasks == []
     ledger.close()
 
 

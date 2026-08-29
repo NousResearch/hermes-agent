@@ -9,6 +9,7 @@ import pytest
 from github_pr_feedback.ci_runner import CIAuditIdentity, CIAuditReceipt
 from github_pr_feedback.github_client import (
     CheckState,
+    Feedback,
     GitHubClientError,
     PullRequestMergeState,
     RepositoryMergePolicy,
@@ -18,9 +19,10 @@ from github_pr_feedback.ledger import FeedbackLedger
 from github_pr_feedback.merge_controller import (
     MergeController,
     MergeSnapshot,
+    _codex_reviewed_head,
     evaluate_merge,
 )
-from github_pr_feedback.policy import MergeMaintainerPolicy
+from github_pr_feedback.policy import MergeMaintainerPolicy, Reviewer
 
 
 BASE_SHA = "b" * 40
@@ -132,6 +134,11 @@ def eligible_snapshot(**overrides: object) -> MergeSnapshot:
         ),
         (eligible_snapshot(check_state=CheckState(True, False, 2)), "github_checks_not_green"),
         (
+            eligible_snapshot(check_state=CheckState(True, False, 2, False, True)),
+            "action_required",
+        ),
+        (eligible_snapshot(codex_review_pending=True), "codex_review_pending"),
+        (
             eligible_snapshot(review_state=ReviewState("CHANGES_REQUESTED", 0)),
             "changes_requested",
         ),
@@ -155,6 +162,34 @@ def test_evaluate_merge_fails_closed_with_stable_blocker_codes(
     assert decision.eligible is False
     assert blocker in decision.blockers
     assert decision.method is None
+
+
+def test_evaluate_merge_does_not_block_on_a_billing_locked_out_check_state() -> None:
+    """Actions failing every job from a billing lockout is not evidence against the PR.
+
+    Local CI (the ci_receipt gates above) remains the authoritative signal;
+    GitHub's own red X is noise while the account is locked out.
+    """
+
+    snapshot = eligible_snapshot(check_state=CheckState(True, False, 2, True))
+
+    decision = evaluate_merge(policy(), snapshot, now=NOW)
+
+    assert decision.eligible is True
+    assert "github_checks_not_green" not in decision.blockers
+
+
+def test_evaluate_merge_reports_action_required_instead_of_the_generic_not_green_code() -> None:
+    """A precise code, not the generic red-X one, so an action_required PR routes
+    to human/escalation handling instead of being treated as an ordinary failing
+    check a repair or a wait-and-retry could eventually clear."""
+
+    snapshot = eligible_snapshot(check_state=CheckState(True, False, 2, False, True))
+
+    decision = evaluate_merge(policy(), snapshot, now=NOW)
+
+    assert decision.eligible is False
+    assert decision.blockers == ("action_required",)
 
 
 def test_evaluate_merge_selects_first_configured_repository_enabled_method() -> None:
@@ -405,3 +440,54 @@ def test_report_only_never_acquires_a_write_or_merge_lease(tmp_path: Path) -> No
         "failed": 0,
     }
     ledger.close()
+
+
+def _codex_summary(status: str, sha: str) -> str:
+    return (
+        "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n"
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+        f"| Code Review | {status} "
+        '<relative-time datetime="2026-08-25T20:00:00Z"></relative-time> | '
+        f"`{sha}` | PR opened |"
+    )
+
+
+def _codex_feedback(body: str, *, login: str = "chatgpt-codex-connector[bot]") -> Feedback:
+    return Feedback(
+        "issue_comment", "1", Reviewer(login, None), body, NOW, True
+    )
+
+
+def test_codex_reviewed_head_true_for_a_completed_review_of_the_exact_head() -> None:
+    feedback = (_codex_feedback(_codex_summary("✅ **Completed**", HEAD_SHA[:7])),)
+
+    assert _codex_reviewed_head(feedback, HEAD_SHA) is True
+
+
+def test_codex_reviewed_head_false_when_no_codex_comment_exists() -> None:
+    assert _codex_reviewed_head((), HEAD_SHA) is False
+
+
+def test_codex_reviewed_head_false_when_the_review_covers_a_different_head() -> None:
+    stale_sha = ("f" * 40)[:7]
+    feedback = (_codex_feedback(_codex_summary("✅ **Completed**", stale_sha)),)
+
+    assert _codex_reviewed_head(feedback, HEAD_SHA) is False
+
+
+def test_codex_reviewed_head_false_while_the_review_is_still_running() -> None:
+    feedback = (_codex_feedback(_codex_summary("⏳ **Running**", HEAD_SHA[:7])),)
+
+    assert _codex_reviewed_head(feedback, HEAD_SHA) is False
+
+
+def test_codex_reviewed_head_ignores_a_look_alike_comment_from_another_user() -> None:
+    """Only the real Codex App login counts -- anyone can quote the marker text."""
+
+    feedback = (
+        _codex_feedback(
+            _codex_summary("✅ **Completed**", HEAD_SHA[:7]), login="some-human"
+        ),
+    )
+
+    assert _codex_reviewed_head(feedback, HEAD_SHA) is False

@@ -208,7 +208,18 @@ Kanban card never clears a merge blocker. After an opted-in repair worker has
 verified the exact head, pushed its bounded fix, and posted the factual reply,
 the card supplies a fixed `complete-feedback` acknowledgement command. That
 command rereads the canonical resolved head and records the action separately;
-it cannot create CI or merge receipts.
+it cannot create CI or merge receipts. For every feedback kind whose reply is
+required to carry one (`pr_repair`, and the ordinary admitted kinds
+`issue_comment`, `review_comment`, `review` -- everything except
+`pr_local_ci`, which completes through its own typed `audit-pr` receipt
+instead), `complete-feedback` independently rereads canonical comments and
+refuses to complete without a matching `<!-- pr-maintenance-receipt:v1
+status=completed kind=<kind> head=<resolved SHA> -->` marker; a prior
+receipt's marker for the same resolved head also satisfies a later one, so a
+second feedback item already fixed by an earlier reply needs no duplicate
+comment. On every repository except the upstream `NousResearch/hermes-agent`,
+that reply must also open with `Hermes automated repair (<assignee>)` so an
+automated reply is never mistaken for a manual one.
 
 When `repair_steward.enabled: true`, reconciliation independently rereads each
 configured PR's exact head and creates a deduplicated repair card only for a
@@ -219,12 +230,39 @@ smallest confirmed repair, run focused tests, push normally, and post factual
 evidence. It cannot merge or approve the PR, delete branches, change settings,
 force-push, rewrite published history, or weaken tests and safety gates.
 
+Independently of the triggers above, whenever `repair_steward` reconciliation
+observes a PR whose GitHub Checks report the canonical `action_required`
+conclusion, it creates one deduplicated, blocked "actions needed" card instead
+of (or alongside, if another trigger also applies) an ordinary repair card. No
+repair commit, local CI receipt, or automatic merge can clear `action_required`
+-- it means a workflow is waiting on a human, not a code defect -- so the card
+routes to the plugin's fallback `assignee` and starts blocked rather than being
+auto-dispatched to a worker. It surfaces on the board for manual pickup (by
+hand, or handed to a Claude or Codex session) once the underlying GitHub
+workflow is resolved. The merge maintainer independently reports the same
+`action_required` PR blocked with the precise `action_required` code rather
+than the generic `github_checks_not_green`.
+
 When `merge_maintainer.enabled: true`, each reconciliation also evaluates open
 PRs from the configured author and same repository. It requires a private
 repository, exact base and head identities, an admitted branch prefix, a fresh
 passing local-CI receipt for the current lane-manifest digest, clean explicit
 mergeability, green GitHub checks when Actions is enabled, no change request,
-no unresolved review thread, and no unprocessed admitted feedback. Missing or
+no unresolved review thread, no unprocessed admitted feedback, and a completed
+`chatgpt-codex-connector[bot]` review-summary row naming the exact current
+head (`codex_review_pending` otherwise) -- Codex reviewing an earlier push, or
+not having reviewed yet, blocks the same as a missing CI receipt does; a
+finished PR is never merged the instant its checks turn green while Codex is
+still queued. A genuine Codex finding surfaces as an ordinary admitted comment
+and is what `feedback_unprocessed` above actually blocks on -- this gate only
+enforces that Codex has weighed in at all. Codex's GitHub App never re-reviews
+on an ordinary push (only on PR-opened, marked-ready, or an explicit
+`@codex review` mention), so every path that pushes a new commit to an
+already-open PR -- a completed repair (`complete-feedback` for `pr_repair`)
+and the deterministic base-refresh merge-forward -- mentions `@codex review`
+itself right after a verified push, once, only if Codex's last review does not
+already cover the new head. Without this, `codex_review_pending` would wait
+forever for a re-review nothing ever asked for. Missing or
 unknown evidence blocks. The controller selects the first configured method
 that the repository currently enables, binds the command with
 `--match-head-commit`, and accepts success only from canonical merged readback.
@@ -248,7 +286,11 @@ collect CI receipts, use `report_only: true`, enable automatic merging, and only
 then separately configure and enable a post-merge hook.
 
 When `release_maintenance.enabled: true`, the ordinary reconciliation scan
-first requires a canonical repository-wide open-PR count of zero. It observes
+first requires a canonical repository-wide open-PR count of zero
+(`require_zero_open_prs: false` opts out of that specific precondition for a
+continuously-active repository that may never reach zero open PRs; the SHA
+quiescence gate below still applies and is what actually protects against
+auditing mid-churn). It observes
 the configured base SHA durably and dispatches nothing until that exact SHA has
 remained unchanged for `quiet_period_seconds`. Each lane receives its own
 exact-head linked worktree and specialist profile, runs one configured literal

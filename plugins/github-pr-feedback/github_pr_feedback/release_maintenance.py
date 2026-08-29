@@ -69,7 +69,10 @@ class ReleaseMaintenanceController:
 
     def scan(self) -> MaintenanceScanResult:
         try:
-            if self._github.list_all_open_pull_requests(self._policy.repository):
+            if (
+                self._policy.require_zero_open_prs
+                and self._github.list_all_open_pull_requests(self._policy.repository)
+            ):
                 return MaintenanceScanResult("waiting_open_prs", None, 0, ("open_prs",))
             head_sha = self._github.get_branch_head(
                 self._policy.repository, self._policy.base_branch

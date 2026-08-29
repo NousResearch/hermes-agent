@@ -165,7 +165,9 @@ export function staleAuxAssignments(
     .filter(entry => {
       const p = (entry.provider ?? '').toLowerCase()
 
-      return p && p !== 'auto' && p !== main && !entry.local_endpoint
+      // 'main' is a backend alias meaning "follow the current main provider"
+      // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
+      return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
     })
     .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
 }

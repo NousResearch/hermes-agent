@@ -624,7 +624,9 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
         if not isinstance(slot_cfg, dict):
             continue
         slot_provider = str(slot_cfg.get("provider", "") or "").strip()
-        if slot_provider and slot_provider.lower() not in {"auto", ""} and slot_provider.lower() != new_provider:
+        # "main" is an alias for the active main provider (auxiliary_client._normalize_aux_provider):
+        # it follows the switch and is never a stale pin.
+        if slot_provider and slot_provider.lower() not in {"auto", "", "main"} and slot_provider.lower() != new_provider:
             # A pin on a private/LAN endpoint (per-task base_url, e.g. a home Ollama box) never bills
             # a provider, so a main switch does not orphan it.
             if is_local_endpoint(str(slot_cfg.get("base_url", "") or "")):

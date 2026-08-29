@@ -239,7 +239,12 @@ def test_rg_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
     )
 
     command = _rg_files_commands(env.commands)[0]
-    assert downloads.as_posix() in command
+    absolute_operand = downloads.as_posix() in command
+    anchored_operand = (
+        f"cd {ops._escape_shell_arg(downloads.parent.as_posix())} &&" in command
+        and " -- '.' 'Downloads' 2>/dev/null" in command
+    )
+    assert absolute_operand or anchored_operand
     assert "!Downloads/**" not in command
     assert "path contained 2 entries" in (result.warning or "")
     assert "macOS protected folders" in (result.warning or "")

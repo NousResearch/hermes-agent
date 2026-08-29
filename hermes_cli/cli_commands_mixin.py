@@ -2386,6 +2386,8 @@ class CLICommandsMixin:
         # Snapshot NOW, on the UI thread — the foreground turn keeps appending
         # to conversation_history while the worker runs.
         history_snapshot = list(self.conversation_history or [])
+        # Live agent → cache-parity fork (full context, warm cache reads).
+        parent_agent = self.agent
         turn_route = self._resolve_turn_agent_config(question)
         main_runtime = {
             "model": turn_route["model"],
@@ -2405,6 +2407,7 @@ class CLICommandsMixin:
                 answer = answer_side_question(
                     question,
                     history_snapshot,
+                    parent_agent=parent_agent,
                     main_runtime=main_runtime,
                 )
                 if self._app:

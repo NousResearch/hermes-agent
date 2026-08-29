@@ -3684,6 +3684,25 @@ class GatewaySlashCommandsMixin:
             "api_mode": runtime_kwargs.get("api_mode"),
         }
         history_snapshot = list(history)
+        # Prefer the cache-parity fork when this chat has a live cached
+        # AIAgent: the fork replays the snapshot against the warm provider
+        # prefix cache (same mechanism as the background self-improvement
+        # review), giving the side answer FULL conversation context at
+        # cache-read prices. If no cached agent exists (evicted / first
+        # message), the provider cache is cold anyway — the one-shot digest
+        # fallback inside answer_side_question handles it.
+        parent_agent = None
+        try:
+            session_key = self._session_key_for_source(source)
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            if _cache_lock is not None:
+                with _cache_lock:
+                    _cached = self._agent_cache.get(session_key)
+                    parent_agent = (
+                        _cached[0] if isinstance(_cached, tuple) else _cached
+                    ) or None
+        except Exception:
+            parent_agent = None
         event_message_id = self._reply_anchor_for_event(event)
         _thread_metadata = self._thread_metadata_for_source(source, event_message_id)
         adapter = self._adapter_for_source(source)
@@ -3696,6 +3715,7 @@ class GatewaySlashCommandsMixin:
                     answer_side_question,
                     question,
                     history_snapshot,
+                    parent_agent=parent_agent,
                     main_runtime=main_runtime,
                 )
             except Exception as e:

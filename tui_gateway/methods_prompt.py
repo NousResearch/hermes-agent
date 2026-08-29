@@ -1427,6 +1427,7 @@ def _(rid, params: dict) -> dict:
                 answer = answer_side_question(
                     text,
                     snapshot,
+                    parent_agent=agent,
                     main_runtime=main_runtime,
                 )
             finally:

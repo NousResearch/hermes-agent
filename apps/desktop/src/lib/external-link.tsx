@@ -216,9 +216,7 @@ export function wantsNativeBrowser(event: Pick<MouseEvent, 'button' | 'ctrlKey' 
  * either no-ops or tries to paint a webview into the transparent overlay —
  * the OAuth-in-the-HUD case. Always hand off to the OS browser.
  */
-export function hudForcesNativeLinks(
-  search = typeof window === 'undefined' ? '' : window.location.search
-): boolean {
+export function hudForcesNativeLinks(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
   try {
     return new URLSearchParams(search).get('win') === 'hud'
   } catch {
@@ -245,11 +243,7 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
     return
   }
 
-  if (
-    options.native ||
-    hudForcesNativeLinks() ||
-    !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')
-  ) {
+  if (options.native || hudForcesNativeLinks() || !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')) {
     openExternalLink(target)
 
     return

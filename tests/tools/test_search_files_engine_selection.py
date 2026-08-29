@@ -79,7 +79,10 @@ def test_modified_zero_match_exit_one_is_valid_without_capability_error():
     assert len(env.rg_commands) == 1
 
 
-@pytest.mark.parametrize("version", ["ripgrep 13.0.0\n", "ripgrep unknown\n"])
+@pytest.mark.parametrize(
+    "version",
+    ["ripgrep 13.0.0\n", "ripgrep unknown\n", "ripgrep 14 garbage\n"],
+)
 def test_modified_requires_parseable_ripgrep_14_before_search(version):
     env = RecordingEnvironment()
 
@@ -101,6 +104,25 @@ def test_modified_requires_parseable_ripgrep_14_before_search(version):
     assert second.error == first.error
     assert env.rg_commands == []
     assert len([c for c in env.commands if "--version" in c]) == 1
+
+
+def test_modified_accepts_complete_ripgrep_semver_with_revision_text():
+    env = RecordingEnvironment()
+    original_execute = env.execute
+
+    def execute(command, **kwargs):
+        if "--version" in command:
+            env.commands.append(command)
+            return {"output": "ripgrep 14.1.1 (rev abc123)\n", "returncode": 0}
+        return original_execute(command, **kwargs)
+
+    env.execute = execute
+    result = ShellFileOperations(env).search(
+        "*.py", path="/repo", target="files", order="modified"
+    )
+
+    assert result.error is None
+    assert len(env.rg_commands) == 1
 
 
 def test_empty_discovery_output_is_zero_matches_without_retry():
@@ -337,6 +359,37 @@ def test_modified_multi_path_search_preserves_exact_order_request():
     assert "--sortr=modified" in env.rg_commands[0]
     assert "'/one'" in env.rg_commands[0]
     assert "'/two'" in env.rg_commands[0]
+
+
+def test_comma_delimited_file_roots_preserve_internal_spaces_in_one_search():
+    env = RecordingEnvironment(rg_output="C:/root one/a.py\nC:/root two/b.py\n")
+    combined = "C:/root one, C:/root two"
+
+    path_checks = 0
+
+    def execute(command, **kwargs):
+        nonlocal path_checks
+        env.commands.append(command)
+        if command.startswith("test -e "):
+            path_checks += 1
+            output = "not_found\n" if path_checks == 1 else "exists\n"
+            return {"output": output, "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "/usr/bin/rg\n", "returncode": 0}
+        if "--files" in command:
+            return {"output": env.rg_output, "returncode": 0}
+        return {"output": "", "returncode": 1}
+
+    env.execute = execute
+    result = ShellFileOperations(env).search(
+        "*.py", path=combined, target="files"
+    )
+
+    assert result.error is None
+    assert result.files == ["C:/root one/a.py", "C:/root two/b.py"]
+    assert len(env.rg_commands) == 1
+    assert "'C:/root one' 'C:/root two'" in env.rg_commands[0]
+    assert "path contained 2 entries" in (result.warning or "")
 
 
 def test_multi_path_modified_capability_error_propagates():

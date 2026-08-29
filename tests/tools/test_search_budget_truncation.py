@@ -183,6 +183,48 @@ def test_find_modified_capability_failure_is_actionable_without_retry():
 
 
 @pytest.mark.parametrize(
+    ("order", "output"),
+    [
+        (
+            "discovery",
+            "/narrow/a.py\n/narrow/b.py\n/narrow/c.py\n/narrow/d.py\n",
+        ),
+        (
+            "modified",
+            "40 /narrow/a.py\n30 /narrow/b.py\n20 /narrow/c.py\n10 /narrow/d.py\n",
+        ),
+    ],
+)
+def test_find_sigpipe_is_benign_only_after_fetch_limit_rows(order, output):
+    result = ShellFileOperations(FindRecordingEnvironment(output, code=141))._search_files(
+        "*.py", "/narrow", limit=2, offset=1, order=order
+    )
+
+    assert result.error is None
+    assert result.files == ["/narrow/b.py", "/narrow/c.py"]
+    assert result.truncated is True
+
+
+@pytest.mark.parametrize(
+    ("order", "output", "error_fragment"),
+    [
+        ("discovery", "/narrow/partial.py\n", "bounded find traversal"),
+        ("modified", "10 /narrow/partial.py\n", "modification-time"),
+    ],
+)
+def test_find_sigpipe_with_fewer_than_fetch_limit_rows_fails_closed(
+    order, output, error_fragment
+):
+    result = ShellFileOperations(FindRecordingEnvironment(output, code=141))._search_files(
+        "*.py", "/narrow", limit=2, offset=1, order=order
+    )
+
+    assert error_fragment in (result.error or "")
+    assert result.files == []
+    assert result.total_count == 0
+
+
+@pytest.mark.parametrize(
     ("order", "output", "error_fragment"),
     [
         ("discovery", "/narrow/partial.py\n", "bounded find traversal"),

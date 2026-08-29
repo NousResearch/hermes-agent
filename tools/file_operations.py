@@ -1106,7 +1106,11 @@ class ShellFileOperations(FileOperations):
             return self._rg_modified_capability[executable]
         quoted = self._quote_executable(executable)
         result = self._exec(f"{quoted} --version", timeout=10)
-        match = re.search(r"(?im)^ripgrep\s+(\d+)(?:\.|\s|$)", result.stdout or "")
+        match = re.search(
+            r"(?im)^ripgrep\s+(\d+)\.\d+\.\d+"
+            r"(?:[-+][0-9A-Za-z.-]+)?(?:\s|$)",
+            result.stdout or "",
+        )
         if result.exit_code == 0 and match and int(match.group(1)) >= 14:
             error = None
         else:
@@ -3497,12 +3501,17 @@ class ShellFileOperations(FileOperations):
         """Recover a not-found ``path`` that is really several paths in one string.
 
         Production trajectories show models passing "dir1 dir2 dir3" (or
-        comma-separated lists) as ``path``. Split on whitespace/commas; when
-        at least one candidate exists and at least two candidates were given,
-        search every existing path, merge results, and note skipped parts.
-        Returns None when this doesn't look like a multi-path string.
+        comma-separated lists) as ``path``. Commas explicitly delimit paths and
+        therefore preserve internal spaces; without commas, retain the legacy
+        whitespace-separated recovery. When at least one candidate exists and
+        at least two candidates were given, search every existing path, merge
+        results, and note skipped parts. Returns None when this doesn't look
+        like a multi-path string.
         """
-        parts = [p for chunk in path.split(",") for p in chunk.split() if p.strip()]
+        if "," in path:
+            parts = [part.strip() for part in path.split(",") if part.strip()]
+        else:
+            parts = path.split()
         if len(parts) < 2:
             return None
         existing, missing = [], []
@@ -3740,14 +3749,11 @@ class ShellFileOperations(FileOperations):
 
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
-        if order == "modified" and result.exit_code not in {0, 124}:
-            return SearchResult(error=(
-                "Exact modification-time order requires GNU find with "
-                "-printf support; install ripgrep 14+ or use order='discovery'."
-            ))
-        if order == "discovery" and result.exit_code not in {0, 124}:
-            return SearchResult(error="File search failed while running bounded find traversal.")
 
+        # Parse before classifying exit 141: with pipefail, a bounded producer
+        # can receive SIGPIPE when head intentionally closes after fetch_limit
+        # rows. It is benign only when the parsed payload proves that bound was
+        # reached; a shorter payload remains a hard failure.
         raw_files: List[str] = []
         for line in stdout.splitlines():
             if order == "modified":
@@ -3757,6 +3763,15 @@ class ShellFileOperations(FileOperations):
                 raw_files.append(parts[1])
             elif line:
                 raw_files.append(line)
+        bounded_sigpipe = result.exit_code == 141 and len(raw_files) >= fetch_limit
+
+        if order == "modified" and result.exit_code not in {0, 124} and not bounded_sigpipe:
+            return SearchResult(error=(
+                "Exact modification-time order requires GNU find with "
+                "-printf support; install ripgrep 14+ or use order='discovery'."
+            ))
+        if order == "discovery" and result.exit_code not in {0, 124} and not bounded_sigpipe:
+            return SearchResult(error="File search failed while running bounded find traversal.")
 
         from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
         if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):

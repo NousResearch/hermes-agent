@@ -11,17 +11,22 @@ from __future__ import annotations
 
 import re
 
+# Shared opener prefix prevents drift between scanner policies.
+_HEREDOC_CONSUMER_PREFIX = (
+    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+)
+
 # Non-shell interpreters whose quoted heredoc bodies are data for THAT interpreter; optional
 # VAR=... assignments, ``env`` and a path prefix allowed. Narrow on purpose: unmatched = visible.
 _INERT_HEREDOC_CONSUMER_RE = re.compile(
-    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    _HEREDOC_CONSUMER_PREFIX +
     r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
     re.IGNORECASE)
 
 
 # Unlike interpreters, cat only consumes stdin as data during this command.
 _INERT_DATA_SINK_HEREDOC_CONSUMER_RE = re.compile(
-    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    _HEREDOC_CONSUMER_PREFIX +
     r"cat(?=\s|$)", re.IGNORECASE)
 
 

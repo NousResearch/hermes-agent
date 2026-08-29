@@ -274,6 +274,16 @@ class TestGatewayLifecyclePattern:
         """Quoted source is inert to the shell, not to its interpreter."""
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
+    def test_interpreter_heredoc_prose_fails_closed(self):
+        """Keep interpreter source visible even when it only prints prose.
+
+        This deliberately accepts a false positive: Python source can execute
+        commands, so deciding whether a string is merely prose would require
+        interpreting the program rather than conservatively scanning it.
+        """
+        text = "python3 - <<'PY'\nprint('hermes gateway restart')\nPY"
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
     @pytest.mark.parametrize("text", [
         # Executable heredoc (shell consumer) must stay blocked.
         "bash <<EOF\nhermes gateway restart\nEOF",

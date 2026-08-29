@@ -20865,9 +20865,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             # successful compaction as a timeout.
                                             _compressed, _ = await _hyg_future
                                         else:
-                                            # Cleanup follows worker completion;
-                                            # its holder-qualified lease remains
-                                            # live until then to exclude retries.
+                                            # Release an inactivity-timed-out
+                                            # worker's holder-qualified lease
+                                            # promptly. Total-ceiling attempts
+                                            # retained it above, so this is a
+                                            # no-op until worker cleanup there.
+                                            _hyg_commit_fence.release_cancelled_compression_lock()
                                             self._defer_agent_cleanup_until_future_done(
                                                 _hyg_future,
                                                 _hyg_agent,

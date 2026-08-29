@@ -506,6 +506,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
 
     worker_started = threading.Event()
     release_worker = threading.Event()
+    lease_released = threading.Event()
     cleanup_done = threading.Event()
     fake_db = MagicMock()
     # The DB-backed cooldown check calls this before compressing; a bare
@@ -531,8 +532,10 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         def _compress_context(
             self, messages, *_args, commit_fence=None, **_kwargs
         ):
+            if commit_fence is not None:
+                commit_fence.register_cancelled_lock_release(lease_released.set)
             worker_started.set()
-            assert release_worker.wait(timeout=2)
+            assert release_worker.wait(timeout=10)
             if commit_fence is not None and not commit_fence.begin_commit():
                 return (messages, None)
             try:
@@ -630,8 +633,9 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     timeout_warnings = [s for s in adapter.sent if "Context compression timed out" in s["content"]]
     assert len(timeout_warnings) == 1
     fake_db.archive_and_compact.assert_not_called()
+    assert lease_released.is_set()
     # Event/state assertions prove the host returned before the detached
-    # worker's two-second wait completed without a scheduler-sensitive clock
+    # worker's event-gated wait completed without a scheduler-sensitive clock
     # bound: cleanup runs only when that worker actually exits.
     SlowCompressAgent.last_instance.close.assert_not_called()
 

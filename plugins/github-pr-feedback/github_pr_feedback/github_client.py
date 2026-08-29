@@ -300,12 +300,32 @@ class GitHubClient:
         # real value, so poll once before treating this as unavailable --
         # without this, a stale-but-perfectly-normal open PR is
         # indistinguishable from a genuine API failure.
+        terminal_merged = (
+            isinstance(row.get("state"), str)
+            and row["state"].casefold() == "closed"
+            and row.get("merged") is True
+            and row.get("mergeable") is None
+            and isinstance(row.get("mergeable_state"), str)
+            and row["mergeable_state"].casefold() == "unknown"
+            and isinstance(row.get("merge_commit_sha"), str)
+            and _SHA.fullmatch(row["merge_commit_sha"])
+        )
         for delay in (3.0, 6.0):
-            if row.get("mergeable") is not None or row.get("mergeable_state") != "unknown":
+            if terminal_merged or row.get("mergeable") is not None or row.get("mergeable_state") != "unknown":
                 break
             time.sleep(delay)
             row = self._read_object(f"repos/{repository}/pulls/{number}")
-        if row.get("mergeable") is None and row.get("mergeable_state") == "unknown":
+            terminal_merged = (
+                isinstance(row.get("state"), str)
+                and row["state"].casefold() == "closed"
+                and row.get("merged") is True
+                and row.get("mergeable") is None
+                and isinstance(row.get("mergeable_state"), str)
+                and row["mergeable_state"].casefold() == "unknown"
+                and isinstance(row.get("merge_commit_sha"), str)
+                and _SHA.fullmatch(row["merge_commit_sha"])
+            )
+        if not terminal_merged and row.get("mergeable") is None and row.get("mergeable_state") == "unknown":
             raise MergeStateStillComputingError(
                 "GitHub has not finished computing mergeability for this PR yet"
             )

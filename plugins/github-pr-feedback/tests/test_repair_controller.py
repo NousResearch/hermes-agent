@@ -278,7 +278,7 @@ def test_repair_controller_dedupes_exact_head_and_preserves_merge_authority(
     assert task.assignee == "pr-repair-steward"
     assert task.initial_status == "running"
     assert task.max_runtime_seconds == 1200
-    assert "normal merge" in task.instructions
+    assert "git merge --no-ff --no-edit" in task.instructions
     assert "Commit the resolved merge before running base-relative" in task.instructions
     assert "Do not merge the pull request" in task.instructions
     assert "Do not force-push" in task.instructions
@@ -303,9 +303,9 @@ def test_repair_controller_routes_a_stale_pr_base_into_the_refresh_lane(
 
     assert result.created == 1
     assert kanban.tasks[0].evidence["triggers"] == ["base_refresh_required"]
-    assert "normal merge" in kanban.tasks[0].instructions
+    assert "git merge --no-ff --no-edit" in kanban.tasks[0].instructions
     assert "base_refresh_required" in kanban.tasks[0].instructions
-    assert "hermes github-pr-feedback complete-feedback" in kanban.tasks[0].instructions
+    assert "github-pr-feedback complete-feedback" in kanban.tasks[0].instructions
     assert "--feedback-kind pr_repair" in kanban.tasks[0].instructions
     assert "--feedback-id repair:base_refresh_required" in kanban.tasks[0].instructions
     assert "--resolved-head-sha <full literal resolved head SHA>" in (
@@ -404,7 +404,10 @@ def test_terminal_refresh_binding_does_not_hold_slot_before_archived_recovery(
     assert result.created == 1
     assert result.skipped == {"duplicate": 1}
     assert [task.evidence["pr_number"] for task in kanban.tasks] == [18]
-    assert ledger.exact_pending_task_binding(archived) is not None
+    assert any(
+        binding.task_id == "repair-task"
+        for binding in ledger.pending_task_bindings_for_head(archived)
+    )
     ledger.close()
 
 

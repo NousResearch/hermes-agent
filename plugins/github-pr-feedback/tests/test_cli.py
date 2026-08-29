@@ -696,7 +696,7 @@ def test_merge_maintainer_task_has_no_model_merge_authority(tmp_path: Path) -> N
     assert task.assignee == "pr-merge-maintainer"
     assert task.initial_status == "running"
     assert task.evidence["blockers"] == ["ci_receipt_missing"]
-    assert "Do not edit source, push, reply, approve, merge" in task.instructions
+    assert "no repository or GitHub mutation authority" in task.instructions
     assert "Model output cannot waive" in task.instructions
     assert "supplied deterministic evidence" in task.instructions
     assert "not a blocker for this observability card" in task.instructions
@@ -1424,7 +1424,7 @@ def test_cron_wrapper_invokes_only_the_fixed_scan_argv_with_an_absolute_hermes_e
                             "merge_commit_oid": "def456",
                         }
                     ],
-                    "blocked": {"133": "ci_receipt_not_passing"},
+                    "blocked": {"133": ["ci_receipt_not_passing"]},
                 },
                 "release_maintenance": {"status": "degraded"},
             },
@@ -1594,6 +1594,12 @@ def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
     base_sha = "b" * 40
     repository = tmp_path / "repository"
     repository.mkdir()
+    manifest = repository / "tests" / "manifests" / "test_lanes.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        "[lanes.fast]\nci_status = 'required'\nargv = ['pytest']\n",
+        encoding="utf-8",
+    )
     settings = enabled_settings(Path(__file__).resolve().parents[3])
     settings["auto_dispatch"] = True
     settings["routing_rules"] = [
@@ -1617,7 +1623,7 @@ def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
     receipt = CIAuditReceipt(
         receipt_id="f" * 64,
         identity=CIAuditIdentity("acme/widgets", 17, base_sha, head_sha),
-        manifest_digest="e" * 64,
+            manifest_digest=hashlib.sha256(manifest.read_bytes()).hexdigest(),
         status="failed",
         started_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
         completed_at=datetime(2026, 8, 25, 12, 1, tzinfo=UTC),

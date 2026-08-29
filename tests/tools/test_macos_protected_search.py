@@ -333,6 +333,32 @@ def test_rg_scoped_multi_root_handles_dot_spaces_and_overlapping_roots(monkeypat
     assert result.files == ["/Users/alice/work space/local.txt"]
 
 
+def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monkeypatch):
+    env = RecordingEnvironment("/Users/alice")
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+
+    def execute(command, cwd=None, **kwargs):
+        env.commands.append(command)
+        if command.startswith("test -e"):
+            output = "not_found\n" if "'., --version'" in command else "exists\n"
+            return {"output": output, "returncode": 0}
+        if command.startswith("command -v rg"):
+            return {"output": "/usr/bin/rg\n", "returncode": 0}
+        if "--files" in command:
+            return {"output": "", "returncode": 0}
+        raise AssertionError(command)
+
+    env.execute = execute
+    result = ops.search("*.txt", path="., --version", target="files")
+
+    command = _rg_files_commands(env.commands)[0]
+    assert "cd '/Users/alice' &&" in command
+    assert " -- '.' '--version' 2>/dev/null" in command
+    assert result.error is None
+
+
 def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     safe = home / "safe"

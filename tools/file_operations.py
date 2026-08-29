@@ -3871,7 +3871,7 @@ class ShellFileOperations(FileOperations):
         )
         cmd = (
             f"set -o pipefail; {cd_prefix}{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
-            f"{exclusion_args} {root_args} 2>/dev/null | head -n {fetch_limit}"
+            f"{exclusion_args} -- {root_args} 2>/dev/null | head -n {fetch_limit}"
         )
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)

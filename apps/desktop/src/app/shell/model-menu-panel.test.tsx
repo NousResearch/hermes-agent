@@ -431,7 +431,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     await content.findByText(/Glm 4\.5 Air/i)
 
-    fireEvent.click(await content.findByText('Refresh Models'))
+    fireEvent.click(await content.findByText('Refresh models'))
 
     await vi.waitFor(() => {
       expect(onSelectModel).toHaveBeenCalledWith({
@@ -450,7 +450,7 @@ describe('ModelMenuPanel provider collapse', () => {
     const { content, onSelectModel } = renderPanel()
 
     await content.findByText(/Deepseek V4 Pro/i)
-    fireEvent.click(await content.findByText('Refresh Models'))
+    fireEvent.click(await content.findByText('Refresh models'))
 
     await vi.waitFor(() => {
       expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
@@ -524,7 +524,7 @@ describe('ModelMenuPanel refresh reconcile × guarded-switch confirm handshake',
     const content = render(<ConfirmHarness requestGateway={requestGateway as never} />)
 
     await content.findByText(/Glm 4\.5 Air/i)
-    fireEvent.click(await content.findByText('Refresh Models'))
+    fireEvent.click(await content.findByText('Refresh models'))
 
     // The reconcile fired exactly ONE switch attempt and it came back
     // confirm_required → the confirm toast is up, nothing retried silently.

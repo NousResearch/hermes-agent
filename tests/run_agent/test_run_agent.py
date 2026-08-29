@@ -7064,6 +7064,24 @@ class TestMemoryNudgeCounterPersistence:
 
 
 class TestSupportsReasoningExtraBody:
+    @pytest.fixture(autouse=True)
+    def _cold_openrouter_catalog(self, monkeypatch):
+        """Exercise the static fallback, independent of ambient catalog state.
+
+        Current main consults cached OpenRouter metadata first.  These cases
+        protect the offline/first-turn path this allowlist exists for, so a
+        model-picker run or a disk cache from another test must not make the
+        assertions pass through the live-catalog branch instead.
+        """
+        monkeypatch.setattr(
+            "hermes_cli.models_reasoning_caps.openrouter_model_reasoning_capabilities",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models_reasoning_caps.warm_openrouter_reasoning_caps_async",
+            lambda: None,
+        )
+
     def _make_agent(self):
         agent = object.__new__(AIAgent)
         agent.provider = "openrouter"

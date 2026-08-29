@@ -237,8 +237,12 @@ describe('clarifyStillBlocking (#83319 guard)', () => {
     expect(clarifyStillBlocking(req(1_000, 600), 1_100)).toBe(true)
   })
 
-  it('false once a finite server timeout has elapsed (dialog is stale)', () => {
-    expect(clarifyStillBlocking(req(1_000, 600), 1_601)).toBe(false)
+  it('keeps a finite request through the server/renderer deadline boundary', () => {
+    expect(clarifyStillBlocking(req(1_000, 600), 1_601)).toBe(true)
+  })
+
+  it('returns false after the finite timeout safety margin (dialog is stale)', () => {
+    expect(clarifyStillBlocking(req(1_000, 600), 1_603)).toBe(false)
   })
 
   it('true forever when the server waits for a real answer (null timeout)', () => {

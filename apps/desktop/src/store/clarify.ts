@@ -140,6 +140,12 @@ export function setClarifyRequest(request: ClarifyRequest): void {
   $clarifyRequests.set({ ...$clarifyRequests.get(), [keyFor(request.sessionId)]: request })
 }
 
+// `_block()` starts its Event wait immediately after emitting the request. The
+// renderer can therefore start its wall-clock estimate a fraction earlier than
+// the server starts waiting. Keep a small conservative margin so a turn-end at
+// that boundary cannot remove the only UI capable of releasing the bridge.
+const CLARIFY_TIMEOUT_GRACE_SECONDS = 2
+
 /**
  * True when the server-side bridge may STILL be blocked on this request.
  *
@@ -162,7 +168,7 @@ export const clarifyStillBlocking = (request: ClarifyRequest | null, now: number
     return true
   }
 
-  return now - request.receivedAt < request.timeoutSeconds
+  return now - request.receivedAt < request.timeoutSeconds + CLARIFY_TIMEOUT_GRACE_SECONDS
 }
 
 export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {

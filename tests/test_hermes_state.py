@@ -3,6 +3,8 @@
 import sqlite3
 import time
 import json
+import os
+import stat
 import threading
 from pathlib import Path
 from unittest import mock
@@ -110,6 +112,49 @@ def _no_fts_rebuild_throttle(monkeypatch):
 
 
 class TestConnectionLifecycle:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_writable_state_db_is_owner_only_under_permissive_umask(self, tmp_path):
+        """state.db and any live SQLite sidecars must not inherit 0644 modes."""
+        db_path = tmp_path / "state.db"
+
+        old_umask = os.umask(0o022)
+        try:
+            session_db = SessionDB(db_path=db_path)
+        finally:
+            os.umask(old_umask)
+
+        try:
+            state_files = [
+                path
+                for path in (
+                    db_path,
+                    db_path.with_name(db_path.name + "-wal"),
+                    db_path.with_name(db_path.name + "-shm"),
+                )
+                if path.exists()
+            ]
+            assert state_files
+            assert all(
+                stat.S_IMODE(path.stat().st_mode) == 0o600
+                for path in state_files
+            )
+        finally:
+            session_db.close()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_writable_state_db_tightens_existing_loose_mode(self, tmp_path):
+        """Opening a legacy 0644 profile store repairs it in place."""
+        db_path = tmp_path / "state.db"
+        initial = SessionDB(db_path=db_path)
+        initial.close()
+        os.chmod(db_path, 0o644)
+
+        session_db = SessionDB(db_path=db_path)
+        try:
+            assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+        finally:
+            session_db.close()
+
     def test_failed_writable_open_does_not_leak_tracked_connection(
         self, tmp_path, monkeypatch
     ):

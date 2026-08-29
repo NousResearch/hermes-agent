@@ -1428,6 +1428,61 @@ def test_protected_kanban_redacts_nested_readonly_search_argument_replay(
     assert "<redacted-base64>" in replayed
 
 
+def test_protected_kanban_projects_readonly_git_grep_result_to_locations(
+    tmp_path, monkeypatch
+):
+    """A bounded line-number search must not replay matching source text."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    arguments = json.dumps(
+        {"command": "git grep -n -E 'paper|safety' -- README.md live_runner.py"}
+    )
+    output = json.dumps(
+        {
+            "output": "README.md:42:c2VjcmV0LXBheWxvYWQ=\nlive_runner.py:8:PAPER_MODE = True\n",
+            "exit_code": 0,
+        }
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": "call_git_grep_123",
+                    "arguments": arguments,
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_git_grep_123",
+                    "output": output,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    rendered = json.loads(authorized["input"][1]["output"])
+    assert rendered == {
+        "exit_code": 0,
+        "output": json.dumps(
+            {
+                "git_grep_locations": "locations-v1",
+                "matches": [
+                    {"path": "README.md", "line": 42},
+                    {"path": "live_runner.py", "line": 8},
+                ],
+            },
+            separators=(",", ":"),
+        ),
+    }
+
+
 def test_protected_kanban_projects_exact_git_workspace_diagnostic(
     tmp_path, monkeypatch
 ):

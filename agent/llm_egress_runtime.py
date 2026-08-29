@@ -87,6 +87,7 @@ _REMOTE_KANBAN_READONLY_REPLAY_TOOL_NAMES = frozenset(
 _GITHUB_LIST_TERMINAL_MAX_ROWS = 100
 _GITHUB_LIST_TERMINAL_MAX_ITEM_BYTES = 512
 _GITHUB_LIST_TERMINAL_MAX_OUTPUT_BYTES = 10_240
+_GIT_GREP_TERMINAL_MAX_MATCHES = 200
 _REJECTED_TERMINAL_COMMAND_REPLAY = json.dumps(
     {"command": "<rejected terminal command omitted>"}, separators=(",", ":")
 )
@@ -693,6 +694,94 @@ def _git_workspace_diagnostic_call_ids(value: Any) -> frozenset[str]:
     return frozenset(recognized)
 
 
+def _git_grep_terminal_call_ids(value: Any) -> frozenset[str]:
+    """Recognize a line-numbered, read-only ``git grep`` result for projection."""
+
+    recognized: set[str] = set()
+
+    def is_line_numbered_git_grep(arguments: Any) -> bool:
+        try:
+            parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+            command = parsed.get("command") if isinstance(parsed, Mapping) else None
+            tokens = shlex.split(command) if isinstance(command, str) else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if tokens[:2] != ["git", "grep"] or "--" not in tokens:
+            return False
+        separator = tokens.index("--")
+        return (
+            separator > 2
+            and separator + 1 < len(tokens)
+            and any(token in {"-n", "--line-number"} for token in tokens[2:separator])
+        )
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            direct_function = item.get("function")
+            direct_name = (
+                direct_function.get("name")
+                if isinstance(direct_function, Mapping)
+                else item.get("name")
+            )
+            arguments = (
+                direct_function.get("arguments")
+                if isinstance(direct_function, Mapping)
+                else item.get("arguments")
+            )
+            call_id = item.get("call_id") or item.get("id")
+            if (
+                item.get("type") in {"function", "function_call"}
+                and direct_name == "terminal"
+                and is_line_numbered_git_grep(arguments)
+                and isinstance(call_id, str)
+            ):
+                recognized.update(tool_result_id_variants(call_id))
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return frozenset(recognized)
+
+
+def _project_git_grep_terminal_result(text: str) -> str | None:
+    """Replace line contents from a recognized ``git grep -n`` with locations."""
+
+    try:
+        wrapper = json.loads(text)
+        raw_output = wrapper.get("output") if isinstance(wrapper, Mapping) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw_output, str):
+        return None
+    matches: list[dict[str, Any]] = []
+    for raw_line in raw_output.splitlines():
+        if not raw_line:
+            continue
+        matched = re.match(r"^(?P<path>[^:\n]+):(?P<line>[1-9]\d*):", raw_line)
+        if matched is None:
+            return None
+        if len(matches) >= _GIT_GREP_TERMINAL_MAX_MATCHES:
+            continue
+        matches.append(
+            {"path": matched.group("path"), "line": int(matched.group("line"))}
+        )
+    projection: dict[str, Any] = {
+        "git_grep_locations": "locations-v1",
+        "matches": matches,
+    }
+    line_count = sum(1 for line in raw_output.splitlines() if line)
+    if line_count > len(matches):
+        projection["omitted_matches"] = line_count - len(matches)
+    exit_code = wrapper.get("exit_code") if isinstance(wrapper.get("exit_code"), int) else None
+    return json.dumps(
+        {"exit_code": exit_code, "output": json.dumps(projection, separators=(",", ":"))},
+        separators=(",", ":"),
+    )
+
+
 def _bounded_remote_text(value: str) -> str:
     """Keep a display field UTF-8 bounded before remote GitHub replay."""
 
@@ -961,6 +1050,7 @@ def _typed_payload(
     search_projection_tool_call_ids: frozenset[str] = frozenset(),
     read_file_projection_tool_call_ids: frozenset[str] = frozenset(),
     git_workspace_diagnostic_call_ids: frozenset[str] = frozenset(),
+    git_grep_projection_tool_call_ids: frozenset[str] = frozenset(),
     github_list_terminal_call_limits: Mapping[str, int] | None = None,
     rejected_terminal_call_ids: frozenset[str] = frozenset(),
     redact_readonly_tool_arguments: bool = False,
@@ -1052,6 +1142,14 @@ def _typed_payload(
                 or value.get("type") == "function_call_output"
             )
         )
+        is_git_grep_projection_tool_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in git_grep_projection_tool_call_ids
+            and (
+                value.get("role") == "tool"
+                or value.get("type") == "function_call_output"
+            )
+        )
         github_list_limit = (
             github_list_terminal_call_limits.get(output_call_id)
             if isinstance(github_list_terminal_call_limits, Mapping)
@@ -1117,6 +1215,17 @@ def _typed_payload(
                 typed[key] = GeneratedContextSegment(_GIT_WORKSPACE_DIAGNOSTIC_REPLAY)
                 continue
             if (
+                is_git_grep_projection_tool_result
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                projected = _project_git_grep_terminal_result(item)
+                if projected is not None:
+                    typed[key] = GeneratedContextSegment(
+                        redact_remote_unsafe_text(projected)
+                    )
+                    continue
+            if (
                 isinstance(github_list_limit, int)
                 and key in {"content", "output"}
                 and isinstance(item, str)
@@ -1168,6 +1277,7 @@ def _typed_payload(
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
+                git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
@@ -1205,6 +1315,7 @@ def _typed_payload(
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
+                git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
@@ -1477,6 +1588,11 @@ def authorize_agent_sdk_kwargs(
         ),
         git_workspace_diagnostic_call_ids=(
             _git_workspace_diagnostic_call_ids(body)
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        git_grep_projection_tool_call_ids=(
+            _git_grep_terminal_call_ids(body)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

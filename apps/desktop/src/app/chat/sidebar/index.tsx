@@ -161,6 +161,7 @@ import {
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
+  reconcileEnteredProjectSessions,
   sessionRecency as sessionTime,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -1006,14 +1007,22 @@ export function ChatSidebar({
     )
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
+  const enteredProjectOverlaySessions = useMemo(
+    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
+    [agentSessions, overviewEnteredProject?.previewSessions]
+  )
+
   // Overlay live `$sessions` onto the entered project so a just-created session
   // (which the backend snapshot hasn't folded in yet) counts as content and
-  // renders immediately — same optimistic layer as the overview previews. The
-  // backend now seeds each project folder as an (empty) repo, so the overlay
-  // always has a lane to place a new in-project session into.
+  // renders immediately. Also carry over the overview's current preview rows:
+  // its project tree and the separately hydrated drill-in can resolve at
+  // different times, but a row visible in the overview must not disappear on
+  // entry. The backend seeds each project folder as an (empty) repo, so the
+  // overlay always has a lane to place a missing in-project session into.
   const enteredProjectContent = useMemo(
-    () => (enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds) : undefined),
-    [enteredProject, agentSessions, removedSessionIds]
+    () =>
+      enteredProject ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds) : undefined,
+    [enteredProject, enteredProjectOverlaySessions, removedSessionIds]
   )
 
   const scopedRepoPaths = useMemo(
@@ -1804,7 +1813,7 @@ export function ChatSidebar({
                     ) : undefined
                   ) : undefined
                 }
-                liveSessions={inProject ? agentSessions : undefined}
+                liveSessions={inProject ? enteredProjectOverlaySessions : undefined}
                 manualOrderIds={agentOrderManual ? agentOrderIds : sortOrderIds}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}

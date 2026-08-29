@@ -943,6 +943,55 @@ def test_protected_codex_elides_bound_plain_github_list_output(tmp_path, monkeyp
     )
 
 
+def test_protected_codex_projects_combined_github_list_diagnostic(tmp_path, monkeypatch):
+    """A bounded workspace/GitHub list chain retains no raw API identifiers."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_chain_1234"
+    command = (
+        "pwd && git status --short && "
+        "gh issue list --repo NousResearch/hermes-agent --state open --limit 20 "
+        "--json number,title,labels,assignees,updatedAt,createdAt,url && "
+        "gh pr list --repo NousResearch/hermes-agent --state open --limit 100 "
+        "--json number,title,headRefName,baseRefName,updatedAt,createdAt,url"
+    )
+    rows = [
+        {"id": "c2VjcmV0LXBheWxvYWQ=", "number": 123, "title": "Issue", "state": "open"},
+        {"node_id": "c2VjcmV0LW5vZGUtYnl0ZXM=", "number": 124, "title": "PR", "state": "open"},
+    ]
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "terminal",
+                "call_id": call_id,
+                "arguments": json.dumps({"command": command}),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps(
+                    {"exit_code": 0, "output": "/workspace\n M file.py\n" + json.dumps(rows)}
+                ),
+            },
+        ],
+    }
+
+    authorized, _ = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    replay = authorized["input"][1]["output"]
+    assert "c2VjcmV0LXBheWxvYWQ=" not in replay
+    assert json.loads(json.loads(replay)["output"])["items"] == [
+        {"number": 123, "state": "open", "title": "Issue"},
+        {"number": 124, "state": "open", "title": "PR"},
+    ]
+
+
 def test_protected_codex_omits_rejected_terminal_command_replay(
     tmp_path, monkeypatch
 ):

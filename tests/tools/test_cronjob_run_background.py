@@ -94,7 +94,9 @@ class TestBackgroundDispatch:
                  patch("cron.scheduler.run_one_job", return_value=True), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None,
-                                     "next_run_at": "2026-08-07T09:00:00"}):
+                                     "next_run_at": "2026-08-07T09:00:00"}), \
+                 patch("tools.cronjob_tools._latest_job_output_excerpt",
+                       return_value="LOCAL JOB PAYLOAD"):
                 res = _try_dispatch_background_run(_job('job-bg-02'))
                 assert res["dispatched"] is True
 
@@ -115,6 +117,55 @@ class TestBackgroundDispatch:
         assert found["session_key"] == "agent:main:telegram:dm:777"
         assert found["status"] == "completed"
         assert "bg run" in (found.get("summary") or "")
+        assert "LOCAL JOB PAYLOAD" in found["summary"]
+
+    def test_external_delivery_completion_does_not_echo_job_output(self):
+        """A manual run's completion returns to the invoking session, which may
+        be unrelated to the job's explicit destination. Once the scheduler has
+        delivered externally, the completion must report status without copying
+        the payload into that other session.
+        """
+        import time
+
+        from tools.process_registry import process_registry
+
+        job = {
+            **_job("job-bg-explicit-target"),
+            "deliver": "telegram:170829464:539316",
+        }
+        with _bound_session_key("agent:main:telegram:dm:170829464:581299"):
+            with patch(
+                "tools.cronjob_tools.claim_job_for_fire",
+                return_value={**job, "fire_claim": {"by": "bg-owner"}},
+            ), patch(
+                "cron.scheduler.run_one_job", return_value=True
+            ), patch(
+                "tools.cronjob_tools.get_job",
+                return_value={"last_status": "ok", "last_error": None},
+            ), patch(
+                "tools.cronjob_tools._latest_job_output_excerpt",
+                return_value="PAYLOAD FOR THREAD 539316",
+            ):
+                res = _try_dispatch_background_run(job)
+                assert res["dispatched"] is True
+
+                found = None
+                for _ in range(100):
+                    try:
+                        evt = process_registry.completion_queue.get_nowait()
+                    except Exception:
+                        time.sleep(0.05)
+                        continue
+                    if evt.get("delegation_id") == res["delegation_id"]:
+                        found = evt
+                        break
+                    process_registry.completion_queue.put(evt)
+                    time.sleep(0.05)
+
+        assert found is not None
+        assert found["session_key"].endswith(":581299")
+        assert "Delivery target: telegram:170829464:539316" in found["summary"]
+        assert "PAYLOAD FOR THREAD 539316" not in found["summary"]
 
     def test_failed_run_reports_error_status_in_event(self):
         import time

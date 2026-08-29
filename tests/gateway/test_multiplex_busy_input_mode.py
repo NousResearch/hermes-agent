@@ -218,6 +218,7 @@ async def test_busy_change_updates_only_routed_profile(tmp_path, monkeypatch):
         "hermes_cli.profiles.get_profile_dir",
         lambda _profile_name: profile_home,
     )
+    # Isolate the wrapper's profile scope; active-session dispatch is covered above.
     runner._handle_message = runner._handle_busy_command
 
     response = await runner._make_profile_message_handler("research")(event)

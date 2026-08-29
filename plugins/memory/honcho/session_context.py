@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable
 
 from plugins.memory.honcho.session_auth import HonchoAuthError
@@ -10,6 +11,36 @@ from plugins.memory.honcho.session_auth import HonchoAuthError
 logger = logging.getLogger("plugins.memory.honcho.session")
 
 _FAILED = object()  # sentinel: a guarded call raised (distinct from a legitimately empty/None result)
+
+# Reasoning-channel markers a summarizer model can leave inside a persisted session summary (#97639).
+_THINK_BLOCK_RE = re.compile(
+    r"<\s*(?:think|thinking|reasoning|thought|reasoning_scratchpad)\s*>.*?"
+    r"<\s*/\s*(?:think|thinking|reasoning|thought|reasoning_scratchpad)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_CLOSE_RE = re.compile(r"</\s*think\s*>", re.IGNORECASE)
+_PLANNING_HEAD_RE = re.compile(
+    r"^(?:i need to create a thorough|the instruction says to focus on capturing key facts|first, let me review)",
+    re.IGNORECASE,
+)
+
+
+def usable_honcho_summary(text: object) -> str | None:
+    """A session summary safe to inject, or None to omit it. Honcho summarizers can persist the
+    model's planning text and a trailing ``</think>`` as the summary body; the text after that
+    close survives, planning-only or still-tagged text is dropped."""
+    raw = "" if text is None else str(text)
+    if not raw.strip():
+        return None
+    # The observed payload has no opening tag: planning prose, then ``</think>``, then the summary.
+    close = _THINK_CLOSE_RE.search(raw)
+    if close:
+        raw = raw[close.end():]
+    cleaned = _THINK_BLOCK_RE.sub("", raw).strip()
+    lowered = cleaned.lower()
+    if not cleaned or "<think" in lowered or "</think" in lowered or _PLANNING_HEAD_RE.search(cleaned):
+        return None
+    return cleaned
 
 
 class SessionContextMixin:
@@ -107,8 +138,8 @@ class SessionContextMixin:
                 "session summary fetch",
                 lambda: self._sdk_session(session.honcho_session_id).context(summary=True, tokens=self._context_tokens),
             )
-            if ctx.summary and getattr(ctx.summary, "content", None):
-                result["summary"] = ctx.summary.content
+            if ctx.summary and (summary := usable_honcho_summary(getattr(ctx.summary, "content", None))):
+                result["summary"] = summary
 
         def _user() -> None:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, "user")
@@ -167,8 +198,8 @@ class SessionContextMixin:
                 ),
             )
             result: dict[str, Any] = {}
-            if ctx.summary:
-                result["summary"] = ctx.summary.content
+            if ctx.summary and (summary := usable_honcho_summary(getattr(ctx.summary, "content", ctx.summary))):
+                result["summary"] = summary
             if ctx.peer_representation:
                 result["representation"] = ctx.peer_representation
             if ctx.peer_card:

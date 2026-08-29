@@ -625,3 +625,57 @@ def test_profile_home_is_not_memoized_before_the_profile_exists(multiplex_homes)
     (root / "profiles" / "latecomer").mkdir(parents=True)
 
     assert store._profile_home_for_key(key) == root / "profiles" / "latecomer"
+
+
+def test_named_owner_without_a_home_never_falls_back_to_root(multiplex_homes):
+    """A named profile that is not provisioned yet must not land in root.
+
+    The enrollment bridge creates ``profiles/<name>/`` at runtime, so a key
+    can arrive before its owner exists.  Resolving that to the ambient store
+    would put one qualified session identity in two physical stores — root on
+    the first lookup, the profile store on the next — which is exactly the
+    split this whole change removes.  Fail closed instead.
+    """
+    root, _profile = multiplex_homes
+    store = _multiplex_store(root)
+    key = "agent:latecomer:telegram:dm:9"
+
+    assert store._named_profile_for_key(key) == "latecomer"
+    assert store._db_for_key(key) is None
+    assert _session_ids(root / "state.db") == set()
+
+    # Once the bridge provisions it, the same key owns a real store.
+    home = root / "profiles" / "latecomer"
+    home.mkdir(parents=True)
+    db = store._db_for_key(key)
+    assert db is not None
+    db.create_session("20260829_120000_abcdef01", "telegram")
+
+    assert _session_ids(home / "state.db") == {"20260829_120000_abcdef01"}
+    assert _session_ids(root / "state.db") == set()
+
+
+def test_profile_resolution_failure_fails_closed(multiplex_homes, monkeypatch):
+    """A resolver error must not degrade into an ambient write either.
+
+    ``_profile_home_for_key`` swallows lookup exceptions, so without the
+    ownership check the failure would be indistinguishable from "no named
+    owner" and silently route the row to root.
+    """
+    import hermes_cli.profiles as profiles_mod
+
+    root, _profile = multiplex_homes
+    store = _multiplex_store(root)
+    key = "agent:fitness:telegram:dm:1"
+
+    # It resolves while the lookup works.
+    assert store._db_for_key(key) is not None
+    store._profile_home_cache.clear()
+
+    def _boom(_name):
+        raise OSError("profile lookup failed")
+
+    monkeypatch.setattr(profiles_mod, "profile_exists", _boom)
+
+    assert store._db_for_key(key) is None
+    assert _session_ids(root / "state.db") == set()

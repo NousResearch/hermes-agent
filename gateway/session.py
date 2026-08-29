@@ -1398,18 +1398,32 @@ class SessionStore:
     def _db(self, value) -> None:
         self._db_pinned = value
 
-    def _profile_home_for_key(self, session_key: Optional[str]) -> Optional[Path]:
-        """HERMES_HOME of the profile that owns *session_key*, or None.
+    def _named_profile_for_key(self, session_key: Optional[str]) -> Optional[str]:
+        """The non-default profile that owns *session_key*, or None.
 
-        None means "resolve exactly the way we always have": multiplexing is
-        off, the key carries the legacy ``agent:main`` namespace, or the
-        profile has no live directory.  A single-profile gateway therefore
-        never reaches a different store than before this helper existed.
+        None means the ambient store is authoritative for this key —
+        multiplexing is off, or the key carries the legacy ``agent:main``
+        namespace.  It deliberately does NOT cover "that profile has no
+        directory": ownership and resolvability are different questions, and
+        ``_db_for_key`` has to answer them separately.
         """
         if not getattr(self.config, "multiplex_profiles", False):
             return None
         profile = self._profile_from_session_key(session_key)
         if not profile or profile == "default":
+            return None
+        return profile
+
+    def _profile_home_for_key(self, session_key: Optional[str]) -> Optional[Path]:
+        """HERMES_HOME of the profile that owns *session_key*, or None.
+
+        None here means only "no live home to point at" — either the key has
+        no named owner, or that owner's directory could not be resolved.
+        Callers that mutate state must tell those two apart through
+        ``_named_profile_for_key``.
+        """
+        profile = self._named_profile_for_key(session_key)
+        if profile is None:
             return None
         cache = self._profile_home_cache
         if profile in cache:
@@ -1454,9 +1468,27 @@ class SessionStore:
         """
         if self._db_pinned is not _DB_UNPINNED:
             return self._db_pinned
+        profile = self._named_profile_for_key(session_key)
+        if profile is None:
+            # No named owner — the ambient store is authoritative, exactly as
+            # it was before this helper existed.
+            return self._db
         home = self._profile_home_for_key(session_key)
         if home is None:
-            return self._db
+            # A named owner we cannot resolve: the profile is not provisioned
+            # yet (the enrollment bridge creates profiles/<name>/ at runtime,
+            # so a key legitimately arrives first), or the lookup failed.
+            # Falling back to the ambient store would put ONE qualified
+            # session identity in two physical stores — the split this helper
+            # exists to remove — because the first lookup would land in root
+            # and the next one, after provisioning, in the profile. Fail
+            # closed instead; callers already handle a missing DB.
+            logger.warning(
+                "gateway.session: profile %r has no resolvable home (key %r); "
+                "refusing to fall back to the ambient store",
+                profile, session_key,
+            )
+            return None
         try:
             return self._open_session_db_for_active_scope(db_path=home / "state.db")
         except Exception:
@@ -4038,7 +4070,17 @@ class SessionStore:
 
     def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
         """Write one transcript row. Caller handles retry queuing."""
-        self._db_for_session_id(session_id).append_message(
+        _db = self._db_for_session_id(session_id)
+        if _db is None:
+            # A named profile with no resolvable home yet. Defer instead of
+            # writing the row into the ambient store — the caller queues the
+            # message and a later attempt lands it once the profile exists.
+            # Reached via the compression-child id, which is not the id the
+            # entry-point guard in append_to_transcript already checked.
+            raise RuntimeError(
+                f"no owning session store for {session_id}; deferring transcript write"
+            )
+        _db.append_message(
             session_id=session_id,
             role=message.get("role", "unknown"),
             content=message.get("content"),

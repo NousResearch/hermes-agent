@@ -2298,6 +2298,44 @@ class RelayAdapter(BasePlatformAdapter):
             error=result.get("error"),
         )
 
+    async def delete_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> bool:
+        """Delete a relayed message through the connector-owned platform API.
+
+        Consumer: the stream consumer's fresh-final cleanup — on the Slack
+        unfurl force-on route the completed reply is re-delivered as a new
+        stamped post and the sealed streamed preview must go away, or the
+        user sees the answer twice.
+
+        Gated on the negotiated descriptor advertising the ``delete`` op
+        (additive within contract_version 1): older connectors never receive
+        an op they can't dispatch, and this returns False so the consumer's
+        best-effort cleanup degrades to leaving the preview in place —
+        exactly the pre-delete behavior.
+        """
+        if self._transport is None:
+            return False
+        desc = self._descriptor_for_chat(str(chat_id))
+        if "delete" not in (desc.supported_ops or ()):
+            return False
+        try:
+            result = await self._transport.send_outbound(
+                {
+                    "op": "delete",
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "metadata": self._with_scope(chat_id, {}),
+                },
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception:
+            logger.debug("relay delete_message failed", exc_info=True)
+            return False
+        return bool(result.get("success"))
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Egress a typing indicator through the connector.
 

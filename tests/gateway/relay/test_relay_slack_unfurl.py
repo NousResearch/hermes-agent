@@ -410,3 +410,67 @@ class TestConsumerRoutesForceOnFinalAsFreshSend:
         assert ops[0] == "send"
         assert transport.actions[0]["metadata"]["unfurl_links"] is False
         assert ops[-1] == "edit", f"ops={ops}"
+
+
+class TestDeleteOpForFreshFinalCleanup:
+    """Relay delete_message: emitted only when the negotiated descriptor
+    advertises the additive `delete` op; older connectors degrade to the
+    leave-the-preview-behind behavior (return False, no wire traffic)."""
+
+    @pytest.mark.asyncio
+    async def test_delete_emitted_when_advertised(self):
+        transport = _RecordingTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(
+                platform="slack",
+                supported_ops=("send", "edit", "delete"),
+            ),
+            transport=transport,
+        )
+        ok = await a.delete_message("D1", "1700000000.000200")
+        assert ok is True
+        assert transport.actions[-1]["op"] == "delete"
+        assert transport.actions[-1]["message_id"] == "1700000000.000200"
+
+    @pytest.mark.asyncio
+    async def test_delete_refused_when_not_advertised(self):
+        transport = _RecordingTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True}}),
+            make_desc(platform="slack", supported_ops=("send", "edit")),
+            transport=transport,
+        )
+        ok = await a.delete_message("D1", "1700000000.000200")
+        assert ok is False
+        assert transport.actions == []  # no wire traffic for old connectors
+
+    @pytest.mark.asyncio
+    async def test_consumer_fresh_final_deletes_preview_when_supported(self):
+        from gateway.stream_consumer import (
+            GatewayStreamConsumer,
+            StreamConsumerConfig,
+        )
+
+        transport = _RecordingTransport()
+        a = RelayAdapter(
+            PlatformConfig(extra={"slack": {"unfurl_links": True, "unfurl_media": True}}),
+            make_desc(
+                platform="slack",
+                supports_edit=True,
+                supported_ops=("send", "edit", "delete"),
+            ),
+            transport=transport,
+        )
+        consumer = GatewayStreamConsumer(
+            adapter=a, chat_id="D1", config=StreamConsumerConfig()
+        )
+        await consumer._send_or_edit("Working on it…")
+        await consumer._send_or_edit("see https://studiotwin.ai", finalize=True)
+
+        ops = [x.get("op") for x in transport.actions]
+        # send (placeholder) ... send (fresh final) ... delete (preview)
+        assert ops[-1] == "delete", f"ops={ops}"
+        deleted = transport.actions[-1]["message_id"]
+        # The deleted message must be the FIRST send's id (m1), not the final.
+        assert deleted == "m1"

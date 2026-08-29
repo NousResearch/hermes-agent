@@ -1,7 +1,9 @@
 export interface ConfigFieldSchema {
   category?: string
+  clearable?: boolean
   description?: string
   options?: unknown[]
+  searchable?: boolean
   type?: 'boolean' | 'list' | 'number' | 'select' | 'string' | 'text'
 }
 

@@ -32,7 +32,7 @@ export function ControlRoomStatusBadge({ onOpen }: { onOpen: () => void }) {
     const fetchCounts = () => {
       requestGateway<CrSnapshotBadge>('control.room.snapshot', { profile: 'default' })
         .then(snap => {
-          if (snap && !cancelled) setCounts(snap.counts ?? null)
+          if (snap && !cancelled) {setCounts(snap.counts ?? null)}
         })
         .catch(() => {
           // Gateway unavailable — stay silent (never render a fake zero).
@@ -41,9 +41,11 @@ export function ControlRoomStatusBadge({ onOpen }: { onOpen: () => void }) {
 
     fetchCounts()
     timer = setInterval(fetchCounts, POLL_MS)
+
     return () => {
       cancelled = true
-      if (timer) clearInterval(timer)
+
+      if (timer) {clearInterval(timer)}
     }
   }, [requestGateway])
 

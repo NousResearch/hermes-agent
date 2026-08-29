@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { AlertCircle, Archive, CheckCircle2, MessageCircle, Play, Plus, RefreshCw, Users } from '@/lib/icons'
@@ -125,9 +125,9 @@ export function ControlRoomHome() {
       </div>
 
       {section === 'home' ? (
-        <HomeView snapshot={snapshot} onOpen={setSection} />
+        <HomeView onOpen={setSection} snapshot={snapshot} />
       ) : (
-        <SectionView snapshot={snapshot} section={section} onBack={back} />
+        <SectionView onBack={back} section={section} snapshot={snapshot} />
       )}
     </div>
   )
@@ -143,6 +143,7 @@ function HomeView({
   onOpen: (s: 'needs-you' | 'agents' | 'tasks' | 'messages' | 'system') => void
 }) {
   const c = snapshot.counts
+
   const rows = [
     { key: 'needs-you' as const, icon: AlertCircle, label: 'Needs You', value: `${c.needs_you}`, detail: 'approvals · blocked · stalled' },
     { key: 'agents' as const, icon: Users, label: 'Agents', value: `${c.agents_active} active`, detail: 'foreground · delegations · processes' },
@@ -156,6 +157,7 @@ function HomeView({
       <div className="grid gap-2">
         {rows.map(row => {
           const Icon = row.icon
+
           return (
             <button
               className="group flex items-center gap-3 rounded-lg border border-(--ui-stroke-secondary) px-3 py-2.5 text-left hover:bg-(--chrome-action-hover)"
@@ -175,9 +177,9 @@ function HomeView({
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        <NewActionButton label="+ New Task" icon={Plus} onClick={() => {}} />
-        <NewActionButton label="+ New Message" icon={MessageCircle} onClick={() => {}} />
-        <NewActionButton label="+ New Agent Run" icon={Play} onClick={() => {}} />
+        <NewActionButton icon={Plus} label="+ New Task" onClick={() => {}} />
+        <NewActionButton icon={MessageCircle} label="+ New Message" onClick={() => {}} />
+        <NewActionButton icon={Play} label="+ New Agent Run" onClick={() => {}} />
       </div>
     </div>
   )
@@ -226,14 +228,14 @@ function SectionView({
               .filter(a => a.severity <= 1)
               .map(item => (
                 <Row
-                  key={`${item.kind}:${item.id}`}
                   glyph={SEVERITY_GLYPH[item.severity] ?? '·'}
-                  text={item.title}
+                  key={`${item.kind}:${item.id}`}
                   sub={item.detail}
+                  text={item.title}
                 />
               ))
           )}
-          <UnavailableHint visible={!snapshot.capabilities.approvals} text="Approvals not wired in this runtime — shown unavailable." />
+          <UnavailableHint text="Approvals not wired in this runtime — shown unavailable." visible={!snapshot.capabilities.approvals} />
         </>
       )}
 
@@ -243,11 +245,11 @@ function SectionView({
             <EmptyNote text="No active agents." />
           ) : (
             snapshot.agents.map(a => (
-              <Row key={`${a.kind}:${a.id}`} text={`[${a.kind}] ${a.name} · ${a.status}`} sub={a.detail} />
+              <Row key={`${a.kind}:${a.id}`} sub={a.detail} text={`[${a.kind}] ${a.name} · ${a.status}`} />
             ))
           )}
           {!snapshot.capabilities.process_control && snapshot.agents.length > 0 && (
-            <UnavailableHint visible text="Process/delegation control not wired in this runtime." />
+            <UnavailableHint text="Process/delegation control not wired in this runtime." visible />
           )}
         </>
       )}
@@ -258,11 +260,11 @@ function SectionView({
             <EmptyNote text="No tasks." />
           ) : (
             snapshot.tasks.map(task => (
-              <Row key={task.id} text={`${task.id} · ${task.title}`} sub={`${task.state}${task.owner ? ` · ${task.owner}` : ''}`} />
+              <Row key={task.id} sub={`${task.state}${task.owner ? ` · ${task.owner}` : ''}`} text={`${task.id} · ${task.title}`} />
             ))
           )}
           {!snapshot.capabilities.kanban_actions && snapshot.tasks.length > 0 && (
-            <UnavailableHint visible text="Kanban write route not wired in this runtime." />
+            <UnavailableHint text="Kanban write route not wired in this runtime." visible />
           )}
         </>
       )}
@@ -273,18 +275,18 @@ function SectionView({
             <EmptyNote text="No held or queued peer messages." />
           ) : (
             snapshot.messages.map(m => (
-              <Row key={`${m.kind}:${m.id}`} text={`[${m.state}] ${m.title}`} sub={m.sender ? `from ${m.sender}` : ''} />
+              <Row key={`${m.kind}:${m.id}`} sub={m.sender ? `from ${m.sender}` : ''} text={`[${m.state}] ${m.title}`} />
             ))
           )}
           {!snapshot.capabilities.peer_messages && snapshot.messages.length > 0 && (
-            <UnavailableHint visible text="Hermes Peer plugin not wired in this runtime." />
+            <UnavailableHint text="Hermes Peer plugin not wired in this runtime." visible />
           )}
         </>
       )}
 
       {section === 'system' && (
         <>
-          <Row text={`state: ${snapshot.system?.state ?? 'unknown'}`} sub={snapshot.system?.detail} />
+          <Row sub={snapshot.system?.detail} text={`state: ${snapshot.system?.state ?? 'unknown'}`} />
         </>
       )}
 
@@ -312,6 +314,7 @@ function EmptyNote({ text }: { text: string }) {
 }
 
 function UnavailableHint({ text, visible }: { text: string; visible: boolean }) {
-  if (!visible) return null
+  if (!visible) {return null}
+
   return <div className="mt-2 px-2 text-xs text-(--ui-text-tertiary)">{text}</div>
 }

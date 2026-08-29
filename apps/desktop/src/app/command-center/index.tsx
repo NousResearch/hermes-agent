@@ -37,8 +37,8 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
-import { MaintenancePanel } from './maintenance'
 import { ControlRoomHome } from './control-room-home'
+import { MaintenancePanel } from './maintenance'
 
 export type CommandCenterSection = 'home' | 'maintenance' | 'sessions' | 'system' | 'usage'
 

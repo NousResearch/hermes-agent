@@ -76,6 +76,7 @@ logger = logging.getLogger(__name__)
 
 _VALIDATED_SYNTAX_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
+_REMOTE_KANBAN_TERMINAL_REPLAY_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_SEARCH_PROJECTION_TOOL_NAMES = frozenset({"search_files"})
 _REMOTE_KANBAN_READ_FILE_PROJECTION_TOOL_NAMES = frozenset({"read_file"})
 _REMOTE_KANBAN_READONLY_REPLAY_TOOL_NAMES = frozenset(
@@ -100,6 +101,13 @@ _GITHUB_PLAIN_LIST_OUTPUT_REPLAY = (
 )
 _REJECTED_TERMINAL_COMMAND_REPLAY = json.dumps(
     {"command": "<rejected terminal command omitted>"}, separators=(",", ":")
+)
+_REMOTE_KANBAN_TERMINAL_COMMAND_REPLAY = json.dumps(
+    {"command": "<terminal command omitted from remote replay>"},
+    separators=(",", ":"),
+)
+_REMOTE_KANBAN_TERMINAL_RESULT_REPLAY = (
+    "terminal completed locally; raw output was omitted from remote replay."
 )
 _GIT_WORKSPACE_DIAGNOSTIC_REPLAY = (
     "git workspace diagnostic completed locally; raw paths and commit subjects "
@@ -1614,6 +1622,7 @@ def _typed_payload(
     combined_github_list_terminal_call_limits: Mapping[str, int] | None = None,
     combined_github_view_terminal_call_limits: Mapping[str, int] | None = None,
     rejected_terminal_call_ids: frozenset[str] = frozenset(),
+    terminal_replay_tool_call_ids: frozenset[str] = frozenset(),
     redact_readonly_tool_arguments: bool = False,
     protected_tool_content: bool = False,
     elide_kanban_tool_content: bool = False,
@@ -1766,6 +1775,17 @@ def _typed_payload(
             and isinstance(output_call_id, str)
             and output_call_id in rejected_terminal_call_ids
         )
+        is_terminal_replay_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in terminal_replay_tool_call_ids
+            and (value.get("role") == "tool" or value.get("type") == "function_call_output")
+        )
+        is_terminal_replay_call = (
+            value.get("type") in {"function", "function_call"}
+            and direct_name == "terminal"
+            and isinstance(output_call_id, str)
+            and output_call_id in terminal_replay_tool_call_ids
+        )
         typed: dict[Any, Any] = {}
         context_mapping = value.get("role") in {"system", "developer"}
         is_codex_reasoning_replay = (
@@ -1913,6 +1933,17 @@ def _typed_payload(
             if is_rejected_terminal_call and key == "arguments":
                 typed[key] = GeneratedContextSegment(_REJECTED_TERMINAL_COMMAND_REPLAY)
                 continue
+            if is_terminal_replay_result and key in {"content", "output"} and isinstance(item, str):
+                # Terminal stdout is produced locally and can contain source,
+                # credentials, or opaque values.  It must not cause a remote
+                # worker to fail closed after the local command already ran.
+                # Specialized GitHub/search projections above retain the few
+                # bounded facts a worker needs; all other stdout is outcome-only.
+                typed[key] = GeneratedContextSegment(_REMOTE_KANBAN_TERMINAL_RESULT_REPLAY)
+                continue
+            if is_terminal_replay_call and key == "arguments" and isinstance(item, str):
+                typed[key] = GeneratedContextSegment(_REMOTE_KANBAN_TERMINAL_COMMAND_REPLAY)
+                continue
             if (
                 redact_readonly_tool_arguments
                 and key == "arguments"
@@ -1954,6 +1985,7 @@ def _typed_payload(
                 combined_github_list_terminal_call_limits=combined_github_list_terminal_call_limits,
                 combined_github_view_terminal_call_limits=combined_github_view_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
+                terminal_replay_tool_call_ids=terminal_replay_tool_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=(
                     is_recognized_tool_result and key in {"content", "output"}
@@ -1998,6 +2030,7 @@ def _typed_payload(
                 combined_github_list_terminal_call_limits=combined_github_list_terminal_call_limits,
                 combined_github_view_terminal_call_limits=combined_github_view_terminal_call_limits,
                 rejected_terminal_call_ids=rejected_terminal_call_ids,
+                terminal_replay_tool_call_ids=terminal_replay_tool_call_ids,
                 redact_readonly_tool_arguments=redact_readonly_tool_arguments,
                 protected_tool_content=protected_tool_content,
                 elide_kanban_tool_content=elide_kanban_tool_content,
@@ -2313,6 +2346,11 @@ def authorize_agent_sdk_kwargs(
         ),
         rejected_terminal_call_ids=(
             _rejected_terminal_call_ids(body)
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        terminal_replay_tool_call_ids=(
+            _recognized_tool_call_ids(body, _REMOTE_KANBAN_TERMINAL_REPLAY_TOOL_NAMES)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

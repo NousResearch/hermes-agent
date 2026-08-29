@@ -1502,14 +1502,13 @@ def test_protected_kanban_runtime_does_not_hide_encoded_payload(tmp_path, monkey
 def test_protected_kanban_admits_bounded_generic_terminal_stdout(
     tmp_path, monkeypatch, output
 ):
-    """Ordinary terminal evidence must not deadlock a protected cloud worker.
-
-    The result is still typed as bounded non-source text; it is not promoted
-    to a source grant merely because its shape resembles a URL, ref, or hash.
-    """
+    """Generic terminal output cannot deadlock a protected cloud worker."""
 
     monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
     agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
     kwargs = {
         "model": "test-model",
         "messages": [
@@ -1534,7 +1533,10 @@ def test_protected_kanban_admits_bounded_generic_terminal_stdout(
     authorized, receipt = authorize_agent_sdk_kwargs(agent, kwargs)
 
     assert receipt.allowed
-    assert authorized["messages"][1]["content"] == output
+    assert authorized["messages"][1]["content"] == (
+        "terminal completed locally; raw output was omitted from remote replay."
+    )
+    assert output not in authorized["messages"][1]["content"]
     assert receipt.decision.source_segment_count == 0
 
 

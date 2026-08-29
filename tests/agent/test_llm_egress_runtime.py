@@ -992,6 +992,38 @@ def test_protected_codex_projects_combined_github_list_diagnostic(tmp_path, monk
     ]
 
 
+def test_protected_codex_projects_combined_github_issue_views(tmp_path, monkeypatch):
+    """A bounded chain of issue views excludes bodies and comments."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_views_1234"
+    command = " && ".join(
+        "gh issue view " + number + " --repo NousResearch/hermes-agent "
+        "--json number,title,body,labels,assignees,state,url,comments,createdAt,updatedAt"
+        for number in ("98168", "98160")
+    )
+    raw = "\n".join(
+        json.dumps(
+            {"id": f"c2VjcmV0LXBheWxvYWQ={number}", "number": int(number), "title": "Issue", "body": "c2VjcmV0LXBheWxvYWQ=", "comments": [{"body": "c2VjcmV0LXBheWxvYWQ="}]}
+        )
+        for number in ("98168", "98160")
+    )
+    kwargs = {"model": agent.model, "input": [
+        {"type": "function_call", "name": "terminal", "call_id": call_id, "arguments": json.dumps({"command": command})},
+        {"type": "function_call_output", "call_id": call_id, "output": json.dumps({"exit_code": 0, "output": raw})},
+    ]}
+
+    authorized, _ = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    replay = authorized["input"][1]["output"]
+    assert "c2VjcmV0LXBheWxvYWQ=" not in replay
+    assert [item["number"] for item in json.loads(json.loads(replay)["output"])["items"]] == [98168, 98160]
+
+
 def test_protected_codex_omits_rejected_terminal_command_replay(
     tmp_path, monkeypatch
 ):

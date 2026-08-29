@@ -14,6 +14,7 @@ tool calls or reasoning.
 import logging
 import time
 import weakref
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
@@ -57,6 +58,27 @@ from tools.delegate_tool_results import (  # noqa: F401
 )
 
 _ROLES = frozenset({"leaf", "orchestrator"})
+
+
+def _parent_live_home(parent_agent: Any) -> Optional[Path]:
+    """Resolve the live transcripts' profile home from parent-owned state.
+
+    The parent's per-profile SessionDB sits directly under its profile home
+    (``<home>/state.db``), so the db path's parent IS the home. Returns None
+    when the parent exposes no SessionDB — the caller then falls back to the
+    ambient resolve, which is exactly the #91996 failure mode, so the skip is
+    logged rather than silent.
+    """
+    parent_db = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
+    if parent_db is not None:
+        return parent_db.parent
+    logger.warning(
+        "delegate_task: parent agent exposes no _session_db; live-transcript "
+        "home pinning skipped, falling back to ambient HERMES_HOME resolve "
+        "(transcripts may land in a different profile, #91996)"
+    )
+    return None
+
 
 # Nested delegation is granted by depth/role in _build_child_agent, never by the
 # model naming toolsets (there is no model-facing toolsets argument).
@@ -520,11 +542,9 @@ def delegate_task(
     # and process-wide HERMES_HOME is unstable under concurrent
     # multi-profile workers — either way transcripts could land in the
     # wrong profile (#91996). state.db sits directly under the home, so
-    # its parent IS the home; None falls back to today's ambient resolve.
-    _live_home = None
-    _parent_db = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
-    if _parent_db is not None:
-        _live_home = _parent_db.parent
+    # its parent IS the home; None falls back to today's ambient resolve
+    # (with a warning — that fallback is exactly the #91996 failure mode).
+    _live_home = _parent_live_home(parent_agent)
 
     from tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
@@ -543,6 +563,7 @@ def delegate_task(
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        live_home=_live_home,
     )
     return _run_batch(batch, background)
 

@@ -244,10 +244,11 @@ def create_live_transcripts(
 
     ``home`` pins every transcript and the manifest to one explicit profile
     home instead of an ambient resolve that raw thread boundaries can strip
-    of its ContextVar override (#91996).
+    of its ContextVar override (#91996). Retention pruning runs against the
+    same resolved root, so pinned homes clean their own stale dirs.
     """
     n = len(task_list)
-    prune_stale_live_dirs()  # best-effort; never raises
+    prune_stale_live_dirs(root=live_transcript_root(home))  # best-effort; never raises
     with _best_effort("creation"):
         # Same id shape as async_delegation's so the dir name matches the handle.
         deleg_id = delegation_id or f"deleg_{uuid.uuid4().hex[:8]}"
@@ -270,6 +271,7 @@ def _manifest_path(delegation_id: str, home: Optional[Path] = None) -> Path:
 
 def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                     paths: List[str], model: Optional[str] = None,
+                    provider: Optional[str] = None, home: Optional[Path] = None) -> None:
     with _best_effort("manifest write"):
         _dump_json(_manifest_path(delegation_id, home), {
             "delegation_id": delegation_id, "started": time.strftime(_TIME_FMT),
@@ -302,15 +304,20 @@ def update_manifest_statuses(delegation_id: Optional[str],
         _dump_json(mp, manifest)
 
 
-def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS) -> int:
-    """Remove live/<delegation_id> dirs older than the retention window. Best-effort."""
+def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS, root: Optional[Path] = None) -> int:
+    """Remove live/<delegation_id> dirs older than the retention window. Best-effort.
+
+    ``root`` defaults to the ambient resolve; callers that pin transcripts to an
+    explicit home pass the same root so the prune sweeps where the writes actually
+    land (stale dirs under other profiles' roots stay those profiles' business).
+    """
     removed = 0
     with _best_effort("pruning"):
-        root = live_transcript_root()
-        if not root.is_dir():
+        root_dir = root if root is not None else live_transcript_root()
+        if not root_dir.is_dir():
             return 0
         cutoff = time.time() - max_age_days * 86400
-        for child in root.iterdir():
+        for child in root_dir.iterdir():
             try:
                 if child.is_dir() and child.stat().st_mtime < cutoff:
                     shutil.rmtree(child, ignore_errors=True)

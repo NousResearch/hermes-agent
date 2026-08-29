@@ -312,6 +312,57 @@ def test_manifest_update_uses_same_explicit_home(tmp_path, monkeypatch):
     assert manifest["tasks"][0]["status"] == "completed"
 
 
+def test_parent_without_session_db_warns_and_skips_pin(caplog):
+    """A parent with no _session_db cannot be pinned; the skip must be
+    observable (ambient fallback is the #91996 failure mode), not silent."""
+    import logging as _logging
+
+    from tools.delegate_tool import _parent_live_home
+
+    parent = MagicMock(spec=[])  # no _session_db attribute at all
+
+    with caplog.at_level(_logging.WARNING, logger="tools.delegate_tool"):
+        assert _parent_live_home(parent) is None
+    assert any("home pinning skipped" in r.getMessage() for r in caplog.records), (
+        "the ambient fallback must leave a warning trace"
+    )
+
+
+def test_parent_session_db_pins_home():
+    from tools.delegate_tool import _parent_live_home
+
+    parent = MagicMock(spec=["_session_db"])
+    parent._session_db.db_path = Path("/prof/state.db")
+
+    assert _parent_live_home(parent) == Path("/prof")
+
+
+def test_prune_sweeps_the_pinned_root_not_ambient(tmp_path, monkeypatch):
+    """Retention must clean where the dispatch writes: stale dirs under the
+    pinned home are removed by that home's dispatches; a stale dir under the
+    ambient root is NOT this dispatch's business."""
+    ambient_home = tmp_path / "ambient"
+    pinned_home = tmp_path / "pinned"
+    ambient_home.mkdir()
+    pinned_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(ambient_home))
+
+    stale_age = time.time() - (dll.LIVE_RETENTION_DAYS + 1) * 86400
+    stale_pinned = pinned_home / "cache" / "delegation" / "live" / "old-deleg"
+    stale_pinned.mkdir(parents=True)
+    os.utime(stale_pinned, (stale_age, stale_age))
+    stale_ambient = (
+        ambient_home / "cache" / "delegation" / "live" / "other-profile-deleg"
+    )
+    stale_ambient.mkdir(parents=True)
+    os.utime(stale_ambient, (stale_age, stale_age))
+
+    create_live_transcripts([{"goal": "sweep my own root"}], home=pinned_home)
+
+    assert not stale_pinned.exists(), "pinned home's own stale dir must be pruned"
+    assert stale_ambient.exists(), "ambient root is not this dispatch's root"
+
+
 def test_manifest_includes_model_and_provider():
     """The manifest.json should record the model and provider used for the delegation."""
     delegation_id, _writers, _paths = create_live_transcripts(

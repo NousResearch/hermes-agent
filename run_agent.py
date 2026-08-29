@@ -9067,6 +9067,11 @@ class AIAgent:
         durable_turn_lease_turn_active = False
         durable_turn_lease_interrupt_message = None
         token = None
+        # Initialized alongside `token`: the turn-lease timeout/interrupt
+        # early returns leave the try block before set_affinity_scope() runs,
+        # and the finally reads this name unconditionally (UnboundLocalError
+        # otherwise — the 4 red cross-process lease tests on PR #97158).
+        affinity_token = None
         acct_token = None
         task_started = False
         task_finished = False

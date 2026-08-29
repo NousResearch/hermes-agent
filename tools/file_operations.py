@@ -3460,6 +3460,35 @@ class ShellFileOperations(FileOperations):
         return _macos_protected_search_exclusions(
             path, cwd=cwd, home=_HOME, platform=sys.platform
         )
+
+    def _effective_macos_search_exclusions(
+        self, roots: List[str]
+    ) -> List[tuple[str, str, str]]:
+        """Return unique exclusions without pruning an explicitly chosen root."""
+        explicit_roots = {
+            os.path.normcase(os.path.abspath(os.path.normpath(root)))
+            for root in roots
+        }
+        seen = set()
+        effective = []
+        for root in roots:
+            for relative in self._macos_search_exclusions(root):
+                absolute = os.path.normpath(os.path.join(root, relative))
+                key = os.path.normcase(os.path.abspath(absolute))
+                if key in explicit_roots or key in seen:
+                    continue
+                seen.add(key)
+                effective.append((root, relative, absolute))
+        return effective
+
+    @staticmethod
+    def _macos_protected_search_warning(paths: List[str]) -> str:
+        skipped = ", ".join(os.path.basename(item) for item in paths)
+        return (
+            "Skipped macOS protected folders during broad search to avoid "
+            f"an unattended privacy prompt: {skipped}. Search a protected "
+            "folder directly when access is intentional."
+        )
     
     def _try_multi_path_search(self, pattern: str, path: str, target: str,
                                file_glob: Optional[str], limit: int, offset: int,
@@ -3518,7 +3547,18 @@ class ShellFileOperations(FileOperations):
             note += "; skipped missing: " + ", ".join(missing[:3])
             if len(missing) > 3:
                 note += f" (+{len(missing) - 3} more)"
-        merged.warning = note
+        warning_parts = [note]
+        if not merged.error:
+            protected_paths = [
+                absolute
+                for _root, _relative, absolute
+                in self._effective_macos_search_exclusions(existing)
+            ]
+            if protected_paths:
+                warning_parts.append(
+                    self._macos_protected_search_warning(protected_paths)
+                )
+        merged.warning = " ".join(warning_parts)
         return merged
 
     def _zero_match_probe(self, pattern: str, path: str,
@@ -3618,12 +3658,15 @@ class ShellFileOperations(FileOperations):
 
         root = normalized(path)
         home = normalized(_HOME)
+        drive = os.path.splitdrive(root)[0]
+        anchor = drive + os.sep if drive else os.path.abspath(os.sep)
+        if root == os.path.normcase(anchor):
+            return True
         try:
             common = os.path.commonpath([root, home])
         except ValueError:
             return False
-        anchor = os.path.splitdrive(root)[0] + os.sep if os.path.splitdrive(root)[0] else os.path.abspath(os.sep)
-        return root == home or common == root or root == os.path.normcase(anchor)
+        return root == home or common == root
 
     def _search_files(self, pattern: str, path: str | List[str], limit: int, offset: int,
                       order: str = "discovery") -> SearchResult:
@@ -3668,9 +3711,9 @@ class ShellFileOperations(FileOperations):
             f" \\( -type d -name '.*'{root_exemptions} \\) -prune -o"
         )
         protected_paths = [
-            os.path.normpath(os.path.join(root, item))
-            for root in roots
-            for item in self._macos_search_exclusions(root)
+            absolute
+            for _root, _relative, absolute
+            in self._effective_macos_search_exclusions(roots)
         ]
         protected_prune = ""
         if protected_paths:
@@ -3697,12 +3740,12 @@ class ShellFileOperations(FileOperations):
 
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
-        if order == "modified" and result.exit_code not in {0, 124} and not stdout.strip():
+        if order == "modified" and result.exit_code not in {0, 124}:
             return SearchResult(error=(
                 "Exact modification-time order requires GNU find with "
                 "-printf support; install ripgrep 14+ or use order='discovery'."
             ))
-        if order == "discovery" and result.exit_code not in {0, 1, 124} and not stdout.strip():
+        if order == "discovery" and result.exit_code not in {0, 124}:
             return SearchResult(error="File search failed while running bounded find traversal.")
 
         raw_files: List[str] = []
@@ -3746,12 +3789,11 @@ class ShellFileOperations(FileOperations):
 
         roots = [path] if isinstance(path, str) else path
         fetch_limit = limit + offset + 1
-        exclusion_terms: List[str] = []
-        for root in roots:
-            exclusion_terms.extend(
-                f"--glob {self._escape_shell_arg(f'!{item}/**')}"
-                for item in self._macos_search_exclusions(root)
-            )
+        exclusion_terms = [
+            f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
+            for _root, relative, _absolute
+            in self._effective_macos_search_exclusions(roots)
+        ]
         exclusion_globs = " ".join(dict.fromkeys(exclusion_terms))
         exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
         rg_executable = rg_executable or self._resolve_command("rg")

@@ -1,5 +1,6 @@
 """macOS TCC-safe behavior for broad file searches."""
 
+import re
 from pathlib import Path
 
 import tools.file_operations as file_operations
@@ -201,6 +202,67 @@ def test_find_fallback_prunes_protected_directories(tmp_path, monkeypatch):
     for command in find_commands:
         assert ops._escape_shell_arg(str(home / "Downloads")) in command
         assert "-prune" in command
+
+
+def _multi_root_protected_search(tmp_path, monkeypatch, engine):
+    home = tmp_path / "Users" / "alice"
+    downloads = home / "Downloads"
+    downloads.mkdir(parents=True)
+    env = RecordingEnvironment(home)
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+    monkeypatch.setattr(ops, "_has_command", lambda command: command == engine)
+    path_checks = 0
+
+    def execute(command, cwd=None, **kwargs):
+        nonlocal path_checks
+        env.commands.append(command)
+        if command.startswith("test -e"):
+            path_checks += 1
+            output = "not_found\n" if path_checks == 1 else "exists\n"
+            return {"output": output, "returncode": 0}
+        if "--files" in command or command.startswith("set -o pipefail; find "):
+            return {"output": "", "returncode": 0}
+        return {"output": "yes\n", "returncode": 0}
+
+    env.execute = execute
+    result = ops.search("*.txt", path=f"{home} {downloads}", target="files")
+    return ops, env, result, downloads
+
+
+def test_rg_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
+    tmp_path, monkeypatch
+):
+    ops, env, result, downloads = _multi_root_protected_search(
+        tmp_path, monkeypatch, "rg"
+    )
+
+    command = _rg_files_commands(env.commands)[0]
+    assert downloads.as_posix() in command
+    assert "!Downloads/**" not in command
+    assert "path contained 2 entries" in (result.warning or "")
+    assert "macOS protected folders" in (result.warning or "")
+    protected_warning = result.warning.split("macOS protected folders", 1)[1]
+    assert "Desktop" in protected_warning
+    assert "Downloads" not in protected_warning
+
+
+def test_find_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
+    tmp_path, monkeypatch
+):
+    ops, env, result, downloads = _multi_root_protected_search(
+        tmp_path, monkeypatch, "find"
+    )
+
+    command = _find_commands(env.commands)[0]
+    assert "Downloads" in command
+    assert re.search(r"(?<!! )-path '[^']*/Downloads'", command) is None
+    assert "path contained 2 entries" in (result.warning or "")
+    assert "macOS protected folders" in (result.warning or "")
+    protected_warning = result.warning.split("macOS protected folders", 1)[1]
+    assert "Desktop" in protected_warning
+    assert "Downloads" not in protected_warning
 
 
 def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypatch):

@@ -182,6 +182,45 @@ def test_find_modified_capability_failure_is_actionable_without_retry():
     assert len(env.find_commands) == 1
 
 
+@pytest.mark.parametrize(
+    ("order", "output", "error_fragment"),
+    [
+        ("discovery", "/narrow/partial.py\n", "bounded find traversal"),
+        ("modified", "/narrow/not-a-timestamp.py\n", "modification-time"),
+    ],
+)
+def test_find_hard_error_discards_partial_output(order, output, error_fragment):
+    env = FindRecordingEnvironment(output, code=2)
+
+    result = ShellFileOperations(env)._search_files(
+        "*.py", "/narrow", limit=2, offset=0, order=order
+    )
+
+    assert error_fragment in (result.error or "")
+    assert result.files == []
+    assert result.total_count == 0
+
+
+def test_find_timeout_preserves_partial_results_and_limit_reason():
+    env = FindRecordingEnvironment(timeout_output("/narrow/partial.py"), code=124)
+
+    result = ShellFileOperations(env)._search_files(
+        "*.py", "/narrow", limit=2, offset=0, order="discovery"
+    )
+
+    assert result.files == ["/narrow/partial.py"]
+    assert_timed_out(result)
+
+
+def test_find_zero_match_exit_zero_is_success():
+    result = ShellFileOperations(FindRecordingEnvironment("", code=0))._search_files(
+        "*.missing", "/narrow", limit=2, offset=0, order="discovery"
+    )
+
+    assert result.error is None
+    assert result.files == []
+
+
 def test_local_broad_no_rg_refuses_before_find(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()

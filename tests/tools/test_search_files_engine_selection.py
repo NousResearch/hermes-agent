@@ -297,6 +297,19 @@ def test_remote_msys_shaped_executable_is_not_rewritten_as_controller_path():
     assert "C:/remote-tools/rg" not in env.rg_commands[0]
 
 
+@pytest.mark.windows_only
+def test_every_windows_drive_root_is_broad_even_when_home_is_on_another_drive(
+    tmp_path, monkeypatch
+):
+    import tools.file_operations as file_operations
+
+    monkeypatch.setattr(file_operations, "_HOME", "C:/Users/alice")
+    ops = ShellFileOperations(LocalEnvironment(str(tmp_path)))
+
+    assert ops._is_broad_local_search_root("D:/") is True
+    assert ops._is_broad_local_search_root("D:/repo") is False
+
+
 def test_modified_multi_path_search_preserves_exact_order_request():
     env = RecordingEnvironment()
 

@@ -413,6 +413,25 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    def test_zai_429_reset_at_stays_rate_limit(self):
+        """Z.ai returns 'Your limit will reset at <timestamp>' (not 'resets at').
+
+        Before the 'reset at' transient signal was added, this was misclassified
+        as billing (non-retryable), preventing failover to BytePlus/Chutes.
+        Regression for hermes-health-77y.16 / commit 85ae71c473.
+        """
+        e = MockAPIError(
+            "Usage limit reached for 5 hour. Your limit will reset at"
+            " 2026-08-28 20:03:16",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="zai", model="glm-5.3")
+        assert result.reason == FailoverReason.rate_limit, (
+            "Z.ai 'reset at' must classify as rate_limit (retryable), not billing"
+        )
+        assert result.retryable is True
+        assert result.should_fallback is True
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 

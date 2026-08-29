@@ -569,6 +569,37 @@ def _recognized_syntax_tool_call_ids(value: Any) -> frozenset[str]:
     return _recognized_tool_call_ids(value, _VALIDATED_SYNTAX_TOOL_NAMES)
 
 
+def _scratch_read_file_tool_call_ids(value: Any) -> frozenset[str]:
+    """Recognize worker scratch-file reads that have no source authority."""
+
+    recognized: set[str] = set()
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            function = item.get("function")
+            name = function.get("name") if isinstance(function, Mapping) else item.get("name")
+            arguments = (
+                function.get("arguments") if isinstance(function, Mapping) else item.get("arguments")
+            )
+            call_id = item.get("call_id") or item.get("id")
+            if item.get("type") in {"function", "function_call"} and name == "read_file":
+                try:
+                    parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+                    path = parsed.get("path") if isinstance(parsed, Mapping) else None
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    path = None
+                if isinstance(path, str) and path.startswith(("/tmp/", "/private/tmp/")) and isinstance(call_id, str):
+                    recognized.update(tool_result_id_variants(call_id))
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return frozenset(recognized)
+
+
 def _github_list_terminal_call_limits(value: Any) -> dict[str, int]:
     """Bind a small GitHub list projection to an exact preceding terminal call.
 
@@ -1608,6 +1639,7 @@ def _typed_payload(
     elided_kanban_tool_call_ids: frozenset[str] = frozenset(),
     search_projection_tool_call_ids: frozenset[str] = frozenset(),
     read_file_projection_tool_call_ids: frozenset[str] = frozenset(),
+    scratch_read_file_tool_call_ids: frozenset[str] = frozenset(),
     git_workspace_diagnostic_call_ids: frozenset[str] = frozenset(),
     git_grep_projection_tool_call_ids: frozenset[str] = frozenset(),
     rg_projection_tool_call_ids: frozenset[str] = frozenset(),
@@ -1700,6 +1732,11 @@ def _typed_payload(
                 value.get("role") == "tool"
                 or value.get("type") == "function_call_output"
             )
+        )
+        is_scratch_read_file_tool_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in scratch_read_file_tool_call_ids
+            and (value.get("role") == "tool" or value.get("type") == "function_call_output")
         )
         is_git_workspace_diagnostic_result = (
             isinstance(output_call_id, str)
@@ -1811,6 +1848,9 @@ def _typed_payload(
                 )
                 continue
             if is_read_file_result and key == "content" and isinstance(item, str):
+                if is_scratch_read_file_tool_result:
+                    typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
+                    continue
                 typed[key] = _segment_read_file_presentation(
                     item,
                     source_metadata,
@@ -2000,6 +2040,7 @@ def _typed_payload(
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
+                scratch_read_file_tool_call_ids=scratch_read_file_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
                 rg_projection_tool_call_ids=rg_projection_tool_call_ids,
@@ -2046,6 +2087,7 @@ def _typed_payload(
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
+                scratch_read_file_tool_call_ids=scratch_read_file_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
                 rg_projection_tool_call_ids=rg_projection_tool_call_ids,
@@ -2347,6 +2389,11 @@ def authorize_agent_sdk_kwargs(
             _recognized_tool_call_ids(
                 body, _REMOTE_KANBAN_READ_FILE_PROJECTION_TOOL_NAMES
             )
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        scratch_read_file_tool_call_ids=(
+            _scratch_read_file_tool_call_ids(body)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

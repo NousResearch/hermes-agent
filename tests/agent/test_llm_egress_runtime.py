@@ -1684,6 +1684,52 @@ def test_protected_kanban_redacts_nested_terminal_argument_replay(
     assert opaque_command not in replay
 
 
+def test_protected_kanban_elides_scratch_read_without_source_metadata(
+    tmp_path, monkeypatch
+):
+    """Worker-created scratch files cannot abort a remote task on provenance."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    call_id = "call_scratch_read"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":"/tmp/kanban_list.txt"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_name": "read_file",
+                    "tool_call_id": call_id,
+                    "content": "untrusted c2VjcmV0LXBheWxvYWQ=",
+                    "_source_provenance": {"presentation_kind": "forged"},
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][1]["content"] == (
+        "read_file completed locally, but its raw content cannot be replayed on "
+        "this protected route. Request only the needed narrow range again."
+    )
+
+
 def test_protected_kanban_redacts_readonly_search_argument_replay(
     tmp_path, monkeypatch
 ):

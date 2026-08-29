@@ -75,6 +75,7 @@ Each entry requires both `provider` and `model`. Entries missing either field ar
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | OpenCode Free | `opencode-free` | — (keyless, no credential) |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
+| Ramp Router | `router` | `RAMP_ROUTER_API_KEY` |
 | Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | GMI Cloud | `gmi` | `GMI_API_KEY` |

@@ -26,7 +26,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import cached_property, wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
@@ -655,14 +655,38 @@ class PluginContext:
         return self._register_entry("cli_command", name, self._manager._cli_commands, entry,
                                     "Plugin %s registered CLI command: %s", name)
 
+    @staticmethod
+    def _normalize_busy_safe_subcommands(values: Iterable[str]) -> Tuple[str, ...]:
+        """Normalize the public busy-safe verb list once for every registrar."""
+        normalized: List[str] = []
+        for raw_subcommand in values or ():
+            if not isinstance(raw_subcommand, str):
+                raise TypeError("busy_safe_subcommands entries must be strings")
+            subcommand = raw_subcommand.strip().lower()
+            if any(char.isspace() for char in subcommand):
+                raise ValueError(
+                    "busy_safe_subcommands entries must be single tokens"
+                )
+            if subcommand not in normalized:
+                normalized.append(subcommand)
+        return tuple(normalized)
+
     @_serialized_replacement
     def register_command(
         self, name: str, handler: Callable, description: str = "", args_hint: str = "",
         argument_mode: str | None = None,
+        *,
+        busy_safe_subcommands: Iterable[str] = (),
     ) -> Optional[PluginRegistration]:
-        """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        """Register an in-session slash command (``/name``).
+
+        The handler is ``fn(raw_args: str) -> str | None`` (sync or async).
+        ``args_hint`` lets adapters surface an argument field. ``argument_mode``
+        controls composer behavior. ``busy_safe_subcommands`` opts specific
+        first argument tokens into authorization-aware dispatch while an agent
+        is running; ``""`` represents the bare command. Once opted in, unlisted
+        tokens are rejected mid-turn instead of entering the busy input path.
+        """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -679,6 +703,9 @@ class PluginContext:
             "plugin": self.manifest.name, "plugin_key": self.plugin_id, "args_hint": hint,
             "argument_mode": argument_mode if argument_mode in {"options", "text", "mixed"}
             else ("text" if hint else None),
+            "busy_safe_subcommands": self._normalize_busy_safe_subcommands(
+                busy_safe_subcommands
+            ),
         }
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)
@@ -2069,6 +2096,14 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     return entry["handler"] if entry else None
 
 
+def get_plugin_command_entry(name: str) -> Optional[dict]:
+    """Return normalized metadata for a plugin slash command, if registered."""
+    clean = (name or "").lower().strip().lstrip("/").replace("_", "-")
+    if not clean:
+        return None
+    return _ensure_plugins_discovered()._plugin_commands.get(clean)
+
+
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
 
 
@@ -2151,7 +2186,6 @@ def get_plugin_toolsets() -> List[tuple]:
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-from typing import Iterable  # noqa: F401,E402
 from typing import Type  # noqa: F401,E402
 from contextlib import contextmanager  # noqa: F401,E402
 import contextvars  # noqa: F401,E402

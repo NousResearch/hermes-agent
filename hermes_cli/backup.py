@@ -449,15 +449,17 @@ def is_zeroed_sqlite_file(
         size = path.stat().st_size
     except OSError:
         return False
-    if size <= 0:
+    if size < 0:
         return False
     from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
 
     head = read_header_bytes_preopen(
         path, length=max(16, probe_bytes), force=force
     )
-    if not head:
+    if head is None:
         return False
+    if len(head) == 0:
+        return True
     if head.startswith(b"SQLite format 3"):
         return False
     return all(byte == 0 for byte in head)

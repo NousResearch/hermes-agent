@@ -8,11 +8,14 @@ own; methods access the host's attributes (``self._conn``, ``self.db_path``,
 module-level constants live in hermes_state_common.
 """
 
+import datetime
 import logging
 import json
 import sqlite3
 import time
+import uuid
 from typing import Dict, Optional, Sequence
+
 
 from hermes_constants import get_hermes_home
 from hermes_state_common import (
@@ -1032,6 +1035,17 @@ class SessionSchemaMixin:
                 "INSERT INTO schema_version (version) VALUES (?)",
                 (SCHEMA_VERSION,),
             )
+            # Record store provenance on creation so fresh vs wiped stores are distinguishable (#97568)
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            instance_id = str(uuid.uuid4())
+            cursor.executemany(
+                "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
+                [
+                    ("store_instance_id", instance_id),
+                    ("store_created_at_utc", now_iso),
+                ],
+            )
+
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
             # Data migrations that can't be expressed declaratively (row

@@ -41,6 +41,38 @@ def test_sessiondb_opens_fresh_after_zeroed_quarantine(tmp_path, monkeypatch):
         sdb.close()
 
 
+def test_is_zeroed_state_db_zero_byte_quarantine(tmp_path, monkeypatch):
+    """#97568: a 0-byte file must be detected as zeroed and quarantined."""
+    import hermes_state as hs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = tmp_path / "state.db"
+    db.write_bytes(b"")  # 0-byte truncated file
+    assert hs.is_zeroed_state_db(db) is True
+
+    sdb = hs.SessionDB(db_path=db)
+    try:
+        # Fresh DB should open and accept schema
+        assert db.exists()
+        assert not hs.is_zeroed_state_db(db)
+        # Quarantine retained for the 0-byte file
+        backups = list(tmp_path.glob("state.db.zeroed-*.bak"))
+        assert len(backups) == 1
+        assert backups[0].stat().st_size == 0
+        # Check store provenance was recorded in state_meta
+        row_instance = sdb._conn.execute(
+            "SELECT value FROM state_meta WHERE key = 'store_instance_id'"
+        ).fetchone()
+        row_created = sdb._conn.execute(
+            "SELECT value FROM state_meta WHERE key = 'store_created_at_utc'"
+        ).fetchone()
+        assert row_instance is not None and row_instance[0]
+        assert row_created is not None and row_created[0]
+    finally:
+        sdb.close()
+
+
+
 def test_concurrent_quarantine_no_clobber(tmp_path):
     """#68805: two concurrent startups must not race on quarantine.
 

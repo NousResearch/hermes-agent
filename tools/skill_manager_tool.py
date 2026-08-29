@@ -683,15 +683,32 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     Searches the local skills dir (~/.hermes/skills/) first, then any
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
+
+    Accepts both the bare directory name (``axolotl``) and the categorized
+    relative path (``mlops/axolotl``) — the same two forms skill_view
+    resolves, and the form skill_view's ambiguity hint explicitly tells
+    the caller to use. Matching bare-name suffix keeps bare lookups
+    working for nested skills.
     """
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+
+    def _matches(skill_md: Path) -> bool:
+        if skill_md.parent.name == name:
+            return True
+        # Categorized form: the full relative path of the skill dir.
+        try:
+            rel = skill_md.parent.resolve().relative_to(_skills_dir().resolve())
+        except ValueError:
+            return False
+        return str(rel) == name
+
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_md in skills_dir.rglob("SKILL.md"):
             if is_excluded_skill_path(skill_md):
                 continue
-            if skill_md.parent.name == name:
+            if _matches(skill_md):
                 return {"path": skill_md.parent}
     return None
 

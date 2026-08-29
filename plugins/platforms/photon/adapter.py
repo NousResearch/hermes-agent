@@ -11,6 +11,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -40,6 +41,7 @@ from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from utils import atomic_json_write
 
 from .auth import load_project_credentials
 # Sidecar dir resolution is lazy (never at import): it probes the filesystem and may
@@ -61,6 +63,7 @@ _MAX_MESSAGE_LENGTH = 8000  # iMessage caps practical size at ~16 KB; conservati
 _RUNTIME_RECORD_NAME = "photon-sidecar.json"
 _DEDUP_MAX_SIZE = 4000  # the gRPC stream is at-least-once and a reconnect can replay
 _DEDUP_WINDOW_SECONDS = 48 * 3600
+_DEDUP_STATE_NAME = "photon-inbound-dedupe.json"
 _FFFC_WAIT_SECONDS = 15.0  # wait for the real attachment after a U+FFFC placeholder
 _NPM_REINSTALL_TIMEOUT = 600  # a wedged self-heal `npm ci` must not stall connect indefinitely
 # Photon / Envoy / spectrum-ts substrings meaning transient upstream overload.
@@ -517,7 +520,10 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_health_interval = 15.0
         self._probe_failures = 0
         self._last_upstream_activity = 0.0  # monotonic; watchdog skips probe if traffic proved liveness
-        self._seen_messages: Dict[str, float] = {}  # at-least-once stream dedup
+        # At-least-once gRPC replay can outlive a sidecar/gateway restart; keep the window on disk.
+        from hermes_constants import get_hermes_home
+        self._dedup_state_path = get_hermes_home() / "state" / _DEDUP_STATE_NAME
+        self._seen_messages = self._load_seen_messages()
         self._sent_message_ids: Dict[str, float] = {}  # only reactions targeting OUR sends are routed
         self._last_inbound_by_chat: Dict[str, str] = {}  # default target for the react action
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
@@ -715,14 +721,55 @@ class PhotonAdapter(BasePlatformAdapter):
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
+        else:
+            if msg_id:
+                self._mark_seen_message(msg_id)
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
-        t = self._seen_messages.get(msg_id)
-        if t is not None and now - t < _DEDUP_WINDOW_SECONDS:
-            return True
-        _bounded_put(self._seen_messages, msg_id, now, _DEDUP_MAX_SIZE)
-        return False
+        seen_at = self._seen_messages.get(msg_id)
+        return seen_at is not None and now - seen_at < _DEDUP_WINDOW_SECONDS
+
+    def _mark_seen_message(self, msg_id: str) -> None:
+        """Persist a message ID only after inbound dispatch has succeeded."""
+        _bounded_put(self._seen_messages, msg_id, time.time(), _DEDUP_MAX_SIZE)
+        self._persist_seen_messages()
+
+    def _load_seen_messages(self) -> Dict[str, float]:
+        """Load live provider message IDs from this profile's durable state."""
+        try:
+            raw = json.loads(self._dedup_state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        now = time.time()
+        live: List[tuple[str, float]] = []
+        for msg_id, seen_at in raw.items():
+            if not isinstance(msg_id, str) or not isinstance(seen_at, (int, float)):
+                continue
+            timestamp = float(seen_at)
+            if not math.isfinite(timestamp):
+                continue
+            # A wall-clock rollback must not turn a valid claim into an unbounded one.
+            timestamp = min(timestamp, now)
+            if now - timestamp < _DEDUP_WINDOW_SECONDS:
+                live.append((msg_id, timestamp))
+        live.sort(key=lambda item: item[1])
+        return dict(live[-_DEDUP_MAX_SIZE:])
+
+    def _persist_seen_messages(self) -> None:
+        """Atomically persist the already-bounded in-memory dedupe window."""
+        try:
+            atomic_json_write(
+                self._dedup_state_path,
+                self._seen_messages,
+                indent=0,
+                separators=(",", ":"),
+                mode=0o600,
+            )
+        except OSError as exc:
+            logger.warning("[photon] failed to persist inbound dedupe state: %s", exc)
 
     async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
         await asyncio.sleep(_FFFC_WAIT_SECONDS)

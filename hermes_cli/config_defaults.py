@@ -3750,10 +3750,7 @@ DEFAULT_CONFIG = {
         #   False = always enable the overlay
         "no_overlay": None,
         # cua-driver permission mode for each Hermes computer-use runtime.
-        #   standard (default) — cua-driver's own approval boundary. Protected
-        #     operations (e.g. attaching to an existing signed-in browser
-        #     profile) fail closed unless grant_existing_profile is enabled
-        #     below.
+        #   standard (default) — cua-driver's own approval boundary.
         #   bounded — repeatable automation under a user-reviewed session
         #     capability manifest (set capability_manifest below). No runtime
         #     prompts; anything outside the manifest fails closed inside
@@ -3774,14 +3771,6 @@ DEFAULT_CONFIG = {
         # cua-driver identity (com.trycua.driver / an official signing team).
         # Enable only when developing the driver locally from source.
         "allow_unsigned_driver": False,
-        # Pre-authorize existing-profile browser attachment in standard mode
-        # (cua-driver's trusted-launcher `--grant existing-profile`). When
-        # true, the agent can attach to your already-running, signed-in
-        # Chrome/Edge window — exposing that profile's live pages, cookies,
-        # and storage to the browser protocol — without a per-use prompt.
-        # Leave false to keep existing-profile attachment failing closed;
-        # isolated driver-owned profiles work either way.
-        "grant_existing_profile": False,
     },
 
     # =========================================================================

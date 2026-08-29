@@ -52,7 +52,7 @@ def _content_terms(text: str) -> set[str]:
 # Terms too generic to count toward supersession overlap. Without this,
 # any long technical document shares >=2 of these with any other block
 # and a stray " override" mention evicts the head block (v0.6.0 holdout
-# regression: hindsight-skill head lost because a postgres section said
+# regression: database-skill head lost because a postgres section said
 # "permissions ... override").
 _OVERLAP_STOP = frozenset(
     """

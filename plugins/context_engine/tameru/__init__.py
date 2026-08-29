@@ -1,8 +1,4 @@
-"""Tameru (貯める) context engine — deterministic query-aware compaction.
-
-This plugin carries the reviewed Tameru implementation locally so Hermes does
-not depend on a separate checkout or host-specific paths.
-"""
+"""Hermes context-engine adapter for vendored Tameru 1.1.1."""
 from __future__ import annotations
 
 from typing import Any
@@ -35,7 +31,7 @@ class ExtractiveContextEngine(ContextCompressor):
         del phase, context
         return f"🗜️ {self.DISPLAY_NAME} compaction — {default_message}"
 
-    def __init__(self, model: str = "pending", **kwargs):
+    def __init__(self, model: str = "pending", **kwargs: Any) -> None:
         kwargs.setdefault("proactive_prune_tokens", 48_000)
         super().__init__(model=model, **kwargs)
 
@@ -46,8 +42,8 @@ class ExtractiveContextEngine(ContextCompressor):
                 query = str(msg.get("content") or "")
                 break
         pruned, changed = apply_extractive_tool_prune(messages, query)
-        more, changed_more = super().prune_tool_results_only(pruned, current_tokens)
-        return more, changed + changed_more
+        more, parent_changed = super().prune_tool_results_only(pruned, current_tokens)
+        return more, changed + parent_changed
 
     def compress(
         self,
@@ -64,19 +60,19 @@ class ExtractiveContextEngine(ContextCompressor):
                     query = str(msg.get("content") or "")
                     break
         pruned, _changed = apply_extractive_tool_prune(messages, query)
-        summarized = super().compress(
+        summarised = super().compress(
             pruned,
             current_tokens=current_tokens,
             focus_topic=focus_topic,
             force=force,
             memory_context=memory_context,
         )
-        if query_facts_lost(pruned, summarized, query) or bulky_tools_dropped(
-            pruned, summarized
+        if query_facts_lost(messages, summarised, query) or bulky_tools_dropped(
+            pruned, summarised
         ):
             return pruned
-        return summarized
+        return summarised
 
 
-def register(ctx):
+def register(ctx) -> None:
     ctx.register_context_engine(ExtractiveContextEngine())

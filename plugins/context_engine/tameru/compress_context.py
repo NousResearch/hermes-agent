@@ -1,6 +1,6 @@
 """Local extractive, query-aware context compression.
 
-Independent implementation. No SuperCompress API, no their weights, no
+Independent implementation. No Baseline RAG API, no their weights, no
 off-box calls. Keep original wording; drop whole blocks; fail open when
 the query signal is too weak to justify a cut.
 """
@@ -33,7 +33,11 @@ except ImportError:  # direct-script use without package context
     def resolve_tier(tier):
         return tier
 
-DEFAULT_CCR_DIR = Path.home() / ".hermes" / "cache" / "context-compress-ccr"
+try:
+    DEFAULT_CCR_DIR = Path.home() / ".tameru" / "cache" / "context-compress-ccr"
+except Exception:
+    import tempfile
+    DEFAULT_CCR_DIR = Path(tempfile.gettempdir()) / ".tameru" / "cache" / "context-compress-ccr"
 CCR_TTL_SECONDS = 6 * 60 * 60
 CCR_MAX_CLOCK_SKEW_SECONDS = 5 * 60
 FREEZE_MAX_DECISIONS = 4096
@@ -48,6 +52,7 @@ DEFAULT_SUMMARY_MODELS = (
 )
 DEFAULT_SUMMARY_TIMEOUT = 30.0
 _CCR_HASH_RE = re.compile(r"^[0-9a-f]{24}$")
+_CCR_SWEEP_CURSOR = 0
 
 _STOP = {
     "what", "how", "does", "do", "the", "is", "are", "was", "were", "why",
@@ -68,7 +73,7 @@ _TOKEN_RE = re.compile(
 )
 _CAMEL_RE = re.compile(r"\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b")
 # Slash is required between segments. `(?:/?[\w.-]+){2,}` is catastrophic
-# on long hyphenated ids (paperclip-genesis-v14-focused-node22-raw).
+# on long hyphenated ids (acmecorp-genesis-v14-focused-node22-raw).
 _PATH_RE = re.compile(r"(?:[\w.-]+/){2,}[\w.-]+")
 _DOTTED_RE = re.compile(r"\b[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+\b")
 _QUOTED_RE = re.compile(r"[\"']([^\"']{2,64})[\"']")
@@ -368,7 +373,14 @@ def _looks_indented_frame(line: str) -> bool:
     return False
 
 
-def _crush_value(val: Any, depth: int, query_needles: list[str]) -> Any:
+def _crush_value(
+    val: Any,
+    depth: int,
+    query_needles: list[str],
+    query_selectors: list[re.Pattern[str]] | None = None,
+) -> Any:
+    if query_selectors is None:
+        query_selectors = _selector_patterns(query_needles)
     if depth > 10:
         return val
     if val is None:
@@ -380,18 +392,23 @@ def _crush_value(val: Any, depth: int, query_needles: list[str]) -> Any:
         rest = []
         for item in val:
             blob = json.dumps(item, ensure_ascii=False) if not isinstance(item, str) else item
-            if query_needles and any(n.lower() in blob.lower() for n in query_needles):
-                matching.append(_crush_value(item, depth + 1, query_needles))
+            if query_selectors and any(selector.search(blob) for selector in query_selectors):
+                matching.append(
+                    _crush_value(item, depth + 1, query_needles, query_selectors)
+                )
             else:
                 rest.append(item)
-        # No SuperCompress first-3 cliff: if nothing matches, keep the
+        # No Baseline RAG first-3 cliff: if nothing matches, keep the
         # whole array. Destructive crush only happens when needles hit.
         if matching:
             leftover = len(val) - len(matching)
             if leftover > 0:
                 matching.append(f"... {leftover} more items")
             return matching
-        return [_crush_value(x, depth + 1, query_needles) for x in val]
+        return [
+            _crush_value(x, depth + 1, query_needles, query_selectors)
+            for x in val
+        ]
     if isinstance(val, dict):
         out: dict[str, Any] = {}
         for k, v in val.items():
@@ -399,35 +416,54 @@ def _crush_value(val: Any, depth: int, query_needles: list[str]) -> Any:
                 continue
             if isinstance(v, list) and not v:
                 continue
-            if isinstance(v, str) and len(v) > 120 and not re.search(r"\s", v):
+            if isinstance(v, str) and not re.search(r"\s", v):
+                # Opaque values are commonly hashes, tokens or identifiers;
+                # shortening or dropping them destroys their exact meaning.
+                out[k] = v
                 continue
             if isinstance(v, str) and len(v) > 200:
-                if query_needles and any(
-                    n.casefold() in v.casefold() for n in query_needles
+                if query_selectors and any(
+                    selector.search(v) for selector in query_selectors
                 ):
                     out[k] = v
                     continue
                 out[k] = v[:100] + f"... [{len(v) - 100} more chars]"
                 continue
-            out[k] = _crush_value(v, depth + 1, query_needles)
+            out[k] = _crush_value(v, depth + 1, query_needles, query_selectors)
         return out
     return val
+
+
+def _json_query_needles(query: str) -> list[str]:
+    terms = set(distinctive_query_terms(query))
+    terms.update(_extract_entities(query))
+    strong = {
+        term
+        for term in terms
+        if any(ch.isdigit() for ch in term)
+        or "-" in term
+        or "_" in term
+        or len(term) >= 8
+    }
+    return sorted(strong or terms)
 
 
 def preprocess_json(text: str, query: str) -> str:
     stripped = text.strip()
     if not query_has_distinctive_selectors(query):
         return text
-    needles = list(distinctive_query_terms(query))
-    needles.extend(_extract_entities(query))
+    needles = _json_query_needles(query)
     try:
         parsed = json.loads(stripped)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return text
-    crushed = _crush_value(parsed, 0, needles)
+    try:
+        crushed = _crush_value(parsed, 0, needles)
+    except RecursionError:
+        return text
     try:
         dumped = json.dumps(crushed, ensure_ascii=False, indent=2)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return text
     if len(dumped) < len(stripped) * 0.92:
         return dumped
@@ -442,6 +478,13 @@ def _looks_like_csv(text: str) -> bool:
     return similar >= 4
 
 
+def _selector_patterns(terms: Iterable[str]) -> list[re.Pattern[str]]:
+    return [
+        re.compile(rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])", re.I)
+        for term in terms
+    ]
+
+
 def preprocess_csv(text: str, query: str) -> str:
     """Keep header + distinctive-matching rows. No first-N cliff."""
     if not query_has_distinctive_selectors(query) or not _looks_like_csv(text):
@@ -449,13 +492,37 @@ def preprocess_csv(text: str, query: str) -> str:
     terms = [t for t in distinctive_query_terms(query) if not t.startswith("script:")]
     if not terms:
         return text
+    selectors = _selector_patterns(terms)
     lines = text.split("\n")
     kept = [lines[0]]
     for line in lines[1:]:
-        low = line.lower()
-        if any(t in low for t in terms):
+        if any(selector.search(line) for selector in selectors):
             kept.append(line)
     if len(kept) == 1 or len(kept) == len(lines):
+        return text
+    return "\n".join(kept)
+
+
+_FLAT_RECORD_RE = re.compile(r"^[^\s:#][^:\n]{0,200}:\s+\S.*$")
+
+
+def preprocess_flat_records(text: str, query: str) -> str:
+    """Select exact rows from a flat key/value record dump."""
+    if not query_has_distinctive_selectors(query):
+        return text
+    lines = text.split("\n")
+    if any(not line.strip() for line in lines):
+        return text
+    if len(lines) < 6 or not all(_FLAT_RECORD_RE.match(line) for line in lines):
+        return text
+    terms = [
+        term
+        for term in distinctive_query_terms(query)
+        if not term.startswith("script:")
+    ]
+    selectors = _selector_patterns(terms)
+    kept = [line for line in lines if any(rx.search(line) for rx in selectors)]
+    if not kept or len(kept) == len(lines):
         return text
     return "\n".join(kept)
 
@@ -547,7 +614,7 @@ def unwrap_hermes_tool(text: str) -> str:
         return text
     try:
         parsed = json.loads(stripped)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return text
     if not isinstance(parsed, dict):
         return text
@@ -574,6 +641,10 @@ def preprocess(text: str, query: str) -> tuple[list[str], str]:
             return preprocess(unwrapped, query)
         processed = preprocess_json(text, query)
         return processed.split("\n"), kind
+    if kind == "text":
+        processed = preprocess_flat_records(text, query)
+        if processed != text:
+            return processed.split("\n"), kind
     return _collapse_blanks(lines), kind
 
 
@@ -718,9 +789,25 @@ def _segment_blocks_chunked(lines: list[str]) -> list[dict[str, Any]]:
         tokens = 0
 
     prev_type = None
+    in_fence = False
     for i, line in enumerate(lines):
         kind = classify_line(line)
         line_toks = estimate_tokens(line)
+        if in_fence:
+            tokens += line_toks
+            if kind == "fence":
+                close(i)
+                in_fence = False
+            prev_type = kind
+            continue
+        if kind == "fence":
+            close(i - 1)
+            start = i
+            btype = "fence"
+            tokens = line_toks
+            in_fence = True
+            prev_type = kind
+            continue
         new = False
         if start is None:
             new = True
@@ -884,7 +971,7 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
                 tok_df[tok] = tok_df.get(tok, 0) + 1
         block_token_sets.append(block_tokens)
 
-    # Log-type detection (SuperCompress "Log" policy): if > 60% of blocks
+    # Log-type detection (Baseline RAG "Log" policy): if > 60% of blocks
     # look like timestamped log lines, apply log-specific scoring weights.
     # Error/traceback blocks get a bonus; pure INFO/WARN noise gets penalized.
     _LOG_LINE_RE = re.compile(
@@ -909,7 +996,7 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
     # overlap, recent blocks and blocks holding rare, high-information
     # identifiers deserve a base floor so a "keep track of every detail"
     # style query does not evict scattered facts.
-    # Critical-line pre-computation (SuperCompress-style):
+    # Critical-line pre-computation (Baseline RAG-style):
     # Pre-identify lines that carry operational facts — errors, exceptions,
     # config assignments, key-value pairs, dates, versions, large numbers.
     # Blocks containing these lines get a floor boost so they survive
@@ -944,7 +1031,6 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
     # Guard: only apply the weak-query boost when there are enough
     # blocks (≥ 6) to make compression meaningful. With ≤ 5 blocks,
     # the keep_ratio will be ~1.0 and we'd fail-open anyway.
-    query_entropy = 0.0
     weak_boost = 0.0
     if len(blocks) >= 6 and terms:
         distinctive = 0
@@ -953,7 +1039,6 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
                 continue
             if re.search(r"[\d_./-]", t) or t[0].isupper():
                 distinctive += 1
-        query_entropy = distinctive / len(terms)
         topic = _topic_terms(query)
         # English topic words (alena, cinematography) are not "weak" just
         # because they lack digits. Vague next-chat ("keep every detail")
@@ -1018,7 +1103,7 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
             if reason == "context":
                 reason = "stale error"
 
-        # Log-context policy (SuperCompress "Log" policy): in log-heavy
+        # Log-context policy (Baseline RAG "Log" policy): in log-heavy
         # contexts, boost error/traceback blocks and penalize pure INFO
         # noise so the signal stands out from the chatter.
         if is_log_context:
@@ -1028,14 +1113,16 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
                     reason = "log error"
             else:
                 lines = b["text"].splitlines()
-                noise_lines = sum(1 for l in lines if _LOG_NOISE_RE.match(l))
+                noise_lines = sum(
+                    1 for block_line in lines if _LOG_NOISE_RE.match(block_line)
+                )
                 if noise_lines >= len(lines) * 0.8 and len(lines) >= 2:
                     score -= 1.5
                     if reason == "context":
                         reason = "log noise"
         # Critical-line floor: blocks containing operational facts (errors,
         # config, key-value pairs, dates, versions) get a floor boost so
-        # they survive even without query overlap. This is the SuperCompress
+        # they survive even without query overlap. This is the Baseline RAG
         # "important_kept_pct" signal — their verifier tracks critical lines
         # and flags risk when they're dropped. We make it a scoring input
         # instead, so the critical lines are kept in the first place.
@@ -1742,7 +1829,7 @@ def _entity_recall(original: str, compressed: str, query: str) -> float:
 def _extract_critical_lines(text: str) -> list[str]:
     """Extract lines that look like critical facts: error lines, key-value
     pairs with identifiers, tracebacks, and lines containing numbers + words.
-    Mirrors SuperCompress's critical_lines_total/kept/dropped reporting.
+    Mirrors Baseline RAG's critical_lines_total/kept/dropped reporting.
     """
     critical: list[str] = []
     for line in text.split("\n"):
@@ -1762,7 +1849,7 @@ def _extract_critical_lines(text: str) -> list[str]:
 
 
 def _critical_line_recall(original: str, compressed: str) -> tuple[int, int]:
-    """Return (kept, total) counts of critical lines, matching SuperCompress
+    """Return (kept, total) counts of critical lines, matching Baseline RAG
     verifier's critical_lines_kept/critical_lines_total fields."""
     critical = _extract_critical_lines(original)
     if not critical:
@@ -1782,7 +1869,7 @@ def verify_compression(
     compressed: str,
     query: str,
 ) -> dict[str, Any]:
-    """Post-compression self-check, mirroring SuperCompress's verifier object.
+    """Post-compression self-check, mirroring Baseline RAG's verifier object.
 
     Returns a dict with:
       entity_recall     — fraction of query entities/terms present in compressed
@@ -2087,20 +2174,26 @@ def sweep_ccr_cache(
     Malformed or unreadable files are left untouched: retention maintenance is
     best-effort and must not destroy data it cannot validate.
     """
+    global _CCR_SWEEP_CURSOR
     root = Path(ccr_dir)
     if not root.is_dir():
         return 0
     current = time.time() if now is None else float(now)
     removed = 0
-    processed = 0
     limit = None if max_records is None else max(0, int(max_records))
-    for fp in root.glob("*.json"):
-        if limit is not None and processed >= limit:
-            break
-        processed += 1
+    # Cursor progression only works when every call sees the same ordering;
+    # filesystem glob order is unspecified and may change between writes.
+    records = sorted(root.glob("*.json"), key=lambda path: path.name)
+    if limit is not None and records:
+        total = len(records)
+        start = _CCR_SWEEP_CURSOR % total
+        count = min(limit, total)
+        records = [records[(start + offset) % total] for offset in range(count)]
+        _CCR_SWEEP_CURSOR += count
+    for fp in records:
         try:
             data = json.loads(fp.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, RecursionError):
             continue
         metadata = _ccr_metadata(data)
         if (
@@ -2239,12 +2332,11 @@ def _clear_tool_payloads(text: str) -> str:
 
         if is_tool_result:
             # Collect the full payload (consecutive indented lines)
-            payload_start = i
             j = i
             total_chars = 0
             while j < len(lines):
-                l = lines[j]
-                if l.strip() == "":
+                payload_line = lines[j]
+                if payload_line.strip() == "":
                     # Blank line might end the payload or be part of it.
                     # Look ahead: if the next non-blank line is also indented,
                     # the payload continues.
@@ -2259,7 +2351,7 @@ def _clear_tool_payloads(text: str) -> str:
                     else:
                         break
                 elif lines[j].startswith("  ") or lines[j].startswith("\t"):
-                    total_chars += len(l)
+                    total_chars += len(payload_line)
                     j += 1
                 else:
                     break
@@ -2415,6 +2507,7 @@ def _summarise_with_llm(
             TypeError,
             AttributeError,
             OverflowError,
+            RecursionError,
         ):
             continue
     return None
@@ -2467,6 +2560,25 @@ def _summary_preserves_required_facts(
             token = item.casefold()
             if token not in required:
                 required.append(token)
+        # Plain-text scalar answers are not necessarily identifiers (for
+        # example "paint color is ultraviolet"). Require the first content
+        # term after a queried field and a simple relation verb; do not require
+        # every adjective in a long source segment.
+        for query_term in sorted(query_terms, key=len, reverse=True):
+            match = re.search(
+                rf"(?<!\w){re.escape(query_term)}(?!\w)\s+"
+                r"(?:is|are|was|were|equals?|uses?|=)\s+(.+)$",
+                segment,
+                re.I,
+            )
+            if not match:
+                continue
+            answer_terms = _extract_terms(match.group(1))
+            if answer_terms:
+                token = answer_terms[0].casefold()
+                if token not in query_terms and token not in required:
+                    required.append(token)
+            break
     kept = sum(1 for token in required if token in summary_fold)
     recall = kept / len(required) if required else 1.0
 
@@ -2495,7 +2607,7 @@ def retrieve(ccr_hash: str, ccr_dir: str | Path = DEFAULT_CCR_DIR) -> Optional[s
         return None
     try:
         data = json.loads(fp.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, RecursionError):
         return None
     if not isinstance(data, dict) or data.get("hash") != ccr_hash:
         return None
@@ -2520,11 +2632,11 @@ def retrieve(ccr_hash: str, ccr_dir: str | Path = DEFAULT_CCR_DIR) -> Optional[s
 
 
 # ---------------------------------------------------------------------------
-# JSON preprocessor (SuperCompress-inspired)
+# JSON preprocessor (Baseline RAG-inspired)
 #
 # Detects JSON payloads in the context and crushes redundant array items.
 # Keeps only query-relevant items + a bounded sample of the rest, preserving
-# the top-level structure. This is the "JSON policy" from SuperCompress's
+# the top-level structure. This is the "JSON policy" from Baseline RAG's
 # type-specific policy system.
 # ---------------------------------------------------------------------------
 
@@ -2610,27 +2722,18 @@ def _crush_json_items(payload: str, query: str, max_keep: int = 50) -> str | Non
 
     if not query_has_distinctive_selectors(query):
         return None
-    query_terms = set(distinctive_query_terms(query))
+    query_terms = set(_json_query_needles(query))
     if not query_terms:
         return None
-    # Short ALLCAPS (SKU, PNN) are distinctive for scoring but they also
-    # appear as JSON keys on every row. Prefer hyphen/digit/long terms
-    # for crush matching so a "SKU of titanium-torsion-rod" query does
-    # not keep the entire catalog.
-    strong = {
-        t
-        for t in query_terms
-        if any(ch.isdigit() for ch in t) or "-" in t or "_" in t or len(t) >= 8
-    }
-    query_terms = strong or query_terms
+    query_selectors = _selector_patterns(query_terms)
 
     total_crushed = 0
     for path, arr in arrays_to_crush:
         kept_indices = []
         dropped_count = 0
         for i, item in enumerate(arr):
-            item_str = json.dumps(item, ensure_ascii=False).lower()
-            if any(t in item_str for t in query_terms):
+            item_str = json.dumps(item, ensure_ascii=False)
+            if any(selector.search(item_str) for selector in query_selectors):
                 kept_indices.append(i)
             else:
                 dropped_count += 1
@@ -2747,19 +2850,30 @@ def compress_context(
     summary_allow_remote: bool | None = None,
 ) -> CompressResult:
     caller_text = str(context or "")
+    requested_mode = (mode or "adaptive").strip().lower()
+    if requested_mode not in {"adaptive", "fixed", "compiler", "precision"}:
+        raise ValueError(
+            f"unknown mode {mode!r} (expected adaptive/fixed/compiler/precision)"
+        )
+    mode_norm = (
+        "adaptive" if requested_mode in {"compiler", "precision"} else requested_mode
+    )
     original_text = _norm_newlines(caller_text)
     text = strip_ansi(original_text)
     text = unwrap_hermes_tool(text)
     text = preprocess_test_runner(text, query or "")
     if not text.strip():
-        return CompressResult(compressed_text="", policy_name="noop", mode=mode)
+        return CompressResult(
+            compressed_text="", policy_name="noop", mode=requested_mode
+        )
     ambiguity_fail_open = bool(ambiguity_fail_open)
 
     # Destructive preprocess (JSON crush / later log collapse) only when
     # the query names something specific. Generic/empty queries must not
     # delete array tails or fingerprint-collapse logs before scoring.
     if query_has_distinctive_selectors(query or ""):
-        text = _preprocess_json(text, query or "")
+        if route_content_type(_norm_newlines(text).split("\n")) != "json":
+            text = _preprocess_json(text, query or "")
         text = preprocess_csv(text, query or "")
         text = preprocess_filler_comments(text, query or "")
 
@@ -2825,7 +2939,7 @@ def compress_context(
                 kept_tokens=kept_tokens,
                 tokens_saved_pct=(1.0 - keep_ratio) * 100.0,
                 policy_name="summarise-llm",
-                mode=mode,
+                mode=requested_mode,
                 keep_ratio=keep_ratio,
                 tokens_saved=original_tokens - kept_tokens,
                 kept_line_ratio=1.0,
@@ -2885,10 +2999,7 @@ def compress_context(
         decision_cache = None
     if decision_cache is not None:
         scored = _apply_freeze(decision_cache, scored, text, query or "")
-    mode_norm = (mode or "adaptive").strip().lower()
     _reorder = bool(reorder_best)
-    if mode_norm in {"compiler", "precision"}:
-        mode_norm = "adaptive"
     if mode_norm == "fixed":
         ratio = 0.35 if budget_ratio is None else float(budget_ratio)
         if not (0.0 < ratio <= 1.0):
@@ -2903,12 +3014,12 @@ def compress_context(
         )
         ratio = budget_ratio if budget_ratio is not None else 0.0
     if not fail_open:
-        # Temporal supersession: a later kept block that explicitly marks an
-        # earlier kept block stale (now/obsolete/override/newer date) prunes
-        # it. Prune-only, so it cannot rescue distractors.
-        kept = apply_supersession(scored, kept)
         if decision_cache is not None:
             kept = _enforce_frozen_decisions(scored, kept)
+        # Temporal supersession: a later kept block that explicitly marks an
+        # earlier kept block stale (now/obsolete/override/newer date) prunes
+        # it after cache replay, so a frozen keep cannot revive stale data.
+        kept = apply_supersession(scored, kept)
     if ambiguity_fail_open:
         fail_open = True
         risk = "high"
@@ -2935,8 +3046,6 @@ def compress_context(
         risk = "high"
 
     collapsed = "\n".join(lines)
-    if decision_cache is not None and not fail_open:
-        kept = _enforce_frozen_decisions(scored, kept)
     if fail_open:
         annotated_ids = {
             b["id"] for b in scored if b.get("trust_risk") and not b.get("pinned")
@@ -2951,7 +3060,7 @@ def compress_context(
             fail_open = False
             risk = "high"
         # Do not undo a useful structured collapse (repeated INFO lines).
-        # SuperCompress wins on JP/KO heartbeats by keeping the error and
+        # Baseline RAG wins on JP/KO heartbeats by keeping the error and
         # dropping repeats; restoring original bytes here threw that away.
         elif (
             not ambiguity_fail_open
@@ -3069,19 +3178,40 @@ def compress_context(
         cache_applied = True
 
     ccr_info = None
-    ccr_marker = ""
+    pending_ccr_hash = None
+    candidate_text = result_text
     if ccr and not fail_open and compressed != original_text:
-        try:
-            # Recovery means the caller's exact bytes, not a preprocessed view.
-            ccr_info = _ccr_store(caller_text, ccr_dir)
-        except OSError:
-            ccr_info = None
-        if ccr_info is not None:
-            ccr_marker = f"\n[CC-Retrieve: {ccr_info['hash']}]\n"
-            if "[CC-Retrieve:" not in result_text:
-                result_text = result_text.rstrip() + ccr_marker
+        pending_ccr_hash = hashlib.sha256(caller_text.encode("utf-8")).hexdigest()[:24]
+        if "[CC-Retrieve:" not in candidate_text:
+            candidate_text = (
+                candidate_text.rstrip()
+                + f"\n[CC-Retrieve: {pending_ccr_hash}]\n"
+            )
 
-    savings = round((1 - kept_tokens / max(original_tokens, 1)) * 100, 2)
+    candidate_tokens = estimate_tokens(candidate_text)
+    if not fail_open and candidate_tokens > original_tokens and not trust_filtered:
+        result_text = caller_text
+        compressed = caller_text
+        kept = {b["id"] for b in scored}
+        fail_open = True
+        risk = "high"
+        cache_applied = False
+        line_keep = 1.0
+    else:
+        result_text = candidate_text
+        if pending_ccr_hash is not None:
+            try:
+                # Recovery means the caller's exact bytes, not a preprocessed view.
+                ccr_info = _ccr_store(caller_text, ccr_dir)
+            except OSError:
+                ccr_info = None
+                result_text = result_text.replace(
+                    f"\n[CC-Retrieve: {pending_ccr_hash}]\n", ""
+                )
+
+    kept_tokens = estimate_tokens(result_text)
+    keep_ratio = kept_tokens / max(1, original_tokens)
+    savings = round((1 - keep_ratio) * 100, 2)
     policy = f"local-{content_type}"
     if fail_open:
         policy = "local-fail-open"
@@ -3104,8 +3234,9 @@ def compress_context(
         kept_tokens=kept_tokens,
         tokens_saved_pct=savings,
         policy_name=policy,
-        mode=mode_norm,
+        mode=requested_mode,
         keep_ratio=keep_ratio,
+        tokens_saved=original_tokens - kept_tokens,
         kept_line_ratio=round(line_keep, 4),
         cache_prefix_applied=cache_applied,
         compression_risk=risk,
@@ -3210,7 +3341,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if dc_path.is_file():
             try:
                 decision_cache = json.loads(dc_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError, RecursionError):
                 decision_cache = {}
             if not isinstance(decision_cache, dict):
                 decision_cache = {}

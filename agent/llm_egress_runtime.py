@@ -102,12 +102,8 @@ _GITHUB_PLAIN_LIST_OUTPUT_REPLAY = (
 _REJECTED_TERMINAL_COMMAND_REPLAY = json.dumps(
     {"command": "<rejected terminal command omitted>"}, separators=(",", ":")
 )
-_REMOTE_KANBAN_TERMINAL_COMMAND_REPLAY = json.dumps(
-    {"command": "<terminal command omitted from remote replay>"},
-    separators=(",", ":"),
-)
-_REMOTE_KANBAN_TERMINAL_RESULT_REPLAY = (
-    "terminal completed locally; raw output was omitted from remote replay."
+_REMOTE_KANBAN_TERMINAL_COMMAND_ALLOWLIST = frozenset(
+    {"awk", "cat", "find", "gh", "git", "head", "ls", "npm", "pwd", "pytest", "python", "rg", "sed", "tail", "uv"}
 )
 _GIT_WORKSPACE_DIAGNOSTIC_REPLAY = (
     "git workspace diagnostic completed locally; raw paths and commit subjects "
@@ -1939,10 +1935,10 @@ def _typed_payload(
                 # worker to fail closed after the local command already ran.
                 # Specialized GitHub/search projections above retain the few
                 # bounded facts a worker needs; all other stdout is outcome-only.
-                typed[key] = GeneratedContextSegment(_REMOTE_KANBAN_TERMINAL_RESULT_REPLAY)
+                typed[key] = GeneratedContextSegment(_terminal_replay_result(item))
                 continue
             if is_terminal_replay_call and key == "arguments" and isinstance(item, str):
-                typed[key] = GeneratedContextSegment(_REMOTE_KANBAN_TERMINAL_COMMAND_REPLAY)
+                typed[key] = GeneratedContextSegment(_terminal_replay_command(item))
                 continue
             if (
                 redact_readonly_tool_arguments
@@ -2044,6 +2040,50 @@ def _typed_payload(
             for item in value
         ]
     return value
+
+
+def _terminal_replay_command(arguments: str) -> str:
+    """Classify a completed terminal command without replaying its text."""
+
+    try:
+        parsed = json.loads(arguments)
+        command = parsed.get("command") if isinstance(parsed, Mapping) else None
+        tokens = shlex.split(command) if isinstance(command, str) else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        tokens = []
+    command_classes: list[str] = []
+    is_executable = True
+    for token in tokens:
+        if token in {"&&", "||", ";", "|"}:
+            is_executable = True
+            continue
+        if not is_executable or token.startswith("-") or "=" in token:
+            continue
+        command_classes.append(
+            token if token in _REMOTE_KANBAN_TERMINAL_COMMAND_ALLOWLIST else "other"
+        )
+        is_executable = False
+    return json.dumps(
+        {"command_class": command_classes[:4] or ["other"]}, separators=(",", ":")
+    )
+
+
+def _terminal_replay_result(output: str) -> str:
+    """Preserve a local terminal exit status without replaying raw output."""
+
+    try:
+        parsed = json.loads(output)
+        exit_code = parsed.get("exit_code") if isinstance(parsed, Mapping) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        exit_code = None
+    return json.dumps(
+        {
+            "terminal_result": "completed",
+            "exit_code": exit_code if isinstance(exit_code, int) else None,
+            "raw_output": "omitted_from_remote_replay",
+        },
+        separators=(",", ":"),
+    )
 
 
 def _structural_literal_hashes(value: Any) -> frozenset[str]:

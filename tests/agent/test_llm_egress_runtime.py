@@ -1533,9 +1533,11 @@ def test_protected_kanban_admits_bounded_generic_terminal_stdout(
     authorized, receipt = authorize_agent_sdk_kwargs(agent, kwargs)
 
     assert receipt.allowed
-    assert authorized["messages"][1]["content"] == (
-        "terminal completed locally; raw output was omitted from remote replay."
-    )
+    assert json.loads(authorized["messages"][1]["content"]) == {
+        "terminal_result": "completed",
+        "exit_code": None,
+        "raw_output": "omitted_from_remote_replay",
+    }
     assert output not in authorized["messages"][1]["content"]
     assert receipt.decision.source_segment_count == 0
 

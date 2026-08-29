@@ -104,6 +104,134 @@ class _FakeWebSocket:
         self.sent.append(json.loads(raw))
 
 
+# ── _websocket_loop: read-idle watchdog (#98097) ──────────────────────────
+
+
+class _ScriptedWebSocket(_FakeWebSocket):
+    """A connect() target whose event frames come from a scripted behavior.
+
+    The auth handshake is the relay's (inherited from _FakeWebSocket); after
+    it, each ``__anext__`` delegates to ``anext_behavior`` — a coroutine
+    function returning the next raw frame or raising StopAsyncIteration for
+    a clean close.
+    """
+
+    def __init__(self, anext_behavior):
+        super().__init__()
+        self._anext_behavior = anext_behavior
+        self.exited = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        self.exited = True
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await self._anext_behavior()
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, caplog):
+    """A relay close the transport never surfaces must not park the loop.
+
+    Reproduces the #98097 shape: a socket stuck in CLOSE_WAIT yields no
+    frame and no error, so without a read-side bound the loop would wait
+    forever while the gateway keeps reporting "connected".
+    """
+    import logging
+
+    adapter = _make_adapter()
+    monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
+    caplog.set_level(logging.WARNING)
+
+    sockets = []
+
+    async def dead_anext():
+        await asyncio.Event().wait()  # never yields, never raises
+
+    def fake_connect(*args, **kwargs):
+        ws = _ScriptedWebSocket(dead_anext)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        deadline = time.monotonic() + 5.0
+        while len(sockets) < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+    finally:
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, 5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    assert len(sockets) >= 2, "idle read watchdog did not force a reconnect"
+    assert sockets[0].exited, "the silent connection was not closed before reconnecting"
+    assert any("went silent" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_dispatches_frames_and_closes_cleanly(monkeypatch):
+    """The watchdog refactor preserves the healthy path: frames dispatch to
+    _handle_event and a server-side close (StopAsyncIteration) exits the
+    connection cleanly before the loop reconnects."""
+    adapter = _make_adapter()
+    adapter._channel_state = {CHANNEL: {"last_ts": 1, "seen": {}}}
+
+    handled = []
+
+    async def record_handle_event(channel_id, state, event):
+        handled.append((channel_id, event))
+
+    monkeypatch.setattr(adapter, "_handle_event", record_handle_event)
+
+    frames = iter(
+        [
+            json.dumps(
+                ["EVENT", "hermes-buzz-0", {"id": "e1", "kind": 9, "created_at": 2, "content": "hi"}]
+            ),
+        ]
+    )
+
+    async def scripted_anext():
+        try:
+            return next(frames)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    sockets = []
+
+    def fake_connect(*args, **kwargs):
+        # Second connect ends the loop: CancelledError re-raises out of the
+        # loop's except-order, unlike a regular Exception which would retry.
+        if len(sockets) == 1:
+            raise asyncio.CancelledError()
+        ws = _ScriptedWebSocket(scripted_anext)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 10.0)
+
+    assert sockets[0].exited, "clean close did not exit the async-with block"
+    assert handled and handled[0][0] == CHANNEL
+    assert handled[0][1]["id"] == "e1"
+
+
 @pytest.mark.asyncio
 async def test_websocket_auth_raises_on_rejection():
     adapter = _make_adapter()

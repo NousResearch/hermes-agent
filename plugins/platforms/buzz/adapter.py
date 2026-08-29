@@ -241,6 +241,13 @@ _PROFILE_NAME_TTL = 300.0
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
 # kind 44100 is Buzz's channel-membership event — used for live DM discovery.
 _WS_AUTH_TIMEOUT = 20.0
+# Last-resort bound on how long the read loop may wait for a frame. The
+# library keepalive (ping_interval/ping_timeout below) should catch a dead
+# relay first, but a relay-side close the transport never surfaces (observed
+# as a CLOSE_WAIT socket with the loop parked on recv, #98097) leaves the
+# gateway "connected" while inbound stops; this timeout forces the normal
+# reconnect path instead.
+_WS_READ_IDLE_TIMEOUT = 300.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
@@ -1483,7 +1490,20 @@ class BuzzAdapter(BasePlatformAdapter):
                         if self._ws_ready is not None:
                             self._ws_ready.set()
                         backoff = 1.0
-                        async for raw in websocket:
+                        frame_iter = websocket.__aiter__()
+                        while True:
+                            try:
+                                raw = await asyncio.wait_for(
+                                    frame_iter.__anext__(),
+                                    timeout=_WS_READ_IDLE_TIMEOUT,
+                                )
+                            except StopAsyncIteration:
+                                break
+                            except asyncio.TimeoutError:
+                                raise ConnectionError(
+                                    f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; "
+                                    "assuming the connection went silent"
+                                ) from None
                             try:
                                 message = json.loads(raw)
                             except (ValueError, TypeError):

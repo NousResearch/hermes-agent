@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import shutil
 import tarfile
+import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
@@ -51,10 +52,31 @@ def normalize_archive_parts(member_name: str) -> list[str]:
 
 
 def make_targz(base: str, root_dir: str, base_dir: str) -> str:
-    """Create ``<base>.tar.gz`` of ``root_dir/base_dir`` in GNU tar format."""
+    """Create ``<base>.tar.gz`` of ``root_dir/base_dir`` in GNU tar format.
+
+    Writes to a sibling temp file and renames onto ``archive_path`` only
+    after the archive is fully written. ``tarfile.open`` on a path truncates
+    the destination the instant it opens, so writing there directly means a
+    failure partway through ``tf.add`` (disk full, permission loss,
+    interruption) destroys whatever was already at that path — including an
+    existing export the caller chose to overwrite.
+    """
     archive_path = f"{base}.tar.gz"
-    with tarfile.open(archive_path, "w:gz", format=tarfile.GNU_FORMAT) as tf:
-        tf.add(str(Path(root_dir) / base_dir), arcname=base_dir)
+    dest_dir = os.path.dirname(archive_path) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        dir=dest_dir, prefix=".archive_", suffix=".tar.gz.tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as f:
+            with tarfile.open(fileobj=f, mode="w:gz", format=tarfile.GNU_FORMAT) as tf:
+                tf.add(str(Path(root_dir) / base_dir), arcname=base_dir)
+        os.replace(tmp_path, archive_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return archive_path
 
 

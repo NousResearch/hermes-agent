@@ -7,12 +7,13 @@ nothing when reasoning was *enabled*, so a configured ``reasoning_effort``
 was silently dropped for every custom endpoint.
 
 These tests pin the wire-shape contract:
-  - disabled            → extra_body.think = False
-  - enabled + effort    → top-level reasoning_effort (native OpenAI-compat
+    - disabled on Ollama  → extra_body.think = False + reasoning_effort=none
+    - disabled elsewhere  → reasoning_effort=none, no think (strict APIs 422)
+    - enabled + effort    → top-level reasoning_effort (native OpenAI-compat
                           format GLM/ARK expect), passed through verbatim
                           including ``max``/``xhigh``
-  - enabled + no effort → nothing emitted (endpoint's server default applies)
-  - ollama_num_ctx      → extra_body.options.num_ctx, orthogonal to reasoning
+    - enabled + no effort → nothing emitted (endpoint's server default applies)
+    - ollama_num_ctx      → extra_body.options.num_ctx, orthogonal to reasoning
 """
 
 from __future__ import annotations
@@ -49,23 +50,71 @@ class TestCustomReasoningWireShape:
         assert tl == {}
 
     def test_disabled_sends_think_false(self, custom_profile):
-        """enabled=False → reasoning_effort='none' top-level + think=False.
+        """enabled=False on an Ollama URL → reasoning_effort='none' + think=False.
 
-        Both fields are required: Ollama's /v1/chat/completions silently
+        Both fields are required on Ollama: /v1/chat/completions silently
         ignores extra_body.think (only /api/chat honours it — ollama#14820)
         but respects top-level reasoning_effort (#25758). think=False stays
         for proxies and the native /api/chat path.
         """
         eb, tl = custom_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False}, model="glm-5.2"
+            reasoning_config={"enabled": False},
+            model="qwen3",
+            base_url="http://127.0.0.1:11434/v1",
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
 
     def test_effort_none_sends_think_false(self, custom_profile):
-        """effort='none' is the disable alias → same dual emission."""
+        """effort='none' is the disable alias → same dual emission on Ollama."""
         eb, tl = custom_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "none"}, model="glm-5.2"
+            reasoning_config={"enabled": True, "effort": "none"},
+            model="qwen3",
+            base_url="http://localhost:11434/v1",
+        )
+        assert eb == {"think": False}
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_disabled_omits_think_on_mistral(self, custom_profile):
+        """Strict OpenAI-compat hosts forbid extra ``think`` (HTTP 422)."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "none"},
+            model="mistral-small-latest",
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert "think" not in eb
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_disabled_omits_think_without_base_url(self, custom_profile):
+        """Unknown custom endpoint — do not send the Ollama-only flag."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model="glm-5.2"
+        )
+        assert "think" not in eb
+        assert tl == {"reasoning_effort": "none"}
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "http://127.0.0.1:8080/v1",
+            "http://localhost:1234/v1",
+            "https://api.groq.com/openai/v1",
+        ],
+    )
+    def test_disabled_omits_think_on_non_ollama_relays(self, custom_profile, base_url):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"effort": "none"},
+            model="llama3",
+            base_url=base_url,
+        )
+        assert "think" not in eb
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_disabled_sends_think_false_on_ollama_cloud_host(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="qwen3",
+            base_url="https://ollama.com/v1",
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}

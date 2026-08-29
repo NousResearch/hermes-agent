@@ -63,20 +63,22 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         if role == "user":
             stable_prefix = find_stable_prefix(content)
             if stable_prefix is not None:
-                # Builder-declared boundary (#81867): the scaffold carries the
-                # breakpoint, the volatile invocation tail rides unmarked so a
-                # changed ticket ID or timestamp no longer invalidates the
-                # whole skill body. Request-local only — the canonical session
-                # message stays a plain string.
-                msg["content"] = [
-                    {
-                        "type": "text",
-                        "text": stable_prefix,
-                        "cache_control": cache_marker,
-                    },
-                    {"type": "text", "text": content[len(stable_prefix):]},
-                ]
-                return
+                suffix = content[len(stable_prefix):]
+                if suffix.strip():
+                    # Builder-declared boundary (#81867): the scaffold carries the
+                    # breakpoint, the volatile invocation tail rides unmarked so a
+                    # changed ticket ID or timestamp no longer invalidates the
+                    # whole skill body. Request-local only — the canonical session
+                    # message stays a plain string.
+                    msg["content"] = [
+                        {
+                            "type": "text",
+                            "text": stable_prefix,
+                            "cache_control": cache_marker,
+                        },
+                        {"type": "text", "text": suffix},
+                    ]
+                    return
         msg["content"] = [
             {"type": "text", "text": content, "cache_control": cache_marker}
         ]
@@ -204,7 +206,7 @@ def _apply_system_cache_markers(
         and content.startswith(static_system_prefix)
     ):
         suffix = content[len(static_system_prefix):]
-        if suffix:
+        if suffix.strip():
             suffix_part: dict = {"type": "text", "text": suffix}
             if mark_suffix:
                 suffix_part["cache_control"] = cache_marker
@@ -217,7 +219,7 @@ def _apply_system_cache_markers(
                 suffix_part,
             ]
             return 2 if mark_suffix else 1
-        # Empty suffix: the stored prompt IS the static prefix. Mark it as
+        # Empty/whitespace-only suffix: the stored prompt IS the static prefix. Mark it as
         # one whole block — a [marked-prefix, ""] split would put an empty
         # text block on the wire (HTTP 400 on native Anthropic).
         _apply_cache_marker(message, cache_marker, native_anthropic=native_anthropic)

@@ -254,6 +254,9 @@ def effective_cache_ttl(
     (renewed on hit); the Anthropic ``1h`` tier is ignored/rejected there,
     so a configured ``1h`` regresses to ``5m`` instead of shipping a marker
     the provider drops and creating a false 1h-cache expectation (#84733).
+    Exception: routes in ``MEASURED_1H_PROVIDERS`` were wire-measured to
+    honour the tier (delayed read past 5 minutes) and keep ``1h`` — minus
+    any model in ``NO_1H_TIER_MODELS`` measured to ignore it on that route.
     All other caching routes keep the requested TTL.
 
     ``None`` (caching active with no explicit tier) resolves to ``5m``.

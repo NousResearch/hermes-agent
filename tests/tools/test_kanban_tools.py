@@ -924,6 +924,15 @@ def test_kanban_guidance_rejects_self_referential_reclaim_and_crash_blockers():
     assert "Do not pass the literal environment-variable token" in KANBAN_GUIDANCE
 
 
+def test_kanban_guidance_uses_github_cli_for_remote_list_intake():
+    """Workers must not build raw API scripts that cannot cross the egress boundary."""
+
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "`gh issue/pr list/view --json`" in KANBAN_GUIDANCE
+    assert "do not use raw `curl`" in KANBAN_GUIDANCE
+
+
 def test_kanban_guidance_resolves_board_context_before_needs_input_block():
     from agent.prompt_builder import KANBAN_GUIDANCE
 

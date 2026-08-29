@@ -1219,6 +1219,43 @@ def test_recognized_terminal_syntax_does_not_exempt_adjacent_base64(
         )
 
 
+def test_recognized_terminal_diagnostic_atoms_do_not_trigger_base64_blocks(
+    tmp_path, monkeypatch
+):
+    """Verified local terminal output may retain non-encoded code evidence."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    output = "PASS _SCHWAB_PARENT_SEED_ASSEMBLER line 5243"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_terminal123",
+                            "type": "function",
+                            "function": {"name": "terminal", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_terminal123",
+                    "content": output,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][1]["content"] == output
+
+
 def test_protected_kanban_admits_bounded_codex_function_output(
     tmp_path, monkeypatch
 ):

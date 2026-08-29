@@ -237,6 +237,15 @@ _PROMPT_CACHE_KEY = re.compile(r"^pck_[0-9a-f]{24}$")
 _CODEX_ENCRYPTED_REASONING_REPLAY = re.compile(r"^gAAAA[A-Za-z0-9_=-]{20,}$")
 _BOUNDED_DURATION = re.compile(r"^(?:0|[1-9][0-9]{0,6})(?:ms|s|m|h)$")
 _BOUNDED_CLI_WORD = re.compile(r"^--[a-z]+(?:-[a-z]+)*$")
+_SAFE_DIAGNOSTIC_STATUS_WORDS = frozenset({
+    "PASS",
+    "WARN",
+    "SUMMARY",
+    "REQUIREMENTS",
+    "AVAILABILITY",
+    "HANDLING",
+    "VERIFICATION",
+})
 # Any-case letters + optional trailing slash: GitHub-style org/repo slugs
 # ("NousResearch/hermes") and vault/skill paths ("Memories/Shared/") use
 # mixed case; a lone directory reference ("scripts/") has nothing after
@@ -254,6 +263,11 @@ _VALIDATED_TOOL_SYNTAX = {
         r"(?:t_[0-9a-f]{8}|[0-9a-f]{40}|[0-9a-f]{64}|"
         r"[a-z][a-z0-9]{0,31}(?:[_-][a-z][a-z0-9]{0,31}){1,7}"
         r"(?::v[0-9]{1,3})?)"
+    ),
+    "verified_diagnostic_atom": re.compile(
+        r"(?:PASS|WARN|SUMMARY|REQUIREMENTS|AVAILABILITY|HANDLING|VERIFICATION|"
+        r"[0-9]{1,10}|0x[0-9a-fA-F]{1,16}|"
+        r"_?[A-Za-z][A-Za-z0-9]{0,63}(?:_[A-Za-z0-9]{1,64}){1,7})"
     ),
     "separator": re.compile(r"[ \t\r\n,:=()\[\]{}]+"),
     "github_url": re.compile(
@@ -549,7 +563,13 @@ def _canonical_base64_candidate(candidate: str) -> bool:
 
     if candidate in _PROTOCOL_GRAMMAR_ATOMS:
         return False
+    if candidate in _SAFE_DIAGNOSTIC_STATUS_WORDS:
+        # Exact status labels are not an encoding channel; treating them as
+        # Base64 strands workers while replaying ordinary CLI output.
+        return False
     if _BOUNDED_DURATION.fullmatch(candidate):
+        return False
+    if re.fullmatch(r"0x[0-9a-fA-F]+", candidate):
         return False
     if not 4 <= len(candidate) <= _MAX_BASE64_CANDIDATE_CHARS:
         return False

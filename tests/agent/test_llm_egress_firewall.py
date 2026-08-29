@@ -632,6 +632,7 @@ def test_sha_and_commit_references_in_prose_are_not_base64_false_positives(tmp_p
         "Templates live under references/templates/scripts in this skill.",
         "Bind ids/goals/status/transcripts before writing the summary.",
         "TODO: revisit this once the WAIT state clears; do not SKIP the check.",
+        "PASS WARN SUMMARY REQUIREMENTS AVAILABILITY; 0x104e0860.",
     ],
 )
 def test_tool_and_skill_identifier_shapes_are_not_base64_false_positives(tmp_path, text):

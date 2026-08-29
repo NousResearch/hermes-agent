@@ -120,6 +120,12 @@ _APPLICATION_IDENTIFIER_TOKEN = re.compile(
     r"[a-z][a-z0-9]{0,31}(?:[_-][a-z][a-z0-9]{0,31}){1,7}"
     r"(?::v[0-9]{1,3})?)(?![A-Za-z0-9_-])"
 )
+_VERIFIED_DIAGNOSTIC_ATOM = re.compile(
+    r"(?<![A-Za-z0-9_])(?:PASS|WARN|SUMMARY|REQUIREMENTS|AVAILABILITY|"
+    r"HANDLING|VERIFICATION|[0-9]{1,10}|0x[0-9a-fA-F]{1,16}|"
+    r"_?[A-Za-z][A-Za-z0-9]{0,63}(?:_[A-Za-z0-9]{1,64}){1,7})"
+    r"(?![A-Za-z0-9_])"
+)
 _CREDENTIAL_ENV_SUFFIXES = (
     "_API_KEY",
     "_TOKEN",
@@ -488,13 +494,39 @@ def _segment_protected_tool_result(
     closed there.
     """
 
-    return _segment_text(
-        text,
-        grant_texts,
-        used_grants,
-        sanitized_cap=sanitized_cap,
-        allow_line_split=True,
-    )
+    segments: list[SanitizedSegment | SourceBoundSegment | ValidatedToolSyntaxSegment] = []
+    cursor = 0
+    for match in _VERIFIED_DIAGNOSTIC_ATOM.finditer(text):
+        if match.start() > cursor:
+            prefix = _segment_text(
+                text[cursor : match.start()],
+                grant_texts,
+                used_grants,
+                sanitized_cap=sanitized_cap,
+                allow_line_split=True,
+            )
+            segments.extend(prefix.segments if isinstance(prefix, OutboundText) else (prefix,))
+        atom = validate_tool_syntax(match.group(0), "verified_diagnostic_atom")
+        segments.append(ValidatedToolSyntaxSegment(atom, "verified_diagnostic_atom"))
+        cursor = match.end()
+    if cursor < len(text):
+        suffix = _segment_text(
+            text[cursor:],
+            grant_texts,
+            used_grants,
+            sanitized_cap=sanitized_cap,
+            allow_line_split=True,
+        )
+        segments.extend(suffix.segments if isinstance(suffix, OutboundText) else (suffix,))
+    if not segments:
+        return _segment_text(
+            text,
+            grant_texts,
+            used_grants,
+            sanitized_cap=sanitized_cap,
+            allow_line_split=True,
+        )
+    return segments[0] if len(segments) == 1 else OutboundText(tuple(segments))
 
 
 def _segment_read_file_presentation(

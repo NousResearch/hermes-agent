@@ -44,7 +44,7 @@ import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-c
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
-import { metadataSummary, ModelDetailsSubmenu } from './model-details-submenu'
+import { isFreeTierModelId, metadataSummary, ModelDetailsSubmenu } from './model-details-submenu'
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
@@ -520,7 +520,7 @@ export function ModelCatalogMenu({
                     const modelMetadata = group.provider.metadata?.[family.id]
 
                     const meta = detailsOnHover
-                      ? metadataSummary(modelMetadata)
+                      ? metadataSummary(modelMetadata, isFreeTierModelId(family.id) ? t.shell.modelOptions.optionsFree : undefined)
                       : [
                           fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
                           (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null

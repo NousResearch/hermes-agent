@@ -3450,6 +3450,7 @@ export const en: Translations = {
       model: 'Model',
       provider: 'Provider',
       inputs: 'Inputs',
+      optionsFree: 'Free',
       modalityText: 'text',
       modalityImage: 'image',
       modalityAudio: 'audio',

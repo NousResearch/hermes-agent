@@ -1,10 +1,11 @@
+import type { ModelPickerMetadata, ModelPricing } from '@hermes/shared'
+
 import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSubContent
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
-import type { ModelPickerMetadata, ModelPricing } from '@hermes/shared'
 
 export function compactTokens(value?: number): string | null {
   if (!value || value <= 0) {
@@ -18,7 +19,14 @@ export function compactTokens(value?: number): string | null {
   return `${Number.isInteger(amount) ? amount : amount.toFixed(1)}${suffix}`
 }
 
-export function metadataSummary(metadata?: ModelPickerMetadata): string {
+/** Models whose id ends in the `-free` suffix are free-tier entries in the
+ *  catalogs that name them that way (muse-spark-1.2-contributor-free,
+ *  hy3-free, …). Pure display signal — mirrors what OpenCode derives. */
+export function isFreeTierModelId(modelId: string): boolean {
+  return /-free$/i.test(modelId.trim())
+}
+
+export function metadataSummary(metadata?: ModelPickerMetadata, freeBadge?: string): string {
   if (!metadata) {
     return ''
   }
@@ -26,7 +34,8 @@ export function metadataSummary(metadata?: ModelPickerMetadata): string {
   return [
     compactTokens(metadata.context_window),
     metadata.supports_vision ? 'Vision' : null,
-    metadata.supports_tools ? 'Tools' : null
+    metadata.supports_tools ? 'Tools' : null,
+    freeBadge
   ]
     .filter(Boolean)
     .join(' · ')
@@ -105,6 +114,11 @@ export function ModelDetailsSubmenu({
               {pricing.cache ? <Row label={copy.cachedInput} value={copy.pricingPerMtok(pricing.cache)} /> : null}
             </>
           )}
+        </>
+      ) : isFreeTierModelId(model) ? (
+        <>
+          <DropdownMenuSeparator className="mx-1" />
+          <Row label={copy.pricing} value={copy.pricingFree} />
         </>
       ) : null}
       {!metadata && !pricing ? (

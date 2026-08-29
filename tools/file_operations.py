@@ -627,7 +627,8 @@ class FileOperations(ABC):
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
-               output_mode: str = "content", context: int = 0) -> SearchResult:
+               output_mode: str = "content", context: int = 0,
+               order: str = "discovery") -> SearchResult:
         """Search for content or files."""
         ...
 
@@ -997,8 +998,9 @@ class ShellFileOperations(FileOperations):
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
 
-        # Cache for command availability checks
-        self._command_cache: Dict[str, bool] = {}
+        # Cache successful command resolutions. Misses are deliberately not
+        # cached so a tool installed while this instance is alive is visible.
+        self._command_cache: Dict[str, str] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
@@ -1039,12 +1041,62 @@ class ShellFileOperations(FileOperations):
             exit_code=exit_code
         )
     
+    def _resolve_command(self, cmd: str) -> Optional[str]:
+        """Resolve an executable in the command host's namespace.
+
+        Only successful resolutions are cached. Native Windows local searches
+        additionally recognize common off-PATH ripgrep install locations;
+        remote backends must resolve exclusively in their own namespace.
+        """
+        cached = self._command_cache.get(cmd)
+        if cached:
+            return cached
+
+        result = self._exec(f"command -v {cmd} 2>/dev/null")
+        if result.exit_code == 0 and result.stdout.strip():
+            resolved = result.stdout.strip().splitlines()[0]
+            # Compatibility with test/fake environments that historically
+            # answered the old boolean probe with the literal "yes".
+            if resolved == "yes":
+                resolved = cmd
+            self._command_cache[cmd] = resolved
+            return resolved
+
+        if cmd == "rg":
+            from tools.environments.local import LocalEnvironment, _IS_WINDOWS
+
+            if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
+                user_profile = os.environ.get("USERPROFILE") or str(Path.home())
+                local_app_data = os.environ.get("LOCALAPPDATA")
+                scoop = os.environ.get("SCOOP") or os.path.join(user_profile, "scoop")
+                candidates = [
+                    os.path.join(user_profile, ".cargo", "bin", "rg.exe"),
+                    os.path.join(scoop, "shims", "rg.exe"),
+                ]
+                if local_app_data:
+                    candidates.append(
+                        os.path.join(local_app_data, "Microsoft", "WinGet", "Links", "rg.exe")
+                    )
+                for candidate in candidates:
+                    if os.path.isfile(candidate):
+                        resolved = candidate.replace("\\", "/")
+                        self._command_cache[cmd] = resolved
+                        return resolved
+        return None
+
     def _has_command(self, cmd: str) -> bool:
-        """Check if a command exists in the environment (cached)."""
-        if cmd not in self._command_cache:
-            result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
-            self._command_cache[cmd] = result.stdout.strip() == 'yes'
-        return self._command_cache[cmd]
+        """Return whether a command resolves in the execution environment."""
+        return self._resolve_command(cmd) is not None
+
+    def _quote_executable(self, executable: str) -> str:
+        """Quote an executable without leaking controller path semantics."""
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", executable):
+            return executable
+        from tools.environments.local import LocalEnvironment
+
+        if isinstance(self.env, LocalEnvironment):
+            return self._escape_native_tool_arg(executable)
+        return "'" + executable.replace("'", "'\"'\"'") + "'"
     
     def _sample_file_bytes(self, path: str, length: int = 1000):
         """Fetch the first ``length`` raw bytes of a file through the terminal.
@@ -3271,7 +3323,8 @@ class ShellFileOperations(FileOperations):
     
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
-               output_mode: str = "content", context: int = 0) -> SearchResult:
+               output_mode: str = "content", context: int = 0,
+               order: str = "discovery") -> SearchResult:
         """
         Search for content or files.
         
@@ -3284,11 +3337,18 @@ class ShellFileOperations(FileOperations):
             offset: Skip first N results
             output_mode: "content", "files_only", or "count"
             context: Lines of context around matches
+            order: File-search ordering: fast discovery or exact modified time
         
         Returns:
             SearchResult with matches or file list
         """
         offset, limit = normalize_search_pagination(offset, limit)
+
+        if target == "files" and order not in {"discovery", "modified"}:
+            return SearchResult(
+                error=(f"Invalid file search order {order!r}; expected "
+                       "'discovery' or 'modified'.")
+            )
 
         # Expand ~ and other shell paths
         path = self._expand_path(path)
@@ -3301,7 +3361,8 @@ class ShellFileOperations(FileOperations):
             # failing the whole call, split, search every path that exists,
             # merge the results, and report the skipped parts.
             multi = self._try_multi_path_search(
-                pattern, path, target, file_glob, limit, offset, output_mode, context
+                pattern, path, target, file_glob, limit, offset, output_mode, context,
+                order,
             )
             if multi is not None:
                 return multi
@@ -3336,7 +3397,7 @@ class ShellFileOperations(FileOperations):
             )
         
         if target == "files":
-            result = self._search_files(pattern, path, limit, offset)
+            result = self._search_files(pattern, path, limit, offset, order)
         else:
             result = self._search_content(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
@@ -3373,7 +3434,8 @@ class ShellFileOperations(FileOperations):
     
     def _try_multi_path_search(self, pattern: str, path: str, target: str,
                                file_glob: Optional[str], limit: int, offset: int,
-                               output_mode: str, context: int) -> Optional[SearchResult]:
+                               output_mode: str, context: int,
+                               order: str = "discovery") -> Optional[SearchResult]:
         """Recover a not-found ``path`` that is really several paths in one string.
 
         Production trajectories show models passing "dir1 dir2 dir3" (or
@@ -3398,7 +3460,7 @@ class ShellFileOperations(FileOperations):
         merged = SearchResult()
         for p in existing:
             if target == "files":
-                sub = self._search_files(pattern, p, limit, offset)
+                sub = self._search_files(pattern, p, limit, offset, order)
             else:
                 sub = self._search_content(pattern, p, file_glob, limit, offset,
                                            output_mode, context)
@@ -3430,8 +3492,10 @@ class ShellFileOperations(FileOperations):
         metacharacters, also probe it as a fixed string. Bounded: two rg
         invocations max, count-only output.
         """
-        if not self._has_command('rg'):
+        rg_executable = self._resolve_command('rg')
+        if not rg_executable:
             return None
+        rg = self._quote_executable(rg_executable)
 
         def _tally(stdout: str):
             """Parse ``path:count`` lines from rg --count-matches."""
@@ -3451,7 +3515,7 @@ class ShellFileOperations(FileOperations):
 
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
-            f"rg -i --count-matches{glob_expr} "
+            f"{rg} -i --count-matches{glob_expr} "
             f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
@@ -3468,7 +3532,7 @@ class ShellFileOperations(FileOperations):
         # returning a bare zero (bench case: match in .hidden/ silently
         # missing from results).
         hidden = self._exec(
-            f"rg --hidden --no-ignore --count-matches{glob_expr} "
+            f"{rg} --hidden --no-ignore --count-matches{glob_expr} "
             f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
@@ -3482,7 +3546,7 @@ class ShellFileOperations(FileOperations):
             )
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
-                f"rg -F --count-matches{glob_expr} "
+                f"{rg} -F --count-matches{glob_expr} "
                 f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
                 f"2>/dev/null | head -50",
                 timeout=30,
@@ -3497,7 +3561,8 @@ class ShellFileOperations(FileOperations):
                 )
         return None
 
-    def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
+    def _search_files(self, pattern: str, path: str, limit: int, offset: int,
+                      order: str = "discovery") -> SearchResult:
         """Search for files by name pattern (glob-like)."""
         # Auto-prepend **/ for recursive search if not already present
         if not pattern.startswith('**/') and '/' not in pattern:
@@ -3515,7 +3580,10 @@ class ShellFileOperations(FileOperations):
         # default, and has parallel directory traversal (~200x faster than
         # find on wide trees).  Mirrors _search_content which already uses rg.
         if self._has_command('rg'):
-            return self._search_files_rg(search_pattern, path, limit, offset)
+            return self._search_files_rg(
+                search_pattern, path, limit, offset, order,
+                rg_executable=self._resolve_command("rg") or "rg",
+            )
 
         # Fallback: find (slower, no .gitignore awareness)
         if not self._has_command('find'):
@@ -3602,13 +3670,15 @@ class ShellFileOperations(FileOperations):
             limit_reason=limit_reason,
         )
 
-    def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
+    def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int,
+                         order: str = "discovery",
+                         rg_executable: Optional[str] = None) -> SearchResult:
         """Search for files by name using ripgrep's --files mode.
 
         rg --files respects .gitignore and excludes hidden directories by
         default, and uses parallel directory traversal for ~200x speedup
-        over find on wide trees.  Results are sorted by modification time
-        (most recently edited first) when rg >= 13.0 supports --sortr.
+        over find on wide trees. Discovery order stays bounded and fast;
+        exact modification-time ordering is explicit because it scans globally.
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
@@ -3623,28 +3693,29 @@ class ShellFileOperations(FileOperations):
             for item in self._macos_search_exclusions(path)
         )
         exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
-        # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
-        cmd_sorted = (
-            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)}"
+        rg_executable = rg_executable or self._resolve_command("rg")
+        if not rg_executable:
+            return SearchResult(error="File search requires ripgrep (rg).")
+        rg = self._quote_executable(rg_executable)
+        sort_arg = " --sortr=modified" if order == "modified" else ""
+        cmd = (
+            f"set -o pipefail; {rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
             f"{exclusion_args} "
             f"{self._escape_native_tool_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
-        result = self._exec(cmd_sorted, timeout=60)
+        result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.strip().split('\n') if f]
 
-        if not all_files and not limit_reason:
-            # --sortr may have failed on older rg; retry without it.
-            cmd_plain = (
-                f"rg --files -g {self._escape_shell_arg(glob_pattern)}"
-                f"{exclusion_args} "
-                f"{self._escape_native_tool_arg(path)} 2>/dev/null "
-                f"| head -n {fetch_limit}"
+        if order == "modified" and result.exit_code not in {0, 124}:
+            return SearchResult(
+                error=(
+                    "Exact modification-time order requires ripgrep with "
+                    "--sortr=modified support; upgrade ripgrep or use "
+                    "order='discovery'."
+                )
             )
-            result = self._exec(cmd_plain, timeout=60)
-            stdout, limit_reason = _search_stdout_and_limit(result)
-            all_files = [f for f in stdout.strip().split('\n') if f]
 
         page = all_files[offset:offset + limit]
 
@@ -3663,7 +3734,8 @@ class ShellFileOperations(FileOperations):
         if self._has_command('rg'):
             used_rg = True
             result = self._search_with_rg(pattern, path, file_glob, limit, offset,
-                                          output_mode, context)
+                                          output_mode, context,
+                                          rg_executable=self._resolve_command("rg") or "rg")
         elif self._has_command('grep'):
             result = self._search_with_grep(pattern, path, file_glob, limit, offset,
                                             output_mode, context)
@@ -3694,9 +3766,13 @@ class ShellFileOperations(FileOperations):
         return _maybe_warn_line_oriented_newline_pattern(result, pattern)
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                        limit: int, offset: int, output_mode: str, context: int,
+                        rg_executable: Optional[str] = None) -> SearchResult:
         """Search using ripgrep."""
-        cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
+        rg_executable = rg_executable or self._resolve_command("rg")
+        if not rg_executable:
+            return SearchResult(error="Content search requires ripgrep (rg).")
+        cmd_parts = [self._quote_executable(rg_executable), "--line-number", "--no-heading", "--with-filename"]
 
         # Giant-single-line containment (ported from cline/cline#13525): a
         # match inside a serialized dump (multi-MB single-line JSON/minified

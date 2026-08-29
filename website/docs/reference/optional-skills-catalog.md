@@ -231,7 +231,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**code-wiki**](/docs/user-guide/skills/optional/software-development/software-development-code-wiki) | Generate wiki docs + Mermaid diagrams for any codebase. |
-| [**grill-me**](/docs/user-guide/skills/optional/software-development/software-development-grill-me) | Adversarial plan interview before implementation. |
+| [**plan-interrogation**](/docs/user-guide/skills/optional/software-development/software-development-plan-interrogation) | Adversarial plan interview before implementation. |
 | [**rest-graphql-debug**](/docs/user-guide/skills/optional/software-development/software-development-rest-graphql-debug) | Debug REST/GraphQL APIs: status codes, auth, schemas, repro. |
 | [**subagent-driven-development**](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development) | Execute plans via delegate_task subagents (2-stage review). |
 

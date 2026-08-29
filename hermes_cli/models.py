@@ -572,11 +572,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # tier, so a relay-delisted model stops appearing in the picker and a
     # newly-live one becomes selectable without a release. This floor keeps the
     # picker populated when the relay is unreachable. Note: this floor may lag
-    # the live relay (e.g. x-preview-f-free was delisted 2026-08-26) — that is
-    # intentional; the live revalidation is the source of truth when reachable.
-    # deepseek-v4-flash-free and mimo-v2.5-free are back on the live list.
+    # the live relay — that is intentional; the live revalidation is the
+    # source of truth when reachable. Known-delisted models are REMOVED from
+    # the floor (x-preview-f-free delisted 2026-08-26 — offline fallback must
+    # not offer a model that 401s). deepseek-v4-flash-free and mimo-v2.5-free
+    # are back on the live list.
     "opencode-free": [
-        "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
         "deepseek-v4-flash-free",
         "hy3-free",
         "mimo-v2.5-free",
@@ -4113,7 +4114,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # empty. This is what keeps a relay-delisted model (e.g. x-preview-f-free)
     # from lingering in the picker until a release re-syncs the snapshot.
     if normalized == "opencode-free":
-        return _fetch_opencode_free_models() or list(_PROVIDER_MODELS.get(normalized, []))
+        return _fetch_opencode_free_models(
+            force_refresh=force_refresh
+        ) or list(_PROVIDER_MODELS.get(normalized, []))
 
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".
@@ -5475,6 +5478,14 @@ _OPENCODE_KEYLESS_EXTRA_SLUGS = frozenset({"big-pickle"})
 # subscription twin of the Zen keyless Ox Alpha (verified 2026-08-21).
 _OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
 
+# In-process memo for _fetch_opencode_free_models(): (fetched_at, ids-or-None).
+# Direct provider_model_ids("opencode-free") callers (model validation, healing)
+# can run several times per resolution — without this each would block on a
+# network round-trip. Failures are memoized too (negative caching) so an
+# unreachable relay doesn't stall every validation for `timeout` seconds.
+_opencode_free_live_memo: Optional[tuple[float, Optional[list[str]]]] = None
+_OPENCODE_FREE_LIVE_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
+
 
 def is_opencode_zen_free_model(model_id: Optional[str]) -> bool:
     """True when ``model_id`` is an OpenCode Zen free-tier slug.
@@ -5511,7 +5522,9 @@ def opencode_zen_free_headers() -> dict:
     }
 
 
-def _fetch_opencode_free_models(timeout: float = 8.0) -> Optional[list[str]]:
+def _fetch_opencode_free_models(
+    timeout: float = 8.0, *, force_refresh: bool = False
+) -> Optional[list[str]]:
     """Fetch the live keyless OpenCode Free catalog from the Zen relay.
 
     GETs ``{_OPENCODE_ZEN_FREE_BASE_URL}/models`` ANONYMOUSLY (the free tier
@@ -5522,6 +5535,13 @@ def _fetch_opencode_free_models(timeout: float = 8.0) -> Optional[list[str]]:
     treated as a failure for the same reason (a relay with zero free models is
     not worth trusting over the floor).
 
+    A short in-process memo (``_OPENCODE_FREE_LIVE_MEMO_TTL``) keeps direct
+    ``provider_model_ids("opencode-free")`` callers — model validation runs
+    it several times per resolution — from issuing one blocking network
+    round-trip each. The picker's cross-process freshness still comes from
+    the SWR disk cache one layer up; ``force_refresh=True`` (the SWR refresh
+    path) bypasses and repopulates the memo.
+
     The Zen ``/models`` dump also lists paid/subscription IDs (e.g. Go
     ``ox-alpha-free`` is KEYED despite the suffix), so a bare ``*-free`` suffix
     filter is not safe on its own — this mirrors the existing
@@ -5531,6 +5551,12 @@ def _fetch_opencode_free_models(timeout: float = 8.0) -> Optional[list[str]]:
     import urllib.request
 
     from hermes_cli.urllib_security import open_credentialed_url
+
+    now = time.time()
+    if not force_refresh:
+        memo = _opencode_free_live_memo
+        if memo is not None and now - memo[0] < _OPENCODE_FREE_LIVE_MEMO_TTL:
+            return list(memo[1]) if memo[1] else None
 
     url = f"{_OPENCODE_ZEN_FREE_BASE_URL.rstrip('/')}/models"
     req = urllib.request.Request(url)
@@ -5543,6 +5569,7 @@ def _fetch_opencode_free_models(timeout: float = 8.0) -> Optional[list[str]]:
             data = json.loads(resp.read().decode())
         items = data if isinstance(data, list) else data.get("data", [])
     except Exception:
+        _set_opencode_free_live_memo(None)
         return None
     ids = [m["id"] for m in items if isinstance(m, dict) and isinstance(m.get("id"), str)]
     # Filter to the anonymous-servable free tier. The Zen dump can contain
@@ -5553,7 +5580,35 @@ def _fetch_opencode_free_models(timeout: float = 8.0) -> Optional[list[str]]:
         if mid.lower().endswith("-free")
         and mid.lower() not in _OPENCODE_FREE_KEYED_SUFFIX_MODELS
     ]
-    return live_free if live_free else None
+    result = live_free if live_free else None
+    _set_opencode_free_live_memo(result)
+    return result
+
+
+def _set_opencode_free_live_memo(ids: Optional[list[str]]) -> None:
+    global _opencode_free_live_memo
+    _opencode_free_live_memo = (time.time(), list(ids) if ids else None)
+
+
+def _opencode_free_known_model_slugs() -> set[str]:
+    """Lowercased keyless free-tier slugs known right now — WITHOUT network I/O.
+
+    Union of the static ``_PROVIDER_MODELS["opencode-free"]`` floor, the
+    in-process live memo, and the SWR disk-cache entry. Used by the
+    ``opencode_zen_free_runtime`` healing path, which runs during model
+    resolution and must never block on a live fetch. Union (not replacement)
+    so a stale cache can only widen healing, never silently disable it.
+    """
+    known = {m.lower() for m in _PROVIDER_MODELS.get("opencode-free", [])}
+    memo = _opencode_free_live_memo
+    if memo is not None and memo[1]:
+        known.update(m.lower() for m in memo[1])
+    try:
+        entry = _load_provider_models_cache().get("opencode-free") or {}
+        known.update(str(m).lower() for m in entry.get("models", []) or [])
+    except Exception:
+        pass
+    return known
 
 
 def opencode_zen_free_runtime(provider_id: Optional[str], model_id: Optional[str]) -> Optional[dict]:
@@ -5573,13 +5628,16 @@ def opencode_zen_free_runtime(provider_id: Optional[str], model_id: Optional[str
     stopped being a reliable keyless signal when ``ox-alpha-free`` appeared
     on the Go relay as a KEYED subscription model (2026-08-21) — suffix-based
     healing would have routed it to a Zen relay that doesn't serve it.
+    Membership means the union of the cached LIVE keyless catalog (in-process
+    memo / SWR disk cache — never a blocking fetch on this hot path) and the
+    static floor, so a newly-live free model heals without a release.
     """
     family = opencode_provider_family(provider_id)
     if family is None:
         return None
     if family != "opencode-free":
         bare = normalize_opencode_model_id(provider_id, model_id).strip().lower()
-        if bare not in {m.lower() for m in _PROVIDER_MODELS.get("opencode-free", [])}:
+        if bare not in _opencode_free_known_model_slugs():
             return None
     normalized = normalize_opencode_model_id(provider_id, model_id)
     api_mode = opencode_model_api_mode("opencode-zen", normalized)

@@ -127,3 +127,95 @@ class TestOpencodeFreeCacheFingerprint:
         entry = written["opencode-free"]
         assert entry["fp"].startswith("keyless:opencode-free")
         assert isinstance(entry["at"], float) and not isinstance(entry["at"], bool)
+
+
+class TestOpencodeFreeFollowUps:
+    """Follow-up hardening on top of the salvaged live-catalog fix (#95943)."""
+
+    def _reset_memo(self, mod):
+        mod._opencode_free_live_memo = None
+
+    def test_fetch_memoizes_success_in_process(self):
+        """Direct provider_model_ids() callers must not each pay a network
+        round-trip: the second call within the memo TTL is served in-process."""
+        import hermes_cli.models as mod
+
+        self._reset_memo(mod)
+        calls = {"n": 0}
+
+        def fake_open(req, timeout):
+            calls["n"] += 1
+            import io, json as _json
+
+            class _Resp(io.BytesIO):
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return _Resp(
+                _json.dumps({"data": [{"id": m} for m in _LIVE_FREE_MODELS]}).encode()
+            )
+
+        with patch("hermes_cli.urllib_security.open_credentialed_url", fake_open):
+            first = mod._fetch_opencode_free_models()
+            second = mod._fetch_opencode_free_models()
+        assert first == second == list(_LIVE_FREE_MODELS)
+        assert calls["n"] == 1  # memo served the second call
+        self._reset_memo(mod)
+
+    def test_fetch_memoizes_failure_negative_cache(self):
+        """An unreachable relay is memoized too — repeated validations must not
+        each block for the full network timeout."""
+        import hermes_cli.models as mod
+
+        self._reset_memo(mod)
+        calls = {"n": 0}
+
+        def fake_open(req, timeout):
+            calls["n"] += 1
+            raise OSError("relay down")
+
+        with patch("hermes_cli.urllib_security.open_credentialed_url", fake_open):
+            assert mod._fetch_opencode_free_models() is None
+            assert mod._fetch_opencode_free_models() is None
+        assert calls["n"] == 1
+        self._reset_memo(mod)
+
+    def test_heal_union_includes_live_only_model(self):
+        """A newly-live free model absent from the static floor must still heal
+        opencode-go/zen selections to the keyless Zen relay (sibling-site widen:
+        opencode_zen_free_runtime used to check the floor only)."""
+        import hermes_cli.models as mod
+
+        live_only = "ling-3.0-flash-fin-free"
+        assert live_only not in {m.lower() for m in _PROVIDER_MODELS["opencode-free"]}
+
+        self._reset_memo(mod)
+        with patch.object(mod, "_load_provider_models_cache", return_value={}):
+            assert mod.opencode_zen_free_runtime("opencode-go", live_only) is None
+
+        mod._set_opencode_free_live_memo(_LIVE_FREE_MODELS + [live_only])
+        try:
+            with patch.object(mod, "_load_provider_models_cache", return_value={}):
+                rt = mod.opencode_zen_free_runtime("opencode-go", live_only)
+            assert rt is not None and rt["source"] == "opencode-zen-free-keyless"
+        finally:
+            self._reset_memo(mod)
+
+    def test_heal_union_reads_swr_disk_cache(self):
+        """A fresh process (empty memo) still heals live-only models via the
+        SWR disk-cache entry — no blocking fetch on the resolution hot path."""
+        import hermes_cli.models as mod
+
+        live_only = "ling-3.0-flash-fin-free"
+        self._reset_memo(mod)
+        entry = {"opencode-free": {"fp": "keyless:opencode-free", "at": 0.0, "models": [live_only]}}
+        with patch.object(mod, "_load_provider_models_cache", return_value=entry):
+            rt = mod.opencode_zen_free_runtime("opencode-zen", live_only)
+        assert rt is not None
+
+    def test_static_floor_excludes_delisted_model(self):
+        """The offline floor must not offer a model known to 401 (#95914)."""
+        assert "x-preview-f-free" not in _PROVIDER_MODELS["opencode-free"]

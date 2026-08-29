@@ -1149,6 +1149,30 @@ If you run the dashboard as a systemd service, `~/.hermes/.env` is picked up aut
 The dashboard reads and writes your `.env` (API keys, secrets) and can run agent commands. The **username/password** setup shown here is for a trusted network — never expose a password-protected dashboard directly to the open internet. Put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL. Only devices on your tailnet can reach it. To reach a backend over the public internet, use the **OAuth (Nous Portal)** provider instead.
 :::
 
+### Hardening the bind for LAN-only access
+
+The `hermes dashboard --host 0.0.0.0` bind exposes the dashboard on **all** host interfaces. Without a firewall rule, any network the host can reach can reach the dashboard. Restrict it to your LAN:
+
+```bash
+# Find your LAN interface and subnet:
+ip -4 addr show | grep inet
+
+# Allow only your LAN subnet (replace IFACE, LAN_SUBNET, PORT):
+sudo ufw allow in on IFACE to any port PORT proto tcp from LAN_SUBNET comment 'Hermes Remote Backend (LAN only)'
+
+# Verify from a host on a DIFFERENT subnet (should time out):
+curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://SERVER_LAN_IP:PORT/api/status
+# Expected: 000
+```
+
+Or with iptables:
+
+```bash
+sudo iptables -A INPUT -i IFACE -p tcp -s LAN_SUBNET --dport PORT -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport PORT -j DROP
+```
+
+
 ### In Hermes Desktop
 
 **Settings → Gateways → Remote gateway:**
@@ -1174,6 +1198,29 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 - **No "Sign in" button — it asks for a session token instead** — the username/password provider isn't active (`/api/status` won't list `"basic"`). Make sure the username and a password (or password hash) are set and the dashboard process loaded them.
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value; otherwise the signing key is regenerated per boot.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) instead of a reachable address, or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
+
+### End-to-end verification
+
+After setup, confirm everything works:
+
+```bash
+# Port listening on non-loopback:
+ss -tlnp | grep 'PORT'
+# → LISTEN on 0.0.0.0:PORT
+
+# Auth gate engaged:
+curl -s http://127.0.0.1:PORT/api/status | jq '.auth_required, .auth_providers'
+# → true, ["basic"]
+
+# Unauthenticated request rejected:
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:PORT/api/agents
+# → 401
+
+# Firewall rule present:
+sudo ufw status | grep 'PORT/tcp'
+# → ALLOW LAN_SUBNET
+```
+
 
 ## CORS
 

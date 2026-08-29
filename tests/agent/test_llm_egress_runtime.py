@@ -862,6 +862,44 @@ def test_protected_codex_projects_bound_github_api_extract_metadata(
     assert "c2VjcmV0LXBheWxvYWQ=" not in authorized["input"][1]["output"]
 
 
+def test_protected_codex_elides_bound_github_api_curl_arguments(tmp_path, monkeypatch):
+    """A bounded REST list ``curl`` does not replay its opaque URL path."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_api_curl_1234"
+    command = (
+        "curl -fsSL "
+        "'https://api.github.com/repos/NousResearch/hermes-agent/issues?state=open&per_page=20'"
+    )
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "terminal",
+                "call_id": call_id,
+                "arguments": json.dumps({"command": command}),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps({"exit_code": 0, "output": "20 issues listed"}),
+            },
+        ],
+    }
+
+    authorized, _ = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    assert authorized["input"][0]["arguments"] == json.dumps(
+        {"command": "curl GitHub REST list (details omitted)"}, separators=(",", ":")
+    )
+    assert "NousResearch" not in authorized["input"][0]["arguments"]
+
+
 def test_protected_codex_omits_rejected_terminal_command_replay(
     tmp_path, monkeypatch
 ):

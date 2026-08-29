@@ -497,7 +497,7 @@ class GatewayStreamConsumer:
         """
         if not self._use_native_streaming:
             return False
-        return bool(getattr(self.adapter, "SUPPORTS_TOOL_TIMER", True))
+        return bool(getattr(self.adapter, "SUPPORTS_TOOL_TIMER", False))
 
     def on_tool_progress(self, line: str, tool_call_id: str | None = None) -> None:
         """Inject a tool-progress status line into the native stream bubble.
@@ -540,8 +540,10 @@ class GatewayStreamConsumer:
         # completed history when the timer is ticking) or just completed
         # history when the timer has stopped but history remains.
         tool_lines = self._tool_progress_lines
-        if not tool_lines and self._tool_completed_lines:
-            tool_lines = list(self._tool_completed_lines)
+        if not tool_lines:
+            with self._timer_lock:
+                if self._tool_completed_lines:
+                    tool_lines = list(self._tool_completed_lines)
 
         if self._accumulated and tool_lines:
             # Text + active tool status at the bottom
@@ -595,7 +597,7 @@ class GatewayStreamConsumer:
             self._tool_start_times.clear()
             self._tool_timer_labels.clear()
             self._tool_completed_lines.clear()
-        self._tool_timer_tick_count = 0
+            self._tool_timer_tick_count = 0
         logger.debug("[timer] stopped (was_running=%s)", was_running)
 
     def on_tool_completed(self, tool_name: str, duration: float, tool_call_id: str | None = None) -> None:
@@ -800,7 +802,11 @@ class GatewayStreamConsumer:
         # Keep _tool_completed_lines — they persist below the text until
         # finalize so the user sees tool history throughout the turn.
         # Stop the tool-timer animation — text means tools are done.
-        if self._tool_start_times:
+        # Check under lock, but call _stop_tool_timer outside (it acquires
+        # its own lock).
+        with self._timer_lock:
+            has_active_tools = bool(self._tool_start_times)
+        if has_active_tools:
             self._stop_tool_timer()
         self._accumulated += text
         self._stream_ledger += text
@@ -1097,8 +1103,8 @@ class GatewayStreamConsumer:
         # starts clean.
         self._tool_progress_lines = []
         self._tool_progress_active = False
-        self._tool_completed_lines = []
-        # Stop the tool-timer animation on segment reset.
+        # Stop the tool-timer animation on segment reset (also clears
+        # _tool_completed_lines under _timer_lock).
         self._stop_tool_timer()
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter

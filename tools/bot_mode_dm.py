@@ -207,20 +207,87 @@ def _peers(root: Path) -> list[str]:
         return []
 
 
+# Mirrors the Desktop's mentionNameForms reserved list: a profile whose
+# display_name slugs to one of these keeps its canonical handle, so a bot
+# renamed "Hermes" can never stamp or claim the default's @hermes alias.
+_RESERVED_HANDLES = {"all", "everyone", "user", "default", "hermes"}
+
+
+def _display_handle(profile_dir) -> str:
+    """The slugged display_name of a profile, or "" when unusable.
+
+    The slug follows the Desktop's mention charset (lowercase, [a-z0-9_-]) so
+    the handle stamped into attribution is the same one autocomplete inserts
+    and the relay roster carries. Reserved and invalid slugs return "" and the
+    caller keeps the canonical handle — fail-safe, never fail-weird.
+    """
+    try:
+        from pathlib import Path as _Path
+
+        from hermes_cli.profiles import read_profile_meta
+
+        display = str(read_profile_meta(_Path(profile_dir)).get("display_name") or "")
+    except Exception:
+        return ""
+    slug = re.sub(r"[^a-z0-9_-]+", "-", display.strip().lower()).strip("-")
+    if not slug or slug in _RESERVED_HANDLES or not _LOCAL_TARGET_RE.match(slug):
+        return ""
+    return slug
+
+
 def _handle(name: str) -> str:
+    """The sender's wire handle: display_name slug when set, else canonical.
+
+    Without this, a renamed default profile still attributed every DM as
+    "Message from 🤖 hermes (@hermes)" — display_name reached rosters and
+    titles but never the identity the recipient actually sees.
+
+    Caveat: the slug is read from THIS PROCESS's profile home, not from
+    ``name``. That is correct under Bot Mode's one-agent-per-process model
+    (the sender is always the running profile), but a future caller that
+    labels some OTHER profile's message must resolve that profile's home
+    itself rather than trusting this helper.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        display = _display_handle(get_hermes_home())
+        if display:
+            return display
+    except Exception:
+        pass
     return "hermes" if name == "default" else name
 
 
 def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
-    """Map a target handle to a profile name ('hermes' → 'default')."""
+    """Map a target handle to a profile name ('hermes' → 'default').
+
+    Canonical profile names win; a profile's display_name slug is a FALLBACK,
+    so teammates can address a renamed agent by the handle its outgoing
+    messages carry without ever shadowing a real profile of that name.
+    """
     want = target.strip()
     if not want:
         return None
     if want.lower() == "hermes":
         return "default" if "default" in roster else None
+    # Canonical profile names resolve FIRST and unconditionally: a real
+    # profile must stay addressable by its own name even when some other
+    # profile's display_name slugs to the same handle (a profile literally
+    # named "cto" vs a default renamed "CTO"). That keeps this purely
+    # additive — every target that resolved before resolves the same way,
+    # and the slug only answers names nothing else claims.
     for name in roster:
         if name.lower() == want.lower():
             return name
+    for name in roster:
+        try:
+            from hermes_cli.profiles import get_profile_dir
+
+            if _display_handle(get_profile_dir(name)) == want.lower():
+                return name
+        except Exception:
+            continue
     return None
 
 

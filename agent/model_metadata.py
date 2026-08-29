@@ -573,6 +573,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "solar-pro3": 131072,
     "solar-pro2": 65536,
     "solar-mini": 32768,
+    # Tencent — Hy4 Preview (Hunyuan), 1M context window per OpenRouter
+    # live metadata (2026-08-28). Longest-key-first so this wins over any
+    # future shorter hy* catch-all.
+    "hy4-preview": 1_048_576,
     # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
     # OpenRouter live metadata reports 262144 (256 × 1024); align the
     # static fallback so cache and offline both agree (issue #22268).

@@ -326,6 +326,44 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_set_wd.add_argument("path", nargs="?", default=None,
                           help="Absolute path to use as default workdir. Omit to clear.")
 
+    b_export = boards_sub.add_parser(
+        "export",
+        help="Export a board to a portable .tar.gz archive",
+        description=(
+            "Package a board's tasks, comments, links, history, and file "
+            "attachments into one archive that can be imported on another "
+            "machine. Claims, worker PIDs, chat subscriptions, and paths "
+            "belonging to this machine are stripped. Workspaces are never "
+            "included — they are rebuilt on demand."
+        ),
+    )
+    b_export.add_argument("slug", nargs="?", default=None,
+                          help="Board to export (default: the current board)")
+    b_export.add_argument("-o", "--output", default=None,
+                          help="Archive path (default: ./<slug>.tar.gz)")
+    b_export.add_argument("--no-attachments", action="store_true",
+                          help="Skip attachment files, keeping the archive small")
+    b_export.add_argument("--include-logs", action="store_true",
+                          help="Include per-task worker logs")
+    b_export.add_argument("--json", action="store_true")
+
+    b_import = boards_sub.add_parser(
+        "import",
+        help="Import a board archive as a new board",
+        description=(
+            "Import a .tar.gz produced by `hermes kanban boards export`. "
+            "The board always lands as a NEW board — the slug gains a "
+            "numeric suffix if it is already taken — so an import can "
+            "never overwrite or merge into a board you already have."
+        ),
+    )
+    b_import.add_argument("archive", help="Path to the .tar.gz archive")
+    b_import.add_argument("--as", dest="as_slug", default=None,
+                          help="Slug for the imported board (default: from the archive)")
+    b_import.add_argument("--switch", action="store_true",
+                          help="Switch to the imported board afterwards")
+    b_import.add_argument("--json", action="store_true")
+
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
     p_create.add_argument("title", help="Task title")
@@ -1268,6 +1306,10 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub == "export":
+        return _cmd_boards_export(args)
+    if sub == "import":
+        return _cmd_boards_import(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1440,6 +1482,64 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_export(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_transfer
+    from hermes_cli.sizefmt import format_bytes
+
+    slug = args.slug or kb.get_current_board()
+    output = args.output or f"{slug}.tar.gz"
+    try:
+        res = kanban_transfer.export_board(
+            slug,
+            output,
+            include_attachments=not args.no_attachments,
+            include_logs=args.include_logs,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"kanban boards export: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0
+    counts = res["counts"]
+    print(f"Exported board {res['board']!r} → {res['archive']}")
+    print(f"  Size:        {format_bytes(res['size'])}")
+    print(f"  Tasks:       {counts['tasks']}")
+    print(f"  Comments:    {counts['task_comments']}")
+    print(f"  Attachments: {counts['attachment_files']}")
+    print("Import it with `hermes kanban boards import <archive>`.")
+    return 0
+
+
+def _cmd_boards_import(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_transfer
+
+    try:
+        res = kanban_transfer.import_board(
+            args.archive, args.as_slug, activate=args.switch
+        )
+    except (OSError, ValueError) as exc:
+        print(f"kanban boards import: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0
+    print(f"Imported board {res['board']!r} ({res['name']}).")
+    if res["renamed"]:
+        print(f"  Renamed from {res['requested_board']!r} — that slug was taken.")
+    print(f"  Path:  {res['path']}")
+    print(f"  Tasks: {res['counts']['tasks']}")
+    for warning in res["warnings"]:
+        print(f"  Note:  {warning}")
+    if res["activated"]:
+        print(f"  Active board is now {res['board']!r}.")
+    else:
+        print(f"  Switch to it with `hermes kanban boards switch {res['board']}`.")
     return 0
 
 

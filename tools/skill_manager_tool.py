@@ -1734,7 +1734,11 @@ def _skill_manage_batch(
                     # Batch created this skill: remove the partial result.
                     shutil.rmtree(post_dir)
             except Exception as exc:  # noqa: BLE001
-                notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})")
+                notes.append(
+                    f"ROLLBACK FAILED for '{nm}' ({exc}); snapshot preserved at '{snap}'"
+                    if snap is not None
+                    else f"ROLLBACK FAILED for '{nm}' ({exc})"
+                )
         nonlocal rollback_failed
         rollback_failed = bool(notes)
         return "; ".join(notes) if notes else "all touched skills rolled back"

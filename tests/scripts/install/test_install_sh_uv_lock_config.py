@@ -49,7 +49,7 @@ def test_installers_keep_bootstrap_isolation_but_restore_project_config_for_lock
     assert "unset UV_NO_CONFIG UV_CONFIG_FILE" in helper
     assert 'export XDG_CONFIG_HOME="$isolated_uv_config"' in helper
     assert 'export XDG_CONFIG_DIRS="$isolated_uv_config"' in helper
-    assert "$UV_CMD sync --extra all --locked" in helper
+    assert '"$UV_CMD" sync --extra all --locked' in helper
     assert 'run_locked_uv_sync "$INSTALL_DIR/venv"' in install_text
     assert 'run_locked_uv_sync "$SCRIPT_DIR/venv"' in setup_text
 
@@ -72,12 +72,16 @@ printf '%s\n' "$@" > "$RECORD"
         encoding="utf-8",
         newline="\n",
     )
+    # The installers invoke UV_CMD as a single quoted word (so a managed uv under
+    # a $HOME containing spaces still runs, issue #40820), so the stub has to be
+    # directly executable rather than reached via `sh <path>` word-splitting.
+    fake_uv.chmod(0o755)
 
     harness = tmp_path / "harness.sh"
     harness.write_text(
         """#!/bin/bash
 set -eu
-UV_CMD="sh $1"
+UV_CMD="$1"
 RECORD="$2"
 export UV_CMD RECORD
 export UV_NO_CONFIG=1

@@ -34,12 +34,27 @@ describe('markdown documents delivered via MEDIA', () => {
     expect(screen.getByText('report.md')).toBeTruthy()
   })
 
-  it('still renders a non-markdown MEDIA file through the media fallback', async () => {
+  it('renders a non-markdown MEDIA file as a preview attachment too', async () => {
+    // Extends #84951 to every non-media extension: PDFs, archives, data
+    // files. MediaAttachment's kind==='file' branch was a degraded dead-end
+    // (bare "Open ..." anchor, verified live with .pdf and .qzx7 — the
+    // markdown-LINK path already gave these a proper file card). MEDIA:
+    // must never render worse than a plain markdown link to the same file.
     const href = mediaMarkdownHref('/home/user/out/archive.zip')
 
     render(<MarkdownTextContent isRunning={false} text={`[archive.zip](${href})`} />)
 
-    expect(await screen.findByText(/archive\.zip/)).toBeTruthy()
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(await screen.findByRole('button')).toBeTruthy()
+    expect(screen.getByText('archive.zip')).toBeTruthy()
+    expect(screen.queryByText(/^Open archive/)).toBeNull()
+  })
+
+  it('renders a MEDIA pdf as a preview attachment', async () => {
+    const href = mediaMarkdownHref('C:/Users/a/report.pdf')
+
+    render(<MarkdownTextContent isRunning={false} text={`[report.pdf](${href})`} />)
+
+    expect(await screen.findByRole('button')).toBeTruthy()
+    expect(screen.getByText('report.pdf')).toBeTruthy()
   })
 })

@@ -725,9 +725,11 @@ export function useMessageStream({
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
+
         const sameTurnAssistant = streamId
           ? nextMessages.find(m => m.id === streamId)
           : [...nextMessages].reverse().find(m => m.role === 'assistant' && !m.hidden)
+
         const localVisibleText = sameTurnAssistant ? chatMessageText(sameTurnAssistant).trim() : ''
         // Having streamed the reply normally means this window owns the whole
         // turn and re-reading stored history would be wasted work. That only

@@ -1101,8 +1101,7 @@ def _copy_quick_snapshot_files(
     """Copy every quick-snapshot candidate into *staging_dir*.
 
     Returns ``(manifest {rel: size}, failed_dbs, oversized_skipped)``. The last two are snapshot
-    incompleteness (#68805): the caller must suppress pruning so the older snapshot that may hold
-    the only recoverable DB survives.
+    incompleteness (#68805): pruning still runs but must keep the latest complete recovery source.
     """
     manifest: Dict[str, int] = {}
     failed_dbs: list[str] = []
@@ -1182,18 +1181,20 @@ def _create_quick_snapshot_locked(
         json.dump(meta, f, indent=2)
     os.replace(staging_dir, root / snap_id)
     # Auto-prune (pre-update callers pass a smaller keep so state.db copies don't accumulate).
-    # Skip when a DB failed to capture OR was skipped for size (#68805): the snapshot is
-    # incomplete and the older one may hold the only recoverable database.
-    if not (failed_dbs or oversized_skipped):
-        _prune_oldest(_snapshot_dirs(root), _QUICK_DEFAULT_KEEP if keep is None else keep, shutil.rmtree, "snapshot")
-    else:
+    # When a present DB failed to capture OR was skipped for size (#68805), preserve the latest
+    # complete recovery source in addition to the retention window. Still prune stale incomplete
+    # snapshots: they contain config/auth copies too, and repeated failures must stay bounded.
+    incomplete = failed_dbs or oversized_skipped
+    retention = _QUICK_DEFAULT_KEEP if keep is None else keep
+    if incomplete:
         if oversized_skipped:
-            print("  ⚠ Skipping snapshot prune: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
+            print("  ⚠ Preserving latest complete snapshot: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
             logger.warning("Quick snapshot skipped oversized DB file(s): %s", ", ".join(oversized_skipped))
         logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture and/or %d were oversized "
-            "— preserving older snapshots as recovery source",
+            "Snapshot incomplete because %d DB(s) failed to capture and/or %d were oversized "
+            "— preserving latest complete recovery source",
             len(failed_dbs), len(oversized_skipped))
+    _prune_quick_snapshots(root, keep=retention, preserve_latest_complete=bool(incomplete))
     logger.info("quick snapshot phase=copy status=complete id=%s files=%d bytes=%d",
                 snap_id, len(manifest), sum(manifest.values()))
     return snap_id
@@ -1503,6 +1504,28 @@ def _prune_oldest(newest_first: List[Path], keep: int, remove, what: str) -> int
         except OSError as exc:
             logger.warning("Failed to prune %s %s: %s", what, p.name, exc)
     return deleted
+
+
+def _prune_quick_snapshots(
+    root: Path,
+    keep: int = _QUICK_DEFAULT_KEEP,
+    *,
+    preserve_latest_complete: bool = False,
+) -> int:
+    """Remove old snapshots, optionally retaining one complete recovery source."""
+    dirs = _snapshot_dirs(root)
+    retained = set(dirs[:keep])
+    if preserve_latest_complete:
+        for d in dirs:
+            try:
+                with open(d / "manifest.json", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(meta, dict) and not meta.get("failed_dbs") and not meta.get("oversized_skipped"):
+                retained.add(d)
+                break
+    return _prune_oldest([d for d in dirs if d not in retained], 0, shutil.rmtree, "snapshot")
 
 
 def prune_quick_snapshots(keep: int = _QUICK_DEFAULT_KEEP, hermes_home: Optional[Path] = None) -> int:

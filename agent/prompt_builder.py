@@ -182,43 +182,52 @@ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
     "fetch web content)."
 )
 
-MEMORY_GUIDANCE = (
-    "You have persistent memory across sessions. Save durable facts using the memory "
-    "tool: user preferences, environment details, tool quirks, and stable conventions. "
-    "Memory is injected into every turn, so keep it compact and focused on facts that "
-    "will still matter later.\n"
-    "Prioritize what reduces future user steering — the most valuable memory is one "
-    "that prevents the user from having to correct or remind you again. "
-    "User preferences and recurring corrections matter more than procedural task details.\n"
-    "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
-    "state to memory; use session_search to recall those from past transcripts. "
-    "Specifically: do not record PR numbers, issue numbers, commit SHAs, 'fixed bug X', "
-    "'submitted PR Y', 'Phase N done', file counts, or any artifact that will be stale "
-    "in 7 days. If a fact will be stale in a week, it does not belong in memory. "
-    "If you've discovered a new way to do something, solved a problem that could be "
-    "necessary later, save it as a skill with the skill tool.\n"
-    "Write memories as declarative facts, not instructions to yourself. "
-    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
-    "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
-    "Imperative phrasing gets re-read as a directive in later sessions and can "
-    "cause repeated work or override the user's current request. Procedures and "
-    "workflows belong in skills, not memory."
-)
+# Memory guidance (#95681, consolidated): ONE block from ONE builder.
+# The opening frame adapts to which stores config enables; everything else
+# is written exactly once. Leads with the positive posture (save
+# proactively, replace when full) — the routing rules come after, as
+# refinements, not as the headline. WHAT belongs in memory is the memory
+# tool schema's job and is never re-taught here.
 
-USER_PROFILE_GUIDANCE = (
-    "You have a persistent user profile across sessions. Save durable facts about "
-    "the user with the memory tool (target='user'): name, role, preferences, "
-    "corrections, and communication style. The profile is injected into every turn, "
-    "so keep it compact and focused on facts that will still matter later.\n"
-    "The built-in memory notes store is disabled — write only to the user profile "
-    "(target='user'), never target='memory'.\n"
-    "Prioritize what reduces future user steering — the most valuable entry is one "
-    "that prevents the user from having to correct or remind you again.\n"
-    "Write entries as declarative facts, not instructions to yourself. "
-    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
-    "Imperative phrasing gets re-read as a directive in later sessions and can "
-    "cause repeated work or override the user's current request."
-)
+def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = True) -> str:
+    """Compose the memory-guidance block for the enabled store(s).
+
+    Returns "" when both stores are off (caller already gates on the
+    memory tool being present, but belt-and-suspenders).
+    """
+    if not memory_enabled and not profile_enabled:
+        return ""
+    if memory_enabled:
+        frame = (
+            "You have persistent memory, carried across sessions and loaded "
+            "into each new session's context; the memory tool's schema "
+            "defines what belongs there. "
+        )
+    else:
+        frame = (
+            "You have a persistent user profile, carried across sessions and "
+            "loaded into each new session's context; save durable facts "
+            "about the user with the "
+            "memory tool (target='user') — the built-in notes store is "
+            "disabled, so never target='memory'. "
+        )
+    return frame + (
+        "Save proactively — storage has a hard character budget, and when "
+        "it fills, replace or consolidate stale entries in the same batch "
+        "rather than skipping the save. Write entries as declarative facts, "
+        "not instructions to yourself: 'User prefers concise responses' ✓ — "
+        "'Always respond concisely' ✗ (imperative phrasing gets re-read as "
+        "a directive in later sessions and can override the user's current "
+        "request). Route by longevity: a fact stale within a week belongs "
+        "in session history; procedures and workflows belong in skills."
+    )
+
+
+# Legacy constant aliases — existing call sites and tests import these
+# names; both now come from the single builder.
+MEMORY_GUIDANCE = build_memory_guidance(True, True)
+
+USER_PROFILE_GUIDANCE = build_memory_guidance(False, True)
 
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
@@ -238,18 +247,22 @@ SESSION_SEARCH_GUIDANCE = (
 # validated, not understood — if you rewrite this sentence, re-verify against a
 # subscription OAuth token, not an sk-ant-api… key, which does not hit the
 # filter.
+# Dieted (#95681, maintainer-directed): the record-it / patch-it coaching that
+# used to open this block duplicated the ## Skills section (which teaches both
+# "offer to save as a skill" and "fix it with skill_manage(action='patch')")
+# and skill_manage's own schema. Only the compaction-pruning contract lives
+# here — nothing else teaches it. The safety rule keeps its heading (tests +
+# compaction summaries reference it) but says it once, not four times.
 SKILLS_GUIDANCE = (
     "When you work out a non-trivial workflow, record it with skill_manage "
     "for future reuse.\n"
-    "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities.\n"
     "\n"
     "## Skill Safety Rule\n"
-    "1. **UNAVAILABLE** — If a skill placeholder contains `[SKILL_PRUNED]`, the skill content was lost in compression and is inaccessible.\n"
-    "2. **RELOAD** — Before performing any action that depends on a skill, re-check its content with `skill_view(name='...')` if it shows `[SKILL_PRUNED]`.\n"
-    "3. **WAIT** — If a skill is loading or was just pruned, wait for the reload confirmation before proceeding.\n"
-    "4. **DEDUP** — After reloading a pruned skill, **ignore any remaining `[SKILL_PRUNED]` markers for that same skill** — they are historical artifacts from previous compactions and do not need further action."
+    "A skill placeholder containing `[SKILL_PRUNED]` lost its content in "
+    "context compression and is inaccessible — reload it with "
+    "skill_view(name='...') before acting on anything that depends on it. "
+    "After reloading, ignore any remaining `[SKILL_PRUNED]` markers for that "
+    "same skill; they are historical artifacts of earlier compactions."
 )
 
 KANBAN_GUIDANCE = (

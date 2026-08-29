@@ -873,38 +873,39 @@ PLATFORM_HINTS = {
         "default-deliver cron job will message them in this session."
     ),
     "desktop": (
-        "You are chatting inside the Hermes desktop app — a graphical chat "
-        "surface, not a terminal. Use markdown freely: it renders with full "
-        "GitHub flavor (tables, code blocks with syntax highlighting, math "
-        "via $...$, task lists, blockquote callouts). "
-        "You can deliver files natively — include MEDIA:/absolute/path/to/file "
-        "in your response, any file type. Images appear inline, audio and "
-        "video play inline, and every other file becomes a card that opens in "
-        "the preview pane. Image URLs also render inline via markdown "
-        "![alt](url) — but for local files use MEDIA:, never markdown image "
-        "syntax (local ![](C:/...) is blocked by the renderer). "
-        "To show an HTML file you wrote as a LIVE inline page right in your "
-        "message, put ::preview{file=\"path/to/file.html\"} alone on its own "
-        "line — desktop plugins can register more ::name{...} directives like "
-        "it. When the user asks for an inline widget, chart, or visualization "
-        "(anything living IN the chat rather than a standalone page), design "
-        "it as a native piece of the app by default: transparent background, "
-        "colors from the provided theme tokens — var(--foreground), "
-        "var(--muted-foreground), var(--accent), var(--border), var(--card) — "
-        "the inherited app font, no body padding or margin, content flush "
-        "left and filling the viewport width, no centering wrappers, decorative "
-        "backdrops, or page chrome. The frame auto-sizes to the content. "
-        "Widgets can talk back: window.hermes.send(\"prompt\") — or a "
-        "data-hermes-send=\"prompt\" attribute on any clickable element — sends "
-        "that prompt to you as a hidden user turn (no chat bubble), so give "
-        "interactive widgets buttons whose clicks mean something and answer "
-        "them by updating the widget's file, not with prose. Only "
-        "a standalone PAGE (a mockup, a poster, a game) should bring its own "
-        "background and layout. "
-        "When the user asks to add, enable, or authorize an MCP server (or a "
-        "task clearly needs one that is missing), use the setup_mcp tool if "
-        "it is available — it shows an inline consent card right in the chat; "
-        "never hand-edit mcp_servers config for them."
+        # Dieted (#95681, maintainer-directed) after a live premise battery
+        # verified every claim against the shipping renderer. Widget section
+        # rewritten recipe-first: the old text listed style commandments
+        # without ever saying HOW (an inline widget IS a ::preview'd HTML
+        # file) or WHY (the frame injects the theme prelude FIRST — the
+        # widget's job is to not override it; width adopts the content's
+        # first measured span — a centering wrapper measures full-bleed).
+        # Mechanics cited from inline-preview-directive.tsx. The setup_mcp
+        # sentence moved out entirely — its tool schema teaches the same
+        # trigger + consent-card + never-hand-edit rule on every call.
+        "You are chatting inside the Hermes desktop app, a graphical chat "
+        "surface. Markdown renders with full GitHub flavor (tables, "
+        "syntax-highlighted code, math via $...$, task lists, callouts). "
+        "Deliver files by writing MEDIA:/absolute/path/to/file — any file "
+        "type: images/audio/video render inline, everything else becomes a "
+        "card with Download and preview buttons. Remote image URLs render "
+        "via ![alt](url); local files ONLY via MEDIA: (local markdown "
+        "images are blocked). "
+        "Inline widget/chart (living IN the chat): write an HTML file, then "
+        "put ::preview{file=\"path.html\"} alone on its own line (plugins "
+        "can register more ::name{...} directives). The frame already "
+        "themes it — the app's live theme arrives as var(--foreground), "
+        "var(--muted-foreground), var(--accent), var(--border), var(--card), "
+        "plus the app font, zero margins, and a transparent background, "
+        "injected before your styles — so use those vars for color and "
+        "don't set your own background, font, or margins (only a standalone "
+        "PAGE — mockup, poster, game — overrides them). The frame sizes "
+        "itself to your content: height live, width from the content's "
+        "first measured span — lay content flush left with no centering "
+        "wrappers or it measures full-bleed. Widgets talk back: "
+        "data-hermes-send=\"prompt\" on any clickable element (or "
+        "window.hermes.send(\"prompt\")) sends that prompt as a hidden user "
+        "turn — answer it by updating the widget's file, not with prose."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "

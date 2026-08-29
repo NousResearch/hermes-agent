@@ -1,8 +1,10 @@
 export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
 // Dispatch is synchronous user intent: a cached descriptor must prove its
-// forwarded endpoint is alive before it can be returned. Reuse the background
-// liveness budget so a quiet-box cold-start (~6-8s) can finish instead of
-// failing the probe and kicking off a reconnect storm.
+// forwarded endpoint is alive before it can be returned. Probe cheap
+// /api/health — not /api/status, whose cold payload (gateway probe, topology,
+// state.db session count) on a fresh SSH forward routinely runs seconds — and
+// reuse the background liveness budget so a quiet-box cold-start (~6-8s) can
+// finish instead of failing the probe and kicking off a reconnect storm.
 export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = REMOTE_LIVENESS_TIMEOUT_MS
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
@@ -100,7 +102,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       return reconnect()
     }
 
-    await probe(connection, '/api/status', {
+    await probe(connection, '/api/health', {
       timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
     })
   } catch (error) {

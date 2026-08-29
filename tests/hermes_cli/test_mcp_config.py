@@ -109,6 +109,7 @@ class TestMcpList:
         assert "ink" in out
         assert "github" in out
         assert "2 selected" in out  # ink has 2 in include
+        assert "all" in out  # github has no tools block: default filter renders "all"
         assert "disabled" in out  # github is disabled
 
     def test_list_enabled_default_true(self, tmp_path, capsys):

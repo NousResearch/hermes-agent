@@ -9,6 +9,7 @@ import pytest
 
 from agent.llm_egress_firewall import EgressBlocked, SanitizedTextRejected
 from agent.llm_egress_runtime import (
+    _typed_payload_violation_locations,
     authorize_agent_sdk_kwargs,
     dispatch_authorized_agent_request,
 )
@@ -43,6 +44,20 @@ def _grant(tmp_path: Path, registry: SourceProvenanceRegistry):
         turn_id="turn-1",
         request_id="req-1",
         policy_digest=sha256(b"policy-1").hexdigest(),
+    )
+
+
+def test_typed_payload_violation_locations_are_content_free():
+    """Live egress diagnostics identify the typed boundary without text leaks."""
+
+    from agent.llm_egress_firewall import SanitizedSegment
+
+    locations = _typed_payload_violation_locations(
+        {"input": [SanitizedSegment("c2VjcmV0LXBheWxvYWQ=")]}
+    )
+
+    assert locations == (
+        ("$.map[0].value.sequence[0]", "SanitizedSegment", 20, ("base64_payload",)),
     )
 
 

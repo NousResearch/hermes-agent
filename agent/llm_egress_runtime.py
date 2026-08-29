@@ -1230,6 +1230,55 @@ def _structural_literal_hashes(value: Any) -> frozenset[str]:
     return frozenset(static_literal_sha256(literal) for literal in literals)
 
 
+def _typed_payload_violation_locations(
+    value: Any,
+) -> tuple[tuple[str, str, int, tuple[str, ...]], ...]:
+    """Summarize unsafe typed segments without recording their text.
+
+    This is diagnostic-only evidence for a failed final authorization.  It
+    deliberately retains neither raw values nor hashes that could be used to
+    correlate secret material across requests.
+    """
+
+    locations: list[tuple[str, str, int, tuple[str, ...]]] = []
+    text_segments = (
+        SanitizedSegment,
+        GeneratedContextSegment,
+        LiteralSegment,
+        ValidatedToolSyntaxSegment,
+        CodexReasoningReplaySegment,
+        SourcePresentationSegment,
+        SourceBoundSegment,
+        UntrustedProvenanceSegment,
+    )
+
+    def visit(item: Any, path: str) -> None:
+        if isinstance(item, OutboundText):
+            for index, segment in enumerate(item.segments):
+                visit(segment, f"{path}.segments[{index}]")
+            return
+        if isinstance(item, text_segments):
+            text = getattr(item, "text", None)
+            if not isinstance(text, str):
+                return
+            reasons = tuple(
+                sorted({reason for _, found in content_free_violation_locations(text) for reason in found})
+            )
+            if reasons:
+                locations.append((path, type(item).__name__, len(text.encode("utf-8")), reasons))
+            return
+        if isinstance(item, Mapping):
+            for index, (_, child) in enumerate(item.items()):
+                visit(child, f"{path}.map[{index}].value")
+            return
+        if isinstance(item, (list, tuple)):
+            for index, child in enumerate(item):
+                visit(child, f"{path}.sequence[{index}]")
+
+    visit(value, "$")
+    return tuple(locations)
+
+
 def _route_for_agent(agent: Any, route: Any | None) -> Any:
     if route is not None:
         return route
@@ -1477,6 +1526,11 @@ def authorize_agent_sdk_kwargs(
             grants=tuple(used_grants.values()),
         )
     except EgressBlocked:
+        typed_locations = _typed_payload_violation_locations(typed_body)
+        if typed_locations:
+            logger.warning(
+                "LLM egress blocked typed locations: %s", typed_locations
+            )
         locations = content_free_violation_locations(body)
         if locations:
             logger.warning("LLM egress blocked structural locations: %s", locations)

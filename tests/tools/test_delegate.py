@@ -705,6 +705,107 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertIn("404", entry["error"])
 
 
+class TestDelegateFailedChildStatus(unittest.TestCase):
+    """Honest status / exit_reason for failed subagents (issue #97655).
+
+    A child that fails on its first API call (e.g. an HTTP 400 "not a valid
+    model ID") returns completed=False with failed=True + an error string as
+    its terminal final_response. It must be reported as status=failed with an
+    honest exit_reason — never status=completed + exit_reason=max_iterations
+    (which mislabels provider rejections as iteration-budget exhaustion and
+    would render the false "TRUNCATED" banner).
+    """
+
+    def _delegate_single(self, child_result):
+        """Dispatch a single task whose mock child returns `child_result`,
+        returning the parsed child result entry dict."""
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = child_result
+            MockAgent.return_value = mock_child
+            result = json.loads(
+                delegate_task(goal="Test child status", parent_agent=parent)
+            )
+            return result["results"][0]
+
+    def test_failed_flag_marks_status_failed(self):
+        """Regression (issue #97655): a provider-rejected child (HTTP 400 on its
+        first call) returns completed=False with failed=True + an error string.
+        It must be status=failed, exit_reason=error, and NOT truncated."""
+        entry = self._delegate_single(
+            {
+                "final_response": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
+                "completed": False,
+                "interrupted": False,
+                "failed": True,
+                "error": "HTTP 400: upstage/solar-pro-4 is not a valid model ID",
+                "api_calls": 1,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "error")
+        self.assertFalse(entry["truncated"])
+
+    def test_error_with_summary_still_failed(self):
+        """A child that returns BOTH an error field and a summary must still be
+        failed — the summary-presence heuristic must not override the
+        structured failure."""
+        entry = self._delegate_single(
+            {
+                "final_response": "partial work before crashing",
+                "completed": False,
+                "interrupted": False,
+                "failed": True,
+                "error": "provider boom",
+                "api_calls": 3,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "error")
+        self.assertFalse(entry["truncated"])
+
+    def test_genuine_truncation_stays_completed_max_iterations(self):
+        """REGRESSION GUARD: a child that genuinely exhausts its iteration
+        budget (completed=False, no failed flag, no error) but still returns a
+        summary must keep status=completed, exit_reason=max_iterations, and
+        truncated=True. This is the legitimate truncation path we must not
+        break while making failure labels honest."""
+        entry = self._delegate_single(
+            {
+                "final_response": "made partial progress before the budget ran out",
+                "completed": False,
+                "interrupted": False,
+                "api_calls": 10,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["exit_reason"], "max_iterations")
+        self.assertTrue(entry["truncated"])
+
+    def test_interrupted_unchanged(self):
+        """Interrupted children keep status=interrupted + exit_reason=interrupted
+        and are not marked truncated."""
+        entry = self._delegate_single(
+            {
+                "final_response": "some partial output",
+                "completed": False,
+                "interrupted": True,
+                "api_calls": 2,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "interrupted")
+        self.assertEqual(entry["exit_reason"], "interrupted")
+        self.assertFalse(entry["truncated"])
+
+
 class TestSubagentCostRollup(unittest.TestCase):
     """Port of Kilo-Org/kilocode#9448 — parent's session_estimated_cost_usd
     must include subagent spend, not just the parent's own API calls."""

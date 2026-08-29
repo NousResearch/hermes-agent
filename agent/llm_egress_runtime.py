@@ -78,6 +78,9 @@ _REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
 _GITHUB_LIST_TERMINAL_MAX_ROWS = 100
 _GITHUB_LIST_TERMINAL_MAX_ITEM_BYTES = 512
 _GITHUB_LIST_TERMINAL_MAX_OUTPUT_BYTES = 10_240
+_REJECTED_TERMINAL_COMMAND_REPLAY = json.dumps(
+    {"command": "<rejected terminal command omitted>"}, separators=(",", ":")
+)
 _REMOTE_KANBAN_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,}\"']+"
 )
@@ -621,6 +624,56 @@ def _project_github_list_terminal_result(text: str, *, max_rows: int) -> str | N
     )
 
 
+def _rejected_terminal_call_ids(value: Any) -> frozenset[str]:
+    """Return terminal calls that the local policy rejected before execution."""
+
+    terminal_ids: set[str] = set()
+    rejected: set[str] = set()
+
+    def remember_variants(target: set[str], call_id: Any) -> None:
+        if isinstance(call_id, str):
+            target.update(tool_result_id_variants(call_id))
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            direct_function = item.get("function")
+            direct_name = (
+                direct_function.get("name")
+                if isinstance(direct_function, Mapping)
+                else item.get("name")
+            )
+            call_id = item.get("call_id") or item.get("id")
+            if item.get("type") in {"function", "function_call"} and direct_name == "terminal":
+                remember_variants(terminal_ids, call_id)
+            if (
+                item.get("type") == "function_call_output"
+                and isinstance(call_id, str)
+                and call_id in terminal_ids
+            ):
+                raw_output = item.get("output")
+                try:
+                    result = json.loads(raw_output) if isinstance(raw_output, str) else None
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    result = None
+                if (
+                    isinstance(result, Mapping)
+                    and result.get("exit_code") == -1
+                    and isinstance(result.get("error"), str)
+                    and result["error"].startswith(
+                        "BLOCKED: Command flagged as dangerous"
+                    )
+                ):
+                    remember_variants(rejected, call_id)
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return frozenset(rejected)
+
+
 def _segment_protected_tool_result(
     text: str,
     grant_texts: Sequence[tuple[str, SourceGrant]],
@@ -759,6 +812,7 @@ def _typed_payload(
     syntax_tool_call_ids: frozenset[str] = frozenset(),
     elided_kanban_tool_call_ids: frozenset[str] = frozenset(),
     github_list_terminal_call_limits: Mapping[str, int] | None = None,
+    rejected_terminal_call_ids: frozenset[str] = frozenset(),
     protected_tool_content: bool = False,
     elide_kanban_tool_content: bool = False,
     protected_kanban_context: bool = False,
@@ -829,6 +883,18 @@ def _typed_payload(
             and isinstance(output_call_id, str)
             else None
         )
+        direct_function = value.get("function")
+        direct_name = (
+            direct_function.get("name")
+            if isinstance(direct_function, Mapping)
+            else value.get("name")
+        )
+        is_rejected_terminal_call = (
+            value.get("type") in {"function", "function_call"}
+            and direct_name == "terminal"
+            and isinstance(output_call_id, str)
+            and output_call_id in rejected_terminal_call_ids
+        )
         typed: dict[Any, Any] = {}
         context_mapping = value.get("role") in {"system", "developer"}
         is_codex_reasoning_replay = (
@@ -870,6 +936,9 @@ def _typed_payload(
                         allow_line_split=True,
                     )
                     continue
+            if is_rejected_terminal_call and key == "arguments":
+                typed[key] = GeneratedContextSegment(_REJECTED_TERMINAL_COMMAND_REPLAY)
+                continue
             typed_key = (
                 GeneratedContextKey(key)
                 if generated_context and redact_generated_context
@@ -887,6 +956,7 @@ def _typed_payload(
                 syntax_tool_call_ids=syntax_tool_call_ids,
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
+                rejected_terminal_call_ids=rejected_terminal_call_ids,
                 protected_tool_content=(
                     is_recognized_tool_result and key in {"content", "output"}
                 ),
@@ -919,6 +989,7 @@ def _typed_payload(
                 syntax_tool_call_ids=syntax_tool_call_ids,
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
+                rejected_terminal_call_ids=rejected_terminal_call_ids,
                 protected_tool_content=protected_tool_content,
                 elide_kanban_tool_content=elide_kanban_tool_content,
                 protected_kanban_context=protected_kanban_context,
@@ -1127,6 +1198,11 @@ def authorize_agent_sdk_kwargs(
             _github_list_terminal_call_limits(body)
             if protected_kanban_remote and protected_provider_route
             else None
+        ),
+        rejected_terminal_call_ids=(
+            _rejected_terminal_call_ids(body)
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
         ),
         protected_kanban_context=protected_remote_context,
         redact_generated_context=redact_protected_generated_context,

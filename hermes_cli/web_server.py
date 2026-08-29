@@ -303,6 +303,9 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
             profile_homes = list(profiles_to_serve(multiplex=True))
             if len(profile_homes) > 1:
                 start_kwargs["profile_homes"] = profile_homes
+                from hermes_logging import enable_profile_log_routing
+
+                enable_profile_log_routing(profile_homes)
                 _log.info(
                     "Desktop cron scheduler will tick %d profile(s): %s",
                     len(profile_homes),

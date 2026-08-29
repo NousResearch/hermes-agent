@@ -45,6 +45,7 @@ class TestExplicitAllowlist:
         "ANTHROPIC_API_KEY",
         "HONCHO_API_KEY",
         "FIRECRAWL_API_KEY",
+        "SEARXNG_URL",
         "BROWSERBASE_API_KEY",
         "FAL_KEY",
         "SUDO_PASSWORD",

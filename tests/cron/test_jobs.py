@@ -1128,6 +1128,29 @@ class TestLateEnvRepointScopesStore:
             store = jobs._current_cron_store()
             assert store.jobs_file == (tmp_path / "override-home").resolve() / "cron" / "jobs.json"
 
+    def test_heartbeat_does_not_recreate_deleted_named_profile(self, tmp_path):
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+
+        with jobs.use_cron_store(deleted_home):
+            jobs.record_ticker_heartbeat()
+
+        assert not deleted_home.exists()
+
+    def test_heartbeat_initializes_existing_named_profile(self, tmp_path):
+        import cron.jobs as jobs
+
+        profile_home = tmp_path / "profiles" / "active"
+        profile_home.mkdir(parents=True)
+
+        with jobs.use_cron_store(profile_home):
+            jobs.record_ticker_heartbeat()
+
+        assert (profile_home / "cron" / "ticker_heartbeat").is_file()
+
 
     def test_public_io_after_late_env_repoint_leaves_old_file_untouched(
         self, tmp_path, monkeypatch
@@ -1189,6 +1212,50 @@ class TestLateEnvRepointScopesStore:
 # UTF-8 BOM on jobs.json (Windows Notepad / PowerShell 5.1)
 # =========================================================================
 
+class TestJobsJsonShapes:
+    def test_load_jobs_normalizes_id_keyed_jobs_mapping(self, tmp_cron_dir):
+        import json
+        from cron.jobs import JOBS_FILE
+
+        job_a = {
+            "id": "cron1234abcd",
+            "name": "daily briefing",
+            "enabled": True,
+            "prompt": "Summarize overnight incidents",
+            "schedule": {"kind": "interval", "minutes": 1440, "display": "every 24h"},
+        }
+        job_b = {
+            "id": "cron5678efgh",
+            "name": "disabled cleanup",
+            "enabled": False,
+            "prompt": "Clean stale scratch files",
+            "schedule": {"kind": "once", "run_at": "2030-01-15T14:00:00+00:00"},
+        }
+        payload = {
+            "jobs": {
+                job_a["id"]: job_a,
+                job_b["id"]: job_b,
+            },
+            "updated_at": "2026-08-23T00:00:00+00:00",
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = load_jobs()
+        assert isinstance(loaded, list)
+        assert {job["id"] for job in loaded} == {job_a["id"], job_b["id"]}
+
+        listed = {job["id"]: job for job in list_jobs(include_disabled=True)}
+        assert set(listed) == {job_a["id"], job_b["id"]}
+        for expected in (job_a, job_b):
+            actual = listed[expected["id"]]
+            assert actual["id"] == expected["id"]
+            assert actual["name"] == expected["name"]
+            assert actual["prompt"] == expected["prompt"]
+            assert actual["schedule"] == expected["schedule"]
+            assert actual["enabled"] is expected["enabled"]
+
+
 class TestJobsJsonUtf8Bom:
     """jobs.json readers must accept a leading UTF-8 BOM.
 
@@ -1243,6 +1310,185 @@ class TestJobsJsonUtf8Bom:
 
         loaded = load_jobs()
         assert [j["id"] for j in loaded] == ["plainjob01"]
+
+
+
+
+# =========================================================================
+# ID-keyed jobs map on jobs.json (external tools / hand edits) — #92935
+# =========================================================================
+
+class TestJobsJsonIdKeyedMap:
+    """load_jobs() must flatten an ID-keyed ``jobs`` map to the list contract.
+
+    A store written as ``{"jobs": {"<job_id>": {...}, ...}}`` (external tool
+    or hand edit — Hermes' own save_jobs() only ever writes a list) made
+    load_jobs() return a dict. Every consumer iterates it as a list, so
+    ``list_jobs()`` → ``_normalize_job_record`` → ``dict(<id-string>)`` raised
+    ``ValueError: dictionary update sequence element #0 has length 1; 2 is
+    required`` and took down ``hermes cron list``, the ``cronjob(action=
+    "list")`` tool, and the Dashboard cron view. The values already carry
+    their own ``id`` matching the map key, so flattening is lossless.
+    """
+
+    _ID_KEYED = {
+        "jobs": {
+            "cron1234abcd": {
+                "id": "cron1234abcd",
+                "name": "Example job",
+                "enabled": True,
+                "prompt": "do a thing",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            },
+            "cron5678efgh": {
+                "id": "cron5678efgh",
+                "name": "Second job",
+                "enabled": True,
+                "prompt": "do another",
+                "schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"},
+            },
+        },
+        "updated_at": "2026-08-23T10:10:12+08:00",
+    }
+
+    def test_load_jobs_flattens_id_keyed_map(self, tmp_cron_dir):
+        """The pre-fix repro: load_jobs() returns a list, not the raw dict."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
+
+        loaded = load_jobs()
+        assert isinstance(loaded, list)
+        assert {j["id"] for j in loaded} == {"cron1234abcd", "cron5678efgh"}
+        assert all(isinstance(j, dict) for j in loaded)
+
+    def test_list_jobs_survives_id_keyed_map(self, tmp_cron_dir):
+        """The reported traceback path (hermes cron list / cronjob list tool)."""
+        import json
+        from cron.jobs import JOBS_FILE, list_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
+
+        # Pre-fix this raised ValueError from _normalize_job_record(dict(<str>)).
+        jobs = list_jobs(include_disabled=True)
+        assert {j["id"] for j in jobs} == {"cron1234abcd", "cron5678efgh"}
+
+    def test_id_keyed_map_repaired_to_list_on_disk(self, tmp_cron_dir):
+        """Loading rewrites the store into the canonical {"jobs": [...]} form."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
+
+        load_jobs()
+
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk["jobs"], list)
+        assert {j["id"] for j in on_disk["jobs"]} == {"cron1234abcd", "cron5678efgh"}
+
+        # A second load reads the repaired list unchanged (idempotent).
+        reloaded = load_jobs()
+        assert {j["id"] for j in reloaded} == {"cron1234abcd", "cron5678efgh"}
+
+    def test_empty_id_keyed_map_returns_empty_list(self, tmp_cron_dir):
+        """An empty ``jobs`` map must not crash and yields no jobs."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps({"jobs": {}}), encoding="utf-8")
+
+        assert load_jobs() == []
+
+    def test_map_value_without_inline_id_adopts_key(self, tmp_cron_dir):
+        """A value lacking an inline "id" gets the map key as its id."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        payload = {
+            "jobs": {
+                "cronkeyonly1": {
+                    "name": "keyed only",
+                    "enabled": True,
+                    "prompt": "no inline id here",
+                    "schedule": {"kind": "interval", "minutes": 15, "display": "every 15m"},
+                },
+                "cron-ignored-key": {
+                    "id": "croninline99",
+                    "name": "inline id wins",
+                    "enabled": True,
+                    "prompt": "inline id present",
+                    "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
+                },
+            }
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = {j["id"]: j for j in load_jobs()}
+        # Key adopted when the value has no inline id.
+        assert "cronkeyonly1" in loaded
+        assert loaded["cronkeyonly1"]["name"] == "keyed only"
+        # Inline id wins over a differing map key.
+        assert "croninline99" in loaded
+        assert "cron-ignored-key" not in loaded
+
+        # Self-heal persisted the id-merged records.
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk["jobs"], list)
+        assert {j["id"] for j in on_disk["jobs"]} == {"cronkeyonly1", "croninline99"}
+
+    def test_non_dict_map_values_skipped_with_warning(self, tmp_cron_dir, caplog):
+        """Junk (non-dict) values in the map are skipped, never crash."""
+        import json
+        import logging
+        from cron.jobs import JOBS_FILE, list_jobs, load_jobs
+
+        payload = {
+            "jobs": {
+                "goodjob1": {
+                    "name": "survivor",
+                    "enabled": True,
+                    "prompt": "keep me",
+                    "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                },
+                "junk-string": "i am not a job",
+                "junk-number": 42,
+                "junk-null": None,
+            }
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["goodjob1"]
+        assert any("non-dict" in rec.getMessage() for rec in caplog.records)
+
+        # The reported traceback path also survives the junk.
+        jobs = list_jobs(include_disabled=True)
+        assert {j["id"] for j in jobs} == {"goodjob1"}
+
+        # Self-heal wrote only the valid record, canonical list shape.
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk["jobs"], list)
+        assert [j["id"] for j in on_disk["jobs"]] == ["goodjob1"]
+
+    def test_all_junk_map_values_yield_empty_list(self, tmp_cron_dir):
+        """A map of only junk values flattens to [] without crashing."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(
+            json.dumps({"jobs": {"a": "junk", "b": 1}}), encoding="utf-8"
+        )
+
+        assert load_jobs() == []
 
 
 
@@ -1382,3 +1628,73 @@ class TestCompletedOneshotRetentionSweep:
         assert updated["enabled"] is True
         assert updated["state"] == "scheduled"
         assert updated["next_run_at"] is not None
+
+
+class TestEnsureCronDirWidened:
+    """Tests for the widened _ensure_cron_dir covering all cron mkdir sites."""
+
+    def test_ensure_cron_dir_named_profile_subdir_fails_closed(self, tmp_path):
+        """A subdir under a deleted named profile's cron/ must not recreate it."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+        # cron_dir doesn't exist because the profile was deleted
+        output_dir = deleted_home / "cron" / "output" / "job_123"
+
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            jobs._ensure_cron_dir(output_dir)
+        assert not deleted_home.exists()
+
+    def test_ensure_cron_dir_default_home_creates_subdir(self, tmp_path):
+        """A subdir under a default home's cron/ should be created normally."""
+        import cron.jobs as jobs
+
+        default_home = tmp_path / "default_home"
+        default_home.mkdir()
+        output_dir = default_home / "cron" / "output" / "job_123"
+
+        jobs._ensure_cron_dir(output_dir)
+        assert output_dir.is_dir()
+
+    def test_ensure_cron_dir_named_profile_cron_dir_fails_closed(self, tmp_path):
+        """The cron dir of a deleted named profile must not be recreated."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+        cron_dir = deleted_home / "cron"
+
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            jobs._ensure_cron_dir(cron_dir)
+        assert not deleted_home.exists()
+
+    def test_ensure_cron_dir_existing_named_profile_cron_dir_works(self, tmp_path):
+        """An existing named profile's cron dir should be created normally."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        active_home = profiles_dir / "active"
+        active_home.mkdir(parents=True)
+        cron_dir = active_home / "cron"
+
+        jobs._ensure_cron_dir(cron_dir)
+        assert cron_dir.is_dir()
+
+    def test_ensure_cron_dir_scripts_dir_under_named_profile_fails_closed(self, tmp_path):
+        """A scripts dir under a deleted named profile must not be recreated."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+        scripts_dir = deleted_home / "scripts"
+
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            jobs._ensure_cron_dir(scripts_dir)
+        assert not deleted_home.exists()

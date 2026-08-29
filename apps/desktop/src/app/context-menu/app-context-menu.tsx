@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { writeClipboardText } from '@/components/ui/copy-button'
@@ -306,8 +307,13 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     // SELECTION, so they need selected text — not just field content.
     // Inputs and textareas carry their selection on the element (Chrome
     // never reflects it into window.getSelection()); contenteditable uses
-    // the document selection the resolver captured. Paste needs a
-    // non-empty clipboard, select all needs the field to hold anything.
+    // the document selection the resolver captured. Select all needs the
+    // field to hold anything. Paste is intentionally NOT gated on a
+    // clipboard probe: its action is webContents.paste() in main — the
+    // same path Ctrl+V takes — which resolves the system clipboard itself,
+    // while the renderer-side readClipboard probe can report empty on
+    // Windows even when that path succeeds (#91553). Pasting with an
+    // empty clipboard is a harmless no-op, so the item fails open.
     const formField =
       target.editable instanceof HTMLInputElement || target.editable instanceof HTMLTextAreaElement
         ? target.editable
@@ -337,7 +343,6 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         shortcut={EDIT_SHORTCUTS.copy}
       />,
       <Item
-        disabled={!open.clipboardHasText}
         key="edit-paste"
         label={copy.edit.paste}
         onSelect={() => editableCommand('paste')}
@@ -566,6 +571,15 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
         label={t.keybinds.actions['view.toggleStatusbar']}
         onSelect={toggleStatusbarVisible}
       />,
+      // The pointer-only way back to a hidden tab strip: right-clicking the
+      // shell reaches this menu from anywhere, including a zone that has no
+      // chrome left to right-click.
+      <Item
+        icon="layout-menubar"
+        key="shell-tabstrip"
+        label={t.keybinds.actions['view.toggleTabStrip']}
+        onSelect={() => void toggleTargetZoneTabStrip()}
+      />,
       <Item
         icon="settings-gear"
         key="shell-settings"
@@ -680,6 +694,7 @@ export function AppContextMenu() {
         align="start"
         className="w-56"
         onCloseAutoFocus={event => event.preventDefault()}
+        portalContainer={open.kind === 'dom' ? open.target.dialogPortalContainer : undefined}
         side="bottom"
       >
         {sections.map((section, index) => (

@@ -549,7 +549,7 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 | `HERMES_DASHBOARD_BASIC_AUTH_SECRET` | HMAC key (32+ bytes, base64/hex/raw) signing the basic provider's stateless session tokens. Set explicitly so sessions survive restarts / span multiple workers; blank → random per-process (you'll be logged out on every restart). Overrides `dashboard.basic_auth.secret`. |
 | `HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS` | Access-token lifetime for the basic provider (default 12h). Overrides `dashboard.basic_auth.session_ttl_seconds`. |
 | `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | OAuth client id (`agent:{instance_id}`) for the gated/public dashboard, activating the Nous (`plugins/dashboard_auth/nous`) provider. Overrides `dashboard.oauth.client_id`. Provision it with `hermes dashboard register`. |
-| `HERMES_DASHBOARD_PUBLIC_URL` | Complete public URL the dashboard is reached at, for OAuth callback construction behind reverse proxies. Overrides `dashboard.public_url`. |
+| `HERMES_DASHBOARD_PUBLIC_URL` | Complete public URL the dashboard is reached at behind a reverse proxy. It controls OAuth callback construction, adds its exact hostname to the HTTP Host/WebSocket Origin guard, and requires the auth gate for non-loopback public hosts even when the backend binds to loopback. Overrides `dashboard.public_url`. |
 | `HERMES_DASHBOARD_OIDC_ISSUER` | OIDC issuer URL for the bundled self-hosted OIDC provider (`plugins/dashboard_auth/self_hosted`). Required to activate it. Overrides `dashboard.oauth.self_hosted.issuer`. |
 | `HERMES_DASHBOARD_OIDC_CLIENT_ID` | Public OIDC client id (authorization-code + PKCE) for the self-hosted OIDC provider. Required to activate it. Overrides `dashboard.oauth.self_hosted.client_id`. |
 | `HERMES_DASHBOARD_OIDC_SCOPES` | Requested OIDC scopes for the self-hosted OIDC provider (default `openid profile email`). Overrides `dashboard.oauth.self_hosted.scopes`. |
@@ -898,10 +898,10 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 | `AUXILIARY_VISION_MODEL` | Override model for vision tasks |
 | `AUXILIARY_VISION_BASE_URL` | Direct OpenAI-compatible endpoint for vision tasks |
 | `AUXILIARY_VISION_API_KEY` | API key paired with `AUXILIARY_VISION_BASE_URL` |
-| `AUXILIARY_WEB_EXTRACT_PROVIDER` | Override provider for web extraction/summarization |
-| `AUXILIARY_WEB_EXTRACT_MODEL` | Override model for web extraction/summarization |
-| `AUXILIARY_WEB_EXTRACT_BASE_URL` | Direct OpenAI-compatible endpoint for web extraction/summarization |
-| `AUXILIARY_WEB_EXTRACT_API_KEY` | API key paired with `AUXILIARY_WEB_EXTRACT_BASE_URL` |
+
+:::note
+`AUXILIARY_WEB_EXTRACT_*` variables are obsolete: `web_extract` and browser snapshots no longer use an auxiliary LLM. Long pages and snapshots are truncated deterministically with the full text stored on disk for `read_file` paging.
+:::
 
 For task-specific direct endpoints, Hermes uses the task's configured API key or `OPENAI_API_KEY`. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
 

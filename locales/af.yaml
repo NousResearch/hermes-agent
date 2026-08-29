@@ -166,10 +166,14 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
       handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
       guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
@@ -280,6 +284,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Ongeldige kontrolepunt-nommer. Gebruik 1-{max}."
     restored:              "✅ Herstel na kontrolepunt {hash}: {reason}\n'n Voor-terugrol-momentopname is outomaties gestoor."
     kept_user_edits:       "↷ Jou handwysigings is behou: {files}\nGebruik /rollback <N> --all om dié ook te herstel."
+    kept_oversize:         "↷ Behou (te groot vir kontrolepunte, geen gestoorde kopie om na terug te keer nie): {files}"
+    failed_deletes:        "⚠️ Kon nie verwyder nie (in plek gelaat): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

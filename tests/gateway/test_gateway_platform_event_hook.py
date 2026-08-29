@@ -36,26 +36,6 @@ if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
 
-# ---------------------------------------------------------------------------
-# python-telegram-bot is an optional dep; mock it so the adapter imports
-# (same shim as test_telegram_network_reconnect / test_telegram_plugin_handlers).
-# ---------------------------------------------------------------------------
-def _ensure_telegram_mock() -> None:
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.profile_routing import ProfileRoute  # noqa: E402

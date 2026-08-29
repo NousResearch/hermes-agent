@@ -629,6 +629,60 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.sessionCount).toBe(1)
   })
 
+  it('keeps cwd-less repo sessions visible in both the overview and project drill-in', () => {
+    const project = projectNode({
+      id: '/www/app',
+      isAuto: true,
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 0,
+          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app' })]
+        }
+      ]
+    })
+
+    const live = makeCwdSession(null, { id: 'fresh', git_branch: 'main', git_repo_root: '/www/app' })
+
+    expect(overlayLivePreviews([project], [live], [], 3)['/www/app'].map(session => session.id)).toEqual(['fresh'])
+
+    const overlaid = overlayLiveLanes(project, [live])
+
+    expect(overlaid.repos[0].groups.flatMap(group => group.sessions.map(session => session.id))).toEqual(['fresh'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('places a cwd-less repo session only in its exact repo subtree', () => {
+    const project = projectNode({
+      id: '/www',
+      repos: [
+        {
+          id: '/www',
+          label: 'www',
+          path: '/www',
+          sessionCount: 0,
+          groups: [lane({ id: '/www::branch::main', label: 'main', isMain: true, path: '/www' })]
+        },
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 0,
+          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app' })]
+        }
+      ]
+    })
+
+    const live = makeCwdSession(null, { id: 'fresh', git_branch: 'main', git_repo_root: '/www/app' })
+    const overlaid = overlayLiveLanes(project, [live])
+
+    expect(overlaid.repos[0].groups.flatMap(group => group.sessions)).toEqual([])
+    expect(overlaid.repos[1].groups.flatMap(group => group.sessions.map(session => session.id))).toEqual(['fresh'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
   it('injects a session created in a fresh worktree into that worktree lane (no git_repo_root yet)', () => {
     // The brand-new session row has only a cwd — no git_repo_root. The entered
     // project knows its repo root, so the worktree session still lands in its

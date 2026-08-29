@@ -12,6 +12,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import textwrap
@@ -39,9 +40,11 @@ from gateway.restart import (
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     is_gateway_supervisor_process,
+    parse_cron_drain_timeout,
     parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
     resolve_restart_exit_wait_budget,
+    resolve_systemd_timeout_stop_sec,
 )
 from hermes_cli.config import (
     get_env_value,
@@ -96,19 +99,45 @@ class ProfileGatewayProcess:
     profile: str
     path: Path
     pid: int
+    create_time: float = 0.0
 
 
-def _get_service_pids() -> set:
+@dataclass(frozen=True)
+class WindowsGatewayService:
+    """A real Windows service supervising a profile gateway process tree."""
+
+    name: str
+    profile: str
+    service_pid: int
+    gateway_pid: int
+    descendant_pids: frozenset[int]
+    descendant_identities: tuple[tuple[int, float], ...]
+    service_create_time: float = 0.0
+    gateway_create_time: float = 0.0
+
+
+def _get_service_pids(all_profiles: bool = False) -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
     Used to avoid killing freshly-restarted service processes when sweeping
-    for stale manual gateway processes after a service restart.  Relies on the
-    service manager having committed the new PID before the restart command
+    for stale manual gateway processes after a service restart.  Relies on
+    the service manager having committed the new PID before the restart command
     returns (true for both systemd and launchd in practice).
+
+    ``all_profiles`` widens the launchd branch to every installed
+    ``ai.hermes.gateway*`` LaunchAgent — the update path needs the whole
+    fleet excluded from its sweep (#41403, #73626): sibling-profile launchd
+    gateways found by the (BSD-fixed) ps scan must not be misclassified as
+    manual processes and killed.  Default-scope callers (``gateway status``,
+    cron checks) keep seeing only the current profile's service; the orphan
+    reaper passes all_profiles=True for the same friendly-fire reason.  The
+    systemd branch has always been fleet-wide (``hermes-gateway*``) and is
+    unaffected.
     """
     pids: set = set()
 
     # --- systemd (Linux): user and system scopes ---
+    # systemd always lists every hermes-gateway* unit regardless of scope.
     if supports_systemd_services():
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
@@ -147,33 +176,49 @@ def _get_service_pids() -> set:
 
     # --- launchd (macOS) ---
     if is_macos():
-        try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Try plist format first (macOS 26+): "PID" = <N>;
-                pid = _parse_launchd_pid_from_list_output(result.stdout)
-                if pid is not None and pid > 0:
-                    pids.add(pid)
-                else:
-                    # Fall back to legacy tab-separated format:
-                    # "PID\tStatus\tLabel"
+        labels = {get_launchd_label()}
+        if all_profiles:
+            # Every gateway LaunchAgent, not just the invoking profile's —
+            # mirrors the systemd branch's ``hermes-gateway*`` pattern above.
+            # The update path restarts the whole fleet, and its stale-process
+            # sweep must not mistake a sibling service's fresh PID for a
+            # manual gateway it should kill (#41403).
+            labels.update(launchd_gateway_labels_for_install())
+        for label in sorted(labels):
+            try:
+                _domain, pid = _locate_launchd_gateway_service(label)
+            except subprocess.TimeoutExpired:
+                continue
+            if pid is not None and pid > 0:
+                pids.add(pid)
+        if all_profiles:
+            # Belt-and-suspenders for the EXCLUDE use case (#74075): a bare
+            # ``launchctl list`` prefix scan also catches ai.hermes.gateway*
+            # agents the label derivation can't map (renamed profiles, other
+            # installs sharing this user).  Over-inclusion is safe here —
+            # these PIDs are only ever protected from the kill sweep, never
+            # targeted.  Restart paths use the label-derived set only.
+            try:
+                result = subprocess.run(
+                    ["launchctl", "list"],
+                    capture_output=True,
+                    text=True, encoding='utf-8', errors='replace',
+                    timeout=5,
+                )
+                if result.returncode == 0:
                     for line in result.stdout.strip().splitlines():
                         parts = line.split()
-                        if len(parts) >= 3 and parts[2] == label:
+                        if len(parts) >= 3 and parts[-1].startswith(
+                            "ai.hermes.gateway"
+                        ):
                             try:
                                 pid = int(parts[0])
                                 if pid > 0:
                                     pids.add(pid)
                             except ValueError:
                                 pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
 
     return pids
 
@@ -335,24 +380,47 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 # rewrites ``state/gateway.heartbeat`` every 30s (#66892), so a frozen loop
 # stops refreshing the file while a busy-but-alive loop keeps refreshing it.
 #
-# ``probe_gateway_loop_liveness`` reads that signal (a local stat + JSON read,
-# instant — far inside the 10s query tier of the subprocess timeout doc) and
-# classifies the gateway BEFORE any drain wait begins:
+# Since #90502 the heartbeat write runs on a thread (a stalling filesystem
+# must not be able to block the loop the watchdog watches), which costs the
+# file its status as *proof*: a stalled write or a saturated executor can age
+# the file while the loop runs, and an off-loop write can land after the loop
+# froze, keeping the file fresh for a dead loop. The loop therefore also arms
+# a second witness — ``state/gateway.loop-tick.<pid>.sock``, a UNIX socket
+# answered by the loop itself — and records whether it is armed in the
+# heartbeat payload (``loop_tick_socket``).
 #
-# - ``alive``   — heartbeat is fresh: the loop is dispatching (possibly busy).
-#                 Callers must take the normal graceful-drain path, which
-#                 honours the in-flight cron drain floor (#86684).
-# - ``wedged``  — heartbeat belongs to this PID but has gone stale well past
-#                 several missed beats: the loop is provably dead.  Draining
-#                 is pointless (nothing can run the drain), so callers may
-#                 escalate immediately via ``_escalate_wedged_gateway``.
-# - ``unknown`` — no heartbeat / unreadable / PID mismatch (older gateway,
-#                 still starting up, stale file from a previous process).
+# ``probe_gateway_loop_liveness`` reads both signals (a local stat + JSON
+# read + a bounded socket ping, repeated up to ``tick_strikes`` times when a
+# wedge is suspected — worst case ~3.4s, still far inside the 10s query tier
+# of the subprocess timeout doc) and classifies the gateway BEFORE any drain
+# wait begins:
+#
+# - ``alive``   — the loop answered the tick socket, or the file is fresh and
+#                 the loop is not contradicted by the socket.  Callers must
+#                 take the normal graceful-drain path, which honours the
+#                 in-flight cron drain floor (#86684).
+# - ``wedged``  — the heartbeat belongs to this PID, is stale well past
+#                 several missed beats, AND the tick socket is armed but
+#                 stays silent across a sustained window of consecutive
+#                 misses (default 3): both witnesses agree, sustained, that
+#                 the loop is provably dead. One silent probe is never
+#                 destructive authority — a transient synchronous stall can
+#                 outlast a single recv timeout, so a lone miss falls to
+#                 ``unknown``. Draining is pointless for a provably dead
+#                 loop (nothing can run the drain), so callers may escalate
+#                 immediately via ``_escalate_wedged_gateway``.
+# - ``unknown`` — no heartbeat / unreadable / PID mismatch / witness conflict
+#                 (fresh file with a silent loop, armed socket unreachable).
 #                 Treated like ``alive``: never escalate on ambiguity.
 #
 # The distinction matters: only a *provably dead* loop may bypass the cron
-# drain floor.  A merely busy gateway still answers the probe (fresh file)
-# and keeps its full drain budget.
+# drain floor.  A merely busy gateway still answers the probe (socket ping)
+# and keeps its full drain budget — even when the filesystem is stalling the
+# heartbeat write (the incident that motivated #90502).
+#
+# Legacy gateways (no ``loop_tick_socket`` flag in the payload) wrote the
+# file on-loop, so their staleness remains proof and the old single-witness
+# contract is unchanged.
 
 GATEWAY_LOOP_ALIVE = "alive"
 GATEWAY_LOOP_WEDGED = "wedged"
@@ -362,19 +430,130 @@ GATEWAY_LOOP_UNKNOWN = "unknown"
 # Three missed beats is decisive without false-positiving on one slow write.
 DEFAULT_LOOP_LIVENESS_STALE_AFTER_S = 90.0
 
+# Sentinel for "the producer never wrote the witness flag" (legacy payload).
+_LOOP_TICK_ABSENT = object()
+
+
+def _probe_loop_tick_socket(
+    pid: int,
+    home: Path | None,
+    timeout: float = 1.0,
+) -> bool | None:
+    """Ping the loop-scheduling witness socket for ``pid``.
+
+    Returns:
+      True  — the loop answered: it is dispatching right now.
+      False — a socket node exists for this PID but did not answer (the loop
+              is not scheduling, or the node is a leftover from a dead
+              listener).
+      None  — no socket node for this PID (legacy producer), or the path
+              could not be resolved. Not evidence either way.
+    """
+    try:
+        from gateway.shutdown_watchdog import get_loop_tick_socket_path
+
+        path = get_loop_tick_socket_path(home, pid)
+        if not path.is_socket():
+            return None
+    except Exception:
+        return None
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(max(float(timeout), 0.0))
+        sock.connect(str(path))
+        return sock.recv(1) == b"1"
+    except Exception:
+        # ECONNREFUSED (node with no listener), timeout (loop not answering),
+        # transient errors: the witness exists but is silent.
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def _probe_loop_tick_socket_sustained(
+    pid: int,
+    home: Path | None,
+    *,
+    timeout: float = 1.0,
+    strikes: int = 3,
+    gap_s: float = 0.2,
+) -> bool | None:
+    """Probe the tick socket until a reply or the sustained-miss budget.
+
+    A single silent probe is NOT destructive evidence: the loop may be in a
+    short transient synchronous stall (a reconnect storm, a heavy synchronous
+    callback, scheduler delay) that outlasts one recv timeout. Killing a
+    gateway on that would be a false wedge — the exact class of false
+    positive #90502 exists to prevent. Destructive authority therefore
+    requires the loop to fail to answer across a bounded window of
+    ``strikes`` consecutive misses, ``gap_s`` apart; any answer inside the
+    window proves the loop is dispatching and returns ``True``.
+
+    Returns:
+      True  — some attempt got an answer: the loop is dispatching.
+      False — every attempt observed a socket node that stayed silent: the
+              loop did not schedule for the whole window.
+      None  — a probe found no socket node (witness vanished mid-window, or
+              legacy producer): not evidence either way.
+    """
+    total = max(int(strikes), 0)
+    for attempt in range(total):
+        result = _probe_loop_tick_socket(pid, home, timeout=timeout)
+        if result is True:
+            return True
+        if result is None:
+            # No socket node this attempt — either the witness never
+            # existed (legacy producer) or it vanished mid-window. Both
+            # are ambiguity, never a wedge: absence is not a miss.
+            return None
+        if attempt < total - 1 and gap_s > 0:
+            time.sleep(gap_s)
+    return False
+
+
 
 def probe_gateway_loop_liveness(
     pid: int,
     *,
     stale_after: float = DEFAULT_LOOP_LIVENESS_STALE_AFTER_S,
     home: Path | None = None,
+    tick_timeout: float = 1.0,
+    tick_strikes: int = 3,
+    tick_gap_s: float = 0.2,
 ) -> str:
     """Classify a gateway PID's event loop as alive / wedged / unknown.
 
-    Reads the loop-liveness heartbeat file the gateway rewrites every 30s
-    while its loop is dispatching.  Never raises; any ambiguity (missing
-    file, unreadable JSON, PID mismatch) returns ``GATEWAY_LOOP_UNKNOWN``
-    so callers default to the safe graceful-drain path.
+    Two witnesses:
+
+    - the loop-tick socket (``state/gateway.loop-tick.<pid>.sock``): answered
+      by the gateway loop itself, so a reply is direct proof that the loop is
+      dispatching. It is never refreshed by the heartbeat executor thread and
+      never stalled by a filesystem that is slow to fsync.
+    - the heartbeat file (``state/gateway.heartbeat``): rewritten every 30s
+      on a thread since #90502, so freshness alone is no longer proof of loop
+      schedulability — a stalled write (measured at 112.6s max on the
+      incident box) or a saturated executor can age the file while the loop
+      runs, and a write can land after the loop froze.
+
+    A stale file classifies as ``wedged`` only when the producer declared the
+    tick socket armed (``loop_tick_socket: true`` in the payload) AND the
+    socket stays silent across a sustained window — ``tick_strikes``
+    consecutive misses (default 3). One silent probe is never destructive
+    authority: a short transient synchronous stall can outlast a single recv
+    timeout, so a single miss returns ``unknown`` and keeps the graceful
+    drain path. Any answer inside the window proves the loop is dispatching
+    and returns ``alive``. Any conflict or ambiguity returns ``unknown`` so
+    callers keep the safe graceful-drain path. Legacy producers (payload
+    without the flag) wrote the file on-loop, so their staleness remains
+    proof and the old contract is unchanged.
+
+    Never raises; any ambiguity (missing file, unreadable JSON, PID mismatch)
+    returns ``GATEWAY_LOOP_UNKNOWN``.
     """
     try:
         stale_budget = max(float(stale_after), 0.0)
@@ -393,10 +572,63 @@ def probe_gateway_loop_liveness(
         # No heartbeat for THIS process — old gateway version, still starting
         # up, or a stale file from a previous PID.  Not evidence of a wedge.
         return GATEWAY_LOOP_UNKNOWN
+
+    witness = _probe_loop_tick_socket(pid, home, timeout=tick_timeout)
+    if witness is True:
+        # The loop answered a ping — it is dispatching right now. A stale
+        # heartbeat file is a stalled write or a saturated executor, not a
+        # wedge (#90502).
+        return GATEWAY_LOOP_ALIVE
+
+    tick_armed = payload.get("loop_tick_socket", _LOOP_TICK_ABSENT)
     age = time.time() - mtime
-    if age > stale_budget:
+    if age <= stale_budget:
+        if witness is False:
+            # File fresh but the loop did not answer: an off-loop write can
+            # land after the loop froze, so a fresh file is not a liveness
+            # proof while the loop itself is silent.
+            return GATEWAY_LOOP_UNKNOWN
+        return GATEWAY_LOOP_ALIVE
+
+    # File is stale past the budget. The verdict now depends on what the
+    # producer promised about its witness:
+    if tick_armed is _LOOP_TICK_ABSENT:
+        # Legacy producer: the write ran on-loop, so staleness really does
+        # prove the loop stopped scheduling — old contract, unchanged.
         return GATEWAY_LOOP_WEDGED
-    return GATEWAY_LOOP_ALIVE
+    if tick_armed is not True:
+        # New producer whose witness could not be armed (bind failed): the
+        # write is off-loop, so staleness is NOT proof. Never escalate
+        # without a witness.
+        return GATEWAY_LOOP_UNKNOWN
+    if witness is False:
+        # First miss. One silent probe is NOT destructive authority: a
+        # short transient synchronous stall can outlast a single recv
+        # timeout, and killing a live gateway on it would be the exact false
+        # wedge #90502 exists to prevent. Require the loop to stay silent
+        # across the whole bounded window — the first probe above is miss
+        # #1, so ``tick_strikes - 1`` more attempts follow.
+        sustained = _probe_loop_tick_socket_sustained(
+            pid,
+            home,
+            timeout=tick_timeout,
+            strikes=tick_strikes - 1,
+            gap_s=tick_gap_s,
+        )
+        if sustained is False:
+            # Both witnesses agree, sustained: the loop did not schedule for
+            # the entire window.
+            return GATEWAY_LOOP_WEDGED
+        if sustained is True:
+            # The loop answered on a later attempt: it was a transient
+            # stall, not a wedge — the stale file is a stalled write.
+            return GATEWAY_LOOP_ALIVE
+        # Witness vanished mid-window: ambiguity — never kill on it. The
+        # graceful drain path remains the backstop.
+        return GATEWAY_LOOP_UNKNOWN
+    # Armed producer but the socket is unreachable: ambiguity — never kill on
+    # it. The graceful drain path remains the backstop.
+    return GATEWAY_LOOP_UNKNOWN
 
 
 def _escalate_wedged_gateway(
@@ -599,7 +831,7 @@ def _scan_gateway_pids(
                     current_cmd = ""
         else:
             # Try /proc first (works in Docker without procps installed),
-            # fall back to ps -A eww.
+            # fall back to `ps -Aww` (BSD-safe; see below).
             _found_via_proc = False
             if os.path.isdir("/proc"):
                 try:
@@ -626,7 +858,13 @@ def _scan_gateway_pids(
 
             if not _found_via_proc:
                 result = subprocess.run(
-                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    # ``-Aww`` (not ``-A eww``): the BSD ``e`` flag (show
+                    # environment) is illegal on macOS/BSD ps and makes the
+                    # whole command fail with rc 1, silently returning [] on
+                    # every macOS machine (#73626).  The matcher only needs
+                    # argv, not env vars, so ``e`` is unnecessary.  ``-ww``
+                    # keeps unlimited-width output on both BSD and procps ps.
+                    ["ps", "-Aww", "-o", "pid=,command="],
                     capture_output=True,
                     text=True, encoding='utf-8', errors='replace',
                     timeout=10,
@@ -734,7 +972,7 @@ def find_gateway_pids(
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
             pass
-    for pid in _get_service_pids():
+    for pid in _get_service_pids(all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)
     try:
         include_restart_managers = not supports_systemd_services()
@@ -751,29 +989,175 @@ def find_gateway_pids(
 
 def find_profile_gateway_processes(
     exclude_pids: set | None = None,
+    *,
+    strict: bool = False,
 ) -> list[ProfileGatewayProcess]:
     """Return running gateway PIDs mapped to Hermes profiles via PID files."""
     _exclude = set(exclude_pids or set())
     processes: list[ProfileGatewayProcess] = []
     try:
-        from gateway.status import get_running_pid
+        from gateway.status import get_running_pid, get_running_pid_identity_strict
         from hermes_cli.profiles import list_profiles
     except Exception:
+        if strict:
+            raise
         return processes
 
     seen: set[int] = set()
-    for profile in list_profiles():
+    try:
+        profiles = list_profiles()
+    except Exception:
+        if strict:
+            raise
+        return processes
+    for profile in profiles:
         try:
-            pid = get_running_pid(profile.path / "gateway.pid", cleanup_stale=False)
-        except Exception:
+            if strict:
+                identity = get_running_pid_identity_strict(profile.path / "gateway.pid")
+                pid = identity[0] if identity else None
+                create_time = identity[1] if identity else 0.0
+            else:
+                pid = get_running_pid(profile.path / "gateway.pid", cleanup_stale=False)
+                create_time = 0.0
+        except Exception as exc:
+            if strict:
+                raise RuntimeError(
+                    f"Could not inspect gateway PID for profile {profile.name}"
+                ) from exc
             continue
         if pid is None or pid <= 0 or pid in _exclude or pid in seen:
             continue
         seen.add(pid)
         processes.append(
-            ProfileGatewayProcess(profile=profile.name, path=profile.path, pid=pid)
+            ProfileGatewayProcess(
+                profile=profile.name,
+                path=profile.path,
+                pid=pid,
+                create_time=create_time,
+            )
         )
     return processes
+
+
+def find_windows_gateway_services(
+    *,
+    psutil_module=None,
+    profile_processes: list[ProfileGatewayProcess] | None = None,
+) -> list[WindowsGatewayService]:
+    """Find profile gateways supervised by real Windows services.
+
+    Service-logon processes can deny the interactive Desktop access to their
+    command lines. The updater can still identify them without guessing: a
+    validated profile gateway PID comes from Hermes's own PID file, and its
+    parent chain terminates at a running SCM service PID. The complete service
+    subtree is returned so the Desktop preflight exempts only processes the CLI
+    updater will stop through the Service Control Manager.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        if psutil_module is None:
+            import psutil as psutil_module  # type: ignore[no-redef]  # noqa: PLC0415
+        if profile_processes is None:
+            profile_processes = find_profile_gateway_processes(strict=True)
+        service_names_by_pid: dict[int, set[str]] = {}
+        for service in psutil_module.win_service_iter():
+            try:
+                if all(
+                    callable(getattr(service, field, None))
+                    for field in ("name", "status", "pid")
+                ):
+                    service_name = str(service.name() or "")
+                    service_status = service.status()
+                    service_pid = int(service.pid() or 0)
+                else:
+                    data = service.as_dict()
+                    service_name = str(data.get("name") or "")
+                    service_status = data.get("status")
+                    service_pid = int(data.get("pid") or 0)
+            except FileNotFoundError:
+                # The service was deleted between enumeration and inspection;
+                # it cannot still supervise a live gateway tree.
+                continue
+            except Exception as exc:
+                raise RuntimeError("SCM service inspection failed") from exc
+            if not service_name:
+                raise RuntimeError("SCM service has an empty name")
+            if service_status == "stopped":
+                continue
+            if service_status != "running":
+                raise RuntimeError(
+                    f"SCM service {service_name} has indeterminate status: {service_status}"
+                )
+            if service_pid <= 0:
+                raise RuntimeError(
+                    f"Running SCM service {service_name} has no valid process ID"
+                )
+            service_names_by_pid.setdefault(service_pid, set()).add(service_name)
+    except Exception as exc:
+        raise RuntimeError("SCM service enumeration failed") from exc
+
+    found: dict[str, WindowsGatewayService] = {}
+    for profile_process in profile_processes:
+        try:
+            gateway_process = psutil_module.Process(int(profile_process.pid))
+            gateway_create_time = float(gateway_process.create_time())
+            if profile_process.create_time <= 0 or abs(
+                gateway_create_time - profile_process.create_time
+            ) > 0.001:
+                raise RuntimeError("Gateway process identity changed during SCM discovery")
+            ancestor_pids = [int(parent.pid) for parent in gateway_process.parents()]
+            shared_service_pids = [
+                pid
+                for pid in ancestor_pids
+                if len(service_names_by_pid.get(pid, set())) > 1
+            ]
+            if shared_service_pids:
+                raise RuntimeError(
+                    "Gateway ownership is ambiguous under shared SCM host PID(s): "
+                    + ", ".join(str(pid) for pid in shared_service_pids)
+                )
+            service_pid = next(
+                (
+                    pid
+                    for pid in ancestor_pids
+                    if len(service_names_by_pid.get(pid, set())) == 1
+                ),
+                None,
+            )
+            if service_pid is None:
+                continue
+            service_name = next(iter(service_names_by_pid[service_pid]))
+            service_process = psutil_module.Process(service_pid)
+            service_create_time = float(service_process.create_time())
+            descendant_processes = service_process.children(recursive=True)
+            descendants = frozenset(int(child.pid) for child in descendant_processes)
+            if int(profile_process.pid) not in descendants:
+                continue
+            descendant_identities = tuple(
+                sorted(
+                    (int(child.pid), float(child.create_time()))
+                    for child in descendant_processes
+                )
+            )
+            found[service_name] = WindowsGatewayService(
+                name=service_name,
+                profile=str(profile_process.profile),
+                service_pid=service_pid,
+                gateway_pid=int(profile_process.pid),
+                descendant_pids=descendants,
+                descendant_identities=descendant_identities,
+                service_create_time=service_create_time,
+                gateway_create_time=gateway_create_time,
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not determine SCM ownership for gateway profile "
+                f"{profile_process.profile}"
+            ) from exc
+    return [found[name] for name in sorted(found)]
 
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
@@ -830,12 +1214,24 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     manager. Starting Hermes's detached watcher as well would escape the
     manager and race its replacement process. Ordinary foreground gateways
     retain the existing detached-watcher behavior.
+
+    When the profile-derived relaunch cannot be armed -- typically because
+    ``_gateway_run_args_for_profile`` cannot rebuild a run argv for this
+    profile -- fall back to replaying the process's own captured command
+    line, which is what ``launch_detached_gateway_restart_by_cmdline``
+    exists for and what the Windows post-update path already does for its
+    unmapped gateways.  Without this the caller has no way to relaunch the
+    process and (before #88654) silently left it running pre-update modules
+    against post-update code on disk.  ``argv`` is already captured above,
+    so the fallback costs nothing extra.
     """
     argv = _capture_gateway_argv(pid)
     if argv and "--external-supervisor" in argv:
         return "external-supervisor"
     if launch_detached_profile_gateway_restart(profile, pid):
         return "detached"
+    if argv and launch_detached_gateway_restart_by_cmdline(pid, list(argv)):
+        return "detached-cmdline"
     return None
 
 
@@ -1212,13 +1608,16 @@ def _wait_for_systemd_service_restart(
     *,
     system: bool = False,
     previous_pid: int | None = None,
-    timeout: float = 60.0,
+    timeout: float | None = None,
+    replacement_observed: list[bool] | None = None,
 ) -> bool:
     """Wait for the gateway service to become active after a restart handoff."""
     import time
 
     svc = get_service_name()
     scope_label = _service_scope_label(system).capitalize()
+    if timeout is None:
+        timeout = _systemd_restart_wait_timeout(system=system)
     deadline = time.monotonic() + timeout
     printed_runtime_wait = False
 
@@ -1236,9 +1635,26 @@ def _wait_for_systemd_service_restart(
         if not new_pid:
             new_pid = _systemd_main_pid_from_props(props)
 
+        runtime_state = _read_gateway_runtime_status()
+        try:
+            runtime_pid = int((runtime_state or {}).get("pid", 0) or 0)
+        except (TypeError, ValueError):
+            runtime_pid = 0
+        if (
+            previous_pid is not None
+            and replacement_observed is not None
+            and not replacement_observed
+            and any(
+                candidate_pid > 0 and candidate_pid != previous_pid
+                for candidate_pid in (new_pid or 0, runtime_pid)
+            )
+        ):
+            replacement_observed.append(True)
+
         if active_state == "active":
             if new_pid and (previous_pid is None or new_pid != previous_pid):
-                runtime_state = _gateway_runtime_status_for_pid(new_pid)
+                if runtime_pid != new_pid:
+                    runtime_state = _gateway_runtime_status_for_pid(new_pid)
                 gateway_state = (runtime_state or {}).get("gateway_state")
                 if gateway_state == "running":
                     print(f"✓ {scope_label} service restarted (PID {new_pid})")
@@ -1273,6 +1689,25 @@ def _wait_for_systemd_service_restart(
         f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} -l --since '2 min ago'"
     )
     return False
+
+
+def _systemd_restart_wait_timeout(system: bool = False) -> float:
+    """Cover systemd's relaunch delays before applying the runtime wait floor."""
+    from gateway.shutdown_forensics import parse_systemd_duration_to_us
+
+    props = _read_systemd_unit_properties(
+        system=system,
+        properties=("RestartUSec", "TimeoutStartUSec"),
+    )
+    supervisor_budget = 0.0
+    for name in ("RestartUSec", "TimeoutStartUSec"):
+        raw = props.get(name, "")
+        duration_us = (
+            int(raw) if raw.isdigit() else parse_systemd_duration_to_us(raw)
+        )
+        if duration_us is not None:
+            supervisor_budget += duration_us / 1_000_000
+    return 60.0 + supervisor_budget
 
 
 def _systemd_unit_is_start_limited(props: dict[str, str]) -> bool:
@@ -1396,6 +1831,87 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
                 except ValueError:
                     return None
     return None
+
+
+def _parse_launchd_pid_from_print_output(output: str) -> int | None:
+    """Extract the live PID from ``launchctl print`` output (``pid = <N>``).
+
+    A bootstrapped-but-not-running service prints no ``pid =`` line; the
+    first (service-level) occurrence wins over any nested endpoint state.
+    Returns ``None`` when no PID is found or the PID is non-positive.
+    """
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("pid = "):
+            try:
+                pid = int(stripped[len("pid = "):].strip())
+                return pid if pid > 0 else None
+            except ValueError:
+                return None
+    return None
+
+
+def _launchd_print_service_pid(domain: str, label: str) -> tuple[bool, int | None]:
+    """Return ``(loaded, pid)`` for ``domain/label`` via ``launchctl print``.
+
+    Domain-explicit on purpose: legacy ``launchctl list`` infers its domain
+    from the caller's execution context, which is exactly the ambiguity that
+    sank the first fleet-restart attempt (#41403 review). ``TimeoutExpired``
+    propagates — fleet-restart callers own per-label failure accounting (a
+    wedged launchctl call must be reported, not read as "unloaded").
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"{domain}/{label}"],
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return (False, None)
+    if result.returncode != 0:
+        return (False, None)
+    return (True, _parse_launchd_pid_from_print_output(result.stdout))
+
+
+def _launchd_service_registered(label: str) -> bool:
+    """True when launchd knows ``label`` (``launchctl list <label>`` exit 0).
+
+    Registration is domain-agnostic and — unlike the ``launchctl print``
+    domain probes in ``_locate_launchd_gateway_service`` — stays true on
+    macOS 26+ hosts whose per-user domains reject service management, so
+    the update path can still hand the label to ``launchd_restart()``,
+    which owns that fallback.  ``FileNotFoundError``/``TimeoutExpired``
+    propagate: the caller treats gate errors as a best-effort skip,
+    matching the pre-fleet inline behavior.
+    """
+    result = subprocess.run(
+        ["launchctl", "list", label],
+        capture_output=True,
+        text=True, encoding='utf-8', errors='replace',
+        timeout=5,
+    )
+    return result.returncode == 0
+
+
+def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]:
+    """Return ``(domain, pid)`` for ``label``, probing both per-user domains.
+
+    Probes ``gui/<uid>`` first (Aqua sessions), then ``user/<uid>``
+    (Background/SSH sessions).  ``domain`` is None when the label is not
+    bootstrapped in either; ``pid`` is None when the service has no live
+    process.  Sibling profile services resolve independently — a fleet can
+    legitimately mix domains (a profile installed over SSH lands in
+    ``user/<uid>`` while the rest live in ``gui/<uid>``), so the current
+    profile's cached domain (``_launchd_domain()``) is never consulted.
+    ``TimeoutExpired`` propagates (see ``_launchd_print_service_pid``).
+    """
+    uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    for domain in (f"gui/{uid}", f"user/{uid}"):
+        loaded, pid = _launchd_print_service_pid(domain, label)
+        if loaded:
+            return (domain, pid)
+    return (None, None)
 
 
 def _probe_launchd_service_running() -> bool:
@@ -1734,7 +2250,14 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     # under KeepAlive.SuccessfulExit=false) and any systemd unit reachable
     # from a host that got past the gate above (#83683, #85344).
     try:
-        own |= _get_service_pids()
+        # all_profiles=True: the reaper's process scan sees every profile's
+        # gateway (and on macOS the now-working ps fallback surfaces sibling
+        # launchd gateways, #73626), so the service exclusion must cover the
+        # whole ai.hermes.gateway* fleet — not just the current profile's
+        # label — or a sibling profile's launchd gateway is misclassified as
+        # an unsupervised orphan and reaped. Same class as the update-sweep
+        # fix in #74075.
+        own |= _get_service_pids(all_profiles=True)
     except Exception:
         pass
     # On Windows there is no systemd/launchd service query at all
@@ -2972,6 +3495,36 @@ def get_launchd_plist_path() -> Path:
     return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
 
 
+def launchd_gateway_labels_for_install() -> list[str]:
+    """Return the launchd gateway label for every profile of THIS install.
+
+    Derived from the install's profile layout (rooted at
+    ``get_default_hermes_root()``), NOT by globbing ``~/Library/LaunchAgents``:
+    the LaunchAgents directory is shared per-user, so a sandboxed
+    ``HERMES_HOME`` (tests, capture sandboxes, side-by-side installs) must
+    never enumerate — let alone restart — another install's fleet.
+
+    Root label first, then profile labels sorted by name.  Profile names
+    that cannot map to a service suffix (see ``_profile_suffix``'s naming
+    rule) are skipped — ``gateway install`` could never have created a
+    predictable label for them.  Profiles without an installed gateway are
+    harmless to include: their labels simply aren't bootstrapped and
+    callers skip them after a failed locate.
+    """
+    import re as _re
+
+    from hermes_cli.profiles import list_profiles
+
+    root_label: list[str] = []
+    profile_labels: list[str] = []
+    for profile in list_profiles():
+        if profile.is_default:
+            root_label.append("ai.hermes.gateway")
+        elif _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile.name):
+            profile_labels.append(f"ai.hermes.gateway-{profile.name}")
+    return root_label + sorted(profile_labels)
+
+
 def _detect_venv_dir() -> Path | None:
     """Detect the active virtualenv directory.
 
@@ -3333,12 +3886,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         "/sbin",
         "/bin",
     ]
-    # Preserve 30s for post-drain cleanup before systemd escalates, with a
-    # 60s minimum for installs that use the default immediate drain. Positive
-    # drain values extend the deadline directly instead of inheriting a second
-    # 60s floor, so a configured 45s drain yields 75s rather than 90s.
-    _drain_timeout = int(_get_restart_drain_timeout() or 0)
-    restart_timeout = max(60, _drain_timeout + 30)
+    # TimeoutStopSec must cover the full stop budget, not just
+    # restart_drain_timeout. Cron work can legally wait cron_drain_timeout
+    # plus cleanup reserve before interrupt/teardown, and systemd SIGKILLs
+    # if the unit's deadline is shorter (#94759). 30s of post-drain headroom
+    # is preserved on top, with a 60s floor.
+    restart_timeout = resolve_systemd_timeout_stop_sec(
+        _get_restart_drain_timeout(),
+        _get_cron_drain_timeout(),
+    )
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -3759,6 +4315,18 @@ def _get_restart_drain_timeout() -> float:
     return parse_restart_drain_timeout(raw)
 
 
+def _get_cron_drain_timeout() -> float:
+    """Return the configured cron-only drain floor in seconds (#82161)."""
+    env_raw = os.getenv("HERMES_CRON_DRAIN_TIMEOUT")
+    if env_raw is not None and str(env_raw).strip() != "":
+        return parse_cron_drain_timeout(env_raw)
+    cfg = read_raw_config()
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+    if isinstance(agent_cfg, dict) and "cron_drain_timeout" in agent_cfg:
+        return parse_cron_drain_timeout(agent_cfg.get("cron_drain_timeout"))
+    return parse_cron_drain_timeout(None)
+
+
 def _get_restart_after_turn_timeout() -> float:
     """Return the in-band restart wait-for-idle timeout in seconds (#77184)."""
     env_raw = os.getenv("HERMES_RESTART_AFTER_TURN_TIMEOUT")
@@ -3981,32 +4549,49 @@ def systemd_restart(system: bool = False):
             f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
             f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
         )
+        service_action = "restart"
         if _graceful_restart_via_sigusr1(pid, wait_budget):
-            # The gateway exits with code 75 for a planned service restart.
-            # RestartSec can otherwise delay the relaunch even though the
-            # operator asked for an immediate restart, so kick the unit once
-            # the old PID has exited and then wait for the replacement PID.
-            _run_systemctl(
-                ["reset-failed", svc],
+            # Exit 75 transfers restart ownership to systemd.  Observe that
+            # single replacement instead of issuing another restart that can
+            # stop the process systemd has already brought up.
+            replacement_observed: list[bool] = []
+            if _wait_for_systemd_service_restart(
                 system=system,
-                check=False,
-                timeout=30,
-            )
-            _run_systemctl(
-                ["restart", svc],
-                system=system,
-                check=False,
-                timeout=90,
-            )
-            if _wait_for_systemd_service_restart(system=system, previous_pid=pid):
+                previous_pid=pid,
+                replacement_observed=replacement_observed,
+            ):
+                return
+            if replacement_observed:
                 return
             if _systemd_service_is_start_limited(system=system):
                 return
 
-        print(
-            f"⚠ Graceful restart did not complete within {int(wait_budget)}s; "
-            "forcing a service restart..."
-        )
+            # A replacement may have started but not reached gateway runtime
+            # readiness before the wait expired.  Never stop that generation.
+            props = _read_systemd_unit_properties(system=system)
+            if not props:
+                return
+            replacement_pid = _systemd_main_pid_from_props(props)
+            if (
+                props.get("ActiveState") in {"active", "activating", "reloading"}
+                or props.get("SubState") == "auto-restart"
+                or (replacement_pid is not None and replacement_pid != pid)
+            ):
+                return
+
+            print(
+                "⚠ Systemd did not relaunch the gateway after its graceful exit; "
+                "starting the inactive service..."
+            )
+            # ``start`` is intentionally idempotent: if a replacement appears
+            # after the snapshot, this must not stop that new generation.
+            service_action = "start"
+        else:
+            print(
+                f"⚠ Graceful restart did not complete within {int(wait_budget)}s; "
+                "forcing a service restart..."
+            )
+
         _run_systemctl(
             ["reset-failed", svc],
             system=system,
@@ -4014,7 +4599,9 @@ def systemd_restart(system: bool = False):
             timeout=30,
         )
         try:
-            _run_systemctl(["restart", svc], system=system, check=True, timeout=90)
+            _run_systemctl(
+                [service_action, svc], system=system, check=True, timeout=90
+            )
         except subprocess.CalledProcessError as exc:
             if _systemd_error_indicates_start_limit(
                 exc
@@ -4197,52 +4784,35 @@ def get_launchd_label() -> str:
 _resolved_launchd_domain: str | None = None
 
 
-def _launchd_domain() -> str:
-    """Return the launchd domain that actually manages the gateway service.
+def _probe_launchd_domain_for_label(label: str) -> str:
+    """Resolve the launchd domain that manages ``label`` — uncached, per label.
 
     Probes ``gui/<uid>`` first (Aqua sessions), then ``user/<uid>``
     (Background/SSH sessions).  When neither domain contains a loaded
     service, falls back to ``launchctl managername`` as a heuristic.
 
-    The result is cached for the lifetime of the process so that repeated
-    calls (``start``, ``stop``, ``restart``) use a consistent domain.
-
-    See #40831, #23387.
+    Sibling profile services resolve independently: a fleet can legitimately
+    mix domains (a profile installed over SSH lands in ``user/<uid>`` while
+    the rest live in ``gui/<uid>``), so the current profile's cached domain
+    (``_launchd_domain()``) must never be reused for another label.
     """
-    global _resolved_launchd_domain
-    if _resolved_launchd_domain is not None:
-        return _resolved_launchd_domain
-
     uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
-    label = get_launchd_label()
     gui_domain = f"gui/{uid}"
     user_domain = f"user/{uid}"
 
     # 1. Probe gui/<uid> first — in Aqua sessions the service is loaded here.
-    try:
-        subprocess.run(
-            ["launchctl", "print", f"{gui_domain}/{label}"],
-            check=True,
-            timeout=5,
-            capture_output=True,
-        )
-        _resolved_launchd_domain = gui_domain
-        return gui_domain
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-
-    # 2. Probe user/<uid> — in Background/SSH sessions this is the working domain.
-    try:
-        subprocess.run(
-            ["launchctl", "print", f"{user_domain}/{label}"],
-            check=True,
-            timeout=5,
-            capture_output=True,
-        )
-        _resolved_launchd_domain = user_domain
-        return user_domain
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+    # 2. Then user/<uid> — in Background/SSH sessions this is the working domain.
+    for domain in (gui_domain, user_domain):
+        try:
+            subprocess.run(
+                ["launchctl", "print", f"{domain}/{label}"],
+                check=True,
+                timeout=5,
+                capture_output=True,
+            )
+            return domain
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            pass
 
     # 3. Neither domain has the service loaded — use managername as heuristic.
     #    Aqua → gui/<uid>, anything else (Background, loginwindow) → user/<uid>.
@@ -4254,15 +4824,30 @@ def _launchd_domain() -> str:
             timeout=5,
         )
         if "Aqua" in (result.stdout or ""):
-            _resolved_launchd_domain = gui_domain
             return gui_domain
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
     # 4. Default to user/<uid> (matches the pre-probing behavior for
     #    Background/SSH sessions and is the recommended domain on macOS 26+).
-    _resolved_launchd_domain = user_domain
     return user_domain
+
+
+def _launchd_domain() -> str:
+    """Return the launchd domain that actually manages the gateway service.
+
+    Per-label probing lives in ``_probe_launchd_domain_for_label``; this
+    wrapper resolves the *current* profile's label and caches the result for
+    the lifetime of the process so that repeated calls (``start``, ``stop``,
+    ``restart``) use a consistent domain.
+
+    See #40831, #23387.
+    """
+    global _resolved_launchd_domain
+    if _resolved_launchd_domain is not None:
+        return _resolved_launchd_domain
+    _resolved_launchd_domain = _probe_launchd_domain_for_label(get_launchd_label())
+    return _resolved_launchd_domain
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and
@@ -4513,10 +5098,22 @@ def _timestamped_stderr_gateway_command(
     ``hermes update`` sees the flag on the live grandchild argv and hands
     the process back to launchd instead of starting a detached watcher
     (#86893 / #87005). The detached nohup fallback stays unmarked.
+
+    Supervised starts also drop ``--replace`` (issue #79048): a launchd
+    service is respawned by KeepAlive, so takeover authority would be
+    re-armed on every respawn — two profiles legitimately sharing one
+    platform token would each terminate the sibling, and launchd would
+    revive the victim forever. Bounded replacement is the lifecycle
+    commands' job (``launchctl kickstart -k``, drain in
+    ``launchd_restart()``, bootout+bootstrap in install/refresh), which
+    run before supervision resumes. Mirrors ``generate_systemd_unit``,
+    whose ExecStart also runs ``gateway run`` without ``--replace``.
     """
     inner = _gateway_run_command()
     if external_supervisor and "--external-supervisor" not in inner:
         inner = [*inner, "--external-supervisor"]
+    if external_supervisor and "--replace" in inner:
+        inner = [part for part in inner if part != "--replace"]
     return [
         get_python_path(),
         "-m",
@@ -5129,10 +5726,47 @@ def _wait_for_gateway_exit(
     return True
 
 
+def _launchd_kickstart(label: str, domain: str) -> None:
+    """Hard-restart ``domain/label`` via ``launchctl kickstart -k``.
+
+    Raises ``CalledProcessError``/``TimeoutExpired`` — callers own the
+    per-label failure accounting during fleet restarts.
+    """
+    subprocess.run(
+        ["launchctl", "kickstart", "-k", f"{domain}/{label}"],
+        check=True,
+        capture_output=True,
+        text=True, encoding='utf-8', errors='replace',
+        timeout=90,
+    )
+
+
+def _wait_for_launchd_service_pid(
+    label: str, old_pid: int | None, timeout: float = 10.0, *, domain: str
+) -> bool:
+    """Poll ``domain/label`` until the service runs on a fresh PID.
+
+    launchd's exit → ``KeepAlive`` respawn transition is not instantaneous;
+    a one-shot check races that window and falsely reports the service as
+    down (same rationale as the systemd ``is-active`` poll in the update
+    path).  Poll every 0.5s up to ``timeout`` seconds before giving up.
+    ``TimeoutExpired`` from launchctl propagates — callers own per-label
+    failure accounting.
+    """
+    deadline = time.monotonic() + max(timeout, 0.5)
+    while True:
+        _loaded, pid = _launchd_print_service_pid(domain, label)
+        if pid is not None and pid > 0 and pid != old_pid:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
 def launchd_restart():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
-    drain_timeout = _get_restart_drain_timeout()
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
     from gateway.status import get_running_pid
 
     try:
@@ -5156,26 +5790,57 @@ def launchd_restart():
             _escalate_wedged_gateway(pid)
             pid = None
         if pid is not None:
-            # Announce the drain BEFORE waiting on it. This wait can run for
-            # the full drain budget (180s by default) while the old gateway
-            # finishes in-flight agent runs, and it streams into surfaces with
-            # no other feedback — the desktop updater's live output most of
-            # all, where a silent stop here reads as "update stuck" (#44515).
-            # Mirrors the systemd branch's "draining (up to Ns)..." line.
+            # Graceful in-band restart, mirroring the systemd branch.
+            #
+            # Previously this sent a bare SIGTERM and waited
+            # ``_get_restart_drain_timeout()`` — which defaults to 0, so the
+            # wait could never succeed and every restart fell through to
+            # ``kickstart -k``. A bare SIGTERM also leaves
+            # ``restart_requested`` False, so the gateway exits 1 instead of
+            # 75 and reports itself to chat as "shutting down" rather than
+            # "restarting", losing the resume_pending handoff.
+            #
+            # SIGUSR1 is the drain-aware path: refuse new turns, wait for
+            # in-flight work (``agent.restart_after_turn_timeout``), then
+            # stop() within ``agent.restart_drain_timeout``. The wait budget
+            # must cover BOTH phases plus headroom (#77184) — the raw drain
+            # timeout covers only the second.
+            #
+            # Announce the wait BEFORE it runs: it can last the full budget
+            # while the old gateway finishes in-flight agent runs, and it
+            # streams into surfaces with no other feedback — the desktop
+            # updater's live output most of all, where a silent stop here
+            # reads as "update stuck" (#44515).
+            wait_budget = _get_restart_exit_wait_budget()
             print(
                 f"→ Stopping gateway (PID {pid}) — draining in-flight runs "
-                f"(up to {drain_timeout:.0f}s)..."
+                f"(up to {wait_budget:.0f}s)..."
             )
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(
-                        f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
-                    )
+            if _graceful_restart_via_sigusr1(pid, wait_budget):
+                # The gateway exited with the planned-restart code. When
+                # launchd is actually supervising this label, KeepAlive
+                # revives it — do NOT kickstart (the replacement may already
+                # be up, and ``-k`` would kill it and restart a second time).
+                # But a graceful exit alone doesn't prove supervision:
+                # detached-fallback gateways and unloaded jobs also exit
+                # cleanly with nobody to revive them (and the SIGUSR1 helper
+                # returns True for an already-gone PID). Verify a replacement
+                # PID appears before trusting KeepAlive — mirrors the systemd
+                # branch's replacement observation.
+                if _wait_for_launchd_service_pid(
+                    label, pid, timeout=15.0, domain=domain
+                ):
+                    print("✓ Service restart requested")
+                    _clear_launchd_unsupported_marker()
+                    return
+                print(
+                    "⚠ launchd did not revive the gateway after its graceful "
+                    "exit — forcing restart"
+                )
+            else:
+                print(
+                    f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart"
+                )
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
@@ -5215,6 +5880,51 @@ def launchd_restart():
             return
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
+
+
+# launchd will not relaunch a KeepAlive job more than about once per 10s.  A
+# self-restart that exits promptly therefore leaves the label registered with
+# NO pid for most of that window, so any verification budget shorter than the
+# throttle reports a healthy restart as a failure.
+LAUNCHD_SUPERVISION_VERIFY_TIMEOUT = 20.0
+
+
+def wait_for_launchd_gateway_supervision(
+    *,
+    timeout: float = LAUNCHD_SUPERVISION_VERIFY_TIMEOUT,
+    label: str | None = None,
+    poll_interval: float = 0.5,
+) -> bool:
+    """Poll launchd until it is supervising a live gateway process.
+
+    :func:`launchd_restart` returns as soon as the restart has been *requested*.
+    The ``_request_gateway_self_restart`` branch hands the work to the running
+    gateway and returns immediately, and a plist reload is handed to a detached
+    helper.  Both are asynchronous, so a caller that reads "returned without
+    raising" as "the service is up" cannot see a helper that dies before its
+    first bootstrap (#88848) — nor a ``launchctl bootstrap`` that exits 0
+    without registering, which the reporter measured on macOS 26.6.1.
+
+    Judge the outcome the way #80491 taught the helper to judge it: by a live
+    supervised pid, never by an exit code.  :func:`_launchctl_label_supervising_process`
+    is already that predicate, so this only adds the wait.
+
+    Returns True immediately when the detached fallback is active.  On a host
+    where launchd cannot manage the domain the gateway runs unsupervised *by
+    design*, so the absence of a launchd pid there is the expected state and
+    not the silent failure this guards against.
+    """
+    if _launchd_unsupported_marker_exists():
+        return True
+
+    label = label or get_launchd_label()
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        if _launchctl_label_supervising_process(label):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(max(poll_interval, 0.01))
 
 
 def launchd_status(deep: bool = False):
@@ -5445,7 +6155,18 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     print()
     print("  Pass --force to start a separate profile gateway anyway (not")
     print("  recommended while the multiplexer is running).")
-    sys.exit(1)
+    # EX_CONFIG, not a generic failure. This refusal is decided entirely by
+    # configuration (multiplex_profiles plus the allowlist), so it is permanent:
+    # no number of retries can change the answer. Exiting 1 made it look
+    # transient to a service manager -- and the systemd unit this module
+    # generates pairs Restart=always/RestartSec=5 with StartLimitIntervalSec=0,
+    # deliberately trading systemd's generic start-rate limiter for the specific
+    # RestartPreventExitStatus=GATEWAY_FATAL_CONFIG_EXIT_CODE backstop declared
+    # beside it. Returning 1 left that backstop unarmed with the limiter already
+    # off, so a correct refusal became an unbounded restart loop. 78 also reaches
+    # the s6 finish script's 125 "permanent failure" translation (see #51228),
+    # the same path the other fatal-config exits take.
+    sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
 
 def _guard_supervised_gateway_conflict(force: bool = False) -> None:
@@ -7635,6 +8356,20 @@ def _gateway_command_inner(args):
             sys.exit(1)
 
     elif subcmd == "uninstall":
+        # Uninstall stops the managed service before removing it. Gate on
+        # PID-file ownership like stop/restart (#92560): the env marker is
+        # inherited by every descendant, and CLI sessions spawned under the
+        # gateway tree must stay able to manage it.
+        from tools.process_registry import _is_supervised_gateway_process
+
+        if _is_supervised_gateway_process():
+            print_error(
+                "Refusing to uninstall the gateway from inside the gateway process.\n"
+                "This command was blocked to prevent the gateway from terminating itself.\n"
+                "Use `hermes gateway uninstall` from a shell outside the running gateway."
+            )
+            sys.exit(1)
+
         if is_managed():
             managed_error("uninstall gateway service")
             return
@@ -7745,7 +8480,13 @@ def _gateway_command_inner(args):
     elif subcmd == "stop":
         # Defense: refuse self-targeting gateway stop from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        if os.getenv("_HERMES_GATEWAY") == "1":
+        # The supervised probe also PASSES a plain foreground `hermes gateway run`
+        # (env set, PID owned, but no supervisor): that is intentional and
+        # harmless — with no supervisor there is no KeepAlive, so a self-stop is
+        # a one-shot exit rather than a respawn loop.
+        from tools.process_registry import _is_supervised_gateway_process
+
+        if _is_supervised_gateway_process():
             print_error(
                 "Refusing to stop the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
@@ -7838,7 +8579,13 @@ def _gateway_command_inner(args):
     elif subcmd == "restart":
         # Defense: refuse self-targeting gateway restart from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        if os.getenv("_HERMES_GATEWAY") == "1":
+        # The supervised probe also PASSES a plain foreground `hermes gateway run`
+        # (env set, PID owned, but no supervisor): that is intentional and
+        # harmless — with no supervisor there is no KeepAlive, so a self-restart
+        # is a single relaunch rather than a respawn loop.
+        from tools.process_registry import _is_supervised_gateway_process
+
+        if _is_supervised_gateway_process():
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"

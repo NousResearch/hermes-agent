@@ -114,6 +114,42 @@ def test_adapter_auth_check_stamps_secondary_profile(monkeypatch):
     assert captured["profile"] == "coder"
 
 
+def test_startup_guard_gateway_allow_all_reads_scope_not_environ(monkeypatch):
+    """The GATEWAY_ALLOW_ALL_USERS opt-in check inside the startup guard
+    must honor the active profile secret scope (#93522): the default
+    profile's env-only opt-in must not leak into a secondary profile that
+    never opted in, and a secondary profile's own scoped opt-in must be
+    honored."""
+    from agent import secret_scope
+    from gateway.run import _own_policy_open_startup_violation
+
+    _clear_auth_env(monkeypatch)
+    cfg = GatewayConfig(multiplex_profiles=True)
+    cfg.platforms = {
+        Platform.WECOM: PlatformConfig(enabled=True, extra={"dm_policy": "open"}),
+    }
+
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    try:
+        token = secret_scope.set_secret_scope({"SOMETHING_ELSE": "x"})
+        try:
+            violation = _own_policy_open_startup_violation(cfg)
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert violation is not None, "default profile's env opt-in must not leak into the scoped secondary profile"
+
+        token = secret_scope.set_secret_scope({"GATEWAY_ALLOW_ALL_USERS": "true"})
+        try:
+            violation = _own_policy_open_startup_violation(cfg)
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert violation is None, "the secondary profile's own scoped opt-in must be honored"
+    finally:
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+
 def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     """Secondary profiles must pass the same open-policy startup guard."""
     from gateway.run import _own_policy_open_startup_violation

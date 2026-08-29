@@ -9,6 +9,14 @@ import { compactNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
 
+import {
+  SIDEBAR_ROW_INSET,
+  SIDEBAR_ROW_LABEL,
+  SIDEBAR_ROW_LEAD,
+  SIDEBAR_ROW_MIN_H,
+  SIDEBAR_ROW_PAD_TRAIL
+} from './row-geometry'
+
 // Shared, content-agnostic sidebar chrome — used by both the flat session
 // sections and the project/workspace tree, so it lives outside either to keep
 // imports one-directional (no index <-> projects cycle).
@@ -18,24 +26,10 @@ export function SidebarSectionMeta({ children }: { children: React.ReactNode }) 
   return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
 
-// ── Row geometry (session row is canonical — everything composes these) ─────
-//
-// Height lives ONLY on SidebarRowShell (min-h-[1.625rem]). Inset children
-// stretch to fill the cell and center content internally — never items-center
-// on the shell grid, or short clusters (projects) float 1–2px off sessions.
-
-const rowMinH = 'min-h-[1.625rem]'
-const rowPadX = 'pl-2 pr-1'
-const rowGap = 'gap-1.5'
-const rowLead = 'grid size-3.5 shrink-0 place-items-center'
-const rowInset = cn(rowPadX, rowGap, 'flex h-full min-w-0 items-center self-stretch py-0.5')
-const rowLabel = 'min-w-0 truncate text-[0.8125rem] leading-none text-(--ui-text-secondary)'
-
-/** Inbox-style card (workspace + age, title + preview, model + size). */
-export const SIDEBAR_ROW_CARD_MIN_H = 'min-h-[3.375rem]' as const
-
-/** Codicon size in sidebar row leads — matches the file tree (`tree.tsx`). */
-export const SIDEBAR_LEAD_ICON_SIZE = '0.875rem' as const
+// Row geometry lives in `row-geometry.ts` — see that file for why each class
+// belongs to the box it belongs to. Re-exported here because this module is
+// where callers already look for row chrome.
+export { SIDEBAR_LEAD_ICON_SIZE, SIDEBAR_ROW_CARD_MIN_H, SIDEBAR_TRUNCATED_LEADING } from './row-geometry'
 
 /** Vertical stack of rows (gap-px, single column). */
 export function SidebarRowStack({ className, ...props }: React.ComponentProps<'div'>) {
@@ -71,9 +65,11 @@ export function SidebarDateDivider({
   )
 }
 
-/** Outer grid — sole owner of row height. The trailing `actions` slot is
- *  marked `data-row-actions` so a row-wide drag gesture can exclude it with
- *  one selector: it holds real controls, never grab surface. */
+/** Outer grid — sole owner of row height and of the trailing inset. The
+ *  `actions` slot is marked `data-row-actions` so a row-wide drag gesture can
+ *  exclude it with one selector: it holds real controls, never grab surface.
+ *  It stretches so that exclusion covers the column, not just its tallest
+ *  control. */
 export function SidebarRowShell({
   actions,
   actionsClassName,
@@ -82,10 +78,18 @@ export function SidebarRowShell({
   ...props
 }: React.ComponentProps<'div'> & { actions?: React.ReactNode; actionsClassName?: string }) {
   return (
-    <div className={cn(rowMinH, 'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md', className)} {...props}>
+    <div
+      className={cn(
+        SIDEBAR_ROW_MIN_H,
+        SIDEBAR_ROW_PAD_TRAIL,
+        'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md',
+        className
+      )}
+      {...props}
+    >
       {children}
       {actions ? (
-        <div className={cn('flex shrink-0 items-center self-center', actionsClassName)} data-row-actions>
+        <div className={cn('flex shrink-0 items-center self-stretch', actionsClassName)} data-row-actions>
           {actions}
         </div>
       ) : null}
@@ -95,12 +99,12 @@ export function SidebarRowShell({
 
 /** Multi-control left cluster (project rows). */
 export function SidebarRowCluster({ className, ...props }: React.ComponentProps<'div'>) {
-  return <div className={cn(rowInset, className)} {...props} />
+  return <div className={cn(SIDEBAR_ROW_INSET, className)} {...props} />
 }
 
 /** Session row main tap target. */
 export function SidebarRowBody({ className, ...props }: React.ComponentProps<'button'>) {
-  return <RowButton className={cn(rowInset, 'bg-transparent text-left', className)} {...props} />
+  return <RowButton className={cn(SIDEBAR_ROW_INSET, 'bg-transparent text-left', className)} {...props} />
 }
 
 /** Tappable label — underline/truncate live on the inner span, not the button. */
@@ -112,19 +116,19 @@ export function SidebarRowLink({
 }: React.ComponentProps<'button'> & { labelClassName?: string }) {
   return (
     <RowButton className={cn('min-w-0 shrink bg-transparent p-0 text-left', className)} {...props}>
-      <span className={cn(rowLabel, labelClassName)}>{children}</span>
+      <span className={cn(SIDEBAR_ROW_LABEL, labelClassName)}>{children}</span>
     </RowButton>
   )
 }
 
 /** Fixed leading column (dot, icon, drag handle). */
 export function SidebarRowLead({ className, ...props }: React.ComponentProps<'span'>) {
-  return <span className={cn(rowLead, className)} {...props} />
+  return <span className={cn(SIDEBAR_ROW_LEAD, className)} {...props} />
 }
 
 /** Standard row label typography. */
 export function SidebarRowLabel({ className, ...props }: React.ComponentProps<'span'>) {
-  return <span className={cn(rowLabel, className)} {...props} />
+  return <span className={cn(SIDEBAR_ROW_LABEL, className)} {...props} />
 }
 
 /** What a group's sessions add up to, for the Show options that count something. */

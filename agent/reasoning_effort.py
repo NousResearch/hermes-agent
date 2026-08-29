@@ -95,6 +95,13 @@ KIMI_K3_EFFORTS: tuple[str, ...] = ("low", "high", "max")
 #: Moonshot/Kimi K2-era models: low/medium/high.
 KIMI_K2_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
+#: OpenCode "Ox Alpha" stealth model (x-preview-f-free): thinking is always
+#: on and the wire accepts exactly low/high/max — medium/none/xhigh 400 with
+#: "This model always engages in thinking and cannot be disabled; please use
+#: low, high, or max" (verified live 2026-08-21). xhigh rounds up to max.
+OX_ALPHA_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+OX_ALPHA_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+
 #: Tencent TokenHub: low/medium/high.
 TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
@@ -109,6 +116,13 @@ KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 #: docs). ``xhigh`` requests the top tier, not the floor.
 GLM52_EFFORTS: tuple[str, ...] = ("high", "max")
 GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+
+#: GLM-5.3 widens the knob to a graded low/medium/high/max scale — verified
+#: live on api.z.ai/api/coding/paas/v4 (issue #91789, 2026-08-21): every
+#: level accepted with monotonic reasoning-token scaling (low=4, medium=11,
+#: high=98, max=125 on the probe prompt). ``xhigh`` requests the top tier.
+GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
+GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: DeepSeek V4 OpenAI-compat endpoint: low/medium/high/max; ``xhigh``
 #: requests the top tier (matches the shipped profile mapping).

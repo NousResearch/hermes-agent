@@ -44,22 +44,12 @@ def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
     assert not (tmp_path / ".env").exists()
 
 
-def test_write_env_vars_strips_line_separators_and_nul(tmp_path):
-    """A pasted secret with embedded CR/LF/NUL must not inject an extra
-    KEY=VALUE line into .env (mirrors the openviking plugin's writer)."""
-    env_path = tmp_path / ".env"
-
-    memory_setup._write_env_vars(
-        env_path,
-        {"PROVIDER_API_KEY": "good\nINJECTED_KEY=attacker\r\u2028\x00tail"},
-    )
-
-    lines = env_path.read_text(encoding="utf-8").splitlines()
-    assert lines == ["PROVIDER_API_KEY=goodINJECTED_KEY=attackertail"]
-    parsed = dict(line.split("=", 1) for line in lines if "=" in line)
-    assert set(parsed) == {"PROVIDER_API_KEY"}
-
-
+# _write_env_vars's CR/LF-stripping, denylist, and plain-value-roundtrip
+# behavior is covered by tests/hermes_cli/test_memory_setup_env_denylist.py,
+# which exercises the current save_env_value-routed signature
+# (env_writes, hermes_home=None) \u2014 these three tests pinned the prior direct
+# Path.write_text(env_path, env_writes) signature/implementation and were
+# removed along with it (#60587).
 
 
 # ---------------------------------------------------------------------------

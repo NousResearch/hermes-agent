@@ -27,10 +27,15 @@ This is a defence-in-depth layer.  ``tools/terminal_tool.py`` blocks direct
 commands and shell scripts they reference when ``_HERMES_GATEWAY=1``. It also
 rejects ``launchctl submit`` in gateway sessions because launchd treats that
 primitive as a persistent KeepAlive job, not a one-shot task. ``hermes gateway
-stop|restart`` separately refuse to self-target from inside the gateway.
+stop|restart|uninstall`` separately refuse to self-target from inside the gateway.
 Blocking cron specs at creation time as well means the agent gets an immediate,
 informative rejection instead of scheduling a job that will only fail
 (silently) when it fires.
+
+The profile-flag form (``hermes -p <profile> gateway restart|stop``, #78028)
+is handled profile-aware: it is blocked only when the named profile is the
+profile running the guard. Sibling-profile restarts are legitimate fleet
+operations and stay allowed.
 """
 
 from __future__ import annotations
@@ -55,11 +60,18 @@ class GatewayLifecycleBlocked(ValueError):
 # actual shell-command-shaped strings, not on prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    # Branch A: `hermes gateway restart|stop` — the canonical foot-gun.
+    # Branch A: destructive `hermes gateway` operations.
+    # The destructive operations are restart, stop, and uninstall.
     # `start` is intentionally excluded: starting a gateway from inside a
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
-    r"(?:hermes\s+gateway\s+(?:restart|stop))"
+    # The lookbehind (#77173): `hermes` must not be a path component or a
+    # word tail. Excluding `/`, word chars, `.` and `-` keeps file paths
+    # with embedded spaces (`/docs/hermes gateway restart-notes.md`) from
+    # matching via the `/hermes` tail, while every real command position
+    # (start of text, whitespace, `;`/`&`/`|`, `$(`, backtick, even a
+    # U+FFFD from binary-content decoding) still matches.
+    r"(?:(?<![/\w.\-])hermes\s+gateway\s+(?:restart|stop|uninstall)\b)"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
@@ -72,13 +84,22 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # loop instead (#62891) — same foot-gun, indirect shape. Neutral-label
     # submissions that dodge this text anchor are caught separately by
     # `contains_launchctl_submit_command` (execution-aware, label-independent).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap)\b[^\n]*\bhermes[.\-]?gateway)"
+    # `bootout`/`remove`/`disable` sit alongside `unload`: Apple deprecated
+    # load/unload in favour of bootstrap/bootout, so `bootout` is the modern
+    # spelling of an already-listed verb, `remove` is its legacy sibling, and
+    # `disable` is what makes an unload durable across boots. Omitting them
+    # left the bypassable approval layer (tools/approval.py, skipped on
+    # force=True) as the only cover, while this hard block — documented as
+    # "force=True cannot help here" — let them through (#80260).
+    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
     # token orders because real reproductions show both.
-    r"|(?:p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    # Leading \b ensures we match "pkill" or "kill" as whole words, not as
+    # suffixes of other words (e.g. "skill" -> "kill").
+    r"|(?:\bp?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
 
 
@@ -94,13 +115,176 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 # across genuinely separate lines.
 _SHELL_LINE_CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
 
+# Python argv-list punctuation (#68289): `subprocess.run(["launchctl",
+# "bootout", ...])` separates the words the OS will exec with brackets and
+# commas rather than spaces. Stripped before the token-join re-scan only —
+# never from the raw text, so prose stays governed by the primary pattern.
+_ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],]+")
+
+
+# Branch A2 (#78028): the same foot-gun written with an explicit profile
+# selector — `hermes -p <profile> gateway restart|stop` / `--profile <name>`
+# / `--profile=<name>`. The selector token between `hermes` and `gateway`
+# breaks Branch A's literal adjacency. Unlike Branch A this form is NOT
+# unconditionally self-targeting: issued from inside gateway `zeus`,
+# `hermes -p venus gateway restart` operates on a sibling profile's gateway
+# and is a legitimate fleet operation. The pattern captures the named
+# profile so `contains_gateway_lifecycle_command` can block only the
+# self-targeting shape (named profile == the profile running the guard).
+# `start` stays excluded for the same reason as Branch A.
+_PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
+    r"(?i)"
+    r"hermes\s+"
+    # Any global flags before the profile selector (each may carry a value).
+    r"(?:-{1,2}\S+(?:\s+\S+)?\s+)*"
+    # The selector itself: `--profile=<name>` or the space-separated
+    # `-p <name>` / `--profile <name>` — exactly the shapes the CLI's
+    # `_apply_profile_override` accepts.
+    r"(?:--profile=([^\s]+)|(?:-p|--profile)\s+([^\s]+))"
+    # Any global flags between the selector and the subcommand.
+    r"(?:\s+-{1,2}\S+(?:\s+\S+)?)*"
+    r"\s+gateway\s+(?:restart|stop)"
+)
+
+
+def _current_profile_name() -> Optional[str]:
+    """Return the name of the profile running the guard, if determinable.
+
+    Prefers the explicit ``HERMES_PROFILE_NAME`` / ``HERMES_PROFILE`` env
+    (set by the profile launcher and kanban worker spawns), falling back to
+    ``hermes_cli.profiles.get_active_profile_name`` (derived from
+    ``HERMES_HOME``, which the gateway process inherits from its launch
+    profile). Returns ``None`` when neither source yields a name.
+    """
+    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        value = os.environ.get(env_name)
+        if value and value.strip():
+            return value.strip()
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or None
+    except Exception:
+        return None
+
+
+def _named_profile_is_current(named: str) -> bool:
+    """True when *named* is the profile executing the guard (self-targeting)."""
+    current = _current_profile_name()
+    if not current:
+        # No profile identity available: cannot prove self-targeting, so do
+        # not block — sibling restarts must stay allowed (#78028).
+        return False
+    return named.strip().casefold() == current.strip().casefold()
+
+
+# Branch B only catches `launchctl <verb> ... hermes[.-]?gateway` when the
+# label literally appears AFTER the verb in the same `[^\n]*` span, and its
+# verb list is missing `bootout`/`kill`/`disable`/`remove` entirely (2026-08-02
+# incident). `bootout` is the one that actually unloads a job's registration
+# — worse than `stop`/`kickstart`, which just bounce a still-registered job.
+#
+# A shell loop that builds the label from a list defined EARLIER in the same
+# command — `for item in 'ai.hermes.gateway-apollo:...' 'ai.hermes.gateway:...';
+# do label=${item%%:*}; launchctl bootout "gui/$uid/$label"; done` — puts the
+# literal label text in a different `;`-separated segment than the verb, so
+# no amount of same-segment tokenization sees it: the token next to `bootout`
+# is the unexpanded variable `$label`, not the string "hermes.gateway". This
+# incident command evaded Branch B on both counts (missing verb AND order)
+# and unloaded all 4 profiles' launchd jobs with zero approval.
+#
+# Unlike `submit`/`bootstrap` (handled separately, fully label-independent,
+# because a NEW job's label is attacker-chosen), these verbs act on an
+# EXISTING job, so anchoring to the hermes-gateway label is still correct —
+# `test_safe_commands` requires unrelated-label ops (e.g. `launchctl unload
+# ai.hermes.update-checker.plist`) to stay unblocked. The fix is checking
+# "verb anywhere AND label anywhere", not "label right after verb".
+_LAUNCHCTL_LIFECYCLE_VERBS_RE = re.compile(
+    r"(?i)\blaunchctl\s+(?:kickstart|unload|load|stop|restart|bootout|kill|disable|remove)\b"
+)
+_HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
+
+
+def _contains_launchctl_gateway_lifecycle(normalized_text: str) -> bool:
+    """Order-independent companion to Branch B — see comment above."""
+    return bool(_LAUNCHCTL_LIFECYCLE_VERBS_RE.search(normalized_text)) and bool(
+        _HERMES_GATEWAY_LABEL_RE.search(normalized_text)
+    )
+
 
 def contains_gateway_lifecycle_command(text: str) -> bool:
-    """Return True if *text* contains a gateway lifecycle command pattern."""
+    """Return True if *text* contains a gateway lifecycle command pattern.
+
+    Matches in two passes. The first is the raw-text regex above — cheap,
+    and the only pass that can fire on non-shell inputs shlex can't
+    tokenize (e.g. a Python source string). The second re-runs the same
+    pattern against each command segment after shell tokenization, where
+    quotes and backslash escapes have already been resolved.
+
+    That second pass exists because a real shell resolves quote-splicing
+    (``kick"start"``) and backslash-escaping (``kick\\start``) into one
+    literal word — ``kickstart`` — before the command ever runs. The raw
+    text still has the quote or backslash sitting between the verb's two
+    halves, so the first pass alone lets a spliced verb reach
+    ``launchctl``/``systemctl`` untouched while still executing as the
+    blocked lifecycle command (#80269, reported against #80260's bootout
+    parity fix). Tokenizing closes that gap while keeping the same
+    gateway-label anchoring (``_GATEWAY_LIFECYCLE_PATTERN`` still requires
+    a ``hermes``/``gateway`` token) — this function is the single choke
+    point ``_contains_unsafe_gateway_action`` calls at every recursion
+    level, so referenced-script and ``sh -c`` payload scanning inherit the
+    fix automatically.
+    """
     if not text:
         return False
+    # Heredoc bodies that are provably inert data (quoted delimiter, data-sink
+    # consumer like `cat > file <<'EOF'`) are masked before scanning (#88336):
+    # a runbook line "a human can run: hermes gateway restart" inside such a
+    # body is documentation, not a command this shell will execute. The
+    # stripper fails open on ANY ambiguity (unquoted delimiter, shell
+    # consumer, unterminated body), so executable heredocs are still scanned.
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    text = strip_inert_heredoc_bodies(text)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    return bool(_GATEWAY_LIFECYCLE_PATTERN.search(normalized))
+    if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
+        return True
+    # Profile-flag form (#78028): `hermes -p <profile> gateway restart|stop`
+    # bypasses Branch A because the selector sits between `hermes` and
+    # `gateway`. It is only the same foot-gun when the named profile IS the
+    # profile running the guard — sibling-profile restarts are legitimate
+    # fleet operations and stay allowed.
+    profile_match = _PROFILE_FLAG_LIFECYCLE_PATTERN.search(normalized)
+    if profile_match:
+        named = profile_match.group(1) or profile_match.group(2)
+        if named:
+            # Profile ids cannot contain quotes (hermes_cli.profiles
+            # enforces `^[a-z0-9][a-z0-9_-]{0,63}$`), so a shell-quoted
+            # `-p 'zeus'` compares equal to the bare name.
+            named = named.strip().strip("\"'")
+            if _named_profile_is_current(named):
+                return True
+    # Token-aware second pass (#80269): re-run the pattern on shell-tokenized
+    # segments where quotes/escapes are resolved, closing splice bypasses
+    # like `kick"start"`. Runs after the profile-flag check so both passes
+    # apply independently. Tokens are additionally re-joined with Python
+    # argv-list punctuation ([ ] ,) stripped (#68289): the same command
+    # reaches this guard as `subprocess.run(["launchctl", "bootout", ...])`
+    # from execute_code, where commas and brackets — not spaces — separate
+    # the argv words the OS will actually see.
+    for segment in _iter_command_segments(normalized):
+        joined = " ".join(segment)
+        if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
+            return True
+        stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
+        if stripped != joined and _GATEWAY_LIFECYCLE_PATTERN.search(stripped):
+            return True
+    # Order-independent launchctl pass (#77083): a shell loop can build the
+    # gateway label from a variable defined in an earlier `;`-separated
+    # segment (`label=${item%%:*}; launchctl bootout "gui/$uid/$label"`), so
+    # neither the same-span regex nor same-segment tokenization sees verb
+    # and label together. Check "verb anywhere AND label anywhere" instead.
+    return _contains_launchctl_gateway_lifecycle(normalized)
 
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
@@ -150,6 +334,14 @@ _DATA_SINK_EXECUTABLES = frozenset(
 # psql backslash escapes (`\! ...`). Any hit disables masking for the whole
 # segment — fail closed to the plain regex verdict.
 _UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
+# A leading dot also disables masking, because sqlite3 spells its escapes as
+# dot-commands (`.shell`, `.system`, `.import`). But `.`, `./x` and `../x`
+# are ordinary path operands, and `grep -r <pattern> .` is a far more common
+# shape than any dot-command — treating those as escapes disabled the
+# exemption for the single most ordinary way to run a recursive search,
+# blocking `grep -r 'systemctl restart hermes-gateway' .` outright. Require a
+# dot followed by a NAME character so a relative path stays a path.
+_DOT_COMMAND_ARGUMENT = re.compile(r"^\.[A-Za-z]")
 # A data sink piped into a shell/interpreter can feed matched lines straight
 # to execution (`grep 'systemctl restart hermes-gateway' f | sh`); never mask
 # such a line.
@@ -177,10 +369,60 @@ _BINARY_SNIFF_BYTES = 4096
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 
+def _split_logical_lines(text: str) -> list[str]:
+    """Split text on newlines that are not inside quotes.
+
+    A newline inside a quoted string (single or double quotes) is data,
+    not a command separator. Handles escaped quotes within strings.
+    """
+    lines = []
+    current = []
+    in_single = False
+    in_double = False
+    escape = False
+
+    for ch in text:
+        if escape:
+            current.append(ch)
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            current.append(ch)
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            current.append(ch)
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            current.append(ch)
+            continue
+        if ch == "\n" and not in_single and not in_double:
+            lines.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+
+    if current:
+        lines.append("".join(current))
+    return lines
+
+
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
-    """Yield shell-tokenized command segments, honoring quotes and comments."""
+    """Yield shell-tokenized command segments, honoring quotes and comments.
+
+    A newline inside a quoted token is data, not a command separator.
+    First split on logical lines (newlines outside quotes), then tokenize
+    each logical line with shlex. If a logical line cannot be tokenized
+    (unbalanced quotes), fall back to per-physical-line tokenization for
+    that logical line.
+    """
     normalized = command.replace("\\\n", "")
-    for line in normalized.splitlines() or [normalized]:
+    logical_lines = _split_logical_lines(normalized)
+
+    for line in logical_lines:
+        # Try to tokenize the logical line as a whole.
         try:
             lexer = shlex.shlex(
                 line,
@@ -191,6 +433,31 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
             lexer.commenters = "#"
             tokens = list(lexer)
         except ValueError:
+            # Fall back to per-physical-line tokenization for this logical line.
+            # This handles cases where quotes are unbalanced across lines.
+            for physical_line in line.splitlines():
+                try:
+                    lexer = shlex.shlex(
+                        physical_line,
+                        posix=True,
+                        punctuation_chars=";&|()",
+                    )
+                    lexer.whitespace_split = True
+                    lexer.commenters = "#"
+                    tokens = list(lexer)
+                except ValueError:
+                    continue
+
+                segment: list[str] = []
+                for token in tokens:
+                    if token and set(token) <= _CONTROL_CHARS:
+                        if segment:
+                            yield segment
+                            segment = []
+                        continue
+                    segment.append(token)
+                if segment:
+                    yield segment
             continue
 
         segment: list[str] = []
@@ -205,10 +472,123 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
             yield segment
 
 
+def _executable_name(token: str) -> str:
+    """Return the command name for a tokenized executable token.
+
+    ``Path(token).name`` is right for real paths (``/usr/bin/bash`` →
+    ``bash``), but pathlib has no name component for the pure-path tokens
+    ``.``, ``..`` and ``/``, so it returns "" for them. The POSIX
+    dot-source builtin is spelled ``.``, so keying the sourced-script
+    branch on ``Path(token).name`` alone made it unreachable: ``source
+    ./helper.sh`` was scanned but its exact synonym ``. ./helper.sh`` was
+    not, letting a referenced script carrying a lifecycle command through
+    both the cron guard and the in-gateway terminal guard. Fall back to the
+    raw token so ``.`` survives.
+    """
+    return Path(token).name or token
+
+
+# Prefixes that hand execution straight to their argument tail: the command
+# that actually runs sits further right. A guard that reads only the first
+# token sees `sudo`/`env`/`nohup` and never inspects what they run, so
+# `sudo bash ~/restart.sh` walked past the same walk that stops
+# `bash ~/restart.sh`, and `sudo launchctl submit ...` past the
+# label-independent submit block (#62891). `_PIPE_TO_INTERPRETER` above
+# already reads `sudo ` this way for the pipe case; this generalises that
+# reading to the command position.
+_TRANSPARENT_COMMAND_PREFIXES = frozenset({
+    "sudo", "doas", "env", "nohup", "setsid", "nice", "ionice", "stdbuf",
+    "timeout", "exec", "command", "builtin", "eatmydata",
+    # Privilege and namespace wrappers. Same shape — options, then the
+    # command they hand execution to.
+    "pkexec", "su", "runuser", "setpriv", "systemd-run", "nsenter", "unshare",
+})
+
+# Options of those wrappers that consume the NEXT token as their value, so a
+# value is never mistaken for the wrapped command (`sudo -u deploy bash x.sh`).
+_TRANSPARENT_PREFIX_VALUE_OPTIONS = {
+    "sudo": {"-u", "-g", "-U", "-C", "-p", "-r", "-t", "-T",
+             "--user", "--group", "--prompt"},
+    "doas": {"-u", "-C"},
+    "env": {"-u", "--unset", "-S", "--split-string", "-C", "--chdir"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "--class", "--classdata"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "pkexec": {"--user"},
+    "su": {"-s", "--shell", "-g", "--group", "-G", "--supp-group"},
+    "runuser": {"-u", "--user", "-s", "--shell", "-g", "--group",
+                "-G", "--supp-group"},
+    "setpriv": {"--reuid", "--regid", "--groups", "--inh-caps",
+                "--ambient-caps", "--bounding-set", "--selinux-label",
+                "--apparmor-profile"},
+    "systemd-run": {"-u", "--unit", "-p", "--property", "-E", "--setenv",
+                    "--slice", "--description", "--uid", "--gid",
+                    "--on-calendar", "--service-type"},
+    "nsenter": {"-t", "--target", "-S", "--setuid", "-G", "--setgid",
+                "-r", "--root", "-w", "--wd"},
+    "unshare": {"--map-user", "--map-group", "--setgroups", "-R", "--root",
+                "-w", "--wd"},
+}
+
+# Wrappers whose option carries a COMMAND STRING rather than an argv tail.
+# The string is shell source and must be re-scanned like `sh -c` — skipping
+# it as an opaque option value would hide whatever it runs
+# (`env -S 'bash ~/restart.sh'`).
+_STRING_COMMAND_OPTIONS = {
+    "env": ("-S", "--split-string"),
+    "su": ("-c", "--command"),
+    "runuser": ("-c", "--command"),
+}
+
+# Wrappers whose first non-option operand is a VALUE, not the command
+# (`timeout 60 bash x.sh`).
+_TRANSPARENT_PREFIX_OPERANDS = {"timeout": 1}
+
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# Bound the walk: a pathological token run must not spin here.
+_MAX_PREFIX_PEELS = 8
+
+
+def _peel_transparent_prefixes(segment: list[str], index: int) -> int:
+    """Return the index of the command a wrapper chain actually executes.
+
+    Returns *index* unchanged when the token there is not a wrapper, and may
+    return ``len(segment)`` when a wrapper has no operand — callers must
+    bounds-check before indexing.
+    """
+    for _ in range(_MAX_PREFIX_PEELS):
+        if index >= len(segment):
+            return index
+        name = _executable_name(segment[index])
+        if name not in _TRANSPARENT_COMMAND_PREFIXES:
+            return index
+        value_options = _TRANSPARENT_PREFIX_VALUE_OPTIONS.get(name, frozenset())
+        index += 1
+        while index < len(segment):
+            token = segment[index]
+            if token == "--":
+                # POSIX end-of-options: the command starts at the next token.
+                index += 1
+                break
+            if token in value_options:
+                index += 2
+                continue
+            if token.startswith("-") or _ENV_ASSIGNMENT.match(token):
+                index += 1
+                continue
+            break
+        for _ in range(_TRANSPARENT_PREFIX_OPERANDS.get(name, 0)):
+            if index < len(segment) and not segment[index].startswith("-"):
+                index += 1
+    return index
+
+
 def _command_token_index(segment: list[str]) -> Optional[int]:
     """Return the executable token index after simple env assignments."""
     for index, token in enumerate(segment):
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+        if _ENV_ASSIGNMENT.match(token):
             continue
         return index
     return None
@@ -228,7 +608,10 @@ def contains_launchctl_submit_command(command: str) -> bool:
         index = _command_token_index(segment)
         if index is None:
             continue
-        if Path(segment[index]).name == "launchctl":
+        index = _peel_transparent_prefixes(segment, index)
+        if index >= len(segment):
+            continue
+        if _executable_name(segment[index]) == "launchctl":
             arguments = segment[index + 1 :]
             if arguments and arguments[0].lower() in {"submit", "bootstrap"}:
                 return True
@@ -295,7 +678,7 @@ def _mask_data_sink_arguments(text: str) -> str:
             if index is not None and Path(segment[index]).name in _DATA_SINK_EXECUTABLES:
                 arguments = segment[index + 1 :]
                 if not any(
-                    argument.startswith(".")
+                    _DOT_COMMAND_ARGUMENT.match(argument)
                     or any(marker in argument for marker in _UNSAFE_DATA_ARG_MARKERS)
                     for argument in arguments
                 ):
@@ -369,69 +752,112 @@ def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Optiona
     return path
 
 
+def _iter_option_values(
+    segment: list[str], start: int, option: str
+) -> Iterator[str]:
+    """Yield values given to *option*, in both ``--opt v`` and ``--opt=v`` form."""
+    prefix = option + "="
+    for position in range(start + 1, len(segment)):
+        token = segment[position]
+        if token == option and position + 1 < len(segment):
+            yield segment[position + 1]
+        elif token.startswith(prefix):
+            yield token[len(prefix):]
+
+
+def _references_at(
+    segment: list[str], index: int, cwd: Optional[str]
+) -> Iterator[Path]:
+    """Yield the scripts the token at *index* executes, if any."""
+    if index >= len(segment):
+        return
+    executable = segment[index]
+    executable_name = _executable_name(executable)
+
+    if executable_name in {".", "source"}:
+        if len(segment) > index + 1:
+            resolved = _resolve_terminal_script_path(segment[index + 1], cwd)
+            if resolved is not None:
+                yield resolved
+        return
+
+    if executable_name in _SHELL_EXECUTABLES:
+        arguments = segment[index + 1 :]
+        arg_index = 0
+        while arg_index < len(arguments):
+            argument = arguments[arg_index]
+            if argument == "--":
+                arg_index += 1
+                break
+            if argument in {"-c", "--command"}:
+                break
+            if argument in _SHELL_OPTIONS_WITH_VALUES:
+                arg_index += 2
+                continue
+            if argument.startswith("-"):
+                arg_index += 1
+                continue
+            break
+        if arg_index < len(arguments) and arguments[arg_index] not in {
+            "-c",
+            "--command",
+        }:
+            resolved = _resolve_terminal_script_path(arguments[arg_index], cwd)
+            if resolved is not None:
+                yield resolved
+        return
+
+    # A bare "/" token is pathlib's division operator in Python sources
+    # (e.g. `Path.home() / ".hermes"`), not an executable reference.
+    # Resolving it walks to the filesystem root and fails the
+    # regular-file check below, hard-blocking innocent .py scripts
+    # (#77131). Skip pure-separator tokens.
+    if executable.strip("/"):
+        if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
+            resolved = _resolve_terminal_script_path(executable, cwd)
+            if resolved is not None:
+                yield resolved
+
+
 def _iter_referenced_shell_scripts(
     command: str,
     *,
     cwd: Optional[str] = None,
 ) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell."""
+    """Yield scripts executed directly or through a POSIX shell.
+
+    Each segment is read twice: once at the token the walk has always used,
+    and again at the command a wrapper chain hands off to. Additive on
+    purpose — peeling must never REMOVE a reference the un-peeled read would
+    have found. A local script named ``./timeout`` is a script, not the
+    coreutils wrapper, and reading only the peeled index would skip it.
+    """
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
             continue
-        executable = segment[index]
-        executable_name = Path(executable).name
-
-        if executable_name in {".", "source"}:
-            if len(segment) > index + 1:
-                resolved = _resolve_terminal_script_path(segment[index + 1], cwd)
-                if resolved is not None:
-                    yield resolved
-            continue
-
-        if executable_name in _SHELL_EXECUTABLES:
-            arguments = segment[index + 1 :]
-            arg_index = 0
-            while arg_index < len(arguments):
-                argument = arguments[arg_index]
-                if argument == "--":
-                    arg_index += 1
-                    break
-                if argument in {"-c", "--command"}:
-                    break
-                if argument in _SHELL_OPTIONS_WITH_VALUES:
-                    arg_index += 2
-                    continue
-                if argument.startswith("-"):
-                    arg_index += 1
-                    continue
-                break
-            if arg_index < len(arguments) and arguments[arg_index] not in {
-                "-c",
-                "--command",
-            }:
-                resolved = _resolve_terminal_script_path(arguments[arg_index], cwd)
-                if resolved is not None:
-                    yield resolved
-            continue
-
-        # A bare "/" token is pathlib's division operator in Python sources
-        # (e.g. `Path.home() / ".hermes"`), not an executable reference.
-        # Resolving it walks to the filesystem root and fails the
-        # regular-file check below, hard-blocking innocent .py scripts
-        # (#77131). Skip pure-separator tokens.
-        if executable.strip("/"):
-            if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
-                resolved = _resolve_terminal_script_path(executable, cwd)
-                if resolved is not None:
-                    yield resolved
+        yield from _references_at(segment, index, cwd)
+        peeled = _peel_transparent_prefixes(segment, index)
+        if peeled != index:
+            yield from _references_at(segment, peeled, cwd)
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
     """Yield code passed through ``sh|bash|... -c`` for recursive scanning."""
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
-        if index is None or Path(segment[index]).name not in _SHELL_EXECUTABLES:
+        if index is None:
+            continue
+        # Command-string options are read at the ORIGINAL token: peeling past
+        # `su`/`env` would discard the very option carrying the command.
+        for option in _STRING_COMMAND_OPTIONS.get(
+            _executable_name(segment[index]), ()
+        ):
+            yield from _iter_option_values(segment, index, option)
+        index = _peel_transparent_prefixes(segment, index)
+        if index >= len(segment):
+            continue
+        if _executable_name(segment[index]) not in _SHELL_EXECUTABLES:
             continue
         arguments = segment[index + 1 :]
         for arg_index, argument in enumerate(arguments[:-1]):
@@ -449,6 +875,38 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+_BINARY_MAGICS = (
+    b"\x7fELF",              # ELF — Linux/BSD executables and shared objects
+    b"\xfe\xed\xfa\xce",     # Mach-O 32-bit
+    b"\xfe\xed\xfa\xcf",     # Mach-O 64-bit
+    b"\xce\xfa\xed\xfe",     # Mach-O 32-bit, byte-swapped
+    b"\xcf\xfa\xed\xfe",     # Mach-O 64-bit, byte-swapped
+    b"\xca\xfe\xba\xbe",     # Mach-O universal ("fat") binary
+    b"MZ",                   # PE/COFF — Windows .exe/.dll
+    b"!<arch>",              # static archive (.a)
+    b"\x1f\x8b",             # gzip
+    b"PK\x03\x04",           # zip (also .jar/.whl/.egg)
+)
+
+
+def _has_binary_magic(data: bytes) -> bool:
+    """Return True when *data* starts with a known compiled-binary signature.
+
+    Deliberately narrower than "contains a NUL byte": a shell script that
+    happens to hold a NUL is still executed by ``bash``, so treating every
+    NUL-bearing file as an unscannable binary lets a padded script bypass the
+    lifecycle scan entirely.
+
+    A shebang always wins — an interpreted script is never a binary, however
+    odd its payload. File extensions are deliberately *not* consulted: a
+    suffixless shell script must still be scanned (and, if oversized, still
+    fail closed).
+    """
+    if data.startswith(b"#!"):
+        return False
+    return data.startswith(_BINARY_MAGICS)
 
 
 def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
@@ -496,12 +954,15 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
                 return None, False
             return None, True
         # Sniff a small prefix first: files that are clearly compiled
-        # binaries (executable magic, or NUL bytes in the head) are never
-        # shell scripts, so skip them WITHOUT reading the rest — reading a
-        # megabyte of machine code just to discard it wastes the guard's
-        # budget and (pre-#77703) fed decoded garbage into the recursion.
+        # binaries (executable magic) are never shell scripts, so skip them
+        # WITHOUT reading the rest — reading a megabyte of machine code just
+        # to discard it wastes the guard's budget and (pre-#77703) fed
+        # decoded garbage into the recursion. Deliberately NOT keyed on the
+        # mere presence of a NUL byte (#77927): bash executes a text script
+        # straight past an embedded NUL, so NUL-bearing text must fall
+        # through to the magic-number check + NUL-strip below.
         data = os.read(descriptor, _BINARY_SNIFF_BYTES)
-        if data.startswith(_BINARY_MAGIC_PREFIXES) or b"\x00" in data:
+        if data.startswith(_BINARY_MAGIC_PREFIXES):
             return None, False
         # Read the remainder (bounded). Loop because os.read may return
         # short for non-regular-file-backed descriptors.
@@ -516,16 +977,25 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         return None, False
     finally:
         os.close(descriptor)
-    # A NUL byte in the first chunk means this is a binary (ELF/Mach-O/
-    # PE), not a shell script — scanning its decoded contents would
-    # tokenize machine code and feed junk paths into the recursion
-    # (including a `ValueError: embedded null byte` from Path.resolve,
-    # #76762). Treat it as "nothing to scan" rather than unsafe: a binary
-    # executed by the user is not a referenced *shell script*.
-    if b"\x00" in data:
+    # Identify binaries by MAGIC NUMBER, not by the mere presence of a NUL.
+    #
+    # "contains a NUL" and "is a compiled binary" are different questions, and
+    # the gap between them is a guard bypass: `bash` executes a *text* script
+    # straight past an embedded NUL, so a single pad byte in a shell script made
+    # the scan skip a file that still runs its lifecycle command. Match on the
+    # signature instead (ELF/Mach-O/PE/static archive/compressed), and treat a
+    # NUL-bearing *text* file as a script whose NULs are stripped before
+    # scanning — stripping can only splice tokens together, never apart, so it
+    # fails closed.
+    if _has_binary_magic(data):
         return None, False
+    # Check the size BEFORE stripping: stripping shrinks the buffer, so doing it
+    # first would let an oversized file slip under the threshold and skip this
+    # fail-closed branch.
     if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
         return None, True
+    if b"\x00" in data:
+        data = data.replace(b"\x00", b"")
     return data.decode("utf-8", errors="replace"), False
 
 

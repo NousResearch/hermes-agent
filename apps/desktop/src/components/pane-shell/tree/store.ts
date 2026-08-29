@@ -13,7 +13,7 @@ import { translateNow } from '@/i18n'
 import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
-import { isSecondaryWindow } from '@/store/windows'
+import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
@@ -27,6 +27,7 @@ import {
   isLayoutNode,
   type LayoutNode,
   mergeZonesWithPane as mergeZonesWithPaneOp,
+  migratePersistedTree,
   mirrorTreeHorizontal,
   movePane as movePaneOp,
   movePanes as movePanesOp,
@@ -34,12 +35,14 @@ import {
   removePane,
   reorderPanesInGroup as reorderPanesInGroupOp,
   setActivePane as setActivePaneOp,
-  setGroupHeaderHidden as setGroupHeaderHiddenOp,
   setGroupMinimized,
+  setGroupTabStrip as setGroupTabStripOp,
   setSplitWeights as setSplitWeightsOp,
-  type SplitNode
+  type SplitNode,
+  type TabStripMode
 } from './model'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
+import { tabStripVisibleForZone } from './renderer/strip-visibility'
 import { rootChildSide } from './renderer/track-model'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
@@ -53,15 +56,17 @@ let defaultTree: LayoutNode | null = null
 function loadPersisted(): LayoutNode | null {
   const parsed = readJson<unknown>(STORAGE_KEY)
 
-  // Canonicalize on load: strips stale attributes older code persisted
-  // (e.g. explicit headerHidden on lone-pane zones) and re-flattens.
-  return isLayoutNode(parsed) ? normalize(parsed) : null
+  // Canonicalize on load: bring attributes onto the current schema (see
+  // migratePersistedTree — the retired `headerHidden` is dropped here) and
+  // re-flatten the structure.
+  return isLayoutNode(parsed) ? normalize(migratePersistedTree(parsed)) : null
 }
 
 function persist(tree: LayoutNode | null) {
   // A secondary window (single-chat pop-out) shares the origin's localStorage;
   // writing its stripped-down DEFAULT tree back would wipe the primary's layout.
-  if (isSecondaryWindow()) {
+  // A popped-out Browser is the same class of window.
+  if (isSecondaryWindow() || isBrowserWindow()) {
     return
   }
 
@@ -71,7 +76,7 @@ function persist(tree: LayoutNode | null) {
 /** The live tree (null until a default is declared). A secondary window ignores
  *  the persisted (primary) layout and boots to the default — nothing but its
  *  own routed session. */
-export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() ? null : loadPersisted())
+export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() || isBrowserWindow() ? null : loadPersisted())
 
 /**
  * Which layout preset the current tree came from; `'custom'` after the user
@@ -715,6 +720,22 @@ function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
   })
 }
 
+/** Is this zone showing a tab strip right now? The store's adapter over the
+ *  shared resolver — TreeGroup answers the same question from its own render
+ *  inputs, so the toggle command and the strip on screen cannot disagree about
+ *  which way "toggle" points. */
+export function tabStripVisibleForGroup(group: GroupNode): boolean {
+  const registered = registry.getArea('panes')
+
+  return tabStripVisibleForZone({
+    active: group.active,
+    isCollapsePane,
+    mode: group.tabStrip,
+    paneFor: (id: string) => registered.find(c => c.id === id),
+    shown: shownPanesInGroup(group)
+  })
+}
+
 /** ⌘1…⌘9: activate the Nth *visible* tab of the target zone — the first of
  *  hovered / focused / workspace that is a real tab strip (≥2 shown panes).
  *  Pointing at the sidebar (or nothing) therefore still switches main's tabs
@@ -761,13 +782,11 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): null | string {
   const nextId = panes[(idx + direction + panes.length) % panes.length]
   activateTreePane(group.id, nextId)
 
-  // Cycling onto a session/main tab must surface the name card — a zone that
-  // was double-tap-hidden stays headerless otherwise ("the one that cycles
-  // never gets it").
-  if (isMainStripPane(nextId)) {
-    setTreeGroupHeaderHidden(group.id, false)
-  }
-
+  // No strip repair here: cycling needs two shown tabs, which is exactly when
+  // auto shows a strip anyway. The old force-show existed because a stray
+  // double-tap could leave a multi-tab zone headerless; that gesture is gone,
+  // and a zone the user deliberately set to `never` must not be argued with by
+  // a keystroke that was only asked to change tabs.
   return nextId
 }
 
@@ -1262,16 +1281,11 @@ function enforceDockedPanes(
     }
 
     if (dock.pos === 'center' && from.id === anchor.id) {
-      // Already stacked with its anchor — but an enforced tab must be
-      // REACHABLE, not just co-located. Community regression (Aug 2026):
-      // persisted trees where the enforced pane was center-stacked with the
-      // strip hidden and itself active left the ANCHOR invisible with no
-      // strip to switch back ("my ui only shows bots now... cant find the
-      // sessions"). An enforced zone always shows its strip.
-      if (anchor.headerHidden === true) {
-        next = setGroupHeaderHiddenOp(next, anchor.id, false) ?? next
-      }
-
+      // Already stacked with its anchor, and nothing to repair: the trees that
+      // produced the "my ui only shows bots now... cant find the sessions"
+      // regression carried an accidental `headerHidden: true`, which the load
+      // migration now drops outright. A surviving `never` here is deliberate
+      // and recoverable from the toggle command, so boot does not overrule it.
       continue
     }
 
@@ -1312,7 +1326,8 @@ function adoptContributedPanes(): void {
   const panes = registry.getArea('panes')
 
   const dataOf = (paneId: string) =>
-    panes.find(c => c.id === paneId)?.data as { placement?: string; dock?: PaneDockHint } | undefined
+    panes.find(c => c.id === paneId)?.data as
+      { defaultCollapsed?: boolean; dock?: PaneDockHint; placement?: string } | undefined
 
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
@@ -1354,14 +1369,14 @@ function adoptContributedPanes(): void {
     const target = findGroupOfPane(next, anchor ?? '')?.id
 
     if (target) {
-      // Whether the DESTINATION zone's header was explicitly hidden, read
-      // BEFORE the insert — `insertAtGroup` pins `headerHidden: false` on a
-      // center drop (a stack you can't see is a trap), which is right for a
-      // drag but wrong for adoption into a zone whose bar the user hid.
-      const hostHeaderHidden = findGroup(next, target)?.headerHidden === true
-
       // Silent adoption: don't front over the zone's active tab — a reveal
       // does. An edge dock re-takes the share the pane held when it closed.
+      //
+      // Nothing writes the strip choice afterwards. This used to read the
+      // host's hidden flag before the insert and stamp it back on after, purely
+      // to undo the pin `insertAtGroup` applied; with the pin gone the zone's
+      // own preference simply survives, and the adopted pane arrives with a
+      // chip whenever auto says the zone has more than one.
       next =
         insertAtGroup(
           next,
@@ -1372,25 +1387,22 @@ function adoptContributedPanes(): void {
           false,
           recalledEdgeWeights(pane.id)
         ) ?? next
-
-      // An adopted pane ARRIVES with its chip showing — a surprise zone with
-      // zero chrome has no obvious handle to drag or close. (Explicit reveal;
-      // the next structural op returns lone panes to the auto-hide default.)
-      //
-      // EXCEPT into a zone whose header the user explicitly hid: that's a
-      // standing preference about the zone, not a stale default. Without this
-      // the bar came back every time a tool panel was closed and toggled on
-      // again — Close dismisses the pane, the toggle re-adopts it through here.
-      const landed = findGroupOfPane(next, pane.id)
-
-      if (landed) {
-        next = setGroupHeaderHiddenOp(next, landed.id, hostHeaderHidden)
-      }
     }
   }
 
   if (next !== tree) {
     commit(next)
+  }
+
+  // After the commit, so the zone exists to minimize. `defaultCollapsed` is the
+  // pane's arrival state, not a standing invariant: it runs on the adoption
+  // that put the pane in the tree, and a pane already in the tree is never
+  // re-adopted — so a user's expand persists with the layout and is never
+  // overruled on a later boot.
+  for (const pane of missing) {
+    if (dataOf(pane.id)?.defaultCollapsed) {
+      setPaneCollapsed(pane.id, true)
+    }
   }
 }
 
@@ -1846,13 +1858,48 @@ export function collapseTreePane(paneId: string) {
   }
 }
 
-/** Hide/show a zone's header entirely (double-click gesture). */
-export function setTreeGroupHeaderHidden(groupId: string, headerHidden: boolean) {
+/** Write a zone's standing tab-strip choice; `undefined` returns it to auto. */
+export function setTreeGroupTabStrip(groupId: string, tabStrip: TabStripMode | undefined) {
   const tree = $layoutTree.get()
 
   if (tree) {
-    commit(setGroupHeaderHiddenOp(tree, groupId, headerHidden))
+    commit(setGroupTabStripOp(tree, groupId, tabStrip))
   }
+}
+
+/**
+ * The zone `view.toggleTabStrip` and its ⌘K row act on: the first of hovered /
+ * focused / workspace that renders panes at all. Deliberately the widest
+ * eligibility of any tab verb — the whole point of the command is to reach a
+ * zone showing no chrome, so it must not require the chrome it restores.
+ */
+const tabStripTargetGroup = () => tabTargetGroup(candidate => shownPanesInGroup(candidate).length > 0)
+
+/** Is the toggle's target zone currently showing a strip? Null when no zone
+ *  qualifies — the ⌘K row reads this to describe what pressing it will do. */
+export function targetZoneTabStripVisible(): boolean | null {
+  const group = tabStripTargetGroup()
+
+  return group ? tabStripVisibleForGroup(group) : null
+}
+
+/** Flip the target zone's strip. Returns the mode written, or null when there
+ *  was no zone to act on. */
+export function toggleTargetZoneTabStrip(): TabStripMode | null {
+  const group = tabStripTargetGroup()
+
+  if (!group) {
+    return null
+  }
+
+  // Toggle against what is ON SCREEN, not against the stored mode: a zone on
+  // auto has no stored mode, and "toggle" means "do the other thing to what I
+  // am looking at". Both outcomes are explicit, so the zone leaves auto either
+  // way rather than drifting with its tab count afterwards.
+  const next: TabStripMode = tabStripVisibleForGroup(group) ? 'never' : 'always'
+  setTreeGroupTabStrip(group.id, next)
+
+  return next
 }
 
 export function setTreeSplitWeights(splitId: string, weights: number[]) {

@@ -287,3 +287,63 @@ class TestApiServerListenerGlobals:
         finally:
             ss.reset_secret_scope(token)
         assert not ss._is_global_env("API_SERVER_KEY")
+
+
+class TestRelayRoutingStampGlobals:
+    """GATEWAY_RELAY_* ROUTING stamps are deployment config, not profile
+    secrets: config's relay enablement/sweep and gateway.relay's readers
+    (relay_url(), registration, self-provision) must resolve the same
+    process-env value under any scope, or the gateway enters a split-brain
+    state (adapter registered but Platform.RELAY absent from config, or vice
+    versa). Auth material (GATEWAY_RELAY_SECRET / _ID / _DELIVERY_KEY and the
+    IDP_* credentials) stays profile-scoped with the fail-closed guard —
+    mirroring the API_SERVER_KEY line above and the terminal env blocklist
+    (tools/environments/local.py)."""
+
+    ROUTING_VARS = (
+        "GATEWAY_RELAY_URL",
+        "GATEWAY_RELAY_ENDPOINT",
+        "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS",
+        "GATEWAY_RELAY_PLATFORMS",
+        "GATEWAY_RELAY_BOT_IDS",
+        "GATEWAY_RELAY_ROUTE_KEYS",
+        "GATEWAY_RELAY_INSTANCE_ID",
+        "GATEWAY_RELAY_WAKE_URL",
+        "GATEWAY_RELAY_DISPLAY_NAME",
+    )
+    AUTH_VARS = (
+        "GATEWAY_RELAY_SECRET",
+        "GATEWAY_RELAY_ID",
+        "GATEWAY_RELAY_DELIVERY_KEY",
+        "GATEWAY_RELAY_IDP_CLIENT_SECRET",
+        "GATEWAY_RELAY_IDP_CLIENT_ID",
+        "GATEWAY_RELAY_IDP_TOKEN_URL",
+    )
+
+    def test_routing_stamps_read_environ_even_when_scoped_multiplex(self, monkeypatch):
+        for name in self.ROUTING_VARS:
+            monkeypatch.setenv(name, f"deploy-{name.lower()}")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"TELEGRAM_BOT_TOKEN": "scoped"})
+        try:
+            for name in self.ROUTING_VARS:
+                assert ss.get_secret(name) == f"deploy-{name.lower()}", name
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+    def test_relay_auth_material_stays_profile_scoped(self, monkeypatch):
+        for name in self.AUTH_VARS:
+            monkeypatch.setenv(name, "cross-profile-credential")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"OTHER": "x"})
+        try:
+            for name in self.AUTH_VARS:
+                # A scoped miss must NOT borrow the (potentially
+                # cross-profile) environ value: relay auth is a credential.
+                assert ss.get_secret(name) is None, name
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+        for name in self.AUTH_VARS:
+            assert not ss._is_global_env(name), name

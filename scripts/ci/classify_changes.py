@@ -25,6 +25,9 @@ Lanes:
   must not run it.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
 * ``installer``   — PowerShell installer tests (Windows runner).
+* ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
+  lives under ``apps/``, so without this lane a Rust change matched ``frontend``
+  and only the TypeScript matrix ran.
 * ``mcp_catalog`` — bundled MCP catalog / installer review.
 
 Docker is not a lane — it builds on push-to-main and release only,
@@ -106,6 +109,13 @@ _MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 _INSTALLER_PATHS = ("scripts/tests/",)
 _INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
 
+# Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
+# These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
+# ``frontend`` and nothing more: the TypeScript matrix built, cargo never ran,
+# and the crate's unit tests had never executed in CI at all.
+_RUST_PATHS = ("apps/bootstrap-installer/src-tauri/",)
+_RUST_FILENAMES = {"Cargo.toml", "Cargo.lock"}
+
 def _is_docs(p: str) -> bool:
     if p.startswith(("skills/", "optional-skills/")):
         return False
@@ -152,6 +162,14 @@ def _is_installer(p: str) -> bool:
     return p.startswith(_INSTALLER_PATHS) or p in _INSTALLER_FILES
 
 
+def _is_rust(p: str) -> bool:
+    return (
+        p.endswith(".rs")
+        or p.startswith(_RUST_PATHS)
+        or os.path.basename(p) in _RUST_FILENAMES
+    )
+
+
 def _is_ci_review(p: str) -> bool:
     if p in _CI_REVIEW_FILES or p.startswith(_CI_REVIEW_PATHS):
         return True
@@ -187,6 +205,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
         "npm_lock": npm_lock,
         "installer": any(_is_installer(f) for f in files),
+        "rust": any(_is_rust(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
         "nix": python_prod or frontend or any(_is_nix(f) for f in files)
@@ -203,6 +222,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["uv_lock"] = True
         ret["npm_lock"] = True
         ret["installer"] = True
+        ret["rust"] = True
         ret["nix"] = True
         ret["ci_review"] = True
 

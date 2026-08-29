@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: "Drive the desktop in the background without stealing focus."
+description: "Drive the desktop background-first; escalate on signal."
 version: 2.0.0
 author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT
@@ -170,62 +170,32 @@ NOT conclude "cua-driver can't drive this app" — climb the ladder. If
 action schema lacks that property; choose another verified rung without
 inferring support from the executable's reported version.
 
-## Typed browser page rung
+## Browser page automation
 
-For page content in a supported GUI browser, the same `computer_use` tool
-exposes namespaced `cua_browser_*` actions. They do not collide with other
-browser tools. The contract is capability-based:
+For normal webpage content, use the dedicated `browser_exec` tool rather than
+`computer_use`. Browser Use mode is the default when `browser.backend` is unset
+and the Browser Use CLI can run (installed directly or available through
+`uvx`); otherwise Hermes falls back to the built-in browser tools.
 
-1. Discover the exact native browser `(pid, window_id)` with `list_windows` or
-   native capture, then call `cua_browser_state` with both values.
-2. Continue only when it returns `status:"ok"`, `binding_quality:"exact"`, and
-   `mutation_allowed:true`. Select an opaque `tab_id` from that response.
-3. Call `cua_browser_state` with the `tab_id` for a fresh `semantic_v2`
-   snapshot. Use only refs from that newest snapshot and only for their
-   declared actions.
-4. Use the matching namespaced action (`cua_browser_click`,
-   `cua_browser_type`, `cua_browser_navigate`, or `cua_browser_pointer`).
-   Trusted input is the default. `input_route="dom_event"` is an explicit
-   trust downgrade; never choose it silently after a refusal.
-5. Every mutation invalidates refs. Take a fresh state snapshot before another
-   typed action. Never chain actions from remembered refs.
+`browser_exec` runs Python with browser helpers already imported:
 
-`cua_browser_prepare` is a separate approved setup action. Driver-owned
-`isolated_new`/`isolated_named` profiles require explicit `allow_launch=true`.
-An `existing_profile` is decided by cua-driver's immutable permission mode.
-Prefer `isolated_new` unless the task genuinely needs the user's signed-in
-session — attaching to an existing profile exposes its live pages, cookies,
-and storage over the browser protocol.
+1. Put a short leading comment in `code` describing the step.
+2. Use `print(...)` for any page data needed in the tool result.
+3. Reuse one `session="name"` across related calls. Named sessions isolate
+   daemons and tabs, so concurrent agents do not clobber one another.
+4. Omit `session` only for one-at-a-time work in the shared default session.
+5. Set a bounded `timeout_s` appropriate to the operation; do not retry an
+   unchanged deterministic failure.
 
-Authorization paths for `existing_profile`:
+Because `browser_exec` executes model-written Python, it is offered only when
+the session also has terminal access. Camofox and terminal-less surfaces keep
+the built-in browser tools automatically. A consent-gated `local=true` option
+appears only when real-profile browsing has been explicitly enabled.
 
-1. **Config grant (standard and unrestricted modes).** When
-   `computer_use.grant_existing_profile: true` is set, the runtime is
-   launched pre-authorized in standard mode (`--grant existing-profile`) and
-   Hermes applies the same host-side floor in unrestricted mode. If it is not
-   set, both modes fail closed. Tell the user to flip that config key and
-   restart the session if they want this; do not retry or work around it.
-2. **Bounded manifest.** When `computer_use.permission_mode: bounded` is
-   configured with a reviewed `capability_manifest`, prepares inside the
-   manifest's scope succeed without prompts and everything else fails closed.
-
-Explicit Hermes YOLO (`--yolo`, `/yolo`, or `approvals.mode: off`) launches an
-unrestricted runtime with no runtime Cua approval prompts, but it does not
-substitute for `grant_existing_profile: true`.
-
-These settings belong to runtime launch. The agent cannot add or change them
-after the runtime starts. Without the applicable grant or bounded manifest,
-`existing_profile` fails closed. Report the refusal and name the config key;
-do not retry, downgrade trust, or work around it.
-
-Every MCP transport owns a private lifecycle session inside the runtime. The
-public session name only labels cursor identity and session-scoped state. It
-does not select, share, or keep a runtime alive.
-
-Use the native capture/AX/pixel/foreground ladder for browser chrome, browser
-permission UI, OS prompts, native dialogs, extension surfaces, unsupported
-engines, and any typed route that cannot prove exact binding or mutation
-permission. `cua_browser_dialog` covers page JavaScript dialogs only.
+Use native `computer_use` capture/AX/pixel/foreground actions for browser
+chrome, permission UI, OS prompts, native dialogs, extension surfaces, and
+non-page application controls. The retired `cua_browser_*` page route no longer
+exists; never instruct an agent to call it.
 
 ### Key shortcuts vary per platform
 

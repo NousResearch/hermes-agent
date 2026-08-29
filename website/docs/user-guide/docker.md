@@ -1,10 +1,10 @@
 ---
 sidebar_position: 7
-title: "Docker"
+title: "Hermes Docker Setup"
 description: "Running Hermes Agent in Docker and using Docker as a terminal backend"
 ---
 
-# Hermes Agent — Docker
+# Hermes Docker Setup
 
 There are two distinct ways Docker intersects with Hermes Agent:
 
@@ -137,6 +137,24 @@ There are three bundled ways to satisfy the second condition:
 - **Self-hosted OIDC** — to authenticate against your own identity provider via standard OpenID Connect: the `dashboard_auth/self_hosted` provider activates when `HERMES_DASHBOARD_OIDC_ISSUER` + `HERMES_DASHBOARD_OIDC_CLIENT_ID` are set.
 
 Whichever you choose, the gate redirects callers to a login page before they can reach any protected route. See [Web Dashboard → Authentication](features/web-dashboard.md#authentication-gated-mode) for all three providers.
+
+When a reverse proxy such as Traefik or nginx runs in another container, its
+bridge-network address is not trusted by default. Set the dashboard's public
+URL and trust only that proxy's exact IP, or a bounded CIDR for a dedicated
+proxy network, in the mounted `config.yaml`:
+
+```yaml
+dashboard:
+  public_url: "https://dashboard.example.com"
+  trusted_proxies:
+    - "172.20.0.5"
+    # Or, if the proxy address is dynamic on a dedicated network:
+    # - "172.20.0.0/24"
+```
+
+This allows the proxy's `X-Forwarded-Proto: https` to control secure OAuth
+cookies while leaving forwarding headers from other peers untrusted. Do not
+use `*`, `0.0.0.0/0`, or `::/0`; Hermes rejects those unbounded entries.
 
 If no provider is registered and the bind is non-loopback, the dashboard **fails closed at startup** with a specific error pointing at the missing env var. There is no longer an escape hatch that serves the dashboard unauthenticated on a public bind: `HERMES_DASHBOARD_INSECURE=1` is now a deprecated no-op (it logs a warning and is ignored). Configure a provider, or bind `HERMES_DASHBOARD_HOST=127.0.0.1` and reach the dashboard over an SSH tunnel / Tailscale instead.
 
@@ -801,6 +819,16 @@ docker run -d \
 ```
 
 `docker exec hermes <cmd>` automatically drops to UID 10000 too — see [`docker exec` automatically drops to the `hermes` user](#docker-exec-automatically-drops-to-the-hermes-user) for details and the per-invocation opt-out.
+
+### "Permission denied" on every `docker exec` (install dir locked to 0700)
+
+Images built before late August 2026 had a bug where writing a credential file directly under `/opt/hermes` restricted that directory to `0700`, locking the `hermes` user (UID 10000) out of the install tree. Every new `docker exec` then fails with `Permission denied`.
+
+Pulling a newer image and recreating the container fixes it permanently (the install dir ships as `0755` and current releases no longer restrict it). If you need to recover a running container in place without recreating it:
+
+```sh
+docker exec -u root hermes chmod 0755 /opt/hermes
+```
 
 ### Browser tools not working
 

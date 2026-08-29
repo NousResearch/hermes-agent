@@ -171,8 +171,19 @@ export interface SidebarNavItem {
   keybindActionId?: string
 }
 
+export interface PersistedDisplayTranscriptProvenance {
+  source: 'persisted-display'
+  connectionId: string
+  profile: string
+  storedSessionId: string
+  lineageRootId: string | null
+  coverage: 'latest-page'
+}
+
 export interface ClientSessionState {
   storedSessionId: string | null
+  transcriptAuthorityEpoch?: number
+  transcriptProvenance?: PersistedDisplayTranscriptProvenance
   messages: ChatMessage[]
   branch: string
   cwd: string

@@ -165,11 +165,11 @@ def test_text_response_surfaces_fields_additively():
     # Bare transport success still requires fresh verification, without None noise.
     r2 = ActionResult(ok=True, action="click")
     payload2 = json.loads(_text_response(r2))
-    assert payload2 == {
-        "ok": True,
-        "action": "click",
-        "verdict": {"decision": "verify_fresh_state"},
-    }
+    assert payload2["ok"] is True
+    assert payload2["action"] == "click"
+    # Verdict routes to fresh verification; a human hint may accompany the
+    # decision (contract is the decision, not the exact dict shape).
+    assert payload2["verdict"]["decision"] == "verify_fresh_state"
     for k in ("effect", "escalation", "code", "verified", "path", "degraded", "delivery_mode"):
         assert k not in payload2
 

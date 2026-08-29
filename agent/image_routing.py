@@ -18,16 +18,11 @@ It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
 
 In ``auto`` mode:
   - If the active model reports ``supports_vision=True`` (via config
-    override or models.dev metadata), we attach natively — vision-capable
-    main models should always see the original pixels, even when an
-    auxiliary vision backend is configured. That auxiliary backend then
-    acts as a *fallback* for sessions whose main model can't take images.
-  - Otherwise, if the user has explicitly configured ``auxiliary.vision``
-    (provider/model/base_url not ``auto``/empty), we route through the
-    text pipeline so the auxiliary vision backend can describe the image
-    for the text-only main model.
-  - Otherwise (non-vision model, no explicit override), we fall back to
-    text via the default vision_analyze flow.
+    override or models.dev metadata), attach natively so it sees the
+    original pixels.
+  - Otherwise, if the user configured ``auxiliary.vision``, route through
+    that backend as a fallback for a text-only main model.
+  - Otherwise use the default text vision_analyze flow.
 
 This keeps ``vision_analyze`` surfaced as a tool in every session — skills
 and agent flows that chain it (browser screenshots, deeper inspection of
@@ -332,17 +327,105 @@ def _resolve_inference_base_url(
     return ""
 
 
-def _should_probe_ollama_vision(provider: str, base_url: str) -> bool:
-    """True when the active provider likely fronts a local Ollama server."""
+def _resolve_inference_api_key(
+    cfg: Optional[Dict[str, Any]],
+    provider: str,
+) -> str:
+    """Best-effort API key for the active inference provider.
+
+    Mirrors :func:`_resolve_inference_base_url`'s resolution order (runtime
+    value, then ``model.api_key``, then the providers blocks) so the key
+    matches the base URL actually being probed. Without this, the local
+    server-type probe fires at a remote API-keyed endpoint without an
+    Authorization header — 5×401 per image-bearing turn on a keyed
+    sglang/vLLM deployment (#89863).
+    """
+    try:
+        from agent.auxiliary_client import _runtime_main_value
+
+        runtime_key = str(_runtime_main_value("api_key") or "").strip()
+        if runtime_key:
+            return runtime_key
+    except Exception:
+        pass
+
+    if not isinstance(cfg, dict):
+        return ""
+
+    model_cfg_raw = cfg.get("model")
+    model_cfg: Dict[str, Any] = model_cfg_raw if isinstance(model_cfg_raw, dict) else {}
+    key = str(model_cfg.get("api_key") or "").strip()
+    if key:
+        return key
+
+    config_provider = str(model_cfg.get("provider") or "").strip()
+    candidate_names: set[str] = set()
+    for p in filter(None, (provider, config_provider)):
+        candidate_names.add(p)
+        if p.lower().startswith("custom:"):
+            candidate_names.add(p.split(":", 1)[1])
+        else:
+            candidate_names.add(f"custom:{p}")
+
+    providers_cfg = cfg.get("providers")
+    if isinstance(providers_cfg, dict):
+        for name in candidate_names:
+            entry = providers_cfg.get(name)
+            if isinstance(entry, dict):
+                k = str(entry.get("api_key") or "").strip()
+                if k:
+                    return k
+
+    custom_providers = cfg.get("custom_providers")
+    if isinstance(custom_providers, list):
+        lowered = {n.lower() for n in candidate_names}
+        for entry_raw in custom_providers:
+            if not isinstance(entry_raw, dict):
+                continue
+            entry_name = str(entry_raw.get("name") or "").strip()
+            if entry_name not in candidate_names and entry_name.lower() not in lowered:
+                continue
+            k = str(entry_raw.get("api_key") or "").strip()
+            if k:
+                return k
+
+    return ""
+
+
+def _should_probe_ollama_vision(
+    provider: str, base_url: str, api_key: str = ""
+) -> bool:
+    """True when the active provider likely fronts a local Ollama server.
+
+    Server-fingerprint probing is only meaningful for *local* endpoints —
+    remote OpenAI-compatible APIs (sglang, vLLM, etc.) should never be probed,
+    and probing them without an api_key sprays 401s at the inference backend
+    (issue #89863).
+    """
     p = (provider or "").strip().lower()
     if p == "ollama":
         return True
     if not base_url:
         return False
+    # Remote endpoints must never be fingerprinted: the probe waterfall is
+    # only valid for local/LM-Studio/Ollama boxes. Non-Ollama remotes (sglang,
+    # vLLM, OpenAI-compat) expose Ollama-compat endpoints that can misidentify
+    # and, without an api_key, return 401 on every leg (issue #89863).
+    if p != "ollama":
+        try:
+            from agent.model_metadata import is_local_endpoint
+
+            if not is_local_endpoint(base_url):
+                return False
+        except Exception:
+            return False
     try:
         from agent.model_metadata import detect_local_server_type
 
-        return detect_local_server_type(base_url) == "ollama"
+        # Forward the API key: a remote API-keyed endpoint answers the
+        # probe waterfall with 401s without it, and an unauthorized probe
+        # can never produce a positive verdict (#89863).
+        return detect_local_server_type(base_url, api_key=api_key) == "ollama"
     except Exception:
         return False
 
@@ -360,10 +443,10 @@ def _coerce_mode(raw: Any) -> str:
 def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     """True when the user configured a specific auxiliary vision backend.
 
-    An explicit override means the user has a dedicated vision backend
-    available; it's used as a *fallback* when the main model can't take
-    images natively. In ``auto`` mode, native vision on a vision-capable
-    main model still wins over this fallback — see issue #29135.
+    In Kensei's ``auto`` mode this remains a fallback for text-only main
+    models. Native-capable main models retain the original-pixel route;
+    ``agent.image_input_mode`` remains the explicit force-native/force-text
+    override.
     """
     if not isinstance(cfg, dict):
         return False
@@ -448,11 +531,18 @@ def _lookup_supports_vision(
     base_url = _resolve_inference_base_url(cfg, provider)
     if not base_url and (provider or "").strip().lower() == "ollama":
         base_url = "http://localhost:11434/v1"
-    if _should_probe_ollama_vision(provider, base_url):
+
+    # Resolve the provider's API key so probe requests at keyed endpoints
+    # carry Authorization and don't spray 401s (issue #89863).
+    resolved_api_key = _resolve_inference_api_key(cfg, provider)
+
+    if _should_probe_ollama_vision(provider, base_url, api_key=resolved_api_key):
         try:
             from agent.model_metadata import query_ollama_supports_vision
 
-            ollama_vision = query_ollama_supports_vision(model, base_url)
+            ollama_vision = query_ollama_supports_vision(
+                model, base_url, api_key=resolved_api_key
+            )
             if ollama_vision is not None:
                 return ollama_vision
         except Exception as exc:  # pragma: no cover - defensive
@@ -491,10 +581,8 @@ def decide_image_input_mode(
     if mode_cfg == "text":
         return "text"
 
-    # auto: prefer native vision when the main model supports it. An
-    # explicit auxiliary.vision config acts as a *fallback* for text-only
-    # main models — it should not preempt native vision on a model that
-    # can natively inspect the pixels (issue #29135).
+    # auto: prefer native vision when the main model supports it. An explicit
+    # auxiliary backend remains the fallback for text-only main models.
     if requested_provider:
         supports = _lookup_supports_vision(
             provider,

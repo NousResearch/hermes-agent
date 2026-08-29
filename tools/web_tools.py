@@ -563,23 +563,47 @@ def _rescue_search(provider_name: str, original_error: str, query: str, limit: i
     }
 
 
+def _policy_blocked_result(result: dict) -> bool:
+    """True when an extract result failed because of the user's website
+    policy — an intentional refusal, never a backend outage. Policy blocks
+    must NOT be rescued: routing the same URL through the keyless ring
+    would fetch content the user explicitly blocked."""
+    if result.get("blocked_by_policy"):
+        return True
+    return "blocked by website policy" in str(result.get("error") or "").lower()
+
+
 def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     """One-shot keyless-ring rescue for a failed keyed/configured extract.
 
     Fires only when EVERY url failed (whole-backend failure); partial
     results are page problems and pass through untouched. Stateless —
     the next web_extract call attempts the chosen backend again.
+
+    Website-policy refusals are intentional, not failures: entries flagged
+    by ``_policy_blocked_result`` are never re-fetched through the ring and
+    their original (blocked) results are preserved verbatim.
     """
     from plugins.web.keyless_mcp import extract_with_failover
 
+    # Partition out policy blocks. Rescue only genuine backend failures.
+    if len(results) == len(urls):
+        rescue_idx = [i for i, r in enumerate(results) if not _policy_blocked_result(r)]
+    else:  # defensive: provider broke order parity — treat all as rescueable
+        rescue_idx = list(range(len(results)))
+    if not rescue_idx:
+        return results  # every failure is an intentional policy block
+
+    rescue_urls = [urls[i] for i in rescue_idx] if len(results) == len(urls) else list(urls)
     original_error = next(
-        (r.get("error") for r in results if r.get("error")), "extract failed"
+        (results[i].get("error") for i in rescue_idx if results[i].get("error")),
+        "extract failed",
     )
     logger.warning(
         "web_extract backend '%s' failed all %d URL(s) (%s); one-shot keyless rescue",
-        provider_name, len(urls), (original_error or "")[:200],
+        provider_name, len(rescue_urls), (original_error or "")[:200],
     )
-    rescued = extract_with_failover(provider_name, list(urls))
+    rescued = extract_with_failover(provider_name, list(rescue_urls))
     rescued_errors = [r.get("error", "") for r in rescued]
     if rescued and all(e for e in rescued_errors):
         return results  # rescue also failed everywhere: keep original errors
@@ -589,6 +613,11 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
             if isinstance(meta, dict):
                 meta["rescued_from"] = provider_name
                 meta["backend_error"] = (original_error or "")[:300]
+    if len(rescued) == len(rescue_idx) and len(results) == len(urls):
+        merged = list(results)
+        for pos, i in enumerate(rescue_idx):
+            merged[i] = rescued[pos]
+        return merged
     return rescued
 
 
@@ -981,33 +1010,83 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            response_data = provider.search(query, limit)
-            if _is_fallback_eligible_response(response_data):
-                fallback = get_fallback_search_provider(exclude=provider.name)
-                if fallback is not None:
-                    logger.warning(
-                        "Web search provider %s failed with %s; retrying via %s",
-                        provider.name,
-                        response_data.get("status_code", "4xx"),
-                        fallback.name,
-                    )
-                    fallback_response = fallback.search(query, limit)
-                    if isinstance(fallback_response, dict):
-                        fallback_response.setdefault("fallback_from", provider.name)
-                    response_data = fallback_response
-            elif (
-                not response_data.get("success")
-                and _rescue_eligible(provider)
-            ):
-                # One-shot keyless rescue: THIS call rides the free-tier
-                # ring; the next call attempts the chosen backend again.
-                response_data = _rescue_search(
-                    provider.name,
-                    str(response_data.get("error", "")),
-                    query,
-                    limit,
-                )
+            # ── TTL memo + single-flight (tools/web_result_cache.py) ──
+            # Sits after every safety/config check and directly around the
+            # paid vendor call. Identical queries within the TTL (subagent
+            # fan-outs, repeat lookups) are served from memory; concurrent
+            # identical queries share one request via the flight lock. The
+            # provider is asked for the BUCKETED count (10/20/50/100) so
+            # near-identical limits share an entry; the caller's requested
+            # count is sliced out below. Only successful responses cache.
+            from tools.web_result_cache import (
+                bucket_limit as _bucket_limit,
+                search_memo as _search_memo,
+                slice_search_response as _slice_search_response,
+            )
 
+            def _paid_search() -> tuple[dict, bool]:
+                _fetch_limit = _bucket_limit(limit)
+                # True when a configured fallback or keyless rescue served the
+                # result. Alternate-provider responses must not be cached under
+                # the selected provider's key.
+                _alternate_served = False
+                try:
+                    _resp = provider.search(query, _fetch_limit)
+                except Exception as exc:  # noqa: BLE001 — candidate for rescue
+                    if _rescue_eligible(provider):
+                        _alternate_served = True
+                        _resp = _rescue_search(
+                            provider.name, str(exc), query, _fetch_limit
+                        )
+                    else:
+                        raise
+                else:
+                    if _is_fallback_eligible_response(_resp):
+                        fallback = get_fallback_search_provider(exclude=provider.name)
+                        if fallback is not None:
+                            logger.warning(
+                                "Web search provider %s failed with %s; retrying via %s",
+                                provider.name,
+                                _resp.get("status_code", "4xx"),
+                                fallback.name,
+                            )
+                            _alternate_served = True
+                            fallback_response = fallback.search(query, _fetch_limit)
+                            if isinstance(fallback_response, dict):
+                                fallback_response.setdefault("fallback_from", provider.name)
+                            _resp = fallback_response
+                    elif not _resp.get("success") and _rescue_eligible(provider):
+                        # One-shot keyless rescue: THIS call rides the
+                        # free-tier ring; the next call attempts the chosen
+                        # backend again.
+                        _alternate_served = True
+                        _resp = _rescue_search(
+                            provider.name,
+                            str(_resp.get("error", "")),
+                            query,
+                            _fetch_limit,
+                        )
+                return _resp, _alternate_served
+
+            response_data = _search_memo.lookup(provider.name, query, limit)
+            if response_data is None:
+                with _search_memo.flight_lock(provider.name, query, limit):
+                    # Re-check inside the lock: a concurrent identical call
+                    # may have stored while this one waited.
+                    response_data = _search_memo.lookup(
+                        provider.name, query, limit
+                    )
+                    if response_data is None:
+                        response_data, _alternate_served = _paid_search()
+                        # Never cache an alternate-provider response: it came
+                        # from a configured fallback or rescue ring, not the
+                        # selected backend (wrong cache key). The next call
+                        # must attempt the selected backend again.
+                        if not _alternate_served:
+                            _search_memo.store(
+                                provider.name, query, limit, response_data
+                            )
+            response_data = _slice_search_response(response_data, limit)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1250,43 +1329,144 @@ async def web_extract_tool(
                         ensure_ascii=False,
                     )
 
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
 
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
-            import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
+            # ── Extract cache (tools/web_result_cache.py) ─────────────────
+            # Disk-backed via cache/web: a URL extracted within the TTL is
+            # served from disk instead of re-scraped. Deliberately placed
+            # AFTER the secret-URL gate, SSRF gate, provider resolution, and
+            # strict-selection validation, and gated per-URL on the website
+            # blocklist policy — a hit skips only the vendor call, never a
+            # control. Policy-blocked URLs are treated as cache misses so
+            # dispatch handles them exactly as it would without a cache.
+            # Keys include the provider and format, so switching backends or
+            # formats within the TTL never serves the other's content.
+            from tools.web_result_cache import (
+                extract_cache_get as _extract_cache_get,
+                extract_cache_put as _extract_cache_put,
+            )
+            from tools.website_policy import check_website_access as _check_site
+            cached_results: Dict[int, Dict[str, Any]] = {}
+            fetch_urls: List[str] = []
+            fetch_positions: List[int] = []
+            for position, url in enumerate(safe_urls):
+                hit = None
+                try:
+                    _policy_block = _check_site(url)
+                except Exception:  # noqa: BLE001 — policy errors fail open like dispatch
+                    _policy_block = None
+                if _policy_block is None:
+                    hit = _extract_cache_get(
+                        url, format=format, provider=provider.name
+                    )
+                if hit is not None:
+                    cached_results[position] = hit
+                else:
+                    fetch_urls.append(url)
+                    fetch_positions.append(position)
+
+            if not fetch_urls:
+                results = [cached_results[i] for i in range(len(safe_urls))]
             else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
+                logger.info(
+                    "Web extract via %s: %d URL(s)", provider.name, len(fetch_urls)
                 )
-            if _is_fallback_eligible_results(results):
-                fallback = get_fallback_extract_provider(exclude=provider.name)
-                if fallback is not None:
-                    logger.warning(
-                        "Web extract provider %s failed with 4xx; retrying via %s",
-                        provider.name,
-                        fallback.name,
-                    )
-                    results = await _call_extract_provider(
-                        fallback, safe_urls, format=format
-                    )
-            elif (
-                results
-                and all(r.get("error") for r in results)
-                and _rescue_eligible(provider)
-            ):
-                # One-shot keyless rescue when the WHOLE batch failed
-                # (backend-level outage, not per-page problems). Stateless:
-                # the next web_extract call uses the chosen backend again.
-                results = await asyncio.to_thread(
-                    _rescue_extract, provider.name, safe_urls, results
-                )
+
+                # Async-or-sync dispatch: parallel + firecrawl have async
+                # extract(); exa + tavily are sync.
+                import inspect
+                _extract_rescued = False
+                try:
+                    if inspect.iscoroutinefunction(provider.extract):
+                        results = await provider.extract(fetch_urls, format=format)
+                    else:
+                        # Run sync extract() in a thread so we don't block the
+                        # event loop on network I/O.
+                        results = await asyncio.to_thread(
+                            provider.extract, fetch_urls, format=format
+                        )
+                except Exception as exc:  # noqa: BLE001 — candidate for rescue
+                    if _rescue_eligible(provider):
+                        _extract_rescued = True
+                        failed = [
+                            {"url": u, "title": "", "content": "", "error": str(exc)}
+                            for u in fetch_urls
+                        ]
+                        results = await asyncio.to_thread(
+                            _rescue_extract, provider.name, fetch_urls, failed
+                        )
+                    else:
+                        raise
+                else:
+                    # Preserve Kensei's configured-provider fallback before
+                    # attempting the keyless rescue ring. Alternate-provider
+                    # batches are never cached under the selected provider key.
+                    if _is_fallback_eligible_results(results):
+                        fallback = get_fallback_extract_provider(exclude=provider.name)
+                        if fallback is not None:
+                            logger.warning(
+                                "Web extract provider %s failed with 4xx; retrying via %s",
+                                provider.name,
+                                fallback.name,
+                            )
+                            _extract_rescued = True
+                            results = await _call_extract_provider(
+                                fallback, fetch_urls, format=format
+                            )
+                    elif (
+                        results
+                        and all(r.get("error") for r in results)
+                        and _rescue_eligible(provider)
+                    ):
+                        # One-shot keyless rescue when the WHOLE batch failed
+                        # (backend-level outage, not per-page problems). Stateless:
+                        # the next web_extract call uses the chosen backend again.
+                        _extract_rescued = True
+                        results = await asyncio.to_thread(
+                            _rescue_extract, provider.name, fetch_urls, results
+                        )
+
+                # Cache each successful fetch's full clean text for TTL reuse
+                # (best-effort; oversized pages are skipped by the cache).
+                # NEVER cache a rescue-served batch: it came from a ring
+                # vendor, not the chosen backend, and caching it would make
+                # the one-shot rescue sticky for a whole TTL — the next call
+                # must attempt the chosen backend again.
+                if not _extract_rescued:
+                    for fetched_pos, fetched in enumerate(results):
+                        if fetched_pos >= len(fetch_urls):
+                            break
+                        if fetched.get("error"):
+                            continue
+                        _content = (
+                            fetched.get("raw_content", "") or fetched.get("content", "")
+                        )
+                        if _content:
+                            _extract_cache_put(
+                                fetch_urls[fetched_pos],
+                                _content,
+                                title=fetched.get("title", ""),
+                                format=format,
+                                provider=provider.name,
+                            )
+
+                # Merge fetched results back with cache hits, restoring the
+                # safe_urls order the downstream reconstruction expects.
+                if cached_results:
+                    merged: List[Dict[str, Any]] = [None] * len(safe_urls)  # type: ignore[list-item]
+                    for position, hit in cached_results.items():
+                        merged[position] = hit
+                    for fetched_pos, position in enumerate(fetch_positions):
+                        merged[position] = (
+                            results[fetched_pos]
+                            if fetched_pos < len(results)
+                            else {
+                                "url": safe_urls[position],
+                                "title": "",
+                                "content": "",
+                                "error": "Extract backend returned no result for this URL",
+                            }
+                        )
+                    results = merged
 
         # Reconstruct the original input order across invalid, blocked, and
         # provider-processed entries. Providers are expected to preserve the

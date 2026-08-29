@@ -22,6 +22,7 @@ from __future__ import annotations
 import inspect
 import threading
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 # Cap for the exponential tick backoff applied while consecutive ticks fail
@@ -62,6 +63,31 @@ def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
         _reclaim_fds_best_effort()
         return consecutive_failures + 1
     return 0
+
+
+def _existing_profile_homes(profile_homes: list) -> list:
+    """Drop profile homes whose directory no longer exists on disk.
+
+    The multiplex ticker's ``profile_homes`` is a snapshot taken at startup
+    (``web_server.py`` calls ``profiles_to_serve(multiplex=True)`` once, and
+    the gateway multiplex path does the same). If a profile is deleted while
+    the ticker runs — via ``hermes profile delete``, the desktop's DELETE
+    ``/api/profiles/<name>`` route, or any other path that removes the home
+    directory — that stale entry stays in the list.
+
+    Ticking or heartbeating a deleted home recreates its ``cron/`` workspace
+    (``record_ticker_heartbeat`` -> ``ensure_dirs`` -> ``mkdir(parents=True)``)
+    on every 60s cycle, so the "deleted" profile silently comes back on disk
+    and in ``hermes profile list`` (#47368). Filtering on directory existence
+    leaves a deleted profile's home untouched, which is the correct invariant:
+    a home that does not exist cannot hold jobs to fire.
+    """
+    live = []
+    for entry in profile_homes:
+        home = entry[1] if isinstance(entry, tuple) else entry
+        if Path(home).is_dir():
+            live.append(entry)
+    return live
 
 
 class CronScheduler(ABC):
@@ -394,6 +420,27 @@ def fire_overdue_jobs(
         if overdue_seconds < grace_minutes * 60:
             continue
         job_id = str(job.get("id") or "")
+        # One-shot jobs share the module-wide policy: more than
+        # ONESHOT_GRACE_SECONDS past their run time means "will never fire"
+        # (create/update/resume/recovery and, since #89571, the due-scan all
+        # enforce it). The misfire backstop must not resurrect them hours
+        # late after downtime — that's #93526.
+        schedule = job.get("schedule") or {}
+        if str(schedule.get("kind") or "") == "once":
+            from cron.jobs import ONESHOT_GRACE_SECONDS
+
+            if overdue_seconds > ONESHOT_GRACE_SECONDS:
+                logger.warning(
+                    "Misfire catch-up: one-shot job %s (%s) was due %s "
+                    "(%.0f min overdue) — outside the %ss one-shot grace "
+                    "window, not firing.",
+                    job_id,
+                    job.get("name") or "unnamed",
+                    next_run_at,
+                    overdue_seconds / 60,
+                    ONESHOT_GRACE_SECONDS,
+                )
+                continue
         logger.warning(
             "Misfire catch-up: job %s (%s) was due %s (%.0f min overdue) and "
             "no external fire arrived — firing locally.",
@@ -636,7 +683,10 @@ class InProcessCronScheduler(CronScheduler):
         )
 
         # Recovery + initial heartbeat for every profile.
-        for entry in profile_homes:
+        # A profile may have been deleted since this snapshot was taken;
+        # never recreate a deleted home's cron workspace via the heartbeat
+        # below (#47368).
+        for entry in _existing_profile_homes(profile_homes):
             home = entry[1] if isinstance(entry, tuple) else entry
             home_token = set_hermes_home_override(str(home))
             try:
@@ -660,7 +710,7 @@ class InProcessCronScheduler(CronScheduler):
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
-                    for entry in profile_homes:
+                    for entry in _existing_profile_homes(profile_homes):
                         home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))
                         try:
@@ -683,7 +733,7 @@ class InProcessCronScheduler(CronScheduler):
             else:
                 _tick_error = None
             # Record per-profile heartbeat after each tick cycle.
-            for entry in profile_homes:
+            for entry in _existing_profile_homes(profile_homes):
                 home = entry[1] if isinstance(entry, tuple) else entry
                 home_token = set_hermes_home_override(str(home))
                 try:

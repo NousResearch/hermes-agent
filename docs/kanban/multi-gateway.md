@@ -4,6 +4,13 @@ Hermes supports multiple gateway processes running concurrently — one per prof
 (default, writer, admin, coder, researcher). Each gateway opens its own connection
 to platform APIs and delivers messages for its profile's subscribers.
 
+Task subscriptions also cover review feedback. A `changes_requested` review
+event is delivered as an actionable review-BLOCK notification. Subscriptions
+using `notify+wake` additionally wake the exact originating chat/thread/session
+so the controller inspects the existing card and current run; `notify` remains
+passive-only and `wake` remains wake-only. Review feedback never creates,
+unblocks, requeues, or otherwise mutates a task.
+
 ## Single-dispatcher posture
 
 Only one gateway owns the kanban dispatcher. The owning gateway keeps

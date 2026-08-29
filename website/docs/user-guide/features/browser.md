@@ -9,9 +9,9 @@ sidebar_position: 5
 
 Hermes Agent includes a full browser automation toolset with multiple backend options:
 
-- **Browserbase cloud mode** via [Browserbase](https://browserbase.com) for managed cloud browsers and anti-bot tooling
-- **Browser Use cloud mode** via [Browser Use](https://browser-use.com) as an alternative cloud browser provider
-- **Browser Use mode** via the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) — a new browser harness that is SOTA for web tasks; automates your local Chrome or Browser Use cloud browsers
+- **Browser Use cloud mode** via [Browser Use](https://browser-use.com) for managed Chromium with stealth, residential proxies, CAPTCHA solving, and reusable browser profiles
+- **Browserbase cloud mode** via [Browserbase](https://browserbase.com) as an alternative cloud browser provider with anti-bot tooling
+- **Browser Use mode** via the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use), the default browser driver for local Chrome and Browser Use cloud browsers
 - **Firecrawl cloud mode** via [Firecrawl](https://firecrawl.dev) for cloud browsers with built-in scraping
 - **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
 - **Lightpanda local engine** via [Lightpanda](https://lightpanda.io) — a headless browser built from scratch in Zig for machines; instant start up, 16x lower memory and 9x faster than Chrome, with automatic Chrome fallback for actions it doesn't support yet
@@ -26,9 +26,10 @@ Pages are represented as **accessibility trees** (text-based snapshots), making 
 
 Key capabilities:
 
-- **Multi-provider cloud execution** — Browserbase, Browser Use, or Firecrawl — no local browser needed
+- **Multi-provider cloud execution** — Browser Use, Browserbase, or Firecrawl — no local browser needed
 - **Local Chromium-family integration** — attach to your running Chrome, Brave, Chromium, or Edge browser via CDP for hands-on browsing
-- **Built-in stealth** — random fingerprints, CAPTCHA solving, residential proxies (Browserbase)
+- **Cloud anti-bot support** — Browser Use Cloud includes stealth, residential proxies, and CAPTCHA solving
+- **Persistent cloud profiles** — Browser Use Cloud can reuse cookies, localStorage, and saved passwords across sessions
 - **Session isolation** — each task gets its own browser session
 - **Automatic cleanup** — inactive sessions are closed after a timeout
 - **Vision analysis** — screenshot + AI analysis for visual understanding
@@ -38,6 +39,19 @@ Key capabilities:
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, you can use browser automation through the **[Tool Gateway](tool-gateway.md)** without any separate API keys. New installs can run `hermes setup --portal` to log in and turn on every gateway tool at once; existing installs can pick **Nous Subscription** as the browser provider via `hermes model` or `hermes tools`.
 :::
+
+### Browser Use cloud mode
+
+To use Browser Use as your cloud browser provider, add:
+
+```bash
+# Add to ~/.hermes/.env
+BROWSER_USE_API_KEY=***
+```
+
+Get your API key at [browser-use.com](https://browser-use.com).
+
+Browser Use Cloud runs managed Chromium with [stealth](https://docs.browser-use.com/cloud/browser/stealth) and [residential proxies](https://docs.browser-use.com/cloud/browser/proxies) enabled by default, includes CAPTCHA solving, and supports [persistent profiles](https://docs.browser-use.com/cloud/guides/authentication) for cookies, localStorage, and saved passwords.
 
 ### Browserbase cloud mode
 
@@ -51,24 +65,13 @@ BROWSERBASE_PROJECT_ID=your-project-id-here
 
 Get your credentials at [browserbase.com](https://browserbase.com).
 
-### Browser Use cloud mode
-
-To use Browser Use as your cloud browser provider, add:
-
-```bash
-# Add to ~/.hermes/.env
-BROWSER_USE_API_KEY=***
-```
-
-Get your API key at [browser-use.com](https://browser-use.com).
-
 :::note Selecting the provider
 The `.env` keys above supply **credentials only**. The active cloud browser is chosen by the `browser.cloud_provider` selection written by `hermes tools` → Browser Automation (`browserbase`, `browser-use`, `camofox`, or `nous` for the Nous Subscription). Once a selection exists, adding or removing a key does not switch providers — and a selected provider with a missing key errors with guidance to run `hermes tools` instead of silently rerouting. Never-configured setups still autodetect from available credentials.
 :::
 
 ### Browser Use mode (default)
 
-Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) — a new browser harness that is state-of-the-art at web tasks — instead of the built-in browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages.
+Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) instead of the built-in browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages.
 
 **This is the default browser mode**: when `browser.backend` is unset and the `browser-use` CLI is runnable (installed, or available through `uvx`), the agent gets the single `browser_exec` tool. If the CLI can't run, Hermes falls back to the built-in browser tools automatically.
 
@@ -154,6 +157,67 @@ mode, so you need it installed (`hermes setup tools → Browser Automation`
 auto-installs it). Post-navigation redirects from a public URL onto a private
 address are still blocked (you can't use a redirect-to-internal trick to reach
 your LAN through the public path).
+
+### Real profile browsing (use your own logins)
+
+By default, local browsing runs in a clean, throwaway profile — the agent is
+logged into nothing. Turn on **real profile browsing** to let the agent browse
+as *you*, with your existing logins and cookies:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  use_real_profile: true
+```
+
+When enabled, Hermes copies your default browser's **active** profile — the one
+you actually browse (`Local State → profile.last_used`), with its cookies, saved
+logins, and preferences — into a managed snapshot under
+`~/.hermes/browser-profile/<browser>/`, then drives that snapshot with its
+packaged Chromium. Your live browser profile is **never opened directly**: the
+snapshot is a separate directory, so it doesn't fight your running browser for
+the profile lock and it sidesteps Chrome 136+'s block on remote-debugging the
+default profile directory. The auth files (cookies/logins/preferences) are
+re-synced from your real profile whenever a fresh session is launched, so logins
+you do in your own browser show up in the agent's session. Only the active
+profile is copied — other Chrome profiles are never snapshotted.
+
+When you turn the toggle back off, Hermes deletes the snapshot store
+(`~/.hermes/browser-profile/`) on the next browser use, so the copied
+credentials don't linger after you revoke consent.
+
+:::note Windows: the browser must be fully closed
+On Windows a running Chrome/Edge/Brave holds its cookie and login databases with
+an exclusive (deny-all) lock, so Hermes cannot copy them while the browser is
+open — it fails fast with a "fully quit the browser and retry" message rather
+than hang or produce a signed-out session. Real-profile browsing on Windows
+therefore requires the browser **fully quit**, including any background/tray
+instance (Chrome's "continue running background apps when closed" keeps a
+`chrome.exe` alive after you close the window). macOS and Linux can copy the
+profile while the browser is running.
+
+Set `browser.real_profile_autoclose: true` to let Hermes **offer to close the
+browser for you** when it's holding the profile. Even with this on, Hermes never
+closes it automatically — when the profile is locked it always stops and the
+agent asks you first; only on your approval does it run `hermes browser
+close-profile` (terminates the browser process tree bound to that profile,
+losing unsaved tabs), then retries. If the profile is still locked after that
+(e.g. a background/tray instance relaunched), Hermes stays blocked and tells you
+to fully quit the browser — it won't loop or kill again on its own.
+:::
+
+- **Supported browsers:** Chrome, Edge, Brave, Chromium (whichever is your OS
+  default). A non-Chromium default (e.g. Firefox) fails closed with a clear
+  message rather than guessing.
+- **Works on any backend.** On a local backend it's automatic once the toggle
+  is on. Under a **cloud** browser backend, the agent can still open a
+  real-profile local session on demand via the `browser_exec` tool's `local`
+  argument (the tool only exposes that argument when this toggle is on) — the
+  cloud backend keeps serving everything else.
+- **Security framing:** this is a consent-gated convenience, not an isolation
+  boundary. A page the agent visits runs with your real logins, so only enable
+  it when you want the agent acting as you. Off by default.
+- **Desktop:** toggle it in **Settings → Browser → Use My Real Browser Profile**.
 
 ### Camofox local mode
 
@@ -511,7 +575,17 @@ Get a text-based snapshot of the current page's accessibility tree. Returns inte
 - **`full=false`** (default): Compact view showing only interactive elements
 - **`full=true`**: Complete page content
 
-Snapshots over 15,000 characters are automatically truncated or summarized by an LLM (the same per-page budget as `web_extract`). When that happens, the complete snapshot is saved to `~/.hermes/cache/web/` and the tool output includes the file path plus a ready-to-use `read_file` call, so the agent can page through the full accessibility tree — including element refs beyond the cut — without re-snapshotting.
+Snapshots larger than `browser.snapshot_threshold` (default 15,000 characters — the same per-page budget as `web_extract`) are automatically truncated at line boundaries; no LLM summarization is involved. When that happens, the complete snapshot is saved to `~/.hermes/cache/web/` and the tool output includes the file path plus a ready-to-use `read_file` call, so the agent can page through the full accessibility tree — including element refs beyond the cut — without re-snapshotting.
+
+Increase the threshold for long pages where more source content should reach the agent inline:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  snapshot_threshold: 30000
+```
+
+You can also run `hermes config set browser.snapshot_threshold 30000`. The setting applies to both explicit `browser_snapshot` calls and the automatic snapshot returned after navigation, including the Camofox backend (minimum 1000). Restart the current Hermes session after changing it so the browser config cache reloads.
 
 ### `browser_click`
 
@@ -743,7 +817,7 @@ If paid features aren't available on your plan, Hermes automatically falls back 
 ## Limitations
 
 - **Text-based interaction** — relies on accessibility tree, not pixel coordinates
-- **Snapshot size** — large pages may be truncated or LLM-summarized at 15,000 characters (matching `web_extract`); the complete snapshot is saved to `~/.hermes/cache/web/` and the output points at it for `read_file` paging
+- **Snapshot size** — large pages are truncated at `browser.snapshot_threshold` (default 15,000 characters, matching `web_extract`; no LLM summarization); the complete snapshot is saved to `~/.hermes/cache/web/` and the output points at it for `read_file` paging
 - **Session timeout** — cloud sessions expire based on your provider's plan settings
 - **Cost** — cloud sessions consume provider credits; sessions are automatically cleaned up when the conversation ends or after inactivity. Use `/browser connect` for free local browsing.
 - **No file downloads** — cannot download files from the browser

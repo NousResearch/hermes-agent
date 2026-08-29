@@ -16,6 +16,7 @@ import re
 import uuid
 from collections import OrderedDict
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -319,6 +320,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # This is required for the server to know where to send events
         await self._register_webhook()
 
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -518,7 +521,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = data.get("guid") or data.get("messageGuid") or "ok"
             return SendResult(success=True, message_id=str(msg_id), raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
     # ------------------------------------------------------------------
     # Text sending
@@ -581,7 +584,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     success=True, message_id=str(msg_id), raw_response=res
                 )
             except Exception as exc:
-                return SendResult(success=False, error=str(exc))
+                return SendResult(success=False, error=str(exc) or type(exc).__name__)
         return last
 
     # ------------------------------------------------------------------
@@ -599,7 +602,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         """Send a file attachment via BlueBubbles multipart upload."""
         if not self.client:
             return SendResult(success=False, error="Not connected")
-        if not os.path.isfile(file_path):
+        if not await asyncio.to_thread(os.path.isfile, file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
         guid = await self._resolve_chat_guid(chat_id)
@@ -608,23 +611,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         fname = filename or os.path.basename(file_path)
         try:
-            with open(file_path, "rb") as f:
-                files = {"attachment": (fname, f, "application/octet-stream")}
-                data: Dict[str, str] = {
-                    "chatGuid": guid,
-                    "name": fname,
-                    "tempGuid": uuid.uuid4().hex,
-                }
-                if is_audio_message:
-                    data["isAudioMessage"] = "true"
-                res = await self.client.post(
-                    self._api_url("/api/v1/message/attachment"),
-                    files=files,
-                    data=data,
-                    timeout=120,
-                )
-                res.raise_for_status()
-                result = res.json()
+            # httpx's async multipart iterator reads file-like objects through
+            # a synchronous chunk generator. Read the file off the event-loop
+            # thread before handing bytes to the client.
+            payload = await asyncio.to_thread(Path(file_path).read_bytes)
+            files = {"attachment": (fname, payload, "application/octet-stream")}
+            data: Dict[str, str] = {
+                "chatGuid": guid,
+                "name": fname,
+                "tempGuid": uuid.uuid4().hex,
+            }
+            if is_audio_message:
+                data["isAudioMessage"] = "true"
+            res = await self.client.post(
+                self._api_url("/api/v1/message/attachment"),
+                files=files,
+                data=data,
+                timeout=120,
+            )
+            res.raise_for_status()
+            result = res.json()
 
             if caption:
                 await self.send(chat_id, caption)

@@ -10,7 +10,6 @@ We mock the telegram module at import time to avoid collection errors.
 
 import asyncio
 import os
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,28 +27,6 @@ from gateway.platforms.base import (
 # ---------------------------------------------------------------------------
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
-
-def _ensure_telegram_mock():
-    """Install mock telegram modules so TelegramAdapter can be imported."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        # Real library is installed — no mocking needed
-        return
-
-    telegram_mod = MagicMock()
-    # ContextTypes needs DEFAULT_TYPE as an actual attribute for the annotation
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-
-
-_ensure_telegram_mock()
-
 # Now we can safely import
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 

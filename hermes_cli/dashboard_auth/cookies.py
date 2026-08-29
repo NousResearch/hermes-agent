@@ -17,14 +17,24 @@ Three cookies in play:
   - hermes_session_pkce: short-lived PKCE state + CSRF nonce + provider
                          hint (HttpOnly, lifetime = 10 minutes)
 
-All three are ``SameSite=Lax`` (browser will send on cross-site GET
-top-level navigation, which we need for the IDP redirect back to
-``/auth/callback``) and live under the prefix's Path. ``Secure`` is set
-ONLY when the dashboard was reached over HTTPS — detected via the
-request URL scheme, which honours ``X-Forwarded-Proto`` upstream of
-Fly's TLS terminator when uvicorn is configured with
-``proxy_headers=True``. Loopback dev traffic is always HTTP so
-``Secure`` would lock the cookies out of the browser.
+The two session cookies are ``SameSite=Lax`` and live under the prefix's
+Path. The PKCE cookie is the exception: ``SameSite=None`` over HTTPS,
+falling back to ``Lax`` on plain HTTP (where ``SameSite=None`` is invalid
+without ``Secure``). It is set on the ``/auth/login`` 302 and must survive
+the cross-site redirect chain out to the IDP and back to
+``/auth/callback``; Chromium intermittently drops ``Lax`` cookies set on a
+302 in such a chain (crbug 40508226), which surfaces as "Missing PKCE
+state cookie". ``Secure`` is set ONLY when the dashboard was reached over
+HTTPS — detected via the request URL scheme, which honours
+``X-Forwarded-Proto`` upstream of Fly's TLS terminator when uvicorn is
+configured with ``proxy_headers=True``. Loopback dev traffic is always
+HTTP so ``Secure`` would lock the cookies out of the browser.
+
+NOTE: uvicorn only honours ``X-Forwarded-Proto`` from a peer inside its
+``forwarded_allow_ips`` (default: ``127.0.0.1``). A TLS terminator that
+reaches the dashboard from a non-loopback address — e.g. a reverse proxy
+in its own container — is not trusted, so the request still looks like
+HTTP here and these cookies are written in their HTTP shape.
 
 Cookie prefix selection (browser hardening per
 https://datatracker.ietf.org/doc/html/draft-west-cookie-prefixes):
@@ -56,7 +66,7 @@ Refresh-token handling:
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 from fastapi import Request
 from fastapi.responses import Response
@@ -212,6 +222,46 @@ def set_session_cookies(
     )
 
 
+def _clear_cookie_variants(
+    response: Response,
+    bare_name: str,
+    *,
+    prefix: str,
+    https_samesite: Literal["lax", "strict", "none"],
+    bare_attrs: dict,
+) -> None:
+    """Emit Max-Age=0 deletions for every plausible name variant of a cookie.
+
+    Cookie-prefix rules make the deletion shape load-bearing: a Set-Cookie
+    for a ``__Host-``/``__Secure-`` name is rejected outright by the
+    browser unless it carries ``Secure`` (and ``__Host-`` additionally
+    requires ``Path=/``), so those deletions always carry the attributes
+    their name demands. The bare-name deletion mirrors the shape the
+    setter uses (``bare_attrs``) — under RFC 6265bis a deletion sent from
+    a secure origin may omit ``Secure`` and still delete a Secure cookie,
+    while a ``Secure`` deletion on a plain-HTTP origin can be ignored, so
+    matching the setter is the shape that works on both origins.
+    """
+    for variant in _NAME_VARIANTS:
+        if variant == "__Host-":
+            # __Host- demands Secure AND Path=/ or the header is invalid.
+            response.set_cookie(
+                f"{variant}{bare_name}", "", max_age=0,
+                path="/", httponly=True, samesite=https_samesite,
+                secure=True,
+            )
+        elif variant == "__Secure-":
+            response.set_cookie(
+                f"{variant}{bare_name}", "", max_age=0,
+                path=_cookie_path(prefix), httponly=True,
+                samesite=https_samesite, secure=True,
+            )
+        else:
+            response.set_cookie(
+                bare_name, "", max_age=0, **bare_attrs,
+            )
+
+
 def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
     """Emit Max-Age=0 deletions for both session cookies.
 
@@ -221,40 +271,69 @@ def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
     depends on the request that set it), so we emit deletions for every
     plausible variant under the active path.
     """
-    path = _cookie_path(prefix)
-    for variant in _NAME_VARIANTS:
-        response.set_cookie(
-            f"{variant}{SESSION_AT_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
+    bare_attrs = {
+        "path": _cookie_path(prefix), "httponly": True, "samesite": "lax",
+    }
+    for name in (SESSION_AT_COOKIE, SESSION_RT_COOKIE, SESSION_PROVIDER_COOKIE):
+        _clear_cookie_variants(
+            response, name,
+            prefix=prefix, https_samesite="lax", bare_attrs=bare_attrs,
         )
-        response.set_cookie(
-            f"{variant}{SESSION_RT_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
-        )
-        response.set_cookie(
-            f"{variant}{SESSION_PROVIDER_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
-        )
+
+
+def _pkce_attrs(*, use_https: bool, prefix: str) -> dict:
+    """Cookie attributes for the PKCE cookie's set AND clear paths.
+
+    Single source of truth so a deletion always matches the shape the
+    setter emitted for the same origin — a shape mismatch means the
+    browser silently keeps the stale cookie.
+    """
+    attrs = _common_attrs(use_https=use_https, prefix=prefix)
+    if use_https:
+        attrs["samesite"] = "none"
+    return attrs
 
 
 def set_pkce_cookie(
     response: Response, *, payload: str, use_https: bool, prefix: str = "",
 ) -> None:
+    # SameSite=None when HTTPS: the PKCE cookie is set on the /auth/login
+    # 302 response (redirecting to the IDP) and must survive the cross-site
+    # redirect chain (same-site → IDP → same-site callback). Chromium has a
+    # long-standing bug (crbug 40508226) where SameSite=Lax cookies set on a
+    # 302 in a cross-site redirect chain are intermittently dropped, causing
+    # "Missing PKCE state cookie" on the callback. SameSite=None + Secure
+    # sidesteps the bug — these cookies are explicitly designed for cross-site
+    # delivery and Chromium processes them reliably during redirects.
+    # Loopback HTTP degrades to Lax (SameSite=None requires Secure).
     response.set_cookie(
         _resolved_name(PKCE_COOKIE, use_https=use_https, prefix=prefix),
         payload,
         max_age=_PKCE_MAX_AGE,
-        **_common_attrs(use_https=use_https, prefix=prefix),
+        **_pkce_attrs(use_https=use_https, prefix=prefix),
     )
 
 
-def clear_pkce_cookie(response: Response, *, prefix: str = "") -> None:
-    path = _cookie_path(prefix)
-    for variant in _NAME_VARIANTS:
-        response.set_cookie(
-            f"{variant}{PKCE_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
-        )
+def clear_pkce_cookie(
+    response: Response, *, use_https: bool, prefix: str = "",
+) -> None:
+    """Emit Max-Age=0 deletions for every plausible PKCE cookie variant.
+
+    A deletion is only honoured when its shape is acceptable to the
+    browser on the current origin: a ``Secure`` deletion can be dropped
+    on a plain-HTTP origin, while the ``__Host-``/``__Secure-`` name
+    variants REQUIRE ``Secure`` to be valid at all. So the bare-name
+    deletion mirrors the setter's shape for the active origin (Lax
+    without ``Secure`` over HTTP; ``SameSite=None; Secure`` over HTTPS,
+    matching :func:`set_pkce_cookie`), and the prefixed variants — which
+    can only ever have been set on an HTTPS origin — always carry
+    ``Secure; SameSite=None``.
+    """
+    _clear_cookie_variants(
+        response, PKCE_COOKIE,
+        prefix=prefix, https_samesite="none",
+        bare_attrs=_pkce_attrs(use_https=use_https, prefix=prefix),
+    )
 
 
 def _read_with_fallback(
@@ -319,12 +398,13 @@ def clear_sso_attempt_cookie(response: Response, *, prefix: str = "") -> None:
     Called on a successful callback and whenever the gate falls back to
     /login, so the marker never lingers to suppress a later silent attempt.
     """
-    path = _cookie_path(prefix)
-    for variant in _NAME_VARIANTS:
-        response.set_cookie(
-            f"{variant}{SSO_ATTEMPT_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
-        )
+    _clear_cookie_variants(
+        response, SSO_ATTEMPT_COOKIE,
+        prefix=prefix, https_samesite="lax",
+        bare_attrs={
+            "path": _cookie_path(prefix), "httponly": True, "samesite": "lax",
+        },
+    )
 
 
 def detect_https(request: Request) -> bool:

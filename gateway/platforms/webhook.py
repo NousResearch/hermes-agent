@@ -341,6 +341,8 @@ class WebhookAdapter(BasePlatformAdapter):
             self._port,
             route_names,
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -564,12 +566,14 @@ class WebhookAdapter(BasePlatformAdapter):
         """Resolve + validate the /p/<profile>/ URL prefix on a webhook request.
 
         Returns:
-          - ``None`` when no profile prefix is present, or multiplexing is off
-            (the prefix is ignored, request handled as the default profile).
+          - ``None`` when no profile prefix is present, or when multiplexing
+            is off and the prefix names this gateway's own profile (the
+            request is handled as the serving profile).
           - the profile name (str) when present, multiplexing is on, and the
             profile is one this gateway serves.
           - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
-            unknown/unconfigured (handler returns 404).
+            unknown/unconfigured, or names a profile this single-profile
+            gateway does not serve (handler returns 404).
         """
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
@@ -577,9 +581,19 @@ class WebhookAdapter(BasePlatformAdapter):
         runner = self.gateway_runner
         cfg = getattr(runner, "config", None)
         if not getattr(cfg, "multiplex_profiles", False):
-            # Prefix supplied but multiplexing is off — ignore it, behave as
-            # the single-profile gateway (don't 404 a would-be valid route).
-            return None
+            # Prefix supplied but multiplexing is off. Only a self-referential
+            # prefix (naming this gateway's own profile) may fall through to
+            # the bare route; anything else fails closed — silently ignoring
+            # the prefix served the gateway owner's routes/config under
+            # another profile's URL (#91583 defect 2).
+            try:
+                from hermes_cli.profiles import profile_matches_home
+
+                if profile_matches_home(profile):
+                    return None
+            except Exception:
+                pass
+            return _PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve
             served = {
@@ -1368,7 +1382,14 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         try:
-            result = subprocess.run(
+            # Off-loop: `gh` does network I/O and can take its full 30s
+            # timeout. Running it inline froze every adapter and timer on
+            # the gateway event loop for the duration (Pattern A, #91912
+            # class). asyncio.to_thread keeps the loop serving while the
+            # subprocess runs; the worker thread is bounded by the
+            # subprocess timeout below.
+            result = await asyncio.to_thread(
+                subprocess.run,
                 [
                     "gh",
                     "pr",

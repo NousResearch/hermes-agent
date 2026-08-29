@@ -174,10 +174,16 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     stopped = SimpleNamespace(returncode=0, stdout="", stderr="")
 
     daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
-    with patch.object(
+    with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
         cua_backend,
         "_resolve_mcp_invocation",
         return_value=("/opt/cua-driver", ["mcp"]),
+    ), patch.object(
+        # This test pins the socket/ack contract, not overlay policy. Pin the
+        # policy off so the environment-dependent auto-detect (headless CI vs
+        # Wayland dev box) can't add a `--help` capability-probe subprocess.run
+        # call that the fixed two-entry side_effect below doesn't budget for.
+        cua_backend, "_cua_no_overlay", return_value=False,
     ), patch.object(cua_backend.subprocess, "Popen", return_value=process) as popen, patch.object(
         cua_backend.subprocess, "run", side_effect=[status, stopped]
     ):
@@ -238,25 +244,19 @@ def test_standard_existing_profile_grant_stays_in_process_off_macos():
     assert socket_path is None
 
 
-def test_transport_reset_invalidates_native_and_browser_capabilities():
+def test_transport_reset_invalidates_native_capabilities():
     from tools.computer_use.cua_backend import CuaDriverBackend
 
     backend = CuaDriverBackend(permission_mode="standard")
     backend._active_pid = 10
     backend._active_window_id = 20
     backend._snapshot_tokens = {1: "old-token"}
-    backend._typed_browser.state.pid = 10
-    backend._typed_browser.state.window_id = 20
-    backend._typed_browser.state.target_id = "old-target"
-    backend._typed_browser.state.refs = {"old-ref": {"click"}}
 
     backend._handle_transport_reset()
 
     assert backend._active_pid is None
     assert backend._active_window_id is None
     assert backend._snapshot_tokens == {}
-    assert backend._typed_browser.state.target_id is None
-    assert backend._typed_browser.state.refs == {}
 
 
 # ── the escalation is at least audible ──────────────────────────────────

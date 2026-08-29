@@ -51,6 +51,12 @@ DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT = float(
 # SIGKILLed mid-write and stays wedged at ``last_status=running`` forever.
 CRON_DRAIN_CLEANUP_RESERVE_S = 10.0
 
+# systemd TimeoutStopSec headroom after the stop-path drain budget, and the
+# floor used when that budget is still the default immediate (0s) chat drain.
+# Keep these in lockstep with generate_systemd_unit() / #94759.
+SYSTEMD_STOP_HEADROOM_S = 30.0
+SYSTEMD_TIMEOUT_STOP_SEC_FLOOR = 60.0
+
 
 def is_gateway_supervisor_process(
     environ: Mapping[str, str] | None = None,
@@ -140,10 +146,12 @@ def resolve_cron_drain_budget(
 
     The configured floor is clamped to what this process can actually honour.
     The shutdown watchdog hard-exits at ``watchdog_delay`` and the service
-    manager's ``TimeoutStopSec`` is sized from the same drain timeout, so
-    waiting past that leash (minus ``cleanup_reserve_s`` for the teardown that
-    follows the drain) would swap a cleanly-interrupted job for a SIGKILL that
-    leaves it wedged mid-run — strictly worse than the bug being fixed.
+    manager's ``TimeoutStopSec`` is sized from the full stop budget (drain
+    vs cron floor + cleanup reserve, plus headroom — see
+    ``resolve_systemd_timeout_stop_sec``), so waiting past that leash
+    (minus ``cleanup_reserve_s`` for the teardown that follows the drain)
+    would swap a cleanly-interrupted job for a SIGKILL that leaves it
+    wedged mid-run — strictly worse than the bug being fixed.
 
     Never returns less than ``drain_timeout``: the cron floor only ever
     extends the wait, so an operator who deliberately configured a long
@@ -166,6 +174,42 @@ def resolve_cron_drain_budget(
         - _seconds(cleanup_reserve_s, CRON_DRAIN_CLEANUP_RESERVE_S)
     )
     return max(drain, min(floor, ceiling))
+
+
+def resolve_systemd_timeout_stop_sec(
+    drain_timeout: float,
+    cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
+    *,
+    cleanup_reserve_s: float = CRON_DRAIN_CLEANUP_RESERVE_S,
+    headroom_s: float = SYSTEMD_STOP_HEADROOM_S,
+    floor_s: float = SYSTEMD_TIMEOUT_STOP_SEC_FLOOR,
+) -> int:
+    """Seconds systemd ``TimeoutStopSec`` must cover the full stop budget.
+
+    ``restart_drain_timeout`` is only the chat-turn interrupt budget (default
+    0). The stop path may wait longer for in-flight cron work —
+    ``cron_drain_timeout`` plus ``cleanup_reserve_s`` — before it even starts
+    interrupting. Sizing the unit from drain alone lets systemd SIGKILL an
+    in-budget drain (#94759).
+
+    A zero ``cron_drain_timeout`` is a deliberate opt-out and does not extend
+    the budget. Non-numeric inputs degrade to 0 rather than raising.
+    """
+
+    def _seconds(value: object) -> float:
+        try:
+            return max(float(value), 0.0)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 0.0
+
+    drain = _seconds(drain_timeout)
+    cron = _seconds(cron_drain_timeout)
+    reserve = _seconds(cleanup_reserve_s)
+    headroom = _seconds(headroom_s)
+    floor = _seconds(floor_s)
+    cron_budget = (cron + reserve) if cron > 0.0 else 0.0
+    stop_budget = max(drain, cron_budget)
+    return int(max(floor, stop_budget + headroom))
 
 
 def resolve_restart_exit_wait_budget(

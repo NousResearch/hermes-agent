@@ -72,6 +72,15 @@ def _capture_output(fn: Callable[[], object]) -> str:
                 code = 1
             else:
                 code = int(exc.code or 0)
+        except ConsoleCommandError:
+            raise
+        except RuntimeError as exc:
+            # Fail-closed config write guards raise RuntimeError (e.g.
+            # require_readable_config_before_write refusing an unparseable
+            # config.yaml). Convert to a console error instead of letting it
+            # escape execute() and kill the REPL / websocket session.
+            message = str(exc)
+            code = 1
     text = stdout.getvalue() + stderr.getvalue()
     if code:
         raise ConsoleCommandError(message.strip() or text.strip() or f"Command exited with status {code}")
@@ -1600,16 +1609,26 @@ def _cron_pause(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 
 def _cron_resume(_engine: HermesConsoleEngine, args: list[str]) -> str:
-    if len(args) != 1:
-        raise ConsoleCommandError("Usage: cron resume <job>")
-    from cron.jobs import AmbiguousJobReference, resume_job
+    parser = _ArgumentParser(prog="cron resume", add_help=False)
+    parser.add_argument("job")
+    parser.add_argument("--at")
+    parser.add_argument("--run-now", action="store_true")
+    ns = parser.parse_args(args)
+    if ns.at and ns.run_now:
+        raise ConsoleCommandError("Use exactly one of --at or --run-now.")
+    from cron.jobs import AmbiguousJobReference, _hermes_now, rearm_oneshot, resume_job
 
     try:
-        job = resume_job(args[0])
+        if ns.at or ns.run_now:
+            job = rearm_oneshot(ns.job, _hermes_now().isoformat() if ns.run_now else ns.at)
+        else:
+            job = resume_job(ns.job)
     except AmbiguousJobReference as exc:
         raise ConsoleCommandError(str(exc)) from exc
+    except ValueError as exc:
+        raise ConsoleCommandError(str(exc)) from exc
     if not job:
-        raise ConsoleCommandError(f"Job not found: {args[0]}")
+        raise ConsoleCommandError(f"Job not found: {ns.job}")
     return _format_job(job, "Resumed")
 
 

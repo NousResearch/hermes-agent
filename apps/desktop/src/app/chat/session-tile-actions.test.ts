@@ -6,12 +6,9 @@ import { MAIN_COMPOSER_SCOPE } from './composer/scope'
 
 const requestGatewayMock = vi.hoisted(() => vi.fn())
 
-vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
-  useGatewayRequest: () => ({ requestGateway: requestGatewayMock })
-}))
-
-const { setSessionTileDelegate } = await import('@/store/session-states')
-const { useSessionTileActions } = await import('./session-tile-actions')
+const { $activeSessionId, $sessions, setSessions } = await import('@/store/session')
+const { $sessionTiles, setSessionTileDelegate } = await import('@/store/session-states')
+const { listTileSessionRow, useSessionTileActions } = await import('./session-tile-actions')
 
 const RUNTIME_SESSION_ID = 'rt-tile-current'
 const STORED_SESSION_ID = 'stored-tile-db'
@@ -20,12 +17,43 @@ const RECOVERED_SESSION_ID = 'rt-tile-recovered'
 function renderTileActions() {
   return renderHook(() =>
     useSessionTileActions({
+      requestGateway: requestGatewayMock,
       runtimeId: RUNTIME_SESSION_ID,
       scope: MAIN_COMPOSER_SCOPE,
       storedSessionId: STORED_SESSION_ID
     })
   )
 }
+
+describe('session tile optimistic owner metadata', () => {
+  afterEach(() => {
+    $sessions.set([])
+    $sessionTiles.set([])
+  })
+
+  it('keeps the tile source on its first optimistic sidebar row', () => {
+    const storedSessionId = 'stored-tile-owner-metadata'
+    const ownerRoute = { connectionId: 'source-a', profile: 'default' }
+    $sessionTiles.set([{ ownerRoute, storedSessionId }])
+
+    expect(
+      listTileSessionRow({
+        cwd: '/remote/worktree',
+        model: 'model-a',
+        preview: 'hello from the tile',
+        runtimeId: 'rt-tile-owner-metadata',
+        sessions: [],
+        storedSessionId
+      })
+    ).toBe(true)
+
+    expect($sessions.get()[0]).toMatchObject({
+      connection_id: 'source-a',
+      id: storedSessionId,
+      profile: 'default'
+    })
+  })
+})
 
 // A tile's cancelRun/steerPrompt/reloadFromMessage each build their own
 // requestGateway call directly instead of going through the shared
@@ -35,6 +63,9 @@ function renderTileActions() {
 // primary chat's own reloadFromMessage.
 describe('useSessionTileActions sleep/wake session recovery', () => {
   beforeEach(() => {
+    $activeSessionId.set('foreground-runtime')
+    setSessions([])
+    $sessionTiles.set([{ runtimeId: RUNTIME_SESSION_ID, storedSessionId: STORED_SESSION_ID }])
     setSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
       branchSession: vi.fn(async () => undefined),
@@ -58,6 +89,9 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
   })
 
   afterEach(() => {
+    $activeSessionId.set(null)
+    setSessions([])
+    $sessionTiles.set([])
     requestGatewayMock.mockReset()
     vi.restoreAllMocks()
   })
@@ -95,8 +129,9 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     // First interrupt (stale id) → session.resume (stored id) → retry interrupt (fresh id).
     expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume', 'session.interrupt'])
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
+    expect(calls[1]?.params).toMatchObject({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
+    expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 
   it('resumes the stored session and retries once when session.redirect (steer) reports "session not found"', async () => {
@@ -130,5 +165,44 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['session.redirect', 'session.resume', 'session.redirect'])
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'actually use Postgres' })
+    expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
+  })
+
+  it('rebinds prompt.submit recovery to the tile without changing the foreground session', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let submitAttempts = 0
+
+    requestGatewayMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return {}
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID }
+      }
+
+      return {}
+    })
+
+    const { result } = renderTileActions()
+
+    await act(async () => {
+      await expect(result.current.submitText('continue the bot chat')).resolves.toBe(true)
+    })
+
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[0]?.params).toMatchObject({ session_id: RUNTIME_SESSION_ID })
+    expect(calls[1]?.params).toMatchObject({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
+    expect(calls[2]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
+    expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
+    expect($activeSessionId.get()).toBe('foreground-runtime')
   })
 })

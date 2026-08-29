@@ -2740,35 +2740,74 @@ class GatewaySlashCommandsMixin:
         session_entry = await self.async_session_store.get_or_create_session(source)
         history = await self.async_session_store.load_transcript(session_entry.session_id)
         
-        # Find the last user message
-        last_user_msg = None
+        # Find the last *real* user message. Timeline bookkeeping rows carry
+        # role=user + display_kind (model_switch / async_delegation_complete /
+        # auto_continue / hidden); clients never count them as user turns.
+        # Without this filter /retry rewrote the transcript around a marker
+        # and re-sent opaque bookkeeping text (same class as the TUI ordinal).
         last_user_idx = None
-        # is_user_originated_turn: excludes display_kind bookkeeping AND
-        # compaction handoffs (durable role=user, sometimes without
-        # display_kind on legacy sessions; #80622) — /retry must never
-        # re-send a reference-only summary as if the user asked it.
-        from agent.context_compressor import is_user_originated_turn
+        # The canonical projection excludes bookkeeping and pure handoffs while
+        # still recognizing a real ask embedded in a compaction carrier.
+        from agent.context_compressor import (
+            history_before_user_originated_turn,
+            retryable_user_text,
+            split_user_originated_turn,
+            user_originated_turn_view,
+        )
 
         for i in range(len(history) - 1, -1, -1):
             msg = history[i]
-            if is_user_originated_turn(msg):
-                last_user_msg = msg.get("content", "")
+            if user_originated_turn_view(msg) is not None:
                 last_user_idx = i
                 break
-        
-        if not last_user_msg:
+
+        if last_user_idx is None:
             return t("gateway.retry.no_previous")
-        
-        # Truncate history to before the last user message and persist only the
-        # live view. After in-place compaction the pre-compaction transcript
-        # lives on as active=0/compacted=1 rows under this same session id, and
-        # a bare rewrite (active_only=False) would DELETE them (same class as
-        # #61145). /retry never intends to purge archived history, so avoid a
-        # separate existence probe: it could fail open or race with the write.
-        truncated = history[:last_user_idx]
-        await self.async_session_store.rewrite_transcript(
-            session_entry.session_id, truncated, active_only=True
-        )
+
+        # Resolve the live text and the scaffold-preserving prefix before any
+        # transcript write. Messaging retries cannot reconstruct attachments;
+        # reject media/unknown content without truncating the session.
+        try:
+            truncated, live_view = history_before_user_originated_turn(
+                history, last_user_idx
+            )
+            last_user_msg = retryable_user_text(live_view.get("content"))
+            handoff, _ = split_user_originated_turn(history[last_user_idx])
+        except ValueError as exc:
+            return f"Cannot retry that message safely: {exc}"
+
+        if handoff is not None:
+            # A composite carrier is one physical row containing both the
+            # retained summary and the live ask. Let the carrier-aware rewind
+            # archive that row/tail and insert its pure scaffold atomically.
+            # Plain turns keep the existing rewrite path below; #84078 owns
+            # its separate archive_dropped/prefix-CAS semantics.
+            try:
+                rewind_result = await self.async_session_store.rewind_session(
+                    session_entry.session_id,
+                    1,
+                    require_retryable_composite=True,
+                )
+            except ValueError as exc:
+                return f"Cannot retry that message safely: {exc}"
+            if rewind_result is None:
+                return "Retry failed; transcript was not changed."
+            # The store reselects and validates the latest carrier on the same
+            # snapshot used by the atomic rewind.  A concurrent newer turn can
+            # therefore never be removed while this handler resends stale text.
+            last_user_msg = rewind_result["target_text"]
+        else:
+            # After in-place compaction the pre-compaction transcript lives on
+            # as active=0/compacted=1 rows under this session id. active_only
+            # preserves that archive; a separate existence probe could fail
+            # open or race with the write.
+            if not await self.async_session_store.rewrite_transcript(
+                session_entry.session_id,
+                truncated,
+                active_only=True,
+                reject_active_turn_lease=True,
+            ):
+                return "Retry failed; transcript was not changed."
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
 
@@ -3118,6 +3157,64 @@ class GatewaySlashCommandsMixin:
             f"⚗ Reviewing this conversation in the background{tail} — "
             f"any memory/skill updates will be reported when done."
         )
+
+    async def _handle_review_command(self, event: "MessageEvent") -> str:
+        """Handle /review — spawn an independent reviewer subagent.
+
+        Snapshots the last 10 chat messages from the session's cached agent,
+        wraps them (plus any argument text) in a reviewer briefing, and
+        dispatches a full-privilege background subagent on the async
+        delegation rail. The completed review re-enters this session as a
+        normal async-delegation completion turn.
+
+        The approval session-key contextvar is only bound during agent
+        turns, so it is bound explicitly here — without it the completion
+        event would carry no gateway route and never re-enter this chat.
+        """
+        args = (event.get_command_args() or "").strip()
+        quick_key = self._session_key_for_source(event.source) if event.source else None
+        if not quick_key:
+            return "Review unavailable (no session)."
+        if quick_key in self._running_agents:
+            return "Agent is running — wait for the turn to finish, then /review."
+
+        agent = None
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        if cache_lock is not None:
+            with cache_lock:
+                cached = self._agent_cache.get(quick_key)
+                agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
+        if agent is None:
+            return "Nothing to review yet — send a message first."
+
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+
+        from tools.approval import (
+            reset_current_session_key,
+            set_current_session_key,
+        )
+
+        loop = asyncio.get_running_loop()
+
+        def _dispatch():
+            token = set_current_session_key(quick_key)
+            try:
+                from agent.review_engine import start_review
+
+                return start_review(agent, snapshot, args)
+            finally:
+                reset_current_session_key(token)
+
+        try:
+            result = await loop.run_in_executor(None, _dispatch)
+        except ValueError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"/review failed to start: {exc}"
+
+        from agent.review_engine import format_dispatch_note
+
+        return format_dispatch_note(result, args)
 
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
@@ -3507,6 +3604,22 @@ class GatewaySlashCommandsMixin:
                 more = f" (+{len(skipped) - 5})" if len(skipped) > 5 else ""
                 msg += "\n" + t(
                     "gateway.rollback.kept_user_edits",
+                    files=shown + more,
+                )
+            oversize = result.get("skipped_oversize") or []
+            if oversize:
+                shown = ", ".join(oversize[:5])
+                more = f" (+{len(oversize) - 5})" if len(oversize) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.kept_oversize",
+                    files=shown + more,
+                )
+            failed = result.get("failed_deletes") or []
+            if failed:
+                shown = ", ".join(failed[:5])
+                more = f" (+{len(failed) - 5})" if len(failed) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.failed_deletes",
                     files=shown + more,
                 )
             return msg
@@ -4422,9 +4535,12 @@ class GatewaySlashCommandsMixin:
                 runtime_kwargs["platform"] = platform_key
             runtime_kwargs["gateway_session_key"] = session_key
 
-            # The manual compression helper skips memory-provider initialization,
-            # but _compress_context may persist its cached system prompt. Restore
-            # the exact live-session prompt so provider blocks are retained.
+            # The manual compression helper runs outside the live session's
+            # fully initialized prompt environment (it loads the memory
+            # provider only when compression.checkpoint_required demands it),
+            # and _compress_context may persist its cached system prompt.
+            # Restore the exact live-session prompt so provider blocks are
+            # retained.
             session_row = None
             get_session = getattr(self._session_db, "get_session", None)
             if callable(get_session):
@@ -4440,12 +4556,26 @@ class GatewaySlashCommandsMixin:
                         exc_info=True,
                     )
 
+            # This agent performs a lossy rewrite. When the operator enabled
+            # compression.checkpoint_required, the memory provider must be
+            # loaded so _compress_context() can create the required
+            # pre-compression checkpoint; otherwise keep the historical fast
+            # path (no provider init, no best-effort hook) for this helper.
+            from hermes_cli.config import load_config as _load_cfg
+            from utils import is_truthy_value as _is_truthy
+
+            _checkpoint_required = _is_truthy(
+                ((_load_cfg() or {}).get("compression") or {}).get(
+                    "checkpoint_required"
+                ),
+                default=False,
+            )
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
                 max_iterations=4,
                 quiet_mode=True,
-                skip_memory=True,
+                skip_memory=not _checkpoint_required,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
                 session_db=getattr(self._session_db, "_db", self._session_db),
@@ -4796,9 +4926,16 @@ class GatewaySlashCommandsMixin:
         temp_dir = tempfile.mkdtemp(prefix="hermes_save_")
         temp_path = os.path.join(temp_dir, filename)
         try:
-            content = render_session_for_save(export_data, fmt)
-            with open(temp_path, "w", encoding="utf-8") as f:
-                f.write(content)
+            # Off-loop: rendering a long session and writing it to disk are
+            # CPU/disk-bound and scale with transcript size (multi-MB for
+            # long sessions). Inline they stall every other chat on the
+            # gateway event loop (Pattern A). One thread hop covers both.
+            def _render_and_write() -> None:
+                rendered = render_session_for_save(export_data, fmt)
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    f.write(rendered)
+
+            await asyncio.to_thread(_render_and_write)
 
             adapter = self.get_adapter(source.platform)
             if adapter:
@@ -5897,7 +6034,35 @@ class GatewaySlashCommandsMixin:
 
         logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
         plural = "plural" if count > 1 else "singular"
-        return t(f"gateway.approve.{choice}_{plural}", count=count)
+        confirmation_text = t(f"gateway.approve.{choice}_{plural}", count=count)
+        # Native-streaming adapters (WeCom msgtype:"stream") need the
+        # confirmation sent directly with control-lane metadata so it lands
+        # via a reliable proactive send instead of the (already-finalized)
+        # reply stream. Every other platform keeps the normal contract:
+        # else: return the text and let the gateway deliver it.
+        # (`is not True` — mock adapters auto-create truthy attributes.)
+        if getattr(_adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
+            return confirmation_text
+        if _adapter:
+            try:
+                await _adapter.send(
+                    source.chat_id,
+                    confirmation_text,
+                    reply_to=event.message_id,
+                    metadata={
+                        "is_approval_prompt": True,
+                        "force_proactive_send": True,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to send /approve confirmation to %s: %s",
+                    source.chat_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        return None
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject pending dangerous command(s).
@@ -5955,11 +6120,40 @@ class GatewaySlashCommandsMixin:
         )
         if reason:
             if count > 1:
-                return t("gateway.deny.denied_reason_plural", count=count, reason=reason)
-            return t("gateway.deny.denied_reason_singular", reason=reason)
-        if count > 1:
-            return t("gateway.deny.denied_plural", count=count)
-        return t("gateway.deny.denied_singular")
+                confirmation_text = t("gateway.deny.denied_reason_plural", count=count, reason=reason)
+            else:
+                confirmation_text = t("gateway.deny.denied_reason_singular", reason=reason)
+        elif count > 1:
+            confirmation_text = t("gateway.deny.denied_plural", count=count)
+        else:
+            confirmation_text = t("gateway.deny.denied_singular")
+
+        # Same native-streaming carve-out as /approve above: only WeCom-style
+        # native-stream adapters take the direct control-lane send; everyone
+        # else returns the text for normal gateway delivery.
+        # (`is not True` — mock adapters auto-create truthy attributes.)
+        if getattr(_adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
+            return confirmation_text
+        if _adapter:
+            try:
+                await _adapter.send(
+                    source.chat_id,
+                    confirmation_text,
+                    reply_to=event.message_id,
+                    metadata={
+                        "is_approval_prompt": True,
+                        "force_proactive_send": True,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to send /deny confirmation to %s: %s",
+                    source.chat_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        return None
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload debug report (summary only) and return paste URLs.

@@ -326,6 +326,9 @@ class TestPersistence:
         assert restored is not None
         msg = restored.history[0]
         assert isinstance(msg.pop("timestamp", None), (int, float))
+        # Load-time durability stamp (#92231): rows materialized from the DB
+        # are marked persisted so a later flush can't re-append them.
+        assert msg.pop("_db_persisted", None) is True
         assert restored.history == [{
             "role": "assistant",
             "content": "hello",

@@ -2,9 +2,11 @@
 import asyncio
 import json
 
+import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -274,6 +276,47 @@ class TestBlueBubblesAttachmentDownload:
         assert result == "/tmp/test_image.png"
 
 
+class TestBlueBubblesAttachmentSend:
+    @pytest.mark.asyncio
+    async def test_attachment_payload_is_read_before_async_upload(self, monkeypatch, tmp_path):
+        adapter = _make_adapter(monkeypatch)
+        file_path = tmp_path / "payload.bin"
+        payload = b"attachment-payload"
+        file_path.write_bytes(payload)
+
+        captured = {}
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;+;chat-guid"
+
+        class MockResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": 200, "data": {"guid": "message-guid"}}
+
+        class MockClient:
+            async def post(self, url, *, files, data, timeout):
+                captured.update(url=url, files=files, data=data, timeout=timeout)
+                return MockResponse()
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        adapter.client = MockClient()
+
+        result = await adapter._send_attachment(
+            "target", str(file_path), filename="payload.bin"
+        )
+
+        assert result.success is True
+        assert captured["files"]["attachment"] == (
+            "payload.bin",
+            payload,
+            "application/octet-stream",
+        )
+        assert captured["data"]["chatGuid"] == "iMessage;+;chat-guid"
+
+
 # ---------------------------------------------------------------------------
 # Webhook registration
 # ---------------------------------------------------------------------------
@@ -436,5 +479,91 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
         assert len(deleted_ids) == 2
+
+
+# ---------------------------------------------------------------------------
+# Regression for #78183: httpx timeout exceptions stringify to "" which
+# defeats _is_timeout_error, causing the plain-text fallback to re-send an
+# already-delivered message (duplicate delivery).
+# ---------------------------------------------------------------------------
+
+class TestBlueBubblesTimeoutErrorNormalization:
+    """When an httpx timeout has an empty string representation, the adapter
+    must fall back to the exception type name so the base-layer timeout guard
+    can still recognise it."""
+
+    @pytest.mark.asyncio
+    async def test_send_read_timeout_produces_matchable_error(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        async def fake_api_post(path, payload):
+            raise httpx.ReadTimeout("")
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("chat-1", "hello world")
+
+        assert not result.success
+        assert result.error, "error must not be empty"
+        assert BasePlatformAdapter._is_timeout_error(result.error), (
+            f"_is_timeout_error must recognise {result.error!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_write_timeout_produces_matchable_error(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        async def fake_api_post(path, payload):
+            raise httpx.WriteTimeout("")
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("chat-1", "hello world")
+
+        assert not result.success
+        assert result.error
+        assert BasePlatformAdapter._is_timeout_error(result.error)
+
+    @pytest.mark.asyncio
+    async def test_create_chat_for_handle_timeout_produces_matchable_error(
+        self, monkeypatch,
+    ):
+        """Sibling call path — _create_chat_for_handle has the same
+        error=str(exc) pattern and must also preserve the exception type."""
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(path, payload):
+            raise httpx.ReadTimeout("")
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter._create_chat_for_handle("test@example.com", "hi")
+
+        assert not result.success
+        assert result.error
+        assert BasePlatformAdapter._is_timeout_error(result.error)
+
+    @pytest.mark.asyncio
+    async def test_non_empty_error_string_is_unchanged(self, monkeypatch):
+        """A normal exception with a message must keep its original text."""
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        async def fake_api_post(path, payload):
+            raise RuntimeError("Server error '500 Internal Server Error'")
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("chat-1", "hello world")
+
+        assert not result.success
+        assert "500 Internal Server Error" in (result.error or "")
 
 

@@ -59,7 +59,19 @@ def line_input(prompt_text: str) -> str:
     except ImportError:
         return input(prompt_text)
 
-    return prompt_toolkit_prompt(ANSI(prompt_text))
+    try:
+        return prompt_toolkit_prompt(ANSI(prompt_text))
+    except (KeyboardInterrupt, EOFError):
+        raise
+    except Exception:
+        # Some terminals report isatty() == True yet reject registering stdin
+        # with the asyncio event-loop selector (observed on macOS, where kqueue
+        # raises EINVAL / "Invalid argument" for fd 0). prompt_toolkit cannot
+        # attach its input there, so fall back to the built-in line reader,
+        # which needs no selector and works in cooked mode.  Any prompt_toolkit
+        # runtime failure (OSError, ValueError, RuntimeError) degrades the same
+        # way — the wizard proceeds instead of crashing.
+        return input(prompt_text)
 
 
 def prompt(

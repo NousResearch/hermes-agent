@@ -2217,7 +2217,8 @@ def switch_model(
     # page — and without the re-append, a stripped URL persisted to
     # model.base_url broke every later chat_completions model (glm, deepseek,
     # kimi) the same way.
-    if target_provider in {"opencode-zen", "opencode-go"} and isinstance(base_url, str):
+    from hermes_cli.models import opencode_provider_family as _oc_family_fn
+    if _oc_family_fn(target_provider) is not None and isinstance(base_url, str):
         from hermes_cli.models import normalize_opencode_base_url
         base_url = normalize_opencode_base_url(target_provider, api_mode, base_url)
 
@@ -2695,10 +2696,18 @@ def list_authenticated_providers(
         except Exception:
             pass
 
+    from hermes_cli.config import coerce_provider_id, stringify_provider_map
+
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
-    _current_provider_norm = str(current_provider or "").strip().lower()
-    _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
+    # PyYAML parses unquoted numeric names (`provider: 2070`) as int. Later
+    # `.strip()` / `.lower()` on that raw value 500s GET /api/model/options.
+    current_provider = coerce_provider_id(current_provider)
+    current_base_url = str(current_base_url or "").strip()
+    current_model = str(current_model or "").strip()
+    _current_provider_norm = current_provider.lower()
+    _current_base_url_norm = current_base_url.rstrip("/").lower()
+    user_providers = stringify_provider_map(user_providers)
 
     def _can_probe_custom_provider(*, row_is_current: bool) -> bool:
         return bool(probe_custom_providers or (probe_current_custom_provider and row_is_current))
@@ -3000,7 +3009,11 @@ def list_authenticated_providers(
 
         # Check if credentials exist
         has_creds = False
-        if overlay.auth_type == "aws_sdk":
+        if getattr(overlay, "keyless", False):
+            # Keyless providers (opencode-free) are served anonymously —
+            # there is no credential to check, so everyone is authenticated.
+            has_creds = True
+        elif overlay.auth_type == "aws_sdk":
             has_creds = _has_aws_sdk_creds_for_listing(hermes_slug)
         elif overlay.auth_type == "vertex":
             # Vertex authenticates via OAuth2 (service-account JSON / ADC),
@@ -3274,7 +3287,7 @@ def list_authenticated_providers(
                 continue
             if ep_name.lower() in seen_slugs:
                 continue
-            display_name = ep_cfg.get("name", "") or ep_name
+            display_name = coerce_provider_id(ep_cfg.get("name")) or ep_name
             api_url = (
                 ep_cfg.get("base_url", "")
                 or ep_cfg.get("api", "")
@@ -3622,8 +3635,8 @@ def list_authenticated_providers(
             if not isinstance(entry, dict):
                 continue
 
-            raw_name = (entry.get("name") or "").strip()
-            api_url = (
+            raw_name = coerce_provider_id(entry.get("name"))
+            api_url = str(
                 entry.get("base_url", "")
                 or entry.get("url", "")
                 or entry.get("api", "")
@@ -3631,8 +3644,8 @@ def list_authenticated_providers(
             ).strip().rstrip("/")
             if not raw_name or not api_url:
                 continue
-            inline_api_key = (entry.get("api_key") or "").strip()
-            key_env = (entry.get("key_env") or "").strip()
+            inline_api_key = str(entry.get("api_key") or "").strip()
+            key_env = str(entry.get("key_env") or "").strip()
             api_key = inline_api_key or _scoped_key_env(key_env)
             api_mode = str(
                 entry.get("api_mode")

@@ -630,7 +630,12 @@ def test_run_codex_stream_strips_nested_request_override_retention(
     with caplog.at_level("WARNING", logger="agent.codex_runtime"):
         agent._run_codex_stream(request)
 
-    assert "extra_body" not in captured
+    # The transform bypass (#93650) re-introduces extra_body to carry the bulk
+    # payload fields; the guard's contract is that retention itself never
+    # crosses the wire boundary in either shape.
+    assert "prompt_cache_retention" not in captured
+    assert "prompt_cache_retention" not in captured.get("extra_body", {})
+    assert "input" in captured.get("extra_body", {})
     assert request["extra_body"] == {"prompt_cache_retention": "24h"}
     assert any(
         "Dropped unsupported prompt_cache_retention at consumer Codex wire boundary"
@@ -1676,6 +1681,13 @@ def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(mo
         _codex_tool_call_response(),
         _codex_message_response("Summary after compaction."),
     ]
+    # The usage anchor now TRUSTS provider-reported usage (#97206). The shared
+    # fixture reports a 12-token prompt, which would honestly mean there is no
+    # pressure; give this tool-heavy-turn scenario a realistic anchored history
+    # so the pressure check exercises the same decision it did pre-anchor.
+    responses[0].usage = SimpleNamespace(
+        input_tokens=18_000, output_tokens=4, total_tokens=18_004
+    )
     requests = []
     monkeypatch.setattr(
         agent,
@@ -1745,6 +1757,10 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
         _codex_tool_call_response(),
         _codex_message_response("Summary after compaction."),
     ]
+    # Same anchored-usage realism as the mid-turn compaction test above.
+    responses[0].usage = SimpleNamespace(
+        input_tokens=18_000, output_tokens=4, total_tokens=18_004
+    )
     monkeypatch.setattr(
         agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
     )

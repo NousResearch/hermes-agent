@@ -1622,3 +1622,128 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["source"] == "pool:lmstudio-pool"
     assert resolved["provider"] == "custom"
     assert resolved["requested_provider"] == "custom:lmstudio"
+
+
+def test_resolve_runtime_provider_opencode_free_keyless_despite_exhausted_pool(monkeypatch):
+    """OpenCode Free is keyless: an exhausted credential pool must not raise
+    a missing-credential error. The provider resolves with the keyless
+    placeholder + empty-Authorization headers so the request goes out
+    anonymously."""
+    class _ExhaustedPool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return None
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "opencode-free", "default": "x-preview-f-free"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _ExhaustedPool())
+
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-free", target_model="x-preview-f-free"
+    )
+
+    assert resolved["provider"] == "opencode-free"
+    assert resolved["api_key"] == "opencode-zen-free-keyless"
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["default_headers"]["Authorization"] == ""
+
+
+def test_resolve_runtime_provider_opencode_free_missing_env_still_resolves(monkeypatch):
+    """OpenCode Free resolves keylessly with no env var configured at all —
+    the provider declares no credentials."""
+    class _NoPool:
+        def has_credentials(self):
+            return False
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "opencode-free", "default": "x-preview-f-free"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _NoPool())
+
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-free", target_model="x-preview-f-free"
+    )
+
+    assert resolved["provider"] == "opencode-free"
+    assert resolved["api_key"] == "opencode-zen-free-keyless"
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+
+
+def test_custom_provider_explicit_target_model_wins(monkeypatch):
+    """An explicit target_model must not be silently replaced by the custom
+    provider's configured default model (regression: auxiliary slots such as
+    background-review resolve a concrete model and got default_model instead)."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "myproxy",
+            "base_url": "http://127.0.0.1:10100/v1",
+            "api_key": "no-key-required",
+            "model": "default-model",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="myproxy", target_model="myproxy/gemini-flash")
+
+    assert resolved is not None
+    assert resolved["provider"] == "custom"
+    assert resolved["model"] == "myproxy/gemini-flash"
+    assert resolved["base_url"] == "http://127.0.0.1:10100/v1"
+
+
+def test_custom_provider_without_target_model_keeps_default(monkeypatch):
+    """No target_model -> the provider's configured model is preserved."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "myproxy",
+            "base_url": "http://127.0.0.1:10100/v1",
+            "api_key": "no-key-required",
+            "model": "default-model",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="myproxy")
+
+    assert resolved is not None
+    assert resolved["model"] == "default-model"
+
+
+def test_custom_provider_pool_target_model_wins(monkeypatch):
+    """Pooled-credentials path also honors target_model over the default."""
+    monkeypatch.setattr(
+        rp,
+        "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_key": "pooled-key",
+            "base_url": "http://127.0.0.1:10100/v1",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "myproxy",
+            "base_url": "http://127.0.0.1:10100/v1",
+            "api_key": "no-key-required",
+            "model": "default-model",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="myproxy", target_model="myproxy/gemini-flash")
+
+    assert resolved is not None
+    assert resolved["model"] == "myproxy/gemini-flash"

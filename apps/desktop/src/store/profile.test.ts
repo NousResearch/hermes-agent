@@ -161,6 +161,16 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 })
 
 describe('refreshProfiles shared rail list (#49289)', () => {
+  beforeEach(() => {
+    vi.mocked(getProfiles).mockReset()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
   it('removes a deleted profile from the shared $profiles cache after Manage Profiles refreshes', async () => {
     $profiles.set([profile('default', true), profile('test1')])
     vi.mocked(getProfiles).mockResolvedValueOnce({ profiles: [profile('default', true)] })
@@ -170,12 +180,54 @@ describe('refreshProfiles shared rail list (#49289)', () => {
     expect($profiles.get().map(profile => profile.name)).toEqual(['default'])
   })
 
-  it('leaves the shared $profiles cache intact when the refresh fails', async () => {
+  it('recovers from transient failures and writes the returned profile list (#70679)', async () => {
+    // Global remote mode: the refresh fires while the remote HTTP proxy is still
+    // routing, so the first attempts fail and a later one succeeds. The retry
+    // backoff is 500ms then 1000ms (refreshProfiles retries twice on failure).
+    $profiles.set([])
+    vi.mocked(getProfiles)
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce({ profiles: [profile('default', true), profile('healthops')] })
+
+    const refresh = refreshProfiles()
+    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(refresh).resolves.toHaveLength(2)
+
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(3)
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'healthops'])
+  })
+
+  it('shares one retry chain across concurrent callers (single-flight)', async () => {
+    // Gateway open fires both useBackgroundSync and the activeGatewayProfile
+    // effect at once; both callers must ride the same chain, not double it.
+    $profiles.set([])
+    vi.mocked(getProfiles)
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce({ profiles: [profile('default', true), profile('healthops')] })
+
+    const first = refreshProfiles()
+    const second = refreshProfiles()
+    await vi.advanceTimersByTimeAsync(500)
+    await expect(first).resolves.toHaveLength(2)
+    await expect(second).resolves.toHaveLength(2)
+
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(2)
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'healthops'])
+  })
+
+  it('leaves the shared $profiles cache intact when every retry fails', async () => {
     $profiles.set([profile('default', true), profile('test1')])
-    vi.mocked(getProfiles).mockRejectedValueOnce(new Error('backend unavailable'))
+    vi.mocked(getProfiles).mockRejectedValue(new Error('backend unavailable'))
 
-    await expect(refreshProfiles()).rejects.toThrow('backend unavailable')
+    const refresh = refreshProfiles()
+    const rejection = expect(refresh).rejects.toThrow('backend unavailable')
+    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(1000)
+    await rejection
 
+    expect(vi.mocked(getProfiles)).toHaveBeenCalledTimes(3)
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
   })
 })

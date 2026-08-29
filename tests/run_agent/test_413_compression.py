@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-from agent.context_compressor import SUMMARY_PREFIX
+from agent.context_compressor import SUMMARY_PREFIX, _DB_PERSISTED_MARKER
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
 from run_agent import AIAgent
 import run_agent
@@ -479,7 +479,7 @@ class TestPreflightCompression:
         # summary-first before the next API call).
         assert compressed == [
             {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
-            {"role": "user", "content": "hello"},
+            {"role": "user", "content": "hello", _DB_PERSISTED_MARKER: True},
         ]
         assert new_system_prompt == "You are helpful."
         build_prompt.assert_not_called()
@@ -508,6 +508,25 @@ class TestPreflightCompression:
         assert [event for event, _ in events] == ["lifecycle", "warn", "compacted"]
         assert events[-1] == ("compacted", COMPACTION_DONE_STATUS)
 
+    def test_compress_context_does_not_emit_completion_after_an_abort(self, agent):
+        """An aborted summary must not claim that compaction completed."""
+        agent.compression_enabled = False
+        events = []
+        agent.status_callback = lambda event, message: events.append((event, message))
+        messages = [{"role": "user", "content": "hello"}]
+
+        def _abort_compression(current_messages, **_kwargs):
+            agent.context_compressor._last_compress_aborted = True
+            agent.context_compressor._last_summary_error = "auxiliary model unavailable"
+            return current_messages
+
+        with patch.object(agent.context_compressor, "compress", side_effect=_abort_compression):
+            compressed, prompt = agent._compress_context(messages, "system prompt", force=True)
+
+        assert compressed is messages
+        assert prompt == "You are helpful."
+        assert [event for event, _ in events] == ["lifecycle", "warn"]
+        assert ("compacted", COMPACTION_DONE_STATUS) not in events
 
     def test_compression_reuses_cached_prompt_when_memory_snapshot_is_unchanged(self, agent):
         """A memory reload without new injected text must keep the cache prefix."""
@@ -656,7 +675,7 @@ class TestPreflightCompression:
             mock_compress.return_value = (
                 [
                     {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
-                    {"role": "user", "content": "hello"},
+                    {"role": "user", "content": "hello", _DB_PERSISTED_MARKER: True},
                 ],
                 "new system prompt",
             )

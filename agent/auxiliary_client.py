@@ -161,7 +161,11 @@ def aux_probe_mode():
         _aux_probe_state.active = prev
 
 from agent.credential_pool import load_pool
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.model_metadata import (
+    MINIMUM_CONTEXT_LENGTH,
+    get_model_context_length,
+    strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
+)
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -191,7 +195,7 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
     """Resolve httpx ``verify`` for an auxiliary-client base_url.
 
     Mirrors the main client's TLS resolution so auxiliary calls (compression,
-    vision, web_extract, title generation, etc.) honor per-provider
+    vision, title generation, etc.) honor per-provider
     ``ssl_ca_cert`` / ``ssl_verify`` config and the ``HERMES_CA_BUNDLE`` /
     ``SSL_CERT_FILE`` env conventions. Best-effort: any failure falls back to
     the httpx/certifi default (``True``).
@@ -262,6 +266,22 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         # answer. Skip the openai import + httpx/SSL construction entirely.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
+    # OpenCode Zen free tier: the keyless placeholder must never reach the
+    # wire — the Zen relay serves free models anonymously but 401s any
+    # unrecognized bearer. Override the SDK's Authorization header with an
+    # empty value (single shared chokepoint for every aux client build).
+    try:
+        from hermes_cli.models import (
+            OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
+            opencode_zen_free_headers,
+        )
+        if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
+            merged = dict(kwargs.get("default_headers") or {})
+            merged.update(opencode_zen_free_headers())
+            kwargs["default_headers"] = merged
+    except Exception:
+        pass
+    _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain
     # fallback). The OpenAI SDK's own default (max_retries=2 → up to 3
@@ -423,6 +443,8 @@ class _AuxiliaryCancellationDecision:
 # call topology — the aux call and its stream consumption run synchronously
 # on the thread that installed the hook.
 _aux_progress = threading.local()
+_aux_dispatch = threading.local()
+_aux_provider_response = threading.local()
 
 
 def _notify_aux_progress() -> None:
@@ -436,8 +458,46 @@ def _notify_aux_progress() -> None:
         logger.debug("aux progress hook failed", exc_info=True)
 
 
+def _notify_aux_dispatch() -> None:
+    """Record an actual provider dispatch without claiming response progress."""
+    hook = getattr(_aux_dispatch, "hook", None)
+    if hook is not None:
+        try:
+            hook()
+        except Exception:
+            logger.debug("aux dispatch hook failed", exc_info=True)
+
+
+def _notify_aux_provider_response() -> None:
+    """Record a provider response/chunk, then preserve the liveness signal."""
+    hook = getattr(_aux_provider_response, "hook", None)
+    if hook is not None:
+        try:
+            hook()
+        except Exception:
+            logger.debug("aux provider response hook failed", exc_info=True)
+    _notify_aux_progress()
+
+
 def _aux_progress_active() -> bool:
     return getattr(_aux_progress, "hook", None) is not None
+
+
+@contextlib.contextmanager
+def _aux_thread_local_hook(local: threading.local, hook):
+    """Install one thread-local hook callback and restore its prior value.
+
+    ``hook=None`` (or any non-callable) is a no-op passthrough so callers can
+    wire it unconditionally. Re-entrant-safe: restores the previous hook on
+    exit. Shared by the forward-progress hook and the content-free timing
+    hooks — one save/restore implementation, three thread-local slots.
+    """
+    previous = getattr(local, "hook", None)
+    local.hook = hook if callable(hook) else previous
+    try:
+        yield
+    finally:
+        local.hook = previous
 
 
 @contextlib.contextmanager
@@ -447,12 +507,12 @@ def aux_progress_hook(hook):
     ``hook=None`` is a no-op passthrough so callers can wire it
     unconditionally. Re-entrant-safe: restores the previous hook on exit.
     """
-    prev = getattr(_aux_progress, "hook", None)
-    _aux_progress.hook = hook if callable(hook) else prev
-    try:
+    with _aux_thread_local_hook(_aux_progress, hook):
         yield
-    finally:
-        _aux_progress.hook = prev
+
+
+# Back-compat alias — the timing hooks were introduced with this name.
+_aux_timing_hook = _aux_thread_local_hook
 
 
 def _run_protected_sync_provider_call(
@@ -486,14 +546,24 @@ def _run_protected_sync_provider_call(
         raise AuxiliaryExplicitCancellation()
 
     progress_hook = getattr(_aux_progress, "hook", None)
+    # Timing hooks ride along with the progress hook: _create_with_progress
+    # fires _notify_aux_dispatch/_notify_aux_provider_response from whichever
+    # thread runs the provider callback, so an owner-thread-only install would
+    # silently drop provider_dispatch_ms / time_to_first_progress_ms whenever
+    # the protected daemon path is taken.
+    dispatch_hook = getattr(_aux_dispatch, "hook", None)
+    provider_response_hook = getattr(_aux_provider_response, "hook", None)
     provider_context = contextvars.copy_context()
     done = threading.Event()
     outcome: dict[str, Any] = {}
 
     def _provider_worker() -> None:
         try:
-            with aux_progress_hook(progress_hook), aux_interrupt_protection(
-                cancel_check=cancel_check
+            with (
+                aux_progress_hook(progress_hook),
+                _aux_thread_local_hook(_aux_dispatch, dispatch_hook),
+                _aux_thread_local_hook(_aux_provider_response, provider_response_hook),
+                aux_interrupt_protection(cancel_check=cancel_check),
             ):
                 outcome["result"] = callback(kwargs)
         except BaseException as exc:
@@ -656,12 +726,22 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     via prefix so the override tracks every 272K-capped family (5.4, 5.5,
     5.6 sol/terra/luna incl. their ``-pro`` modes) without re-listing every
     variant. (Name kept for backward compatibility with the
-    ``compression.codex_gpt55_autoraise`` config key.)
+    ``compression.codex_gpt55_autoraise`` config key.) The exact
+    ``gpt-daybreak-blue-latest`` Codex slug is also a verified Sol-family
+    alias and receives the same autoraise.
+
+    ``-900k`` large-context picker variants are explicitly EXCLUDED: the
+    85% autoraise exists to stop wasting a small 272K window, and a 900K
+    window doesn't have that problem — those sessions keep the user's
+    global ``compression.threshold`` (default 50%, ~450K).
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
         return False
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    from agent.model_metadata import is_codex_context_variant
+    if is_codex_context_variant(bare):
+        return False
     return (
         bare == "gpt-5.4"
         or bare.startswith("gpt-5.4-")
@@ -672,6 +752,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         or bare == "gpt-5.6"
         or bare.startswith("gpt-5.6-")
         or bare.startswith("gpt-5.6.")
+        or bare == "gpt-daybreak-blue-latest"
     )
 
 
@@ -726,7 +807,8 @@ def _compression_threshold_for_model(
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth route → 0.85, because
+      - gpt-5.4 / gpt-5.5 / gpt-5.6 and the exact Daybreak Sol alias on the
+        Codex OAuth route → 0.85, because
         Codex caps all three families at 272K and the default 50% trigger
         would compact at ~136K. Gated by ``allow_codex_gpt55_autoraise``
         (historical config-key name kept for backward compatibility) so the
@@ -1191,19 +1273,31 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
-def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
-    """Headers required to avoid Cloudflare 403s on chatgpt.com/backend-api/codex.
+def _is_official_codex_base_url(base_url: str) -> bool:
+    """Identify OpenAI's Codex endpoint without matching custom proxies."""
+    try:
+        parsed = urlparse(base_url)
+        path = parsed.path.rstrip("/")
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "chatgpt.com"
+            and parsed.port in (None, 443)
+            and (path == "/backend-api/codex" or path.startswith("/backend-api/codex/"))
+        )
+    except (TypeError, ValueError):
+        return False
 
-    The Cloudflare layer in front of the Codex endpoint whitelists a small set of
-    first-party originators (``codex_cli_rs``, ``codex_vscode``, ``codex_sdk_ts``,
-    anything starting with ``Codex``). Requests from non-residential IPs (VPS,
-    server-hosted agents) that don't advertise an allowed originator are served
-    a 403 with ``cf-mitigated: challenge`` regardless of auth correctness.
 
-    We pin ``originator: codex_cli_rs`` to match the upstream codex-rs CLI, set
-    ``User-Agent`` to a codex_cli_rs-shaped string (beats SDK fingerprinting),
-    and extract ``ChatGPT-Account-ID`` (canonical casing, from codex-rs
-    ``auth.rs``) out of the OAuth JWT's ``chatgpt_account_id`` claim.
+def _codex_cloudflare_headers(
+    access_token: str, *, base_url: str = _CODEX_AUX_BASE_URL,
+) -> Dict[str, str]:
+    """Identity and account headers for chatgpt.com/backend-api/codex.
+
+    OpenAI requires third-party harnesses to identify themselves. Requests to
+    the official endpoint always send Hermes' originator and version. Custom
+    endpoints retain the existing compatibility identity. In either case,
+    preserve ``ChatGPT-Account-ID`` from the OAuth JWT's
+    ``chatgpt_account_id`` claim.
 
     Malformed tokens are tolerated — we drop the account-ID header rather than
     raise, so a bad token still surfaces as an auth error (401) instead of a
@@ -1213,6 +1307,13 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
         "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
         "originator": "codex_cli_rs",
     }
+    if _is_official_codex_base_url(base_url):
+        from hermes_cli import __version__
+
+        headers.update({
+            "User-Agent": f"HermesAgent/{__version__}",
+            "originator": "hermes-agent",
+        })
     if not isinstance(access_token, str) or not access_token.strip():
         return headers
     try:
@@ -1228,6 +1329,22 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     except Exception:
         pass
     return headers
+
+
+def _apply_required_codex_headers(
+    client_kwargs: Dict[str, Any], *, access_token: str, base_url: str,
+) -> None:
+    """Keep required Codex identity after user/provider header overrides."""
+    if not _is_official_codex_base_url(base_url):
+        return
+    required = _codex_cloudflare_headers(access_token, base_url=base_url)
+    required_names = {name.lower() for name in required}
+    existing = client_kwargs.get("default_headers") or {}
+    client_kwargs["default_headers"] = {
+        **{name: value for name, value in existing.items()
+           if str(name).lower() not in required_names},
+        **required,
+    }
 
 
 # Hosts that expose BOTH an Anthropic-style ``…/anthropic`` path and a sibling
@@ -1512,7 +1629,10 @@ class _CodexCompletionsAdapter:
         )
 
         resp_kwargs: Dict[str, Any] = {
-            "model": model,
+            # Strip the Hermes-side ``-900k`` large-context picker suffix —
+            # the Codex backend only knows the base slug (mirrors the main
+            # transport in agent/transports/codex.py::build_kwargs).
+            "model": _strip_codex_ctx_variant(model),
             "instructions": instructions,
             "input": input_items or [{"role": "user", "content": ""}],
             "store": False,
@@ -1788,10 +1908,16 @@ class _CodexCompletionsAdapter:
             # Consuming raw events and assembling the final response
             # ourselves from ``response.output_item.done`` makes us
             # structurally immune to that drift.
-            from agent.codex_runtime import _consume_codex_event_stream
+            from agent.codex_runtime import (
+                _bypass_sdk_request_transform,
+                _consume_codex_event_stream,
+            )
 
             stream_kwargs = dict(resp_kwargs)
             stream_kwargs["stream"] = True
+            # #93650: keep bulk wire-format payload out of the SDK's
+            # GIL-holding request transform on auxiliary calls too.
+            stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
 
             def _on_each_event(_event: Any) -> None:
                 # Re-check timeout/cancellation per event, matching the
@@ -1799,7 +1925,7 @@ class _CodexCompletionsAdapter:
                 # Each SSE event is also forward progress for hosts watching
                 # a progress hook (gateway session hygiene): a reasoning
                 # model streaming a long summary must not look hung.
-                _notify_aux_progress()
+                _notify_aux_provider_response()
                 _check_cancelled()
 
             event_stream = self._client.responses.create(**stream_kwargs)
@@ -2158,7 +2284,7 @@ class _AnthropicCompletionsAdapter:
             # slow-but-generating summary model. No-op when no hook is
             # installed (None keeps the fast get_final_message path).
             on_stream_event=(
-                (lambda _event: _notify_aux_progress())
+                (lambda _event: _notify_aux_provider_response())
                 if _aux_progress_active() else None
             ),
         )
@@ -2283,7 +2409,7 @@ class _BedrockCompletionsAdapter:
                 "stream); caller downgrades to non-streaming.",
                 model,
             )
-        return call_converse(
+        response = call_converse(
             region=self._region,
             model=model,
             messages=messages,
@@ -2301,6 +2427,11 @@ class _BedrockCompletionsAdapter:
             top_p=kwargs.get("top_p"),
             stop_sequences=stop,
         )
+        # Converse is a complete-response API in this shim. Mark provider
+        # progress only after the response returns so TTFP reflects real
+        # Bedrock latency rather than dispatch/setup activity.
+        _notify_aux_provider_response()
+        return response
 
 
 class _BedrockChatShim:
@@ -2827,8 +2958,15 @@ _paid_lane_warned: set = set()
 
 
 def _is_free_model(model: Optional[str]) -> bool:
-    """True when ``model`` is an OpenRouter free SKU (``:free`` suffix)."""
-    return bool(model) and str(model).strip().endswith(":free")
+    """True when ``model`` is a free SKU (``:free`` suffix or ``stealth/`` prefix).
+
+    Naming-convention trust: a paid model shipped under ``stealth/`` would
+    silently bypass both the free_only gate and the paid-lane warning.
+    """
+    if not model:
+        return False
+    normalized = str(model).strip()
+    return normalized.endswith(":free") or normalized.startswith("stealth/")
 
 
 def _aux_openrouter_settings() -> Tuple[bool, str]:
@@ -2850,7 +2988,8 @@ def _aux_openrouter_settings() -> Tuple[bool, str]:
 
 
 def _warn_paid_lane_once(model: str) -> None:
-    """Log a WARNING the first time a non-:free OpenRouter model is engaged."""
+    """Log a WARNING the first time a non-free (neither ``:free`` nor
+    ``stealth/``) OpenRouter model is engaged."""
     if model in _paid_lane_warned:
         return
     _paid_lane_warned.add(model)
@@ -2875,7 +3014,6 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
             "auxiliary.free_only.",
             or_model,
         )
-        _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
     if not _is_free_model(or_model):
         _warn_paid_lane_once(or_model)
@@ -2901,8 +3039,15 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
                    default_headers=build_or_headers()), or_model
 
 
-def _describe_openrouter_unavailable() -> str:
-    """Return a more precise OpenRouter auth failure reason for logs."""
+def _describe_openrouter_unavailable(model: str = None) -> str:
+    """Return the policy or credential reason OpenRouter was unavailable."""
+    free_only, cfg_model = _aux_openrouter_settings()
+    or_model = model or cfg_model
+    if free_only and not _is_free_model(or_model):
+        return (
+            f"auxiliary.free_only rejected non-free model {or_model!r}; "
+            "the request was skipped before provider availability checks"
+        )
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         if entry is None:
@@ -3772,7 +3917,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     real_client = _create_openai_client(
         api_key=codex_token,
         base_url=base_url,
-        default_headers=_codex_cloudflare_headers(codex_token),
+        default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
     )
     return CodexAuxiliaryClient(real_client, model), model
 
@@ -5026,6 +5171,18 @@ def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[Dict[s
     return entry if isinstance(entry, dict) else None
 
 
+def _coerce_positive_timeout(raw: Any) -> Optional[float]:
+    """Coerce a config ``timeout`` value to a positive float, or None.
+
+    Rejects bools (``True``/``False`` are ``int`` subclasses in Python) and
+    non-positive values. Shared by the aux client's fallback timeout resolver
+    and the compression stall-fallback route resolver (#78981).
+    """
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return float(raw)
+    return None
+
+
 def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[float]:
     """Resolve a per-entry ``timeout`` for a configured fallback candidate.
 
@@ -5044,9 +5201,7 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
     """
     entry = _fallback_chain_entry(task, fb_label)
     raw = entry.get("timeout") if entry else None
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
-        return float(raw)
-    return None
+    return _coerce_positive_timeout(raw)
 
 
 def _fallback_provider_from_label(label: str) -> str:
@@ -5199,6 +5354,19 @@ def _call_fallback_candidate_sync(
         )
         effective_timeout = fb_timeout
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
+    task_config = _get_auxiliary_task_config(task) if task == "compression" else {}
+    fallback_entry = _fallback_chain_entry(task, fb_label) or {}
+    fallback_max_tokens, fallback_extra_body = _compression_fast_lane_controls(
+        task,
+        actual_provider=destination.provider,
+        actual_model=destination.model,
+        requested_provider=fallback_entry.get("provider"),
+        requested_model=fallback_entry.get("model"),
+        route_config=fallback_entry,
+        leak_guard_config=task_config,
+        max_tokens=max_tokens,
+        extra_body=effective_extra_body,
+    )
     fallback_messages, fallback_tools = _replan_synchronous_cache_sections(
         messages,
         tools,
@@ -5206,10 +5374,14 @@ def _call_fallback_candidate_sync(
     )
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
-        temperature=temperature, max_tokens=max_tokens,
+        temperature=temperature, max_tokens=fallback_max_tokens,
         tools=fallback_tools, timeout=effective_timeout,
-        extra_body=effective_extra_body, reasoning_config=reasoning_config,
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config,
         base_url=destination.base_url, task=task)
+    if fallback_max_tokens is not None and max_tokens is None:
+        fb_kwargs.update(
+            auxiliary_max_tokens_param(fallback_max_tokens, model=destination.model)
+        )
     try:
         return _validate_llm_response(
             _relay_sync_completion(
@@ -5217,6 +5389,14 @@ def _call_fallback_candidate_sync(
                 fb_kwargs,
                 provider=destination.provider,
                 api_mode=destination.api_mode,
+                create=lambda request: _create_with_progress(
+                    fb_client,
+                    request,
+                    task,
+                    force_stream=_provider_requires_stream(
+                        destination.provider, destination.base_url
+                    ),
+                ),
             ),
             task,
         )
@@ -5246,15 +5426,32 @@ def _call_fallback_candidate_sync(
                     tools,
                     destination=retry_destination,
                 )
+                retry_max_tokens, retry_extra_body = _compression_fast_lane_controls(
+                    task,
+                    actual_provider=retry_destination.provider,
+                    actual_model=retry_destination.model,
+                    requested_provider=fallback_entry.get("provider"),
+                    requested_model=fallback_entry.get("model"),
+                    route_config=fallback_entry,
+                    leak_guard_config=task_config,
+                    max_tokens=max_tokens,
+                    extra_body=effective_extra_body,
+                )
                 retry_kwargs = _build_call_kwargs(
                     retry_destination.provider,
                     retry_destination.model,
                     retry_messages,
-                    temperature=temperature, max_tokens=max_tokens,
+                    temperature=temperature, max_tokens=retry_max_tokens,
                     tools=retry_tools, timeout=effective_timeout,
-                    extra_body=effective_extra_body,
+                    extra_body=retry_extra_body,
                     reasoning_config=reasoning_config,
                     base_url=retry_destination.base_url, task=task)
+                if retry_max_tokens is not None and max_tokens is None:
+                    retry_kwargs.update(
+                        auxiliary_max_tokens_param(
+                            retry_max_tokens, model=retry_destination.model
+                        )
+                    )
                 try:
                     return _validate_llm_response(
                         _relay_sync_completion(
@@ -5262,6 +5459,15 @@ def _call_fallback_candidate_sync(
                             retry_kwargs,
                             provider=retry_destination.provider,
                             api_mode=retry_destination.api_mode,
+                            create=lambda request: _create_with_progress(
+                                retry_client,
+                                request,
+                                task,
+                                force_stream=_provider_requires_stream(
+                                    retry_destination.provider,
+                                    retry_destination.base_url,
+                                ),
+                            ),
                         ),
                         task,
                     )
@@ -5546,7 +5752,7 @@ def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
     Only ``compression`` carries an explicit minimum today (the same
     ``MINIMUM_CONTEXT_LENGTH`` (64K) floor that
     ``check_compression_model_feasibility`` already enforces at startup).
-    Other tasks (``vision``, ``title_generation``, ``web_extract``,
+    Other tasks (``vision``, ``title_generation``,
     ``skills_hub``, ``mcp``, ``session_search``) return ``None`` — they
     have no per-task context floor and the runtime chain must remain
     permissive for them.
@@ -6169,6 +6375,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
         async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
+    elif _is_official_codex_base_url(sync_base_url):
+        async_kwargs["default_headers"] = _codex_cloudflare_headers(
+            sync_client.api_key, base_url=sync_base_url,
+        )
     elif base_url_host_matches(sync_base_url, "x.ai"):
         from tools.xai_http import hermes_xai_default_headers
 
@@ -6190,6 +6400,9 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
+    _apply_required_codex_headers(
+        async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url,
+    )
     async_kwargs = {
         **_openai_http_client_kwargs(sync_base_url, async_mode=True),
         **async_kwargs,
@@ -6414,11 +6627,14 @@ def resolve_provider_client(
 
     # ── OpenRouter ───────────────────────────────────────────
     if provider == "openrouter":
-        client, default = _try_openrouter(explicit_api_key=explicit_api_key)
+        client, default = _try_openrouter(
+            explicit_api_key=explicit_api_key,
+            model=model,
+        )
         if client is None:
             logger.warning(
                 "resolve_provider_client: openrouter requested but %s",
-                _describe_openrouter_unavailable(),
+                _describe_openrouter_unavailable(model=model),
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
@@ -6797,6 +7013,18 @@ def resolve_provider_client(
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
         if explicit_base_url:
             raw_base_url = explicit_base_url.strip().rstrip("/")
+        # OpenCode Zen free tier (*-free slugs): served anonymously on the
+        # Zen relay only — no credential needed, and any unknown bearer
+        # (including a Go subscription key) is rejected. Route through the
+        # keyless Zen runtime regardless of configured OpenCode credentials.
+        try:
+            from hermes_cli.models import opencode_zen_free_runtime as _oc_free_rt
+            _free_rt = _oc_free_rt(provider, model)
+        except Exception:
+            _free_rt = None
+        if _free_rt is not None:
+            api_key = _free_rt["api_key"]
+            raw_base_url = str(_free_rt["base_url"]).rstrip("/")
         if provider == "actual":
             try:
                 from hermes_cli.auth import (
@@ -6968,8 +7196,12 @@ def resolve_provider_client(
         default_model = "google/gemini-3-flash-preview"
         final_model = _normalize_resolved_model(model or default_model, provider)
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=token, base_url=base_url)
+            # Alias the import: a bare `from openai import OpenAI` here would
+            # make `OpenAI` function-local and shadow the module-level lazy
+            # proxy for every other branch of this function (breaking both the
+            # Bedrock Mantle branch below and patch("agent.auxiliary_client.OpenAI")).
+            from openai import OpenAI as _VertexOpenAI
+            client = _VertexOpenAI(api_key=token, base_url=base_url)
         except Exception as exc:
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)
@@ -6980,17 +7212,23 @@ def resolve_provider_client(
 
     elif pconfig.auth_type == "aws_sdk":
         # AWS SDK providers (Bedrock) — Claude models use the Anthropic Bedrock
-        # SDK (prompt caching, thinking); non-Claude models use Converse API.
+        # SDK (prompt caching, thinking); OpenAI models (GPT-5.5/5.6) use
+        # Bedrock Mantle's OpenAI Responses endpoint; all other models use the
+        # Converse API.
         try:
             from agent.bedrock_adapter import (
                 has_aws_credentials,
                 is_anthropic_bedrock_model,
-                resolve_bedrock_region,
+                resolve_bedrock_runtime_region,
+                is_openai_bedrock_model,
+                bedrock_openai_base_url,
+                resolve_bedrock_bearer_token,
+                configure_bedrock_openai_client_kwargs,
             )
             from agent.anthropic_adapter import build_anthropic_bedrock_client
         except ImportError:
             logger.warning("resolve_provider_client: bedrock requested but "
-                           "boto3 or anthropic SDK not installed")
+                           "boto3, httpx/openai, or anthropic SDK not installed")
             return None, None
 
         if not has_aws_credentials():
@@ -6998,9 +7236,34 @@ def resolve_provider_client(
                          "no AWS credentials found")
             return None, None
 
-        region = resolve_bedrock_region()
+        # Region must match the main runtime's resolution (bedrock.region in
+        # config.yaml first, then env/profile) — see review on #53880/#65076:
+        # a bare resolve_bedrock_region() here let auxiliary calls (compression,
+        # memory, vision) leave the primary runtime's configured region.
+        region = resolve_bedrock_runtime_region()
         default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
-        final_model = _normalize_resolved_model(model or default_model, provider)
+        final_model = _normalize_resolved_model(model or default_model, provider) or default_model
+
+        if is_openai_bedrock_model(final_model):
+            # NOTE: no local `from openai import OpenAI` here — the module-level
+            # lazy proxy (see top of file) must stay visible so tests can
+            # patch("agent.auxiliary_client.OpenAI", ...).
+            bearer = resolve_bedrock_bearer_token()
+            mantle_base_url = bedrock_openai_base_url(region)
+            client_kwargs: Dict[str, Any] = {
+                "api_key": bearer or "aws-sdk",
+                "base_url": mantle_base_url,
+            }
+            configure_bedrock_openai_client_kwargs(client_kwargs)
+            client = OpenAI(**client_kwargs)
+            logger.debug("resolve_provider_client: bedrock-openai (%s, %s)", final_model, region)
+            if raw_codex:
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        else (client, final_model))
+            wrapped = CodexAuxiliaryClient(client, final_model)
+            return (_to_async_client(wrapped, final_model, is_vision=is_vision) if async_mode
+                    else (wrapped, final_model))
+
         base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
 
         if is_anthropic_bedrock_model(final_model):
@@ -7060,11 +7323,11 @@ def get_text_auxiliary_client(
     """Return (client, default_model_slug) for text-only auxiliary tasks.
 
     Args:
-        task: Optional task name ("compression", "web_extract") to check
+        task: Optional task name ("compression", "skills_hub") to check
               for a task-specific provider override.
 
     Callers may override the returned model via config.yaml
-    (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
+    (e.g. auxiliary.compression.model, auxiliary.skills_hub.model).
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
@@ -8218,6 +8481,126 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config
 
 
+class CompressionFastLane(NamedTuple):
+    """Explicit, non-reasoning compression route safe for a bounded summary."""
+
+    certified_non_reasoning: bool
+    max_tokens: Optional[int]
+    reasoning_config: Optional[Dict[str, Any]]
+
+
+def _fast_lane_config_fields(
+    config: Dict[str, Any],
+) -> tuple[str, str, bool, Optional[int]]:
+    """Extract the fast-lane certification fields from one task config.
+
+    Returns ``(provider, model, non_reasoning, cap)``:
+
+    - ``provider``/``model``: normalized (stripped; provider lowercased).
+    - ``non_reasoning``: True only when ``reasoning_effort`` EXPLICITLY
+      disables thinking. Delegates to ``parse_reasoning_effort`` so every
+      spelling users can write in config.yaml (``none``, ``false``,
+      ``disabled``, YAML boolean ``false``) certifies identically —
+      ``_get_task_extra_body`` already uses the same parser to disable
+      reasoning, and the two predicates must not disagree. Empty/unset
+      (provider default) is NOT non-reasoning.
+    - ``cap``: positive int from ``max_output_tokens``, else None.
+      Booleans are config drift, never a cap (``int(True) == 1``).
+    """
+    from hermes_constants import parse_reasoning_effort
+
+    provider = str(config.get("provider") or "").strip().lower()
+    model = str(config.get("model") or "").strip()
+    parsed_effort = parse_reasoning_effort(config.get("reasoning_effort"))
+    non_reasoning = parsed_effort is not None and parsed_effort.get("enabled") is False
+    raw_cap = config.get("max_output_tokens")
+    try:
+        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    return provider, model, non_reasoning, (cap if cap > 0 else None)
+
+
+def resolve_compression_fast_lane(
+    actual_provider: str,
+    actual_model: Optional[str],
+    *,
+    requested_provider: Optional[str] = None,
+    requested_model: Optional[str] = None,
+    route_config: Optional[Dict[str, Any]] = None,
+) -> CompressionFastLane:
+    """Certify the opt-in fast lane against one already-resolved route.
+
+    A cap is safe only when the operator has selected a concrete auxiliary
+    provider/model, explicitly certified it as non-reasoning, and that exact
+    route is the one Hermes will call. A requested model covers a compressor
+    summary-model override. Auto/inherited and drifted routes stay uncapped.
+    """
+    config = (
+        route_config
+        if route_config is not None
+        else _get_auxiliary_task_config("compression")
+    )
+    cfg_provider, cfg_model, non_reasoning, cap = _fast_lane_config_fields(config)
+    provider = str(requested_provider or "").strip().lower() or cfg_provider
+    model = str(requested_model or "").strip() or cfg_model
+    explicit_route = provider not in {"", "auto"} and model.lower() not in {"", "auto"}
+    provider_matches = _normalize_aux_provider(
+        _fallback_provider_from_label(str(actual_provider or ""))
+    ) == _normalize_aux_provider(provider)
+    model_matches = str(actual_model or "").strip().lower() == model.lower()
+    certified = explicit_route and provider_matches and model_matches and non_reasoning
+    if not certified:
+        return CompressionFastLane(False, None, None)
+    return CompressionFastLane(
+        True,
+        cap,
+        {"enabled": False, "effort": "none"},
+    )
+
+
+def _compression_config_claims_fast_lane(config: Dict[str, Any]) -> bool:
+    """Whether task config declares fast-only controls that cannot leak."""
+    provider, model, non_reasoning, cap = _fast_lane_config_fields(config)
+    return (
+        provider not in {"", "auto"}
+        and model.lower() not in {"", "auto"}
+        and non_reasoning
+        and cap is not None
+    )
+
+
+def _compression_fast_lane_controls(
+    task: str | None,
+    *,
+    actual_provider: str,
+    actual_model: str | None,
+    requested_provider: str | None,
+    requested_model: str | None,
+    route_config: Dict[str, Any],
+    leak_guard_config: Dict[str, Any],
+    max_tokens: int | None,
+    extra_body: Dict[str, Any],
+) -> tuple[int | None, Dict[str, Any]]:
+    """Apply the certified compression controls to one resolved route."""
+    if task != "compression" or max_tokens is not None:
+        return max_tokens, extra_body
+    body = dict(extra_body)
+    lane = resolve_compression_fast_lane(
+        actual_provider,
+        actual_model,
+        requested_provider=requested_provider,
+        requested_model=requested_model,
+        route_config=route_config,
+    )
+    if lane.reasoning_config is not None:
+        if "reasoning" not in body:
+            body["reasoning"] = lane.reasoning_config
+    elif _compression_config_claims_fast_lane(leak_guard_config):
+        body.pop("reasoning", None)
+    return lane.max_tokens, body
+
+
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
     if not task:
@@ -9016,9 +9399,13 @@ def _create_with_progress(
     stream-only provider rejects the plain call by definition, so the
     original error is surfaced to the normal recovery chains instead.
     """
-    _notify_aux_progress()  # request dispatched counts as progress
+    _notify_aux_dispatch()
+    _notify_aux_progress()  # Preserve the watchdog's historical dispatch tick.
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
-        return client.chat.completions.create(**kwargs)
+        response = client.chat.completions.create(**kwargs)
+        if not _client_streams_internally(client):
+            _notify_aux_provider_response()
+        return response
 
     total_ceiling = _aux_stream_total_ceiling(kwargs.get("timeout"))
     stream_kwargs = dict(kwargs)
@@ -9047,12 +9434,15 @@ def _create_with_progress(
             "Auxiliary %s: streamed request failed (%s); retrying "
             "non-streaming", task or "call", exc,
         )
-        return client.chat.completions.create(**kwargs)
+        _notify_aux_dispatch()
+        response = client.chat.completions.create(**kwargs)
+        _notify_aux_provider_response()
+        return response
 
     # Some shims (MoA virtual provider under quiet mode, defensive adapters)
     # return a complete response even when stream=True was requested.
     if hasattr(chunks, "choices"):
-        _notify_aux_progress()
+        _notify_aux_provider_response()
         return chunks
     return _aggregate_chat_stream(
         chunks, model=str(kwargs.get("model") or ""), total_ceiling=total_ceiling,
@@ -9108,7 +9498,7 @@ class _ChatStreamAccumulator:
         self.resp_model = model or ""
 
     def feed(self, chunk: Any) -> None:
-        _notify_aux_progress()
+        _notify_aux_provider_response()
         if (
             self._total_ceiling is not None
             and (time.monotonic() - self._started) >= self._total_ceiling
@@ -9260,38 +9650,72 @@ def call_llm(
     stream: bool = False,
     stream_options: dict = None,
     route_info: Optional[Dict[str, str]] = None,
+    latency_info: Optional[Dict[str, int]] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
+    queue_started_at = time.monotonic()
     semaphore = _acquire_sync_aux_semaphore(task)
     if semaphore is not None:
         semaphore.acquire()
-    try:
-        response = _call_llm_impl(
-            task=task,
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            main_runtime=main_runtime,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            tools=tools,
-            timeout=timeout,
-            extra_body=extra_body,
-            reasoning_config=reasoning_config,
-            extra_headers=extra_headers,
-            api_mode=api_mode,
-            stream=stream,
-            stream_options=stream_options,
-            route_info=route_info,
+    request_started_at = time.monotonic()
+    if latency_info is not None:
+        latency_info["queue_wait_ms"] = max(
+            0, int((request_started_at - queue_started_at) * 1000)
         )
+    prior_progress_hook = getattr(_aux_progress, "hook", None)
+
+    def _timed_response() -> None:
+        if latency_info is not None and "time_to_first_progress_ms" not in latency_info:
+            latency_info["time_to_first_progress_ms"] = max(
+                0, int((time.monotonic() - request_started_at) * 1000)
+            )
+
+    def _timed_dispatch() -> None:
+        if latency_info is not None and "provider_dispatch_ms" not in latency_info:
+            latency_info["provider_dispatch_ms"] = max(
+                0, int((time.monotonic() - request_started_at) * 1000)
+            )
+
+    try:
+        with (
+            aux_progress_hook(
+                prior_progress_hook
+                if callable(prior_progress_hook)
+                else ((lambda: None) if latency_info is not None else None)
+            ),
+            _aux_timing_hook(_aux_dispatch, _timed_dispatch),
+            _aux_timing_hook(_aux_provider_response, _timed_response),
+        ):
+            response = _call_llm_impl(
+                task=task,
+                provider=provider,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                main_runtime=main_runtime,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                timeout=timeout,
+                extra_body=extra_body,
+                reasoning_config=reasoning_config,
+                extra_headers=extra_headers,
+                api_mode=api_mode,
+                stream=stream,
+                stream_options=stream_options,
+                route_info=route_info,
+            )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
             semaphore = None
             return _release_sync_semaphore_after_stream(response, stream_semaphore)
         return response
     finally:
+        if latency_info is not None:
+            latency_info["summary_generation_ms"] = max(
+                0, int((time.monotonic() - request_started_at) * 1000)
+            )
         if semaphore is not None:
             semaphore.release()
 
@@ -9338,7 +9762,7 @@ def _call_llm_impl(
     handles auth, request formatting, and model-specific arg adjustments.
 
     Args:
-        task: Auxiliary task name ("compression", "vision", "web_extract",
+        task: Auxiliary task name ("compression", "vision",
               "session_search", "skills_hub", "mcp", "title_generation").
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
@@ -9464,6 +9888,20 @@ def _call_llm_impl(
 
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
+    compression_config = (
+        _get_auxiliary_task_config("compression") if task == "compression" else {}
+    )
+    fast_compression_cap, effective_extra_body = _compression_fast_lane_controls(
+        task,
+        actual_provider=request_provider,
+        actual_model=final_model,
+        requested_provider=provider,
+        requested_model=model,
+        route_config=compression_config,
+        leak_guard_config=compression_config,
+        max_tokens=max_tokens,
+        extra_body=effective_extra_body,
+    )
     _set_relay_auxiliary_route(
         request_provider,
         final_model,
@@ -9489,6 +9927,16 @@ def _call_llm_impl(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url, task=task)
+    if fast_compression_cap is not None and max_tokens is None:
+        # Normal auxiliary calls intentionally omit a cap on most
+        # OpenAI-compatible/local providers.  This is the narrow exception:
+        # the configured compression route is concrete and certified
+        # non-reasoning, so a bounded summary request is intentional.
+        # ``max_tokens is None`` restricts the forced param to caps the
+        # certified lane itself produced — an explicit caller max_tokens is
+        # passed through untouched and keeps _build_call_kwargs's
+        # provider-quirk handling (same guard as the fallback path).
+        kwargs.update(auxiliary_max_tokens_param(fast_compression_cap, model=final_model))
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
 

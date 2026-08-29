@@ -274,7 +274,8 @@ def test_delegate_task_unknown_action_is_an_error():
 
 def test_delegate_task_spawn_action_still_validates_goal():
     out = delegate_task(action="spawn", parent_agent=_StubParent())
-    assert "Provide either 'goal'" in out
+    assert "No tasks provided" in out
+    assert "one-entry" in out  # teaching error carries the canonical shape
 
 
 def test_delegate_task_requires_parent_agent_for_control():
@@ -283,12 +284,11 @@ def test_delegate_task_requires_parent_agent_for_control():
 
 
 def test_empty_tasks_array_with_goal_is_single_task_not_batch_error():
-    """Small models emit tasks=[] alongside goal; that must not trip the
-    'Batch mode requires at least 2 tasks' gate (observed live with
-    gpt-5.4-mini on Nous Portal)."""
+    """Small models emit tasks=[] alongside goal; that must not trip a
+    batch-count gate (observed live with gpt-5.4-mini on Nous Portal) —
+    it falls through to the no-tasks teaching error."""
     out = delegate_task(tasks=[], goal="", parent_agent=_StubParent())
-    # Falls through to the single-goal validation, not the batch gate.
-    assert "Provide either 'goal'" in out
+    assert "No tasks provided" in out
     assert "at least 2 tasks" not in out
 
 
@@ -452,11 +452,21 @@ def test_attribution_unknown_task_id_is_none():
     assert get_subagent_attribution(None) is None
 
 
-def test_completion_notification_carries_delegation_attribution():
+def test_completion_notification_carries_delegation_attribution(monkeypatch):
     """format_process_notification on a child-started process completion must
-    name the subagent + delegation instead of an anonymous output wall."""
-    from tools.process_registry import format_process_notification
+    name the subagent + delegation instead of an anonymous output wall.
 
+    Runs with delegation.surface_child_process_notifications=true (the
+    non-default): this test pins the ATTRIBUTION path, which only renders
+    when child process notifications are surfaced at all.
+    """
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(
+        ProcessRegistry,
+        "_surface_child_process_notifications",
+        staticmethod(lambda: True),
+    )
     parent = _StubParentWithSession("sess-attr-3")
     child = _StubChild(parent)
     _register(
@@ -466,7 +476,8 @@ def test_completion_notification_carries_delegation_attribution():
         goal="run the npm ci for the desktop app",
     )
     try:
-        text = format_process_notification(
+        reg = ProcessRegistry()
+        reg.completion_queue.put(
             {
                 "type": "completion",
                 "session_id": "proc_deadbeef0001",
@@ -476,12 +487,136 @@ def test_completion_notification_carries_delegation_attribution():
                 "output": "added 1500 packages",
             }
         )
+        results = reg.drain_notifications()
+        assert len(results) == 1
+        text = results[0][1]
         assert text is not None
         assert "Started by subagent sa-1-attr0003" in text
         assert "deleg_attr_3" in text
         assert "run the npm ci for the desktop app" in text
     finally:
         _unregister_subagent("sa-1-attr0003")
+
+
+def _child_completion_evt(task_id="sa-9-supp0001", sid="proc_childnoise01"):
+    return {
+        "type": "completion",
+        "session_id": sid,
+        "task_id": task_id,
+        "command": "npm ci",
+        "exit_code": 0,
+        "output": "added 1500 packages",
+    }
+
+
+def test_child_completion_notification_suppressed_by_default(monkeypatch):
+    """With no user config, subagent-owned completion events are DROPPED from
+    the parent drain (not delivered, not requeued)."""
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    reg = ProcessRegistry()
+    reg.completion_queue.put(_child_completion_evt())
+    results = reg.drain_notifications()
+    assert results == []
+    # NOT requeued — children never drain notify events; requeueing would
+    # pin the event in the queue forever.
+    assert reg.completion_queue.qsize() == 0
+
+
+def test_async_delegation_event_from_child_never_suppressed(monkeypatch):
+    """The delegation result itself (type async_delegation) always flows to
+    the parent even while the same child's process notifications are
+    suppressed."""
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    reg = ProcessRegistry()
+    reg.completion_queue.put(_child_completion_evt(task_id="sa-9-supp0002"))
+    reg.completion_queue.put(
+        {
+            "type": "async_delegation",
+            "delegation_id": "deleg_supp_2",
+            "task_id": "sa-9-supp0002",
+            "goal": "port the widget",
+            "status": "completed",
+            "summary": "Widget ported successfully.",
+        }
+    )
+    results = reg.drain_notifications()
+    assert len(results) == 1
+    evt, text = results[0]
+    assert evt["type"] == "async_delegation"
+    assert "ASYNC DELEGATION COMPLETE" in text
+    assert reg.completion_queue.qsize() == 0
+
+
+def test_parent_owned_completion_unaffected_by_suppression(monkeypatch):
+    """Processes the parent itself started (non sa- task_id) still notify."""
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    reg = ProcessRegistry()
+    reg.completion_queue.put(
+        {
+            "type": "completion",
+            "session_id": "proc_parent01",
+            "task_id": "20260817_154314_30d98f",
+            "command": "make build",
+            "exit_code": 0,
+            "output": "ok",
+        }
+    )
+    results = reg.drain_notifications()
+    assert len(results) == 1
+    assert "Background process proc_parent01" in results[0][1]
+
+
+def test_surface_flag_true_restores_child_notification_delivery(monkeypatch):
+    """delegation.surface_child_process_notifications=true restores the legacy
+    behavior: child completion delivered with attribution."""
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(
+        _cfg,
+        "read_raw_config",
+        lambda *a, **k: {
+            "delegation": {"surface_child_process_notifications": True}
+        },
+    )
+    reg = ProcessRegistry()
+    reg.completion_queue.put(_child_completion_evt(task_id="sa-9-supp0003"))
+    results = reg.drain_notifications()
+    assert len(results) == 1
+    text = results[0][1]
+    assert "Background process proc_childnoise01" in text
+    assert "Started by subagent sa-9-supp0003" in text
+
+
+def test_child_watch_match_suppressed_by_default(monkeypatch):
+    """watch_match events from sa- sessions follow the same suppression."""
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    reg = ProcessRegistry()
+    reg.completion_queue.put(
+        {
+            "type": "watch_match",
+            "session_id": "proc_childwatch01",
+            "task_id": "sa-9-supp0004",
+            "command": "vitest --watch",
+            "pattern": "FAIL",
+            "output": "FAIL src/x.test.ts",
+            "suppressed": 0,
+        }
+    )
+    assert reg.drain_notifications() == []
+    assert reg.completion_queue.qsize() == 0
 
 
 def test_completion_notification_trims_subagent_output_wall():

@@ -2826,17 +2826,23 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Check / prompt for API key
-    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
+    # OpenCode Free is keyless — the tier is served anonymously and any
+    # unrecognized bearer 401s, so there is no key to prompt for.
+    if provider_id == "opencode-free":
+        print("  OpenCode Free is keyless — no API key or account needed.")
+        existing_key = ""
+    else:
+        # Check / prompt for API key
+        existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
-    existing_key, abort = _prompt_api_key(
-        pconfig,
-        existing_key,
-        provider_id=provider_id,
-        existing_source=existing_source,
-    )
-    if abort:
-        return
+        existing_key, abort = _prompt_api_key(
+            pconfig,
+            existing_key,
+            provider_id=provider_id,
+            existing_source=existing_source,
+        )
+        if abort:
+            return
 
     # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)
     # are exhausted in a handful of agent turns, so refuse to wire up the
@@ -3005,6 +3011,16 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     print(
                         f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
                     )
+    elif provider_id == "opencode-free":
+        # Keyless free tier: the curated list is synced against anonymous
+        # live probes (models.dev's cost.input==0 filter lags reality —
+        # e.g. deepseek-v4-flash-free stayed "free" there after its promo
+        # ended and the relay started 401ing it keyless).
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print(
+                f'  Showing {len(model_list)} keyless free models — use "Enter custom model name" for others.'
+            )
     else:
         curated = _PROVIDER_MODELS.get(provider_id, [])
 
@@ -3053,7 +3069,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     )
             # else: no defaults either, will fall through to raw input
 
-    if provider_id in {"opencode-zen", "opencode-go"}:
+    if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
         model_list = [
             normalize_opencode_model_id(provider_id, mid) for mid in model_list
         ]
@@ -3088,7 +3104,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             selected = None
 
     if selected:
-        if provider_id in {"opencode-zen", "opencode-go"}:
+        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
             selected = normalize_opencode_model_id(provider_id, selected)
 
         _save_model_choice(selected)
@@ -3102,7 +3118,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         clear_model_endpoint_credentials(model, clear_api_mode=False)
-        if provider_id in {"opencode-zen", "opencode-go"}:
+        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
             model.pop("api_mode", None)

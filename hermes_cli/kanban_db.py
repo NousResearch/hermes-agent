@@ -387,6 +387,18 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # breaker must never trip on a throttle). 75 == BSD EX_TEMPFAIL.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
 
+# _signal_handler_q (cli.py) intentionally calls os._exit() rather than
+# letting SIGINT/SIGTERM/SIGHUP kill the process via the default disposition
+# (issue #28181 — a controlled unwind can leave a worker thread parked in
+# _wait_for_process, orphaning its subprocess). os._exit(N) always reports
+# WIFEXITED, never WIFSIGNALED, so _classify_worker_exit cannot tell "worker
+# caught a termination signal and exited fast on purpose" apart from
+# "worker's own turn quietly finished" unless the two use different exit
+# codes. Historically both exited 0, so a worker that was killed via signal
+# recorded as the misleading `clean_exit` -> protocol_violation. Standard
+# 128+SIGTERM, and well clear of 0/1/2/KANBAN_RATE_LIMIT_EXIT_CODE.
+KANBAN_SIGNAL_EXIT_CODE = 143
+
 
 def _resolve_crash_grace_seconds() -> int:
     """``HERMES_KANBAN_CRASH_GRACE_SECONDS`` (0 = immediate, for tests) else default."""

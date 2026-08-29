@@ -43,6 +43,14 @@ def _init_git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
 
 
+def _make_python_environment(environment: Path) -> None:
+    """Create the minimum executable shape accepted by worktree bootstrap."""
+    python = environment / "bin" / "python"
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------
@@ -584,6 +592,7 @@ def test_worktree_bootstrap_links_ignored_project_environment_when_missing(
     _init_git_repo(repo)
     environment = repo / environment_name / "bin"
     environment.mkdir(parents=True)
+    _make_python_environment(environment.parent)
     (environment / "marker.txt").write_text("project environment\n", encoding="utf-8")
     (repo / ".gitignore").write_text(f"{environment_name}\n", encoding="utf-8")
     target = repo / ".worktrees" / f"task-{environment_name.strip('.')}"
@@ -617,6 +626,7 @@ def test_worktree_bootstrap_accepts_project_local_environment_symlink(
     _init_git_repo(repo)
     environment_target = repo / "shared-environment" / "bin"
     environment_target.mkdir(parents=True)
+    _make_python_environment(environment_target.parent)
     (environment_target / "marker.txt").write_text(
         "shared environment\n", encoding="utf-8"
     )
@@ -653,6 +663,7 @@ def test_worktree_bootstrap_refuses_environment_symlink_outside_project(
     _init_git_repo(repo)
     outside_environment = tmp_path / "other-project" / ".venv"
     (outside_environment / "bin").mkdir(parents=True)
+    _make_python_environment(outside_environment)
     (outside_environment / "bin" / "marker.txt").write_text(
         "outside\n", encoding="utf-8"
     )
@@ -687,7 +698,7 @@ def test_worktree_bootstrap_accepts_canonical_same_repository_environment(
     repo = tmp_path / "repo"
     _init_git_repo(repo)
     environment = repo / environment_name
-    (environment / "bin").mkdir(parents=True)
+    _make_python_environment(environment)
     (environment / "bin" / "marker.txt").write_text("shared runtime\n")
     anchor = tmp_path / "board-anchor"
     subprocess.run(

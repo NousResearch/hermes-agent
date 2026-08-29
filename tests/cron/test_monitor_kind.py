@@ -135,6 +135,75 @@ def test_create_job_stores_monitor_script(hermes_env):
     assert reloaded.get("monitor_state") is None
 
 
+def test_create_job_persists_after_delivery_commit_policy(hermes_env):
+    from cron.jobs import create_job, get_job
+
+    job = create_job(
+        prompt="React",
+        schedule="every 5m",
+        monitor_script="mon.sh",
+        monitor_commit_policy="after_delivery",
+    )
+
+    assert job["monitor_commit_policy"] == "after_delivery"
+    assert get_job(job["id"])["monitor_commit_policy"] == "after_delivery"
+
+
+def test_update_job_sets_and_clears_monitor_commit_policy(hermes_env):
+    from cron.jobs import create_job, get_job, update_job
+
+    job = create_job(
+        prompt="React",
+        schedule="every 5m",
+        monitor_script="mon.sh",
+    )
+
+    updated = update_job(
+        job["id"], {"monitor_commit_policy": "after_delivery"}
+    )
+    assert updated["monitor_commit_policy"] == "after_delivery"
+    assert get_job(job["id"])["monitor_commit_policy"] == "after_delivery"
+
+    cleared = update_job(job["id"], {"monitor_commit_policy": ""})
+    assert cleared.get("monitor_commit_policy") is None
+
+
+def test_monitor_commit_policy_rejects_invalid_or_non_monitor_jobs(hermes_env):
+    from cron.jobs import create_job, update_job
+
+    with pytest.raises(ValueError, match="monitor_commit_policy must be one of"):
+        create_job(
+            prompt="React",
+            schedule="every 5m",
+            monitor_script="mon.sh",
+            monitor_commit_policy="eventually",
+        )
+
+    with pytest.raises(ValueError, match="requires monitor_script or monitor_url"):
+        create_job(
+            prompt="React",
+            schedule="every 5m",
+            monitor_commit_policy="after_delivery",
+        )
+
+    job = create_job(prompt="React", schedule="every 5m")
+    with pytest.raises(ValueError, match="requires monitor_script or monitor_url"):
+        update_job(job["id"], {"monitor_commit_policy": "after_delivery"})
+
+
+def test_update_job_rejects_clearing_monitor_with_after_delivery_policy(hermes_env):
+    from cron.jobs import create_job, update_job
+
+    job = create_job(
+        prompt="React",
+        schedule="every 5m",
+        monitor_script="mon.sh",
+        monitor_commit_policy="after_delivery",
+    )
+    with pytest.raises(ValueError, match="requires monitor_script or monitor_url"):
+        update_job(job["id"], {"monitor_script": ""})
+
+
 def test_create_job_monitor_script_and_url_mutually_exclusive(hermes_env):
     from cron.jobs import create_job
 
@@ -1046,6 +1115,44 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
 # ---------------------------------------------------------------------------
 # cronjob tool: API-layer wiring
 # ---------------------------------------------------------------------------
+
+
+def test_cronjob_tool_create_and_update_monitor_commit_policy(hermes_env):
+    from cron.jobs import get_job
+    from tools.cronjob_tools import CRONJOB_SCHEMA, _cronjob_handler
+
+    policy_schema = CRONJOB_SCHEMA["parameters"]["properties"][
+        "monitor_commit_policy"
+    ]
+    assert policy_schema["enum"] == ["detection_time", "after_delivery"]
+
+    _write_script(hermes_env, "mon.sh", "echo hi\n")
+    created = json.loads(
+        _cronjob_handler(
+            {
+                "action": "create",
+                "prompt": "React",
+                "schedule": "every 5m",
+                "monitor": "mon.sh",
+                "monitor_commit_policy": "after_delivery",
+                "deliver": "local",
+            }
+        )
+    )
+    assert created["success"] is True
+    assert get_job(created["job_id"])["monitor_commit_policy"] == "after_delivery"
+
+    updated = json.loads(
+        _cronjob_handler(
+            {
+                "action": "update",
+                "job_id": created["job_id"],
+                "monitor_commit_policy": "detection_time",
+            }
+        )
+    )
+    assert updated["success"] is True
+    assert get_job(created["job_id"])["monitor_commit_policy"] == "detection_time"
 
 
 def test_cronjob_tool_create_with_monitor_script(hermes_env):

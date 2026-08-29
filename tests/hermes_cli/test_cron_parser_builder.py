@@ -41,6 +41,34 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
 
 
+def test_cron_monitor_commit_policy_create_and_edit_options():
+    parser = _build()
+    created = parser.parse_args(
+        [
+            "cron",
+            "create",
+            "every 5m",
+            "React",
+            "--monitor-url",
+            "https://example.com/status",
+            "--monitor-commit-policy",
+            "after_delivery",
+        ]
+    )
+    assert created.monitor_commit_policy == "after_delivery"
+
+    edited = parser.parse_args(
+        [
+            "cron",
+            "edit",
+            "job-id",
+            "--monitor-commit-policy",
+            "detection_time",
+        ]
+    )
+    assert edited.monitor_commit_policy == "detection_time"
+
+
 def test_cron_accept_hooks_flag_on_run_and_tick():
     parser = _build()
     # --accept-hooks is suppressed-default; present only when passed.

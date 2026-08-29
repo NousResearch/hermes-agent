@@ -123,16 +123,20 @@ def test_nebius_model_catalog_prefers_live_profile_fetch(monkeypatch):
     monkeypatch.setattr(
         profile,
         "fetch_models",
-        lambda *, api_key=None, timeout=8.0: [
+        lambda *, api_key=None, base_url=None, timeout=8.0: [
             "deepseek-ai/DeepSeek-V4-Pro",
             "NousResearch/Hermes-4-70B",
+            "some-brand-new/Live-Only-Model",
         ],
     )
 
-    assert provider_model_ids("nebius-token-factory") == [
-        "deepseek-ai/DeepSeek-V4-Pro",
-        "NousResearch/Hermes-4-70B",
-    ]
+    # Current merge policy (658ac1d86 / #46309): curated-first for single
+    # providers — the profile's fallback_models lead the picker, live-only
+    # entries are appended after, and live duplicates of curated entries
+    # are deduped rather than repeated.
+    result = provider_model_ids("nebius-token-factory")
+    assert result[: len(profile.fallback_models)] == list(profile.fallback_models)
+    assert result[len(profile.fallback_models) :] == ["some-brand-new/Live-Only-Model"]
 
 
 def test_nebius_model_catalog_falls_back_to_profile_models(monkeypatch):
@@ -149,7 +153,7 @@ def test_nebius_model_catalog_falls_back_to_profile_models(monkeypatch):
             "source": "NEBIUS_API_KEY",
         },
     )
-    monkeypatch.setattr(profile, "fetch_models", lambda *, api_key=None, timeout=8.0: None)
+    monkeypatch.setattr(profile, "fetch_models", lambda *, api_key=None, base_url=None, timeout=8.0: None)
 
     assert provider_model_ids("nebius") == list(profile.fallback_models)
 

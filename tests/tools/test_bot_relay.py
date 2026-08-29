@@ -84,6 +84,9 @@ def test_resolve_remote_target_forms(root):
     assert bot_relay.resolve_remote_target("default", roster)["connection_id"] == "cloud-1"
     # exact connection-qualified form
     assert bot_relay.resolve_remote_target("hermes@cloud-1", roster)["profile"] == "default"
+    # profile@connection — the form Desktop's mention middleware annotates
+    # for remote bots (#97678); the UI alias form must not be required
+    assert bot_relay.resolve_remote_target("default@cloud-1", roster)["profile"] == "default"
     assert bot_relay.resolve_remote_target("hermes@nope", roster) is None
     assert bot_relay.resolve_remote_target("ghost", roster) is None
 

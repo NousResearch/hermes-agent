@@ -1095,6 +1095,15 @@ class WeComAdapter(BasePlatformAdapter):
                 _pending_stream.get("finish", "N/A"),
                 time.monotonic() - (pending_frame.sent_at or time.monotonic()),
             )
+            # Cancel the intermediate timeout watchdog BEFORE awaiting the
+            # fence.  The watchdog calls frame.future.cancel(), which would
+            # propagate CancelledError through asyncio.shield() and unwind
+            # the final path before finish=true is ever sent.  Disarming
+            # first ensures only the 15s _REPLY_ACK_TIMEOUT governs the
+            # fence wait.
+            if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
+                queue.ack_timeout_task.cancel()
+                queue.ack_timeout_task = None
             try:
                 await asyncio.wait_for(
                     asyncio.shield(pending_frame.future),
@@ -1110,17 +1119,16 @@ class WeComAdapter(BasePlatformAdapter):
                     _pending_stream.get("finish", "N/A"),
                     time.monotonic() - (pending_frame.sent_at or time.monotonic()),
                 )
-            except Exception:
+            except BaseException:
+                # Catch CancelledError (BaseException in Python 3.9+) and
+                # any other exception so the final path always proceeds to
+                # send finish=true.
                 pass
             fence_elapsed = time.monotonic() - fence_start
             logger.info(
                 "[ACK-SERIAL] req_id=%s fence_wait elapsed=%.3fs",
                 normalized, fence_elapsed,
             )
-            # Cancel the intermediate timeout watchdog — we're taking over
-            if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
-                queue.ack_timeout_task.cancel()
-                queue.ack_timeout_task = None
             # Clear pending regardless — either resolved or timed out
             queue.pending_ack = None
             # Also clear any coalesced content — final frame supersedes

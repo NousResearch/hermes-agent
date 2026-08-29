@@ -170,6 +170,7 @@ class _RefAccounting:
     model: str | None = None
     provider: str | None = None
     temperature: Any = None
+    rerouted: bool = False
 
 
 # Per-tool-result char budget for the advisory view: tool CALLS are kept in full,
@@ -384,16 +385,38 @@ def _run_reference(
         slot_max_tokens = slot.get("max_tokens")
         # Copilot gates premium models on request attribution; MoA fan-out serves the
         # user's current turn, so mirror the main agent's x-initiator header.
-        from agent.auxiliary_client import _normalize_aux_provider
+        from agent.auxiliary_client import _normalize_aux_provider, _normalize_resolved_model
         is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
+        route_info: dict[str, str] = {}
         response = call_llm(
             task="moa_reference", messages=trimmed, temperature=temperature,
             max_tokens=slot_max_tokens if slot_max_tokens is not None else max_tokens,
             timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
-            extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+            extra_headers={"x-initiator": "user"} if is_copilot else None,
+            route_info=route_info, **runtime,
         )
+        requested_provider = str(runtime.get("provider") or slot.get("provider") or "")
+        requested_model = str(runtime.get("model") or slot.get("model") or "")
+        actual_provider = route_info.get("provider") or requested_provider
+        actual_model = route_info.get("model") or requested_model
+        normalized_requested_provider = _normalize_aux_provider(requested_provider)
+        expected_model = _normalize_resolved_model(requested_model, actual_provider)
+        rerouted = normalized_requested_provider != "auto" and (
+            _normalize_aux_provider(actual_provider) != normalized_requested_provider
+            or actual_model != expected_model
+        )
+        if rerouted:
+            label = f"{label} -> {_slot_label({**slot, 'provider': actual_provider, 'model': actual_model})}"
+        actual_slot = {**slot, "model": actual_model}
+        actual_runtime = {**runtime, "provider": actual_provider}
+        if rerouted:
+            actual_runtime.update(api_mode=None, base_url=None, api_key=None)
         output_text = _extract_text(response) or "(empty response)"
-        acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
+        acct = _RefAccounting(
+            *_price_reference_response(response, actual_slot, actual_runtime),
+            messages=trimmed, output=output_text, model=actual_model,
+            provider=actual_provider, temperature=temperature, rerouted=rerouted,
+        )
         return label, output_text, acct
     except Exception as exc:
         logger.warning("MoA reference model %s failed: %s", label, exc)
@@ -753,10 +776,17 @@ def _sum_reference_accounting(outputs: list[tuple[str, str, Any]]) -> tuple[Any,
     return usage, cost
 
 
-def _degraded_notice(failed_labels: list[str], policy: str) -> str:
-    if not failed_labels or policy.strip().lower() == "silent":
+def _degraded_notice(
+    failed_labels: list[str], policy: str, *, rerouted_labels: list[str] | None = None,
+) -> str:
+    if policy.strip().lower() == "silent":
         return ""
-    return f"[Reference models unavailable: {', '.join(failed_labels)}]"
+    notices = []
+    if failed_labels:
+        notices.append(f"Reference models unavailable: {', '.join(failed_labels)}")
+    if rerouted_labels:
+        notices.append(f"Reference models rerouted: {', '.join(rerouted_labels)}")
+    return f"[{'; '.join(notices)}]" if notices else ""
 
 
 def _slot_labels(slots: list[dict[str, Any]]) -> str:
@@ -773,8 +803,16 @@ def _guidance_inputs(
     """
     successful = [o for o in reference_outputs if not _is_failed_reference(o[1])]
     failed_labels = [label for label, text, _acct in reference_outputs if _is_failed_reference(text)]
+    rerouted_labels = [
+        label for label, _text, acct in reference_outputs
+        if isinstance(acct, _RefAccounting) and acct.rerouted
+    ]
     agg_refs = _redact_reference_outputs(successful) if privacy_full else successful
-    return agg_refs, _degraded_notice(failed_labels, policy), bool(reference_outputs) and not successful
+    return (
+        agg_refs,
+        _degraded_notice(failed_labels, policy, rerouted_labels=rerouted_labels),
+        bool(reference_outputs) and not successful,
+    )
 
 
 def aggregate_moa_context(
@@ -850,7 +888,7 @@ def aggregate_moa_context(
         "normal Hermes agent loop. You may call tools, continue reasoning, or "
         "finish normally.]\n"
         f"Aggregator: {agg_label}\n"
-        f"References: {_slot_labels(reference_models)}\n\n"
+        f"References: {', '.join(label for label, _, _ in reference_outputs)}\n\n"
         f"{(synthesis or joined).strip()}"
     )
 

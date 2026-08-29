@@ -156,10 +156,11 @@ describe('openSession', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 
-  it('tab opens a stacked session tile when not on screen', () => {
+  it('tab opens a stacked session tile when not on screen without reusing an unrelated blank draft', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'tab')
     expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(reuseBlankDraftTile).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
   })
 

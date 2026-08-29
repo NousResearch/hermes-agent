@@ -8,27 +8,27 @@ describe('$sidebarSessionsOpenInNewTab', () => {
     vi.resetModules()
   })
 
-  it('defaults to false and canonicalizes an absent value to storage', async () => {
+  it('defaults to tab-first without overwriting absent storage', async () => {
+    const { $sidebarSessionsOpenInNewTab } = await import('./sidebar-open-preference')
+
+    expect($sidebarSessionsOpenInNewTab.get()).toBe(true)
+    expect(window.localStorage.getItem(KEY)).toBeNull()
+  })
+
+  it('preserves an explicitly persisted replace-main preference', async () => {
+    window.localStorage.setItem(KEY, 'false')
+
     const { $sidebarSessionsOpenInNewTab } = await import('./sidebar-open-preference')
 
     expect($sidebarSessionsOpenInNewTab.get()).toBe(false)
     expect(window.localStorage.getItem(KEY)).toBe('false')
   })
 
-  it('falls back to false and canonicalizes malformed storage', async () => {
-    window.localStorage.setItem(KEY, 'not-a-bool')
-
+  it('persists false when the user chooses replace-main', async () => {
     const { $sidebarSessionsOpenInNewTab } = await import('./sidebar-open-preference')
 
-    expect($sidebarSessionsOpenInNewTab.get()).toBe(false)
+    $sidebarSessionsOpenInNewTab.set(false)
+
     expect(window.localStorage.getItem(KEY)).toBe('false')
-  })
-
-  it('persists true when the user enables it', async () => {
-    const { $sidebarSessionsOpenInNewTab } = await import('./sidebar-open-preference')
-
-    $sidebarSessionsOpenInNewTab.set(true)
-
-    expect(window.localStorage.getItem(KEY)).toBe('true')
   })
 })

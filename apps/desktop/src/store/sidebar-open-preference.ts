@@ -4,6 +4,6 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
 // this preference is intentionally desktop-global (not profile namespaced).
 export const $sidebarSessionsOpenInNewTab = persistentAtom(
   'hermes.desktop.sidebarSessionsOpenInNewTab',
-  false,
+  true,
   Codecs.bool
 )

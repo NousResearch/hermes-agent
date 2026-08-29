@@ -48,8 +48,8 @@ vi.mock('@/i18n', () => ({
           deleteFailed: 'Delete failed',
           updateDirFailed: 'Could not update default directory',
           clearDirFailed: 'Could not clear default directory',
-          sidebarOpenInNewTabTitle: 'Open sidebar chats in new tabs',
-          sidebarOpenInNewTabDesc: 'Ordinary sidebar clicks open/focus chats in tabs. Cmd/Ctrl-click still opens in a tab.'
+          sidebarOpenInNewTabTitle: 'Open or focus a tab',
+          sidebarOpenInNewTabDesc: 'Ordinary sidebar session clicks open or focus a tab. Turn off to open in the main tab.'
         }
       }
     }
@@ -59,7 +59,7 @@ vi.mock('@/i18n', () => ({
 describe('SessionsSettings sidebar tab preference', () => {
   beforeEach(() => {
     window.localStorage.clear()
-    $sidebarSessionsOpenInNewTab.set(false)
+    $sidebarSessionsOpenInNewTab.set(true)
     listAllProfileSessions.mockResolvedValue({ sessions: [] })
   })
 
@@ -68,7 +68,7 @@ describe('SessionsSettings sidebar tab preference', () => {
     vi.clearAllMocks()
   })
 
-  it('shows a false-by-default toggle and updates the atom when toggled', async () => {
+  it('shows the tab-first default and lets the user switch to opening in main', async () => {
     const { SessionsSettings } = await import('./sessions-settings')
     render(
       <MemoryRouter>
@@ -78,11 +78,11 @@ describe('SessionsSettings sidebar tab preference', () => {
 
     await waitFor(() => expect(listAllProfileSessions).toHaveBeenCalledWith(200, 0, 'only'))
 
-    const toggle = await screen.findByRole('switch', { name: 'Open sidebar chats in new tabs' })
-    expect(toggle.getAttribute('data-state')).toBe('unchecked')
+    const toggle = await screen.findByRole('switch', { name: 'Open or focus a tab' })
+    expect(toggle.getAttribute('data-state')).toBe('checked')
 
     fireEvent.click(toggle)
 
-    expect($sidebarSessionsOpenInNewTab.get()).toBe(true)
+    expect($sidebarSessionsOpenInNewTab.get()).toBe(false)
   })
 })

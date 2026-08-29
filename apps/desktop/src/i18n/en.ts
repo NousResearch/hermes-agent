@@ -1528,9 +1528,9 @@ export const en: Translations = {
       autoArchiveDaysLabel: 'Archive after',
       autoArchiveDaysUnit: 'days of inactivity',
       autoArchiveFailed: 'Could not update auto-archive',
-      sidebarOpenInNewTabTitle: 'Open sidebar chats in new tabs',
+      sidebarOpenInNewTabTitle: 'Open or focus a tab',
       sidebarOpenInNewTabDesc:
-        'Ordinary sidebar clicks open or focus chats in tabs. Cmd/Ctrl-click still opens in a tab when this is off.',
+        'Ordinary sidebar session clicks open or focus a tab. Turn off to open in the main tab. Cmd/Ctrl-click always uses a tab.',
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',

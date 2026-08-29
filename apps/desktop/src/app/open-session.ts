@@ -178,6 +178,7 @@ export function openSession(
   // (`tab`/`stack` opens keep the front-only jump: those intents asked for a
   // tab beside, not a takeover of main.)
   const focused = focusOpenSession(storedSessionId, workspaceScope)
+
   if (focused === 'tile' || focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }

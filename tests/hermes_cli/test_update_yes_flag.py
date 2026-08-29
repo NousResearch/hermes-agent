@@ -12,7 +12,42 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update_fleet(monkeypatch):
+    """Prevent prompt tests from touching or polling the live VPS fleet."""
+    monkeypatch.setattr(
+        "hermes_cli.main._purge_stale_hermes_modules",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_gateway_pids",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.supports_systemd_services",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_profile_gateway_processes",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.main._finish_dashboard_update_cleanup",
+        lambda *_args, **_kwargs: None,
+    )
 
 
 def _make_run_side_effect(

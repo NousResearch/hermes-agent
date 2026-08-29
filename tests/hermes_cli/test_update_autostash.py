@@ -95,6 +95,22 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
     monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
+    # A real update evicts cached Hermes modules after changing the checkout.
+    # In this unit test that would also evict the mocks below and reconnect the
+    # test to live host state, so keep the test's mocked module graph stable.
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    # Unit tests must not inherit the host's live runtime fleet.  The updater's
+    # fail-closed post-update check treats any discovered pre-update runtime as
+    # an expected restart target, which otherwise makes these tests poll the
+    # real VPS for 30 seconds and fail outside their stated autostash scope.
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **_kwargs: [],
+    )
 
 
 

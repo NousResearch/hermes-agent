@@ -814,6 +814,67 @@ def test_protected_codex_omits_rejected_terminal_command_replay(
     assert "c2VjcmV0LXBheWxvYWQ=" not in authorized["input"][0]["arguments"]
 
 
+def test_protected_codex_projects_bound_github_issue_view_metadata(
+    tmp_path, monkeypatch
+):
+    """A bounded issue view never replays a body containing credential-shaped text."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_issue_view_1234"
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "terminal",
+                "call_id": call_id,
+                "arguments": json.dumps(
+                    {
+                        "command": (
+                            "gh issue view 123 --repo NousResearch/hermes-agent "
+                            "--json number,title,url,labels,body"
+                        )
+                    }
+                ),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps(
+                    {
+                        "exit_code": 0,
+                        "output": json.dumps(
+                            {
+                                "id": "c2VjcmV0LXBheWxvYWQ=",
+                                "number": 123,
+                                "title": "Desktop resume reliability",
+                                "url": "https://github.com/NousResearch/hermes-agent/issues/123",
+                                "body": "token=live-secret-value",
+                            }
+                        ),
+                    }
+                ),
+            },
+        ],
+    }
+
+    authorized, _ = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    projected = json.loads(json.loads(authorized["input"][1]["output"])["output"])
+    assert projected["items"] == [
+        {
+            "number": 123,
+            "title": "Desktop resume reliability",
+            "url": "https://github.com/NousResearch/hermes-agent/issues/123",
+        }
+    ]
+    assert "live-secret-value" not in authorized["input"][1]["output"]
+
+
 def test_runtime_does_not_manufacture_boundaries_for_oversized_sanitized_text(
     tmp_path,
 ):

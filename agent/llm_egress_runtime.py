@@ -487,11 +487,11 @@ def _recognized_syntax_tool_call_ids(value: Any) -> frozenset[str]:
 def _github_list_terminal_call_limits(value: Any) -> dict[str, int]:
     """Bind a small GitHub list projection to an exact preceding terminal call.
 
-    GitHub list JSON contains opaque database identifiers that are neither
-    useful to a Kanban worker nor safe to replay remotely.  This deliberately
-    recognizes only the bounded, literal ``gh issue|pr list --json --limit``
-    form used by the White-Knight intake; every other terminal result follows
-    the normal fail-closed path.
+    GitHub list and issue-view JSON contain opaque database identifiers that
+    are neither useful to a Kanban worker nor safe to replay remotely. This
+    deliberately recognizes only bounded, literal ``gh issue|pr list`` or
+    ``gh issue view`` JSON forms used by the White-Knight intake; every other
+    terminal result follows the normal fail-closed path.
     """
 
     limits: dict[str, int] = {}
@@ -503,9 +503,14 @@ def _github_list_terminal_call_limits(value: Any) -> dict[str, int]:
             tokens = shlex.split(command) if isinstance(command, str) else []
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
-        if len(tokens) < 5 or tokens[:3] not in (["gh", "issue", "list"], ["gh", "pr", "list"]):
-            return None
         if "--json" not in tokens:
+            return None
+        if tokens[:3] == ["gh", "issue", "view"]:
+            return 1
+        if len(tokens) < 5 or tokens[:3] not in (
+            ["gh", "issue", "list"],
+            ["gh", "pr", "list"],
+        ):
             return None
         for index, token in enumerate(tokens):
             raw_limit = (
@@ -568,10 +573,17 @@ def _project_github_list_terminal_result(text: str, *, max_rows: int) -> str | N
     try:
         wrapper = json.loads(text)
         raw_rows = wrapper.get("output") if isinstance(wrapper, Mapping) else None
-        rows = json.loads(raw_rows) if isinstance(raw_rows, str) else None
+        decoded = json.loads(raw_rows) if isinstance(raw_rows, str) else None
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
-    if not isinstance(rows, list):
+    rows = (
+        decoded
+        if isinstance(decoded, list)
+        else [decoded]
+        if isinstance(decoded, Mapping)
+        else None
+    )
+    if rows is None:
         return None
 
     items: list[dict[str, Any]] = []

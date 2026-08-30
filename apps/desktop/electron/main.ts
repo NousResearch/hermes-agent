@@ -20,6 +20,7 @@ import {
   ipcMain,
   Menu,
   type MenuItemConstructorOptions,
+  nativeImage,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,

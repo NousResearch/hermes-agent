@@ -11478,6 +11478,7 @@ def test_commands_catalog_includes_desktop_meta_without_skills():
     )
 
     commands = resp["result"]["commands"]
+    assert commands["/skills"]["desktop"] is None
     assert commands["/compact"]["argument_mode"] == commands["/compress"]["argument_mode"]
 
     for skill in resp["result"]["skills"]:

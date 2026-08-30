@@ -27,6 +27,7 @@ import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_fleet as update_cmd_fleet
 import hermes_cli.update_cmd_deps as update_cmd_deps
+from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
 
 
@@ -270,7 +271,7 @@ def test_successful_command_boundary_receipt_without_fleet_does_not_retrigger(
             {
                 "exit_code": 0,
                 "outcome": "success",
-                "stop_reason": "completed at command boundary",
+                "stop_reason": COMMAND_BOUNDARY_STOP_REASON,
                 "plan": {
                     "expected_sha": old_sha,
                     "runtimes": [

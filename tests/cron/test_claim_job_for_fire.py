@@ -39,7 +39,7 @@ def test_claim_oneshot_cannot_be_double_claimed(temp_home):
     """A one-shot can't be double-claimed (the fresh claim blocks the retry)."""
     from cron.jobs import create_job, claim_job_for_fire
 
-    job = create_job(prompt="x", schedule="30m", name="o")
+    job = create_job(prompt="x", schedule="in 30m", name="o")
     assert claim_job_for_fire(job["id"]) is True
     assert claim_job_for_fire(job["id"]) is False
 

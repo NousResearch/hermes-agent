@@ -39,7 +39,7 @@ def cron_store(tmp_path, monkeypatch):
 
 
 def _make_oneshot(claimed: bool = True) -> dict:
-    job = jobs_mod.create_job(prompt="remind me", schedule="30m")
+    job = jobs_mod.create_job(prompt="remind me", schedule="in 30m")
     if claimed:
         jobs = jobs_mod.load_jobs()
         for j in jobs:

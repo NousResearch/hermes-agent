@@ -677,6 +677,20 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("terminal(command=...)", result["error"])
         self.assertNotIn("NoneType", result["error"])
 
+    def test_terminal_command_class_argument_names_schema_error(self):
+        """Do not execute an unrecognized command list; explain the schema."""
+        from tools.terminal_tool import _handle_terminal
+
+        result = json.loads(
+            _handle_terminal({"command_class": ["pytest"]}, task_id="test")
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("'command_class' parameter", result["error"])
+        self.assertIn("terminal(command=\"...\")", result["error"])
+        self.assertIn("string", result["error"])
+        self.assertNotIn("NoneType", result["error"])
+
     def test_empty_code_explains_required_parameter(self):
         for code in ("", None):
             with self.subTest(code=code):

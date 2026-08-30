@@ -334,10 +334,120 @@ def test_launcher_resolves_the_selected_runtime_dynamically(tmp_path: Path) -> N
 
     launcher = runtime.paths.launcher_path.read_text(encoding="utf-8")
 
-    assert str(runtime.paths.current_link) in launcher
+    assert str(runtime.paths.agent_home) in launcher
+    assert 'runtime_root="$ARES_HOME/runtime/current"' in launcher
+    assert 'if [[ -z "${ARES_HOME:-}" ]]' in launcher
+    assert 'if [[ -z "${ARES_GATEWAY_UNIT_PATH:-}" ]]' in launcher
     assert "cd \"$runtime_root\"" in launcher
     assert "-m ares_runtime.local_runtime" in launcher
     assert "Coding" not in launcher
+
+
+def test_default_paths_honors_an_explicit_gateway_unit_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ARES_HOME", str(tmp_path / "ares-home"))
+    monkeypatch.setenv("ARES_BIN_DIR", str(tmp_path / "bin"))
+    unit_path = tmp_path / "isolated" / "isolated-gateway.service"
+    monkeypatch.setenv("ARES_GATEWAY_UNIT_PATH", str(unit_path))
+
+    from ares_runtime.local_runtime import _default_paths
+
+    assert _default_paths().unit_path == unit_path
+
+
+def test_custom_gateway_unit_path_never_probes_the_live_default_unit(tmp_path: Path, monkeypatch) -> None:
+    runtime = AresLocalRuntime(
+        AresLocalPaths(
+            state_root=tmp_path / "state",
+            data_root=tmp_path / "data",
+            agent_home=tmp_path / "ares-home",
+            launcher_path=tmp_path / "bin" / "ares",
+            unit_path=tmp_path / "unit" / "isolated-gateway.service",
+        )
+    )
+    calls: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr("ares_runtime.local_runtime.shutil.which", lambda _name: "/usr/bin/systemctl")
+    monkeypatch.setattr(
+        "ares_runtime.local_runtime.subprocess.run",
+        lambda command, **_kwargs: calls.append(tuple(command)) or SimpleNamespace(returncode=1, stdout="", stderr=""),
+    )
+
+    runtime._systemctl("is-active", "--quiet", "ares-gateway.service", required=False)
+
+    assert calls == [("systemctl", "--user", "is-active", "--quiet", "isolated-gateway.service")]
+
+
+def test_custom_gateway_unit_path_rejects_the_live_default_basename(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ARES_HOME", str(tmp_path / "ares-home"))
+    monkeypatch.setenv("ARES_GATEWAY_UNIT_PATH", str(tmp_path / "isolated" / "ares-gateway.service"))
+
+    from ares_runtime.local_runtime import _default_paths
+
+    with pytest.raises(AresLocalRuntimeError, match="distinct systemd unit name"):
+        _default_paths()
+
+
+def test_generated_launcher_is_shell_safe_for_unusual_paths(tmp_path: Path) -> None:
+    runtime = AresLocalRuntime(
+        AresLocalPaths(
+            state_root=tmp_path / "state",
+            data_root=tmp_path / "data",
+            agent_home=tmp_path / "home with \"quotes\" $() `ticks` (x)",
+            launcher_path=tmp_path / "bin with spaces" / "ares",
+            unit_path=tmp_path / "unit with spaces" / "isolated-gateway.service",
+        )
+    )
+    runtime._install_launcher()
+
+    result = subprocess.run(["bash", "-n", str(runtime.paths.launcher_path)], check=False)
+
+    assert result.returncode == 0
+
+
+def test_isolated_setup_does_not_probe_legacy_live_gateway(tmp_path: Path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path)
+    revision = "c" * 40
+    _release(runtime, revision)
+    source = tmp_path / "candidate"
+    source.mkdir()
+    isolated_unit = tmp_path / "unit" / "isolated-gateway.service"
+    runtime = AresLocalRuntime(
+        AresLocalPaths(
+            state_root=runtime.paths.state_root,
+            data_root=runtime.paths.data_root,
+            agent_home=runtime.paths.agent_home,
+            launcher_path=runtime.paths.launcher_path,
+            unit_path=isolated_unit,
+        )
+    )
+    calls: list[tuple[str, ...]] = []
+    handoff: list[bool] = []
+
+    def git_output(_source: Path, *args: str) -> str:
+        if args == ("rev-parse", "--is-inside-work-tree"):
+            return "true"
+        if args == ("rev-parse", "HEAD"):
+            return revision
+        if args == ("remote", "get-url", "origin"):
+            return str(source)
+        if args == ("symbolic-ref", "--quiet", "--short", "HEAD"):
+            return "main"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(runtime, "_git_output", git_output)
+    monkeypatch.setattr(runtime, "_materialize", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_seed_agent_home", lambda *_args: False)
+    monkeypatch.setattr(runtime, "_provision_context_governor_key", lambda *_args: None)
+    monkeypatch.setattr(runtime, "_write_config", lambda **_kwargs: None)
+    monkeypatch.setattr(runtime, "_install_launcher", lambda: None)
+    monkeypatch.setattr(runtime, "_install_gateway_unit", lambda: None)
+    monkeypatch.setattr(runtime, "_handoff_gateway", lambda *, legacy_active: handoff.append(legacy_active))
+    monkeypatch.setattr(runtime, "_systemctl", lambda *args, **_kwargs: calls.append(args) or False)
+
+    runtime.setup(source, desktop=False, gateway=True, seed_from=tmp_path / "seed")
+
+    assert handoff == [False]
+    assert all("hermes-gateway.service" not in call for call in calls)
 
 
 def test_setup_handoff_failure_restores_pointer_and_launcher(tmp_path: Path, monkeypatch) -> None:

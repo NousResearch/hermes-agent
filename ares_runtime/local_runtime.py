@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -112,12 +113,19 @@ def _default_paths() -> AresLocalPaths:
     launcher_dir = Path(
         os.environ.get("ARES_BIN_DIR", str(home / ".local" / "bin"))
     ).expanduser()
+    default_unit_path = home / ".config" / "systemd" / "user" / "ares-gateway.service"
+    unit_override = os.environ.get("ARES_GATEWAY_UNIT_PATH")
+    unit_path = Path(unit_override or default_unit_path).expanduser()
+    if unit_override and unit_path != default_unit_path and unit_path.name == "ares-gateway.service":
+        raise AresLocalRuntimeError(
+            "custom ARES_GATEWAY_UNIT_PATH must use a distinct systemd unit name"
+        )
     return AresLocalPaths(
         state_root=agent_home / "runtime-state",
         data_root=agent_home / "runtime",
         agent_home=agent_home,
         launcher_path=launcher_dir / "ares",
-        unit_path=home / ".config" / "systemd" / "user" / "ares-gateway.service",
+        unit_path=unit_path,
     )
 
 
@@ -752,9 +760,10 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
         content = (
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            f"export ARES_HOME={str(self.paths.agent_home)!r}\n"
-            f"export ARES_BIN_DIR={str(self.paths.launcher_path.parent)!r}\n"
-            f"runtime_root={str(self.paths.current_link)!r}\n"
+            f"if [[ -z \"${{ARES_HOME:-}}\" ]]; then export ARES_HOME={shlex.quote(str(self.paths.agent_home))}; fi\n"
+            f"if [[ -z \"${{ARES_BIN_DIR:-}}\" ]]; then export ARES_BIN_DIR={shlex.quote(str(self.paths.launcher_path.parent))}; fi\n"
+            f"if [[ -z \"${{ARES_GATEWAY_UNIT_PATH:-}}\" ]]; then export ARES_GATEWAY_UNIT_PATH={shlex.quote(str(self.paths.unit_path))}; fi\n"
+            'runtime_root="$ARES_HOME/runtime/current"\n'
             "python=\"$runtime_root/.venv/bin/python\"\n"
             "if [[ ! -x \"$python\" ]]; then\n"
             "  printf '%s\\n' 'Ares runtime is not installed; run ares setup from the Ares checkout.' >&2\n"
@@ -807,6 +816,13 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
         return environment
 
     def _systemctl(self, *args: str, required: bool = True) -> bool:
+        # A test/isolated installation may use a different unit path. Never
+        # let its status probe or lifecycle operation address the live default
+        # unit merely because the controller was launched from another home.
+        args = tuple(
+            self.paths.unit_path.name if arg == "ares-gateway.service" else arg
+            for arg in args
+        )
         if shutil.which("systemctl") is None:
             if required:
                 raise AresLocalRuntimeError("systemd user services are unavailable on this host")
@@ -870,7 +886,12 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
         with self.locked():
             old_active = self._release_from_link(self.paths.current_link, "current")
             old_previous = self._release_from_link(self.paths.previous_link, "previous")
-            legacy_active = self._systemctl("is-active", "--quiet", "hermes-gateway.service", required=False)
+            legacy_active = False
+            default_unit_path = Path.home() / ".config" / "systemd" / "user" / "ares-gateway.service"
+            if self.paths.unit_path == default_unit_path:
+                legacy_active = self._systemctl(
+                    "is-active", "--quiet", "hermes-gateway.service", required=False
+                )
             self._materialize(str(source), revision, desktop=desktop)
             seeded = self._seed_agent_home(seed_from)
             self._provision_context_governor_key(self._release_source(revision))

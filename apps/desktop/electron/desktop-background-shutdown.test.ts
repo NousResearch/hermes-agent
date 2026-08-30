@@ -6,8 +6,8 @@ import { stopDesktopBackgroundServices } from './desktop-background-shutdown'
 
 describe('Desktop background-service shutdown', () => {
   it('runs the resolved Hermes gateway stop --all command and waits for exit', async () => {
-    const child = new EventEmitter() as EventEmitter & { kill: ReturnType<typeof vi.fn> }
-    child.kill = vi.fn(() => true)
+    const kill = vi.fn<(signal?: NodeJS.Signals | number) => boolean>(() => true)
+    const child = Object.assign(new EventEmitter(), { kill })
     const spawnFn = vi.fn(() => child)
     const resolveBackend = vi.fn(args => ({
       command: '/runtime/bin/hermes',
@@ -36,13 +36,13 @@ describe('Desktop background-service shutdown', () => {
         stdio: 'ignore'
       })
     )
-    expect(child.kill).not.toHaveBeenCalled()
+    expect(kill).not.toHaveBeenCalled()
   })
 
   it('bounds a hung stop command and reports failure', async () => {
     vi.useFakeTimers()
-    const child = new EventEmitter() as EventEmitter & { kill: ReturnType<typeof vi.fn> }
-    child.kill = vi.fn(() => true)
+    const kill = vi.fn<(signal?: NodeJS.Signals | number) => boolean>(() => true)
+    const child = Object.assign(new EventEmitter(), { kill })
 
     const stopped = stopDesktopBackgroundServices({
       resolveBackend: args => ({ command: 'hermes', args }),
@@ -53,7 +53,7 @@ describe('Desktop background-service shutdown', () => {
     await vi.advanceTimersByTimeAsync(25)
 
     await expect(stopped).resolves.toBe(false)
-    expect(child.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(kill).toHaveBeenCalledWith('SIGTERM')
     vi.useRealTimers()
   })
 })

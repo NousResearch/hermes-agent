@@ -579,9 +579,12 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
         # uv never reads pip.conf, so a mirrored-pip user would see every
         # lazy install stall against the default pypi.org for the full
         # timeout (#95608). Bridge pip's index-url unless uv is configured
-        # explicitly — same policy as the update path (#17761).
+        # explicitly — same policy as the update path (#17761). PIP_INDEX_URL
+        # follows pip's own precedence (env var beats pip.conf).
         if not uv_env.get("UV_INDEX_URL"):
-            pip_index_url = _pip_conf_index_url(uv_env)
+            pip_index_url = (uv_env.get("PIP_INDEX_URL") or "").strip() or (
+                _pip_conf_index_url(uv_env)
+            )
             if pip_index_url:
                 uv_env["UV_INDEX_URL"] = pip_index_url
         # Tier 1: uv. --compile-bytecode because uv writes no __pycache__ by default, so the first

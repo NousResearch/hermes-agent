@@ -633,6 +633,7 @@ class TestPipConfIndexBridge:
             encoding="utf-8",
         )
         monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
         monkeypatch.delenv("UV_INDEX_URL", raising=False)
         captured = self._record_uv_env(monkeypatch)
         result = ld._venv_pip_install(("somepkg==1.0",))
@@ -651,8 +652,38 @@ class TestPipConfIndexBridge:
         ld._venv_pip_install(("somepkg==1.0",))
         assert captured["env"]["UV_INDEX_URL"] == "https://custom.example/simple"
 
+    def test_pip_index_url_env_bridged_without_conf(self, monkeypatch, tmp_path):
+        # A large share of mirror users configure via PIP_INDEX_URL instead
+        # of a config file — the bridge must cover that spelling too.
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(tmp_path / "missing.conf"))
+        monkeypatch.setenv("PIP_INDEX_URL", "https://env-mirror.example/simple")
+        monkeypatch.delenv("UV_INDEX_URL", raising=False)
+        captured = self._record_uv_env(monkeypatch)
+        result = ld._venv_pip_install(("somepkg==1.0",))
+        assert result.success
+        assert (
+            captured["env"]["UV_INDEX_URL"] == "https://env-mirror.example/simple"
+        )
+
+    def test_pip_index_url_env_beats_pip_conf(self, monkeypatch, tmp_path):
+        # pip's own precedence: the env var wins over pip.conf.
+        conf = tmp_path / "pip.conf"
+        conf.write_text(
+            "[global]\nindex-url = https://mirror.example/simple\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        monkeypatch.setenv("PIP_INDEX_URL", "https://env-mirror.example/simple")
+        monkeypatch.delenv("UV_INDEX_URL", raising=False)
+        captured = self._record_uv_env(monkeypatch)
+        ld._venv_pip_install(("somepkg==1.0",))
+        assert (
+            captured["env"]["UV_INDEX_URL"] == "https://env-mirror.example/simple"
+        )
+
     def test_no_pip_conf_leaves_uv_env_unchanged(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PIP_CONFIG_FILE", str(tmp_path / "missing.conf"))
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
         monkeypatch.delenv("UV_INDEX_URL", raising=False)
         captured = self._record_uv_env(monkeypatch)
         ld._venv_pip_install(("somepkg==1.0",))
@@ -660,6 +691,7 @@ class TestPipConfIndexBridge:
 
     def test_uv_timeout_error_carries_actionable_hint(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PIP_CONFIG_FILE", str(tmp_path / "missing.conf"))
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
         monkeypatch.delenv("UV_INDEX_URL", raising=False)
 
         def fake_run(cmd, *args, **kwargs):

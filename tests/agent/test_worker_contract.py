@@ -1,11 +1,15 @@
 import pytest
+from datetime import datetime, timezone
 
 from agent.worker_contract import (
     ContractValidationError,
     CapabilityRecord,
     ConsensusRecord,
+    EmergencyAuthority,
     EvidencePacket,
+    JobContract,
     ObjectiveStack,
+    WorkerConstitution,
     WorkerMode,
     validate_contract_mapping,
 )
@@ -118,9 +122,130 @@ def test_consensus_record_preserves_dissent_and_requires_worker_identity():
 
     assert record.validate() is record
     assert record.to_dict()["dissent"] == ["worker b found a missing receipt"]
+    assert record.to_dict()["quorum"] == 1
 
     with pytest.raises(ContractValidationError, match="worker"):
         ConsensusRecord(
             worker_reports=({"conclusion": "pass"},),
             status="accepted",
         ).validate()
+
+
+def test_capability_lifecycle_requires_review_before_active_promotion():
+    proposed = CapabilityRecord(
+        name="safe_repo_scan",
+        owner_profile="security-worker",
+        authority="read_only",
+        status="proposed",
+    )
+
+    tested = proposed.advance_to(
+        "tested", tested_at="2026-08-30T12:00:00Z", source_sha="abc123"
+    )
+    reviewed = tested.advance_to("reviewed")
+    active = reviewed.advance_to("active")
+
+    assert active.status == "active"
+    with pytest.raises(ContractValidationError, match="reviewed"):
+        proposed.advance_to(
+            "active", tested_at="2026-08-30T12:00:00Z", source_sha="abc123"
+        )
+    with pytest.raises(ContractValidationError, match="forward"):
+        active.advance_to("proposed")
+
+
+def test_worker_constitution_requires_values_authority_and_escalation_path():
+    constitution = WorkerConstitution(
+        profile="evidence-researcher",
+        values=("truth before fluency", "operator-visible uncertainty"),
+        authority="read_only",
+        forbidden_actions=("publish without approval",),
+        required_evidence=("targeted",),
+        escalation_path="operator-review",
+    )
+
+    assert constitution.to_dict()["required_evidence"] == ["targeted"]
+
+    with pytest.raises(ContractValidationError, match="values"):
+        WorkerConstitution(
+            profile="worker",
+            values=(),
+            authority="read_only",
+            escalation_path="operator-review",
+        ).validate()
+
+
+def test_job_contract_is_scoped_and_time_bounded():
+    contract = JobContract(
+        name="review-one-repository",
+        worker_profile="code-reviewer",
+        job="review",
+        scope=("repo:/workspace/project",),
+        authority="read_only",
+        obligations=("cite findings", "preserve dissent"),
+        granted_at="2026-08-30T12:00:00Z",
+        expires_at="2026-08-30T13:00:00Z",
+        requires_review=True,
+    )
+
+    assert contract.to_dict()["requires_review"] is True
+    assert contract.is_active(datetime(2026, 8, 30, 12, 30, tzinfo=timezone.utc))
+    assert not contract.is_active(datetime(2026, 8, 30, 13, 0, tzinfo=timezone.utc))
+
+    with pytest.raises(ContractValidationError, match="expires_at"):
+        JobContract(
+            name="unbounded",
+            worker_profile="worker",
+            job="inspect",
+            scope=("repo:/workspace/project",),
+            authority="read_only",
+            granted_at="2026-08-30T12:00:00Z",
+            expires_at="2026-08-30T12:00:00Z",
+        ).validate()
+
+
+def test_emergency_authority_expires_and_cannot_be_nonrevocable():
+    authority = EmergencyAuthority(
+        name="incident-coordinator",
+        granted_to="worker-a",
+        issuer="operator",
+        reason="coordinate a degraded provider incident",
+        scope=("restart-approved-service",),
+        granted_at="2026-08-30T12:00:00Z",
+        expires_at="2026-08-30T12:15:00Z",
+    )
+
+    assert authority.is_active(datetime(2026, 8, 30, 12, 5, tzinfo=timezone.utc))
+    assert not authority.is_active(datetime(2026, 8, 30, 12, 15, tzinfo=timezone.utc))
+
+    with pytest.raises(ContractValidationError, match="revocable"):
+        EmergencyAuthority(
+            name="unsafe-coordinator",
+            granted_to="worker-a",
+            issuer="operator",
+            reason="incident",
+            scope=("restart-approved-service",),
+            granted_at="2026-08-30T12:00:00Z",
+            expires_at="2026-08-30T12:15:00Z",
+            revocable=False,
+        ).validate()
+
+
+def test_consensus_quorum_cannot_exceed_worker_reports():
+    with pytest.raises(ContractValidationError, match="quorum"):
+        ConsensusRecord(
+            worker_reports=({"worker": "a"}, {"worker": "b"}),
+            quorum=3,
+        ).validate()
+
+    record = ConsensusRecord(
+        worker_reports=({"worker": "a"}, {"worker": "b"}),
+        quorum=2,
+        status="accepted",
+    )
+    assert record.to_dict()["quorum"] == 2
+
+
+def test_contract_mapping_recognizes_new_workforce_contracts():
+    for kind in ("worker_constitution", "job_contract", "emergency_authority"):
+        assert validate_contract_mapping({"kind": kind})["kind"] == kind

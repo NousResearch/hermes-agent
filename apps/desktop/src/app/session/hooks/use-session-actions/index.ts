@@ -101,6 +101,8 @@ import {
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   requestForSessionProfile,
+  type SessionOwnerRoute,
+  sessionOwnerRouteFromRow,
   type SessionOwnerScope,
   type SessionProfileRoute
 } from '@/store/session-request-router'
@@ -1954,27 +1956,48 @@ export function useSessionActions({
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string,
-      branchCount?: number
+      branchCount?: number,
+      ownerRoute?: SessionOwnerRoute
     ): Promise<boolean> => {
       creatingSessionRef.current = true
 
       try {
-        // A branch belongs to its parent's OWNING profile. Swapping the live
-        // gateway first AND passing `profile` on the create mirrors
-        // desktopSessionCreateParams/resumeSession: in app-global remote mode
-        // one backend serves every profile, so an omitted profile silently
-        // lands the branch on the launch (default) profile — the "session
-        // jumps between profiles after branching" bug. The swap also makes
-        // upsertOptimisticSession's $activeGatewayProfile stamp correct.
-        await ensureGatewayProfile(profile)
+        // A branch belongs to its parent's OWNING backend. Two facets, and both
+        // matter once more than one connection is configured:
+        //
+        // 1. PROFILE — passing `profile` on the create mirrors
+        //    desktopSessionCreateParams/resumeSession: in app-global remote mode
+        //    one backend serves every profile, so an omitted profile silently
+        //    lands the branch on the launch (default) profile — the "session
+        //    jumps between profiles after branching" bug.
+        // 2. CONNECTION — a profile name alone does not identify a backend when
+        //    several connections expose the same name. Routing on profile only
+        //    sends session.create to whatever socket happens to be active, so
+        //    branching a remote-owned parent from another connection creates the
+        //    child on the wrong backend (or nowhere), while the optimistic
+        //    sidebar row below still points at an id no backend owns — the
+        //    "Couldn't load this session" strand. removeSession already routes
+        //    by (connection, profile); this is the same ownership contract.
+        //
+        // An untagged parent keeps the historic profile-only path exactly.
+        if (ownerRoute) {
+          await ensureGatewayAgent(ownerRoute.connectionId, ownerRoute.profile)
+        } else {
+          await ensureGatewayProfile(profile)
+        }
+
+        const requestBranchGateway = <T,>(method: string, params: Record<string, unknown>): Promise<T> =>
+          ownerRoute
+            ? requestGatewayForAgent<T>(ownerRoute.connectionId, ownerRoute.profile, method, params)
+            : requestGateway<T>(method, params)
 
         // No title: the backend auto-names the branch from its parent's lineage.
         const branched = sourceSessionId
-          ? await requestGateway<SessionCreateResponse>('session.branch', {
+          ? await requestBranchGateway<SessionCreateResponse>('session.branch', {
               session_id: sourceSessionId,
               ...(branchCount !== undefined ? { count: branchCount } : {})
             })
-          : await requestGateway<SessionCreateResponse>('session.create', {
+          : await requestBranchGateway<SessionCreateResponse>('session.create', {
               cols: 96,
               source: 'desktop',
               ...(cwd && { cwd }),
@@ -2094,9 +2117,17 @@ export function useSessionActions({
       let authoritativeMessages: ChatMessage[] | null = null
       const profile = await resolveSessionProfile(storedSessionId)
 
+      // The open chat's exact owner, when its row carries a connection tag.
+      // Same contract as branchStoredSession: the transcript read and the
+      // branch RPC must both land on the backend that owns the parent, not on
+      // whichever socket is active.
+      const ownerRoute = storedSessionId
+        ? sessionOwnerRouteFromRow($sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)))
+        : undefined
+
       if (storedSessionId) {
         try {
-          const persisted = await getAllSessionMessages(storedSessionId, profile)
+          const persisted = await getAllSessionMessages(storedSessionId, ownerRoute ?? profile)
           const hydrated = toChatMessages(persisted.messages)
 
           if (hydrated.length) {
@@ -2144,7 +2175,8 @@ export function useSessionActions({
         storedSessionId,
         startingCwd,
         profile,
-        messageId ? branchMessages.length : undefined
+        messageId ? branchMessages.length : undefined,
+        ownerRoute
       )
     },
     [activeSessionIdRef, busyRef, copy, forkBranch, getRouteToken, selectedStoredSessionIdRef]
@@ -2166,9 +2198,22 @@ export function useSessionActions({
 
       const profile = sessionProfile ?? stored?.profile
 
+      // An exact owner from the parent row — connection AND profile. Undefined
+      // for an untagged row, which keeps the ambient/profile-only path.
+      const ownerRoute = sessionOwnerRouteFromRow(stored)
+
       try {
-        await ensureGatewayProfile(profile)
-        const { messages } = await getAllSessionMessages(storedSessionId, profile)
+        if (ownerRoute) {
+          await ensureGatewayAgent(ownerRoute.connectionId, ownerRoute.profile)
+        } else {
+          await ensureGatewayProfile(profile)
+        }
+
+        // Read the parent transcript from the backend that OWNS it. A bare
+        // profile scope resolves against the active connection, which for a
+        // foreign-owned parent holds no such session: the read comes back empty
+        // and the branch aborts as "nothing to branch" before any create.
+        const { messages } = await getAllSessionMessages(storedSessionId, ownerRoute ?? profile)
         const branchMessages = toBranchMessages(toChatMessages(messages))
 
         if (!branchMessages.length) {
@@ -2177,7 +2222,15 @@ export function useSessionActions({
           return false
         }
 
-        return await forkBranch(branchMessages, null, stored?.id ?? storedSessionId, stored?.cwd?.trim(), profile)
+        return await forkBranch(
+          branchMessages,
+          null,
+          stored?.id ?? storedSessionId,
+          stored?.cwd?.trim(),
+          profile,
+          undefined,
+          ownerRoute
+        )
       } catch (err) {
         notifyError(err, copy.branchFailed)
 

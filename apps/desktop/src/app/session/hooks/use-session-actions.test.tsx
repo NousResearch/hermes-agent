@@ -1802,6 +1802,122 @@ describe('branchStoredSession desktop source tagging', () => {
     })
   })
 
+  // A branch belongs to the backend that OWNS its parent. Routing on profile
+  // alone silently sends session.create to whatever socket is active, so a
+  // remote-owned parent branched while another connection is active creates
+  // the child on the wrong backend — or nowhere — while the sidebar still
+  // paints an optimistic row that can never hydrate ("Couldn't load this
+  // session"). Same ownership contract removeSession already honours.
+  it('routes a connection-tagged parent branch through its owning connection', async () => {
+    const ambientRequest = vi.fn(async () => ({}) as never)
+
+    vi.mocked(requestGatewayForAgent).mockImplementation((async (
+      _connectionId: null | string,
+      _profile: string,
+      method: string
+    ) => {
+      if (method === 'session.create') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    }) as never)
+
+    setSessions([
+      storedSession({ connection_id: 'pandora', id: 'stored-parent', message_count: 1, profile: 'default' })
+    ])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    // The create must ride the parent's own (connection, profile) socket...
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'pandora',
+      'default',
+      'session.create',
+      expect.objectContaining({ parent_session_id: 'stored-parent', source: 'desktop' })
+    )
+    // ...and never the ambient socket, which may serve a different machine.
+    expect(ambientRequest).not.toHaveBeenCalledWith('session.create', expect.anything())
+  })
+
+  // The parent transcript read must land on the owning backend too: reading it
+  // from the ambient socket returns nothing for a foreign-owned parent, which
+  // aborts the branch as "nothing to branch" before any create is attempted.
+  it('reads a connection-tagged parent transcript from its owning connection', async () => {
+    const ambientRequest = vi.fn(async () => ({}) as never)
+
+    vi.mocked(requestGatewayForAgent).mockImplementation((async (
+      _connectionId: null | string,
+      _profile: string,
+      method: string
+    ) => {
+      if (method === 'session.create') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    }) as never)
+
+    setSessions([
+      storedSession({ connection_id: 'pandora', id: 'stored-parent', message_count: 1, profile: 'default' })
+    ])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(getAllSessionMessages).toHaveBeenCalledWith('stored-parent', {
+      connectionId: 'pandora',
+      profile: 'default'
+    })
+  })
+
+  // An untagged row (single-backend users, the overwhelmingly common case)
+  // must keep the ambient path exactly as before — no behaviour change.
+  it('keeps an untagged parent branch on the ambient socket', async () => {
+    let createParams: Record<string, unknown> | undefined
+
+    const ambientRequest = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(requestGatewayForAgent).mockClear()
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(createParams).toMatchObject({ parent_session_id: 'stored-parent', source: 'desktop' })
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+  })
+
   it('branches an open live chat via session.branch with a trimmed message count (bug #1/#3 fix)', async () => {
     let branchParams: Record<string, unknown> | undefined
 

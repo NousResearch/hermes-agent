@@ -154,6 +154,12 @@ def build_top_level_parser():
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
     )
     parser.add_argument(
+        "--no-tools",
+        action="store_true",
+        default=False,
+        help="Run with an explicit empty tool surface; cannot be combined with --toolsets.",
+    )
+    parser.add_argument(
         "--resume",
         "-r",
         metavar="SESSION",
@@ -298,6 +304,13 @@ def build_top_level_parser():
         "-t", "--toolsets",
         default=argparse.SUPPRESS,
         help="Comma-separated toolsets to enable",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--no-tools",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Run with an explicit empty tool surface; cannot be combined with --toolsets.",
     )
     _inherited_flag(
         chat_parser,

@@ -688,6 +688,11 @@ class CLILoopsMixin:
                 mgr.pause(reason="user-interrupted (Ctrl+C)")
             except Exception as exc:
                 logging.debug("goal pause-on-interrupt failed: %s", exc)
+                _cprint(
+                    f"  {_DIM}Goal pause failed; persisted state is unchanged. "
+                    f"Use /goal pause or /goal clear to retry.{_RST}"
+                )
+                return
             _cprint(
                 f"  {_DIM}⏸ Goal paused — turn was interrupted. "
                 f"Use /goal resume to continue, or /goal clear to stop.{_RST}")

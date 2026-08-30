@@ -51,9 +51,7 @@ def _state_payload(state: Optional[Any]) -> Dict[str, Any]:
         "condition": state.goal,
         "turns_used": state.turns_used,
         "max_turns": state.max_turns,
-        # GoalState has no optimistic revision field today. Keep this explicit
-        # so callers do not mistake timestamps or turn counts for a revision.
-        "revision": None,
+        "revision": state.revision,
         "stop_reason": stop_reason,
         "error_reason": state.last_reason if has_judge_error else None,
     }
@@ -105,9 +103,9 @@ def goal_control_tool(
 
     try:
         from hermes_cli.goals import (
-            ConcurrentGoalStateChange,
+            GoalConflictError,
             GoalManager,
-            load_goal_authoritative,
+            GoalPostconditionError,
             load_goal_snapshot_authoritative,
         )
 
@@ -123,6 +121,7 @@ def goal_control_tool(
         )
 
         intended = before
+        expected_after_raw = before_raw
         if action in {"set", "update"}:
             text = (condition or "").strip()
             if not text:
@@ -172,45 +171,69 @@ def goal_control_tool(
                     session_id=caller_session_id,
                 )
             if action == "update":
-                intended = manager.update(text, max_turns=max_turns)
+                intended = manager.update(
+                    text, max_turns=max_turns, expected_raw=before_raw
+                )
             else:
-                intended = manager.set(text, max_turns=max_turns)
+                intended = manager.set(
+                    text, max_turns=max_turns, expected_raw=before_raw
+                )
+            expected_after_raw = intended.to_json() if intended else None
         elif action == "pause":
-            if before is not None and before.status in {"done", "cleared"}:
+            if before is None or before.status != "active":
                 return _error(
                     "invalid_transition",
-                    "a terminal goal cannot be paused",
+                    "only an active goal can be paused",
                     session_id=caller_session_id,
                 )
-            if before is not None and before.status != "paused":
-                intended = manager.pause(reason="model-paused")
+            intended = manager.pause(
+                reason="model-paused", expected_raw=before_raw
+            )
+            expected_after_raw = intended.to_json() if intended else None
         elif action == "resume":
-            if before is None or before.status not in {"active", "paused"}:
+            if before is None or before.status != "paused":
                 return _error(
                     "invalid_transition",
                     "only a paused goal can be resumed",
                     session_id=caller_session_id,
                 )
-            if before.status == "paused":
-                intended = manager.resume(reset_budget=False)
+            intended = manager.resume(
+                reset_budget=False, expected_raw=before_raw
+            )
+            expected_after_raw = intended.to_json() if intended else None
         elif action == "clear":
             if before is not None and before.status != "cleared":
-                intended = manager.clear(reason="model-cleared")
-
-        persisted = load_goal_authoritative(caller_session_id)
-        if action != "status":
-            intended_json = intended.to_json() if intended is not None else None
-            persisted_json = persisted.to_json() if persisted is not None else None
-            if intended_json != persisted_json:
-                return _error(
-                    "persistence_verification_failed",
-                    "persisted goal state does not match the requested action",
-                    session_id=caller_session_id,
+                intended = manager.clear(
+                    reason="model-cleared", expected_raw=before_raw
                 )
-    except ConcurrentGoalStateChange:
+                expected_after_raw = intended.to_json() if intended else None
+
+        persisted, persisted_raw = load_goal_snapshot_authoritative(
+            caller_session_id
+        )
+        if action != "status" and persisted_raw != expected_after_raw:
+            code = (
+                "transition_conflict"
+                if action in {"pause", "resume"}
+                else "mutation_conflict"
+            )
+            return _error(
+                code,
+                "persisted goal state does not match the requested action",
+                session_id=caller_session_id,
+            )
+    except GoalConflictError:
+        code = "transition_conflict" if action in {"pause", "resume"} else "mutation_conflict"
         return _error(
-            "concurrent_state_change",
+            code,
             "persisted goal changed while applying the requested action",
+            session_id=caller_session_id,
+        )
+    except GoalPostconditionError:
+        code = "transition_conflict" if action in {"pause", "resume"} else "mutation_conflict"
+        return _error(
+            code,
+            "persisted goal state could not be verified after mutation",
             session_id=caller_session_id,
         )
     except (TypeError, ValueError) as exc:

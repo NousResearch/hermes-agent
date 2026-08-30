@@ -55,7 +55,7 @@ def test_set_returns_authoritative_persisted_current_session_state(tmp_path, mon
         "condition": "Run the focused checks",
         "turns_used": 0,
         "max_turns": 7,
-        "revision": None,
+        "revision": 1,
         "stop_reason": None,
         "error_reason": None,
     }
@@ -157,21 +157,25 @@ def test_cross_session_argument_is_rejected_without_mutation(tmp_path, monkeypat
     assert goals.load_goal("session-other") is None
 
 
-def test_pause_resume_clear_and_repeats_return_persisted_state(tmp_path, monkeypatch):
+def test_pause_resume_and_clear_return_persisted_state(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch)
     _call("set", session_id="session-current", condition="Keep going", max_turns=4)
 
-    for _ in range(2):
-        paused = _call("pause", session_id="session-current")
-        assert paused["success"] is True
-        assert paused["state"]["paused"] is True
-        assert paused["state"]["stop_reason"] == "model-paused"
+    paused = _call("pause", session_id="session-current")
+    assert paused["success"] is True
+    assert paused["state"]["paused"] is True
+    assert paused["state"]["stop_reason"] == "model-paused"
+    assert _call("pause", session_id="session-current")["error"]["code"] == (
+        "invalid_transition"
+    )
 
-    for _ in range(2):
-        resumed = _call("resume", session_id="session-current")
-        assert resumed["success"] is True
-        assert resumed["state"]["active"] is True
-        assert resumed["state"]["turns_used"] == 0
+    resumed = _call("resume", session_id="session-current")
+    assert resumed["success"] is True
+    assert resumed["state"]["active"] is True
+    assert resumed["state"]["turns_used"] == 0
+    assert _call("resume", session_id="session-current")["error"]["code"] == (
+        "invalid_transition"
+    )
 
     for _ in range(2):
         cleared = _call("clear", session_id="session-current")
@@ -481,7 +485,7 @@ def test_pause_does_not_resurrect_concurrently_cleared_goal(tmp_path, monkeypatc
     result = _call("pause", session_id="session-current")
 
     assert result["success"] is False
-    assert result["error"]["code"] == "concurrent_state_change"
+    assert result["error"]["code"] == "transition_conflict"
     assert goals.load_goal("session-current").to_json() == cleared.to_json()
 
 
@@ -514,7 +518,7 @@ def test_set_does_not_overwrite_concurrently_created_goal(tmp_path, monkeypatch)
     )
 
     assert result["success"] is False
-    assert result["error"]["code"] == "concurrent_state_change"
+    assert result["error"]["code"] == "mutation_conflict"
     assert goals.load_goal("session-current").to_json() == winner.to_json()
 
 
@@ -533,7 +537,7 @@ def test_failed_persistence_never_returns_success(tmp_path, monkeypatch):
     result = _call("set", session_id="session-current", condition="Must persist")
 
     assert result["success"] is False
-    assert result["error"]["code"] == "persistence_verification_failed"
+    assert result["error"]["code"] == "mutation_conflict"
 
 
 def test_dropped_budget_update_is_not_mistaken_for_success(tmp_path, monkeypatch):
@@ -561,7 +565,141 @@ def test_dropped_budget_update_is_not_mistaken_for_success(tmp_path, monkeypatch
     )
 
     assert result["success"] is False
-    assert result["error"]["code"] == "persistence_verification_failed"
+    assert result["error"]["code"] == "mutation_conflict"
+
+
+@pytest.mark.parametrize("action", ["set", "update", "pause", "resume", "clear"])
+def test_acknowledged_mutation_requires_exact_persisted_readback(
+    tmp_path, monkeypatch, action
+):
+    _home(tmp_path, monkeypatch)
+    session_id = "session-current"
+    if action in {"update", "pause", "clear", "resume"}:
+        _call("set", session_id=session_id, condition="Original", max_turns=9)
+    if action == "resume":
+        _call("pause", session_id=session_id)
+
+    db = goals._get_session_db()
+    real_cas = db.compare_and_set_meta
+    drifted = False
+
+    def commit_then_drift(key, expected, replacement):
+        nonlocal drifted
+        committed = real_cas(key, expected, replacement)
+        if committed and not drifted:
+            drifted = True
+            independent = goals.GoalState.from_json(replacement)
+            independent.revision += 1
+            independent.last_reason = "independent post-write drift"
+            assert real_cas(key, replacement, independent.to_json()) is True
+        return committed
+
+    monkeypatch.setattr(db, "compare_and_set_meta", commit_then_drift)
+    kwargs = {"condition": "Updated", "max_turns": 2} if action in {"set", "update"} else {}
+    result = _call(action, session_id=session_id, **kwargs)
+
+    assert result["success"] is False
+    expected_code = (
+        "transition_conflict" if action in {"pause", "resume"} else "mutation_conflict"
+    )
+    assert result["error"]["code"] == expected_code
+    persisted = goals.load_goal_authoritative(session_id)
+    assert persisted.last_reason == "independent post-write drift"
+
+
+def test_update_cas_conflict_does_not_resurrect_concurrently_cleared_goal(
+    tmp_path, monkeypatch
+):
+    _home(tmp_path, monkeypatch)
+    session_id = "session-current"
+    _call("set", session_id=session_id, condition="Original", max_turns=9)
+    db = goals._get_session_db()
+    real_cas = db.compare_and_set_meta
+    competed = False
+
+    def clear_before_first_candidate(key, expected, replacement):
+        nonlocal competed
+        if not competed:
+            competed = True
+            current = goals.GoalState.from_json(db.get_meta(key))
+            current.status = "cleared"
+            current.revision += 1
+            current.last_reason = "independent clear"
+            assert real_cas(key, expected, current.to_json()) is True
+        return real_cas(key, expected, replacement)
+
+    monkeypatch.setattr(db, "compare_and_set_meta", clear_before_first_candidate)
+    result = _call(
+        "update",
+        session_id=session_id,
+        condition="Must not resurrect",
+        max_turns=2,
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "mutation_conflict"
+    persisted = goals.load_goal_authoritative(session_id)
+    assert persisted.status == "cleared"
+    assert persisted.last_reason == "independent clear"
+
+
+@pytest.mark.parametrize("action", ["pause", "resume"])
+def test_pause_resume_is_bound_to_the_initial_authoritative_snapshot(
+    tmp_path, monkeypatch, action
+):
+    _home(tmp_path, monkeypatch)
+    session_id = "session-current"
+    _call("set", session_id=session_id, condition="Original", max_turns=9)
+    if action == "resume":
+        _call("pause", session_id=session_id)
+
+    original_transition = getattr(goals.GoalManager, action)
+
+    def replace_before_transition(self, *args, **kwargs):
+        replacement = goals.GoalManager(session_id)
+        replacement.set("Independent replacement", max_turns=7)
+        if action == "resume":
+            replacement.pause("independent pause")
+        return original_transition(self, *args, **kwargs)
+
+    monkeypatch.setattr(goals.GoalManager, action, replace_before_transition)
+    result = _call(action, session_id=session_id)
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "transition_conflict"
+    persisted = goals.load_goal_authoritative(session_id)
+    assert persisted.goal == "Independent replacement"
+    assert persisted.status == ("paused" if action == "resume" else "active")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("goal", "   "),
+        ("status", "unknown"),
+        ("revision", -1),
+        ("turns_used", -1),
+        ("max_turns", 0),
+        ("consecutive_transport_failures", -1),
+        ("consecutive_parse_failures", -1),
+    ],
+)
+def test_semantically_invalid_persisted_goal_is_rejected(
+    tmp_path, monkeypatch, field, value
+):
+    _home(tmp_path, monkeypatch)
+    session_id = "session-current"
+    payload = json.loads(goals.GoalState(goal="Valid goal").to_json())
+    payload[field] = value
+    goals._get_session_db().set_meta(
+        goals._meta_key(session_id), json.dumps(payload)
+    )
+
+    with pytest.raises(goals.GoalPersistenceError):
+        goals.load_goal_authoritative(session_id)
+    result = _call("status", session_id=session_id)
+    assert result["success"] is False
+    assert result["error"]["code"] == "persistence_unavailable"
 
 
 def test_slow_initialization_fails_closed_instead_of_claiming_success(

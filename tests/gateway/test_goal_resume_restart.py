@@ -116,6 +116,65 @@ class TestCliResumeRestartsWork:
 
         assert cli._pending_input.empty()
 
+    def test_cli_persistence_drop_reports_failure_without_success_notice(
+        self, hermes_home, monkeypatch
+    ):
+        sid = f"sid-cli-drop-{uuid.uuid4().hex}"
+        cli = _make_cli(sid)
+
+        class DroppedWriteDB:
+            def get_meta(self, _key):
+                return None
+
+            def set_meta(self, _key, _value):
+                return None
+
+            def compare_and_set_meta(self, _key, _expected, _replacement):
+                raise OSError("simulated persistence drop")
+
+        monkeypatch.setattr(goals, "_get_session_db", lambda: DroppedWriteDB())
+        notices = []
+        with patch("cli._cprint", side_effect=notices.append):
+            cli._handle_goal_command("goal must persist")
+
+        rendered = "\n".join(str(item) for item in notices)
+        assert "failed" in rendered.lower() or "unavailable" in rendered.lower()
+        assert "Goal set" not in rendered
+        assert cli._pending_input.empty()
+
+    @pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
+    def test_fresh_cli_status_reports_unavailable_persistence(
+        self, hermes_home, monkeypatch, failure
+    ):
+        sid = f"sid-cli-status-{failure}-{uuid.uuid4().hex}"
+        cli = _make_cli(sid)
+
+        class StatusDB:
+            def get_meta(self, _key):
+                if failure == "read":
+                    raise OSError("status read failed")
+                return "{invalid goal json"
+
+        monkeypatch.setattr(
+            goals,
+            "_get_session_db",
+            (lambda: None) if failure == "missing" else (lambda: StatusDB()),
+        )
+        notices = []
+        with patch("cli._cprint", side_effect=notices.append):
+            cli._handle_goal_command("goal status")
+
+        rendered = "\n".join(str(item) for item in notices)
+        assert "No active goal" not in rendered
+        assert "unavailable" in rendered.lower() or "failed" in rendered.lower()
+
+    def test_fresh_cli_status_reports_verified_empty_goal(self, hermes_home):
+        cli = _make_cli(f"sid-cli-status-empty-{uuid.uuid4().hex}")
+        notices = []
+        with patch("cli._cprint", side_effect=notices.append):
+            cli._handle_goal_command("goal status")
+        assert "No active goal" in "\n".join(str(item) for item in notices)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Messaging gateway
@@ -204,3 +263,37 @@ class TestGatewayResumeRestartsWork:
 
         assert "No goal to resume" in response
         assert adapter._pending_messages == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
+    async def test_fresh_gateway_status_reports_unavailable_persistence(
+        self, hermes_home, monkeypatch, failure
+    ):
+        runner, _adapter = _make_runner()
+
+        class StatusDB:
+            def get_meta(self, _key):
+                if failure == "read":
+                    raise OSError("status read failed")
+                return "{invalid goal json"
+
+        monkeypatch.setattr(
+            goals,
+            "_get_session_db",
+            (lambda: None) if failure == "missing" else (lambda: StatusDB()),
+        )
+        event = _resume_event()
+        event.text = "/goal status"
+
+        response = await GatewayRunner._handle_goal_command(runner, event)
+
+        assert "No active goal" not in response
+        assert "unavailable" in response.lower() or "failed" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_fresh_gateway_status_reports_verified_empty_goal(self, hermes_home):
+        runner, _adapter = _make_runner()
+        event = _resume_event()
+        event.text = "/goal status"
+        response = await GatewayRunner._handle_goal_command(runner, event)
+        assert "No active goal" in response

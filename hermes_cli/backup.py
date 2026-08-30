@@ -1101,7 +1101,7 @@ def _copy_quick_snapshot_files(
     """Copy every quick-snapshot candidate into *staging_dir*.
 
     Returns ``(manifest {rel: size}, failed_dbs, oversized_skipped)``. The last two are snapshot
-    incompleteness (#68805): pruning still runs but must keep the latest complete recovery source.
+    incompleteness (#68805): pruning still runs but must keep the newest recovery copy of each omitted DB.
     """
     manifest: Dict[str, int] = {}
     failed_dbs: list[str] = []
@@ -1181,20 +1181,21 @@ def _create_quick_snapshot_locked(
         json.dump(meta, f, indent=2)
     os.replace(staging_dir, root / snap_id)
     # Auto-prune (pre-update callers pass a smaller keep so state.db copies don't accumulate).
-    # When a present DB failed to capture OR was skipped for size (#68805), preserve the latest
-    # complete recovery source in addition to the retention window. Still prune stale incomplete
-    # snapshots: they contain config/auth copies too, and repeated failures must stay bounded.
+    # When a present DB failed to capture or was skipped for size (#68805), preserve the newest
+    # recovery copy of each omitted DB in addition to the retention window. Still prune stale
+    # partial snapshots that add no recovery coverage: they contain config/auth copies and must
+    # stay bounded.
     incomplete = failed_dbs or oversized_skipped
     retention = _QUICK_DEFAULT_KEEP if keep is None else keep
     if incomplete:
         if oversized_skipped:
-            print("  ⚠ Preserving latest complete snapshot: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
+            print("  ⚠ Preserving latest recovery copy: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
             logger.warning("Quick snapshot skipped oversized DB file(s): %s", ", ".join(oversized_skipped))
         logger.warning(
             "Snapshot incomplete because %d DB(s) failed to capture and/or %d were oversized "
-            "— preserving latest complete recovery source",
+            "— preserving latest recovery copy of each omitted DB",
             len(failed_dbs), len(oversized_skipped))
-    _prune_quick_snapshots(root, keep=retention, preserve_latest_complete=bool(incomplete))
+    _prune_quick_snapshots(root, keep=retention, preserve_recovery_for=set(failed_dbs) | set(oversized_skipped))
     logger.info("quick snapshot phase=copy status=complete id=%s files=%d bytes=%d",
                 snap_id, len(manifest), sum(manifest.values()))
     return snap_id
@@ -1510,21 +1511,31 @@ def _prune_quick_snapshots(
     root: Path,
     keep: int = _QUICK_DEFAULT_KEEP,
     *,
-    preserve_latest_complete: bool = False,
+    preserve_recovery_for: Optional[set[str]] = None,
 ) -> int:
-    """Remove old snapshots, optionally retaining one complete recovery source."""
+    """Remove old snapshots while retaining recovery copies for omitted DBs."""
     dirs = _snapshot_dirs(root)
     retained = set(dirs[:keep])
-    if preserve_latest_complete:
+    missing = set(preserve_recovery_for or ())
+    if missing:
         for d in dirs:
             try:
                 with open(d / "manifest.json", encoding="utf-8") as f:
                     meta = json.load(f)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "Could not inspect snapshot %s while preserving recovery copies: %s",
+                    d.name, exc)
                 continue
-            if isinstance(meta, dict) and not meta.get("failed_dbs") and not meta.get("oversized_skipped"):
+            files = meta.get("files") if isinstance(meta, dict) else None
+            if not isinstance(files, dict):
+                continue
+            covered = missing.intersection(files)
+            if covered:
                 retained.add(d)
-                break
+                missing.difference_update(covered)
+                if not missing:
+                    break
     return _prune_oldest([d for d in dirs if d not in retained], 0, shutil.rmtree, "snapshot")
 
 

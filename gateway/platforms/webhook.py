@@ -174,6 +174,10 @@ class WebhookAdapter(BasePlatformAdapter):
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
         # Idempotency: TTL cache of recently processed delivery IDs.
         self._seen_deliveries: Dict[str, float] = {}
+        # Completed direct-delivery receipts share the seen-delivery TTL. This
+        # lets a webhook retry recover the provider receipt without sending the
+        # human-visible message twice.
+        self._delivery_receipts: Dict[str, str] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
         self._rate_counts: Dict[str, Deque[float]] = {}  # per-route hit timestamps in a fixed window
@@ -282,6 +286,7 @@ class WebhookAdapter(BasePlatformAdapter):
         cutoff = now - self._idempotency_ttl
         for k in [k for k, t in self._seen_deliveries.items() if t < cutoff]:
             self._seen_deliveries.pop(k, None)
+            self._delivery_receipts.pop(k, None)
         self._seen_deliveries_next_prune_at = now + min(60.0, max(1.0, self._idempotency_ttl / 10))
 
     def _record_rate_limit_hit(self, route_name: str, now: float) -> bool:
@@ -302,6 +307,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return False
         if seen_at is not None:
             self._seen_deliveries.pop(delivery_id, None)
+            self._delivery_receipts.pop(delivery_id, None)
         self._seen_deliveries[delivery_id] = now
         if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
             self._prune_seen_deliveries(now)
@@ -461,9 +467,19 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.exception("[webhook] direct-deliver failed route=%s delivery=%s", route_name, delivery_id)
             return web.json_response(failed, status=502)
         if result.success:
-            return web.json_response({"status": "delivered", "route": route_name, "target": delivery["deliver"],
-                                      "delivery_id": delivery_id}, status=200)
-        # Target rejected it — 502 with a generic error (don't leak adapter detail).
+            response = {"status": "delivered", "route": route_name, "target": delivery["deliver"],
+                        "delivery_id": delivery_id}
+            if result.message_id is not None and str(result.message_id).strip():
+                receipt = str(result.message_id).strip()
+                self._delivery_receipts[delivery_id] = receipt
+                response["message_id"] = receipt
+            return web.json_response(response, status=200)
+        # Target rejected it — 502 with a generic error (don't leak adapter detail). Clear
+        # the in-flight marker so the sender can safely retry the same idempotency key.
+        # Exceptions remain marked because provider outcome is ambiguous and an immediate
+        # resend could duplicate a message.
+        self._seen_deliveries.pop(delivery_id, None)
+        self._delivery_receipts.pop(delivery_id, None)
         logger.warning("[webhook] direct-deliver target rejected route=%s target=%s error=%s", route_name,
                        delivery["deliver"], result.error)
         return web.json_response(failed, status=502)
@@ -552,8 +568,31 @@ class WebhookAdapter(BasePlatformAdapter):
             "svix-id", headers.get("X-Request-ID", str(int(time.time() * 1000)))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         if not self._record_delivery_id(delivery_id, now):
-            logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
-            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+            logger.info(
+                "[webhook] Skipping duplicate delivery %s", delivery_id
+            )
+            if route_config.get("deliver_only"):
+                receipt = self._delivery_receipts.get(delivery_id)
+                if receipt:
+                    return web.json_response(
+                        {
+                            "status": "duplicate",
+                            "delivery_id": delivery_id,
+                            "message_id": receipt,
+                        },
+                        status=200,
+                    )
+                # A first direct-delivery request may still be awaiting its
+                # provider response. Tell the caller to retry rather than
+                # sending twice or falsely claiming completion.
+                return web.json_response(
+                    {"status": "in_progress", "delivery_id": delivery_id},
+                    status=425,
+                )
+            return web.json_response(
+                {"status": "duplicate", "delivery_id": delivery_id},
+                status=200,
+            )
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id)
         return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,

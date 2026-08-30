@@ -47,7 +47,9 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
 def _wire_mock_target(adapter: WebhookAdapter, platform_name: str = "telegram"):
     """Attach a gateway_runner with a mocked target adapter."""
     mock_target = AsyncMock()
-    mock_target.send = AsyncMock(return_value=SendResult(success=True))
+    mock_target.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="provider-message-42")
+    )
 
     mock_runner = MagicMock()
     mock_runner.adapters = {Platform(platform_name): mock_target}
@@ -105,6 +107,7 @@ class TestDeliverOnlyBypassesAgent:
             assert data["status"] == "delivered"
             assert data["route"] == "match-alert"
             assert data["target"] == "telegram"
+            assert data["message_id"] == "provider-message-42"
 
         # Let any background tasks settle before asserting no agent call
         await asyncio.sleep(0.05)
@@ -120,11 +123,98 @@ class TestDeliverOnlyBypassesAgent:
         assert content_arg == "alice matched with bob!"
 
 
+    @pytest.mark.asyncio
+    async def test_completed_duplicate_returns_same_receipt_without_resending(self):
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hello",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        app = _create_app(adapter)
+        headers = {"X-GitHub-Delivery": "stable-delivery-1"}
+
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post("/webhooks/r", json={}, headers=headers)
+            duplicate = await cli.post("/webhooks/r", json={}, headers=headers)
+            assert first.status == 200
+            assert duplicate.status == 200
+            assert (await first.json())["message_id"] == "provider-message-42"
+            duplicate_body = await duplicate.json()
+            assert duplicate_body["status"] == "duplicate"
+            assert duplicate_body["message_id"] == "provider-message-42"
+
+        mock_target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_in_flight_duplicate_is_retryable_without_resending(self):
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hello",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        adapter._seen_deliveries["in-flight-1"] = 1e20
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "in-flight-1"},
+            )
+            assert response.status == 425
+            assert (await response.json())["status"] == "in_progress"
+
+        mock_target.send.assert_not_awaited()
+
+
 # ===================================================================
 # HTTP status codes
 # ===================================================================
 
 class TestDeliverOnlyStatusCodes:
+
+    @pytest.mark.asyncio
+    async def test_failed_delivery_can_retry_same_id(self):
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            side_effect=[
+                SendResult(success=False, error="temporary"),
+                SendResult(success=True, message_id="provider-retry-1"),
+            ]
+        )
+        app = _create_app(adapter)
+        headers = {"X-GitHub-Delivery": "retry-delivery-1"}
+
+        async with TestClient(TestServer(app)) as cli:
+            failed = await cli.post("/webhooks/r", json={}, headers=headers)
+            retried = await cli.post("/webhooks/r", json={}, headers=headers)
+            assert failed.status == 502
+            assert retried.status == 200
+            assert (await retried.json())["message_id"] == "provider-retry-1"
+
+        assert mock_target.send.await_count == 2
 
     @pytest.mark.asyncio
     async def test_delivery_failure_returns_502(self):

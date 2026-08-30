@@ -2301,10 +2301,30 @@ def _get_config_home_channel(platform_name: str):
 
 
 def _env_home_target_chat_id(platform_name: str) -> str:
-    """Return the home chat id from the legacy env mirror only (no config)."""
+    """Return the home chat id from the legacy env mirror only (no config).
+
+    Reads through ``get_secret`` (not raw ``os.getenv``) so a profile-scoped
+    secret scope wins in a multiplex gateway. ``DISCORD_HOME_CHANNEL`` lives in
+    each profile's ``.env``; in a multiplex process the winning cron tick runs
+    with the job-owning profile's scope installed (run_one_job sets it), so
+    reading via ``get_secret`` resolves the OWNING profile's chat id rather
+    than the host process's ``os.environ`` (#83182, chat-id leg — the token
+    leg was fixed earlier; chat id / thread id resolve through the same leak).
+    """
     env_var = _resolve_home_env_var(platform_name)
     if not env_var:
         return ""
+    try:
+        from agent.secret_scope import get_secret
+    except Exception:
+        get_secret = None  # type: ignore
+    if get_secret is not None:
+        value = get_secret(env_var, "")
+        if not value:
+            legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
+            if legacy:
+                value = get_secret(legacy, "")
+        return value or ""
     value = os.getenv(env_var, "")
     if not value:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
@@ -2341,15 +2361,33 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
     without changing the lobby invariant.
     """
     env_var = _resolve_home_env_var(platform_name)
+    try:
+        from agent.secret_scope import get_secret
+    except Exception:
+        get_secret = None  # type: ignore
+
+    def _scope_get(name: str) -> str:
+        if get_secret is None:
+            return ""
+        v = get_secret(name, "")
+        return v if v is not None else ""
+
     if platform_name.lower() == "telegram":
-        cron_thread = os.getenv("TELEGRAM_CRON_THREAD_ID", "").strip()
+        cron_thread = _scope_get("TELEGRAM_CRON_THREAD_ID").strip()
         if cron_thread:
             return cron_thread
-    value = os.getenv(f"{env_var}_THREAD_ID", "").strip() if env_var else ""
-    if not value and env_var:
-        legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
-        if legacy:
-            value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
+    if get_secret is not None:
+        value = _scope_get(f"{env_var}_THREAD_ID").strip() if env_var else ""
+        if not value and env_var:
+            legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
+            if legacy:
+                value = _scope_get(f"{legacy}_THREAD_ID").strip()
+    else:
+        value = os.getenv(f"{env_var}_THREAD_ID", "").strip() if env_var else ""
+        if not value and env_var:
+            legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
+            if legacy:
+                value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
     if value:
         return value
     # Canonical config.yaml fallback — same rationale as

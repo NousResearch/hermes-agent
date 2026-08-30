@@ -158,6 +158,11 @@ class TestExtractCacheBustingConfig:
                     "codex_gpt55_autoraise": False,
                     "codex_responses_native": True,
                     "codex_responses_compact_threshold": 120_000,
+                    "in_place": False,
+                    "checkpoint_required": True,
+                    "micro_compact": True,
+                    "micro_compact_every_n_turns": 2,
+                    "micro_compact_defrag_threshold_tokens": 4000,
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
                     "codex_app_server_auto": "hermes",
@@ -170,6 +175,11 @@ class TestExtractCacheBustingConfig:
         assert out["compression.codex_gpt55_autoraise"] is False
         assert out["compression.codex_responses_native"] is True
         assert out["compression.codex_responses_compact_threshold"] == 120_000
+        assert out["compression.in_place"] is False
+        assert out["compression.checkpoint_required"] is True
+        assert out["compression.micro_compact"] is True
+        assert out["compression.micro_compact_every_n_turns"] == 2
+        assert out["compression.micro_compact_defrag_threshold_tokens"] == 4000
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"

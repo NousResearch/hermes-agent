@@ -2,7 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReadDirResult } from '@/global'
-import { $connection, $selectedStoredSessionId, $workspaceCwdOwner, setCurrentCwd } from '@/store/session'
+import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
+import { $connection, $selectedStoredSessionId, $sessions, $workspaceCwdOwner, setCurrentCwd } from '@/store/session'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
 
 import { resetProjectTreeState } from './files/use-project-tree'
 
@@ -68,5 +70,32 @@ describe('RightSidebarPane', () => {
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
     expect(readDir).not.toHaveBeenCalled()
+  })
+
+  it('reads the focused tile workspace cwd when a tile tab is focused', async () => {
+    $selectedStoredSessionId.set('main-session')
+    $workspaceCwdOwner.set('main-session')
+    setCurrentCwd('/repo-main')
+
+    $sessions.set([
+      { cwd: '/repo-tile', id: 'tile-session' } as any
+    ])
+    $sessionTiles.set([
+      { storedSessionId: 'tile-session', runtimeId: 'rt-tile', workspaceMode: 'sessions' } as any
+    ])
+    $layoutTree.set({
+      id: 'grp-1',
+      type: 'group',
+      panes: ['session-tile:tile-session'],
+      active: 'session-tile:tile-session'
+    } as any)
+    $activeTreeGroup.set('grp-1')
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    const refresh = await screen.findByRole('button', { name: 'Refresh tree' })
+    readDir.mockClear()
+    fireEvent.click(refresh)
+    await waitFor(() => expect(readDir).toHaveBeenCalledWith('/repo-tile'))
   })
 })

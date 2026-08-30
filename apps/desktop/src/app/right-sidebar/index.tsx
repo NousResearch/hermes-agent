@@ -14,7 +14,8 @@ import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
 import { openFolderAsProject } from '@/store/projects'
-import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
+import { $currentCwd, $selectedStoredSessionId, $sessions, $workspaceCwdOwner, sessionMatchesStoredId } from '@/store/session'
+import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
@@ -33,11 +34,26 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const currentCwd = useStore($currentCwd).trim()
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const workspaceCwdOwner = useStore($workspaceCwdOwner)
+  const focusedStoredSessionId = useStore($focusedStoredSessionId)
+  const focusedSessionState = useStore($focusedSessionState)
+  const sessions = useStore($sessions)
 
-  // A transition intentionally retains the old CWD until the new session
-  // confirms its workspace. Do not issue a filesystem read against that path:
-  // under a gateway switch it may belong to a different remote machine.
-  const hasWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
+  // When a tile tab is focused, use the focused tile's workspace cwd;
+  // otherwise fall back to the primary session's cwd.
+  const isTileFocused = Boolean(focusedStoredSessionId && focusedStoredSessionId !== selectedStoredSessionId)
+  const tileCwd =
+    isTileFocused && focusedStoredSessionId
+      ? (
+          focusedSessionState?.cwd ||
+          sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.cwd ||
+          ''
+        ).trim()
+      : ''
+
+  const targetCwd = isTileFocused ? tileCwd : currentCwd
+  const hasWorkspace = isTileFocused
+    ? Boolean(tileCwd)
+    : Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
 
   const {
     collapseAll,
@@ -52,7 +68,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     setNodeOpen,
     setShowIgnored,
     showIgnored
-  } = useProjectTree(hasWorkspace ? currentCwd : '')
+  } = useProjectTree(hasWorkspace ? targetCwd : '')
 
   const cwdName =
     effectiveCwd

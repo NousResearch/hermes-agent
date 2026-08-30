@@ -653,15 +653,24 @@ async def get_session_messages(
 
     projected_messages = []
     for message in messages:
-        if not is_compaction_summary_message(message):
-            projected_messages.append(message)
-            continue
         display_view = project_compaction_message_for_display(message)
         projected = message.copy()
         if display_view is None:
+            # Applies to both compaction handoffs and explicitly quarantined
+            # legacy tool carriers. The durable row remains available to an
+            # authorized export path; this endpoint is a display projection.
             if not projected.get("display_kind"):
                 projected["display_kind"] = "hidden"
-        else:
+            metadata = projected.get("display_metadata")
+            if isinstance(metadata, dict) and isinstance(
+                metadata.get("legacy_tool_carrier_quarantine"), dict
+            ):
+                # A legacy raw carrier has no displayable tail. Unlike ordinary
+                # compaction handoffs, returning its physical content here
+                # would still transmit tool bytes to the desktop before its
+                # renderer observes ``display_kind=hidden``.
+                projected["content"] = ""
+        elif is_compaction_summary_message(message):
             # Keep the physical content for inspection/export compatibility;
             # Desktop consumes this display-only projection. A legacy hidden
             # wrapper must not hide a successfully recovered live ask.

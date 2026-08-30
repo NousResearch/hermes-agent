@@ -20,6 +20,26 @@ _COMPACTION_INTERNAL_FIELDS = (
     "codex_message_items",
 )
 
+# Legacy context-governor releases promoted orphaned raw tool outputs into
+# assistant rows. The migration stamps only proven rows with this typed marker;
+# display code must never infer the marker from the message text itself.
+LEGACY_TOOL_CARRIER_QUARANTINE_METADATA_KEY = "legacy_tool_carrier_quarantine"
+LEGACY_TOOL_CARRIER_QUARANTINE_SCHEMA = "LegacyToolCarrierQuarantineV1"
+
+
+def _is_legacy_tool_carrier_quarantine(message: Dict[str, Any]) -> bool:
+    """Return true for any legacy-carrier marker, including an unknown revision.
+
+    ``display_metadata`` is the typed origin boundary.  A malformed or newer
+    marker must fail closed: showing the accompanying historical content would
+    recreate the leak if a producer forgets ``display_kind='hidden'``.
+    """
+    metadata = message.get("display_metadata")
+    return bool(
+        isinstance(metadata, dict)
+        and isinstance(metadata.get(LEGACY_TOOL_CARRIER_QUARANTINE_METADATA_KEY), dict)
+    )
+
 
 def project_compaction_message_for_display(
     message: Dict[str, Any],
@@ -32,6 +52,13 @@ def project_compaction_message_for_display(
     embedded in the carrier.
     """
     if not isinstance(message, dict):
+        return None
+    # ``display_kind`` is the durable presentation authority. The typed marker
+    # below narrows legacy-carrier handling further, but every hidden control
+    # row must stay out of a client transcript regardless of origin.
+    if message.get("display_kind") == "hidden" or _is_legacy_tool_carrier_quarantine(
+        message
+    ):
         return None
     if not is_compaction_summary_message(message):
         return message.copy()

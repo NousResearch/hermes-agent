@@ -1823,6 +1823,98 @@ def test_real_binary_background_notification_compacts_across_generations(
     assert not list((store / ".pending").glob("*.json"))
 
 
+def test_orphaned_tool_result_is_not_promoted_to_assistant_text():
+    """Compaction must repair a broken tool pair without retaining raw output.
+
+    The old adapter converted the orphan to ``[Tool result <id>]: <payload>``
+    assistant text, which subsequently became durable and user-visible.
+    """
+    secret = "SYNTHETIC_TOOL_PAYLOAD_MUST_NOT_BE_VISIBLE"
+    engine, _llm = _checkpoint_engine(
+        target_tokens=900,
+        llm_output=_valid_llm_summary(),
+        compacted_prefix=[
+            {
+                "role": "tool",
+                "id": "call_orphan",
+                "name": "terminal",
+                "content": secret,
+                "metadata": {"tool_call_id": "call_orphan"},
+            }
+        ],
+    )
+
+    compacted = engine.compress(
+        [
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": "final"},
+        ],
+        current_tokens=100,
+    )
+
+    assert all(message.get("role") != "tool" for message in compacted)
+    assert all(secret not in str(message.get("content", "")) for message in compacted)
+    assert all(
+        not str(message.get("content", "")).startswith("[Tool result")
+        for message in compacted
+    )
+
+
+def test_tool_pair_repair_drops_a_result_that_precedes_its_later_call():
+    """A later call must not retroactively legitimize a raw earlier result."""
+    secret = "SYNTHETIC_OUT_OF_ORDER_TOOL_PAYLOAD_MUST_NOT_BE_VISIBLE"
+    engine = ContextGovernorEngine(binary="/tmp/context-governor")
+    messages = [
+        {"role": "tool", "tool_call_id": "call_late", "content": secret},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_late", "type": "function"}],
+        },
+        {"role": "user", "content": "protected latest ask"},
+    ]
+
+    repaired = engine._sanitize_tool_pairs(messages)
+
+    assert [message["role"] for message in repaired] == ["assistant", "tool", "user"]
+    assert repaired[1]["tool_call_id"] == "call_late"
+    assert repaired[1]["content"] == "[Result from earlier conversation — see context summary]"
+    assert all(secret not in str(message.get("content", "")) for message in repaired)
+    assert repaired[-1]["content"] == "protected latest ask"
+
+
+def test_tool_pair_repair_preserves_results_keyed_by_provider_alias():
+    """Provider-native secondary IDs must match without replacing valid output."""
+    engine = ContextGovernorEngine(binary="/tmp/context-governor")
+    result = {
+        "role": "tool",
+        "tool_call_id": "response_item_42",
+        "content": "valid provider result",
+    }
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_42",
+                    "call_id": "call_alias_42",
+                    "response_item_id": "response_item_42",
+                    "type": "function",
+                }
+            ],
+        },
+        result,
+        {"role": "user", "content": "protected latest ask"},
+    ]
+
+    repaired = engine._sanitize_tool_pairs(messages)
+
+    assert repaired[1] is result
+    assert repaired[1]["content"] == "valid provider result"
+    assert [message["role"] for message in repaired] == ["assistant", "tool", "user"]
+
+
 @pytest.mark.integration
 def test_real_binary_recovers_prepared_receipt_after_host_commit_and_restart(
     tmp_path, monkeypatch

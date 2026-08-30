@@ -2861,6 +2861,29 @@ def test_history_to_messages_hides_gateway_system_markers():
     ]
 
 
+def test_history_to_messages_hides_quarantined_legacy_tool_carriers():
+    """TUI resume must share the typed hidden-artifact policy."""
+    secret = "SYNTHETIC_LEGACY_TOOL_PAYLOAD_MUST_NOT_REACH_TUI"
+    history = [
+        {"role": "assistant", "content": "visible answer"},
+        {
+            "role": "assistant",
+            "content": f"[Tool result call_legacy]: {secret}",
+            "display_metadata": {
+                "legacy_tool_carrier_quarantine": {
+                    "schema": "UnknownFutureSchema",
+                    "original_content_sha256": "a" * 64,
+                }
+            },
+        },
+    ]
+
+    projected = server._history_to_messages(history)
+
+    assert projected == [{"role": "assistant", "text": "visible answer"}]
+    assert secret not in str(projected)
+
+
 def test_history_to_messages_drops_display_hidden_scaffolding():
     # A mid-stream steer persists an interrupted-turn checkpoint. When nothing
     # reached the screen the row carries only model-facing scaffolding and is

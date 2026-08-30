@@ -2109,6 +2109,37 @@ class TestWebServerEndpoints:
         contents = [m["content"] for m in resp.json()["messages"]]
         assert contents == ["old q", "old a", "summary", "live q", "live a"]
 
+    def test_get_session_messages_blanks_a_quarantined_legacy_tool_carrier(self):
+        """The desktop API must not ship raw legacy payload bytes in hidden rows."""
+        from hermes_state import SessionDB
+
+        raw_payload = "SYNTHETIC_LEGACY_TOOL_PAYLOAD_MUST_NOT_SHIP_TO_DESKTOP"
+        db = SessionDB()
+        try:
+            db.create_session(session_id="legacy-tool-carrier-display", source="desktop")
+            db.append_message(
+                "legacy-tool-carrier-display",
+                "assistant",
+                f"[Tool result call_legacy]: {raw_payload}",
+                display_kind="hidden",
+                display_metadata={
+                    "legacy_tool_carrier_quarantine": {
+                        "schema": "LegacyToolCarrierQuarantineV1",
+                        "original_content_sha256": "a" * 64,
+                    }
+                },
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/legacy-tool-carrier-display/messages")
+
+        assert resp.status_code == 200
+        [message] = resp.json()["messages"]
+        assert message["display_kind"] == "hidden"
+        assert message["content"] == ""
+        assert raw_payload not in str(message)
+
     def test_get_session_messages_projects_and_dedupes_composite_carrier(self):
         from agent.context_compressor import (
             HISTORICAL_TASK_HEADING,

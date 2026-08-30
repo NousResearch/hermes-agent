@@ -697,11 +697,15 @@ class TestReplySubjectIsolation(unittest.TestCase):
         with patch("smtplib.SMTP") as mock_smtp:
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
-            asyncio.run(adapter.send(
+            result = asyncio.run(adapter.send(
                 chat_id="user@test.com",
                 content="Backup report",
                 metadata={"subject": "Cronjob Response: hermes-nightly-backup"},
             ))
+        # Regression: send() must report SUCCESS (the pre-fix path raised
+        # UnboundLocalError in the success logger after sending, which made
+        # send() return failure and triggered a duplicate standalone fallback).
+        self.assertTrue(result.success)
         msg = mock_smtp.return_value.send_message.call_args_list[0][0][0]
         self.assertEqual(msg["Subject"], "Cronjob Response: hermes-nightly-backup")
         self.assertNotIn("In-Reply-To", msg)
@@ -721,12 +725,13 @@ class TestReplySubjectIsolation(unittest.TestCase):
         with patch("smtplib.SMTP") as mock_smtp:
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
-            asyncio.run(adapter.send_document(
+            result = asyncio.run(adapter.send_document(
                 chat_id="user@test.com",
                 file_path=attach_path,
                 caption="Report with file",
                 metadata={"subject": "Cronjob Response: weekly-report"},
             ))
+        self.assertTrue(result.success)
         msg = mock_smtp.return_value.send_message.call_args_list[0][0][0]
         self.assertEqual(msg["Subject"], "Cronjob Response: weekly-report")
         self.assertNotIn("In-Reply-To", msg)

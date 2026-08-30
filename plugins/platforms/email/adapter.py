@@ -835,7 +835,7 @@ class EmailAdapter(BasePlatformAdapter):
         if explicit_subject:
             # Outbound-only send (cron/standalone): verbatim subject, fresh conversation — no Re:
             # prefix, no thread-context threading headers.
-            subject = explicit_subject  # keep the success-log line bound
+            subject = explicit_subject  # keep the success log line bound
             original_msg_id = reply_to_msg_id
         else:
             if ctx:
@@ -868,7 +868,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
                     thread_id: Optional[str] = None, explicit_subject: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, thread_id=thread_id,

@@ -687,8 +687,9 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     Accepts both the bare directory name (``axolotl``) and the categorized
     relative path (``mlops/axolotl``) — the same two forms skill_view
     resolves, and the form skill_view's ambiguity hint explicitly tells
-    the caller to use. Matching bare-name suffix keeps bare lookups
-    working for nested skills.
+    the caller to use. The bare-name match compares the skill's own
+    directory name (``parent.name``), so bare lookups keep working for
+    category-nested skills.
     """
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
 
@@ -702,7 +703,11 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
         if _resolved_root is None:
             try:
                 _resolved_root = _skills_dir().resolve()
-            except Exception:
+            except OSError:
+                logger.debug(
+                    "skills dir resolve failed; categorized lookups fall back to the unresolved path",
+                    exc_info=True,
+                )
                 _resolved_root = _skills_dir()
         return _resolved_root
 

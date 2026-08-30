@@ -191,13 +191,14 @@ def _interactive_approval_available() -> bool:
     Inline prompting requires both a live interactive surface and a per-thread
     approval callback registered by the interactive CLI
     (``tools.terminal_tool.set_approval_callback``). A callback alone is not
-    sufficient: headless ``hermes chat -q`` / Kanban workers also register one,
-    but have no human available to answer it.
+    sufficient: headless ``hermes chat -q`` runs also register one, but have no
+    human available to answer it. Kanban workers inherit this behavior because
+    the dispatcher launches them through ``hermes chat -q``.
 
     Every other surface stages instead:
 
-    * **Single-query/Kanban workers** — headless even though a CLI callback is
-      registered; inline prompting would wait until the approval timeout.
+    * **Single-query runs (including Kanban workers)** — headless even though a
+      CLI callback is registered; inline prompting would wait until timeout.
     * **Gateway/API sessions** — the dangerous-command ``/approve`` round-trip
       lives in the pending-approval queue (``submit_pending`` +
       ``_await_gateway_decision``), which ``prompt_dangerous_approval`` never

@@ -158,7 +158,30 @@ describe('ModelPill per-surface model label', () => {
       </SessionViewProvider>
     )
 
-    expect(screen.getByText('Sonnet · High')).toBeTruthy()
+    expect(screen.getByText('Sonnet')).toBeTruthy()
     expect(screen.queryByText(/primary/i)).toBeNull()
+  })
+})
+
+describe('ModelPill provider beside model', () => {
+  it('shows the provider dimmed beside the model name', () => {
+    render(<ModelPill disabled={false} model={modelState({ model: 'qwen3-max', provider: 'custom:my_pool' })} />)
+
+    expect(screen.getByText('Qwen3 Max')).toBeTruthy()
+    expect(screen.getByText('custom:my_pool')).toBeTruthy()
+  })
+
+  it('hides the provider when the model id already carries it', () => {
+    render(<ModelPill disabled={false} model={modelState({ model: 'openai/gpt-6', provider: 'openai' })} />)
+
+    expect(screen.getByText('GPT-6')).toBeTruthy()
+    expect(screen.queryByText('openai')).toBeNull()
+  })
+
+  it('hides the provider when none is known', () => {
+    render(<ModelPill disabled={false} model={modelState({ model: 'gpt-6', provider: '' })} />)
+
+    expect(screen.getByText('GPT-6')).toBeTruthy()
+    expect(screen.queryByText(/provider/i)).toBeNull()
   })
 })

@@ -491,6 +491,11 @@ _CRON_CTX = _Unattended(
     "in cron jobs", "this cron profile is intentionally trusted",
 )
 
+_GITHUB_PULL_REQUEST_CREATION_ENDPOINT = re.compile(
+    r"(?:^|/)repos/[^/]+/[^/]+/pulls(?:$|[/?#])",
+    re.IGNORECASE,
+)
+
 
 def _unattended_contexts() -> list[_Unattended]:
     """Active unattended contexts in evaluation order: single-query first (``hermes chat -q``
@@ -874,6 +879,18 @@ def _run_approval_gate(
         pattern_keys=[pattern_key], warnings=[(pattern_key, None, False)], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
     )
+
+
+def _kanban_pull_request_creation_block_result() -> dict:
+    return {
+        "approved": False,
+        "kanban_policy": "pull_request_creation_requires_exact_head_ci_receipt",
+        "message": (
+            "BLOCKED: Autonomous workers may not create pull requests through raw GitHub "
+            "commands. Run the governed pre-publication local-CI audit for the exact branch "
+            "head, then use the receipt-bound publication path."
+        ),
+    }
 
 
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:

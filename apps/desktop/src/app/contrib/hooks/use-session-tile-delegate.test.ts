@@ -317,6 +317,50 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(updateSessionState.mock.calls.some(([runtimeId]) => runtimeId === 'runtime-a')).toBe(false)
   })
 
+  it('continues post-resume hydration through the tile current owner', async () => {
+    const ownerA = { connectionId: 'source-a', profile: 'profile-a' }
+    const ownerB = { connectionId: 'source-b', profile: 'profile-b' }
+    const rowA = row({ connection_id: ownerA.connectionId, id: 'shared-hydration', profile: ownerA.profile })
+    const rowB = row({ connection_id: ownerB.connectionId, id: 'shared-hydration', profile: ownerB.profile })
+    const hydrationStarted = deferred<void>()
+    const hydrationA = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const updateSessionState = vi.fn()
+
+    setSessions([rowA, rowB])
+    openSessionTile('shared-hydration', 'center', undefined, undefined, {
+      ownerRoute: ownerA,
+      workspaceMode: 'sessions'
+    })
+    vi.mocked(requestGatewayForAgent)
+      .mockResolvedValueOnce({ session_id: 'runtime-a' } as never)
+      .mockResolvedValueOnce({ session_id: 'runtime-b' } as never)
+    vi.mocked(getLatestSessionMessages)
+      .mockImplementationOnce(() => {
+        hydrationStarted.resolve()
+
+        return hydrationA.promise
+      })
+      .mockResolvedValueOnce({ messages: [], session_id: 'shared-hydration' } as never)
+    renderTile(
+      vi.fn(async () => ({}) as never),
+      { updateSessionState }
+    )
+
+    const paneResume = sessionTileDelegate()!.resumeTile('shared-hydration')
+
+    await hydrationStarted.promise
+    await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalledTimes(1))
+    await Promise.resolve()
+    await Promise.resolve()
+    openSidebarSession('shared-hydration', rowB, vi.fn())
+    hydrationA.resolve({ messages: [], session_id: 'shared-hydration' } as never)
+
+    await expect(paneResume).resolves.toBe('runtime-b')
+    expect(updateSessionState).not.toHaveBeenCalledWith('runtime-a', expect.any(Function), 'shared-hydration')
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-b', expect.any(Function), 'shared-hydration')
+    expect($sessionTiles.get()[0]?.ownerRoute).toMatchObject(ownerB)
+  })
+
   it('keeps a same-owner same-id tile warm and only focuses its existing surface', async () => {
     const owner = { connectionId: 'source-a', profile: 'profile-a' }
     const ownedRow = row({ connection_id: owner.connectionId, id: 'shared-id', profile: owner.profile })
@@ -619,6 +663,53 @@ describe('useSessionTileDelegate resumeTile', () => {
       ])
       expect(JSON.stringify(refreshed.messages)).toContain('external notice')
     }
+  })
+
+  it('continues a displaced warm transcript refresh through the tile current owner', async () => {
+    const ownerA = { connectionId: 'source-a', profile: 'profile-a' }
+    const ownerB = { connectionId: 'source-b', profile: 'profile-b' }
+    const rowA = row({ connection_id: ownerA.connectionId, id: 'shared-refresh', profile: ownerA.profile })
+    const rowB = row({ connection_id: ownerB.connectionId, id: 'shared-refresh', profile: ownerB.profile })
+    const stateA = { busy: false, messages: [{ id: 'from-a' }], storedSessionId: 'shared-refresh' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['shared-refresh', 'runtime-a']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-a', stateA]]) }
+    const refreshStarted = deferred<void>()
+    const refreshA = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const updateSessionState = vi.fn()
+
+    setSessions([rowA, rowB])
+    openSessionTile('shared-refresh', 'center', undefined, undefined, {
+      ownerRoute: ownerA,
+      workspaceMode: 'sessions'
+    })
+    patchSessionTile('shared-refresh', { runtimeId: 'runtime-a' })
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({ session_id: 'runtime-b' } as never)
+    vi.mocked(getLatestSessionMessages)
+      .mockImplementationOnce(() => {
+        refreshStarted.resolve()
+
+        return refreshA.promise
+      })
+      .mockResolvedValueOnce({ messages: [], session_id: 'shared-refresh' } as never)
+    renderTile(
+      vi.fn(async () => ({}) as never),
+      {
+        runtimeIdByStoredSessionIdRef,
+        sessionStateByRuntimeIdRef,
+        updateSessionState
+      }
+    )
+
+    const refresh = sessionTileDelegate()!.resumeTile('shared-refresh', { refreshTranscript: true })
+
+    await refreshStarted.promise
+    openSidebarSession('shared-refresh', rowB, vi.fn())
+    refreshA.resolve({ messages: [], session_id: 'shared-refresh' } as never)
+
+    await expect(refresh).resolves.toBe('runtime-b')
+    expect(updateSessionState).not.toHaveBeenCalledWith('runtime-a', expect.any(Function), 'shared-refresh')
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-b', expect.any(Function), 'shared-refresh')
+    expect($sessionTiles.get()[0]?.ownerRoute).toMatchObject(ownerB)
   })
 
   it('falls through to a real resume when the warm binding has no transcript (post-wake empty tile)', async () => {

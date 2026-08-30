@@ -323,12 +323,38 @@ export function useSessionTileDelegate({
         // reading messages) without a profile lets the gateway fall back to the
         // launch-profile DB and fork the conversation into the wrong profile —
         // the same cross-profile bleed the recovery resumes had (#67603).
+        const initialTileOwnerKey = sessionResumeFlightKey(storedSessionId, sessionTileOwnerRoute(storedSessionId))
         const owner = await ownerForStoredSession(storedSessionId)
         const ownerFlightKey = sessionResumeFlightKey(storedSessionId, owner)
         const existingOwnerResume = tileResumeByOwner.get(ownerFlightKey)
 
         if (existingOwnerResume) {
           return existingOwnerResume
+        }
+
+        const continueThroughCurrentTileOwner = (): null | Promise<string> | string => {
+          const currentTile = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
+
+          if (!currentTile || sessionResumeFlightKey(storedSessionId, currentTile.ownerRoute) === initialTileOwnerKey) {
+            return null
+          }
+
+          // Retarget invalidates the old stored->runtime mapping before the
+          // new owner dispatches. If that owner already finished, reuse its
+          // winner; otherwise join/start its owner-keyed resume.
+          const currentRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+          if (currentRuntimeId) {
+            return currentRuntimeId
+          }
+
+          const delegate = sessionTileDelegate()
+
+          if (!delegate) {
+            throw new Error('session owner changed while resume was in flight')
+          }
+
+          return delegate.resumeTile(storedSessionId, options)
         }
 
         const ownerResume = (async () => {
@@ -341,6 +367,12 @@ export function useSessionTileDelegate({
 
           if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
             const prefetch = await prefetchPromise
+            const retargetedRuntimeId = continueThroughCurrentTileOwner()
+
+            if (retargetedRuntimeId) {
+              return await retargetedRuntimeId
+            }
+
             // Deltas and completion may land while REST is in flight.
             updateSessionState(
               existing,
@@ -392,31 +424,18 @@ export function useSessionTileDelegate({
             }
           )
 
-          const currentTileOwner = sessionTileOwnerRoute(storedSessionId)
+          const postResumeRuntimeId = continueThroughCurrentTileOwner()
 
-          if (currentTileOwner && sessionResumeFlightKey(storedSessionId, currentTileOwner) !== ownerFlightKey) {
-            // The new owner's concurrent resume may have finished between the
-            // stale RPC settling and this fence. Its cache write is the existing
-            // runtime-binding seam; reuse that winner even when its transcript is
-            // legitimately empty instead of minting a second runtime for the new
-            // owner. The owner-retarget path invalidates the old binding before
-            // dispatch, and this stale outcome has not published anything yet.
-            const currentRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-
-            if (currentRuntimeId) {
-              return currentRuntimeId
-            }
-
-            const delegate = sessionTileDelegate()
-
-            if (!delegate) {
-              throw new Error('session owner changed while resume was in flight')
-            }
-
-            return delegate.resumeTile(storedSessionId, options)
+          if (postResumeRuntimeId) {
+            return await postResumeRuntimeId
           }
 
           const prefetch = await prefetchPromise
+          const postHydrationRuntimeId = continueThroughCurrentTileOwner()
+
+          if (postHydrationRuntimeId) {
+            return await postHydrationRuntimeId
+          }
 
           if (outcome.mode === 'read-only') {
             const readOnlyId = readOnlyRuntimeIdFor(storedSessionId)

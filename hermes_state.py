@@ -367,8 +367,9 @@ DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 # query; short enough that transient fd pressure doesn't strand the read pool.
 _READ_OPEN_RETRY_SECONDS = 60.0
 
-# Hard ceiling on read-only connections ALIVE at once per SessionDB — pooled
-# idle ones and checked-out ones together.
+# Hard ceiling on read-only connections ALIVE at once against one database
+# FILE — pooled idle ones and checked-out ones together, summed over every
+# SessionDB in this process that points at that file. See _PathReadBudget.
 #
 # Deliberately one constant for both the pool's maxsize and the permit count,
 # because bounding only the pool bounds the wrong thing. A LifoQueue caps how
@@ -384,6 +385,90 @@ _READ_OPEN_RETRY_SECONDS = 60.0
 # connection instead of opening more descriptors — slower under load, which is
 # the correct trade against a process-wide wedge the supervisor cannot see.
 _READ_POOL_MAX = 8
+
+
+class _PathReadBudget:
+    """The read-connection permits for ONE database file, shared process-wide.
+
+    ``_READ_POOL_MAX`` used to be enforced by a ``BoundedSemaphore`` owned by
+    each SessionDB, which bounded the wrong noun: the descriptors are spent on
+    a *file*, so N SessionDB objects on one state.db each got their own
+    allowance and peak scaled as ``N x (1 + _READ_POOL_MAX)``.  A long-lived
+    gateway holds at least two (``SessionStore`` and ``GatewayRunner`` open
+    independent handles per profile path) and the count grows with the profile
+    count, which is how a healthy process walked into EMFILE — #98573.
+
+    Holding the permits here instead makes the ceiling mean what its docstring
+    always claimed: read connections ALIVE at once against this path.
+
+    One consequence has to be handled rather than documented away.  A pooled
+    idle connection keeps its permit, so the first instance to warm up would
+    otherwise pin all eight and every later instance — a cron job's transient
+    handle, a second profile's store — would be permanently demoted to the
+    locked writer connection.  That is why a permit miss first reclaims an
+    IDLE connection from a peer instance on the same path: idle descriptors
+    are transferable, in-use ones are not.
+    """
+
+    def __init__(self) -> None:
+        self.permits = threading.BoundedSemaphore(_READ_POOL_MAX)
+        self._lock = threading.Lock()
+        # Weak so a SessionDB that is dropped without close() cannot pin its
+        # peers' budget object; __del__ still runs close() and returns the
+        # permits.
+        self._members: "weakref.WeakSet[SessionDB]" = weakref.WeakSet()
+
+    def register(self, db: "SessionDB") -> None:
+        with self._lock:
+            self._members.add(db)
+
+    def acquire(self, requester: "SessionDB") -> bool:
+        """Take a permit, reclaiming an idle peer connection if need be."""
+        if self.permits.acquire(blocking=False):
+            return True
+        if not self._reclaim_idle(requester):
+            return False
+        # Another thread may take the freed permit first; that is a legitimate
+        # loss, and the caller degrades to the writer lock rather than looping.
+        return self.permits.acquire(blocking=False)
+
+    def _reclaim_idle(self, requester: "SessionDB") -> bool:
+        """Close one idle pooled connection held by a peer. True if one went."""
+        with self._lock:
+            peers = [db for db in self._members if db is not requester]
+        for peer in peers:
+            if peer._evict_one_idle_read_conn():
+                return True
+        return False
+
+
+# canonical db path -> the permits for that file. Weak values: the budget
+# lives exactly as long as some SessionDB on that path holds a strong
+# reference to it, so a test that churns tmp_path databases does not grow
+# this map for the life of the process.
+_read_budgets: "weakref.WeakValueDictionary[str, _PathReadBudget]" = (
+    weakref.WeakValueDictionary()
+)
+_read_budgets_lock = threading.Lock()
+
+
+def _read_budget_key(db_path) -> str:
+    """Canonicalise a db path so two spellings share one budget."""
+    try:
+        return str(Path(db_path).resolve())
+    except OSError:
+        return str(db_path)
+
+
+def _read_budget_for(db_path) -> _PathReadBudget:
+    key = _read_budget_key(db_path)
+    with _read_budgets_lock:
+        budget = _read_budgets.get(key)
+        if budget is None:
+            budget = _PathReadBudget()
+            _read_budgets[key] = budget
+        return budget
+
 
 # Import-time snapshot used by _default_db_path() to detect a deliberately
 # re-pointed DEFAULT_DB_PATH (tests monkeypatch the constant directly).
@@ -4567,7 +4652,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # reader that cannot get a permit must degrade to the writer lock, not
         # queue here — blocking would convert fd exhaustion into a stall, which
         # is the same outage with a different stack trace.
-        self._read_permits = threading.BoundedSemaphore(_READ_POOL_MAX)
+        #
+        # Permits are shared per DATABASE PATH, not per instance: the
+        # descriptors they ration belong to the file, and one process holds
+        # several SessionDB objects on the same state.db (#98573). See
+        # _PathReadBudget.
+        self._read_budget = _read_budget_for(self.db_path)
+        self._read_budget.register(self)
+        # Bound to the semaphore itself so every release site
+        # (_close_read_conn and the _get_read_conn failure paths) is unchanged.
+        self._read_permits = self._read_budget.permits
         # Count of reads that found no permit and fell back to the locked
         # writer connection. Not load-bearing; it is the only externally
         # visible signal that the ceiling is actually being reached, so a
@@ -4885,7 +4979,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # Take the descriptor permit BEFORE the open, so concurrent openers
         # race for permits rather than for file descriptors. Non-blocking:
         # losing the race means "use the writer connection", not "wait".
-        if not self._read_permits.acquire(blocking=False):
+        if not self._read_budget.acquire(self):
             with self._read_conns_lock:
                 self._read_permit_exhausted += 1
             logger.debug(
@@ -4947,6 +5041,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._read_permits.release()
             raise
         return conn
+
+    def _evict_one_idle_read_conn(self) -> bool:
+        """Close one connection sitting idle in this instance's pool.
+
+        Called by _PathReadBudget when a peer SessionDB on the same file wants
+        a permit this instance is holding but not using. Only the idle set is
+        reachable from here — a checked-out connection is not in the queue —
+        so this can never pull a connection out from under a live reader.
+
+        Returns whether a connection (and therefore a permit) was released.
+        """
+        try:
+            conn = self._read_pool.get_nowait()
+        except queue.Empty:
+            return False
+        self._close_read_conn(conn)
+        return True
 
     def _discard_partial_read_conn(self, conn) -> None:
         """Close a connection that failed between open and hand-off.

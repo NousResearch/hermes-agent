@@ -384,3 +384,100 @@ def test_close_returns_every_permit(db):
     for _ in range(_READ_POOL_MAX):
         assert db._read_permits.acquire(blocking=False), "close() stranded a permit"
     assert not db._read_permits.acquire(blocking=False), "close() over-released"
+
+
+# ── The ceiling belongs to the FILE, not to the SessionDB object (#98573) ──
+#
+# Every test above uses ONE SessionDB, which is exactly why the permit lived on
+# the instance for a month without anyone noticing: a per-object cap looks
+# bounded in every single-instance test and scales with deployment shape in
+# production. A gateway holds at least two handles on one state.db --
+# SessionStore and GatewayRunner opened independent ones per profile path --
+# so peak descriptors were `instances x (1 + _READ_POOL_MAX)` and grew with the
+# profile count until the process hit RLIMIT_NOFILE while staying alive.
+
+
+@pytest.mark.requires_wal
+def test_peak_is_bounded_across_two_SessionDBs_on_one_path(db):
+    """Two handles on one file must share one read-connection ceiling."""
+    from hermes_state import SessionDB, _READ_POOL_MAX
+
+    second = SessionDB(db_path=db.db_path)
+    try:
+        n = 48
+        ready = threading.Barrier(n + 1)
+        release = threading.Event()
+        checked_out = []
+        lock = threading.Lock()
+
+        def worker(i):
+            target = db if i % 2 == 0 else second
+            conn = target._checkout_read_conn()
+            if conn is not None:
+                with lock:
+                    checked_out.append((target, conn))
+            ready.wait(timeout=30)
+            release.wait(timeout=30)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+
+        ready.wait(timeout=30)
+        peak_live = _live_count(db.db_path)
+        peak_checked_out = len(checked_out)
+        release.set()
+        for t in threads:
+            t.join(timeout=30)
+
+        for target, conn in checked_out:
+            target._close_read_conn(conn)
+
+        assert peak_checked_out <= _READ_POOL_MAX, (
+            f"{peak_checked_out} read connections checked out across two "
+            f"SessionDBs; the ceiling is {_READ_POOL_MAX}. The permit is "
+            f"per-instance again, so the fd budget scales with handle count."
+        )
+        # +2 for the writer connection each instance holds.
+        assert peak_live <= _READ_POOL_MAX + 2, (
+            f"{peak_live} live connections at peak against one file; ceiling is "
+            f"{_READ_POOL_MAX} read (+2 writers)"
+        )
+    finally:
+        second.close()
+
+
+@pytest.mark.requires_wal
+def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
+    """A peer's IDLE pooled connections must not starve a new handle.
+
+    Permits are held for a connection's whole life, pooled-idle included, so
+    sharing them per path without this would hand the whole budget to whichever
+    handle warmed up first and demote every later one -- a cron job's transient
+    SessionDB, a second profile's store -- to the locked writer connection for
+    the life of the process. Trading one bug for a quieter one.
+    """
+    from hermes_state import SessionDB, _READ_POOL_MAX
+
+    # Warm every permit into db's IDLE pool.
+    held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
+    assert all(c is not None for c in held)
+    for c in held:
+        db._read_pool.put_nowait(c)
+    assert db._read_pool.qsize() == _READ_POOL_MAX
+    assert not db._read_permits.acquire(blocking=False), "budget should be spent"
+
+    second = SessionDB(db_path=db.db_path)
+    try:
+        conn = second._checkout_read_conn()
+        assert conn is not None, (
+            "a peer holding only IDLE connections starved the new handle; "
+            "the read path silently degraded to the writer lock"
+        )
+        assert db._read_pool.qsize() == _READ_POOL_MAX - 1, (
+            "reclaim must close exactly one idle peer connection"
+        )
+        assert _live_count(db.db_path) <= _READ_POOL_MAX + 2
+        second._close_read_conn(conn)
+    finally:
+        second.close()

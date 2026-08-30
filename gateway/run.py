@@ -7861,6 +7861,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._session_db_handle_cache = cache
 
         def _open():
+            # Borrow the SessionStore's handle for this path rather than
+            # opening a second one. Both caches resolve the SAME
+            # ``_default_db_path()``, so the process was holding two writer
+            # connections and two read pools against one state.db — the fd
+            # budget doubled for nothing, and doubled again per profile on a
+            # multiplexed gateway (#98573). The store owns the handle and
+            # sweeps it at shutdown; this cache holds only the async wrapper.
+            #
+            # A borrowed wrapper cannot go stale in practice: the store's
+            # cache only drops handles in close_all_db_handles() (shutdown),
+            # and while the store's own open is failing there is nothing to
+            # borrow, so nothing is cached here either.
+            store = getattr(self, "session_store", None)
+            borrowed = getattr(store, "_db", None) if store is not None else None
+            if borrowed is not None:
+                wrapper = AsyncSessionDB(borrowed)
+                # close_all_session_db_handles() must not close what the store
+                # owns; the store's own sweep already does, and it runs first.
+                wrapper.__dict__["_hermes_borrowed_handle"] = True
+                return wrapper
+            if store is not None:
+                # The store exists and its handle is unavailable (failed open
+                # or backoff). Opening our own here would resurrect exactly
+                # the duplicate this borrows away from, so report the same
+                # unavailability the store is already reporting.
+                raise RuntimeError("SessionStore SQLite handle unavailable")
             try:
                 return AsyncSessionDB(SessionDB())
             except Exception as exc:
@@ -7902,8 +7928,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Shutdown counterpart of the per-path cache above; mirrors
         ``SessionStore.close_all_db_handles``.  Handles are drained under the
         lock and closed outside it; a pinned handle is the pinner's to close.
+
+        Wrappers around a handle BORROWED from ``session_store`` (#98573) are
+        drained but not closed: the store owns that connection and its own
+        sweep — which runs first in the shutdown sequence — closes it.
         """
         def _close(db) -> None:
+            if getattr(db, "__dict__", {}).get("_hermes_borrowed_handle"):
+                return
             inner = getattr(db, "_db", db)
             if inner is None or not hasattr(inner, "close"):
                 return

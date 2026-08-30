@@ -567,13 +567,40 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             candidate = source / "apps" / "desktop" / "release" / "linux-unpacked" / "Ares"
         return candidate if candidate.is_file() else None
 
+    def _quarantine_incomplete_release(self, revision: str, final_dir: Path) -> Path:
+        """Move one non-active incomplete release aside before a staged rebuild.
+
+        Release directories are immutable once published. An interrupted build
+        can nevertheless leave a revision-shaped directory without the required
+        runtime or Desktop artifact. Preserve those original bytes outside the
+        release namespace, then allow the caller to build a fresh staged release
+        at the canonical revision. The caller restores the original directory if
+        the replacement cannot be built.
+        """
+
+        current = self._release_from_link(self.paths.current_link, "current")
+        if current is not None and current[0] == revision:
+            raise AresLocalRuntimeError(
+                "installed active Ares release is incomplete; rollback before recovery"
+            )
+        quarantine_root = self.paths.data_root / "quarantine" / "incomplete-releases"
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        quarantine = quarantine_root / f"{revision}.{uuid.uuid4().hex}"
+        os.replace(final_dir, quarantine)
+        return quarantine
+
     def _materialize(self, source_spec: str, revision: str, *, desktop: bool) -> None:
         self._ensure_layout()
         final_dir = self._release_dir(revision)
+        quarantined: Path | None = None
         if final_dir.exists():
-            source = self._release_source(revision)
-            self._require_complete_release(source, desktop=desktop)
-            return
+            try:
+                source = self._release_source(revision)
+                self._require_complete_release(source, desktop=desktop)
+            except AresLocalRuntimeError:
+                quarantined = self._quarantine_incomplete_release(revision, final_dir)
+            else:
+                return
         staging = self.paths.staging_dir / f"{revision}.{uuid.uuid4().hex}"
         source = staging / "source"
         try:
@@ -590,8 +617,23 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             )
             os.replace(staging, final_dir)
         except Exception:
+            cleanup_failure: OSError | None = None
             if staging.exists():
-                shutil.rmtree(staging)
+                try:
+                    shutil.rmtree(staging)
+                except OSError as exc:
+                    cleanup_failure = exc
+            if quarantined is not None:
+                try:
+                    os.replace(quarantined, final_dir)
+                except OSError as restore_exc:
+                    raise AresLocalRuntimeError(
+                        "incomplete Ares release recovery failed and the original release could not be restored"
+                    ) from restore_exc
+            if cleanup_failure is not None:
+                raise AresLocalRuntimeError(
+                    "incomplete Ares release recovery restored the original release but staging cleanup failed"
+                ) from cleanup_failure
             raise
 
     @staticmethod

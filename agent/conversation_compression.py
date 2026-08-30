@@ -4010,8 +4010,27 @@ def compress_context(
             )
         # Incoming-message interrupts and active-turn redirects must not tear an
         # atomic summary in half (#23975). Explicit stop surfaces set a separate
-        # Event atomically; never infer cause from the racy message fields.
+        # Event atomically; never infer cause from the racy message fields. A
+        # host timeout also cancels the attempt's commit fence. Feed BOTH into
+        # the protected auxiliary-call seam so the compression owner unwinds
+        # promptly while an isolated provider stream finishes or closes in its
+        # daemon worker. Otherwise four timed-out streams retain all four shared
+        # compression-pool slots until the auxiliary stream's longer absolute
+        # ceiling expires.
         _hard_cancel_event = getattr(agent, "_hard_interrupt_requested", None)
+
+        def _compression_cancel_requested() -> bool:
+            return bool(
+                (
+                    _hard_cancel_event is not None
+                    and _hard_cancel_event.is_set()
+                )
+                or (
+                    commit_fence is not None
+                    and commit_fence.is_cancelled
+                )
+            )
+
         try:
             # F6: never start expensive summary work for an already-cancelled
             # fence (a stale queued job admitted after host departure).
@@ -4024,7 +4043,7 @@ def compress_context(
                 compressed = messages
             else:
                 with aux_progress_hook(_progress_hook), aux_interrupt_protection(
-                    cancel_event=_hard_cancel_event
+                    cancel_check=_compression_cancel_requested
                 ):
                     compressed = compress_fn(messages, **compress_kwargs)
                     # Freeze a hard stop that arrived after the final provider

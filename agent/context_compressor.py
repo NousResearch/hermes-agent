@@ -151,19 +151,24 @@ _SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = (
     "no api key found",
 )
 
-_HYGIENE_IDLE_TIMEOUT_MARKERS: tuple[str, ...] = (
+_HYGIENE_PREAGENT_ONLY_COOLDOWN_MARKERS: tuple[str, ...] = (
     "session hygiene compression timed out",
+    "hygiene compression deferred: turn-hold budget expired",
 )
 
 
-def _is_hygiene_idle_timeout_error(error: object) -> bool:
-    """Return True when the durable cooldown came from a hygiene watchdog timeout.
+def _is_hygiene_preagent_only_cooldown(error: object) -> bool:
+    """Return True for a cooldown that belongs only to pre-agent hygiene.
 
-    That persist is intentional for the pre-agent hygiene pass (#74136) but
-    must not block the in-conversation compressor (#86972).
+    Hygiene watchdog timeouts and turn-hold deferrals intentionally persist
+    retry spacing for the pre-agent pass (#74136), but neither is evidence of
+    an auxiliary-model failure and neither may block the in-agent compressor
+    (#86972).
     """
     text = str(error or "").strip().casefold()
-    return any(marker in text for marker in _HYGIENE_IDLE_TIMEOUT_MARKERS)
+    return any(
+        marker in text for marker in _HYGIENE_PREAGENT_ONLY_COOLDOWN_MARKERS
+    )
 
 
 def _response_finish_reason(response: Any) -> str:
@@ -2974,11 +2979,11 @@ class ContextCompressor(ContextEngine):
                 self._last_summary_error = None
             return None
 
-        # Hygiene idle-watchdog timeouts persist the same column so the
-        # pre-agent pass can skip (#74136), but they are not evidence of a
-        # 429/aux-model fault. The in-conversation compressor has its own
-        # budget and must still be allowed to run (#86972).
-        if _is_hygiene_idle_timeout_error(state.get("error")):
+        # Hygiene watchdog timeouts and turn-hold deferrals persist the same
+        # column so the pre-agent pass can skip (#74136), but they are not
+        # evidence of a 429/aux-model fault. The in-conversation compressor has
+        # its own budget and must still be allowed to run (#86972).
+        if _is_hygiene_preagent_only_cooldown(state.get("error")):
             # A later hygiene write can overwrite a previous aux-model row
             # on the shared column. Drop any in-memory cooldown so the
             # in-agent compressor is not still blocked after this refresh.

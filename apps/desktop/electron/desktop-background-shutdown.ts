@@ -1,4 +1,4 @@
-import type { ChildProcess, SpawnOptions } from 'node:child_process'
+import type { SpawnOptions } from 'node:child_process'
 
 interface ResolvedHermesCommand {
   command?: string
@@ -10,8 +10,8 @@ interface ResolvedHermesCommand {
 }
 
 interface StoppableChild {
-  once: ChildProcess['once']
-  kill: ChildProcess['kill']
+  once: (event: string, listener: (...args: any[]) => void) => unknown
+  kill: (signal?: NodeJS.Signals | number) => boolean
 }
 
 interface StopDesktopBackgroundServicesOptions {

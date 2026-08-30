@@ -23,6 +23,7 @@ CHAT_PLATFORMS = [
     "telegram",
     "slack",
     "feishu",
+    "wecom",
 ]
 
 NOISY_STATUS_MESSAGES = [
@@ -154,6 +155,54 @@ def test_telegram_status_keeps_legitimate_heartbeat_messages(message):
 def test_all_chat_gateways_suppress_noise(platform, message):
     """Operational lifecycle/retry noise must be suppressed on every chat surface."""
     assert _prepare_gateway_status_message(platform, "warn", message) is None
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize(
+    "message",
+    [
+        # agent/chat_completion_helpers.py:787 — non-streaming stale kill.
+        "⚠️ No response from provider for 150s (non-streaming, model: gpt-5.5). Aborting call.",
+        # agent/chat_completion_helpers.py:5211 — streaming stale kill.
+        (
+            "⚠️ No response from provider for 300s (model: gpt-5.5, "
+            "context: ~98,781 tokens). Reconnecting..."
+        ),
+        # agent/chat_completion_helpers.py:1670/1676 — codex TTFB kill.
+        "⚠️ No first byte from provider in 120s (codex stream, model: gpt-5.5). Reconnecting.",
+        (
+            "⚠️ No first byte from provider in 120s (codex stream, model: gpt-5.5). "
+            "Reconnecting. Provider accepted the connection but sent no events."
+        ),
+    ],
+    ids=lambda m: m.strip()[:48],
+)
+def test_chat_gateways_suppress_provider_stale_kill_notices(platform, message):
+    """Provider stale/TTFB kill notices stay in logs, not chat bubbles.
+
+    ``_buffer_status`` records these in the retry buffer; ``_flush_status_buffer``
+    replays them through ``_emit_status`` -> ``status_callback`` on terminal
+    failure, so they DO reach a chat surface. The retry loop reconnects on its
+    own and the user already gets a "⏳ Working" heartbeat, so the raw
+    timeout/context diagnostics are operator noise here.
+    """
+    assert _prepare_gateway_status_message(platform, "lifecycle", message) is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I hit an error: the request timed out, so I retried with a longer limit.",
+        "No response from the API docs endpoint was cached, so I fetched it live.",
+        "The provider for this dataset has no first byte order guarantee.",
+    ],
+)
+def test_provider_stale_kill_filter_keeps_assistant_prose(message):
+    """The new alternatives must not swallow ordinary assistant text."""
+    assert (
+        _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message)
+        == message
+    )
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)

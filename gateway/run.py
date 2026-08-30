@@ -104,6 +104,13 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+    # Provider stale/TTFB kill notices buffered by _buffer_status in
+    # agent/chat_completion_helpers.py and replayed through _emit_status when
+    # a turn exhausts its attempts. The retry loop reconnects on its own, so
+    # these belong in logs, not in a chat bubble. The mandatory "\d+s" duration
+    # keeps ordinary assistant prose about providers/timeouts from matching.
+    r"|no\s+response\s+from\s+provider\s+for\s+\d+s\b"
+    r"|no\s+first\s+byte\s+from\s+provider\s+in\s+\d+s\b"
     rf"|{re.escape(COMPACTION_DONE_STATUS)}|{re.escape(COMPRESSION_REFUSED_WOULD_GROW_WARNING)}"
     r")",
     re.IGNORECASE | re.DOTALL)

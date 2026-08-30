@@ -35,6 +35,7 @@ import tools.process_registry as process_registry
 import tools.terminal_tool as terminal_tool
 import tools.terminal_tool_sudo as terminal_tool_sudo
 from tools.environments import base as env_base
+from tools.environments import docker as env_docker
 from tools.environments import local as env_local
 
 # Inputs the retired rewriter provably corrupted (syntax or data), plus the
@@ -64,6 +65,45 @@ def test_rewriter_is_gone():
 def test_execute_has_no_rewrite_parameter():
     sig = inspect.signature(env_base.BaseEnvironment.execute)
     assert "rewrite_compound_background" not in sig.parameters
+
+
+class _DockerWrapperProbe(env_docker.DockerEnvironment):
+    """Docker execute() probe that bypasses container setup entirely."""
+
+    def __init__(self):
+        self.timeout = 5
+        self.cwd = ""
+        self._stdin_mode = "none"
+        self._snapshot_ready = True
+        self._prefer_nonlogin = False
+
+    def _before_execute(self):
+        pass
+
+    def _prepare_command(self, command):
+        return command, None
+
+    def _wrap_command(self, command, cwd):
+        return command
+
+    def _run_bash(self, command, *, login=False, timeout=None, stdin_data=None):
+        return None
+
+    def _wait_for_process(self, proc, *, timeout=None, bounded_capture=False):
+        return {"output": "", "returncode": 0}
+
+    def _update_cwd(self, result):
+        pass
+
+    def cleanup(self):
+        pass
+
+
+def test_docker_execute_rejects_rewrite_parameter():
+    """Docker's **kwargs forwarder must not reopen the retired option."""
+    env = _DockerWrapperProbe()
+    with pytest.raises(TypeError, match="rewrite_compound_background"):
+        env.execute("true", rewrite_compound_background=False)
 
 
 class _ProbeEnv(env_base.BaseEnvironment):

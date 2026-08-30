@@ -2201,6 +2201,33 @@ class CLICommandsMixin:
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /learn needs an active chat session to run.")
 
+    def _handle_plan_command(self, cmd: str):
+        """Handle /plan — write a markdown implementation plan, no execution.
+
+        Mirrors /learn: build the plan-mode prompt and inject it onto the
+        agent's input queue as a normal user turn. The live agent inspects
+        the workspace with read-only tools and saves the plan under
+        ``.hermes/plans/`` via ``write_file``. No engine, no model-tool
+        footprint, works on any terminal backend, and preserves prompt-cache
+        invariants (no system prompt or history mutation).
+        """
+        from agent.plan_prompt import build_plan_prompt
+
+        # Everything after the command word is the task to plan (optional —
+        # empty infers the task from conversation context).
+        parts = cmd.strip().split(None, 1)
+        task = parts[1].strip() if len(parts) > 1 else ""
+
+        msg = build_plan_prompt(task)
+        if task:
+            print(f"\n📋 Planning: {task[:80]}{'...' if len(task) > 80 else ''}")
+        else:
+            print("\n📋 Planning from this conversation's context...")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /plan needs an active chat session to run.")
+
     def _handle_init_command(self, cmd: str):
         """Handle /init — generate or update AGENTS.md from a project scan.
 

@@ -622,6 +622,14 @@ def _(rid, params: dict) -> dict:
         from agent.learn_prompt import build_learn_prompt
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
+    if name == "plan":
+        # Plan mode: build the plan-mode prompt and submit it as a normal
+        # agent turn (same pattern as /learn). The live agent inspects the
+        # workspace read-only and saves the markdown plan under
+        # .hermes/plans/ via write_file. Works on any backend.
+        from agent.plan_prompt import build_plan_prompt
+
+        return _ok(rid, {"type": "send", "message": build_plan_prompt(arg)})
     if name == "init":
         # Generate-or-update AGENTS.md: build the guidance-laden prompt and
         # submit it as a normal agent turn (same pattern as /learn). The live

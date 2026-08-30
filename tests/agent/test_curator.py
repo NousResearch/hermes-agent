@@ -331,13 +331,17 @@ def _disable_prune_builtins(curator_env, monkeypatch):
 
 
 def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypatch):
-    """A protected built-in (e.g. `plan`) is never archived, even when it is a
-    stale bundled skill under prune_builtins — it backs a load-bearing slash
-    command and must survive every curator pass."""
+    """A protected built-in is never archived, even when it is a stale
+    bundled skill under prune_builtins — it backs a load-bearing UX path and
+    must survive every curator pass.
+
+    The shipped set is currently empty (``plan`` graduated to a built-in
+    command), so the mechanism is exercised with a sentinel name."""
     u = curator_env["usage"]
     c = curator_env["curator"]
     skills_dir = curator_env["home"] / "skills"
-    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))  # the real protected name(s)
+    name = "sentinel-protected-skill"
+    monkeypatch.setattr(u, "PROTECTED_BUILTIN_SKILLS", {name})
     _write_skill(skills_dir, name)
     (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
     _enable_prune_builtins(curator_env, monkeypatch)

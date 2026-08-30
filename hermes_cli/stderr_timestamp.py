@@ -1,4 +1,4 @@
-"""Run a child process while prefixing each stderr line with a timestamp."""
+"""Run a child while capturing stdout and timestamping stderr."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import threading
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import BinaryIO, Protocol, Sequence
+from typing import Any, BinaryIO, IO, Protocol, Sequence
 
 EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
 _DEFAULT_MAX_SIZE_MB = 5
@@ -33,10 +33,15 @@ def _rotation_config() -> tuple[int, int]:
         _, configured_size, configured_backups = _read_logging_config()
     except Exception:
         configured_size = configured_backups = None
-    return (
-        max(int(configured_size or _DEFAULT_MAX_SIZE_MB), 1),
-        max(int(configured_backups or _DEFAULT_BACKUP_COUNT), 0),
-    )
+    try:
+        max_size_mb = max(int(configured_size or _DEFAULT_MAX_SIZE_MB), 1)
+    except (TypeError, ValueError):
+        max_size_mb = _DEFAULT_MAX_SIZE_MB
+    try:
+        backup_count = max(int(configured_backups or _DEFAULT_BACKUP_COUNT), 0)
+    except (TypeError, ValueError):
+        backup_count = _DEFAULT_BACKUP_COUNT
+    return max_size_mb, backup_count
 
 _TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s|$)")
 
@@ -70,7 +75,8 @@ class _RotatingWriter:
     ) -> None:
         configured_mb, configured_backups = _rotation_config()
         self._path = log_path
-        self._max_bytes = max(max_bytes or configured_mb * 1024 * 1024, 1)
+        configured_bytes = configured_mb * 1024 * 1024
+        self._max_bytes = max(configured_bytes if max_bytes is None else max_bytes, 1)
         self._backup_count = (
             configured_backups if backup_count is None else max(backup_count, 0)
         )
@@ -85,7 +91,7 @@ class _RotatingWriter:
         prefix = f"{self._path.name}."
         for candidate in self._path.parent.iterdir():
             suffix = candidate.name.removeprefix(prefix)
-            if candidate.name == f"{prefix}{suffix}" and suffix.isdigit():
+            if candidate.name.startswith(prefix) and suffix.isdigit():
                 try:
                     if int(suffix) > self._backup_count:
                         candidate.unlink()
@@ -147,7 +153,7 @@ class _RotatingWriter:
             self._io = None
 
 
-def _copy_stderr_with_timestamps(stderr: BinaryIO, log_path: Path) -> None:
+def _copy_stderr_with_timestamps(stderr: IO[bytes], log_path: Path) -> None:
     writer = _RotatingWriter(log_path)
     try:
         for raw_line in iter(stderr.readline, b""):
@@ -157,7 +163,7 @@ def _copy_stderr_with_timestamps(stderr: BinaryIO, log_path: Path) -> None:
         writer.close()
 
 
-def _copy_stdout(stdout: BinaryIO, log_path: Path) -> None:
+def _copy_stdout(stdout: IO[bytes], log_path: Path) -> None:
     writer = _RotatingWriter(log_path)
     try:
         for raw_line in iter(stdout.readline, b""):
@@ -172,14 +178,14 @@ def _command_exit_code(returncode: int) -> int:
     return returncode
 
 
-def _install_signal_forwarders(proc: subprocess.Popen[bytes]) -> dict[int, object]:
+def _install_signal_forwarders(proc: subprocess.Popen[bytes]) -> dict[int, Any]:
     def _forward(signum: int, _frame: object) -> None:
         try:
             proc.send_signal(signum)
         except ProcessLookupError:
             pass
 
-    previous: dict[int, object] = {}
+    previous: dict[int, Any] = {}
     for signum in (signal.SIGTERM, signal.SIGINT, getattr(signal, "SIGHUP", None)):
         if signum is not None:
             try:

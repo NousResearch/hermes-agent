@@ -500,6 +500,7 @@ describe('Inbox-style session card title wrapping', () => {
     const footer = screen.getByText('GPT-4.1').parentElement
     expect(workspace.className).toContain('truncate')
     expect(title?.className).toContain('line-clamp-2')
+    expect(title?.className).toContain('break-words')
     expect(title?.className).toContain('leading-none')
     expect(title?.className).not.toContain('truncate')
     expect(footer?.className).not.toContain('leading-none')

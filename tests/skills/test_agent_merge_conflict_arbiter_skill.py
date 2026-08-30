@@ -1,4 +1,4 @@
-"""Contract checks for the bundled merge-reconciler skill asset.
+"""Contract checks for the optional agent-merge-conflict-arbiter skill asset.
 
 Reads only the SKILL.md markdown asset — no .py source reads, no network.
 """
@@ -8,9 +8,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_PATH = (
     REPO_ROOT
-    / "skills"
+    / "optional-skills"
     / "autonomous-ai-agents"
-    / "merge-reconciler"
+    / "agent-merge-conflict-arbiter"
     / "SKILL.md"
 )
 
@@ -48,7 +48,7 @@ def test_frontmatter_required_fields():
     fm, _ = _frontmatter_and_body()
     for field in ("name", "description", "version", "author", "license", "platforms"):
         assert field in fm, f"missing frontmatter field: {field}"
-    assert fm["name"] == "merge-reconciler"
+    assert fm["name"] == "agent-merge-conflict-arbiter"
 
 
 def test_description_hardline():

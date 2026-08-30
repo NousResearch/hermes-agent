@@ -2728,11 +2728,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _message_response(message: Dict[str, Any]) -> Dict[str, Any]:
         message = _project_client_message(message)
+        from agent.codex_display_projection import project_codex_display_items
+        codex_display_items = project_codex_display_items(message)
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name",
             "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content",
             "display_kind")
-        return {key: message.get(key) for key in safe_keys if key in message}
+        payload = {key: message.get(key) for key in safe_keys if key in message}
+        if codex_display_items:
+            payload["codex_display_items"] = codex_display_items
+        return payload
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
         try:

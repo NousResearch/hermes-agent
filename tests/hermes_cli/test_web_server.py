@@ -2157,6 +2157,47 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/sessions/neg-offset-messages/messages?offset=-1")
         assert resp.status_code == 422
 
+    def test_get_session_messages_projects_safe_codex_display_items(self):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            db.create_session(session_id="codex-display-safe", source="cli")
+            db.append_message(
+                session_id="codex-display-safe", role="assistant", content="", reasoning="Inspect\n\nVisible",
+                codex_reasoning_items=[{"type": "reasoning", "id": "rs", "encrypted_content": "ENCRYPTED_SENTINEL", "summary": [{"type": "summary_text", "text": "Inspect"}]}],
+                codex_message_items=[
+                    {"type": "message", "id": "analysis", "role": "assistant", "phase": "analysis", "content": [{"type": "output_text", "text": "ANALYSIS_SENTINEL"}]},
+                    {"type": "message", "id": "commentary", "role": "assistant", "phase": "commentary", "content": [{"type": "output_text", "text": "Visible"}]},
+                ],
+            )
+        finally:
+            db.close()
+        response = self.client.get("/api/sessions/codex-display-safe/messages?order=latest")
+        encoded = response.text
+        persisted = response.json()["messages"][0]
+        assert persisted["codex_display_items"][-1]["id"] == "commentary"
+        assert "codex_reasoning_items" not in encoded and "codex_message_items" not in encoded
+        assert "ANALYSIS_SENTINEL" not in encoded and "ENCRYPTED_SENTINEL" not in encoded
+
+    def test_get_session_messages_drops_malformed_codex_sidecars_without_leaking(self):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            db.create_session(session_id="codex-display-malformed", source="cli")
+            db.append_message(
+                session_id="codex-display-malformed", role="assistant", content="", reasoning="Fallback whole reasoning",
+                codex_reasoning_items=[{"type": "reasoning", "id": "rs", "encrypted_content": "ENCRYPTED_SENTINEL", "summary": "malformed"}],
+                codex_message_items=[{"type": "message", "id": "analysis", "role": "assistant", "phase": "analysis", "content": [{"type": "output_text", "text": "ANALYSIS_SENTINEL"}]}],
+            )
+        finally:
+            db.close()
+        response = self.client.get("/api/sessions/codex-display-malformed/messages?order=latest")
+        persisted = response.json()["messages"][0]
+        assert persisted["reasoning"] == "Fallback whole reasoning"
+        assert "codex_display_items" not in persisted
+        for forbidden in ("codex_reasoning_items", "codex_message_items", "ANALYSIS_SENTINEL", "ENCRYPTED_SENTINEL"):
+            assert forbidden not in response.text
+
     def test_get_session_messages_limit_above_500_is_capped_not_rejected(self):
         """A limit above the documented 500-row cap is silently clamped
         (existing ``min(limit, 500)`` behaviour), not rejected — the request

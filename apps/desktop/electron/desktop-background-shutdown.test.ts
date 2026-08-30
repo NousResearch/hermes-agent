@@ -21,6 +21,7 @@ describe('Desktop background-service shutdown', () => {
       resolveBackend,
       spawnFn,
       env: { HERMES_HOME: '/profiles' },
+      platform: 'linux',
       timeoutMs: 1_000
     })
     child.emit('exit', 0, null)
@@ -48,6 +49,7 @@ describe('Desktop background-service shutdown', () => {
       resolveBackend: args => ({ command: 'hermes', args }),
       spawnFn: () => child,
       env: {},
+      platform: 'linux',
       timeoutMs: 25
     })
     await vi.advanceTimersByTimeAsync(25)
@@ -55,5 +57,35 @@ describe('Desktop background-service shutdown', () => {
     await expect(stopped).resolves.toBe(false)
     expect(kill).toHaveBeenCalledWith('SIGTERM')
     vi.useRealTimers()
+  })
+
+  it('boots out the exact Hermes companion launchd job on macOS', async () => {
+    const children: EventEmitter[] = []
+    const spawnFn = vi.fn(() => {
+      const child = Object.assign(new EventEmitter(), {
+        kill: vi.fn(() => true)
+      })
+      children.push(child)
+      return child
+    })
+
+    const stopped = stopDesktopBackgroundServices({
+      resolveBackend: args => ({ command: '/runtime/bin/hermes', args }),
+      spawnFn,
+      env: { HERMES_HOME: '/profiles' },
+      platform: 'darwin',
+      uid: 501,
+      timeoutMs: 1_000
+    })
+    children[0].emit('exit', 0, null)
+    children[1].emit('exit', 0, null)
+
+    await expect(stopped).resolves.toBe(true)
+    expect(spawnFn).toHaveBeenNthCalledWith(
+      2,
+      '/bin/launchctl',
+      ['bootout', 'gui/501/com.local.hermes.companion-backend'],
+      expect.objectContaining({ shell: false, stdio: 'ignore' })
+    )
   })
 })

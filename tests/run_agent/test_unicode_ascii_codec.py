@@ -88,6 +88,61 @@ class TestSurrogateVsAsciiSanitization:
         messages = [{"role": "user", "content": "hello ⚕ world"}]
         assert _sanitize_messages_surrogates(messages) is False
 
+    def test_surrogates_in_multipart_string_list_sanitized(self):
+        """Multipart list of plain strings containing surrogates must be sanitized."""
+        messages = [{
+            "role": "user",
+            "content": ["First part clean", "Second part with surrogate \ud800 here"],
+        }]
+        assert _sanitize_messages_surrogates(messages) is True
+        assert "\ud800" not in messages[0]["content"][1]
+        assert "\ufffd" in messages[0]["content"][1]
+
+    def test_surrogates_in_multipart_thinking_and_tool_result_sanitized(self):
+        """Multipart structured parts (thinking blocks, tool results, citations) with surrogates are sanitized."""
+        messages = [{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "Internal thought with \ud800 surrogate"},
+                {"type": "tool_result", "content": "Tool output with \ud900 surrogate"},
+                {"type": "text", "text": "Clean visible text", "citations": [{"text": "cite \uda00"}]},
+            ],
+        }]
+        assert _sanitize_messages_surrogates(messages) is True
+        assert "\ud800" not in messages[0]["content"][0]["thinking"]
+        assert "\ufffd" in messages[0]["content"][0]["thinking"]
+        assert "\ud900" not in messages[0]["content"][1]["content"]
+        assert "\ufffd" in messages[0]["content"][1]["content"]
+        assert "\uda00" not in messages[0]["content"][2]["citations"][0]["text"]
+        assert "\ufffd" in messages[0]["content"][2]["citations"][0]["text"]
+
+    def test_surrogates_in_dict_content_sanitized(self):
+        """Dictionary content payload (Responses API format) with surrogates is sanitized."""
+        messages = [{
+            "role": "user",
+            "content": {"type": "input_text", "text": "Input prompt with \ud800 surrogate"},
+        }]
+        assert _sanitize_messages_surrogates(messages) is True
+        assert "\ud800" not in messages[0]["content"]["text"]
+        assert "\ufffd" in messages[0]["content"]["text"]
+
+    def test_non_ascii_in_multipart_and_dict_content_sanitized(self):
+        """Non-ASCII in multipart lists, structured parts, and dict content are stripped."""
+        messages = [
+            {
+                "role": "user",
+                "content": ["Part 1: 🤖", {"type": "text", "text": "Part 2: 你好"}],
+            },
+            {
+                "role": "assistant",
+                "content": {"type": "output_text", "text": "Output: ⚕"},
+            },
+        ]
+        assert _sanitize_messages_non_ascii(messages) is True
+        assert messages[0]["content"][0] == "Part 1: "
+        assert messages[0]["content"][1]["text"] == "Part 2: "
+        assert messages[1]["content"]["text"] == "Output: "
+
 
 class TestApiKeyNonAsciiSanitization:
     """Tests for API key sanitization in the UnicodeEncodeError recovery.

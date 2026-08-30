@@ -490,3 +490,18 @@ describe('SidebarSessionRow continuation badge', () => {
     expect(continuationGlyph(branch.container)).toBeNull()
   })
 })
+
+// Bounded card title must not clip adjacent workspace/footer glyphs.
+describe('Inbox-style session card title wrapping', () => {
+  it('keeps card title at two lines and adjacent text normally led', () => {
+    renderRow(makeSession({ cwd: '/Users/tomek/pursuit-support-agent', message_count: 133, model: 'gpt-4.1', title: 'Ruff lint and pytest verification' }), { card: true })
+    const workspace = screen.getByText('pursuit-support-agent')
+    const title = screen.getByText('Ruff lint and pytest verification').parentElement
+    const footer = screen.getByText('GPT-4.1').parentElement
+    expect(workspace.className).toContain('truncate')
+    expect(title?.className).toContain('line-clamp-2')
+    expect(title?.className).toContain('leading-none')
+    expect(title?.className).not.toContain('truncate')
+    expect(footer?.className).not.toContain('leading-none')
+  })
+})

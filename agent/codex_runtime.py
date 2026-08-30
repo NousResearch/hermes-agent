@@ -347,6 +347,68 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 # --- Codex app-server turn ----------------------------------------------------
 
 
+def _codex_thread_store_path():
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "codex_threads.json"
+
+
+def _load_codex_thread_id(agent) -> "str | None":
+    """The codex thread id this Hermes session last ran on, if any.
+
+    Codex threads persist on disk, so resuming one across an agent-cache
+    eviction or gateway restart is what keeps conversation memory alive —
+    the app-server path never replays Hermes' local transcript into a new
+    thread. Persistence failures must never break a turn: every path here
+    degrades to None (fresh thread), which is the pre-resume behavior.
+    """
+    session_id = getattr(agent, "session_id", None)
+    if not session_id or getattr(agent, "platform", "") == "gateway_hygiene":
+        return None
+    try:
+        with open(_codex_thread_store_path(), encoding="utf-8") as fh:
+            entry = json.load(fh).get(session_id)
+        return entry.get("thread_id") if isinstance(entry, dict) else None
+    except Exception:
+        return None
+
+
+def _store_codex_thread_id(agent, thread_id: "str | None") -> None:
+    session_id = getattr(agent, "session_id", None)
+    if (
+        not session_id
+        or not thread_id
+        or getattr(agent, "platform", "") == "gateway_hygiene"
+    ):
+        return
+    path = _codex_thread_store_path()
+    try:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                store = json.load(fh)
+            if not isinstance(store, dict):
+                store = {}
+        except Exception:
+            store = {}
+        prior = store.get(session_id)
+        if isinstance(prior, dict) and prior.get("thread_id") == thread_id:
+            return
+        store[session_id] = {"thread_id": thread_id, "updated": time.time()}
+        if len(store) > 200:  # prune dead sessions oldest-first
+            for key, _ in sorted(
+                store.items(),
+                key=lambda kv: kv[1].get("updated", 0)
+                if isinstance(kv[1], dict) else 0,
+            )[: len(store) - 200]:
+                store.pop(key, None)
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(store, fh, indent=1)
+        os.replace(tmp, path)
+    except Exception:
+        logger.debug("codex thread-id persistence failed", exc_info=True)
+
+
 def _close_codex_session(agent) -> None:
     """Drop the session so the next turn respawns codex instead of reusing a dead client."""
     with suppress(Exception):
@@ -392,6 +454,7 @@ def _ensure_codex_session(agent) -> None:
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
+        resume_thread_id=_load_codex_thread_id(agent),
     )
 
 
@@ -457,6 +520,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     _ensure_codex_session(agent)
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)
+        _store_codex_thread_id(agent, getattr(turn, "thread_id", None))
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)

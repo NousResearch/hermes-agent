@@ -1019,7 +1019,8 @@ export function acceptsSessionRuntimeSource(storedSessionId: string, sourceOwner
 
   return (
     owner.connectionId.trim() === sourceOwner.connectionId.trim() &&
-    normalizeProfileKey(owner.profile) === normalizeProfileKey(sourceOwner.profile)
+    normalizeProfileKey(owner.targetProfile ?? owner.profile) ===
+      normalizeProfileKey(sourceOwner.targetProfile ?? sourceOwner.profile)
   )
 }
 

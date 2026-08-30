@@ -12,6 +12,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
+  sessionOwnerRouteFromRow,
   setActiveSessionId,
   setCurrentBranch,
   setCurrentCwdTransient,
@@ -25,6 +26,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { acceptsSessionRuntimeSource } from '@/store/session-states'
 import { reportInstallMethodWarning } from '@/store/updates'
 
@@ -133,7 +135,7 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
 
-  const sourceOwner = event.connectionId
+  const sourceOwner: SessionOwnerRoute | undefined = event.connectionId
     ? { connectionId: event.connectionId, profile: event.profile?.trim() || 'default' }
     : undefined
 
@@ -467,7 +469,29 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''
 
     if (storedId && nextTitle) {
-      setSessions(prev => prev.map(s => (sessionMatchesStoredId(s, storedId) ? { ...s, title: nextTitle } : s)))
+      setSessions(prev =>
+        prev.map(session => {
+          if (!sessionMatchesStoredId(session, storedId)) {
+            return session
+          }
+
+          if (sourceOwner) {
+            const rowOwner = sessionOwnerRouteFromRow(session)
+            const sourceTargetProfile = (sourceOwner.targetProfile ?? sourceOwner.profile).trim() || 'default'
+            const rowTargetProfile = (rowOwner?.targetProfile ?? rowOwner?.profile)?.trim() || 'default'
+
+            if (
+              !rowOwner ||
+              rowOwner.connectionId !== sourceOwner.connectionId.trim() ||
+              rowTargetProfile !== sourceTargetProfile
+            ) {
+              return session
+            }
+          }
+
+          return { ...session, title: nextTitle }
+        })
+      )
     }
 
     return true

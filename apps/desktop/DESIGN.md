@@ -306,9 +306,10 @@ long transcript or a busy terminal.
 
 - Every user-facing string goes through `useI18n()` (`src/i18n/context.tsx`).
   No literals in JSX.
-- **Update all locales together** — `en`, `ja`, `zh`, `zh-hant`. A string change
-  in `en.ts` that skips the others is a regression (drifted punctuation,
-  stale labels). Keep trailing-punctuation and tone consistent across all four.
+- **Update all locales together** — `en`, `ja`, `zh`, `zh-hant`, `ar`, `tr`. A
+  string change in `en.ts` that skips the others is a regression (drifted
+  punctuation, stale labels). Keep trailing-punctuation and tone consistent
+  across every locale.
 
 ## State (TypeScript)
 
@@ -354,7 +355,7 @@ The detailed state contract lives in the scoped
 - [ ] Hot interactions avoid broad subscriptions, layout thrash, and
       `transition-all`?
 - [ ] Keyboard ownership and single-action `Esc` behavior are correct?
-- [ ] All four locales updated for any new/changed string?
+- [ ] Every locale updated for any new/changed string?
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
 - [ ] Touched a primitive, token, or variant? Its named-contract entry in this
       file is updated in the same change.

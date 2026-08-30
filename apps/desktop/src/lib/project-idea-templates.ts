@@ -1,3 +1,5 @@
+import type { Locale } from '@/i18n/types'
+
 // Fun starter ideas for the new-project dialog. Pills prefill IDEA.md; the set
 // shown is a random handful from this pool (reshuffled on open / via the dice),
 // so creating a project always feels a little playful. Pure content — edit
@@ -102,9 +104,91 @@ export const PROJECT_IDEA_TEMPLATES: ProjectIdeaTemplate[] = [
   }
 ]
 
+const TURKISH_PROJECT_IDEA_COPY: Array<Pick<ProjectIdeaTemplate, 'idea' | 'label'>> = [
+  {
+    label: 'Oyun geliştirme maratonu',
+    idea: 'Bir hafta sonunda geliştirilen küçük bir tarayıcı oyunu.\n\n- Tek bir temel mekanik ve güçlü geri bildirim\n- Derleme adımı yok: tek HTML/JS dosyası\n- 60 saniyeden kısa sürede oynanabilir'
+  },
+  {
+    label: 'Roman',
+    idea: 'Yazım aşamasında bir roman.\n\n- Bölümleri, karakterleri ve zaman çizelgesini takip et\n- Günlük kelime sayısı hedefi belirle\n- Araştırma notlarını taslağın yanında tut'
+  },
+  {
+    label: 'Discord botu',
+    idea: 'Küçük bir topluluk için Discord botu.\n\n- Slash komutları ve eğlenceli günlük bir ritüel\n- Hafif kalıcı veri saklama\n- Ücretsiz bir yerde yayına al'
+  },
+  {
+    label: 'Veri görselleştirme',
+    idea: 'Önemsediğim bir veri kümesinin etkileşimli görselleştirmesi.\n\n- Veri kümesini ve yanıtlayacağı tek soruyu seç\n- Temizle → grafik oluştur → not ekle\n- Tek sayfa olarak paylaşılabilir yap'
+  },
+  {
+    label: 'Üretken sanat',
+    idea: 'Üretken bir sanat eseri.\n\n- Tek algoritma, çok sayıda tohum\n- Yüksek çözünürlüklü görseller dışa aktar\n- En iyi çıktılardan bir galeri oluştur'
+  },
+  {
+    label: 'Tarif kutusu',
+    idea: 'Kişisel tarif koleksiyonu.\n\n- Malzemeye ve ruh hâline göre aranabilir\n- Porsiyonları anında ölçekle\n- Alışveriş listesi otomatik oluştur'
+  },
+  {
+    label: 'Araştırma günlüğü',
+    idea: 'Açık bir soru için araştırma defteri.\n\n- Deneyleri, sonuçları ve çıkmazları kaydet\n- Kaynakları satır içinde belirt\n- Öğrendiklerini haftalık olarak sentezle'
+  },
+  {
+    label: 'Bütçe takipçisi',
+    idea: 'Gösterişsiz bir bütçe takipçisi.\n\n- İşlemleri içe aktar, hızlıca etiketle\n- Aylık harcama hızı ve plan karşılaştırması\n- Gerçeği anlatan tek grafik'
+  },
+  {
+    label: 'Alışkanlık takipçisi',
+    idea: 'Gerçekten sürdürülebilir bir alışkanlık takipçisi.\n\n- Birkaç günlük onay kutusu\n- Suçluluk duygusu olmadan seriler\n- Sakin bir haftalık değerlendirme'
+  },
+  {
+    label: 'Seyahat planlayıcısı',
+    idea: 'Yaklaşan bir gezi için planlayıcı.\n\n- Gün gün gezi programı\n- İşaretler ve notlardan oluşan harita\n- Çanta ve bütçe kontrol listesi'
+  },
+  {
+    label: 'Müzik oyuncağı',
+    idea: 'Küçük bir müzik yapma oyuncağı.\n\n- Tek bir enstrüman veya sekanslayıcı\n- Kurulum gerektirmeyen Web Audio\n- Bir döngüyü kaydet ve paylaş'
+  },
+  {
+    label: 'Bulmaca oluşturucu',
+    idea: 'Sevdiğim bir bulmaca türü için oluşturucu.\n\n- Prosedürel olarak çözülebilir bulmacalar üret\n- Zorluk ayarı\n- Yazdırılabilir ve oynanabilir yap'
+  },
+  {
+    label: 'Dijital bahçe',
+    idea: 'Dijital bahçe veya kişisel wiki.\n\n- Birbirine bağlantı veren atomik notlar\n- Zamanla büyür, asla tamamen “bitmez”\n- Herkese açık olanları yayımla'
+  },
+  {
+    label: 'API sarmalayıcı',
+    idea: 'Sık kullandığım bir API için temiz bir sarmalayıcı.\n\n- Tür tanımlı istemci ve makul varsayılanlar\n- Her uç nokta için bir örnek\n- Yayımla'
+  },
+  {
+    label: 'Antrenman planı',
+    idea: 'Antrenman planlayıcısı ve günlüğü.\n\n- Haftalık bir antrenman bölümü oluştur\n- Setleri mobilde hızlıca kaydet\n- Aylara yayılan ilerlemeyi takip et'
+  },
+  {
+    label: 'Bilgi kartları',
+    idea: 'Aralıklı tekrar kullanan bilgi kartı uygulaması.\n\n- Hızlı kart ekleme\n- Basit SM-2 zamanlaması\n- Beş dakikaya sığan günlük tekrar'
+  },
+  {
+    label: 'Senaryo',
+    idea: 'Kısa bir film senaryosu.\n\n- Logline → olay akışı → sahneler\n- Doğru biçim, dikkat dağıtmayan yazım\n- Sonunda bir masa başı okuma'
+  },
+  {
+    label: 'Yaparak öğren',
+    idea: 'Ertelediğim bir konuyu öğrenmek için proje.\n\n- Konuyu öğreten en küçük gerçek çalışma\n- Her pürüz için notlar\n- Çalıştığında bir yazı hazırla'
+  }
+]
+
+// Index-aligned with the English pool. A missing entry would silently ship an
+// English pill in the Turkish UI, so the pairing is asserted in the test.
+const TURKISH_PROJECT_IDEA_TEMPLATES: ProjectIdeaTemplate[] = PROJECT_IDEA_TEMPLATES.map((template, index) => ({
+  ...template,
+  ...(TURKISH_PROJECT_IDEA_COPY[index] ?? template)
+}))
+
 // A shuffled slice of the pool — the pills shown at any moment.
-export function randomIdeaTemplates(count = 6): ProjectIdeaTemplate[] {
-  const pool = [...PROJECT_IDEA_TEMPLATES]
+export function randomIdeaTemplates(locale: Locale = 'en', count = 6): ProjectIdeaTemplate[] {
+  const pool = [...(locale === 'tr' ? TURKISH_PROJECT_IDEA_TEMPLATES : PROJECT_IDEA_TEMPLATES)]
 
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))

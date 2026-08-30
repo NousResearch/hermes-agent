@@ -3979,29 +3979,21 @@ def compress_context(
                 exc_info=True,
             )
 
-        # Built-in memory is the only system-prompt input that a normal
-        # compaction reloads. When the cached prompt already embeds the
-        # freshly-reloaded memory blocks verbatim, keep the exact cached
-        # prompt so local backends retain their KV-cache prefix. Containment
-        # (not before/after snapshot equality) is required: fresh-agent
-        # surfaces restore the cached prompt from the session DB, where it
-        # can predate mid-session memory writes the in-memory snapshot has
-        # already absorbed. External providers can change their own prompt
-        # block during on_pre_compress(), so they retain the rebuild path.
-        if (
-            cached_system_prompt is not None
-            and getattr(agent, "_memory_manager", None) is None
-            and _cached_prompt_reflects_builtin_memory(agent, cached_system_prompt)
-        ):
+        # ALWAYS rebuild the prompt at the admitted-commit boundary
+        # (maintainer-directed, #95681 arc). The previous "keep-prompt"
+        # containment branch put the OLD bytes back whenever the reloaded
+        # memory blocks were already embedded — which meant prompt-builder
+        # changes (guidance diets, new blocks, renames) NEVER reached a
+        # long-lived session. The cache argument for keeping bytes was
+        # hollow: when nothing changed, the rebuild is byte-identical and
+        # local KV prefixes survive on equality; when something changed,
+        # the cache was stale by definition and propagation is the point.
+        # Preserve OBJECT identity on byte-equality for backends that key
+        # on it.
+        rebuilt_system_prompt = agent._build_system_prompt(system_message)
+        if cached_system_prompt is not None and rebuilt_system_prompt == cached_system_prompt:
             new_system_prompt = cached_system_prompt
             agent._cached_system_prompt = cached_system_prompt
-            # _invalidate_system_prompt() above also cleared the
-            # cross-session-stable prefix marker boundary. The kept prompt
-            # is byte-identical, so reconstruct the stable tier and reuse
-            # it ONLY when the kept prompt still literally starts with it
-            # (same startswith gate as the restore path); otherwise the
-            # request layer falls back to the legacy single-breakpoint
-            # layout with the prompt bytes untouched.
             from agent.system_prompt import reconstruct_static_prefix
 
             reconstruct_static_prefix(
@@ -4010,8 +4002,18 @@ def compress_context(
                 log_label="compression keep-prompt",
             )
         else:
-            new_system_prompt = agent._build_system_prompt(system_message)
+            new_system_prompt = rebuilt_system_prompt
             agent._cached_system_prompt = new_system_prompt
+            if cached_system_prompt is not None:
+                logger.info(
+                    "Compaction rebuilt a drifted system prompt "
+                    "(session=%s, %d -> %d chars): builder output changed "
+                    "since the stored snapshot (update, config change, or "
+                    "memory/skills growth)",
+                    agent.session_id or "none",
+                    len(cached_system_prompt),
+                    len(new_system_prompt),
+                )
 
         _session_commit_succeeded = False
         _commit_started_at = time.monotonic()

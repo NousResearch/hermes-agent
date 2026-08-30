@@ -595,6 +595,35 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_kanban_assignee_phantom_guard(request, monkeypatch):
+    """Default kanban test assignees to \"spawnable\" so create-time assignee
+    validation doesn't park the suite's synthetic names.
+
+    create_task now validates its assignee via ``profile_exists`` and parks an
+    unknown name in triage instead of dispatching it (2026-08-30 incident: 28
+    junk cards created for nonexistent engineers/orchestrators). Most kanban
+    tests create tasks with synthetic assignee names (\"alice\", \"worker\",
+    \"reviewer\") purely to drive board mechanics — those names don't map to
+    on-disk profile dirs, so without a neutralizer the new guard would park
+    every one of them and the suite would collapse to triage.
+
+    Tests that genuinely assert phantom/unknown-assignee *parking* behaviour
+    opt out with ``@pytest.mark.real_assignees`` (mirroring the way
+    ``real_memory_guard`` opts out of its neutralizer).
+    """
+    nodeid = getattr(request.node, "nodeid", "") or ""
+    if "kanban" not in nodeid:
+        return
+    if request.node.get_closest_marker("real_assignees"):
+        return
+    try:
+        from hermes_cli import profiles as _pf
+    except Exception:
+        return
+    monkeypatch.setattr(_pf, "profile_exists", lambda *a, **k: True)
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""
     import webbrowser as _webbrowser

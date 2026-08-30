@@ -1670,6 +1670,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         )
         return 2
     with kb.connect_closing() as conn:
+        _parked: dict = {}
         task_id = kb.create_task(
             conn,
             title=args.title,
@@ -1693,8 +1694,16 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            _assignee_parked=_parked,
         )
         task = kb.get_task(conn, task_id)
+    if _parked:
+        print(
+            f"kanban: warning: assignee {_parked.get('assignee')!r} is not a "
+            "real profile — task parked in triage for the PM to accept/reject "
+            "(no dispatcher will spawn it).",
+            file=sys.stderr,
+        )
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:

@@ -297,6 +297,12 @@ class StreamTurn:
         # timer firing on a dead turn.  None when keep-alive is disabled or
         # the turn has no armed timer.
         self.keepalive_handle: Optional[asyncio.TimerHandle] = None
+        # Settlement status for the finalize frame.  Remains None until the
+        # finalize path runs.  Set to "indeterminate" when the frame was sent
+        # but delivery could not be confirmed (ACK channel poisoned).  Callers
+        # check this instead of ``finalized`` to distinguish confirmed delivery
+        # from an unconfirmed send.
+        self.settlement: Optional[str] = None
 
 
 class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
@@ -2277,6 +2283,18 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 self.name,
             )
             return response
+        # settlement_indeterminate: the final frame was sent but the ACK
+        # channel was poisoned and the fence timed out, so we cannot confirm
+        # delivery.  Propagate as-is (errcode=0 passes _raise_for_wecom_error)
+        # — the caller in _send_stream_frame_inner checks errmsg and avoids
+        # setting turn.finalized = True.
+        if response.get("errmsg") == "settlement_indeterminate":
+            logger.warning(
+                "[%s] finalize returned settlement_indeterminate — delivery "
+                "unconfirmed for stream_id in req_id=%s",
+                self.name, reply_req_id,
+            )
+            return response
         self._raise_for_wecom_error(response, "send stream reply")
         return response
 
@@ -2940,14 +2958,24 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 # the text matches the last ACTUALLY SENT intermediate content.
                 final_text = text
                 if text and text == turn.last_sent_content:
-                    final_text = text + "​"  # zero-width space
-                await self._send_stream_reply(
+                    final_text = text + "\u200b"  # zero-width space
+                result = await self._send_stream_reply(
                     turn.req_id,
                     turn.stream_id,
                     final_text,
                     finish=True,
                 )
-                turn.finalized = True
+                # settlement_indeterminate: the frame was sent but we could
+                # not confirm delivery (ACK channel poisoned, fence timed
+                # out).  Do NOT mark the turn as confirmed-finalized — that
+                # would be a false positive.  Set a distinct settlement flag
+                # so callers can distinguish, but still clean up the turn and
+                # return True (do NOT fall back to a duplicate proactive
+                # send, which would risk a double bubble).
+                if result.get("errmsg") == "settlement_indeterminate":
+                    turn.settlement = "indeterminate"
+                else:
+                    turn.finalized = True
                 # Clean up this turn's state
                 # If turn_id was provided, the key is chat:turn_id, otherwise chat:req_id
                 if turn_id:

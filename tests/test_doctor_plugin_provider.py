@@ -5,12 +5,27 @@ runtime plugin registry. This test creates a temporary plugin, configures
 it, runs Doctor, and verifies no unknown-provider diagnostic appears.
 """
 
+import contextlib
 import io
 import sys
 import types
-import contextlib
 from argparse import Namespace
-from pathlib import Path
+
+
+def _clear_provider_caches():
+    """Force providers/__init__.py to re-discover on next list_providers()."""
+    import providers as _pkg
+
+    _pkg._REGISTRY.clear()
+    _pkg._ALIASES.clear()
+    _pkg._PROVIDER_LIST_CACHE = None
+    _pkg._discovered = False
+    for mod in list(sys.modules.keys()):
+        if (
+            mod.startswith("plugins.model_providers")
+            or mod.startswith("_hermes_user_provider")
+        ):
+            del sys.modules[mod]
 
 
 def test_doctor_accepts_runtime_model_provider_plugin(monkeypatch, tmp_path):
@@ -38,11 +53,18 @@ test_provider = ProviderProfile(
     env_vars=("TEST_PLUGIN_API_KEY",),
     base_url="https://api.test-plugin.example/v1",
     auth_type="api_key",
-    supports_tools=True,
+    supports_health_check=False,
 )
 
 register_provider(test_provider)
 """,
+        encoding="utf-8",
+    )
+    (plugin_dir / "plugin.yaml").write_text(
+        "name: test-plugin\n"
+        "kind: model-provider\n"
+        "version: 0.0.1\n"
+        "description: Runtime plugin used by Doctor validation regression\n",
         encoding="utf-8",
     )
 
@@ -56,11 +78,17 @@ memory: {}
         encoding="utf-8",
     )
 
-    # Set up environment for Doctor
+    # Set up environment for Doctor. run_doctor reads the module-level
+    # HERMES_HOME constant; list_providers() reads get_hermes_home() / env.
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
     monkeypatch.setattr(doctor_mod, "_DHH", str(hermes_home))
+    monkeypatch.setattr(doctor_mod, "_APIKEY_PROVIDERS_CACHE", None)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     (tmp_path / "project").mkdir(exist_ok=True)
+
+    # Re-scan after HERMES_HOME points at the temp plugin.
+    _clear_provider_caches()
 
     # Stub tool availability checks
     fake_model_tools = types.SimpleNamespace(
@@ -73,6 +101,7 @@ memory: {}
     try:
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -85,16 +114,22 @@ memory: {}
     output = buf.getvalue()
 
     # 5. Assert the unknown-provider diagnostic is absent
-    # If the plugin wasn't recognized, Doctor would show:
-    # "Unknown provider: test-plugin"
-    assert "Unknown provider" not in output, (
+    # Current Doctor wording (must stay in sync with run_doctor()):
+    #   "model.provider 'test-plugin' is not a recognised provider"
+    #   "model.provider 'test-plugin' is unknown."
+    assert "is not a recognised provider" not in output, (
+        f"Doctor rejected runtime plugin provider. Expected test-plugin to be "
+        f"recognized by the plugin registry, but got unknown-provider diagnostic.\n"
+        f"Output:\n{output}"
+    )
+    assert "model.provider 'test-plugin' is unknown" not in output, (
         f"Doctor rejected runtime plugin provider. Expected test-plugin to be "
         f"recognized by the plugin registry, but got unknown-provider diagnostic.\n"
         f"Output:\n{output}"
     )
 
     # Sanity check: verify Doctor actually ran the provider section
-    assert "Model Provider" in output or "Provider" in output, (
+    assert "model.provider" in output or "Provider" in output, (
         f"Doctor output missing provider section. Test may not be exercising "
         f"the right code path.\nOutput:\n{output}"
     )

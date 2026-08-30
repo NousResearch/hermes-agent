@@ -179,6 +179,7 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
 
 _CONCRETE_OUTCOME_MARKERS = (
     "acceptance criteria",
+    "authoritative local ci failure receipt",
     "deliverable:",
     "if nothing clears the bar",
     "when sources and local evidence agree",

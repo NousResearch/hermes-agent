@@ -64,6 +64,34 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 })
 
 describe('toChatMessages', () => {
+  it('preserves native reasoning summary identities during hydration', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Done.',
+        timestamp: 1,
+        reasoning: 'Inspect source\nCheck tests\n\nVerify result',
+        codex_reasoning_items: [
+          {
+            type: 'reasoning',
+            id: 'rs_inspect',
+            summary: [
+              { type: 'summary_text', text: 'Inspect source' },
+              { type: 'summary_text', text: 'Check tests' }
+            ]
+          },
+          { type: 'reasoning', id: 'rs_verify', summary: [{ type: 'summary_text', text: 'Verify result' }] }
+        ]
+      }
+    ])
+    expect(message.parts).toEqual([
+      { type: 'reasoning', sourceId: 'rs_inspect:summary:0', text: 'Inspect source', timestamp: 1 },
+      { type: 'reasoning', sourceId: 'rs_inspect:summary:1', text: 'Check tests', timestamp: 1 },
+      { type: 'reasoning', sourceId: 'rs_verify:summary:0', text: 'Verify result', timestamp: 1 },
+      { type: 'text', text: 'Done.', timestamp: 1 }
+    ])
+  })
+
   it('rebuilds the full command from a gateway tool row carrying args', () => {
     // Gateway watch-window hydration projects tool rows as
     // {role:'tool', name, context, args?}. `context` is an 80-char preview;
@@ -1429,7 +1457,10 @@ describe('sealOpenToolParts', () => {
       )
     ])
 
-    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+    const messages = [
+      ...stopped,
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage
+    ]
 
     const restored = restorePendingClarifyToolCall(
       messages,

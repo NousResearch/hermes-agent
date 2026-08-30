@@ -230,6 +230,30 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   return content
 }
 
+function nativeCodexReasoningParts(value: unknown, reasoningText: string, timestamp?: number): ChatMessagePart[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  const parts: ChatMessagePart[] = []
+  const textGroups: string[] = []
+  value.forEach((rawItem, itemIndex) => {
+    if (!rawItem || typeof rawItem !== 'object') return
+    const item = rawItem as { id?: unknown; type?: unknown; summary?: unknown }
+    if (item.type !== 'reasoning' || !Array.isArray(item.summary)) return
+    const itemId = typeof item.id === 'string' && item.id ? item.id : `native-reasoning:${itemIndex}`
+    const itemTexts: string[] = []
+    item.summary.forEach((rawSummary, summaryIndex) => {
+      if (!rawSummary || typeof rawSummary !== 'object') return
+      const summary = rawSummary as { type?: unknown; text?: unknown }
+      if (summary.type !== 'summary_text' || typeof summary.text !== 'string' || !summary.text) return
+      itemTexts.push(summary.text)
+      parts.push(reasoningPart(summary.text, timestamp, `${itemId}:summary:${summaryIndex}`))
+    })
+    if (itemTexts.length) textGroups.push(itemTexts.join('\n'))
+  })
+  return textGroups.join('\n\n').trim() === reasoningText.trim() ? parts : []
+}
+
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
@@ -341,7 +365,15 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       message.reasoning_content ||
       (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
 
-    if (reasoning && message.role === 'assistant') {
+    const structuredReasoningParts = nativeCodexReasoningParts(
+      message.codex_reasoning_items,
+      reasoning,
+      message.timestamp
+    )
+
+    if (structuredReasoningParts.length && message.role === 'assistant') {
+      parts.push(...structuredReasoningParts)
+    } else if (reasoning && message.role === 'assistant') {
       parts.push(reasoningPart(reasoning, message.timestamp))
     }
 

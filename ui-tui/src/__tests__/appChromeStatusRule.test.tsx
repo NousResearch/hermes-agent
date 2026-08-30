@@ -492,7 +492,6 @@ describe('StatusRule idle-since read-out', () => {
   })
 })
 
-
 describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
   const perfUsage = {
     ...baseProps.usage,

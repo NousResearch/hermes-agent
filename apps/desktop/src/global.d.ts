@@ -306,7 +306,10 @@ declare global {
        *  await the provider redirect, relay code/state via oauth.callback. */
       mcpOauth?: {
         listen: () => Promise<{ id: string; redirectUri: string }>
-        wait: (id: string, timeoutMs?: number) => Promise<{ code: null | string; error: null | string; state: null | string }>
+        wait: (
+          id: string,
+          timeoutMs?: number
+        ) => Promise<{ code: null | string; error: null | string; state: null | string }>
         cancel: (id: string) => Promise<boolean>
       }
       openPreviewInBrowser?: (url: string) => Promise<void>

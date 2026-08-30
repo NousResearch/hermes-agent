@@ -79,7 +79,10 @@ test('non-callback noise (favicon) does not settle the listener', async () => {
 test('provider error param is forwarded', async () => {
   const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
 
-  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{ code: null | string; error: null | string }>
+  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{
+    code: null | string
+    error: null | string
+  }>
 
   await fetch(`${redirectUri}?error=access_denied&state=s`)
 

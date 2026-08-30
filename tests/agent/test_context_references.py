@@ -666,6 +666,77 @@ async def test_canonical_guard_fails_closed_when_lookup_raises(tmp_path: Path, m
     )
 
 
+@pytest.mark.asyncio
+async def test_allowed_root_sequence_widens_boundary_to_each_root(tmp_path: Path):
+    """A sequence of allowed roots admits a path under ANY of them — and only
+    under them. The gateway needs this to let file.attach refs (staged into the
+    profile attachments/ dir, outside the workspace) expand without throwing
+    the workspace boundary open entirely (#98634).
+    """
+    from agent.context_references import preprocess_context_references_async
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    staged = uploads / "staged.txt"
+    staged.write_text("STAGED-CONTENT\n", encoding="utf-8")
+    secret = elsewhere / "secret.txt"
+    secret.write_text("ELSEWHERE-CONTENT\n", encoding="utf-8")
+
+    result = await preprocess_context_references_async(
+        f"read @file:{staged} and @file:{secret}",
+        cwd=workspace,
+        allowed_root=(workspace, uploads),
+        context_length=100_000,
+    )
+
+    # The secondary root's file inlines instead of being refused...
+    assert "STAGED-CONTENT" in result.message
+    # ...a path under neither root is still refused, with the body kept out.
+    assert "ELSEWHERE-CONTENT" not in result.message
+    assert any("outside the allowed workspace" in w for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_allowed_root_sequence_still_applies_credential_denylist(
+    tmp_path: Path, monkeypatch
+):
+    """Widening the allowed roots must NOT widen the credential deny-list: a
+    staged-attachment root that happens to contain a credential store (hermes
+    home placed under it) still refuses to inline the secret (#98634).
+    """
+    from agent.context_references import preprocess_context_references_async
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    uploads = tmp_path / "uploads"
+    hermes_home = uploads / ".hermes"
+    hermes_home.mkdir(parents=True)
+
+    monkeypatch.setenv("HOME", str(uploads))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    auth_json = hermes_home / "auth.json"
+    auth_json.write_text('{"openai": "sk-STAGED-ROOT-SECRET"}\n', encoding="utf-8")
+
+    result = await preprocess_context_references_async(
+        f"inspect @file:{auth_json}",
+        cwd=workspace,
+        allowed_root=(workspace, uploads),
+        context_length=100_000,
+    )
+
+    assert "sk-STAGED-ROOT-SECRET" not in result.message
+    assert any(
+        "credential deny-list" in warning or "sensitive credential" in warning
+        for warning in result.warnings
+    )
+
+
 @pytest.mark.parametrize(
     "value",
     [

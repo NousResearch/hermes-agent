@@ -622,6 +622,12 @@ class GatewayBusySessionMixin:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
             return False  # let default path handle it
+        if (
+            isinstance(getattr(event, "metadata", None), dict)
+            and event.metadata.get("telegram_inbound_claimed")
+        ):
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
         # Internal synthetic events (delegation / background completions) must never interrupt or
         # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
         # queue them through the FIFO (security metadata kept apart).

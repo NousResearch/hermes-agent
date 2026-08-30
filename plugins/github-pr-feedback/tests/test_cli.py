@@ -12,6 +12,7 @@ import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -130,6 +131,122 @@ def test_scan_prioritizes_feedback_before_degraded_repair_maintenance(
     assert order == ["feedback", "repair"]
     payload = json.loads(capsys.readouterr().out)
     assert payload["repair"]["status"] == "degraded"
+
+
+def _run_scan_with_primary_result(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    primary_result: SimpleNamespace,
+) -> tuple[int, list[str], dict[str, object]]:
+    from github_pr_feedback.cli import _scan
+
+    order: list[str] = []
+
+    class Lock:
+        def __enter__(self) -> bool:
+            return True
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class Ledger:
+        @classmethod
+        def for_current_profile(cls):
+            return cls()
+
+        def close(self) -> None:
+            pass
+
+    class Policy:
+        repair_steward = object()
+        merge_maintainer = object()
+        release_maintenance = object()
+
+    class Primary:
+        def scan(self):
+            order.append("primary")
+            return primary_result
+
+    class Repair:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def scan(self):
+            order.append("repair")
+            return SimpleNamespace(
+                created=0,
+                skipped={},
+                degraded=False,
+                required_local_ci_backlog=0,
+            )
+
+    def merge(*_args: object, **_kwargs: object) -> dict[str, object]:
+        order.append("merge")
+        return {"status": "ok"}
+
+    def release(*_args: object, **_kwargs: object) -> dict[str, object]:
+        order.append("release")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._load_policy_from_context", lambda _ctx: Policy()
+    )
+    monkeypatch.setattr("github_pr_feedback.cli._exclusive_scan_lock", lambda: Lock())
+    monkeypatch.setattr("github_pr_feedback.cli.FeedbackLedger", Ledger)
+    monkeypatch.setattr("github_pr_feedback.cli.RepairController", Repair)
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._controller", lambda *_args: Primary()
+    )
+    monkeypatch.setattr("github_pr_feedback.cli._run_merge_scan", merge)
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_release_maintenance_scan", release
+    )
+
+    returncode = _scan(object())
+    payload = json.loads(capsys.readouterr().out)
+    return returncode, order, payload
+
+
+def test_scan_defers_secondary_fanout_for_required_ci_backlog_below_read_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = SimpleNamespace(
+        created=1,
+        skipped={"local_ci_dispatch_cap": 1},
+        degraded=False,
+        required_local_ci_backlog=2,
+    )
+
+    returncode, order, payload = _run_scan_with_primary_result(
+        monkeypatch, capsys, result
+    )
+
+    assert returncode == 0
+    assert order == ["primary"]
+    assert payload["required_local_ci_backlog"] == 2
+    assert payload["deferred"] == ["repair", "merge", "release_maintenance"]
+
+
+def test_scan_does_not_defer_secondary_fanout_for_read_cap_without_ci_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = SimpleNamespace(
+        created=0,
+        skipped={"local_ci_open_pr_scan_cap": 1},
+        degraded=False,
+        required_local_ci_backlog=0,
+    )
+
+    returncode, order, payload = _run_scan_with_primary_result(
+        monkeypatch, capsys, result
+    )
+
+    assert returncode == 0
+    assert order == ["primary", "repair", "merge", "release"]
+    assert "required_local_ci_backlog" not in payload
+    assert "deferred" not in payload
 
 
 class RecordingKanbanRunner:

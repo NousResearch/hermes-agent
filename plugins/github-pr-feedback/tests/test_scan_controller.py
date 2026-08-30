@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import subprocess
 import sys
@@ -1721,6 +1722,167 @@ def test_scan_bounds_oldest_first_per_pr_reads_for_local_ci(tmp_path: Path) -> N
     assert result.skipped["local_ci_open_pr_scan_cap"] == 1
     assert github.feedback_calls == [("acme/widgets", 17)]
     assert github.current_calls == [("acme/widgets", 17)]
+    ledger.close()
+
+
+def test_required_local_ci_backlog_signal_counts_missing_receipts_below_read_cap(
+    tmp_path: Path,
+) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    manifest = local_path / "tests" / "manifests" / "test_lanes.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("version = 1\n", encoding="utf-8")
+    base_sha = "b" * 40
+    older = PullRequest(
+        17,
+        "OPEN",
+        "acme/widgets",
+        "acme/widgets",
+        "owner",
+        "codex/older",
+        sha,
+        base_branch="stable",
+        base_sha=base_sha,
+    )
+    newer = PullRequest(
+        18,
+        "OPEN",
+        "acme/widgets",
+        "acme/widgets",
+        "owner",
+        "codex/newer",
+        sha,
+        base_branch="stable",
+        base_sha=base_sha,
+    )
+    raw = {
+        "enabled": True,
+        "repositories": [
+            {
+                "base_repository": "acme/widgets",
+                "head_repository": "acme/widgets",
+                "local_path": str(local_path),
+                "owner_login": "owner",
+                "branch_prefixes": ["codex/"],
+            }
+        ],
+        "reviewer_logins": ["reviewer"],
+        "reviewer_associations": [],
+        "not_before": "2026-08-24T00:00:00Z",
+        "assignee": "repair-agent",
+        "board": "repairs",
+        "local_ci_audit": {
+            "enabled": True,
+            "assignee": "pr-local-ci-auditor",
+            "post_results": True,
+            "required_for_open_prs": True,
+            "max_dispatches_per_scan": 1,
+            "max_open_prs_per_scan": 300,
+        },
+    }
+    github = FakeGitHub(newer, (), pull_requests=(newer, older))
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+
+    result = ScanController(
+        load_policy(raw), ledger, github, RecordingKanban(), RecordingLocalGit()
+    ).scan()
+
+    assert getattr(result, "required_local_ci_backlog", 0) == 2
+    assert result.skipped.get("local_ci_open_pr_scan_cap", 0) == 0
+    assert github.feedback_calls == [("acme/widgets", 17), ("acme/widgets", 18)]
+    assert github.current_calls == [("acme/widgets", 17)]
+    ledger.close()
+
+
+def test_required_local_ci_backlog_signal_ignores_read_cap_when_receipts_are_current(
+    tmp_path: Path,
+) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    manifest = local_path / "tests" / "manifests" / "test_lanes.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("version = 1\n", encoding="utf-8")
+    manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    base_sha = "b" * 40
+    pulls = tuple(
+        PullRequest(
+            number,
+            "OPEN",
+            "acme/widgets",
+            "acme/widgets",
+            "owner",
+            f"codex/pr-{number}",
+            sha,
+            base_branch="stable",
+            base_sha=base_sha,
+        )
+        for number in (17, 18)
+    )
+    raw = {
+        "enabled": True,
+        "repositories": [
+            {
+                "base_repository": "acme/widgets",
+                "head_repository": "acme/widgets",
+                "local_path": str(local_path),
+                "owner_login": "owner",
+                "branch_prefixes": ["codex/"],
+            }
+        ],
+        "reviewer_logins": ["reviewer"],
+        "reviewer_associations": [],
+        "not_before": "2026-08-24T00:00:00Z",
+        "assignee": "repair-agent",
+        "board": "repairs",
+        "local_ci_audit": {
+            "enabled": True,
+            "assignee": "pr-local-ci-auditor",
+            "post_results": True,
+            "required_for_open_prs": True,
+            "max_open_prs_per_scan": 1,
+        },
+    }
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    recorded_at = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
+    for pull in pulls:
+        ledger.record_ci_receipt(
+            CIAuditReceipt(
+                receipt_id=f"{pull.number - 16}" * 64,
+                identity=CIAuditIdentity(
+                    "acme/widgets", pull.number, base_sha, pull.head_sha
+                ),
+                manifest_digest=manifest_digest,
+                status="passed",
+                started_at=recorded_at,
+                completed_at=recorded_at + timedelta(minutes=1),
+                actions_state=CheckState(True, True, 1),
+                commands=(),
+            )
+        )
+        feedback_receipt = FeedbackReceipt(
+            "acme/widgets",
+            pull.number,
+            "pr_local_ci",
+            f"{LOCAL_CI_FEEDBACK_ID}:{base_sha}",
+            pull.head_sha,
+        )
+        lease = ledger.claim(
+            feedback_receipt,
+            owner="seed",
+            claimed_at=recorded_at,
+            stale_before=recorded_at - timedelta(minutes=5),
+        )
+        assert lease is not None
+        ledger.finalize(feedback_receipt, f"audit-{pull.number}", lease)
+    github = FakeGitHub(pulls[0], (), pull_requests=pulls)
+
+    result = ScanController(
+        load_policy(raw), ledger, github, RecordingKanban(), RecordingLocalGit()
+    ).scan()
+
+    assert getattr(result, "required_local_ci_backlog", 0) == 0
+    assert result.skipped["local_ci_open_pr_scan_cap"] == 1
+    assert github.feedback_calls == [("acme/widgets", 17)]
+    assert github.current_calls == []
     ledger.close()
 
 

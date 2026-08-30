@@ -483,15 +483,12 @@ def _scan(ctx: Any) -> int:
                 # leased simply falls back to its lease timeout.
                 pass
             result = _controller(policy, ledger).scan()
-            # A required local-CI backlog is a strict oldest-first merge
-            # train. Do not fan out repair, merge, and release reads across
-            # every remaining PR while the scanner has deliberately bounded
-            # its per-PR work; doing so defeats the API budget and can trigger
-            # a secondary GitHub rate limit before the selected audit starts.
-            oldest_first_backlog = bool(
-                result.skipped.get("local_ci_open_pr_scan_cap", 0)
-            )
-            if policy.repair_steward is not None and not oldest_first_backlog:
+            # Required exact-head CI is a strict oldest-first merge train. Do
+            # not fan out repair, merge, and release reads while any admitted
+            # head still lacks its current passing receipt; doing so can spend
+            # the API budget before the selected audit starts.
+            required_ci_backlog = result.required_local_ci_backlog > 0
+            if policy.repair_steward is not None and not required_ci_backlog:
                 repair = RepairController(
                     policy,
                     ledger,
@@ -500,14 +497,14 @@ def _scan(ctx: Any) -> int:
                     control_home=get_default_hermes_root(),
                 ).scan()
                 repair_payload = _scan_payload(repair)
-            if policy.merge_maintainer is not None and not oldest_first_backlog:
+            if policy.merge_maintainer is not None and not required_ci_backlog:
                 merge_payload = _run_merge_scan(policy, ledger)
-            if policy.release_maintenance is not None and not oldest_first_backlog:
+            if policy.release_maintenance is not None and not required_ci_backlog:
                 maintenance_payload = _run_release_maintenance_scan(policy, ledger)
         finally:
             ledger.close()
     payload = _scan_payload(result)
-    if result.skipped.get("local_ci_open_pr_scan_cap", 0):
+    if result.required_local_ci_backlog > 0:
         payload["deferred"] = ["repair", "merge", "release_maintenance"]
     if merge_payload is not None:
         payload["merge"] = merge_payload
@@ -709,11 +706,14 @@ def _controller(policy: PluginPolicy, ledger: FeedbackLedger) -> ScanController:
 
 
 def _scan_payload(result) -> dict[str, object]:
-    return {
+    payload = {
         "status": "degraded" if result.degraded else "ok",
         "created": result.created,
         "skipped": result.skipped,
     }
+    if result.required_local_ci_backlog > 0:
+        payload["required_local_ci_backlog"] = result.required_local_ci_backlog
+    return payload
 
 
 def _status() -> int:

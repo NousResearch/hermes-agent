@@ -205,6 +205,7 @@ class ScanResult:
     created: int
     skipped: Mapping[str, int]
     degraded: bool = False
+    required_local_ci_backlog: int = 0
 
 
 def _bind_pooled_worktree_task(
@@ -789,8 +790,13 @@ class ScanController:
         skipped: Counter[str] = Counter()
         created = 0
         attempted = 0
+        required_local_ci_backlog = 0
         if not self._policy.enabled or self._policy.not_before is None:
-            return _scan_result(created, skipped)
+            return _scan_result(
+                created,
+                skipped,
+                required_local_ci_backlog=required_local_ci_backlog,
+            )
         for repository in self._policy.targets:
             target = self._policy.targets[repository]
             local_ci_dispatched = 0
@@ -815,6 +821,12 @@ class ScanController:
             # deterministic oldest-first queue so an old failing PR cannot be
             # indefinitely bypassed by newer arrivals.
             pull_requests = tuple(sorted(pull_requests, key=lambda pull: pull.number))
+            required_local_ci_backlog += _required_local_ci_backlog_count(
+                self._policy,
+                self._ledger,
+                target,
+                pull_requests,
+            )
             if (
                 self._policy.local_ci_audit is not None
                 and self._policy.local_ci_audit.applies_to(repository)
@@ -1051,7 +1063,11 @@ class ScanController:
                             local_ci_dispatched += 1
                         else:
                             skipped[audit_error] += 1
-        return _scan_result(created, skipped)
+        return _scan_result(
+            created,
+            skipped,
+            required_local_ci_backlog=required_local_ci_backlog,
+        )
 
     def _read_scan_snapshot(
         self,
@@ -2352,7 +2368,17 @@ def _receipt_idempotency_key(receipt: FeedbackReceipt) -> str:
     return f"github-pr-feedback:{sha256(repr(receipt.key).encode('utf-8')).hexdigest()}"
 
 
-def _scan_result(created: int, skipped: Mapping[str, int]) -> ScanResult:
+def _scan_result(
+    created: int,
+    skipped: Mapping[str, int],
+    *,
+    required_local_ci_backlog: int = 0,
+) -> ScanResult:
     values = dict(skipped)
     degraded = any(values.get(reason, 0) > 0 for reason in _DEGRADED_REASONS)
-    return ScanResult(created, values, degraded)
+    return ScanResult(
+        created,
+        values,
+        degraded,
+        required_local_ci_backlog=required_local_ci_backlog,
+    )

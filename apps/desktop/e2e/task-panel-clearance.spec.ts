@@ -4,10 +4,9 @@
  * height without needing a manual scroll to repair the position.
  */
 
-import { expect, test, type Page } from './test'
-
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { TASK_PANEL_RESUME_TRIGGER } from '../../../tests-js/scripts/mock-server'
+import { expect, type Page, test } from './test'
 
 const SURFACE = '[data-composer-target]:visible'
 const PROMPT = `${TASK_PANEL_RESUME_TRIGGER}: keep the task panel expanded while this session is reopened.`
@@ -84,7 +83,7 @@ test.describe('working-session task-panel clearance', () => {
     fixture = null
   })
 
-  test('window focus reanchors a working session above the expanded task panel', async ({}, testInfo) => {
+  test('window focus reanchors a working session above the expanded task panel', async (_fixtures, testInfo) => {
     const page = fixture!.page
 
     await send(page, PROMPT)
@@ -103,6 +102,7 @@ test.describe('working-session task-panel clearance', () => {
     // disable Chromium's background throttling, so visibility can stay `visible`
     // and window focus is the only foreground edge that can repair it.
     await page.waitForTimeout(750)
+
     const staleState = await activeSurface(page)
       .locator('[data-slot="aui_thread-viewport"]')
       .evaluate(viewport => {

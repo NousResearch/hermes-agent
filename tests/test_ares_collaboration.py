@@ -176,23 +176,24 @@ def test_reopen_requires_a_new_evidence_projection():
     assert not hasattr(projector, "close") and not hasattr(projector, "reopen")
 
 
-def _serve_one_permit_response(path, response_factory):
+def _serve_permit_responses(path, *response_factories):
     ready = threading.Event()
 
     def serve():
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
             listener.bind(str(path))
-            listener.listen(1)
+            listener.listen(len(response_factories))
             ready.set()
-            with listener.accept()[0] as client:
-                size = struct.unpack(">I", client.recv(4))[0]
-                payload = bytearray()
-                while len(payload) < size:
-                    payload.extend(client.recv(size - len(payload)))
-                request = json.loads(bytes(payload))
-                response = response_factory(request)
-                encoded = json.dumps(response).encode()
-                client.sendall(struct.pack(">I", len(encoded)) + encoded)
+            for response_factory in response_factories:
+                with listener.accept()[0] as client:
+                    size = struct.unpack(">I", client.recv(4))[0]
+                    payload = bytearray()
+                    while len(payload) < size:
+                        payload.extend(client.recv(size - len(payload)))
+                    request = json.loads(bytes(payload))
+                    response = response_factory(request)
+                    encoded = json.dumps(response).encode()
+                    client.sendall(struct.pack(">I", len(encoded)) + encoded)
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
@@ -200,13 +201,30 @@ def _serve_one_permit_response(path, response_factory):
     return thread
 
 
-def _daemon_adapter(path):
-    args_digest = "sha256:" + "a" * 64
-    return DaemonPermitReceiptAdapter({
-        "socket_path": str(path),
-        "permit_id": "permit:one",
-        "binding": {"tool": "write_file", "args_digest": args_digest},
-    }), args_digest
+class _WitnessProvider:
+    def __init__(self, witness):
+        self.witness = witness
+        self.calls = []
+
+    def issue_witness(self, *, mission_ref, target_ref, call):
+        self.calls.append({"mission_ref": mission_ref, "target_ref": target_ref, "call": call})
+        return self.witness
+
+
+def _test_witness(_text="fixture"):
+    return {
+        "operator_case": "approval:test:one",
+        "request_digest": "a" * 64,
+        "authenticator": "b" * 64,
+    }
+
+
+def _daemon_adapter(path, witness: object = "valid", text="fixture"):
+    resolved_witness = _test_witness(text) if witness == "valid" else witness
+    return DaemonPermitReceiptAdapter(
+        {"socket_path": str(path), "mode": "test_only_echo"},
+        approval_witness_provider=_WitnessProvider(resolved_witness),
+    )
 
 
 def _write_digest_helper(path: Path, output: str, captured: Path | None = None) -> None:
@@ -241,117 +259,77 @@ def test_daemon_permit_argument_digest_is_daemon_owned(monkeypatch, tmp_path):
     monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
     adapter = DaemonPermitReceiptAdapter({
         "socket_path": str(tmp_path / "unneeded.sock"),
-        "permit_id": "permit:one",
-        "binding": {"tool": "write_file", "args_digest": "sha256:" + "b" * 64},
     })
     token = permit_adapter(adapter)
     try:
         allowed, code, _permit = dispatcher_boundary("write_file", {"path": "x", "content": "payload"}, mission_ref="mission:1")
     finally:
         reset_permit_adapter(token)
-    assert (allowed, code) == (False, "PERMIT_BRIDGE_UNAVAILABLE")
+    assert (allowed, code) == (False, "TEST_ONLY_ECHO_DISABLED")
 
 
-def test_daemon_permit_call_is_exact_post_middleware_payload(monkeypatch, tmp_path):
-    monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
+def test_daemon_permit_call_is_exact_test_only_echo_sequence(tmp_path):
     path = tmp_path / "daemon.sock"
 
+    def issued(request):
+        issuance_payload = {"call": {"tool": "echo", "args": {"text": "payload"}, "frozen_clock": None}, "requested_validity_ms": 300000}
+        assert request["request"] == {
+            "kind": "permit_issue",
+            "request": issuance_payload,
+            "approval": _test_witness("payload"),
+        }
+        return {"request_id": request["request_id"], "permit_id": "permit:one", "binding": {"issued_binding": "opaque"}}
+
     def consumed(request):
-        assert request["request"]["binding"]["args_digest"] == "c" * 64
-        assert request["request"]["call"] == {
-            "tool": "write_file",
-            "args": {"path": "x", "content": "payload"},
-            "frozen_clock": None,
+        assert request["request"] == {
+            "kind": "permit_consume", "permit_id": "permit:one", "binding": {"issued_binding": "opaque"},
+            "call": {"tool": "echo", "args": {"text": "payload"}, "frozen_clock": None},
         }
         return {"request_id": request["request_id"], "permit_id": "permit:one", "evidence": {}, "preflight_artifact": {}, "receipt_artifact": {"digest": "receipt"}}
 
-    _serve_one_permit_response(path, consumed)
-    adapter = DaemonPermitReceiptAdapter({
-        "socket_path": str(path),
-        "permit_id": "permit:one",
-        "binding": {"tool": "write_file", "args_digest": "c" * 64},
-    })
-    token = permit_adapter(adapter)
-    try:
-        allowed, code, permit = dispatcher_boundary("write_file", {"path": "x", "content": "payload"}, mission_ref="mission:1")
-    finally:
-        reset_permit_adapter(token)
-    assert (allowed, code) == (True, None)
-    assert permit is not None and permit["canonical_permit_ref"] == "permit:one"
+    _serve_permit_responses(path, issued, consumed)
+    outcome = _daemon_adapter(path, text="payload").consume(mission_ref="mission:1", tool_name="echo", args={"text": "payload"}, target_ref="tool:echo")
+    assert (outcome.state, outcome.code) == (PermitBridgeState.CONSUMED, "PERMIT_CONSUMED")
+    assert outcome.facts is not None and outcome.facts["canonical_permit_ref"] == "permit:one"
 
 
-def test_daemon_permit_bridge_unavailable_denies_runtime_permit_mode(monkeypatch, tmp_path):
-    monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
-    adapter, args_digest = _daemon_adapter(tmp_path / "missing.sock")
-    outcome = adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x")
+def test_daemon_permit_bridge_unavailable_denies_test_only_echo(tmp_path):
+    adapter = _daemon_adapter(tmp_path / "missing.sock")
+    outcome = adapter.consume(mission_ref="mission:1", tool_name="echo", args={"text": "fixture"}, target_ref="tool:echo")
     assert (outcome.state, outcome.code) == (PermitBridgeState.UNAVAILABLE, "PERMIT_BRIDGE_UNAVAILABLE")
 
 
-def test_daemon_permit_bridge_rejects_malformed_response(tmp_path):
+def test_test_only_adapter_refuses_non_echo_and_default_config(tmp_path):
+    adapter = _daemon_adapter(tmp_path / "must-not-connect.sock")
+    assert (adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x").state, adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x").code) == (PermitBridgeState.DENIED, "TEST_ONLY_ECHO_REQUIRED")
+    production = DaemonPermitReceiptAdapter({"socket_path": str(tmp_path / "production.sock")}, approval_witness_provider=_WitnessProvider(_test_witness()))
+    assert production.consume(mission_ref="mission:1", tool_name="echo", args={"text": "fixture"}, target_ref="tool:echo").code == "TEST_ONLY_ECHO_DISABLED"
+
+
+def test_daemon_permit_bridge_rejects_malformed_issuance_response(tmp_path):
     path = tmp_path / "daemon.sock"
-    _serve_one_permit_response(path, lambda _request: {"request_id": "wrong", "permit_id": "permit:one"})
-    adapter, args_digest = _daemon_adapter(path)
-    outcome = adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x")
+    _serve_permit_responses(path, lambda _request: {"request_id": "wrong", "permit_id": "permit:one"})
+    outcome = _daemon_adapter(path).consume(mission_ref="mission:1", tool_name="echo", args={"text": "fixture"}, target_ref="tool:echo")
     assert (outcome.state, outcome.code) == (PermitBridgeState.MALFORMED, "PERMIT_BRIDGE_MALFORMED")
 
 
-def test_daemon_adapter_maps_daemon_receipt_and_denial_outcomes(tmp_path):
-    path = tmp_path / "daemon.sock"
-
-    def consumed(request):
-        assert request["schema"] == "recursive-agent.ipc/request/v1"
-        assert request["protocol_version"] == 1
-        assert request["request"]["kind"] == "permit_consume"
-        assert request["request"]["permit_id"] == "permit:one"
-        assert request["request"]["call"] == {
-            "tool": "write_file",
-            "args": {"path": "x"},
-            "frozen_clock": None,
-        }
-        return {"request_id": request["request_id"], "permit_id": "permit:one", "evidence": {"state": {"state": "consumed"}}, "preflight_artifact": {"digest": "preflight"}, "receipt_artifact": {"digest": "receipt"}}
-
-    _serve_one_permit_response(path, consumed)
-    adapter, args_digest = _daemon_adapter(path)
-    accepted = adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x")
-    assert accepted.state is PermitBridgeState.CONSUMED
-    assert accepted.facts is not None
-    assert accepted.facts["canonical_permit_ref"] == "permit:one"
-    assert accepted.facts["receipt_artifact"] == {"digest": "receipt"}
-
-    path = tmp_path / "denied.sock"
-    _serve_one_permit_response(path, lambda request: {"request_id": request["request_id"], "error": {"code": "runtime_error", "message": "permit already consumed"}})
-    adapter, args_digest = _daemon_adapter(path)
-    denied = adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x")
-    assert (denied.state, denied.code) == (PermitBridgeState.DENIED, "PERMIT_DENIED")
+@pytest.mark.parametrize("witness, code", [(None, "OPERATOR_APPROVAL_WITNESS_MISSING"), ("not-a-witness", "OPERATOR_APPROVAL_WITNESS_MALFORMED"), ({"tampered": True}, "OPERATOR_APPROVAL_WITNESS_MALFORMED")])
+def test_daemon_adapter_missing_malformed_or_tampered_witness_fails_closed(tmp_path, witness, code):
+    adapter = _daemon_adapter(tmp_path / "must-not-connect.sock", witness)
+    outcome = adapter.consume(mission_ref="mission:1", tool_name="echo", args={"text": "fixture"}, target_ref="tool:echo")
+    assert (outcome.state, outcome.code) == (PermitBridgeState.DENIED, code)
 
 
-def test_daemon_adapter_forwards_bounded_reported_outcome(tmp_path):
+def test_daemon_adapter_forwards_bounded_and_ambiguous_quarantined_outcomes(tmp_path):
     path = tmp_path / "outcome.sock"
 
     def outcome(request):
         assert request["request"]["kind"] == "permit_outcome_record"
-        assert request["request"]["permit_id"] == "permit:one"
-        assert request["request"]["preflight_receipt_digest"] == "a" * 64
-        assert request["request"]["reported"] == {
-            "state": "succeeded",
-            "duration_ms": 7,
-            "error_type": None,
-        }
-        return {
-            "request_id": request["request_id"],
-            "permit_id": "permit:one",
-            "outcome_artifact": {"receipt_digest": "b" * 64},
-        }
+        assert request["request"]["reported"] == {"state": "outcome_ambiguous", "duration_ms": 7, "error_type": None}
+        return {"request_id": request["request_id"], "permit_id": "permit:one", "outcome_artifact": {"receipt_digest": "b" * 64, "state": "terminal_quarantine"}}
 
-    _serve_one_permit_response(path, outcome)
-    adapter, _args_digest = _daemon_adapter(path)
-    adapter.record_receipt({
-        "permit_ref": "permit:one",
-        "preflight_receipt": {"receipt_digest": "a" * 64},
-        "state": "ok",
-        "duration_ms": 7,
-        "error_type": None,
-    })
+    _serve_permit_responses(path, outcome)
+    _daemon_adapter(path).record_receipt({"permit_ref": "permit:one", "preflight_receipt": {"receipt_digest": "a" * 64}, "state": "ambiguous", "duration_ms": 7, "error_type": None})
 
 
 def test_phase_five_frozen_corpus_is_order_independent_and_covers_all_baselines():

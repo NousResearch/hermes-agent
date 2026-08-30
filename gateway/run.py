@@ -5998,7 +5998,23 @@ class TurnRunner:
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config = reasoning_config
         agent.service_tier = self._runner._service_tier
-        agent.request_overrides = turn_route.get("request_overrides") or {}
+        # Merge, never overwrite: init-time request overrides (e.g. a custom
+        # provider's extra_body merged at agent construction) must survive
+        # every reused-agent turn.  Drop only the PREVIOUS turn's routing
+        # overrides (fast-mode service_tier/speed) before layering this
+        # turn's route overrides on top, so stale per-turn values never
+        # linger while construction-time values persist.
+        request_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+        previous_turn_overrides = dict(
+            getattr(agent, "_gateway_turn_request_overrides", {}) or {}
+        )
+        for key, value in previous_turn_overrides.items():
+            if request_overrides.get(key) == value:
+                request_overrides.pop(key, None)
+        turn_request_overrides = dict(turn_route.get("request_overrides") or {})
+        request_overrides.update(turn_request_overrides)
+        agent.request_overrides = request_overrides
+        agent._gateway_turn_request_overrides = turn_request_overrides
         # Must-deliver notes for THIS turn ride the current user message
         # (api_content sidecar), never the system prompt: staged by
         # _handle_message_with_agent (auto-reset note, first-contact

@@ -271,6 +271,68 @@ class TestMigrateGoalToSession:
         assert migrate_goal_to_session("p3", "c3") is False
         assert load_goal("c3").goal == "child already has one"
 
+    def test_multi_key_migration_primitive_rolls_back_on_baseexception(
+        self, hermes_home
+    ):
+        from hermes_cli import goals
+
+        db = goals._get_session_db()
+        parent_key = goals._meta_key("rollback-parent")
+        child_key = goals._meta_key("rollback-child")
+        db.set_meta(parent_key, "parent-before")
+
+        class InterruptingReplacement:
+            def __conform__(self, _protocol):
+                raise KeyboardInterrupt("interrupt second replacement")
+
+        with pytest.raises(KeyboardInterrupt, match="interrupt second replacement"):
+            db.compare_and_set_meta_many(
+                [
+                    (child_key, None, "child-after"),
+                    (parent_key, "parent-before", InterruptingReplacement()),
+                ]
+            )
+
+        assert db.get_meta(child_key) is None
+        assert db.get_meta(parent_key) == "parent-before"
+
+    def test_migration_acknowledges_only_exact_two_row_readback(
+        self, hermes_home, monkeypatch
+    ):
+        from hermes_cli import goals
+
+        goals.save_goal("readback-parent", goals.GoalState(goal="migrate exactly"))
+        db = goals._get_session_db()
+        real_many = db.compare_and_set_meta_many
+        called = False
+
+        def drift_child_after_commit(replacements):
+            nonlocal called
+            called = True
+            committed = real_many(replacements)
+            if committed:
+                child_key, _expected, replacement = replacements[0]
+                drifted = goals.GoalState.from_json(replacement)
+                drifted.last_reason = "independent child change"
+                drifted.revision += 1
+                assert real_many(
+                    [(child_key, replacement, drifted.to_json())]
+                ) is True
+            return committed
+
+        monkeypatch.setattr(
+            db, "compare_and_set_meta_many", drift_child_after_commit
+        )
+
+        migrated = goals.migrate_goal_to_session(
+            "readback-parent", "readback-child"
+        )
+        assert called is True
+        assert migrated is False
+        assert goals.load_goal_authoritative("readback-child").last_reason == (
+            "independent child change"
+        )
+
 
 class TestSessionDbCacheAfterProfileDelete:
     """``hermes profile delete`` force-closes every registry handle under the profile home
@@ -618,15 +680,18 @@ class TestJudgeDrivenWait:
             proc.wait(timeout=10)
 
 
-    def test_time_barrier_clears_after_deadline(self, hermes_home):
+    def test_time_barrier_clears_after_deadline(self, hermes_home, monkeypatch):
+        from hermes_cli import goals
         from hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="jw-deadline")
         mgr.set("g")
         mgr.wait_for_seconds(120, reason="backoff")
         assert mgr.is_waiting() is True
-        # Force the deadline into the past → barrier auto-clears.
-        mgr.state.waiting_until = time.time() - 1
+        # Advance authoritative time past the persisted deadline. is_waiting()
+        # refreshes from storage before its lazy cleanup CAS.
+        deadline = mgr.state.waiting_until
+        monkeypatch.setattr(goals.time, "time", lambda: deadline + 1)
         assert mgr.is_waiting() is False
         assert mgr.state.waiting_until == 0.0
 

@@ -26,6 +26,7 @@ def _attach_goal(cli_obj, *, active: bool, turns_used: int = 3, max_turns: int =
     cli_obj.session_id = "sess-goal-test"
     cli_obj._goal_manager = SimpleNamespace(
         session_id="sess-goal-test",
+        refresh_if_stale=lambda: False,
         is_active=lambda: active,
         state=SimpleNamespace(turns_used=turns_used, max_turns=max_turns),
     )
@@ -74,4 +75,3 @@ class TestStatusBarGoalSegment:
         text = cli_obj._build_status_bar_text(width=50)
 
         assert "⊙ goal" in text
-

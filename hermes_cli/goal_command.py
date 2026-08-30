@@ -115,6 +115,10 @@ def _gate(mgr, arg, authorize_gate):
         return GoalCommandResult(denial, error=True)
     try:
         return handler(mgr, rest)
+    except goals.GoalPersistenceError as exc:
+        return GoalCommandResult(
+            f"Goal update failed; persisted state is unchanged: {exc}", error=True
+        )
     except (RuntimeError, ValueError, IndexError) as exc:
         operation = "remove" if verb == "rm" else verb
         return GoalCommandResult(f"/goal gate {operation}: {exc}", error=True)
@@ -188,6 +192,14 @@ def dispatch_goal_command(
         return _set(mgr, rest if verb == "draft" else arg,
                     drafting=verb == "draft", last_user_message=last_user_message,
                     render=render, progress=progress)
+    except goals.GoalPersistenceError as exc:
+        checking_status = arg.lower() in {"", "status", "show"}
+        output = (
+            f"Goal status unavailable: {exc}"
+            if checking_status
+            else f"Goal update failed; persisted state is unchanged: {exc}"
+        )
+        return GoalCommandResult(output, error=True)
     except (RuntimeError, ValueError, IndexError) as exc:
         output = (render("gateway.goal.invalid", "Invalid goal: {error}", error=str(exc))
                   if prefix == "Invalid goal" else f"{prefix}: {exc}")

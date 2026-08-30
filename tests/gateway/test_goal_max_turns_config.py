@@ -124,3 +124,32 @@ async def test_goal_command_slow_db_init_still_persists(tmp_path, monkeypatch):
         assert state.max_turns == 7
     finally:
         goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_persistence_drop_reports_failure_without_success_notice(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    class DroppedWriteDB:
+        def get_meta(self, _key):
+            return None
+
+        def set_meta(self, _key, _value):
+            return None
+
+        def compare_and_set_meta(self, _key, _expected, _replacement):
+            raise OSError("simulated persistence drop")
+
+    monkeypatch.setattr(goals, "_get_session_db", lambda: DroppedWriteDB())
+    runner = _make_runner()
+
+    response = await GatewayRunner._handle_goal_command(runner, _make_goal_event())
+
+    assert "failed" in response.lower() or "unavailable" in response.lower()
+    assert "Goal set" not in response
+    assert runner._queued_events == {}

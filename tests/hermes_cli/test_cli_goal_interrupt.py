@@ -83,6 +83,29 @@ class TestInterruptAutoPause:
         mgr.resume()
         assert mgr.state.status == "active"
 
+    def test_interrupted_turn_persistence_failure_emits_no_pause_success_notice(
+        self, hermes_home
+    ):
+        from hermes_cli.goals import GoalPersistenceError
+
+        sid = f"sid-interrupt-drop-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        cli._last_turn_interrupted = True
+        cli.conversation_history = [{"role": "assistant", "content": "partial"}]
+
+        notices = []
+        with patch.object(
+            mgr,
+            "pause",
+            side_effect=GoalPersistenceError("simulated persistence failure"),
+        ), patch("cli._cprint", side_effect=notices.append):
+            cli._maybe_continue_goal_after_turn()
+
+        rendered = "\n".join(str(item) for item in notices)
+        assert "failed" in rendered.lower()
+        assert "Goal paused" not in rendered
+        assert cli._pending_input.empty()
+
 
 
 

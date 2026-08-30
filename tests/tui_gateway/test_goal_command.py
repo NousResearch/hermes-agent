@@ -179,6 +179,35 @@ def test_goal_bare_shows_status_when_none_set(server, session):
     assert "No active goal" in r["result"]["output"]
 
 
+@pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
+def test_fresh_tui_status_reports_unavailable_persistence(
+    server, session, monkeypatch, failure
+):
+    from hermes_cli import goals
+
+    class StatusDB:
+        def get_meta(self, _key):
+            if failure == "read":
+                raise OSError("status read failed")
+            return "{invalid goal json"
+
+    monkeypatch.setattr(
+        goals,
+        "_get_session_db",
+        (lambda: None) if failure == "missing" else (lambda: StatusDB()),
+    )
+    sid, _, _ = session
+
+    response = _call(
+        server, "command.dispatch", name="goal", arg="status", session_id=sid
+    )
+
+    assert "result" not in response
+    rendered = str(response)
+    assert "No active goal" not in rendered
+    assert "unavailable" in rendered.lower() or "failed" in rendered.lower()
+
+
 def _exhaust_budget(session_key: str, goal_text: str = "finish the benchmark"):
     """Set a 1-turn goal and drive it to budget-exhaustion auto-pause."""
     from hermes_cli.goals import GoalManager
@@ -228,6 +257,39 @@ def test_goal_resume_without_goal_stays_exec(server, session):
     r = _call(server, "command.dispatch", name="goal", arg="resume", session_id=sid)
     assert r["result"]["type"] == "exec"
     assert "No goal to resume" in r["result"]["output"]
+
+
+def test_goal_persistence_drop_returns_error_without_send_or_success_notice(
+    server, session, monkeypatch
+):
+    from hermes_cli import goals
+
+    class DroppedWriteDB:
+        def get_meta(self, _key):
+            return None
+
+        def set_meta(self, _key, _value):
+            return None
+
+        def compare_and_set_meta(self, _key, _expected, _replacement):
+            raise OSError("simulated persistence drop")
+
+    monkeypatch.setattr(goals, "_get_session_db", lambda: DroppedWriteDB())
+    sid, _, _ = session
+
+    response = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg="must persist",
+        session_id=sid,
+    )
+
+    assert "error" in response
+    rendered = str(response)
+    assert "Goal set" not in rendered
+    assert "notice" not in rendered
+    assert "'type': 'send'" not in rendered
 
 
 # ── slash.exec /goal routing ──────────────────────────────────────────

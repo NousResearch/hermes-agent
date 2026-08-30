@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from collections import Counter
@@ -1429,7 +1430,10 @@ def test_auto_dispatch_starts_an_admitted_exact_head_repair_ready_with_push_and_
     assert "Do not merge" in task.instructions
     assert "still equals the expected receipt SHA" in task.instructions
     assert "complete-feedback" in task.instructions
-    assert f"env HERMES_HOME='{control_home}' hermes github-pr-feedback complete-feedback" in (
+    assert (
+        f"env HERMES_HOME='{control_home}' {sys.executable} -m hermes_cli.main "
+        "github-pr-feedback complete-feedback"
+    ) in (
         task.instructions
     )
     assert "full literal resolved head SHA" in task.instructions

@@ -12,7 +12,7 @@ from typing import Mapping, Protocol
 
 from .ci_runner import CompletedCommand
 from .github_client import PullRequestMergeState
-from .policy import CODEX_REVIEW_TRIGGER
+from .policy import codex_review_trigger_comment
 
 
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -340,5 +340,5 @@ def _receipt_comment(
         # This head has moved past whatever Codex last reviewed (the merge just
         # forwarded it onto a new base); Codex never re-reviews on its own after
         # a push, only on this explicit mention.
-        f"{CODEX_REVIEW_TRIGGER}"
+        f"{codex_review_trigger_comment(resolved)}"
     )

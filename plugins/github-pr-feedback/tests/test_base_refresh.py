@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from github_pr_feedback.base_refresh import BaseRefreshIdentity, _receipt_comment
-from github_pr_feedback.policy import CODEX_REVIEW_TRIGGER
+from github_pr_feedback.policy import (
+    CODEX_REVIEW_TRIGGER,
+    codex_review_trigger_comment,
+)
 
 
 def test_receipt_comment_mentions_codex_review_since_the_head_moved_past_its_last_review() -> (
@@ -28,4 +31,5 @@ def test_receipt_comment_mentions_codex_review_since_the_head_moved_past_its_las
     body = _receipt_comment(identity, "d" * 40, "e" * 64)
 
     assert CODEX_REVIEW_TRIGGER in body
+    assert codex_review_trigger_comment("d" * 40) in body
     assert "<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair head=" + "d" * 40 in body

@@ -2289,7 +2289,10 @@ def _local_ci_task(
 def _governed_command_prefix(control_home: Path) -> str:
     """Pin worker callbacks to the scanner's shared control plane."""
 
-    return f"env HERMES_HOME={shlex.quote(str(control_home))} hermes github-pr-feedback"
+    return (
+        f"env HERMES_HOME={shlex.quote(str(control_home))} "
+        f"{shlex.quote(sys.executable)} -m hermes_cli.main github-pr-feedback"
+    )
 
 
 def _receipt_idempotency_key(receipt: FeedbackReceipt) -> str:

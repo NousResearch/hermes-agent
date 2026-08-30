@@ -11,6 +11,7 @@ import re
 import signal
 import shutil
 import subprocess
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,9 +30,10 @@ from .merge_controller import (
     _codex_reviewed_head,
 )
 from .policy import (
-    CODEX_REVIEW_TRIGGER,
     FeedbackReceipt,
     PluginPolicy,
+    codex_review_trigger_comment,
+    codex_review_trigger_requested,
     hermes_attribution_line,
     load_policy,
 )
@@ -856,7 +858,7 @@ def _complete_current_ci_task(receipt: CIAuditReceipt) -> None:
     if not task_id:
         return
     board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
-    argv = ["hermes", "kanban"]
+    argv = [sys.executable, "-m", "hermes_cli.main", "kanban"]
     if board:
         argv.extend(["--board", board])
     argv.extend(
@@ -867,14 +869,17 @@ def _complete_current_ci_task(receipt: CIAuditReceipt) -> None:
             f"Exact-head local CI receipt {receipt.receipt_id}: {receipt.status}.",
         ]
     )
-    completed = subprocess.run(
-        argv,
-        check=False,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=15,
-    )
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except OSError as exc:
+        raise RuntimeError("Hermes runtime unavailable for Kanban audit completion") from exc
     if completed.returncode != 0:
         raise RuntimeError("Kanban audit completion failed")
 

@@ -25,7 +25,13 @@ from github_pr_feedback.controller import KanbanTask
 from github_pr_feedback.github_client import CheckState, Feedback
 from github_pr_feedback.ledger import FeedbackLedger
 from github_pr_feedback.merge_controller import MergeDecision
-from github_pr_feedback.policy import CODEX_REVIEW_TRIGGER, FeedbackReceipt, PullRequest, Reviewer
+from github_pr_feedback.policy import (
+    CODEX_REVIEW_TRIGGER,
+    FeedbackReceipt,
+    PullRequest,
+    Reviewer,
+    codex_review_trigger_comment,
+)
 from github_pr_feedback.repair_controller import pr_repair_attribution_line
 
 
@@ -1567,7 +1573,9 @@ def test_ci_audit_handoff_completes_current_task_without_waiting_for_model(
     _complete_current_ci_task(receipt)
 
     assert calls[0][0] == [
-        "hermes",
+        sys.executable,
+        "-m",
+        "hermes_cli.main",
         "kanban",
         "--board",
         "repairs",
@@ -1576,6 +1584,34 @@ def test_ci_audit_handoff_completes_current_task_without_waiting_for_model(
         "--result",
         f"Exact-head local CI receipt {'r' * 64}: failed.",
     ]
+
+
+def test_ci_audit_handoff_classifies_missing_hermes_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from github_pr_feedback.ci_runner import CIAuditIdentity, CIAuditReceipt, CheckState
+    from github_pr_feedback.cli import _complete_current_ci_task
+
+    receipt = CIAuditReceipt(
+        receipt_id="r" * 64,
+        identity=CIAuditIdentity("acme/widgets", 17, "a" * 40, "b" * 40),
+        manifest_digest="m" * 64,
+        status="failed",
+        started_at=datetime(2026, 8, 25, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 25, tzinfo=UTC),
+        actions_state=CheckState(False, True, 0),
+        commands=(),
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_exact")
+    monkeypatch.setattr(
+        "github_pr_feedback.cli.subprocess.run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            FileNotFoundError("missing runtime")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Hermes runtime unavailable"):
+        _complete_current_ci_task(receipt)
 
 
 def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
@@ -2037,7 +2073,21 @@ def test_retrigger_codex_review_mentions_codex_when_its_review_is_stale() -> Non
     status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
 
     assert status == "triggered"
-    assert github.posted == [("mrkillbob/luna-bot", 17, CODEX_REVIEW_TRIGGER)]
+    assert github.posted == [
+        ("mrkillbob/luna-bot", 17, codex_review_trigger_comment(head))
+    ]
+
+
+def test_retrigger_codex_review_is_a_noop_while_same_head_request_is_pending() -> None:
+    head = "a" * 40
+    github = _FakeGitHubCodex(
+        (_codex_feedback(codex_review_trigger_comment(head)),)
+    )
+
+    status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
+
+    assert status == "already_requested"
+    assert github.posted == []
 
 
 def test_retrigger_codex_review_is_a_noop_when_codex_already_reviewed_this_head() -> None:

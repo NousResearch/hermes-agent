@@ -52,6 +52,24 @@ def hermes_attribution_line(assignee: str, *, action: str) -> str:
 # pushing, or the merge maintainer's codex_review_pending gate would wait
 # forever for a re-review nothing ever asks for.
 CODEX_REVIEW_TRIGGER = "@codex review"
+_CODEX_REVIEW_TRIGGER_MARKER = "hermes-codex-review-trigger:v1"
+
+
+def codex_review_trigger_comment(head_sha: str) -> str:
+    """Build the idempotent exact-head Codex review request comment."""
+
+    resolved = _sha(head_sha, "head_sha")
+    return (
+        f"{CODEX_REVIEW_TRIGGER}\n\n"
+        f"<!-- {_CODEX_REVIEW_TRIGGER_MARKER} head={resolved} -->"
+    )
+
+
+def codex_review_trigger_requested(body: str, head_sha: str) -> bool:
+    """Return whether Hermes already requested Codex review for this exact head."""
+
+    resolved = _sha(head_sha, "head_sha")
+    return f"<!-- {_CODEX_REVIEW_TRIGGER_MARKER} head={resolved} -->" in body
 
 
 MAX_ASSIGNEE_RULES = 32

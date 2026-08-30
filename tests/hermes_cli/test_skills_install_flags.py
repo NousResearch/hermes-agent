@@ -9,6 +9,8 @@ Based on PR #1595 by 333Alden333 (salvaged).
 
 import sys
 
+import pytest
+
 
 def test_cli_skills_install_yes_sets_skip_confirm(monkeypatch):
     """--yes should set skip_confirm=True but NOT force."""
@@ -56,3 +58,26 @@ def test_cli_skills_install_no_flags(monkeypatch):
 
     assert captured["force"] is False
     assert captured["yes"] is False
+
+
+def test_cli_skills_install_failure_exits_nonzero(monkeypatch):
+    """A failed install must propagate through the top-level CLI exit code."""
+    from hermes_cli.main import main
+
+    monkeypatch.setattr("hermes_cli.skills_hub.skills_command", lambda _args: False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "skills", "install", "missing/skill", "--yes"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+
+
+def test_cli_skills_install_success_does_not_exit_nonzero(monkeypatch):
+    """A successful install keeps the existing zero-exit behavior."""
+    from hermes_cli.main import main
+
+    monkeypatch.setattr("hermes_cli.skills_hub.skills_command", lambda _args: True)
+    monkeypatch.setattr(sys, "argv", ["hermes", "skills", "install", "valid/skill", "--yes"])
+
+    main()

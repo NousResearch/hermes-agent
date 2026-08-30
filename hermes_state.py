@@ -11059,6 +11059,103 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return bool(self._execute_write(_do))
 
+    def quarantine_legacy_tool_carriers(
+        self,
+        candidates: List[Dict[str, Any]],
+        *,
+        migration_id: str,
+        dry_run: bool = True,
+    ) -> Dict[str, int]:
+        """Hide manifest-proven legacy raw-tool carrier rows without erasure.
+
+        The context-governor adapter historically converted orphaned tool
+        results into assistant text.  This method is deliberately narrower than
+        a generic visibility update: every candidate is pinned by row id,
+        session id, role, and original content digest before any write.  It
+        preserves content and existing display metadata, adds one typed marker,
+        and is idempotent for the same candidate state.
+        """
+        if not migration_id or not isinstance(migration_id, str):
+            raise ValueError("migration_id is required")
+        if not isinstance(candidates, list):
+            raise ValueError("candidates must be a list")
+
+        from agent.compaction_display import (
+            LEGACY_TOOL_CARRIER_QUARANTINE_METADATA_KEY,
+            LEGACY_TOOL_CARRIER_QUARANTINE_SCHEMA,
+        )
+
+        def _do(conn):
+            updates: List[Tuple[int, str]] = []
+            seen_row_ids: set[int] = set()
+            changed = 0
+            unchanged = 0
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    raise ValueError("candidate must be an object")
+                row_id = candidate.get("id")
+                session_id = candidate.get("session_id")
+                expected_hash = candidate.get("content_sha256")
+                if (
+                    not isinstance(row_id, int)
+                    or not isinstance(session_id, str)
+                    or not isinstance(expected_hash, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+                ):
+                    raise ValueError("candidate identity is invalid")
+                if row_id in seen_row_ids:
+                    raise ValueError(f"duplicate candidate row {row_id}")
+                seen_row_ids.add(row_id)
+                row = conn.execute(
+                    "SELECT id, session_id, role, content, display_kind, display_metadata "
+                    "FROM messages WHERE id = ?",
+                    (row_id,),
+                ).fetchone()
+                if row is None or row["session_id"] != session_id:
+                    raise ValueError(f"candidate row {row_id} is absent or moved")
+                content = self._decode_content(row["content"])
+                if not isinstance(content, str) or row["role"] != "assistant":
+                    raise ValueError(f"candidate row {row_id} is not an assistant text row")
+                actual_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                if actual_hash != expected_hash:
+                    raise ValueError(f"candidate row {row_id} content hash mismatch")
+                # The command admits only an explicitly reviewed legacy shape;
+                # it never turns an arbitrary assistant row into hidden state.
+                if not re.match(r"^\[Tool result(?: [^\]\r\n]{1,256})?\]: ", content):
+                    raise ValueError(f"candidate row {row_id} is not a legacy tool carrier")
+
+                metadata = self._decode_display_metadata(row["display_metadata"]) or {}
+                marker = metadata.get(LEGACY_TOOL_CARRIER_QUARANTINE_METADATA_KEY)
+                if isinstance(marker, dict):
+                    if (
+                        marker.get("schema") != LEGACY_TOOL_CARRIER_QUARANTINE_SCHEMA
+                        or marker.get("original_content_sha256") != expected_hash
+                        or row["display_kind"] != "hidden"
+                    ):
+                        raise ValueError(f"candidate row {row_id} has a conflicting quarantine")
+                    unchanged += 1
+                    continue
+                if row["display_kind"] is not None:
+                    raise ValueError(f"candidate row {row_id} already has display state")
+
+                metadata[LEGACY_TOOL_CARRIER_QUARANTINE_METADATA_KEY] = {
+                    "schema": LEGACY_TOOL_CARRIER_QUARANTINE_SCHEMA,
+                    "migration_id": migration_id,
+                    "original_content_sha256": expected_hash,
+                }
+                updates.append((row_id, self._encode_display_metadata(metadata) or "{}"))
+                changed += 1
+
+            if not dry_run:
+                for row_id, metadata_json in updates:
+                    conn.execute(
+                        "UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
+                        ("hidden", metadata_json, row_id),
+                    )
+            return {"changed": changed if not dry_run else 0, "unchanged": unchanged}
+
+        return self._execute_write(_do)
+
     #: Key under which message reactions live inside ``display_metadata``.
     #: Reactions share the existing per-message JSON column rather than a side
     #: table so they survive rewind/compaction row rewrites with the row itself.

@@ -473,17 +473,20 @@ def _(rid, params: dict) -> dict:
                     history = live.get("history") or []
                     return _ok(
                         rid,
-                        {
-                            "session_id": live_sid,
-                            "stored_session_id": str(live.get("session_key") or ""),
-                            "message_count": len(history),
-                            "messages": [] if omit_messages else _history_to_messages(history),
-                            "info": {
-                                "model": _resolve_model(),
-                                "lazy": True,
-                                "profile_name": profile or "",
+                        _attach_todo_state(
+                            {
+                                "session_id": live_sid,
+                                "stored_session_id": str(live.get("session_key") or ""),
+                                "message_count": len(history),
+                                "messages": [] if omit_messages else _history_to_messages(history),
+                                "info": {
+                                    "model": _resolve_model(),
+                                    "lazy": True,
+                                    "profile_name": profile or "",
+                                },
                             },
-                        },
+                            live,
+                        ),
                     )
 
                 # Stranded-session adoption (#93296 follow-up): before session
@@ -561,6 +564,11 @@ def _(rid, params: dict) -> dict:
             if tip and tip != target:
                 target = tip
                 found = db.get_session(target) or found
+
+        # A full snapshot is cheap to read and makes every resume path an
+        # authoritative recovery point for task UI state, including deferred
+        # agent builds and reconnects that missed the live event.
+        resume_todo_state = _read_persisted_todo_state(db, target)
 
         # Every interactive resume path materializes the model history, even when
         # omit_messages suppresses the response copy. Count the complete lineage
@@ -682,6 +690,7 @@ def _(rid, params: dict) -> dict:
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
                 profile_home=profile_home,
                 lazy=True,
+                todo_state=resume_todo_state,
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _reuse_live_response(*live)
@@ -704,19 +713,22 @@ def _(rid, params: dict) -> dict:
             messages = [] if omit_messages else _history_to_messages(display_history)
             return _ok(
                 rid,
-                {
-                    "session_id": sid,
-                    "resumed": target,
-                    "message_count": len(display_history) if omit_messages else len(messages),
-                    "messages": messages,
-                    "messages_omitted": omit_messages,
-                    "info": _lazy_resume_info(cwd, profile=profile),
-                    "inflight": None,
-                    "running": child_running,
-                    "session_key": target,
-                    "started_at": record["created_at"],
-                    "status": "streaming" if child_running else "idle",
-                },
+                _attach_todo_state(
+                    {
+                        "session_id": sid,
+                        "resumed": target,
+                        "message_count": len(display_history) if omit_messages else len(messages),
+                        "messages": messages,
+                        "messages_omitted": omit_messages,
+                        "info": _lazy_resume_info(cwd, profile=profile),
+                        "inflight": None,
+                        "running": child_running,
+                        "session_key": target,
+                        "started_at": record["created_at"],
+                        "status": "streaming" if child_running else "idle",
+                    },
+                    record,
+                ),
             )
 
         # Desktop can ask for a bounded acknowledgement and hydrate the display
@@ -750,6 +762,7 @@ def _(rid, params: dict) -> dict:
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
+                todo_state=resume_todo_state,
             )
             record["resume_history_ready"] = threading.Event()
             record["resume_hydrating"] = True
@@ -765,24 +778,27 @@ def _(rid, params: dict) -> dict:
             _schedule_session_cap_enforcement()
             return _ok(
                 rid,
-                {
-                    "session_id": sid,
-                    "resumed": target,
-                    "message_count": record["resume_message_count"],
-                    "messages": [],
-                    "hydrating": True,
-                    "info": _lazy_resume_info(
-                        cwd,
-                        model=model_override.get("model") or "",
-                        provider=overrides.get("provider_override") or "",
-                        profile=profile,
-                    ),
-                    "inflight": None,
-                    "running": False,
-                    "session_key": target,
-                    "started_at": record["created_at"],
-                    "status": "resuming",
-                },
+                _attach_todo_state(
+                    {
+                        "session_id": sid,
+                        "resumed": target,
+                        "message_count": record["resume_message_count"],
+                        "messages": [],
+                        "hydrating": True,
+                        "info": _lazy_resume_info(
+                            cwd,
+                            model=model_override.get("model") or "",
+                            provider=overrides.get("provider_override") or "",
+                            profile=profile,
+                        ),
+                        "inflight": None,
+                        "running": False,
+                        "session_key": target,
+                        "started_at": record["created_at"],
+                        "status": "resuming",
+                    },
+                    record,
+                ),
             )
 
         # Cold resume default: register the live session and read its stored
@@ -846,6 +862,7 @@ def _(rid, params: dict) -> dict:
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
+                todo_state=resume_todo_state,
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _reuse_live_response(*live)
@@ -875,7 +892,7 @@ def _(rid, params: dict) -> dict:
             }
             if auto_continue is not None:
                 payload["auto_continue"] = auto_continue
-            return _ok(rid, payload)
+            return _ok(rid, _attach_todo_state(payload, record))
 
         # Build the agent OUTSIDE the lock — _make_agent can block for seconds
         # (MCP discovery, prompt/skill build, AIAgent construction). Holding
@@ -1077,7 +1094,7 @@ def _(rid, params: dict) -> dict:
     }
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
-    return _ok(rid, payload)
+    return _ok(rid, _attach_todo_state(payload, session))
 
 
 @method("session.cwd.set")

@@ -203,6 +203,32 @@ export function nextTodosFromToolEvent(
   return parseTodos(args)
 }
 
+function parseRevision(value: unknown, depth: number): null | number {
+  if (depth > 2) {
+    return null
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      return parseRevision(JSON.parse(value), depth + 1)
+    } catch {
+      return null
+    }
+  }
+
+  if (!isRecord(value)) {
+    return null
+  }
+
+  if (typeof value.revision === 'number' && Number.isSafeInteger(value.revision) && value.revision >= 0) {
+    return value.revision
+  }
+
+  return Object.hasOwn(value, 'result') ? parseRevision(value.result, depth + 1) : null
+}
+
+export const parseTodoRevision = (value: unknown): null | number => parseRevision(value, 0)
+
 /** Latest parseable todo list from one message's aui content parts (tool-call
  *  parts named `todo`; live parts carry `todos`, hydrated ones args/result). */
 export function todosFromMessageContent(content: unknown): null | TodoItem[] {

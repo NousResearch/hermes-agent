@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { latestSessionTodos, mergeTodoItems, nextTodosFromToolEvent, parseTodoPatch, parseTodos, todoTree } from './todos'
+import { latestSessionTodos, mergeTodoItems, nextTodosFromToolEvent, parseTodoPatch, parseTodoRevision, parseTodos, todoTree } from './todos'
 
 describe('todoTree', () => {
   it('orders parents before children with depths', () => {
@@ -76,6 +76,19 @@ describe('parseTodos', () => {
     expect(parseTodos(undefined)).toBeNull()
     expect(parseTodos('not json')).toBeNull()
     expect(parseTodos({ message: 'no todos here' })).toBeNull()
+  })
+})
+
+describe('parseTodoRevision', () => {
+  it('parses direct and wrapped revisions', () => {
+    expect(parseTodoRevision({ revision: 3 })).toBe(3)
+    expect(parseTodoRevision({ result: '{"revision":4}' })).toBe(4)
+  })
+
+  it('rejects invalid revisions', () => {
+    expect(parseTodoRevision({ revision: -1 })).toBeNull()
+    expect(parseTodoRevision({ revision: 1.5 })).toBeNull()
+    expect(parseTodoRevision({ revision: '3' })).toBeNull()
   })
 })
 

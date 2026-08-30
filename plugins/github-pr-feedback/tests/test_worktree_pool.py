@@ -215,6 +215,31 @@ def test_reconcile_releases_a_slot_whose_task_is_done(tmp_path: Path) -> None:
     ledger.close()
 
 
+@pytest.mark.parametrize("status", ["blocked", "triage"])
+def test_reconcile_releases_a_slot_whose_task_is_not_worker_active(
+    tmp_path: Path, status: str
+) -> None:
+    repo = initialized_repository(tmp_path)
+    sha_a = commit(repo, "a.txt", "a")
+    sha_b = commit(repo, "b.txt", "b")
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    pool = PooledLocalGitRepository(
+        ledger, tmp_path / "pool", slot_count=1, owner_pid=lambda: 4242
+    )
+
+    prepared_a = pool.prepare_receipt_worktree(repo, receipt(sha_a, pr_number=1))
+    pool.bind_task(receipt(sha_a, pr_number=1), "task-1", "repairs")
+
+    released = pool.reconcile_leases(
+        FakeKanban({("repairs", "task-1"): status})
+    )
+    assert released == 1
+
+    prepared_b = pool.prepare_receipt_worktree(repo, receipt(sha_b, pr_number=2))
+    assert prepared_b.path == prepared_a.path
+    ledger.close()
+
+
 def test_reconcile_leaves_a_slot_whose_task_is_still_running(tmp_path: Path) -> None:
     repo = initialized_repository(tmp_path)
     sha_a = commit(repo, "a.txt", "a")

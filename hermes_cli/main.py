@@ -2666,6 +2666,11 @@ def cmd_chat(args):
         "model": args.model,
         "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
+        # An explicit empty tool surface is a distinct capability boundary,
+        # not merely a parser/UI preference. Pass it through to cli.main so
+        # the actual agent construction receives toolsets=[] (and therefore
+        # the model request has no tools), including `hermes chat --no-tools`.
+        "no_tools": getattr(args, "no_tools", False),
         "skills": getattr(args, "skills", None),
         "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),

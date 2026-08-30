@@ -132,6 +132,32 @@ def test_parser_accepts_safe_mode_on_root_and_chat():
     assert parser.parse_args(["chat"]).safe_mode is False
 
 
+def test_cmd_chat_no_tools_reaches_cli_main(monkeypatch):
+    """The parsed flag must reach cli.main, not be lost in subcommand dispatch."""
+    import hermes_cli.main as main_mod
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=main_mod.cmd_chat)
+    args = parser.parse_args(["chat", "--no-tools", "-q", "hello"])
+    captured: dict[str, object] = {}
+    fake_cli = types.ModuleType("cli")
+
+    monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+    monkeypatch.setattr(main_mod, "_sync_bundled_skills_for_startup", lambda: None)
+    monkeypatch.setattr(main_mod, "_termux_should_prefetch_update_check", lambda: False)
+    setattr(fake_cli, "main", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    main_mod.cmd_chat(args)
+
+    assert captured["no_tools"] is True
+    # None-valued toolsets are filtered before invoking cli.main; no_tools
+    # itself tells cli.main to construct toolsets=[] instead.
+    assert "toolsets" not in captured
+
+
 def test_shell_hooks_skipped(monkeypatch):
     monkeypatch.setenv("HERMES_SAFE_MODE", "1")
     from agent.shell_hooks import register_from_config

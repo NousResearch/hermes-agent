@@ -1546,11 +1546,31 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            # Read-only file tools are whitelisted too (#61521, #39996): the
+            # model naturally reaches for read_file/search_files to inspect a
+            # skill before patching it. Denying them caused a per-review
+            # denial storm (~142 denials + ~204 read-before-write refusals
+            # over 2 days on one deployment) that starved the self-improvement
+            # loop — the model never loaded SKILL.md the way the
+            # read-before-write guard requires, so almost no patch landed.
+            # This is a DISPATCH-side change only: the advertised ``tools[]``
+            # stays byte-identical to the parent's, so prompt-cache parity is
+            # untouched. read_file registers the read with the
+            # read-before-write guard (tools/file_tools.py), so a
+            # read_file → skill_manage(patch) sequence now succeeds. Write
+            # tools (write_file/patch/terminal) stay denied — autonomous
+            # maintenance must go through skill_manage's validation, and the
+            # deny message below names that substitute so one denial
+            # redirects the model instead of a storm.
+            review_whitelist |= {"read_file", "search_files"}
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Allowed here: skill_view/skills_list/"
+                    "read_file/search_files to read, "
+                    "skill_manage(action='patch'|...) to change skills, and "
+                    "memory for notes. Do not retry {tool_name}."
                 ),
             )
             try:

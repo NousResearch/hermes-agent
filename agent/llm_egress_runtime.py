@@ -113,6 +113,9 @@ _READ_FILE_REPLAY_ELISION = (
     "read_file completed locally, but its raw content cannot be replayed on "
     "this protected route. Request only the needed narrow range again."
 )
+_STRUCTURED_SEARCH_REPLAY_ELISION = (
+    "search completed locally; structured output omitted from remote replay."
+)
 _REMOTE_KANBAN_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,}\"']+"
 )
@@ -1271,6 +1274,120 @@ def _rg_terminal_call_ids(value: Any) -> frozenset[str]:
     return frozenset(recognized)
 
 
+def _kanban_assignees_terminal_call_ids(value: Any) -> frozenset[str]:
+    """Recognize the exact JSON roster command used by protected workers."""
+
+    recognized: set[str] = set()
+
+    def is_assignee_roster(arguments: Any) -> bool:
+        try:
+            parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+            command = parsed.get("command") if isinstance(parsed, Mapping) else None
+            tokens = shlex.split(command) if isinstance(command, str) else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if len(tokens) >= 2 and tokens[0] == "env" and tokens[1].startswith(
+            "HERMES_HOME="
+        ):
+            tokens = tokens[2:]
+        if tokens[:1] == ["hermes"]:
+            tokens = tokens[1:]
+        elif (
+            len(tokens) >= 3
+            and Path(tokens[0]).name.startswith("python")
+            and tokens[1:3] == ["-m", "hermes_cli.main"]
+        ):
+            tokens = tokens[3:]
+        else:
+            return False
+        if tokens[:1] != ["kanban"]:
+            return False
+        args = tokens[1:]
+        if args == ["assignees", "--json"]:
+            return True
+        if len(args) == 4 and args[:1] == ["--board"]:
+            board = args[1]
+            return (
+                bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", board))
+                and args[2:] == ["assignees", "--json"]
+            )
+        if len(args) == 3 and args[0].startswith("--board="):
+            board = args[0].split("=", 1)[1]
+            return (
+                bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", board))
+                and args[1:] == ["assignees", "--json"]
+            )
+        return False
+
+    def visit(item: Any) -> None:
+        if isinstance(item, Mapping):
+            direct_function = item.get("function")
+            direct_name = (
+                direct_function.get("name")
+                if isinstance(direct_function, Mapping)
+                else item.get("name")
+            )
+            arguments = (
+                direct_function.get("arguments")
+                if isinstance(direct_function, Mapping)
+                else item.get("arguments")
+            )
+            call_id = item.get("call_id") or item.get("id")
+            if (
+                item.get("type") in {"function", "function_call"}
+                and direct_name == "terminal"
+                and is_assignee_roster(arguments)
+                and isinstance(call_id, str)
+            ):
+                recognized.update(tool_result_id_variants(call_id))
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return frozenset(recognized)
+
+
+def _project_kanban_assignees_terminal_result(text: str) -> str | None:
+    """Project an assignee listing to valid, on-disk profile names only."""
+
+    try:
+        wrapper = json.loads(text)
+        raw_output = wrapper.get("output") if isinstance(wrapper, Mapping) else None
+        rows = json.loads(raw_output) if isinstance(raw_output, str) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    assignees: list[str] = []
+    for row in rows[:256]:
+        if not isinstance(row, Mapping) or row.get("on_disk") is not True:
+            continue
+        name = row.get("name")
+        if (
+            isinstance(name, str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", name)
+        ):
+            assignees.append(name)
+    projection: dict[str, Any] = {
+        "kanban_assignees_projection": "v1",
+        "assignees": assignees,
+    }
+    omitted = len(rows) - len(assignees)
+    if omitted:
+        projection["omitted_entries"] = omitted
+    exit_code = wrapper.get("exit_code")
+    return json.dumps(
+        {
+            "exit_code": exit_code if isinstance(exit_code, int) else None,
+            "output": json.dumps(projection, separators=(",", ":")),
+        },
+        separators=(",", ":"),
+    )
+
+
 def _project_line_numbered_search_terminal_result(text: str) -> str | None:
     """Replace matching source lines from a recognized search with locations."""
 
@@ -1350,6 +1467,38 @@ def _project_github_list_terminal_result(text: str, *, max_rows: int) -> str | N
         projected: dict[str, Any] = {}
         if isinstance(row.get("number"), int):
             projected["number"] = row["number"]
+        for key in ("baseRefName", "headRefName"):
+            ref_name = row.get(key)
+            if (
+                isinstance(ref_name, str)
+                and 0 < len(ref_name) <= 255
+                and re.fullmatch(r"[A-Za-z0-9._/-]+", ref_name)
+                and ".." not in ref_name
+                and "@{" not in ref_name
+                and "//" not in ref_name
+                and not ref_name.startswith(("/", "."))
+                and not ref_name.endswith(("/", "."))
+            ):
+                projected[key] = ref_name
+        for key in ("baseRefOid", "headRefOid"):
+            oid = row.get(key)
+            if isinstance(oid, str) and re.fullmatch(r"[0-9a-fA-F]{40}", oid):
+                projected[key] = oid
+        repository = row.get("headRepository")
+        if isinstance(repository, Mapping):
+            projected_repository = {
+                key: value
+                for key, value in repository.items()
+                if key in {"name", "nameWithOwner"}
+                and isinstance(value, str)
+                and 0 < len(value) <= 200
+                and re.fullmatch(
+                    r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?",
+                    value,
+                )
+            }
+            if projected_repository:
+                projected["headRepository"] = projected_repository
         for key in ("title", "url", "state", "createdAt", "updatedAt", "reviewDecision"):
             if isinstance(row.get(key), str):
                 projected[key] = _bounded_remote_text(row[key])
@@ -1643,6 +1792,7 @@ def _typed_payload(
     git_workspace_diagnostic_call_ids: frozenset[str] = frozenset(),
     git_grep_projection_tool_call_ids: frozenset[str] = frozenset(),
     rg_projection_tool_call_ids: frozenset[str] = frozenset(),
+    kanban_assignees_terminal_call_ids: frozenset[str] = frozenset(),
     github_list_terminal_call_limits: Mapping[str, int] | None = None,
     github_api_extract_call_limits: Mapping[str, int] | None = None,
     github_api_curl_terminal_call_ids: frozenset[str] = frozenset(),
@@ -1762,6 +1912,14 @@ def _typed_payload(
                 or value.get("type") == "function_call_output"
             )
         )
+        is_kanban_assignees_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in kanban_assignees_terminal_call_ids
+            and (
+                value.get("role") == "tool"
+                or value.get("type") == "function_call_output"
+            )
+        )
         github_list_limit = (
             github_list_terminal_call_limits.get(output_call_id)
             if isinstance(github_list_terminal_call_limits, Mapping)
@@ -1847,6 +2005,83 @@ def _typed_payload(
                     item, "tool_protocol_identifier"
                 )
                 continue
+            is_structured_result = (
+                key in {"content", "output"}
+                and isinstance(item, (list, Mapping))
+            )
+            structured_text = (
+                _structured_tool_output_text(item) if is_structured_result else None
+            )
+            if is_kanban_assignees_result and structured_text is not None:
+                projected = _project_kanban_assignees_terminal_result(structured_text)
+                if projected is not None:
+                    typed[key] = GeneratedContextSegment(projected)
+                    continue
+            if isinstance(github_list_limit, int) and structured_text is not None:
+                projected = _project_github_list_terminal_result(
+                    structured_text, max_rows=github_list_limit
+                )
+                if projected is not None:
+                    typed[key] = GeneratedContextSegment(projected)
+                    continue
+            if (
+                isinstance(combined_github_list_limit, int)
+                and structured_text is not None
+            ):
+                projected = _project_combined_github_list_terminal_result(
+                    structured_text, max_rows=combined_github_list_limit
+                )
+                if projected is not None:
+                    typed[key] = GeneratedContextSegment(
+                        redact_remote_unsafe_text(projected)
+                    )
+                    continue
+            if (
+                isinstance(combined_github_view_limit, int)
+                and structured_text is not None
+            ):
+                projected = _project_combined_github_view_terminal_result(
+                    structured_text, max_rows=combined_github_view_limit
+                )
+                if projected is not None:
+                    typed[key] = GeneratedContextSegment(
+                        redact_remote_unsafe_text(projected)
+                    )
+                    continue
+            if is_structured_result and (
+                is_read_file_result
+                or is_read_file_projection_tool_result
+                or is_scratch_read_file_tool_result
+            ):
+                typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
+                continue
+            if is_structured_result and (
+                is_search_projection_tool_result
+                or is_git_grep_projection_tool_result
+                or is_rg_projection_tool_result
+            ):
+                typed[key] = GeneratedContextSegment(
+                    _STRUCTURED_SEARCH_REPLAY_ELISION
+                )
+                continue
+            if is_structured_result and is_git_workspace_diagnostic_result:
+                typed[key] = GeneratedContextSegment(
+                    _GIT_WORKSPACE_DIAGNOSTIC_REPLAY
+                )
+                continue
+            if is_structured_result and is_plain_github_list_terminal_result:
+                typed[key] = GeneratedContextSegment(
+                    _GITHUB_PLAIN_LIST_OUTPUT_REPLAY
+                )
+                continue
+            if is_structured_result and is_terminal_replay_result:
+                # The Responses API represents function-call output as an
+                # array of input_text/input_image items.  A recognized local
+                # terminal call gets the same outcome-only replay boundary as
+                # its scalar counterpart; recursively typing the array would
+                # expose raw stdout to the remote firewall.
+                typed[key] = GeneratedContextSegment(_terminal_replay_result(""))
+                continue
             if is_read_file_result and key == "content" and isinstance(item, str):
                 if is_scratch_read_file_tool_result:
                     typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
@@ -1878,6 +2113,15 @@ def _typed_payload(
             ):
                 typed[key] = _project_bound_search_files(item)
                 continue
+            if (
+                is_kanban_assignees_result
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                projected = _project_kanban_assignees_terminal_result(item)
+                if projected is not None:
+                    typed[key] = GeneratedContextSegment(projected)
+                    continue
             if (
                 is_git_workspace_diagnostic_result
                 and key in {"content", "output"}
@@ -2044,6 +2288,7 @@ def _typed_payload(
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
                 rg_projection_tool_call_ids=rg_projection_tool_call_ids,
+                kanban_assignees_terminal_call_ids=kanban_assignees_terminal_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 github_api_extract_call_limits=github_api_extract_call_limits,
                 github_api_curl_terminal_call_ids=github_api_curl_terminal_call_ids,
@@ -2091,6 +2336,7 @@ def _typed_payload(
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
                 rg_projection_tool_call_ids=rg_projection_tool_call_ids,
+                kanban_assignees_terminal_call_ids=kanban_assignees_terminal_call_ids,
                 github_list_terminal_call_limits=github_list_terminal_call_limits,
                 github_api_extract_call_limits=github_api_extract_call_limits,
                 github_api_curl_terminal_call_ids=github_api_curl_terminal_call_ids,
@@ -2113,6 +2359,25 @@ def _typed_payload(
             for item in value
         ]
     return value
+
+
+def _structured_tool_output_text(value: Any) -> str | None:
+    """Return the sole text item from a Responses function output array.
+
+    Specialized projectors may inspect this exact transport shape.  Mixed,
+    image-bearing, extended, or multi-item outputs stay on the conservative
+    whole-result elision path.
+    """
+
+    if not isinstance(value, list) or len(value) != 1:
+        return None
+    item = value[0]
+    if not isinstance(item, Mapping) or set(item) != {"type", "text"}:
+        return None
+    text = item.get("text")
+    if item.get("type") != "input_text" or not isinstance(text, str):
+        return None
+    return text
 
 
 def _terminal_replay_command(arguments: str) -> str:
@@ -2409,6 +2674,11 @@ def authorize_agent_sdk_kwargs(
         ),
         rg_projection_tool_call_ids=(
             _rg_terminal_call_ids(body)
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        kanban_assignees_terminal_call_ids=(
+            _kanban_assignees_terminal_call_ids(body)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

@@ -1188,6 +1188,332 @@ def test_protected_codex_projects_bound_github_pr_view_metadata(
     assert "live-secret-value" not in authorized["input"][1]["output"]
 
 
+def test_protected_codex_preserves_exact_github_pr_identity_fields(
+    tmp_path, monkeypatch
+):
+    """A governed PR preflight retains only its bounded identity tuple."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_pr_identity_1234"
+    command = (
+        "gh pr view 719 --repo mrkillbob/luna-bot "
+        "--json baseRefName,baseRefOid,headRefName,headRefOid,headRepository"
+    )
+    raw_identity = {
+        "baseRefName": "stable",
+        "baseRefOid": "b21d4ae47ebb596929357145a8ca7b819bbc3d8a",
+        "headRefName": "codex/q446-execution-margin-auto-flatten-owner",
+        "headRefOid": "987abfb478cdcf9c3d1725286c9ccf779e915832",
+        "headRepository": {
+            "name": "luna-bot",
+            "nameWithOwner": "mrkillbob/luna-bot",
+        },
+        "id": "c2VjcmV0LXBheWxvYWQ=",
+    }
+    kwargs = {
+        "model": agent.model,
+        "input": [
+            {
+                "type": "function_call",
+                "name": "terminal",
+                "call_id": call_id,
+                "arguments": json.dumps({"command": command}),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps(
+                    {"exit_code": 0, "output": json.dumps(raw_identity)}
+                ),
+            },
+        ],
+    }
+
+    authorized, _ = authorize_agent_sdk_kwargs(agent, kwargs)
+
+    projected = json.loads(json.loads(authorized["input"][1]["output"])["output"])
+    assert projected["items"] == [
+        {
+            "baseRefName": raw_identity["baseRefName"],
+            "baseRefOid": raw_identity["baseRefOid"],
+            "headRefName": raw_identity["headRefName"],
+            "headRefOid": raw_identity["headRefOid"],
+            "headRepository": raw_identity["headRepository"],
+        }
+    ]
+    assert "c2VjcmV0LXBheWxvYWQ=" not in authorized["input"][1]["output"]
+
+
+def test_protected_codex_projects_structured_github_pr_identity_fields(
+    tmp_path, monkeypatch
+):
+    """Responses arrays retain the same bounded governed PR identity tuple."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_structured_github_pr_identity"
+    raw_identity = {
+        "baseRefName": "main",
+        "baseRefOid": "b21d4ae47ebb596929357145a8ca7b819bbc3d8a",
+        "headRefName": "codex/small-reviewable-fix",
+        "headRefOid": "987abfb478cdcf9c3d1725286c9ccf779e915832",
+        "headRepository": {"nameWithOwner": "mrkillbob/hermes-agent"},
+        "id": "c2VjcmV0LXBheWxvYWQ=",
+    }
+    terminal_result = json.dumps(
+        {"exit_code": 0, "output": json.dumps(raw_identity)}
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": call_id,
+                    "arguments": json.dumps(
+                        {
+                            "command": (
+                                "gh pr view 719 --repo mrkillbob/hermes-agent "
+                                "--json baseRefName,baseRefOid,headRefName,"
+                                "headRefOid,headRepository"
+                            )
+                        }
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": [{"type": "input_text", "text": terminal_result}],
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    projected = json.loads(json.loads(authorized["input"][1]["output"])["output"])
+    assert projected["items"] == [
+        {
+            "baseRefName": raw_identity["baseRefName"],
+            "baseRefOid": raw_identity["baseRefOid"],
+            "headRefName": raw_identity["headRefName"],
+            "headRefOid": raw_identity["headRefOid"],
+            "headRepository": raw_identity["headRepository"],
+        }
+    ]
+    assert raw_identity["id"] not in json.dumps(authorized)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        "c2VjcmV0LXBheWxvYWQ=",
+        "API_TOKEN=not-a-real-secret-token-123456789",
+    ),
+)
+def test_protected_codex_elides_structured_terminal_output(
+    tmp_path, monkeypatch, payload
+):
+    """Responses API output arrays receive the same terminal replay policy."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_structured_terminal_output"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": call_id,
+                    "arguments": json.dumps(
+                        {"command": "python3 -m pytest tests/unit -q"}
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": [{"type": "input_text", "text": payload}],
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert payload not in json.dumps(authorized)
+    assert json.loads(authorized["input"][1]["output"]) == {
+        "terminal_result": "completed",
+        "exit_code": None,
+        "raw_output": "omitted_from_remote_replay",
+    }
+
+
+def test_protected_codex_elides_structured_rg_output(tmp_path, monkeypatch):
+    """Structured search output never falls through to recursive text replay."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_structured_rg_output"
+    payload = "README.md:42:c2VjcmV0LXBheWxvYWQ="
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": call_id,
+                    "arguments": json.dumps(
+                        {"command": "rg -n needle README.md"}
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": [{"type": "input_text", "text": payload}],
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert payload not in json.dumps(authorized)
+    assert (
+        authorized["input"][1]["output"]
+        == "search completed locally; structured output omitted from remote replay."
+    )
+
+
+def test_protected_codex_rejects_unknown_structured_tool_output(tmp_path, monkeypatch):
+    """Structured output is elided only when bound to a recognized local call."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+
+    with pytest.raises(EgressBlocked, match="base64_payload"):
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": agent.model,
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_unknown_structured_output",
+                        "output": [
+                            {
+                                "type": "input_text",
+                                "text": "c2VjcmV0LXBheWxvYWQ=",
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+
+@pytest.mark.parametrize("structured", (False, True))
+def test_protected_codex_projects_exact_kanban_assignee_roster(
+    tmp_path, monkeypatch, structured
+):
+    """A worker can recover bounded on-disk profile names without raw replay."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_kanban_assignees_roster"
+    terminal_result = json.dumps(
+        {
+            "exit_code": 0,
+            "output": json.dumps(
+                [
+                    {
+                        "name": "task-orchestrator",
+                        "on_disk": True,
+                        "counts": {"blocked": 2},
+                    },
+                    {
+                        "name": "stale-board-owner",
+                        "on_disk": False,
+                        "counts": {"blocked": 1},
+                    },
+                    {
+                        "name": "API_TOKEN=not-a-profile-secret",
+                        "on_disk": True,
+                        "counts": {},
+                    },
+                ]
+            ),
+        }
+    )
+    output = (
+        [{"type": "input_text", "text": terminal_result}]
+        if structured
+        else terminal_result
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": call_id,
+                    "arguments": json.dumps(
+                        {"command": "hermes kanban assignees --json"}
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    projected = json.loads(authorized["input"][1]["output"])
+    assert projected == {
+        "exit_code": 0,
+        "output": json.dumps(
+            {
+                "kanban_assignees_projection": "v1",
+                "assignees": ["task-orchestrator"],
+                "omitted_entries": 2,
+            },
+            separators=(",", ":"),
+        ),
+    }
+    assert "API_TOKEN" not in json.dumps(authorized)
+
+
 def test_runtime_does_not_manufacture_boundaries_for_oversized_sanitized_text(
     tmp_path,
 ):

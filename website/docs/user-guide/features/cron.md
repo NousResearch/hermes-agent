@@ -356,6 +356,20 @@ prove completion. Restoring the ledger itself to an older backup also removes
 that evidence. External fire callbacks identify the currently accepted store
 claim, not an upstream scheduled slot absent from the callback.
 
+Configure the terminal-row budget and its fair per-job share in `config.yaml`:
+
+```yaml
+cron:
+  execution_retention: 1000          # hard cap for terminal rows
+  execution_retention_per_job: 5     # fair-share target inside that cap
+```
+
+Hermes keeps each represented job's latest terminal attempt first, then failed
+attempts, then up to the per-job target in rounds before filling remaining
+capacity by recency. These are priorities rather than exemptions: when the
+protected sets exceed `execution_retention`, the hard cap still wins. Claimed
+and running attempts are outside the terminal-row cap and are never pruned.
+
 ### Repeated-failure review nudge
 
 Each job tracks a `failure_streak` — consecutive failed runs (delivery

@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _point_ledger(monkeypatch, tmp_path):
     import cron.executions as executions
@@ -176,7 +178,129 @@ def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, t
 
     records = executions.list_executions(limit=100)
     assert len([row for row in records if row["status"] == "completed"]) == 3
-    assert executions.latest_execution("live")["status"] == "running"
+    latest_live = executions.latest_execution("live")
+    assert latest_live is not None
+    assert latest_live["status"] == "running"
+
+
+def _set_retention_config(monkeypatch, executions, *, total, per_job):
+    monkeypatch.setattr(
+        executions,
+        "MAX_TERMINAL_EXECUTIONS",
+        executions._DEFAULT_MAX_TERMINAL_EXECUTIONS,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "cron": {
+                "execution_retention": total,
+                "execution_retention_per_job": per_job,
+            }
+        },
+    )
+
+
+def _finish_many(executions, job_id, count, *, success=True):
+    records = []
+    for _ in range(count):
+        row = executions.create_execution(job_id, source="synthetic")
+        records.append(
+            executions.finish_execution(
+                row["id"], success=success, error=None if success else "synthetic failure"
+            )
+        )
+    return records
+
+
+def test_retention_keeps_a_fair_floor_for_each_job(monkeypatch, tmp_path):
+    """A frequent job cannot evict all history for slower represented jobs."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    _set_retention_config(monkeypatch, executions, total=8, per_job=2)
+
+    _finish_many(executions, "slow-a", 2)
+    _finish_many(executions, "slow-b", 2)
+    _finish_many(executions, "fast", 20)
+
+    rows = executions.list_executions(limit=100)
+    counts = {
+        job_id: sum(row["job_id"] == job_id for row in rows)
+        for job_id in ("slow-a", "slow-b", "fast")
+    }
+    assert len(rows) == 8
+    assert counts["slow-a"] == 2
+    assert counts["slow-b"] == 2
+    assert counts["fast"] == 4
+
+
+def test_retention_prioritizes_latest_per_job_and_failures(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    _set_retention_config(monkeypatch, executions, total=6, per_job=1)
+
+    old_failure = _finish_many(executions, "fast", 1, success=False)[0]
+    _finish_many(executions, "slow", 1)
+    _finish_many(executions, "fast", 8)
+
+    rows = executions.list_executions(limit=100)
+    retained_ids = {row["id"] for row in rows}
+    assert len(rows) == 6
+    assert old_failure["id"] in retained_ids
+    assert executions.latest_execution("slow") is not None
+    assert executions.latest_execution("fast") is not None
+
+
+def test_retention_config_controls_total_and_fair_floor(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    _set_retention_config(monkeypatch, executions, total=5, per_job=2)
+
+    _finish_many(executions, "job-a", 6)
+    _finish_many(executions, "job-b", 6)
+
+    rows = executions.list_executions(limit=100)
+    assert len(rows) == 5
+    assert sum(row["job_id"] == "job-a" for row in rows) >= 2
+    assert sum(row["job_id"] == "job-b" for row in rows) >= 2
+
+
+def test_retention_remains_bounded_when_protected_rows_exceed_cap(monkeypatch, tmp_path):
+    """Protection tiers are priorities, never exemptions from the hard cap."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    _set_retention_config(monkeypatch, executions, total=3, per_job=5)
+
+    for index in range(7):
+        _finish_many(executions, f"job-{index}", 1, success=index % 2 == 0)
+
+    rows = executions.list_executions(limit=100)
+    assert len(rows) == 3
+    assert len({row["job_id"] for row in rows}) == 3
+
+
+@pytest.mark.parametrize(
+    ("total", "per_job", "job_count", "rows_per_job"),
+    [(0, 1, 3, 4), (1, 5, 5, 2), (7, 2, 3, 9), (11, 20, 4, 6)],
+)
+def test_terminal_retention_cap_is_a_hard_invariant(
+    monkeypatch, tmp_path, total, per_job, job_count, rows_per_job
+):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    _set_retention_config(monkeypatch, executions, total=total, per_job=per_job)
+    live = executions.create_execution("live", source="synthetic")
+    executions.mark_execution_running(live["id"])
+
+    for job_index in range(job_count):
+        for row_index in range(rows_per_job):
+            _finish_many(
+                executions,
+                f"job-{job_index}",
+                1,
+                success=(job_index + row_index) % 3 != 0,
+            )
+
+    rows = executions.list_executions(limit=1000)
+    terminal = [row for row in rows if row["status"] in executions._TERMINAL_STATES]
+    assert len(terminal) <= total
+    latest_live = executions.latest_execution("live")
+    assert latest_live is not None
+    assert latest_live["status"] == "running"
 
 
 def test_recently_finished_long_running_execution_survives_retention(
@@ -590,4 +714,8 @@ def test_config_default_matches_module_default(monkeypatch):
     assert (
         DEFAULT_CONFIG["cron"]["execution_retention"]
         == executions._DEFAULT_MAX_TERMINAL_EXECUTIONS
+    )
+    assert (
+        DEFAULT_CONFIG["cron"]["execution_retention_per_job"]
+        == executions._DEFAULT_MIN_TERMINAL_EXECUTIONS_PER_JOB
     )

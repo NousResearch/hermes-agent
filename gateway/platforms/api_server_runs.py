@@ -604,7 +604,16 @@ async def _handle_runs(
 
     run_id = f"run_{uuid.uuid4().hex}"
     self._run_owners[run_id] = self._run_idempotency_scope(request)
-    session_id = session_id or run_id
+    # Same rule as /v1/responses: an explicit body session_id wins, then
+    # the response chain, then the conversation the client declared via
+    # ``X-Hermes-Session-Key``.  Falling straight through to ``run_id``
+    # made the run id the conversation identity, so a declared channel
+    # re-keyed every affinity surface once per run (#96811).
+    session_id = (
+        session_id
+        or self._declared_conversation_session(gateway_session_key)
+        or run_id
+    )
     # Approval queues gate host-side tool execution and must be isolated
     # per API run. Client-provided session IDs and memory session keys are
     # conversation/memory scopes, not authorization namespaces: multiple
@@ -829,6 +838,13 @@ async def _handle_runs(
                         # run deliberately left running (same race-window
                         # guard as gateway/run.py and _run_agent above).
                         _clear_turn_process_ownership(agent)
+                        # /v1/runs owns its agent lifecycle, so it records
+                        # the declared conversation itself rather than
+                        # through _run_agent's bind_declared_conversation.
+                        self._bind_declared_conversation(
+                            getattr(agent, "session_id", None) or session_id,
+                            gateway_session_key,
+                        )
                         try:
                             unregister_gateway_notify(approval_session_key)
                         finally:

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
@@ -10,10 +10,10 @@ import { describe, expect, it } from 'vitest'
 // Without it, raising the backend turn timeout would silently reintroduce
 // #93911 — the client giving up before a valid typed settlement arrives.
 
-const relaySource = readFileSync(fileURLToPath(new URL('./relay.ts', import.meta.url)), 'utf8')
-const repoRoot = new URL('../../../../../', import.meta.url)
-const configDefaults = readFileSync(fileURLToPath(new URL('hermes_cli/config_defaults.py', repoRoot)), 'utf8')
-const relayHandler = readFileSync(fileURLToPath(new URL('tui_gateway/methods_bot_relay.py', repoRoot)), 'utf8')
+const relaySource = readFileSync(join(process.cwd(), 'src/plugins/hermes-bots/relay.ts'), 'utf8')
+const repoRoot = join(process.cwd(), '..', '..')
+const configDefaults = readFileSync(join(repoRoot, 'hermes_cli/config_defaults.py'), 'utf8')
+const relayHandler = readFileSync(join(repoRoot, 'tui_gateway/methods_bot_relay.py'), 'utf8')
 
 function tsConstant(name: string): number {
   const match = relaySource.match(new RegExp(`const ${name} = ([0-9_]+)`))

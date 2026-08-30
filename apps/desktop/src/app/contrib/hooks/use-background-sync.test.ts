@@ -23,6 +23,14 @@ import {
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
+import {
+  $todoProgressBySession,
+  $todosBySession,
+  applyTodoContinuationSnapshot,
+  clearAllSessionTodos,
+  clearAllTodoContinuations,
+  setSessionTodos
+} from '@/store/todos'
 
 import {
   type ActiveTranscriptRefreshDeps,
@@ -32,6 +40,7 @@ import {
   reconcileActiveTranscript,
   reconcileTileTranscripts as reconcileTileTranscriptsForTest,
   rehydrateLiveSessionStatuses,
+  resetLiveRuntimeTracking,
   resetTypingActivityTracking,
   resolveActiveTranscriptSession,
   useBackgroundSync,
@@ -54,7 +63,10 @@ const { refreshProjectTree } = await import('@/store/projects')
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
 
-function transcript(answer: string, sessionId = ACTIVE_STORED_ID): Awaited<ReturnType<typeof getLatestSessionMessages>> {
+function transcript(
+  answer: string,
+  sessionId = ACTIVE_STORED_ID
+): Awaited<ReturnType<typeof getLatestSessionMessages>> {
   return {
     messages: [
       { content: 'question', role: 'user', timestamp: 1 },
@@ -180,6 +192,9 @@ afterEach(() => {
   clearAllSessionStates()
   $sessionTiles.set([])
   _resetSessionOwnerHintsForTests()
+  clearAllSessionTodos()
+  clearAllTodoContinuations()
+  resetLiveRuntimeTracking()
   resetTypingActivityTracking()
 })
 
@@ -887,6 +902,34 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual(['needs-user'])
     expect($attentionSessionIds.get()).toEqual(['needs-user'])
     expect($stalledSessionIds.get()).toEqual([])
+  })
+
+  it('reaps stale unfinished todos without disturbing finished linger or authoritative continuations', () => {
+    setSessionTodos('runtime-stale', [{ content: 'stale task', id: 'stale', status: 'in_progress' }])
+    setSessionTodos('runtime-finished', [{ content: 'done task', id: 'done', status: 'completed' }])
+    setSessionTodos('runtime-active-goal', [{ content: 'continuing task', id: 'active', status: 'pending' }])
+    setSessionTodos('runtime-paused-goal', [{ content: 'paused task', id: 'paused', status: 'in_progress' }])
+    applyTodoContinuationSnapshot('runtime-active-goal', { revision: 1, state: 'active' })
+    applyTodoContinuationSnapshot('runtime-paused-goal', { revision: 1, state: 'paused' })
+
+    rehydrateLiveSessionStatuses({
+      sessions: [
+        { id: 'runtime-stale', session_key: 'stored-stale', status: 'working' },
+        { id: 'runtime-finished', session_key: 'stored-finished', status: 'working' },
+        { id: 'runtime-active-goal', session_key: 'stored-active-goal', status: 'working' },
+        { id: 'runtime-paused-goal', session_key: 'stored-paused-goal', status: 'working' }
+      ]
+    })
+
+    expect($todoProgressBySession.get()['stored-stale']).toBe('0/1')
+
+    rehydrateLiveSessionStatuses({ sessions: [] })
+
+    expect($todosBySession.get()['runtime-stale']).toBeUndefined()
+    expect($todoProgressBySession.get()['stored-stale']).toBeUndefined()
+    expect($todosBySession.get()['runtime-finished']).toHaveLength(1)
+    expect($todosBySession.get()['runtime-active-goal']).toHaveLength(1)
+    expect($todosBySession.get()['runtime-paused-goal']).toHaveLength(1)
   })
 
   it('ignores idle, starting, and malformed live-session rows', () => {

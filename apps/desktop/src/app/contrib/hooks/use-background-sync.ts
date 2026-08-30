@@ -30,6 +30,7 @@ import {
   setSessionStalled
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
+import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
@@ -491,6 +492,11 @@ export function rehydrateLiveSessionStatuses(
           messages: sealOpenToolParts(existing.messages)
         })
       }
+
+      // The same authoritative absence also substitutes for a missed terminal
+      // todo cleanup. Reuse the normal policy so finished linger and explicit
+      // active/paused continuation snapshots remain intact.
+      clearActiveSessionTodos(runtimeSessionId)
     }
   }
 

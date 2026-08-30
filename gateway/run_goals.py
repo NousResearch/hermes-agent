@@ -264,13 +264,34 @@ class GatewayGoalsMixin:
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
         continuation through the adapter FIFO so a simultaneous real user message takes priority."""
-        def _load():
-            from hermes_cli.goals import GoalManager
-            max_turns = self._goal_max_turns_from_config()
-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
-
-        mgr = await self._post_turn_manager(session_entry, "goal continuation", "goals", _load)
-        if mgr is None or not mgr.is_active():
+        try:
+            from hermes_cli.goals import (
+                GoalManager,
+                GoalPersistenceError,
+                load_goal_snapshot_authoritative,
+            )
+        except Exception as exc:
+            logger.debug("goal continuation: goals module unavailable: %s", exc)
+            return
+        sid = getattr(session_entry, "session_id", None) or ""
+        if not sid:
+            return
+        await self._warm_goals_session_db("goal continuation")
+        try:
+            state, persisted_raw = load_goal_snapshot_authoritative(sid)
+        except GoalPersistenceError as exc:
+            notice = f"Goal status unavailable: {exc}"
+            logger.warning("goal continuation: %s", notice)
+            if source is not None:
+                await self._defer_goal_status_notice_after_delivery(source, notice)
+            return
+        mgr = GoalManager.from_authoritative_snapshot(
+            session_id=sid,
+            state=state,
+            persisted_raw=persisted_raw,
+            default_max_turns=self._goal_max_turns_from_config(),
+        )
+        if not mgr.is_active():
             return
 
         _bg_procs, _active_deleg = None, 0

@@ -7660,8 +7660,18 @@ def run_conversation(
                     # these add 20-30K tokens the messages-only
                     # estimate misses, which can skip compression
                     # past the configured threshold (#14695).
-                    _real_tokens = estimate_request_tokens_rough(
-                        messages, tools=agent.tools or None
+                    # Route-aware (#96995/#97602 class): on a compacted
+                    # native-Codex session the generic durable-history
+                    # figure overstates the wire and would false-trigger
+                    # compression here exactly like the pre-API guard —
+                    # this fallback runs precisely when no provider usage
+                    # is available (post-disconnect / gateway restart),
+                    # the unanchored case from #97602's repro.
+                    _real_tokens = _midturn_request_pressure_tokens(
+                        agent,
+                        messages,
+                        active_system_prompt or "",
+                        estimate_messages_tokens_rough(messages),
                     )
 
                 if (

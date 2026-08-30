@@ -111,7 +111,7 @@ class TestKeepaliveSuppressesClockDecline:
             )
 
             # Native finalize succeeded — consumer will suppress fallback.
-            assert ok is True
+            assert ok
             assert len(_finalize_calls(reply)) == 1, (
                 "keep-alive on: finalize frame must reach the wire, not be "
                 "declined by the Layer 2 clock fallback"
@@ -147,7 +147,7 @@ class TestKeepaliveSuppressesClockDecline:
                 chat=CHAT_ID, finalize=True, turn_id=TURN_ID,
             )
 
-            assert ok is False, "keep-alive off: old stream must decline finalize"
+            assert not ok, "keep-alive off: old stream must decline finalize"
             assert len(_finalize_calls(reply)) == 0, (
                 "keep-alive off: no finalize frame should reach the wire"
             )
@@ -186,7 +186,7 @@ class TestKeepaliveSuppressesClockDecline:
                 chat=CHAT_ID, finalize=True, turn_id=TURN_ID,
             )
 
-            assert ok is False, "real 846608 on finalize must fall back"
+            assert not ok, "real 846608 on finalize must fall back"
             assert CHAT_ID in adapter._stream_expired_chats
             assert f"{CHAT_ID}:{TURN_ID}" not in adapter._stream_turns
         finally:
@@ -232,7 +232,7 @@ class TestIntermediateFrameFailureIsFireAndForget:
                 chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
             )
 
-            assert ok is True, "intermediate expiry must be fire-and-forget"
+            assert ok, "intermediate expiry must be fire-and-forget"
             assert f"{CHAT_ID}:{TURN_ID}" in adapter._stream_turns, (
                 "intermediate failure must NOT retire the turn — keep-alive is "
                 "still refreshing the live stream"
@@ -265,7 +265,7 @@ class TestIntermediateFrameFailureIsFireAndForget:
                 chat=CHAT_ID, finalize=False, turn_id=TURN_ID,
             )
 
-            assert ok is True
+            assert ok
             assert f"{CHAT_ID}:{TURN_ID}" in adapter._stream_turns
             assert CHAT_ID not in adapter._stream_expired_chats
         finally:
@@ -296,7 +296,7 @@ class TestIntermediateFrameFailureIsFireAndForget:
                 chat=CHAT_ID, finalize=True, turn_id=TURN_ID,
             )
 
-            assert ok is False, "final-frame expiry MUST fall back (return False)"
+            assert not ok, "final-frame expiry MUST fall back (return False)"
             assert CHAT_ID in adapter._stream_expired_chats
             assert f"{CHAT_ID}:{TURN_ID}" not in adapter._stream_turns
         finally:
@@ -324,7 +324,7 @@ class TestIntermediateFrameFailureIsFireAndForget:
                 chat=CHAT_ID, finalize=True, turn_id=TURN_ID,
             )
 
-            assert ok is False
+            assert not ok
             assert f"{CHAT_ID}:{TURN_ID}" not in adapter._stream_turns
         finally:
             await adapter.disconnect()

@@ -3149,7 +3149,14 @@ class GatewayStreamConsumer(ToolTimerMixin):
                     )
                     if ok:
                         self._final_response_sent = True
-                        self._final_content_delivered = True
+                        # Indeterminate settlement: frame sent but delivery
+                        # unconfirmed — don't claim content was delivered.
+                        _indet = (
+                            hasattr(ok, "value")
+                            and getattr(ok, "value", None) == "indeterminate"
+                        )
+                        if not _indet:
+                            self._final_content_delivered = True
                 except Exception as e:
                     logger.debug("Finalize empty stream failed: %s", e)
             return True  # cursor-only / whitespace-only update
@@ -3245,15 +3252,14 @@ class GatewayStreamConsumer(ToolTimerMixin):
             # (see tests/gateway/test_wecom_double_send.py and
             # docs/rca-wecom-stream-final-ack-timeout-duplicate.md).
             #
-            # A DEFINITIVE dispatch failure (ok is False below: stream never
-            # opened, 846608 expired, errcode 6000, or the call raised) rolls
-            # the mark back so the edit/send fallback still delivers exactly
-            # once. Residual window: if the consumer is cancelled between this
-            # optimistic mark and the control worker actually writing the bytes
-            # (queue latency, sub-ms in practice), the message could be
-            # suppressed without being sent — far rarer than the guaranteed
-            # duplicate this replaces, and the send-path idempotency guard
-            # cannot help there (nothing was sent). Accepted trade-off.
+            # A DEFINITIVE dispatch failure (ok is FAILED / False below:
+            # stream never opened, 846608 expired, errcode 6000, or the call
+            # raised) rolls the mark back so the edit/send fallback still
+            # delivers exactly once.
+            #
+            # INDETERMINATE settlement: the optimistic _final_content_delivered
+            # is rolled back (delivery unconfirmed), but _final_response_sent
+            # stays True (frame was sent — don't retry / duplicate).
             _optimistic_finalize = bool(finalize)
             if _optimistic_finalize:
                 self._final_response_sent = True
@@ -3279,13 +3285,34 @@ class GatewayStreamConsumer(ToolTimerMixin):
                 )
                 ok = False
 
+            # Tri-state handling: StreamFrameResult enum (WeComAdapter) or
+            # bare bool (other adapters).  The enum's __bool__ makes
+            # DELIVERED/INDETERMINATE truthy and FAILED falsy, so the `if ok`
+            # gate still works for backward compat.  We distinguish
+            # INDETERMINATE from DELIVERED by checking the enum value.
+            _is_indeterminate = (
+                hasattr(ok, "value") and getattr(ok, "value", None) == "indeterminate"
+            )
+
             if ok:
                 self._already_sent = True
                 self._last_sent_text = text
                 self._native_last_pushed_len = len(text)
                 if finalize:
                     self._final_response_sent = True
-                    self._final_content_delivered = True
+                    if _is_indeterminate:
+                        # Frame was sent (don't retry) but delivery
+                        # unconfirmed — roll back the optimistic
+                        # _final_content_delivered so the caller knows.
+                        self._final_content_delivered = False
+                        logger.info(
+                            "[stream] indeterminate settlement on finalize "
+                            "(turn=%s) — _final_response_sent=True, "
+                            "_final_content_delivered=False",
+                            self._turn_id,
+                        )
+                    else:
+                        self._final_content_delivered = True
                 return True
 
             # Dispatch failed definitively — roll back the optimistic finalize

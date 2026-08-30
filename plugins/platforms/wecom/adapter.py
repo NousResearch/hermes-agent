@@ -42,8 +42,34 @@ import uuid
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+
+class StreamFrameResult(Enum):
+    """Tri-state return from ``send_stream_frame`` / ``_send_stream_frame_inner``.
+
+    Replaces the bare ``bool`` so the consumer can distinguish a confirmed
+    delivery from an *indeterminate* one (frame sent, ACK not received).
+
+    * ``DELIVERED`` — confirmed success (was ``True``).
+    * ``INDETERMINATE`` — frame was sent but delivery could not be confirmed
+      (ACK channel poisoned / fence timed-out).  The consumer should mark
+      ``_final_response_sent`` (don't retry/duplicate) but must NOT mark
+      ``_final_content_delivered`` (delivery unconfirmed).
+    * ``FAILED`` — definitive dispatch failure (was ``False``); consumer
+      should roll back and fall through to the send() fallback.
+    """
+    DELIVERED = "delivered"
+    INDETERMINATE = "indeterminate"
+    FAILED = "failed"
+
+    # Allow truthiness checks for backward compat: DELIVERED and INDETERMINATE
+    # are truthy (frame was sent — don't duplicate), FAILED is falsy.
+    def __bool__(self) -> bool:
+        return self is not StreamFrameResult.FAILED
+
 from urllib.parse import unquote, urlparse
 
 try:
@@ -297,12 +323,6 @@ class StreamTurn:
         # timer firing on a dead turn.  None when keep-alive is disabled or
         # the turn has no armed timer.
         self.keepalive_handle: Optional[asyncio.TimerHandle] = None
-        # Settlement status for the finalize frame.  Remains None until the
-        # finalize path runs.  Set to "indeterminate" when the frame was sent
-        # but delivery could not be confirmed (ACK channel poisoned).  Callers
-        # check this instead of ``finalized`` to distinguish confirmed delivery
-        # from an unconfirmed send.
-        self.settlement: Optional[str] = None
 
 
 class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
@@ -2675,7 +2695,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         chat_id: Optional[str] = None,
         reply_to: Optional[str] = None,
         **kwargs,
-    ) -> bool:
+    ) -> Union[StreamFrameResult, bool]:
         """Public entry-point for the gateway streaming consumer.
 
         Native streaming lifecycle (per-turn):
@@ -2697,11 +2717,13 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         Each turn (chat_id + req_id) maintains independent state, allowing
         concurrent messages without interference (e.g., approval during streaming).
 
-        Returns ``True`` when the frame landed; ``False`` when the
-        stream is unavailable (no req_id, expired session, transport
-        error). On ``False`` the caller should fall back to
-        :meth:`send` to deliver the remaining content as a one-shot
-        markdown reply.
+        Returns a ``StreamFrameResult`` enum:
+          * ``DELIVERED`` — confirmed success.
+          * ``INDETERMINATE`` — frame was sent but delivery unconfirmed
+            (ACK channel poisoned).  Consumer should NOT set
+            ``_final_content_delivered`` but should NOT retry either.
+          * ``FAILED`` — definitive failure; consumer should fall back to
+            :meth:`send`.
         """
         chat = (chat_id or "").strip()
         if not chat:
@@ -2709,7 +2731,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 "[%s] send_stream_frame: chat_id required",
                 self.name,
             )
-            return False
+            return StreamFrameResult.FAILED
 
         # Extract turn_id early to decide whether to check chat-level expired
         turn_id = kwargs.get("turn_id")
@@ -2720,7 +2742,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         # This prevents cross-turn interference in concurrent scenarios.
         if not turn_id and chat in self._stream_expired_chats:
             # No turn_id provided, and chat is expired → block new turn creation
-            return False
+            return StreamFrameResult.FAILED
 
         if finalize:
             # Finalize frame counts toward 30/min — go through the control queue
@@ -2745,7 +2767,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         reply_to: Optional[str] = None,
         finalize: bool = False,
         turn_id: Optional[str] = None,
-    ) -> bool:
+    ) -> StreamFrameResult:
         """Actual stream frame logic with per-turn state.
 
         Each turn (identified by chat_id + turn_id OR chat_id + req_id)
@@ -2761,6 +2783,12 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
         _last_chat_req_ids[chat] changes (e.g., user sends /approve), the
         existing turn continues with its original req_id. This prevents the
         stream from switching to a new req_id mid-turn.
+
+        Returns:
+            StreamFrameResult.DELIVERED — frame confirmed delivered.
+            StreamFrameResult.INDETERMINATE — frame was sent but delivery
+                unconfirmed (ACK channel poisoned / fence timed out).
+            StreamFrameResult.FAILED — definitive dispatch failure.
         """
         try:
             # If turn_id is provided, use it to find/create the turn.
@@ -2789,7 +2817,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                             "[%s] send_stream_frame: cannot finalize non-existent turn (turn_id=%s, chat=%s)",
                             self.name, turn_id, chat,
                         )
-                        return False
+                        return StreamFrameResult.FAILED
 
                     # First frame for this turn: need to create it.
                     # Check if chat is expired (blocks NEW turn creation).
@@ -2802,7 +2830,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                             "[%s] send_stream_frame: chat %s is expired, cannot create new turn (turn_id=%s)",
                             self.name, chat, turn_id,
                         )
-                        return False
+                        return StreamFrameResult.FAILED
 
                     # First frame for this turn: resolve req_id and create turn
                     req_id = self._resolve_stream_req_id(chat, reply_to)
@@ -2815,7 +2843,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                             "[%s] send_stream_frame: no req_id available for chat %s (turn_id=%s)",
                             self.name, chat, turn_id,
                         )
-                        return False
+                        return StreamFrameResult.FAILED
                     turn = StreamTurn(chat, req_id)
                     self._stream_turns[turn_key] = turn
                     logger.debug(
@@ -2849,7 +2877,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                             "[%s] send_stream_frame: chat %s is expired, cannot create new turn",
                             self.name, chat,
                         )
-                        return False
+                        return StreamFrameResult.FAILED
 
                     req_id = self._resolve_stream_req_id(chat, reply_to)
                     if not req_id:
@@ -2861,7 +2889,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                             "[%s] send_stream_frame: no req_id available for chat %s",
                             self.name, chat,
                         )
-                        return False
+                        return StreamFrameResult.FAILED
                     turn = self._get_or_create_stream_turn(chat, req_id)
                     logger.debug(
                         "[%s] send_stream_frame: created new turn %s (req_id=%s) for chat %s",
@@ -2874,7 +2902,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                     "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
                     "turn_expired", chat, turn_id,
                 )
-                return False
+                return StreamFrameResult.FAILED
 
             # First frame for this turn: send seed ONLY if not already seeded.
             # The GatewayStreamConsumer sends the initial empty seed frame itself
@@ -2902,9 +2930,10 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 # If caller sent empty text (consumer's explicit seed call),
                 # we're done — don't send another empty frame below.
                 if not text and not finalize:
-                    return True
+                    return StreamFrameResult.DELIVERED
 
             # Send the frame
+            _is_indeterminate = False  # set to True on indeterminate settlement
             if finalize:
                 # ── Layer 2 clock fallback ───────────────────────────────
                 # If the stream is older than the safe duration, the finish
@@ -2946,7 +2975,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                             "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
                             "layer2_clock_fallback", chat, turn_id,
                         )
-                        return False
+                        return StreamFrameResult.FAILED
 
                 self._cancel_idle_flush(turn)
                 self._cancel_keepalive(turn)
@@ -2967,14 +2996,11 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 )
                 # settlement_indeterminate: the frame was sent but we could
                 # not confirm delivery (ACK channel poisoned, fence timed
-                # out).  Do NOT mark the turn as confirmed-finalized — that
-                # would be a false positive.  Set a distinct settlement flag
-                # so callers can distinguish, but still clean up the turn and
-                # return True (do NOT fall back to a duplicate proactive
-                # send, which would risk a double bubble).
-                if result.get("errmsg") == "settlement_indeterminate":
-                    turn.settlement = "indeterminate"
-                else:
+                # out).  Return INDETERMINATE so the consumer knows not to
+                # mark _final_content_delivered (delivery unconfirmed), but
+                # also not to retry (risk of double bubble).
+                _is_indeterminate = result.get("errmsg") == "settlement_indeterminate"
+                if not _is_indeterminate:
                     turn.finalized = True
                 # Clean up this turn's state
                 # If turn_id was provided, the key is chat:turn_id, otherwise chat:req_id
@@ -3005,7 +3031,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
 
                 # Pure dedup: skip if content is identical to last sent frame.
                 if text == turn.last_sent_content:
-                    return True
+                    return StreamFrameResult.DELIVERED
 
                 self._cancel_idle_flush(turn)
 
@@ -3023,7 +3049,9 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 turn._intermediate_frames_sent += 1
                 turn.last_sent_content = text
 
-            return True
+            return (StreamFrameResult.INDETERMINATE
+                    if finalize and _is_indeterminate
+                    else StreamFrameResult.DELIVERED)
 
         except WeComStreamExpiredError:
             # Intermediate frames (finalize=False) are fire-and-forget: a later
@@ -3042,7 +3070,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                     "chat %s — dropping frame, stream stays live",
                     self.name, STREAM_EXPIRED_ERRCODE, chat,
                 )
-                return True
+                return StreamFrameResult.DELIVERED
 
             logger.info(
                 "[%s] Stream expired (errcode=%d) for chat %s — switching to proactive send",
@@ -3060,7 +3088,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
                 "stream_expired_error", chat, turn_id,
             )
-            return False
+            return StreamFrameResult.FAILED
         except Exception as exc:
             # Same intermediate/final split as the expired path above: a single
             # intermediate frame failing is transient and self-healing (the next
@@ -3074,7 +3102,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                     "dropping frame, stream stays live",
                     self.name, chat, exc,
                 )
-                return True
+                return StreamFrameResult.DELIVERED
 
             logger.warning(
                 "[%s] Stream frame failed (chat=%s): %s",
@@ -3087,7 +3115,7 @@ class WeComAdapter(ReplyQueueMixin, BasePlatformAdapter):
                 "[stream] frame REJECTED (reason=%s, chat=%s, turn_id=%s)",
                 "exception", chat, turn_id,
             )
-            return False
+            return StreamFrameResult.FAILED
 
     def supports_native_streaming(
         self,

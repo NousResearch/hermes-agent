@@ -173,14 +173,33 @@ browser:
 When enabled, Hermes copies your default browser's **active** profile — the one
 you actually browse (`Local State → profile.last_used`), with its cookies, saved
 logins, and preferences — into a managed snapshot under
-`~/.hermes/browser-profile/<browser>/`, then drives that snapshot with its
-packaged Chromium. Your live browser profile is **never opened directly**: the
+`~/.hermes/browser-profile/<browser>/`, then launches your **real browser
+binary** on that snapshot and attaches its browsing engine to it. Launching the
+real binary (instead of a bundled Chromium with mock-keychain switches) is what
+keeps OS-encrypted cookies decryptable — on macOS, Chrome cookies are encrypted
+through the Keychain, and a mock-keychain launch would silently drop every one
+of them, opening signed out. Your live browser profile is **never opened
+directly**: the
 snapshot is a separate directory, so it doesn't fight your running browser for
 the profile lock and it sidesteps Chrome 136+'s block on remote-debugging the
 default profile directory. The auth files (cookies/logins/preferences) are
 re-synced from your real profile whenever a fresh session is launched, so logins
 you do in your own browser show up in the agent's session. Only the active
 profile is copied — other Chrome profiles are never snapshotted.
+
+If your browser has several profiles (say a work profile and a personal one)
+and you don't want "whichever profile you touched last" deciding the agent's
+identity, pin the snapshot source explicitly:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  use_real_profile: true
+  real_profile_pin: "Profile 2"   # directory name under the browser's user-data dir
+```
+
+A pin naming a profile directory that doesn't exist fails closed with a
+fixable message — it never silently falls back to the last-used profile.
 
 When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied

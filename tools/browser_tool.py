@@ -1457,6 +1457,27 @@ _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
 
 
+def _terminate_real_profile_chrome() -> None:
+    """Terminate real-browser processes launched for real-profile sessions.
+
+    The real-profile path launches the user's actual browser binary on the
+    profile COPY (bypassing agent-browser's mock-keychain launch). Those
+    processes are ours to reap: agent-browser only ATTACHED to them, so its
+    own session cleanup never kills them. Idempotent; safe from atexit.
+    """
+    while _real_profile_chrome_procs:
+        proc = _real_profile_chrome_procs.pop()
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+        except Exception as e:
+            logger.debug("real-profile chrome terminate failed: %s", e)
+
+
 def _agent_browser_argv(browser_cmd: str) -> list:
     """Command prefix to invoke agent-browser (binary or npx sentinel)."""
     if _is_npx_agent_browser_sentinel(browser_cmd):
@@ -1671,7 +1692,6 @@ def _real_profile_cdp() -> tuple:
                 "browser.use_real_profile is on, but the real browser binary for "
                 f"'{browser}' could not be found. Reinstall it or turn the toggle off."
             )
-        import tempfile
 
         port_file = os.path.join(copy_dir, "DevToolsActivePort")
         try:
@@ -1694,6 +1714,14 @@ def _real_profile_cdp() -> tuple:
             "--disable-features=Translate",
             "--no-startup-window",
         ]
+        if sys.platform.startswith("linux") and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        ):
+            # Display-less Linux (servers, CI): the real binary cannot open a
+            # window, so it exits at startup. Chrome's NEW headless mode shares
+            # the profile's normal cookie store (unlike legacy --headless with
+            # its separate store), so real-profile auth still loads.
+            chrome_argv.append("--headless=new")
         try:
             chrome_proc = subprocess.Popen(
                 chrome_argv,
@@ -1722,12 +1750,14 @@ def _real_profile_cdp() -> tuple:
             except OSError:
                 pass
             if chrome_proc.poll() is not None:
+                _terminate_real_profile_chrome()
                 return None, (
                     "browser.use_real_profile is on, but Chrome exited during "
                     "startup (another instance may hold the profile copy)."
                 )
             _time.sleep(0.25)
         if port is None:
+            _terminate_real_profile_chrome()
             return None, (
                 "browser.use_real_profile is on, but the real-profile browser "
                 "did not expose a debug port in time. Retry, or turn the toggle off."
@@ -2197,6 +2227,12 @@ def _emergency_cleanup_all_sessions():
 
     # Clean up this process's own sessions first, so their owner_pid files
     # are removed before the reaper scans.
+    # Real-profile Chrome processes are launched directly (not by
+    # agent-browser), so the session cleanup below never reaps them.
+    try:
+        _terminate_real_profile_chrome()
+    except Exception as e:
+        logger.debug("Real-profile chrome cleanup on exit failed: %s", e)
     if _active_sessions:
         logger.info("Emergency cleanup: closing %s active session(s)...",
                     len(_active_sessions))

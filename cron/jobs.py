@@ -917,7 +917,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         rest = schedule[6:].strip()
         cron_expr = _natural_every_to_cron(rest)
         if cron_expr is not None:
-            if not HAS_CRONITER:
+            if not _ensure_croniter():
                 raise ValueError(
                     "Weekday/time schedules like 'every monday 9am' require the "
                     "'croniter' package. Install with: pip install croniter"
@@ -937,7 +937,27 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "minutes": minutes,
             "display": f"every {minutes}m"
         }
-    
+
+    # No-"every" natural day/time phrases advertised by the Desktop dialog:
+    # "weekdays at 9am", "monday at 9:30", "daily at 7am" (#51975). Reuse the
+    # same helper — the phrase shape is identical without the "every " prefix.
+    cron_expr = _natural_every_to_cron(schedule_lower)
+    if cron_expr is not None:
+        if not _ensure_croniter():
+            raise ValueError(
+                "Weekday/time schedules like 'weekdays at 9am' require the "
+                "'croniter' package. Install with: pip install croniter"
+            )
+        try:
+            croniter(cron_expr)
+        except Exception as e:
+            raise ValueError(f"Invalid schedule '{original}': {e}")
+        return {
+            "kind": "cron",
+            "expr": cron_expr,
+            "display": original,
+        }
+
     # Check for cron expression (5 or 6 space-separated fields)
     # Cron fields: minute hour day month weekday [year]
     parts = schedule.split()

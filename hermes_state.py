@@ -60,6 +60,7 @@ from hermes_cli.sqlite_runtime import (
 )
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, cast
 
+import hermes_state_holders as _state_holders
 from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
     _COMPRESSION_CHILD_SQL,
@@ -3595,58 +3596,17 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         conn.close()
 
 
+def _foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
+    """Compatibility delegate to the state-holder authority."""
+    return _state_holders.foreign_state_db_holders(db_path)
+
+
 def _live_writer_holds_db(db_path: Path) -> bool:
-    """True when a connection outside this call still holds ``db_path`` open.
-
-    Detection works by asking SQLite for the thing a repair actually needs and
-    a live writer cannot grant: ``PRAGMA locking_mode=EXCLUSIVE`` followed by
-    ``BEGIN IMMEDIATE``.  In WAL mode, entering exclusive locking mode
-    requires exclusive locks on the WAL index, so any other open connection —
-    reader or writer — makes it fail with SQLITE_BUSY.  Neither statement
-    parses the schema, so this works on the malformed databases repair exists
-    to handle.
-
-    Fails **open** (returns False) on anything other than a positive
-    busy/locked signal: refusing to repair a database that nobody is actually
-    holding would strand the very self-heal path this guard protects.
-
-    Scope: the WAL-index exclusive lock is what makes this detect a holder, so
-    the guard is effective in WAL mode. On SQLite builds carrying the WAL-reset
-    bug and on NFS/SMB, Hermes deliberately runs ``state.db`` in
-    ``journal_mode=DELETE`` (see :func:`apply_wal_with_fallback`); there a held
-    reader takes only a SHARED lock, ``BEGIN IMMEDIATE`` still acquires
-    RESERVED, and this probe returns False. In that mode repair is serialised
-    only by the cross-process repairer lock rather than by this holder probe.
-    The 2026-08 incident that motivated the guard was in WAL mode, which this
-    covers; broadening detection to DELETE mode is left to a follow-up.
-    """
-    probe = None
-    try:
-        probe = _connect_repair_durable(db_path, timeout=0.0)
-        probe.execute("PRAGMA locking_mode=EXCLUSIVE")
-        probe.execute("BEGIN IMMEDIATE")
-        probe.execute("ROLLBACK")
-        return False
-    except sqlite3.OperationalError as exc:
-        lowered = str(exc).lower()
-        return "locked" in lowered or "busy" in lowered
-    except sqlite3.DatabaseError:
-        # Malformed/unreadable: no evidence of a live holder either way.
-        return False
-    except Exception:
-        return False
-    finally:
-        if probe is not None:
-            try:
-                # Drop exclusive locking mode before closing so the probe
-                # itself never leaves the file pinned.
-                probe.execute("PRAGMA locking_mode=NORMAL")
-            except Exception:
-                pass
-            try:
-                probe.close()
-            except Exception:
-                pass
+    """Compatibility delegate to the repair-admission authority."""
+    return _state_holders.live_writer_holds_db(
+        db_path,
+        connect_repair_durable=_connect_repair_durable,
+    )
 
 
 def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
@@ -5114,35 +5074,8 @@ def _concrete_state_db_holder_pids(
     return pids
 
 
-def _read_proc_cmdline(pid: int) -> Optional[str]:
-    """Read /proc/<pid>/cmdline, world-readable even when fd table is not.
-
-    Returns the cmdline as a space-joined string, or None when unreadable
-    (process exited, or hidepid mount).
-    """
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            raw = f.read()
-        if not raw:
-            return None
-        return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
-    except OSError:
-        return None
-
-
-_HERMES_CMDLINE_MARKERS = ("hermes_cli.main", "hermes_cli/main", "hermes serve",
-                           "hermes-agent", "hermes gateway", "hermes chat")
-
-
-def _looks_like_hermes(cmdline: str) -> bool:
-    """Heuristic: does this cmdline look like a Hermes process?
-
-    Used to decide whether an uninspectable process (fd table unreadable
-    due to different user) should be treated as a potential state.db holder.
-    We only flag processes that look like Hermes, not every system daemon.
-    """
-    lower = cmdline.lower()
-    return any(marker in lower for marker in _HERMES_CMDLINE_MARKERS)
+_read_proc_argv = _state_holders._read_proc_argv
+_looks_like_hermes = _state_holders._looks_like_hermes
 
 
 # Lifecycle statuses surfaced by session pickers. Classification looks ONLY at
@@ -6720,104 +6653,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return msg.startswith("fts5:") and "corrupt structure" in msg
 
     def _foreign_state_db_holders(self) -> List[Tuple[int, str]]:
-        """Return foreign processes holding this DB or its WAL sidecars.
-
-        Automatic FTS repair is structural maintenance, not an ordinary WAL
-        write.  It must not run while another process remains attached: a
-        sidecar reset under that holder can leave the two processes writing
-        through different WAL inodes.
-
-        A scan failure is represented as an unknown holder.  Skipping optional
-        automatic maintenance is safer than assuming quiescence; canonical
-        writes continue through the stale-FTS fail-open path.
-        """
-        # The split-brain mechanism requires POSIX unlink semantics: Windows
-        # refuses to replace SQLite sidecars while another process has them
-        # open.  Avoid psutil.open_files() there; querying arbitrary Windows
-        # processes can block for minutes on device-backed handles.
-        if _IS_WINDOWS:
-            return []
-        if psutil is None:
-            return [(-1, "open-file scan unavailable")]
-
-        db_path = os.path.abspath(os.fspath(self.db_path))
-        watched = {
-            _canonical_sqlite_path(db_path),
-            _canonical_sqlite_path(db_path + "-wal"),
-            _canonical_sqlite_path(db_path + "-shm"),
-        }
-        holders: List[Tuple[int, str]] = []
-
-        # On Linux, read /proc/<pid>/fd symlinks directly.  psutil's
-        # open_files() filters through isfile_strict(), which stats the
-        # literal path — for an unlinked WAL sidecar the kernel returns
-        # "/path/state.db-wal (deleted)" and stat fails, so the entry is
-        # silently dropped and the split-brain holder is never seen.
-        # /proc readlinks preserve the "(deleted)" suffix so _canonical can
-        # strip it and match.
-        if sys.platform.startswith("linux"):
-            try:
-                own_pid = os.getpid()
-                for pid_str in os.listdir("/proc"):
-                    if not pid_str.isdigit():
-                        continue
-                    pid = int(pid_str)
-                    if pid == own_pid:
-                        continue
-                    fd_dir = f"/proc/{pid}/fd"
-                    try:
-                        fds = os.listdir(fd_dir)
-                    except OSError:
-                        # Cannot read this process's fd table (different
-                        # user, e.g. root gateway vs user desktop).
-                        # /proc/<pid>/cmdline is world-readable by default,
-                        # so check whether this is a Hermes process —
-                        # only flag uninspectable holders that look like
-                        # another Hermes instance, not every system daemon.
-                        cmdline = _read_proc_cmdline(pid)
-                        if cmdline is not None and _looks_like_hermes(cmdline):
-                            holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
-                        continue
-                    for fd in fds:
-                        try:
-                            target = os.readlink(f"{fd_dir}/{fd}")
-                        except OSError:
-                            continue
-                        if _canonical_sqlite_path(target) in watched:
-                            holders.append((pid, target))
-            except Exception as exc:
-                logger.warning(
-                    "Could not prove state.db has no foreign holders; "
-                    "deferring automatic FTS maintenance: %s",
-                    exc,
-                )
-                return holders or [(-1, f"open-file scan failed: {exc}")]
-            return holders
-
-        # macOS / BSD: use psutil.open_files().  macOS does not use the
-        # "(deleted)" suffix convention, so psutil's filtering is safe here.
-        try:
-            for process in psutil.process_iter(["pid", "open_files"]):
-                info = process.info
-                pid = int(info["pid"])
-                if pid == os.getpid():
-                    continue
-                # psutil's as_dict() converts AccessDenied to None, which
-                # or-() turns into an empty iteration.  On macOS this is
-                # acceptable: the gateway/desktop topology from the issue is
-                # Linux-specific (systemd units running as root).
-                for opened in info.get("open_files") or ():
-                    path = getattr(opened, "path", "")
-                    if path and _canonical_sqlite_path(path) in watched:
-                        holders.append((pid, path))
-        except Exception as exc:
-            logger.warning(
-                "Could not prove state.db has no foreign holders; "
-                "deferring automatic FTS maintenance: %s",
-                exc,
-            )
-            return holders or [(-1, f"open-file scan failed: {exc}")]
-        return holders
+        """Return foreign processes holding this DB or its WAL sidecars."""
+        return _foreign_state_db_holders(self.db_path)
 
     def _reap_inactive_orphan_desktop_holders(
         self, holders: List[Tuple[int, str]], *, min_age_seconds: float

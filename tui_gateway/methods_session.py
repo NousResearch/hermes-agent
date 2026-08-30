@@ -1658,10 +1658,16 @@ def _(rid, params: dict) -> dict:
 
 @method("handoff.fail")
 def _(rid, params: dict) -> dict:
-    """Mark an in-flight handoff as failed so the user can retry.
+    """Mark a not-yet-claimed handoff as failed so the user can retry.
 
-    Desktop calls this when its bounded poll times out. Only pending/running
-    rows are changed so a late success from the gateway watcher is not clobbered.
+    Desktop calls this when its bounded poll times out. Only PENDING rows are
+    changed (compare-and-swap in ``fail_handoff``): once the gateway watcher
+    has claimed the row (``running``) it owns the terminal state — failing it
+    from the waiter races the in-flight dispatch, which later overwrites
+    ``failed`` → ``completed`` after the user was already told it failed
+    (split-brain; the delivery actually happened). For a ``running`` row the
+    caller gets ``{"failed": False, "state": "running"}`` and should surface
+    "still transferring" instead.
     """
     session, err = _sess_nowait(params, rid)
     if err:
@@ -1671,13 +1677,20 @@ def _(rid, params: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         key = session["session_key"]
-        record = db.get_handoff_state(key) or {}
-        state = record.get("state") or ""
-        if state in {"pending", "running"}:
-            db.fail_handoff(key, reason)
+        try:
+            failed = db.fail_handoff(key, reason, only_states=("pending",))
+        except TypeError:
+            # Older SessionDB without only_states: preserve prior behavior
+            # minus the running-row stomp (fail only when still pending).
+            record = db.get_handoff_state(key) or {}
+            failed = (record.get("state") or "") == "pending"
+            if failed:
+                db.fail_handoff(key, reason)
+        if failed:
             return _ok(rid, {"failed": True, "state": "failed"})
+        record = db.get_handoff_state(key) or {}
 
-    return _ok(rid, {"failed": False, "state": state})
+    return _ok(rid, {"failed": False, "state": record.get("state") or ""})
 
 
 @method("session.usage")

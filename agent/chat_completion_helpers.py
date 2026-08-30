@@ -5516,6 +5516,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # responsive.  See the canonical comment block above ``_stale_streak()``.
     if result["response"] is not None:
         _reset_stale_streak(agent)
+    # Surface first-chunk timing for observability (forwarded to the
+    # ``post_api_request`` plugin hook by the conversation loop). The
+    # per-attempt stream diagnostic dict already records ``first_chunk_at``
+    # on the first received chunk; propagate the latest value onto the agent
+    # so the loop can read it without threading the diag through returns.
+    _diag_last = request_client_holder.get("diag")
+    if isinstance(_diag_last, dict) and _diag_last.get("first_chunk_at"):
+        agent._last_api_first_chunk_at = float(_diag_last["first_chunk_at"])
     return result["response"]
 
 # ── Provider fallback ──────────────────────────────────────────────────

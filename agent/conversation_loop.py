@@ -3153,6 +3153,10 @@ def run_conversation(
 
             try:
                 agent._reset_stream_delivery_tracking()
+                # Per-attempt first-chunk timestamp, refreshed each attempt so
+                # a stale value from a previous API call can never leak into
+                # the post_api_request hook (set again on stream success).
+                agent._last_api_first_chunk_at = None
                 # api_messages is built once, before this retry loop, while the
                 # primary provider is active.  A mid-conversation fallback can
                 # switch to a require-side provider (DeepSeek / Kimi / MiMo) that
@@ -7120,6 +7124,14 @@ def run_conversation(
                         api_duration=api_duration,
                         started_at=api_start_time,
                         ended_at=_api_ended_at,
+                        # First received stream chunk timestamp (epoch seconds), set by
+                        # interruptible_streaming_api_call from its per-attempt
+                        # stream diagnostics; None when the response was not
+                        # streamed or no chunk arrived. TTFB =
+                        # first_chunk_at - started_at.
+                        first_chunk_at=getattr(
+                            agent, "_last_api_first_chunk_at", None
+                        ),
                         finish_reason=finish_reason,
                         message_count=len(api_messages),
                         response_model=getattr(response, "model", None),

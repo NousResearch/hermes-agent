@@ -1886,6 +1886,46 @@ describe('branchStoredSession desktop source tagging', () => {
     })
   })
 
+  // The create landing on the right backend is only half the job: the sidebar
+  // row must be TAGGED with that owner too. An untagged optimistic row inherits
+  // the ambient profile, so every later owner lookup (resume/hydrate/prompt)
+  // routes to the wrong backend and the chat pane spins forever on a session
+  // that backend never had.
+  it('tags the optimistic branch row with the parent connection owner', async () => {
+    const ambientRequest = vi.fn(async () => ({}) as never)
+
+    vi.mocked(requestGatewayForAgent).mockImplementation((async (
+      _connectionId: null | string,
+      _profile: string,
+      method: string
+    ) => {
+      if (method === 'session.create') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    }) as never)
+
+    setSessions([
+      storedSession({ connection_id: 'pandora', id: 'stored-parent', message_count: 1, profile: 'default' })
+    ])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={ambientRequest} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    const row = $sessions.get().find(session => session.id === 'branch-stored')
+    expect(row).toBeDefined()
+    expect(row!.connection_id).toBe('pandora')
+    expect(row!.profile).toBe('default')
+  })
+
   // An untagged row (single-backend users, the overwhelmingly common case)
   // must keep the ambient path exactly as before — no behaviour change.
   it('keeps an untagged parent branch on the ambient socket', async () => {

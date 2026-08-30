@@ -44,10 +44,12 @@ import {
   $gatewayState,
   $selectedStoredSessionId,
   $sessions,
+  knownSessionOwner,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
-import { requestForSessionProfile } from '@/store/session-request-router'
+import { requestForSessionProfile, type SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTileDelegateRevision,
@@ -157,7 +159,38 @@ function TileChat({
 }) {
   const { gateway, requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
-  const ownerRoute = sessionTileOwnerRoute(storedSessionId)
+
+  // Owner ladder, same as useSessionTileActions (session-tile-actions.ts:99-103):
+  // this tile's explicit route first, then the session row's own
+  // (connection, profile) tag — knownSessionOwner also folds in the owner hint.
+  // A tile opened without an explicit route — e.g. a branch child, which
+  // openSessionTile creates with no workspaceScope — has no tile route, so the
+  // row/hint rung is the only thing keeping this tile's model + composer RPCs
+  // on the backend that owns the session instead of the ambient one.
+  //
+  // Resolved on every render (cheap id lookups) so it cannot go stale against
+  // the tile store, the recents/cron/messaging rows, or the hint map. Only the
+  // resulting IDENTITY is memoised, on primitives, because knownSessionOwner
+  // mints a fresh object per call and requestTileGateway below is keyed on it.
+  const resolvedOwner =
+    sessionTileOwnerRoute(storedSessionId) ?? knownSessionOwner(ownerLookupSessionRows(), storedSessionId)
+
+  const ownerConnectionId = resolvedOwner && typeof resolvedOwner === 'object' ? resolvedOwner.connectionId : ''
+  const ownerProfile = resolvedOwner && typeof resolvedOwner === 'object' ? resolvedOwner.profile : ''
+  const ownerTargetProfile = resolvedOwner && typeof resolvedOwner === 'object' ? resolvedOwner.targetProfile : undefined
+
+  // A bare profile string carries no connection and is not a usable route here.
+  const ownerRoute = useMemo<SessionOwnerRoute | undefined>(
+    () =>
+      ownerConnectionId
+        ? {
+            connectionId: ownerConnectionId,
+            profile: ownerProfile,
+            ...(ownerTargetProfile ? { targetProfile: ownerTargetProfile } : {})
+          }
+        : undefined,
+    [ownerConnectionId, ownerProfile, ownerTargetProfile]
+  )
 
   const requestTileGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T> =>

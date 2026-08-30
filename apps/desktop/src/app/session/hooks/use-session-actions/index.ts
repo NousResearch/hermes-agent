@@ -2023,13 +2023,22 @@ export function useSessionActions({
           : 0
 
         setFreshDraftReady(false)
+        // Stamp the optimistic row with the branch's EXACT owner. Without it the
+        // row inherits $activeGatewayProfile and carries no connection_id, so a
+        // child correctly created on the parent's remote backend is listed as
+        // belonging to whichever backend happens to be active. Every later
+        // owner lookup off that row (resume, hydrate, prompt) then routes to the
+        // wrong machine and the chat pane spins on a session that backend never
+        // had — the create is right, the row is a lie. Mirrors the routed
+        // creates at the top of this file, which already pass their route here.
         upsertOptimisticSession(
           branched,
           routedSessionId,
           copy.branchTitle(siblings + 1).toLowerCase(),
           preview,
           parentStoredId,
-          parent ? parent.last_active || parent.started_at : undefined
+          parent ? parent.last_active || parent.started_at : undefined,
+          ownerRoute ?? null
         )
         ensureSessionState(branched.session_id, routedSessionId)
         updateSessionState(

@@ -97,19 +97,65 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
     return None
 
 
+def _conversation_generation(session_key: str, session_db: Any) -> str:
+    """Return the generation marker for *session_key*'s current conversation.
+
+    The declared key is a per-CHAT identifier and deliberately outlives any
+    single conversation on it — ``reset_session()`` mints a fresh physical id
+    on ``/new`` but keeps the key, and the idle/daily/suspended policy resets
+    do the same. Hashing the key alone would therefore map the conversation
+    before a reset and the one after it onto ONE affinity scope, violating the
+    #79017/#86733 contract (warm across compression rotation, cold across a
+    new conversation).
+
+    The generation that must rotate is already durable: every one of those
+    boundaries closes the outgoing row with an ``_RESET_END_REASONS``
+    end_reason, and ``SessionDB.latest_conversation_boundary`` reports the most
+    recent one. Qualifying the key with it gives a carrier that is
+
+    - stable across a host's per-response physical ids (no boundary is written
+      when nothing was reset, so every reply hashes the same value), and
+    - rotating on every conversation replacement, ``/new`` and the policy
+      auto-resets alike, monotonically — ``ended_at`` only moves forward, so a
+      retired generation can never be reused.
+
+    No counter is introduced anywhere: the marker is read from state the
+    reset paths already write, and it is read on the memoized resolution path,
+    not per API call.
+
+    Returns ``""`` when the key has never been reset, when the DB does not
+    expose the lookup, or when it reports nothing.
+    """
+    reader = getattr(session_db, "latest_conversation_boundary", None)
+    if not callable(reader):
+        return ""
+    boundary = reader(session_key)
+    if boundary is None:
+        return ""
+    # Fixed-point so the carrier is byte-identical across repr differences.
+    return f"{float(boundary):.6f}"
+
+
 def declared_conversation_scope(agent: Any) -> Optional[str]:
     """Return the host-declared logical conversation scope, or None.
 
     Resolved from ``agent._gateway_session_key`` (the ``X-Hermes-Session-Key``
-    /``build_session_key`` per-chat key), hashed into ``gwk_<sha256[:24]>``
-    so no platform/chat/user identifier reaches a provider on the wire and
-    the value stays inside every caller's length/charset budget.
+    /``build_session_key`` per-chat key) qualified by the conversation
+    generation currently live on it (:func:`_conversation_generation`), hashed
+    together into ``gwk_<sha256[:24]>`` so no platform/chat/user identifier
+    reaches a provider on the wire and the value stays inside every caller's
+    length/charset budget.
+
+    The key alone would outlive the conversation — it survives ``/new`` and the
+    idle/daily policy resets by design — so the generation is what makes this
+    carrier legal: stable across a host's per-response physical ids, and cold
+    on every conversation replacement.
 
     None — meaning "fall back to the physical-id scope" — when no key was
     declared, when this agent is a background-review fork (``_persist_disabled``:
     it clones the live runtime, including the key), when the session row is an
     explicit fork child (``/branch``, delegate, tool), and on any DB error
-    during that check.
+    during either lookup.
     """
     key = str(getattr(agent, "_gateway_session_key", "") or "").strip()
     if not key:
@@ -118,6 +164,7 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
         return None
     sid = str(getattr(agent, "session_id", None) or "")
     db = getattr(agent, "_session_db", None)
+    generation = ""
     if sid and db is not None:
         try:
             if db.is_explicit_fork_child(sid):
@@ -127,7 +174,16 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
             # fork onto its parent's key on a transient DB failure.
             logger.debug("declared-scope fork check failed", exc_info=True)
             return None
-    digest = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:24]
+    if db is not None:
+        try:
+            generation = _conversation_generation(key, db)
+        except Exception:
+            # Same fail-closed rule as the fork check: an unqualified key
+            # spans /new, so degrade to the physical-id scope instead.
+            logger.debug("declared-scope generation read failed", exc_info=True)
+            return None
+    carrier = f"{key}|{generation}" if generation else key
+    digest = hashlib.sha256(carrier.encode("utf-8", errors="replace")).hexdigest()[:24]
     return f"{_DECLARED_SCOPE_PREFIX}{digest}"
 
 

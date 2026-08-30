@@ -363,3 +363,147 @@ class TestProviderStickyKeys:
             reset_affinity_scope(token)
 
         assert body["session_id"] == body_next["session_id"] == scope
+
+
+class TestConversationGenerationRotates:
+    """The declared key must not outlive the conversation it names.
+
+    ``gateway_session_key`` is a per-CHAT identifier: ``reset_session()``
+    mints a fresh physical id on ``/new`` and keeps the key, and the
+    idle/daily/suspended policy resets do the same. Hashing the key alone
+    would map the conversation before a reset and the one after it onto ONE
+    affinity scope, violating the #79017/#86733 contract.
+
+    The generation is read from the boundary those resets already write
+    (``_RESET_END_REASONS`` on the outgoing row), so nothing new is persisted
+    and the two fences cannot drift.
+    """
+
+    KEY = "agent:main:telegram:dm:123"
+
+    def _keyed(self, db, session_id):
+        db.create_session(
+            session_id=session_id,
+            source="telegram",
+            session_key=self.KEY,
+        )
+        return _agent(session_id, db, self.KEY)
+
+    def test_new_rotates_the_declared_scope(self, db):
+        """The exact reproduction that blocked this PR, now green.
+
+        ``/new`` ends the outgoing row with ``session_reset`` and mints a new
+        physical id under the same chat key; before the generation qualifier
+        both sides hashed to one ``gwk_`` value.
+        """
+        before = self._keyed(db, "sess-A")
+        scope_before = resolve_prompt_cache_scope(before)
+
+        db.end_session("sess-A", "session_reset")
+        after = self._keyed(db, "sess-B")
+
+        assert scope_before.startswith("gwk_")
+        assert resolve_prompt_cache_scope(after).startswith("gwk_")
+        assert resolve_prompt_cache_scope(after) != scope_before
+
+    @pytest.mark.parametrize(
+        "reason",
+        ["session_reset", "session_switch", "idle", "daily", "suspended",
+         "resume_pending_expired"],
+    )
+    def test_every_reset_boundary_rotates(self, db, reason):
+        """Policy auto-resets are conversation replacements too.
+
+        A hand-rolled counter incremented only in ``reset_session()`` would
+        leave these on the previous generation; reading the durable boundary
+        covers the whole set by construction.
+        """
+        first = self._keyed(db, f"sess-{reason}-1")
+        scope_first = resolve_prompt_cache_scope(first)
+        db.end_session(f"sess-{reason}-1", reason)
+        second = self._keyed(db, f"sess-{reason}-2")
+        assert resolve_prompt_cache_scope(second) != scope_first
+
+    def test_generations_never_roll_back(self, db):
+        """Three conversations on one key produce three distinct scopes."""
+        scopes = []
+        for i in range(3):
+            agent = self._keyed(db, f"sess-gen{i}")
+            scopes.append(resolve_prompt_cache_scope(agent))
+            db.end_session(f"sess-gen{i}", "session_reset")
+        assert len(set(scopes)) == 3
+
+    def test_per_response_ids_still_share_one_scope(self, db):
+        """The whole point of the PR survives the fix.
+
+        A host that mints one id per RESPONSE writes no boundary, so every
+        reply reads the same (empty) generation and lands on one scope.
+        """
+        scopes = {
+            resolve_prompt_cache_scope(self._keyed(db, f"gc_run_{i}"))
+            for i in range(4)
+        }
+        assert len(scopes) == 1
+        assert next(iter(scopes)).startswith("gwk_")
+
+    def test_an_accidental_end_is_not_a_boundary(self, db):
+        """Only intentional breaks rotate; a crash-close keeps the scope warm."""
+        first = self._keyed(db, "sess-live")
+        scope_first = resolve_prompt_cache_scope(first)
+        db.end_session("sess-live", "agent_close")
+        second = self._keyed(db, "sess-resumed")
+        assert resolve_prompt_cache_scope(second) == scope_first
+
+    def test_another_chats_reset_does_not_rotate_this_one(self, db):
+        """The boundary is read per declared key, never globally."""
+        mine = self._keyed(db, "sess-mine")
+        scope_mine = resolve_prompt_cache_scope(mine)
+
+        other_key = "agent:main:telegram:dm:999"
+        db.create_session(
+            session_id="sess-other", source="telegram", session_key=other_key
+        )
+        db.end_session("sess-other", "session_reset")
+
+        again = self._keyed(db, "sess-mine-2")
+        assert resolve_prompt_cache_scope(again) == scope_mine
+
+    def test_scope_never_carries_the_raw_key_or_boundary(self, db):
+        agent = self._keyed(db, "sess-A")
+        db.end_session("sess-A", "session_reset")
+        rotated = self._keyed(db, "sess-B")
+        scope = resolve_prompt_cache_scope(rotated)
+        assert self.KEY not in scope
+        assert "telegram" not in scope
+        assert scope.startswith("gwk_")
+        assert len(scope) == len("gwk_") + 24
+
+    def test_generation_read_failure_degrades_to_the_physical_scope(self):
+        """Fail closed: an unqualified key would span a /new."""
+
+        class BoomDB:
+            def is_explicit_fork_child(self, sid):
+                return False
+
+            def latest_conversation_boundary(self, key):
+                raise RuntimeError("db down")
+
+            def get_compression_lineage(self, sid):
+                return []
+
+        agent = _agent("sess-A", BoomDB(), self.KEY)
+        assert declared_conversation_scope(agent) is None
+
+    def test_a_db_without_the_lookup_keeps_the_declaration(self, db):
+        """Forward/backward compatible: no boundary API means no boundary."""
+
+        class LegacyDB:
+            def is_explicit_fork_child(self, sid):
+                return False
+
+            def get_compression_lineage(self, sid):
+                return []
+
+        agent = _agent("sess-A", LegacyDB(), self.KEY)
+        scope = declared_conversation_scope(agent)
+        assert scope is not None and scope.startswith("gwk_")

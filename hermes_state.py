@@ -14134,6 +14134,39 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session = self.get_session(session_id)
         return bool(session and self._is_explicit_fork_child_row(session))
 
+    def latest_conversation_boundary(self, session_key: str) -> Optional[float]:
+        """When the most recent conversation boundary closed for *session_key*.
+
+        A boundary is a row this key ended at an intentional conversation
+        break — the ``_RESET_END_REASONS`` set (``/new``, ``/switch``, idle,
+        daily, suspended, resume_pending_expired).  That is the same fence
+        :meth:`find_latest_gateway_session_for_peer` refuses to reach behind,
+        so the two agree on where one conversation stops and the next begins
+        and cannot drift.
+
+        Returns ``None`` when the key has never been reset.  The value is a
+        monotonically advancing ``ended_at``: each reset appends a newer
+        boundary, so a generation derived from it can never roll back to a
+        previous one.  Read-only; ``agent/prompt_cache_scope.py`` uses it to
+        keep a host-declared conversation key from outliving the conversation
+        it names.
+        """
+        if not session_key:
+            return None
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                f"""
+                SELECT MAX(ended_at) AS boundary
+                FROM sessions
+                WHERE session_key = ?
+                  AND ended_at IS NOT NULL
+                  AND end_reason IN ({_RESET_END_REASONS_SQL})
+                """,
+                (session_key,),
+            ).fetchone()
+        boundary = row["boundary"] if row is not None else None
+        return float(boundary) if boundary is not None else None
+
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
         if not parent_id or self._is_explicit_fork_child_row(child):

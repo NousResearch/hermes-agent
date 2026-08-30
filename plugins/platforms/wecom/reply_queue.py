@@ -52,6 +52,14 @@ class ReplyQueue:
         # Serial-coalesce state
         self.coalesced_body: Optional[Dict[str, Any]] = None
         self.coalesce_count: int = 0
+        # Set to True when the final-fence timeout fires without receiving
+        # the intermediate frame's ACK.  A stale ACK for that frame is now
+        # indistinguishable from the final frame's ACK on the wire (both
+        # carry only req_id), so ACK-based settlement is no longer reliable
+        # for this generation.  The final frame is still sent (UX preserved)
+        # but its result is marked indeterminate — the caller must not treat
+        # it as a confirmed delivery receipt.
+        self.settlement_poisoned: bool = False
 
 
 class ReplyQueueMixin:
@@ -144,6 +152,11 @@ class ReplyQueueMixin:
                     _pending_stream.get("finish", "N/A"),
                     time.monotonic() - (pending_frame.sent_at or time.monotonic()),
                 )
+                # The timed-out intermediate's ACK may still arrive and is
+                # indistinguishable from the final frame's ACK on the wire.
+                # Poison this generation so the final frame does not rely on
+                # ACK-based settlement.
+                queue.settlement_poisoned = True
             except BaseException:
                 # Catch CancelledError (BaseException in Python 3.9+) and
                 # any other exception so the final path always proceeds to
@@ -213,8 +226,25 @@ class ReplyQueueMixin:
                 future.cancel()
             raise
 
-        # For final frames: await the ack (blocking)
+        # For final frames: await the ack (blocking) — unless settlement is
+        # poisoned (fence timeout left an uncorrelated stale ACK in the
+        # channel), in which case skip ACK tracking entirely.
         if is_final:
+            if queue.settlement_poisoned:
+                # ACK channel is ambiguous — any ACK could be the stale
+                # intermediate's.  Return indeterminate without waiting.
+                logger.warning(
+                    "[%s] Final frame sent with poisoned settlement "
+                    "(req_id=%s) — skipping ACK wait, result is indeterminate.",
+                    self.name, normalized,
+                )
+                queue.pending_ack = None
+                self._reply_queues.pop(normalized, None)
+                return {
+                    "errcode": 0,
+                    "errmsg": "settlement_indeterminate",
+                    "ack_pending": True,
+                }
             try:
                 response = await asyncio.wait_for(future, timeout=self._REPLY_ACK_TIMEOUT)
                 return response
@@ -294,6 +324,7 @@ class ReplyQueueMixin:
             # Clear coalesced buffer
             queue.coalesced_body = None
             queue.coalesce_count = 0
+            queue.settlement_poisoned = False
         self._reply_queues.clear()
 
     async def _send_intermediate_serial(

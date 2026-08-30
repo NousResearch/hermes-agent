@@ -120,6 +120,21 @@ def _is_global_env(name: str) -> bool:
     return any(name.startswith(p) for p in _GLOBAL_ENV_PREFIXES)
 
 
+def get_scoped_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Return a profile credential only from the active secret scope.
+
+    Unlike :func:`get_secret`, this never reads ``os.environ``. It is for
+    isolation-critical plugin/subprocess capabilities where an env fallback
+    could cross profile boundaries. Missing scope or missing key is fail-closed.
+    """
+    if _is_global_env(name):
+        raise ValueError(f"global environment variable is not a scoped secret: {name}")
+    scope = _SECRET_SCOPE.get()
+    if scope is None:
+        return default
+    return scope.get(name, default)
+
+
 def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     """Resolve a credential by env-var name, honoring the active profile scope.
 

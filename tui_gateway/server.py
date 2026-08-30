@@ -1245,8 +1245,10 @@ def _interrupt_session_turn(
     run_thread_alive = False
 
     if use_compute_host:
-        if should_interrupt:
-            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
+        # The host owns the live turn. Parent `running` is only a mirror and
+        # can lag behind a blocked interactive tool, so let the host determine
+        # whether there is work to interrupt.
+        _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
     else:
         run_thread = session.get("_run_thread")
         run_thread_alive = run_thread is not None and run_thread.is_alive()
@@ -2599,7 +2601,7 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
             from tui_gateway.host_supervisor import HostSupervisor
 
             _compute_host_supervisor = HostSupervisor(
-                rpc_sink=write_json,
+                rpc_sink=_relay_compute_host_rpc,
                 heartbeat_secs=int(isolation_cfg.get("compute_host_heartbeat_secs") or 15),
                 respawn_max=int(isolation_cfg.get("compute_host_respawn_max") or 3),
             )
@@ -2648,6 +2650,87 @@ def _compute_host_turn_frame(
 def _metadata_mirror(session: dict | None) -> dict:
     mirror = (session or {}).get("_metadata_mirror")
     return mirror if isinstance(mirror, dict) else {}
+
+
+def _relay_compute_host_rpc(message: dict) -> bool:
+    """Relay host events while retaining the clarify snapshot needed on resume."""
+    params = message.get("params") if isinstance(message, dict) else None
+    if isinstance(params, dict) and params.get("type") == "clarify.request":
+        sid = str(params.get("session_id") or "")
+        payload = params.get("payload")
+        session = _sessions.get(sid)
+        if session is not None and isinstance(payload, dict) and payload.get("request_id"):
+            with session.get("history_lock", threading.Lock()):
+                session["_compute_host_pending_clarify"] = dict(payload)
+    elif isinstance(params, dict) and params.get("type") == "clarify.expire":
+        sid = str(params.get("session_id") or "")
+        payload = params.get("payload")
+        session = _sessions.get(sid)
+        request_id = payload.get("request_id") if isinstance(payload, dict) else None
+        if session is not None and request_id:
+            with session.get("history_lock", threading.Lock()):
+                pending = session.get("_compute_host_pending_clarify")
+                if isinstance(pending, dict) and pending.get("request_id") == request_id:
+                    session.pop("_compute_host_pending_clarify", None)
+    return write_json(message)
+
+
+def _compute_host_clarify_session(request_id: str) -> tuple[str, dict] | None:
+    """Find the parent mirror for one host-owned clarify request."""
+    if not request_id:
+        return None
+    for sid, session in list(_sessions.items()):
+        with session.get("history_lock", threading.Lock()):
+            pending = session.get("_compute_host_pending_clarify")
+            if isinstance(pending, dict) and pending.get("request_id") == request_id:
+                return sid, session
+    return None
+
+
+def _update_compute_host_clarify_snapshot(sid: str, session: dict, params: dict, result: dict) -> None:
+    """Keep reconnect snapshots accurate while a batch clarify is answered."""
+    request_id = str(params.get("request_id") or "")
+    with session.get("history_lock", threading.Lock()):
+        pending = session.get("_compute_host_pending_clarify")
+        if not isinstance(pending, dict) or pending.get("request_id") != request_id:
+            return
+        if result.get("status") == "expired" or not result.get("remaining") and not params.get("question_id"):
+            session.pop("_compute_host_pending_clarify", None)
+            return
+        question_id = str(params.get("question_id") or "")
+        if question_id and isinstance(result.get("remaining"), list):
+            answers = dict(pending.get("answers") or {})
+            answers[question_id] = str(params.get("answer") or "")
+            pending["answers"] = answers
+            if not result["remaining"]:
+                session.pop("_compute_host_pending_clarify", None)
+
+
+def _respond_compute_host_clarify(rid: str, params: dict) -> dict | None:
+    """Proxy a clarify answer into the process that owns its pending Event."""
+    located = _compute_host_clarify_session(str(params.get("request_id") or ""))
+    if located is None:
+        return None
+    sid, session = located
+    if not _session_uses_compute_host(session):
+        return None
+    try:
+        ack = _get_compute_host_supervisor().respond(sid, params)
+    except Exception as exc:
+        return _err(rid, 5019, f"compute-host clarify response failed: {exc}")
+    if ack.get("type") == "respond.error":
+        return _err(rid, 5019, str(ack.get("message") or "compute-host clarify response failed"))
+    response = ack.get("response")
+    if not isinstance(response, dict):
+        return _err(rid, 5019, "compute-host clarify response returned an invalid response")
+    if "error" in response:
+        error = response["error"] if isinstance(response["error"], dict) else {}
+        return _err(rid, int(error.get("code") or 5000), str(error.get("message") or "clarify response failed"))
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return _err(rid, 5019, "compute-host clarify response returned an invalid result")
+    _update_compute_host_clarify_snapshot(sid, session, params, result)
+    return _ok(rid, result)
 
 
 def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> None:
@@ -2699,6 +2782,7 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session["running"] = False
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
+        session.pop("_compute_host_pending_clarify", None)
     if is_error:
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
@@ -2818,6 +2902,12 @@ def _pending_clarify_request_payload(sid: str) -> dict | None:
                 if batch is not None and batch["answers"]:
                     snapshot["answers"] = dict(batch["answers"])
                 return snapshot
+    session = _sessions.get(sid)
+    if session is not None:
+        with session.get("history_lock", threading.Lock()):
+            pending = session.get("_compute_host_pending_clarify")
+            if isinstance(pending, dict):
+                return dict(pending)
     return None
 
 

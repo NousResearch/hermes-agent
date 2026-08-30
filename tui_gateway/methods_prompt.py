@@ -1704,6 +1704,8 @@ def _(rid, params: dict) -> dict:
     # from _pending) while the card is still visible — common when a WebSocket
     # reconnect during the wait drops tool.complete. A late answer must resolve
     # gracefully instead of hitting the raw 4009 "no pending answer request".
+    if proxied := _respond_compute_host_clarify(rid, params):
+        return proxied
     return _respond(rid, params, "answer", allow_expired=True)
 
 

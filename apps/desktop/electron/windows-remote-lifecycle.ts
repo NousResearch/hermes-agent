@@ -40,7 +40,7 @@ function stripPowerShellNoise(stdout) {
 // command shell is commonly cmd.exe, whose command-line limit is 8191 chars.
 // SshConnection.exec already supports streaming stdin to the remote command.
 function powerShellStdinCommand() {
-  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Console]::In.ReadToEnd()).Invoke()'
+  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
 }
 }
 
@@ -102,9 +102,8 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   // (module auto-load racing the exec read). stripPowerShellNoise drops every
   // block; the JSON is the last meaningful line.
   const lines = stripPowerShellNoise(
-    await ssh.exec(powerShellStdinCommand(), { stdinData: `${script}\r\n` })
+    await ssh.exec(powerShellStdinCommand(), { stdinData: `${encodedPowerShell(script)}\r\n` })
   )
-
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
   if (!parsed?.os || !parsed?.arch) {

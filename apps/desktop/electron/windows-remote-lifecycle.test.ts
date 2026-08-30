@@ -136,7 +136,11 @@ type SshExecOptions = { stdinData?: string | Buffer }
 function scriptFromInvocation(command: string, options: SshExecOptions = {}) {
   const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
 
-  return encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : String(options.stdinData || '')
+  if (encoded) {
+    return Buffer.from(encoded, 'base64').toString('utf16le')
+  }
+
+  return Buffer.from(String(options.stdinData || '').trim(), 'base64').toString('utf16le')
 }
 
 test('PowerShell transport uses UTF-16LE encoded commands and literal escaping', () => {
@@ -329,18 +333,9 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   assert.ok(pythonCheck < output)
 })
 
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
-import { promisify } from 'node:util'
-  }
-})
-
-import { spawn } from 'node:child_process'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-  }
+import { exec as execCallback, spawn } from 'node:child_process'
+import crypto from 'node:crypto'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'  }
 })
 
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {

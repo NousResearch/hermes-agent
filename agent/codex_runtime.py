@@ -1101,7 +1101,9 @@ def _consume_codex_event_stream(
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
     * ``on_event(event)`` — fires for every event before any other processing.
       Used for watchdog activity, debug logging, anything wire-shape-agnostic.
-    * ``interrupt_check()`` — returns True to break the loop early.
+    * ``interrupt_check()`` — returns True to break the loop early, or raises
+      ``TimeoutError`` / ``InterruptedError`` for request-retirement control
+      flow that must not be converted into a partial final response.
     """
     collected_output_items: List[Any] = []
     # output_index of each collected_output_items entry, appended in lockstep
@@ -1606,18 +1608,39 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
+    # Retirement token for THIS request, installed by
+    # ``interruptible_api_call`` before it hands off to the worker thread. When
+    # a watchdog (TTFB / stream-idle / stale-call) kills the connection it
+    # clears the agent-level token, so a worker that is still draining frames
+    # can tell it has been retired. ``None`` means no watchdog owns this call
+    # (auxiliary callers drive this function directly) — then every check
+    # passes and behavior is unchanged.
+    request_token = getattr(agent, "_active_codex_stream_request_token", None)
+
+    def _request_is_current() -> bool:
+        if request_token is None:
+            return True
+        return getattr(agent, "_active_codex_stream_request_token", None) is request_token
 
     def _on_text_delta(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._codex_streamed_text_parts.append(text)
         agent._fire_stream_delta(text)
 
     def _on_reasoning_delta(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._fire_reasoning_delta(text)
 
     def _on_commentary_message(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._fire_streamed_codex_commentary(text)
 
     def _on_event(event: Any) -> None:
+        if not _request_is_current():
+            return
         # TTFB watchdog and activity touch — runs once per SSE event.
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
@@ -1721,6 +1744,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise
 
         def _interrupt_or_superseded() -> bool:
+            # A retired request must NOT break out of the consume loop: breaking
+            # returns the partial `final` (status defaults to "completed"), which
+            # the caller persists as a finished assistant turn. Raise so the
+            # watchdog's own TimeoutError is what the retry path sees.
+            if not _request_is_current():
+                raise TimeoutError(
+                    "Codex Responses stream request retired before terminal response"
+                )
             return bool(agent._interrupt_requested)
 
         try:

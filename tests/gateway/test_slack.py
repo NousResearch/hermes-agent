@@ -642,11 +642,8 @@ class TestAppMentionHandler:
         assert created_handlers[0].app_token == "xapp-profile"
 
     @pytest.mark.asyncio
-    async def test_connect_unscoped_multiplex_falls_back_to_env(self):
-        """Default-profile connect (multiplex active, NO scope installed) must
-        fall back to process env instead of raising UnscopedSecretError —
-        the primary startup loop and background reconnect rebuild both call
-        connect() unscoped (#59739 salvage follow-up)."""
+    async def test_connect_unscoped_multiplex_rejects_process_env_token(self):
+        """An unscoped multiplex connect must fail closed despite a poison env token."""
         config = PlatformConfig(enabled=True, token="xoxb-default")
         adapter = SlackAdapter(config)
 
@@ -704,9 +701,8 @@ class TestAppMentionHandler:
         finally:
             secret_scope.set_multiplex_active(False)
 
-        assert result is True
-        assert created_handlers
-        assert created_handlers[0].app_token == "xapp-default"
+        assert result is False
+        assert created_handlers == []
 
 
 class TestSlackConnectCleanup:

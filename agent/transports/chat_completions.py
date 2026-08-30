@@ -364,12 +364,14 @@ class ChatCompletionsTransport(ProviderTransport):
         if timeout is not None:
             api_kwargs["timeout"] = timeout
 
-        # Tools
-        if tools:
+        # Tools. An explicit empty list is a capability boundary (for example
+        # `hermes chat --no-tools`), so preserve it on the provider wire as
+        # `tools: []`; only None means this caller has no tools contract.
+        if tools is not None:
             # Moonshot/Kimi uses a stricter flavored JSON Schema.  Rewriting
             # tool parameters here keeps aggregator routes (Nous, OpenRouter,
             # etc.) compatible, in addition to direct moonshot.ai endpoints.
-            if is_moonshot_model(model):
+            if tools and is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
 

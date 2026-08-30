@@ -3933,7 +3933,11 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._app.start()
 
             # Decide between webhook and polling mode
-            webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            # Webhook routing credentials are profile secrets.  Resolve via
+            # the active scope so multiplexed profiles cannot inherit another
+            # profile's process environment values.
+            from agent.secret_scope import get_secret
+            webhook_url = (get_secret("TELEGRAM_WEBHOOK_URL", "") or "").strip()
 
             if webhook_url:
                 # ── Webhook mode ─────────────────────────────────────
@@ -3948,7 +3952,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # start rather than silently run in fail-open mode.
                 # See GHSA-3vpc-7q5r-276h.
                 webhook_port = env_int("TELEGRAM_WEBHOOK_PORT", 8443)
-                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+                webhook_secret = (get_secret("TELEGRAM_WEBHOOK_SECRET", "") or "").strip()
                 if not webhook_secret:
                     raise RuntimeError(
                         "TELEGRAM_WEBHOOK_SECRET is required when "

@@ -230,7 +230,14 @@ class ResponsesApiTransport(ProviderTransport):
             _effort_clamp.update({"xhigh": "high", "max": "high", "ultra": "high"})
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
+        # Preserve an explicit empty list as an on-the-wire capability
+        # boundary (`hermes chat --no-tools`). `_responses_tools` collapses an
+        # empty list to None for legacy callers, so recover the distinction
+        # from the original argument; None itself remains omitted because the
+        # OpenAI SDK rejects `tools=None` before issuing a request.
         response_tools = _responses_tools(tools)
+        if tools == []:
+            response_tools = []
 
         # xAI server-side web search.
         #
@@ -290,14 +297,9 @@ class ResponsesApiTransport(ProviderTransport):
                 filtered.append({"type": "web_search"})
                 response_tools = filtered
 
-        # ``tools`` MUST be omitted entirely when there are no functions to
-        # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
-        # eagerly call ``_make_tools(tools)`` which does ``for tool in tools``
-        # without a None guard, so passing ``tools=None`` raises
-        # ``TypeError: 'NoneType' object is not iterable`` before any HTTP
-        # request is issued (openai==2.24.0).  Reported for the
-        # ``openai-codex`` / ``gpt-5.5`` combo on chatgpt.com/backend-api/codex
-        # (#32892) when the agent runs without external tools registered.
+        # `tools=None` is omitted: the OpenAI SDK eagerly iterates it. An
+        # explicit `tools=[]` is valid and must remain visible to the provider
+        # as a deliberate no-tools capability boundary.
         kwargs = {
             "model": model,
             "instructions": instructions,
@@ -310,10 +312,11 @@ class ResponsesApiTransport(ProviderTransport):
             ),
             "store": False,
         }
-        if response_tools:
+        if response_tools is not None:
             kwargs["tools"] = response_tools
-            kwargs["tool_choice"] = "auto"
-            kwargs["parallel_tool_calls"] = True
+            if response_tools:
+                kwargs["tool_choice"] = "auto"
+                kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
         # prompt_cache_key is content-addressed from the static prefix

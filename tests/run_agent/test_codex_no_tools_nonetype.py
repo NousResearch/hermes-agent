@@ -145,9 +145,8 @@ def test_build_kwargs_emits_tools_when_tools_present(transport, codex_messages):
     assert kwargs["parallel_tool_calls"] is True
 
 
-def test_build_kwargs_drops_empty_tools_list(transport, codex_messages):
-    """``tools=[]`` collapses to ``None`` inside ``_responses_tools`` —
-    the resulting kwargs must therefore also omit the key."""
+def test_build_kwargs_preserves_explicit_empty_tools_list(transport, codex_messages):
+    """`tools=[]` is distinct from None: it is the no-tools wire contract."""
     kwargs = transport.build_kwargs(
         model="gpt-5.5",
         messages=codex_messages,
@@ -155,7 +154,7 @@ def test_build_kwargs_drops_empty_tools_list(transport, codex_messages):
         is_codex_backend=True,
     )
 
-    assert "tools" not in kwargs
+    assert kwargs["tools"] == []
     assert "tool_choice" not in kwargs
     assert "parallel_tool_calls" not in kwargs
 

@@ -534,6 +534,8 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
             fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
         )
         if err is not None:
             return err
@@ -575,7 +577,10 @@ class OpenAICompatRoutesMixin:
 
     async def _run_idempotent(
         self, request: "web.Request", body: Dict[str, Any], compute, *,
-        log_label: str, fingerprint_keys: List[str]) -> tuple:
+        log_label: str, fingerprint_keys: List[str],
+        session_id: Optional[str] = None,
+        gateway_session_key: Optional[str] = None,
+    ) -> tuple:
         """Run ``compute()`` once per Idempotency-Key + body fingerprint ->
         ``((result, usage), None)`` or ``(None, 500 response)``."""
         from gateway.platforms.api_server import (
@@ -583,7 +588,12 @@ class OpenAICompatRoutesMixin:
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
             if idempotency_key:
-                fp = _make_request_fingerprint(body, keys=fingerprint_keys)
+                fp = _make_request_fingerprint(
+                    body,
+                    keys=fingerprint_keys,
+                    session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                )
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, compute)
             else:
                 result, usage = await compute()
@@ -858,6 +868,8 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
             fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
         )
         if err is not None:
             return err

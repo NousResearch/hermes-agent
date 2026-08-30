@@ -660,6 +660,8 @@ class ResponseStore:
 
     def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
         self._max_size = max_size
+        self._lock = threading.RLock()
+        self._closed = False
         if db_path is None:
             db_path = ":memory:"
             with suppress(Exception):
@@ -674,13 +676,26 @@ class ResponseStore:
         # Shared WAL-fallback so response_store.db degrades gracefully on NFS/SMB/FUSE homes.
         from hermes_state_wal import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="response_store.db")
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS responses ("
-            "response_id TEXT PRIMARY KEY, data TEXT NOT NULL, accessed_at REAL NOT NULL)")
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS conversations (name TEXT PRIMARY KEY, response_id TEXT NOT NULL)")
-        self._conn.commit()
-        # Conversation history lives here: owner-only perms, once at init (not per commit).
+        with self._lock:
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS responses (
+                    response_id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    accessed_at REAL NOT NULL
+                )"""
+            )
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS conversations (
+                    name TEXT PRIMARY KEY,
+                    response_id TEXT NOT NULL
+                )"""
+            )
+            self._conn.commit()
+        # response_store.db contains conversation history (tool payloads,
+        # prompts, results). Tighten to owner-only after creation so other
+        # local users on a shared box can't read it. Run once at __init__
+        # rather than after every commit — chmod-on-every-write is wasted
+        # syscalls on a hot path.
         self._tighten_file_permissions()
 
     def _tighten_file_permissions(self) -> None:
@@ -696,64 +711,113 @@ class ResponseStore:
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
-        row = self._conn.execute(
-            "SELECT data FROM responses WHERE response_id = ?", (response_id,)).fetchone()
-        if row is None:
-            return None
-        self._conn.execute(
-            "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
-            (time.time(), response_id))
-        self._conn.commit()
-        try:
-            return json.loads(row[0])
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Corrupted JSON in response store for id=%s, evicting entry", response_id)
-            self._conn.execute("DELETE FROM responses WHERE response_id = ?", (response_id,))
+        with self._lock:
+            if self._closed or self._conn is None:
+                return None
+            row = self._conn.execute(
+                "SELECT data FROM responses WHERE response_id = ?", (response_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute(
+                "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
+                (time.time(), response_id),
+            )
             self._conn.commit()
-            return None
+            try:
+                return json.loads(row[0])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Corrupted JSON in response store for id=%s, evicting entry",
+                    response_id,
+                )
+                self._conn.execute(
+                    "DELETE FROM responses WHERE response_id = ?",
+                    (response_id,),
+                )
+                self._conn.commit()
+                return None
 
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
-        self._conn.execute(
-            "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()))
-        count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
-        if count > self._max_size:
-            evict_ids = [row[0] for row in self._conn.execute(
-                "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
-                (count - self._max_size,)).fetchall()]
-            if evict_ids:
-                placeholders = ",".join("?" for _ in evict_ids)
-                # Conversation mappings pointing at evicted responses go too.
-                self._conn.execute(f"DELETE FROM conversations WHERE response_id IN ({placeholders})", evict_ids)
-                self._conn.execute(f"DELETE FROM responses WHERE response_id IN ({placeholders})", evict_ids)
-        self._conn.commit()
+        with self._lock:
+            if self._closed or self._conn is None:
+                return
+            self._conn.execute(
+                "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
+                (response_id, json.dumps(data, default=str), time.time()),
+            )
+            # Evict oldest entries beyond max_size
+            count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
+            if count > self._max_size:
+                excess = count - self._max_size
+                # Use a single atomic subquery eviction to avoid variable limit crashes on large excess sets
+                self._conn.execute(
+                    """DELETE FROM conversations WHERE response_id IN (
+                        SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?
+                    )""",
+                    (excess,),
+                )
+                self._conn.execute(
+                    """DELETE FROM responses WHERE response_id IN (
+                        SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?
+                    )""",
+                    (excess,),
+                )
+            self._conn.commit()
 
     def delete(self, response_id: str) -> bool:
-        """Remove a response (and conversation mappings to it). True if found and deleted."""
-        self._conn.execute("DELETE FROM conversations WHERE response_id = ?", (response_id,))
-        cursor = self._conn.execute("DELETE FROM responses WHERE response_id = ?", (response_id,))
-        self._conn.commit()
-        return cursor.rowcount > 0
+        """Remove a response from the store. Returns True if found and deleted."""
+        with self._lock:
+            if self._closed or self._conn is None:
+                return False
+            # Clear conversation mappings pointing to this response
+            self._conn.execute(
+                "DELETE FROM conversations WHERE response_id = ?", (response_id,)
+            )
+            cursor = self._conn.execute(
+                "DELETE FROM responses WHERE response_id = ?", (response_id,)
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     def get_conversation(self, name: str) -> Optional[str]:
         """Get the latest response_id for a conversation name."""
-        row = self._conn.execute("SELECT response_id FROM conversations WHERE name = ?", (name,)).fetchone()
-        return row[0] if row else None
+        with self._lock:
+            if self._closed or self._conn is None:
+                return None
+            row = self._conn.execute(
+                "SELECT response_id FROM conversations WHERE name = ?", (name,)
+            ).fetchone()
+            return row[0] if row else None
 
     def set_conversation(self, name: str, response_id: str) -> None:
         """Map a conversation name to its latest response_id."""
-        self._conn.execute("INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)", (name, response_id))
-        self._conn.commit()
+        with self._lock:
+            if self._closed or self._conn is None:
+                return
+            self._conn.execute(
+                "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
+                (name, response_id),
+            )
+            self._conn.commit()
 
     def close(self) -> None:
-        """Close the database connection."""
-        with suppress(Exception):
-            self._conn.close()
+        """Close the database connection and mark the store as closed."""
+        with self._lock:
+            self._closed = True
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
 
     def __len__(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
-        return row[0] if row else 0
+        with self._lock:
+            if self._closed or self._conn is None:
+                return 0
+            row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
+            return row[0] if row else 0
 
 
 _CORS_HEADERS = {
@@ -983,9 +1047,27 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    *,
+    session_id: Optional[str] = None,
+    gateway_session_key: Optional[str] = None,
+    extra_context: Optional[Dict[str, Any]] = None,
+) -> str:
+    from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
-    return hashlib.sha256(repr(subset).encode("utf-8")).hexdigest()
+    if session_id is not None:
+        subset["__session_id__"] = session_id
+    if gateway_session_key is not None:
+        subset["__gateway_session_key__"] = gateway_session_key
+    if extra_context:
+        subset["__extra_context__"] = extra_context
+    try:
+        serialized = json.dumps(subset, sort_keys=True, default=str)
+    except Exception:
+        serialized = repr(sorted(subset.items()))
+    return sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: str) -> str:
@@ -3921,19 +4003,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Stop the aiohttp server and release every owned resource, including the ResponseStore
         connection (the reconnect loop builds a fresh adapter per retry; leaked fds hit EMFILE).
 
-        Without this, every adapter instance leaks 2 file descriptors (the database file and its WAL
-        sidecar) — the reconnect loop in ``gateway.run`` constructs a fresh adapter on every retry, so 2
-        fds/retry × 300s backoff cap ≈ 12 fds/hour, which exhausts the default 2560 fd limit after ~12h of
-        failed reconnects and turns the whole gateway into a zombie (OSError: [Errno 24] Too many open
-        files, #37011).
+        Quiesces and stops the HTTP site and runner first so in-flight requests
+        drain cleanly, then closes the ResponseStore SQLite connection. Without
+        this ordering, in-flight requests could touch the database connection
+        post-close; and without closing ResponseStore, every adapter instance leaks
+        2 file descriptors (the database file and its WAL sidecar) — the
+        reconnect loop in ``gateway.run`` constructs a fresh adapter on
+        every retry, so 2 fds/retry × 300s backoff cap ≈ 12 fds/hour, which
+        exhausts the default 2560 fd limit after ~12h of failed reconnects
+        and turns the whole gateway into a zombie
+        (OSError: [Errno 24] Too many open files, #37011).
         """
         self._mark_disconnected()
-        if self._response_store is not None:
-            try:
-                self._response_store.close()
-            except Exception:
-                logger.debug("Failed to close response store for %s", self.name, exc_info=True)
-        _api_runs._close_run_state(self)
         try:
             if self._site:
                 await self._site.stop()
@@ -3942,6 +4023,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await self._runner.cleanup()
                 self._runner = None
         finally:
+            _api_runs._close_run_state(self)
+            if self._response_store is not None:
+                try:
+                    self._response_store.close()
+                except Exception:
+                    logger.debug(
+                        "Failed to close response store for %s", self.name, exc_info=True,
+                    )
             self._close_cached_session_dbs()
             self._app = None
         logger.info("[%s] API server stopped", self.name)

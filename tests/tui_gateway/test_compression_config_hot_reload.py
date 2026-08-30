@@ -170,7 +170,38 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
     assert compressor.threshold_tokens == 256_000
 
 
+def test_live_summary_instructions_applies_on_next_turn_without_rebuild(monkeypatch):
+    session, compressor = _session_with_compressor()
+    custom = "Preserve ticket IDs. Omit {prices}."
+    assert compressor.summary_instructions == ""
 
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"compression": {"summary_instructions": custom}},
+    )
+
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert compressor.summary_instructions == custom
+
+
+def test_removing_summary_instructions_restores_empty_default(monkeypatch):
+    session, compressor = _session_with_compressor(
+        summary_instructions="Preserve ticket IDs."
+    )
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert compressor.summary_instructions == ""
+
+
+def test_prompt_submit_calls_compression_sync_after_model_sync():
+    # Read the module that actually defines the turn (it moved out of server.py).
+    source = open(server._run_prompt_submit.__code__.co_filename, encoding="utf-8").read()
+    model_idx = source.find("_sync_agent_model_with_config(sid, session)")
+    compression_idx = source.find("_sync_agent_compression_with_config(sid, session)")
+    assert model_idx != -1
+    assert compression_idx != -1
+    assert model_idx < compression_idx
 
 
 # ── Unset semantics (#94724 review finding on #95980) ────────────────────

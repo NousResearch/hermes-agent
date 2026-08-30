@@ -237,12 +237,9 @@ def test_daemon_permit_digest_command_rejects_malformed_output(tmp_path):
         adapter.canonical_args_digest({"path": "x"})
 
 
-def test_daemon_permit_digest_mismatch_rejects_before_daemon_consumption(monkeypatch, tmp_path):
+def test_daemon_permit_argument_digest_is_daemon_owned(monkeypatch, tmp_path):
     monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
-    helper = tmp_path / "ra-daemon"
-    _write_digest_helper(helper, "a" * 64)
     adapter = DaemonPermitReceiptAdapter({
-        "canonical_digest_command": str(helper),
         "socket_path": str(tmp_path / "unneeded.sock"),
         "permit_id": "permit:one",
         "binding": {"tool": "write_file", "args_digest": "sha256:" + "b" * 64},
@@ -252,21 +249,24 @@ def test_daemon_permit_digest_mismatch_rejects_before_daemon_consumption(monkeyp
         allowed, code, _permit = dispatcher_boundary("write_file", {"path": "x", "content": "payload"}, mission_ref="mission:1")
     finally:
         reset_permit_adapter(token)
-    assert (allowed, code) == (False, "PERMIT_DENIED")
+    assert (allowed, code) == (False, "PERMIT_BRIDGE_UNAVAILABLE")
 
 
-def test_daemon_permit_digest_helper_result_maps_to_daemon_binding(monkeypatch, tmp_path):
+def test_daemon_permit_call_is_exact_post_middleware_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
-    helper, captured, path = tmp_path / "ra-daemon", tmp_path / "helper-input.json", tmp_path / "daemon.sock"
-    _write_digest_helper(helper, "c" * 64, captured)
+    path = tmp_path / "daemon.sock"
 
     def consumed(request):
         assert request["request"]["binding"]["args_digest"] == "c" * 64
+        assert request["request"]["call"] == {
+            "tool": "write_file",
+            "args": {"path": "x", "content": "payload"},
+            "frozen_clock": None,
+        }
         return {"request_id": request["request_id"], "permit_id": "permit:one", "evidence": {}, "preflight_artifact": {}, "receipt_artifact": {"digest": "receipt"}}
 
     _serve_one_permit_response(path, consumed)
     adapter = DaemonPermitReceiptAdapter({
-        "canonical_digest_command": str(helper),
         "socket_path": str(path),
         "permit_id": "permit:one",
         "binding": {"tool": "write_file", "args_digest": "c" * 64},
@@ -278,15 +278,12 @@ def test_daemon_permit_digest_helper_result_maps_to_daemon_binding(monkeypatch, 
         reset_permit_adapter(token)
     assert (allowed, code) == (True, None)
     assert permit is not None and permit["canonical_permit_ref"] == "permit:one"
-    helper_input = json.loads(captured.read_text())
-    assert helper_input["payload"] == {"content": "payload", "path": "x"}
-    assert not Path(helper_input["path"]).exists()
 
 
 def test_daemon_permit_bridge_unavailable_denies_runtime_permit_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
     adapter, args_digest = _daemon_adapter(tmp_path / "missing.sock")
-    outcome = adapter.consume(mission_ref="mission:1", tool_name="write_file", args_digest=args_digest, target_ref="path:x")
+    outcome = adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x")
     assert (outcome.state, outcome.code) == (PermitBridgeState.UNAVAILABLE, "PERMIT_BRIDGE_UNAVAILABLE")
 
 
@@ -294,7 +291,7 @@ def test_daemon_permit_bridge_rejects_malformed_response(tmp_path):
     path = tmp_path / "daemon.sock"
     _serve_one_permit_response(path, lambda _request: {"request_id": "wrong", "permit_id": "permit:one"})
     adapter, args_digest = _daemon_adapter(path)
-    outcome = adapter.consume(mission_ref="mission:1", tool_name="write_file", args_digest=args_digest, target_ref="path:x")
+    outcome = adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x")
     assert (outcome.state, outcome.code) == (PermitBridgeState.MALFORMED, "PERMIT_BRIDGE_MALFORMED")
 
 
@@ -306,11 +303,16 @@ def test_daemon_adapter_maps_daemon_receipt_and_denial_outcomes(tmp_path):
         assert request["protocol_version"] == 1
         assert request["request"]["kind"] == "permit_consume"
         assert request["request"]["permit_id"] == "permit:one"
+        assert request["request"]["call"] == {
+            "tool": "write_file",
+            "args": {"path": "x"},
+            "frozen_clock": None,
+        }
         return {"request_id": request["request_id"], "permit_id": "permit:one", "evidence": {"state": {"state": "consumed"}}, "preflight_artifact": {"digest": "preflight"}, "receipt_artifact": {"digest": "receipt"}}
 
     _serve_one_permit_response(path, consumed)
     adapter, args_digest = _daemon_adapter(path)
-    accepted = adapter.consume(mission_ref="mission:1", tool_name="write_file", args_digest=args_digest, target_ref="path:x")
+    accepted = adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x")
     assert accepted.state is PermitBridgeState.CONSUMED
     assert accepted.facts is not None
     assert accepted.facts["canonical_permit_ref"] == "permit:one"
@@ -319,8 +321,37 @@ def test_daemon_adapter_maps_daemon_receipt_and_denial_outcomes(tmp_path):
     path = tmp_path / "denied.sock"
     _serve_one_permit_response(path, lambda request: {"request_id": request["request_id"], "error": {"code": "runtime_error", "message": "permit already consumed"}})
     adapter, args_digest = _daemon_adapter(path)
-    denied = adapter.consume(mission_ref="mission:1", tool_name="write_file", args_digest=args_digest, target_ref="path:x")
+    denied = adapter.consume(mission_ref="mission:1", tool_name="write_file", args={"path": "x"}, target_ref="path:x")
     assert (denied.state, denied.code) == (PermitBridgeState.DENIED, "PERMIT_DENIED")
+
+
+def test_daemon_adapter_forwards_bounded_reported_outcome(tmp_path):
+    path = tmp_path / "outcome.sock"
+
+    def outcome(request):
+        assert request["request"]["kind"] == "permit_outcome_record"
+        assert request["request"]["permit_id"] == "permit:one"
+        assert request["request"]["preflight_receipt_digest"] == "a" * 64
+        assert request["request"]["reported"] == {
+            "state": "succeeded",
+            "duration_ms": 7,
+            "error_type": None,
+        }
+        return {
+            "request_id": request["request_id"],
+            "permit_id": "permit:one",
+            "outcome_artifact": {"receipt_digest": "b" * 64},
+        }
+
+    _serve_one_permit_response(path, outcome)
+    adapter, _args_digest = _daemon_adapter(path)
+    adapter.record_receipt({
+        "permit_ref": "permit:one",
+        "preflight_receipt": {"receipt_digest": "a" * 64},
+        "state": "ok",
+        "duration_ms": 7,
+        "error_type": None,
+    })
 
 
 def test_phase_five_frozen_corpus_is_order_independent_and_covers_all_baselines():

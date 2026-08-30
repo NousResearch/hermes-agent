@@ -1638,6 +1638,7 @@ def handle_function_call(
                     "tool_name": function_name,
                     "mission_ref": _ares_mission_ref,
                     "permit_ref": _ares_permit.get("canonical_permit_ref") or _ares_permit.get("permit_ref"),
+                    "preflight_receipt": _ares_permit.get("receipt_artifact"),
                     "args_digest": _ares_digest(function_args),
                     "state": _status,
                     "error_type": _error_type,

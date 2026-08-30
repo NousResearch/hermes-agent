@@ -2077,6 +2077,15 @@ DEFAULT_CONFIG = {
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
+        # Per-child request settings sent on every delegation API call, on all
+        # three resolution branches (direct base_url, named provider, and
+        # parent-inherit). Top-level keys are API kwargs (e.g. service_tier);
+        # an "extra_body" sub-dict is merged into the request's extra_body —
+        # e.g. {"extra_body": {"provider": {"sort": "throughput"}}} routes
+        # OpenRouter delegation children to the fastest provider. Precedence:
+        # these explicit values merge OVER runtime/parent-derived overrides
+        # (explicit keys win; extra_body deep-merged one level).
+        "request_overrides": {},
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these

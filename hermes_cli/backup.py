@@ -451,7 +451,10 @@ def is_zeroed_sqlite_file(
         return False
     if size < 0:
         return False
-    from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+
+    if not force and has_live_connection(path):
+        return False
 
     head = read_header_bytes_preopen(
         path, length=max(16, probe_bytes), force=force

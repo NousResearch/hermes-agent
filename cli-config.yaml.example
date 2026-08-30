@@ -742,10 +742,10 @@ compression:
   # prune. Default 4096.
   proactive_prune_min_reclaim_tokens: 4096
 
-  # Optional extra instructions for the compression summarizer (default: empty).
-  # Empty / whitespace / null keeps the default Hermes "Be CONCRETE" sentence.
-  # When set, that sentence is replaced on batch compact and the same string
-  # is appended after the NEVER/[REDACTED] block on micro-compact. Inserted
+  # Optional outcome instructions for the compression summarizer (default: empty).
+  # Empty / whitespace / null keeps the default Hermes structured compact
+  # template. When set, that template is replaced on batch compact and the
+  # micro merge-structure paragraph is replaced on micro-compact. Inserted
   # verbatim (braces are not interpolated).
   # summary_instructions: |
   #   Preserve ticket IDs, file paths, and exact error text.

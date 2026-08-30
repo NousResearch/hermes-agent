@@ -218,3 +218,90 @@ async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(mo
     assert _CapturingAgent.last_init["request_overrides"] == {
         "extra_body": {"text": {"verbosity": "low"}},
     }
+
+@pytest.mark.asyncio
+async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypatch):
+    """Merge-not-overwrite regression (salvaged from PR #52432).
+
+    A cached/reused gateway agent must keep its init-time request_overrides
+    (custom-provider extra_body) across turns: a /fast turn layers
+    service_tier ON TOP, and the following normal turn drops only the stale
+    fast-mode key while the provider extra_body survives.
+    """
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "custom",
+            "api_mode": "codex_responses",
+            "base_url": "https://example.test/v1",
+            "api_key": "***",
+            "request_overrides": {
+                "extra_body": {"text": {"verbosity": "low"}},
+            },
+        },
+    )
+    _install_fake_agent(monkeypatch)
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+
+    runner = _make_runner()
+    source = _make_source()
+    session_key = "agent:main:feishu:dm:ou_test"
+
+    runner.session_store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(session_id="session-1"),
+        load_transcript=lambda _session_id: [],
+    )
+
+    seen_agents = []
+    orig_init = _CapturingAgent.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        seen_agents.append(self)
+
+    monkeypatch.setattr(_CapturingAgent, "__init__", _tracking_init)
+
+    async def run_turn():
+        return await runner._run_agent(
+            message="hi",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="session-1",
+            session_key=session_key,
+        )
+
+    # Turn 1: /fast active — provider extra_body AND service_tier both present.
+    # The turn path re-resolves the tier per session, so stub the resolver.
+    tier_box = {"tier": "priority"}
+    runner._resolve_session_service_tier = lambda *a, **k: tier_box["tier"]
+    with patch(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        return_value={"service_tier": "priority"},
+    ):
+        result = await run_turn()
+    assert result["final_response"] == "ok"
+    assert len(seen_agents) == 1
+    agent = seen_agents[0]
+    assert agent.request_overrides == {
+        "extra_body": {"text": {"verbosity": "low"}},
+        "service_tier": "priority",
+    }
+
+    # Turn 2: back to normal — the SAME cached agent must drop only the stale
+    # fast-mode key; the init-time provider extra_body survives the refresh.
+    tier_box["tier"] = None
+    result = await run_turn()
+    assert result["final_response"] == "ok"
+    assert len(seen_agents) == 1, "agent should be reused from the gateway cache"
+    assert agent.request_overrides == {
+        "extra_body": {"text": {"verbosity": "low"}},
+    }

@@ -612,3 +612,106 @@ class TestCacheHitRate:
 
         # cache_read / prompt_tokens = 5000 / 10000 = 50%
         assert "◎ 50.0%" in text
+
+
+class TestRollingLatencyVelocity:
+    def _with_history(self, cli_obj, latencies, outputs):
+        from collections import deque
+        cli_obj.agent._api_latency_history = deque(latencies, maxlen=10)
+        cli_obj.agent._api_output_history = deque(outputs, maxlen=10)
+        return cli_obj
+
+    def test_latency_and_tps_shown_in_wide_terminal(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        self._with_history(cli_obj, [2.0, 4.0], [120, 180])
+
+        text = cli_obj._build_status_bar_text(width=140)
+
+        assert "\u25f7 3.0s" in text           # mean latency (2+4)/2
+        assert "\u2191 50 t/s" in text          # true throughput 300/6.0
+
+    def test_latency_hidden_without_history(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        text = cli_obj._build_status_bar_text(width=140)
+        assert "\u25f7" not in text
+        assert "t/s" not in text
+
+    def test_latency_and_tps_respect_field_filter(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        self._with_history(cli_obj, [2.0], [100])
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
+            text = cli_obj._build_status_bar_text(width=140)
+        assert "\u25f7" not in text
+        assert "t/s" not in text
+
+    def test_negative_latency_guard(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        self._with_history(cli_obj, [-0.8], [100])
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["avg_latency"] is None
+        assert snapshot["avg_velocity"] is None
+
+
+class TestCacheHitBaselineReset:
+    def test_baseline_resets_on_model_switch(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+            cache_read_tokens=9_000,
+        )
+        first = cli_obj._get_status_bar_snapshot()
+        assert first["cache_hit_pct"] == 90.0
+
+        # Switch model. The bar repaints every frame, so the switch is
+        # observed (and the baseline reset) before new tokens accrue.
+        cli_obj.model = "openai/gpt-5"
+        cli_obj.agent.model = "openai/gpt-5"
+        reset_snap = cli_obj._get_status_bar_snapshot()
+        assert reset_snap["cache_hit_pct"] is None  # new regime, no data yet
+
+        cli_obj.agent.session_prompt_tokens = 12_000
+        cli_obj.agent.session_cache_read_tokens = 9_500
+        second = cli_obj._get_status_bar_snapshot()
+        # Delta since switch: 500/2000 = 25%, not the lifetime 79%.
+        assert second["cache_hit_pct"] == 25.0
+
+    def test_baseline_resets_on_compression(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+            cache_read_tokens=8_000,
+        )
+        cli_obj._get_status_bar_snapshot()
+
+        cli_obj.agent.context_compressor.compression_count = 1
+        cli_obj._get_status_bar_snapshot()  # repaint observes the compression
+
+        cli_obj.agent.session_prompt_tokens = 14_000
+        cli_obj.agent.session_cache_read_tokens = 8_400
+        snap = cli_obj._get_status_bar_snapshot()
+        assert snap["cache_hit_pct"] == 10.0  # 400/4000 post-compression
+
+    def test_title_field_filter_hides_session_badge(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_title = "weekly-digest"
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
+            text = cli_obj._build_status_bar_text(width=80)
+        assert "weekly-digest" not in text

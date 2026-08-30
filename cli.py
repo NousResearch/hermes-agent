@@ -6546,16 +6546,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 base_read = cur_read
             delta_prompt = cur_prompt - base_prompt
             delta_read = cur_read - base_read
-            if delta_prompt > 0 and delta_read >= 0:
-                pct = int(round((delta_read / delta_prompt) * 100))
-                pct = max(0, min(100, pct))
+            # A zero-read regime hides the segment entirely (no cache data
+            # is not the same as a 0% hit worth alarming about), and the pct
+            # stays a float so renderers control their own precision.
+            if delta_prompt > 0 and delta_read > 0:
+                pct = max(0.0, min(100.0, (delta_read / delta_prompt) * 100))
                 snapshot["cache_hit_pct"] = pct
-                snapshot["cache_hit_label"] = f"{pct}%"
-            elif cur_prompt > 0 and cur_read >= 0 and base_prompt == 0 and base_read == 0:
-                pct = int(round((cur_read / cur_prompt) * 100)) if cur_prompt else 0
-                pct = max(0, min(100, pct))
+                snapshot["cache_hit_label"] = f"{pct:.0f}%"
+            elif cur_prompt > 0 and cur_read > 0 and base_prompt == 0 and base_read == 0:
+                pct = max(0.0, min(100.0, (cur_read / cur_prompt) * 100))
                 snapshot["cache_hit_pct"] = pct
-                snapshot["cache_hit_label"] = f"{pct}%"
+                snapshot["cache_hit_label"] = f"{pct:.0f}%"
             else:
                 snapshot["cache_hit_pct"] = None
                 snapshot["cache_hit_label"] = ""

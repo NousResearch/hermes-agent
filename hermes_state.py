@@ -1550,6 +1550,32 @@ class SessionDB(
         else:
             self._write_sql(sql, (key, value))
 
+    def compare_and_set_meta(
+        self, key: str, expected: Optional[str], value: str
+    ) -> bool:
+        """Atomically write ``value`` only when the stored value is ``expected``.
+
+        ``expected=None`` means the key must not exist. The comparison and write
+        share one immediate transaction, so callers can enforce optimistic
+        concurrency across processes without a process-local lock.
+        """
+
+        def _do(conn):
+            if expected is None:
+                cursor = conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO NOTHING",
+                    (key, value),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE state_meta SET value = ? WHERE key = ? AND value = ?",
+                    (value, key, expected),
+                )
+            return cursor.rowcount
+
+        return self._execute_write(_do) > 0
+
     def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
         """Retag legacy kanban worker rows from ``cli`` to ``kanban`` by cwd under the board's workspaces
         root; gated once per root via state_meta. Returns rows retagged."""

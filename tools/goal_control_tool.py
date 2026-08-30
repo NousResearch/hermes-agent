@@ -104,14 +104,21 @@ def goal_control_tool(
         )
 
     try:
-        from hermes_cli.goals import GoalManager, load_goal_authoritative
+        from hermes_cli.goals import (
+            ConcurrentGoalStateChange,
+            GoalManager,
+            load_goal_authoritative,
+            load_goal_snapshot_authoritative,
+        )
 
         # This pre-read distinguishes "no goal" from unavailable/corrupt
         # persistence before any mutation is attempted.
-        before = load_goal_authoritative(caller_session_id)
+        before, before_raw = load_goal_snapshot_authoritative(caller_session_id)
         configured_max_turns = _configured_max_turns()
-        manager = GoalManager(
+        manager = GoalManager.from_authoritative_snapshot(
             session_id=caller_session_id,
+            state=before,
+            persisted_raw=before_raw,
             default_max_turns=configured_max_turns,
         )
 
@@ -200,6 +207,12 @@ def goal_control_tool(
                     "persisted goal state does not match the requested action",
                     session_id=caller_session_id,
                 )
+    except ConcurrentGoalStateChange:
+        return _error(
+            "concurrent_state_change",
+            "persisted goal changed while applying the requested action",
+            session_id=caller_session_id,
+        )
     except (TypeError, ValueError) as exc:
         return _error("invalid_request", str(exc), session_id=caller_session_id)
     except Exception:

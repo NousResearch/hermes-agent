@@ -35,7 +35,8 @@ import {
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
   onComposerInsertRequest,
-  releaseActiveComposer
+  releaseActiveComposer,
+  shouldAutoFocusComposer
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
 import {
@@ -181,11 +182,27 @@ export function useComposerDraft({
     [paintDraft]
   )
 
+  // Initial paint / runtime-id rotation may focus only when no concrete control
+  // owns focus. A background reconnect must never steal the caret from another
+  // input, button, terminal, or sidebar control.
   useEffect(() => {
-    if (!inputDisabled) {
+    // Routing identity and keyboard focus are separate: every mounted composer
+    // must claim its bus target, while only an unowned document may receive an
+    // automatic caret move.
+    markActiveComposer(target)
+
+    if (!inputDisabled && shouldAutoFocusComposer(editorRef.current)) {
       focusInput()
     }
-  }, [focusInput, focusKey, focusRequestId, inputDisabled])
+  }, [focusInput, focusKey, inputDisabled, target])
+
+  // Explicit focus-bus and programmatic insert requests ARE user intent and
+  // retain the existing triple-focus behavior across React/browser commits.
+  useEffect(() => {
+    if (!inputDisabled && focusRequestId > 0) {
+      focusInput()
+    }
+  }, [focusInput, focusRequestId, inputDisabled])
 
   // The mirror of the `markActiveComposer` above: give the key back when this
   // composer goes away (a session tile closing, a pane unmounting). Covers both

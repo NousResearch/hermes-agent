@@ -10,7 +10,8 @@ import {
   onComposerModelMenuRequest,
   releaseActiveComposer,
   requestComposerFocus,
-  requestModelMenuToggle
+  requestModelMenuToggle,
+  shouldAutoFocusComposer
 } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
@@ -281,5 +282,37 @@ describe('requestModelMenuToggle', () => {
     // Settings/profiles routes: no [data-composer-target] anywhere.
     expect(requestModelMenuToggle()).toBe(false)
     expect(await collectModelMenuTargets()).toEqual([])
+  })
+})
+
+describe('shouldAutoFocusComposer', () => {
+  it('does nothing until an editor is mounted', () => {
+    expect(shouldAutoFocusComposer(null, document.body)).toBe(false)
+  })
+
+  it('allows initial focus while the document body owns focus', () => {
+    const editor = document.createElement('div')
+
+    expect(shouldAutoFocusComposer(editor, document.body)).toBe(true)
+  })
+
+  it('keeps another editable control in charge during a background runtime-id change', () => {
+    const editor = document.createElement('div')
+    const input = document.createElement('input')
+
+    expect(shouldAutoFocusComposer(editor, input)).toBe(false)
+  })
+
+  it('does not steal focus from a button the user intentionally focused', () => {
+    const editor = document.createElement('div')
+    const button = document.createElement('button')
+
+    expect(shouldAutoFocusComposer(editor, button)).toBe(false)
+  })
+
+  it('allows the already-focused composer to retain focus', () => {
+    const editor = document.createElement('div')
+
+    expect(shouldAutoFocusComposer(editor, editor)).toBe(true)
   })
 })

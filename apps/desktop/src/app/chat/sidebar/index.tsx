@@ -174,6 +174,7 @@ import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } f
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
+import { stabilizeSessionOrder } from './stable-session-order'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
 // front, reveal more in larger steps on demand. Keeps a busy platform from
@@ -535,14 +536,34 @@ export function ChatSidebar({
     [scopedSessions, filtersNarrow, sessionMatchesFilters]
   )
 
-  // Recents by activity (last_active || started_at). User send stamps
-  // last_active immediately. Ordering by status doesn't sort here — it re-slots
-  // rows *inside* whatever dividers are on, via sortOrderIds below — so the
-  // date buckets stay chronological either way.
-  const sortedSessions = useMemo(
-    () => [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
-    [visibleSessions]
-  )
+  // The backend page is recency-sorted, but streaming/tool writes continually
+  // bump last_active. Re-sorting the visible rows on each trailing refresh made
+  // the rail shuffle on a ~10s cadence. Preserve existing row order, insert only
+  // genuinely new conversations at their recency position, and let the explicit
+  // foreground selection promote one row. This is renderer presentation state;
+  // every row's backend fields remain authoritative and current.
+  const [stableSessionOrder, setStableSessionOrder] = useState<{ keys: string[]; scope: string }>({
+    keys: [],
+    scope: ''
+  })
+
+  const sessionOrderScope = `${profileScope}:${showArchived ? 'archived' : 'recent'}`
+
+  const stabilizedSessions = useMemo(() => {
+    const recencySorted = [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a))
+
+    const previousKeys = stableSessionOrder.scope === sessionOrderScope ? stableSessionOrder.keys : []
+
+    return stabilizeSessionOrder(previousKeys, recencySorted, activeSidebarSessionId)
+  }, [activeSidebarSessionId, sessionOrderScope, stableSessionOrder, visibleSessions])
+
+  useEffect(() => {
+    if (stableSessionOrder.scope !== sessionOrderScope || !sameIds(stableSessionOrder.keys, stabilizedSessions.keys)) {
+      setStableSessionOrder({ keys: stabilizedSessions.keys, scope: sessionOrderScope })
+    }
+  }, [sessionOrderScope, stabilizedSessions.keys, stableSessionOrder])
+
+  const sortedSessions = stabilizedSessions.sessions
 
   const visibleCronSessions = useMemo(
     () => filterSessionsByProfileScope(cronSessions, profileScope),

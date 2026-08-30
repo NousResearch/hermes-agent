@@ -30,6 +30,13 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('notifications.updateReadyMessage', 2)).toContain('2')
   })
 
+  it('translates representative pt-BR runtime strings', () => {
+    setRuntimeI18nLocale('pt-br')
+
+    expect(translateNow('common.save')).toBe('Salvar')
+    expect(translateNow('cron.blueprints.scheduled')).toBe('Modelo de automação agendado')
+  })
+
   it('keeps translated settings field copy addressable from schema keys', () => {
     const field = ['display', 'show_reasoning'].join('.')
 

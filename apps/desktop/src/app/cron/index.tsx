@@ -73,7 +73,14 @@ import {
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, initialBlueprintValues } from './blueprints'
+import {
+  blueprintDisplayCopy,
+  blueprintFieldPresentation,
+  BlueprintSlotControl,
+  blueprintSlotHelp,
+  cleanBlueprintFieldError,
+  initialBlueprintValues
+} from './blueprints'
 import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
 import {
   cronEditorUpdates,
@@ -414,8 +421,18 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     const list = blueprintsQuery.data ?? []
     const needle = query.trim().toLowerCase()
 
-    return needle ? list.filter(item => `${item.title} ${item.description}`.toLowerCase().includes(needle)) : list
-  }, [blueprintsQuery.data, query])
+    return needle
+      ? list.filter(item => {
+          const localized = blueprintDisplayCopy(item, c.blueprints.catalog)
+
+          // Include the backend copy too: a person may search with a known
+          // English blueprint name even while their UI is localized.
+          return `${localized.title} ${localized.description} ${item.title} ${item.description}`
+            .toLowerCase()
+            .includes(needle)
+        })
+      : list
+  }, [blueprintsQuery.data, c.blueprints.catalog, query])
 
   // Detail always reflects a concrete job: the explicitly selected one, else the
   // first visible row, so the right pane is never empty while jobs exist.
@@ -629,7 +646,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       notifyError(refreshError, c.failedLoad)
     }
 
-    notify({ kind: 'success', title: c.blueprints.scheduled, message: asText(job.schedule_display) || blueprint.title })
+    notify({
+      kind: 'success',
+      title: c.blueprints.scheduled,
+      message: asText(job.schedule_display) || blueprintDisplayCopy(blueprint, c.blueprints.catalog).title
+    })
     setEditor({ mode: 'closed' })
   }
 
@@ -692,7 +713,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
                     key={item.key}
                     onSelect={() => setEditor({ blueprintKey: item.key, mode: 'create' })}
                     rowKey={`blueprint-${item.key}`}
-                    title={item.title}
+                    title={blueprintDisplayCopy(item, c.blueprints.catalog).title}
                   />
                 ))}
               </>
@@ -1078,6 +1099,8 @@ function CronEditorDialog({
   const blueprint =
     templateChoice === CUSTOM_TEMPLATE ? null : (blueprintList.find(item => item.key === templateChoice) ?? null)
 
+  const blueprintCopy = blueprint ? blueprintDisplayCopy(blueprint, c.blueprints.catalog) : null
+
   const isBlueprint = blueprint !== null
 
   // Same catalog the chat model picker uses: configured providers and their
@@ -1120,9 +1143,9 @@ function CronEditorDialog({
   // Seed the typed slots with the blueprint's defaults whenever a blueprint is
   // picked from "Start from" (and reset them when switching back to Custom).
   useEffect(() => {
-    setSlotValues(blueprint ? initialBlueprintValues(blueprint) : {})
+    setSlotValues(blueprint ? initialBlueprintValues(blueprint, c.blueprints.catalog) : {})
     setError(null)
-  }, [blueprint])
+  }, [blueprint, c.blueprints.catalog])
 
   const selectedScheduleOption =
     SCHEDULE_OPTIONS.find(candidate => candidate.value === schedulePreset) ?? SCHEDULE_OPTIONS[0]
@@ -1237,12 +1260,12 @@ function CronEditorDialog({
                 <SelectItem value={CUSTOM_TEMPLATE}>{c.blueprints.custom}</SelectItem>
                 {blueprintList.map(item => (
                   <SelectItem key={item.key} value={item.key}>
-                    {item.title}
+                    {blueprintDisplayCopy(item, c.blueprints.catalog).title}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {blueprint?.description && <FieldHint>{blueprint.description}</FieldHint>}
+            {blueprintCopy?.description && <FieldHint>{blueprintCopy.description}</FieldHint>}
           </Field>
         )}
 
@@ -1250,10 +1273,12 @@ function CronEditorDialog({
           <form className="grid gap-4" onSubmit={handleBlueprintSubmit}>
             {blueprint.fields.map(field => {
               const fieldId = `blueprint-${blueprint.key}-${field.name}`
-              const help = blueprintSlotHelp(field)
+              const presentation = blueprintFieldPresentation(blueprint.key, field, c.blueprints.catalog)
+              const presentedField = presentation.field
+              const help = blueprintSlotHelp(presentedField)
 
               return (
-                <Field htmlFor={fieldId} key={field.name} label={field.label}>
+                <Field htmlFor={fieldId} key={field.name} label={presentedField.label}>
                   {field.name === 'deliver' ? (
                     // Use the shared, backend-sourced delivery targets (same as the
                     // manual editor) rather than the blueprint's static field.options,
@@ -1267,9 +1292,10 @@ function CronEditorDialog({
                     />
                   ) : (
                     <BlueprintSlotControl
-                      field={field}
+                      field={presentedField}
                       id={fieldId}
                       onChange={next => setSlotValues(prev => ({ ...prev, [field.name]: next }))}
+                      optionLabels={presentation.optionLabels}
                       value={slotValues[field.name] ?? ''}
                     />
                   )}

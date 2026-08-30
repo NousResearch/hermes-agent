@@ -7964,6 +7964,11 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    # S7 (Sahil 30/08/26): an un-typed block must never land as a NULL
+    # block_kind — that is the attribution gap that left 11 Aug tasks
+    # unascribable. Callers that don't know the kind get 'unspecified'.
+    if kind is None:
+        kind = "unspecified"
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(

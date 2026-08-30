@@ -1433,6 +1433,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if _self_task is not None and _self_task.project_id:
                         project_id = _self_task.project_id
                         project_source_task_id = _self_task.id
+            _parked: dict = {}
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -1461,10 +1462,11 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                _assignee_parked=_parked,
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
-            return _ok(
+            payload = dict(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
                 workspace_kind=new_task.workspace_kind if new_task else None,
@@ -1472,6 +1474,14 @@ def _handle_create(args: dict, **kw) -> str:
                 project_id=new_task.project_id if new_task else None,
                 subscribed=subscribed,
             )
+            if _parked:
+                payload["assignee_parked"] = _parked.get("assignee")
+                payload["notice"] = (
+                    f"assignee {_parked.get('assignee')!r} is not a real profile; "
+                    "task parked in triage for the PM to accept/reject. "
+                    "Transfer to a valid assignee to dispatch."
+                )
+            return _ok(**payload)
         finally:
             conn.close()
     except ValueError as e:

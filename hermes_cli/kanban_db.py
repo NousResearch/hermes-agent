@@ -3166,6 +3166,22 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _assignee_is_known(assignee: Optional[str]) -> bool:
+    """Whether ``assignee`` names a real (spawnable) Hermes profile.
+
+    ``default`` is valid — it is the built-in root profile (Agent Smith).
+    Uses :func:`hermes_cli.profiles.profile_exists`, the same guard the
+    dispatcher consults at spawn time so create-time and dispatch-time agree
+    on what is a phantom. Local import here stays local: it lives in a module
+    that peers import eagerly and would otherwise risk an import cycle.
+    """
+    if not assignee:
+        return True
+    from hermes_cli.profiles import profile_exists
+
+    return bool(profile_exists(assignee))
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3194,6 +3210,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    _assignee_parked: Optional[dict] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3481,6 +3498,23 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
+                # Assignee guard: an unknown assignee (not a real profile) is
+                # parked in triage for the PM (Jobsy) to accept/reject — it is
+                # NEVER dispatched, which would strand the card. `default` is a
+                # valid assignee (Agent Smith). The bogus name is preserved on
+                # the row and recorded in a comment so the triage lane sees the
+                # original intent, per the 2026-08-30 phantom-28-card incident.
+                assignee_unknown = assignee is not None and not _assignee_is_known(
+                    assignee
+                )
+                # An explicit initial_status="blocked" (human-ops review) takes
+                # precedence — a blocked card is never dispatched anyway, and we
+                # must not clobber VALID_INITIAL_STATUSES semantics.
+                if assignee_unknown and task_status != "blocked":
+                    task_status = "triage"
+                    if _assignee_parked is not None:
+                        _assignee_parked["assignee"] = assignee
+
                 # Project-linked worktree: a fresh worktree dir under the repo
                 # plus a deterministic branch (project slug + task id). Together
                 # these kill the random ``wt/<task-id>`` worker fallback and the
@@ -3541,6 +3575,21 @@ def create_task(
                     conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
+                    )
+                if assignee_unknown:
+                    conn.execute(
+                        "INSERT INTO task_comments "
+                        "(task_id, author, body, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            task_id,
+                            "(system)",
+                            f"Created with unknown assignee {assignee!r} — "
+                            "not a real profile, so this card is parked in triage "
+                            "for the PM to accept or reject. Transfer to a valid "
+                            "assignee to dispatch.",
+                            now,
+                        ),
                     )
                 # Notify-sub inheritance (ACK-edge: the originating channel
                 # still hears about a child that BLOCKs, not just the final
@@ -7440,8 +7489,15 @@ def decompose_triage_task(
             assignee = _canonical_assignee(child.get("assignee"))
             # A decision-shaped child (auto-decomposer-spawned) is parked in
             # triage, not 'todo', so the PM must explicitly accept it before it
-            # can be dispatched as authoritative.
-            child_status = "triage" if child.get("triage") else "todo"
+            # can be dispatched as authoritative. An unknown (phantom)
+            # assignee likewise parks the child in triage so the PM can fix the
+            # routing rather than have the dispatcher strand or silently drop it.
+            child_status = "triage" if (child.get("triage") or (
+                assignee is not None and not _assignee_is_known(assignee)
+            )) else "todo"
+            assignee_unknown = assignee is not None and not _assignee_is_known(
+                assignee
+            )
             # Per-child override wins; otherwise inherit the root's
             # workspace. A child that sets workspace_kind without a path
             # falls back to the root path only when kinds match (so a
@@ -7485,6 +7541,21 @@ def decompose_triage_task(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            if assignee_unknown:
+                conn.execute(
+                    "INSERT INTO task_comments "
+                    "(task_id, author, body, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        new_id,
+                        "(system)",
+                        f"Decomposed child with unknown assignee {assignee!r} — "
+                        "not a real profile, so this card is parked in triage for "
+                        "the PM to accept or reject. Transfer to a valid assignee "
+                        "to dispatch.",
+                        now,
+                    ),
+                )
             _inherit_notify_subs(conn, new_id, (task_id,), created_at=now)
             child_ids.append(new_id)
 

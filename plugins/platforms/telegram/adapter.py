@@ -150,6 +150,7 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
+        InlineQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         TypeHandler,
@@ -169,6 +170,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    InlineQueryHandler = Any
     TypeHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
@@ -342,7 +344,7 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler
     if TELEGRAM_AVAILABLE:
         return True
@@ -361,6 +363,7 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
+            InlineQueryHandler as _IQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
             TypeHandler as _TH,
@@ -378,6 +381,7 @@ def check_telegram_requirements() -> bool:
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    InlineQueryHandler = _IQH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -4377,6 +4381,12 @@ class TelegramAdapter(BasePlatformAdapter):
         ))
         # Handle inline keyboard button callbacks (update prompts)
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        # Inline command picker (@botname <query>) — searchable, uncapped
+        # access to every command/skill. Inert until the bot owner enables
+        # inline mode via BotFather /setinline (Telegram never delivers
+        # inline_query updates otherwise), so registering unconditionally
+        # is safe.
+        app.add_handler(InlineQueryHandler(self._handle_inline_query))
         # gateway_platform_event observer (see _on_platform_update); group 99 so
         # it observes alongside, never displaces, the core handlers.
         app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
@@ -7198,6 +7208,93 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         except Exception:
             pass
+
+    async def _handle_inline_query(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """Answer ``@botname <query>`` with a searchable command/skill picker.
+
+        The BotCommand menu is capped (100/scope, ~4KB payload; 60-slot
+        Hermes default), so most skill commands can never appear in the
+        ``/`` menu. Inline mode is uncapped: results are computed live per
+        keystroke and paginated 50 at a time (Telegram's per-answer max) —
+        the Telegram analog of Discord's dynamic ``/skill`` autocomplete.
+
+        Tapping a result sends the command text (``/plan <args>``) into the
+        chat as the user. Command-prefixed messages reach the bot even under
+        default privacy mode, and dispatch flows through the existing
+        command path — this handler only ever *offers* text, so it is
+        read-only by construction.
+
+        Authorization: results are only served to users who pass the same
+        auth path as inline-button callbacks (allowlists, pairing,
+        multiplex profiles). Unauthorized queries get an empty result list
+        — the catalog of installed skills is not leaked to arbitrary users
+        who can type ``@botname`` from any chat (inline queries arrive from
+        ANY chat, including ones the bot is not a member of).
+        """
+        inline_query = getattr(update, "inline_query", None)
+        if inline_query is None:
+            return
+
+        from_user = getattr(inline_query, "from_user", None)
+        user_id = str(getattr(from_user, "id", "") or "").strip()
+        try:
+            authorized = bool(user_id) and self._is_callback_user_authorized(
+                user_id,
+                # Inline queries carry no chat context — authorize on the
+                # user identity alone, as a DM-shaped source.
+                chat_id=user_id,
+                chat_type="private",
+                user_name=getattr(from_user, "username", None),
+            )
+        except Exception:
+            logger.debug("[%s] inline picker auth check failed", self.name, exc_info=True)
+            authorized = False
+
+        if not authorized:
+            try:
+                from plugins.platforms.telegram.inline_picker import (
+                    CACHE_TIME_SECONDS as _deny_cache,
+                )
+
+                await inline_query.answer([], cache_time=_deny_cache, is_personal=True)
+            except Exception:
+                logger.debug("[%s] inline picker empty answer failed", self.name, exc_info=True)
+            return
+
+        try:
+            from telegram import InlineQueryResultArticle, InputTextMessageContent
+
+            from plugins.platforms.telegram.inline_picker import (
+                CACHE_TIME_SECONDS as _CACHE,
+                build_inline_results,
+            )
+
+            results, next_offset = build_inline_results(
+                getattr(inline_query, "query", "") or "",
+                offset=getattr(inline_query, "offset", "") or "",
+            )
+            articles = [
+                InlineQueryResultArticle(
+                    id=r["id"],
+                    title=r["title"],
+                    description=r["description"],
+                    input_message_content=InputTextMessageContent(r["message_text"]),
+                )
+                for r in results
+            ]
+            await inline_query.answer(
+                articles,
+                cache_time=_CACHE,
+                # Catalogs differ per user (auth, per-platform disabled
+                # skills) — never let Telegram share cached pages across
+                # users.
+                is_personal=True,
+                next_offset=next_offset,
+            )
+        except Exception:
+            logger.debug("[%s] inline picker answer failed", self.name, exc_info=True)
 
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"

@@ -343,6 +343,10 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  // display.status_bar.fields — visibility filter for status-rule segments,
+  // shared with the classic CLI bar. null = user has not customized (show
+  // the default set).
+  statusBarFields: null | ReadonlySet<string>
   streaming: boolean
   theme: Theme
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript

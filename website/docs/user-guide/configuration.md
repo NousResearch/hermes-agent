@@ -1989,6 +1989,7 @@ Notes:
 - Narrow terminals still drop wide-mode-only fields (`context_detail`, `cache_hit`, `latency`, `tps`, `prompt_elapsed`, `idle_since`) regardless of config (`cache_hit` also shows in the medium ≥52-col tier).
 - `latency`/`tps` stay hidden until API calls have been recorded (e.g. the Codex app-server backend reports no latency).
 - `battery` and `title` visibility here compose with their own toggles (`/battery`, `/title`) — both must be on for the segment to show.
+- The same key also filters the **Ink TUI** status rule (`hermes tui`), where `cache_hit`, `latency`, and `tps` render as width-budgeted tail segments (◎ / ◷ / ↑) on terminals ≥96/104/110 columns respectively.
 - Display-only: no effect on prompt caching or request payloads. Changes take effect on the next session start.
 
 ### Runtime-metadata footer (gateway only)

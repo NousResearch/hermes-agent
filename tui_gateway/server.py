@@ -7156,6 +7156,39 @@ def _get_usage(agent) -> dict:
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
+    # Cache-hit ratio + rolling latency/throughput for the TUI status bar.
+    # Mirrors the classic CLI bar (cli.py _get_status_bar_snapshot / PR #98250):
+    #   hit = session_cache_read_tokens / session_prompt_tokens
+    #   (CanonicalUsage.prompt_tokens = input + cache_read + cache_write)
+    # latency/tps read the deque(maxlen=10) history maintained per API call in
+    # agent/conversation_loop.py. Values are omitted (not fabricated) when no
+    # data exists — e.g. Codex app-server reports no latency, and a session
+    # with zero cache reads shows no hit% rather than an alarming 0.
+    try:
+        _prompt_total = int(getattr(agent, "session_prompt_tokens", 0) or 0)
+        _cache_read = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
+        if _prompt_total > 0 and _cache_read > 0:
+            usage["cache_hit_pct"] = max(0, min(100, round(_cache_read / _prompt_total * 100)))
+    except Exception:
+        pass
+    try:
+        _lhist = list(getattr(agent, "_api_latency_history", []) or [])
+        _ohist = list(getattr(agent, "_api_output_history", []) or [])
+        _n = min(len(_lhist), len(_ohist))
+        if _n:
+            _lhist = _lhist[-_n:]
+            _ohist = _ohist[-_n:]
+            _avg_lat = sum(_lhist) / _n
+            _total_lat = sum(_lhist)
+            _avg_vel = (sum(_ohist) / _total_lat) if _total_lat > 0 else None
+            # Guard NaN/negative/absurd values from odd provider timings.
+            if _avg_lat == _avg_lat and 0 < _avg_lat < 1e6:
+                usage["avg_latency_s"] = round(float(_avg_lat), 1)
+            if _avg_vel is not None and _avg_vel == _avg_vel and 0 < _avg_vel < 1e6:
+                usage["avg_tps"] = round(float(_avg_vel), 1)
+    except Exception:
+        # A status-bar readout must never break usage reporting.
+        pass
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status
     # bar's ⛓ indicator; sourced from the same async_delegation registry.

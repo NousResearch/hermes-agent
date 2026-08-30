@@ -4,6 +4,7 @@ import {
   type CommandCatalogMeta,
   type CommandsCatalogLike,
   desktopSkinSlashCompletions,
+  desktopSlashDescription,
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashUnavailableMessage,
@@ -116,6 +117,7 @@ describe('desktop slash command curation', () => {
     rememberDesktopCommandsCatalog(undefined)
 
     expect(isDesktopSlashSuggestion('/skills')).toBe(true)
+    expect(desktopSlashDescription('/skills')).toBe('Review staged skill writes and approval mode')
     expect(isDesktopSlashCommand('/skills pending')).toBe(true)
     expect(desktopSlashUnavailableMessage('/skills pending')).toBeNull()
     expect(desktopSubcommandAllowlist('/skills')).toEqual(['pending', 'approve', 'reject', 'diff', 'approval'])

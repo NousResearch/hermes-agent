@@ -1714,13 +1714,27 @@ def _real_profile_cdp() -> tuple:
             "--disable-features=Translate",
             "--no-startup-window",
         ]
-        if sys.platform.startswith("linux") and not (
+        # Drive the copy headlessly by default. Real-profile browsing is a
+        # background capability — the agent tweets / fills forms / scrapes on
+        # the user's behalf while they keep working; a visible window that
+        # steals focus every turn defeats the point. Chrome's NEW headless mode
+        # shares the profile's normal cookie store (unlike legacy --headless
+        # with its separate store), so the copied auth/login state still loads.
+        # Cookie decryption is unaffected by headless: the drop we guard against
+        # comes from --use-mock-keychain (which agent-browser's own launcher
+        # force-adds and we deliberately avoid), NOT from headless mode. This
+        # also covers display-less Linux (servers, CI), where a headed launch
+        # would exit at startup. Users who want to watch can opt in via the same
+        # browser.headed / AGENT_BROWSER_HEADED toggle the rest of the browser
+        # stack honors; on a display-less host we force headless regardless so
+        # the launch doesn't die.
+        _has_display = bool(
             os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-        ):
-            # Display-less Linux (servers, CI): the real binary cannot open a
-            # window, so it exits at startup. Chrome's NEW headless mode shares
-            # the profile's normal cookie store (unlike legacy --headless with
-            # its separate store), so real-profile auth still loads.
+        )
+        _want_headed = _is_headed_mode() and (
+            _has_display or not sys.platform.startswith("linux")
+        )
+        if not _want_headed:
             chrome_argv.append("--headless=new")
         try:
             chrome_proc = subprocess.Popen(

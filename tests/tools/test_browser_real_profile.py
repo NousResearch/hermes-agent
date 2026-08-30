@@ -248,14 +248,22 @@ class TestRealProfileCdpLaunch:
         assert cdp == "http://127.0.0.1:41000"
         self._reset()
 
-    def test_launch_never_passes_headless(self, tmp_path):
-        """--headless would use a separate cookie store → 0 real cookies.
+    def test_launch_is_headless_and_agent_browser_attaches(self, tmp_path):
+        """Real-profile browsing runs headless (no focus-stealing window).
 
-        We launch the REAL Chrome binary
-        ourselves (no mock-keychain switches — those break macOS cookie
-        decryption) and agent-browser attaches via --cdp. So the agent-browser
-        argv must contain --cdp (attach, not launch) and must NOT contain
-        --headless or --profile (launch-mode switches).
+        Two argv paths are checked:
+
+        1. The REAL Chrome binary we launch ourselves (via Popen) MUST pass
+           ``--headless=new``. Real-profile browsing is a background
+           capability — a visible window that grabs focus every turn defeats
+           the point. NEW headless shares the profile's normal cookie store
+           (unlike legacy ``--headless``), and cookie decryption is unaffected
+           by headless — the drop we avoid comes from ``--use-mock-keychain``,
+           not from headless. We launch without mock-keychain switches, so the
+           copied auth/login state still loads.
+        2. agent-browser ATTACHES to that running Chrome via ``--cdp``, so its
+           argv must contain ``--cdp`` and must NOT contain launch-mode
+           switches (``--headless`` / ``--profile``).
         """
         import tools.browser_tool as bt
         self._reset()
@@ -271,6 +279,7 @@ class TestRealProfileCdpLaunch:
                 return None
 
         def fake_popen(argv, **kw):
+            captured["chrome_argv"] = argv
             (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
             return FakeChrome()
 
@@ -285,6 +294,9 @@ class TestRealProfileCdpLaunch:
              patch.object(bt.subprocess, "run", side_effect=fake_run), \
              patch.object(bt, "_is_headed_mode", return_value=False):
             bt._real_profile_cdp()
+        # The chrome launch itself is headless (no window, no focus steal).
+        assert "--headless=new" in captured["chrome_argv"]
+        # agent-browser attaches, it does not launch.
         assert "--headless" not in captured["argv"]
         assert "--profile" not in captured["argv"]
         assert "--cdp" in captured["argv"]

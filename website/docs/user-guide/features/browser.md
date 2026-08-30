@@ -187,6 +187,16 @@ re-synced from your real profile whenever a fresh session is launched, so logins
 you do in your own browser show up in the agent's session. Only the active
 profile is copied — other Chrome profiles are never snapshotted.
 
+The snapshot browser runs **headless** — it drives your profile in the
+background with no visible window and never steals focus, so you can keep
+working while the agent tweets, fills forms, or scrapes on your behalf.
+(Headless here uses Chrome's *new* headless mode, which reads your normal
+cookie store, so your logins still load.) If you'd rather watch it work, the
+same [headed-mode](#headed-mode-visible-browser-window) toggle applies —
+`browser.headed: true` (or `AGENT_BROWSER_HEADED=1`) opens a visible window for
+real-profile browsing too. On a display-less host (servers, CI) it always runs
+headless regardless.
+
 If your browser has several profiles (say a work profile and a personal one)
 and you don't want "whichever profile you touched last" deciding the agent's
 identity, pin the snapshot source explicitly:

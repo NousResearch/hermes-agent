@@ -483,7 +483,14 @@ _CONTRACT_FIELDS = {
         "source_sha",
         "limitations",
     },
-    "consensus": {"kind", "worker_reports", "agreement", "dissent", "status"},
+    "consensus": {
+        "kind",
+        "worker_reports",
+        "agreement",
+        "dissent",
+        "status",
+        "quorum",
+    },
     "worker_constitution": {
         "kind",
         "profile",

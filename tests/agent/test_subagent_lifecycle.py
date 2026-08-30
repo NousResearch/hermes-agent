@@ -1,6 +1,7 @@
 """Contract tests for the public plugin subagent lifecycle API."""
 
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -14,6 +15,7 @@ from agent.subagent_lifecycle import (
     bind_subagent_parent,
     get_active_subagent_parent,
 )
+from agent.worker_contract import JobContract, WorkerConstitution
 
 
 class FakeChild:
@@ -38,6 +40,29 @@ class FakeChild:
         self.interrupt_message = reason
         self.tool_reason = tool_reason
 
+
+def _active_workforce_contracts():
+    now = datetime.now(timezone.utc)
+    stamp = lambda value: value.isoformat().replace("+00:00", "Z")
+    constitution = WorkerConstitution(
+        profile="researcher",
+        values=("truthful evidence", "bounded autonomy"),
+        authority="research-only",
+        forbidden_actions=("submit external side effects",),
+        required_evidence=("research", "diagnostic"),
+        escalation_path="operator-review",
+    )
+    contract = JobContract(
+        name="stellaris-research-assignment",
+        worker_profile="researcher",
+        job="analyze the assigned research question",
+        scope=("current task", "approved sources"),
+        authority="research-only",
+        obligations=("separate observations from conclusions",),
+        granted_at=stamp(now - timedelta(seconds=1)),
+        expires_at=stamp(now + timedelta(minutes=5)),
+    )
+    return constitution, contract
 
 @pytest.fixture
 def lifecycle(monkeypatch):
@@ -97,6 +122,84 @@ def test_cancel_uses_explicit_hard_interrupt(lifecycle):
     assert "explicit user cancel" in record.agent.interrupt_message
     assert record.agent.tool_reason == "subagent cancellation requested"
     lifecycle.wait(handle, timeout_seconds=1)
+
+
+def test_launch_propagates_active_workforce_contracts_to_handle_and_child(lifecycle):
+    constitution, contract = _active_workforce_contracts()
+    request = SubagentLaunchRequest(
+        goal="work under a governed assignment",
+        constitution=constitution,
+        job_contract=contract,
+    )
+
+    handle = lifecycle.launch(request)
+    record = lifecycle._record(handle)
+
+    assert handle.worker_profile == "researcher"
+    assert handle.constitution == constitution
+    assert handle.job_contract == contract
+    assert record is not None
+    assert record.agent._worker_constitution == constitution
+    assert record.agent._job_contract == contract
+    restored = handle.from_dict(handle.to_dict())
+    assert restored.constitution == constitution
+    assert restored.job_contract == contract
+    lifecycle.wait(handle, timeout_seconds=1)
+
+
+def test_workforce_context_preserves_existing_context_and_adds_rules():
+    constitution, contract = _active_workforce_contracts()
+    request = SubagentLaunchRequest(
+        goal="use governed context",
+        context="Use the repository's existing conventions.",
+        constitution=constitution,
+        job_contract=contract,
+    )
+
+    rendered = SubagentLifecycleService._workforce_context(request)
+
+    assert rendered.startswith("Use the repository's existing conventions.")
+    assert "GOVERNED WORKFORCE ASSIGNMENT:" in rendered
+    assert '"worker_profile": "researcher"' in rendered
+
+
+def test_launch_rejects_contract_profile_mismatch(lifecycle):
+    constitution, contract = _active_workforce_contracts()
+    mismatched = JobContract(
+        **{
+            **contract.__dict__,
+            "worker_profile": "operator",
+        }
+    )
+
+    with pytest.raises(SubagentLifecycleError, match="worker_profile"):
+        lifecycle.launch(
+            SubagentLaunchRequest(
+                goal="reject a mismatched assignment",
+                constitution=constitution,
+                job_contract=mismatched,
+            )
+        )
+
+
+def test_launch_rejects_expired_workforce_contract(lifecycle):
+    constitution, contract = _active_workforce_contracts()
+    expired = JobContract(
+        **{
+            **contract.__dict__,
+            "granted_at": "2020-01-01T00:00:00Z",
+            "expires_at": "2020-01-01T00:01:00Z",
+        }
+    )
+
+    with pytest.raises(SubagentLifecycleError, match="active"):
+        lifecycle.launch(
+            SubagentLaunchRequest(
+                goal="reject an expired assignment",
+                constitution=constitution,
+                job_contract=expired,
+            )
+        )
 
 
 

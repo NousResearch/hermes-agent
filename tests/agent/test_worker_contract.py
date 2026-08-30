@@ -249,3 +249,7 @@ def test_consensus_quorum_cannot_exceed_worker_reports():
 def test_contract_mapping_recognizes_new_workforce_contracts():
     for kind in ("worker_constitution", "job_contract", "emergency_authority"):
         assert validate_contract_mapping({"kind": kind})["kind"] == kind
+
+    assert validate_contract_mapping(
+        {"kind": "consensus", "worker_reports": [], "quorum": 1}
+    )["quorum"] == 1

@@ -46,7 +46,36 @@ function RouteResumeHarness({
 describe('useRouteResume', () => {
   afterEach(() => {
     cleanup()
+    window.history.replaceState({}, '', '/')
     vi.restoreAllMocks()
+  })
+
+  it('uses a secondary window owner on its first route resume', () => {
+    window.history.replaceState({}, '', '/?win=secondary&ownerConnectionId=source-b&ownerProfile=profile-b#/session-1')
+    const resumeSession = vi.fn(async () => undefined)
+
+    render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={{ current: null }}
+        creatingSessionRef={{ current: false }}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={{ current: new Map() }}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={{ current: null }}
+        startFreshSessionDraft={vi.fn()}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, {
+      connectionId: 'source-b',
+      profile: 'profile-b'
+    })
   })
 
   it('does not re-resume the old session during a /:sid -> /new transition', () => {

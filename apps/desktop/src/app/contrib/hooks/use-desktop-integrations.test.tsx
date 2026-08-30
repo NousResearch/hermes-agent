@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
-import { _resetLegacyDiscardForTests } from '@/store/session'
+import {
+  $sessionResumeRequest,
+  _resetLegacyDiscardForTests,
+  setRememberedRoute,
+  setRememberedSessionId,
+  setRememberedSessionOwner
+} from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -49,6 +55,7 @@ describe('useDesktopIntegrations', () => {
   beforeEach(() => {
     window.localStorage.clear()
     _resetLegacyDiscardForTests()
+    $sessionResumeRequest.set(null)
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
@@ -154,6 +161,24 @@ describe('useDesktopIntegrations', () => {
       render({ profileReady: true, sessions })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+
+    it('restores duplicate ids through the exact owner last claimed by main', () => {
+      const ownerRoute = { connectionId: 'source-b', profile: 'default' }
+      setRememberedRoute('/shared-id', 'default')
+      setRememberedSessionId('shared-id', 'default')
+      setRememberedSessionOwner('shared-id', ownerRoute, 'default')
+
+      render({
+        profileReady: true,
+        sessions: [
+          session({ connection_id: 'source-a', id: 'shared-id', profile: 'default' }),
+          session({ connection_id: 'source-b', id: 'shared-id', profile: 'default' })
+        ]
+      })
+
+      expect($sessionResumeRequest.get()).toMatchObject({ ownerRoute, sessionId: 'shared-id' })
+      expect(navigate).toHaveBeenCalledWith('/shared-id', { replace: true })
     })
 
     it('restores remembered session id when no remembered route exists', () => {

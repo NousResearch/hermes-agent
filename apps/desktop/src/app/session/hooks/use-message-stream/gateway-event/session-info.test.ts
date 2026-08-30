@@ -3,12 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
+  $activeSessionId,
   $currentCwd,
   $selectedStoredSessionId,
   $workspaceCwdOwner,
   releaseWorkspaceCwdOwner,
+  setActiveSessionId,
   setCurrentCwd
 } from '@/store/session'
+import { clearMainSessionOwner, prepareSessionOwnerRetarget } from '@/store/session-states'
 
 import { handleSessionInfoEvent } from './session-info'
 import type { GatewayEventContext } from './types'
@@ -18,11 +21,13 @@ import type { GatewayEventContext } from './types'
 // still carries a real cwd.
 function sessionInfoEvent({
   activeSessionId,
+  connectionId,
   cwd,
   explicitSid = '',
   storedSessionId = ''
 }: {
   activeSessionId: null | string
+  connectionId?: string
   cwd: string
   explicitSid?: string
   storedSessionId?: string
@@ -43,7 +48,7 @@ function sessionInfoEvent({
       updateSessionState: vi.fn(state => state),
       upsertToolCall: vi.fn()
     },
-    event: { profile: 'default', session_id: explicitSid, type: 'session.info' },
+    event: { connectionId, profile: 'default', session_id: explicitSid, type: 'session.info' },
     explicitSid,
     fromActiveSource: () => true,
     isActiveEvent: !!sessionId && sessionId === activeSessionId,
@@ -56,12 +61,16 @@ function sessionInfoEvent({
 
 describe('handleSessionInfoEvent workspace ownership', () => {
   beforeEach(() => {
+    clearMainSessionOwner()
+    setActiveSessionId(null)
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')
   })
 
   afterEach(() => {
+    clearMainSessionOwner()
+    setActiveSessionId(null)
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')
@@ -145,5 +154,41 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     handleSessionInfoEvent(ctx)
 
     expect(next).toBe(original)
+  })
+
+  it('carries the gateway source into stored-runtime admission', () => {
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-a',
+      connectionId: 'source-a',
+      cwd: '/repo/a',
+      explicitSid: 'runtime-a',
+      storedSessionId: 'shared-id'
+    })
+
+    handleSessionInfoEvent(ctx)
+
+    expect(ctx.deps.updateSessionState).toHaveBeenCalledWith('runtime-a', expect.any(Function), 'shared-id', {
+      connectionId: 'source-a',
+      profile: 'default'
+    })
+  })
+
+  it('rejects a stale exact-owner event before it can reclaim the retargeted pane', () => {
+    $selectedStoredSessionId.set('shared-id')
+    prepareSessionOwnerRetarget('shared-id', { connectionId: 'source-b', profile: 'default' }, true)
+    setCurrentCwd('/repo/b')
+    const ctx = sessionInfoEvent({
+      activeSessionId: null,
+      connectionId: 'source-a',
+      cwd: '/repo/a',
+      explicitSid: 'runtime-a',
+      storedSessionId: 'shared-id'
+    })
+
+    expect(handleSessionInfoEvent(ctx)).toBe(true)
+    expect($activeSessionId.get()).toBeNull()
+    expect(ctx.deps.activeSessionIdRef.current).toBeNull()
+    expect($currentCwd.get()).toBe('/repo/b')
+    expect(ctx.deps.updateSessionState).not.toHaveBeenCalled()
   })
 })

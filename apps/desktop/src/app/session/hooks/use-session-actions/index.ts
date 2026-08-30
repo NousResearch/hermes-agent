@@ -113,12 +113,15 @@ import {
 } from '@/store/session-request-router'
 import {
   $sessionTiles,
+  clearMainSessionOwner,
   closeSessionTile,
   dropSessionState,
   focusOpenSession,
   holdSessionOwnerUntilForeground,
+  mainSessionOwnerRoute,
   openSessionTile,
   patchSessionTile,
+  prepareSessionOwnerRetarget,
   publishSessionState,
   releaseSessionOwnerHold,
   type SessionTileWorkspaceScope,
@@ -510,6 +513,7 @@ export function useSessionActions({
 
       setActiveSessionId(null)
       activeSessionIdRef.current = null
+      clearMainSessionOwner()
       setSelectedStoredSessionId(null)
       selectedStoredSessionIdRef.current = null
       setMessages([])
@@ -967,6 +971,11 @@ export function useSessionActions({
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
       const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
+      const ownerRoute = capturedOwner || mainSessionOwnerRoute(storedSessionId) || getSessionOwnerHint(storedSessionId)
+
+      if (ownerRoute) {
+        prepareSessionOwnerRetarget(storedSessionId, ownerRoute, true)
+      }
 
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId &&
@@ -1055,7 +1064,6 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
       // A connection switch clears/reloads the session rows before this path
       // runs, so an untagged row belongs to the connection that supplied the
       // current list. Capture that source before the async metadata lookup. If
@@ -1100,6 +1108,10 @@ export function useSessionActions({
               profile: sessionProfile || 'default'
             }
           : sessionProfile)
+
+      if (sessionOwner && typeof sessionOwner === 'object') {
+        prepareSessionOwnerRetarget(storedSessionId, sessionOwner, true)
+      }
 
       const sessionRestScope = transcriptRestScope(ownerRoute, storedForProfile, ambientConnectionId)
       provisional.paint(sessionRestScope)

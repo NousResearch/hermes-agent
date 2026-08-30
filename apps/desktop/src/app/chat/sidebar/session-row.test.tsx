@@ -235,6 +235,37 @@ describe('SidebarSessionRow', () => {
     vi.useRealTimers()
   })
 
+  it.each([
+    ['middle', undefined, 'tab'],
+    ['modifier', { ctrlKey: true }, 'tab'],
+    ['modifier window', { ctrlKey: true, shiftKey: true }, 'window']
+  ] as const)('routes the %s gesture through the clicked row owner handoff', (name, modifiers, intent) => {
+    const onResume = vi.fn()
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={onResume}
+        onToggleUnread={noop}
+        session={makeSession({ connection_id: 'source-b', profile: 'profile-b', title: 'Owner B' })}
+        unread={false}
+      />
+    )
+    const target = screen.getByText('Owner B')
+
+    if (name === 'middle') {
+      fireEvent.pointerDown(target, { button: 1 })
+      fireEvent.pointerUp(target, { button: 1 })
+    } else {
+      fireEvent.click(target, modifiers)
+    }
+
+    expect(onResume).toHaveBeenCalledWith(intent)
+  })
+
   it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
     render(
       <SidebarSessionRow

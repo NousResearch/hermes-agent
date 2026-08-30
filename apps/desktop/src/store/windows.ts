@@ -1,4 +1,5 @@
 import { notifyError } from './notifications'
+import type { SessionOwnerRoute } from './session-request-router'
 
 // Window flag set by the Electron main process when it opens a standalone
 // session window (see electron/main.ts buildSessionWindowUrl). It rides in the
@@ -25,6 +26,20 @@ export function isSecondaryWindow(): boolean {
   secondaryWindowCache = result
 
   return result
+}
+
+export function secondarySessionOwnerRoute(search = window.location.search): SessionOwnerRoute | undefined {
+  const params = new URLSearchParams(search)
+  const connectionId = params.get('ownerConnectionId')?.trim()
+  const profile = params.get('ownerProfile')?.trim()
+
+  if (!connectionId || !profile) {
+    return undefined
+  }
+
+  const targetProfile = params.get('ownerTargetProfile')?.trim()
+
+  return { connectionId, profile, ...(targetProfile ? { targetProfile } : {}) }
 }
 
 let watchWindowCache: boolean | null = null
@@ -189,13 +204,23 @@ async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage:
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
-// The window is a full renderer that adopts the PRIMARY profile unless told
-// otherwise, so the owning profile rides along (same ladder as openHud,
-// #82285): the session's stamped owner wins, and an unstamped/uncached id —
-// a brand-new subagent child — inherits the profile the user is looking at
-// (#82768, #61286).
-export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
+// An exact row owner is forwarded unchanged and must never be re-derived from
+// the ambiguous bare id. Ownerless sessions retain the legacy profile fallback
+// (same ladder as openHud, #82285/#82768/#61286).
+export async function openSessionInNewWindow(
+  sessionId: string,
+  opts?: { ownerRoute?: SessionOwnerRoute; watch?: boolean }
+): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
+    return
+  }
+
+  if (opts?.ownerRoute) {
+    await runWindowOpen(
+      () => window.hermesDesktop.openSessionWindow(sessionId, opts),
+      'Could not open chat in a new window'
+    )
+
     return
   }
 

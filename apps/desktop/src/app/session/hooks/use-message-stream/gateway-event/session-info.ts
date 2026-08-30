@@ -25,6 +25,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { acceptsSessionRuntimeSource } from '@/store/session-states'
 import { reportInstallMethodWarning } from '@/store/updates'
 
 import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
@@ -132,6 +133,10 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
 
+  const sourceOwner = event.connectionId
+    ? { connectionId: event.connectionId, profile: event.profile?.trim() || 'default' }
+    : undefined
+
   const {
     activeGatewayProfile,
     activeSessionIdRef,
@@ -144,6 +149,17 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'session.info') {
+    const storedSessionId = typeof payload?.stored_session_id === 'string' ? payload.stored_session_id.trim() : ''
+
+    // Admission must happen before runtime rebind or any view-side mutation.
+    // During an exact A -> B retarget, a late session.info from A can still
+    // lineage-match the selected bare id; letting it reach the rebind below
+    // would reclaim B's pane before the state-cache guard gets a chance to
+    // reject the stale source.
+    if (sourceOwner && storedSessionId && !acceptsSessionRuntimeSource(storedSessionId, sourceOwner)) {
+      return true
+    }
+
     // A rebuilt runtime (mid-conversation model/provider switch) speaks under
     // a NEW session_id. Before scoping anything by isActiveEvent, check
     // whether this event is the rebuilt runtime announcing itself for the
@@ -259,7 +275,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       updateSessionState(
         sessionId,
         state => applySessionInfoStatePatch(state, statePatch),
-        payload?.stored_session_id || undefined
+        payload?.stored_session_id || undefined,
+        sourceOwner
       )
     }
 
@@ -376,7 +393,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
             turnLive: false
           }
         },
-        payload?.stored_session_id || undefined
+        payload?.stored_session_id || undefined,
+        sourceOwner
       )
 
       if (recoveredIncompleteTurn) {

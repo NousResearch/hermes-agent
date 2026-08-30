@@ -248,9 +248,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
-      void window.hermesDesktop?.recycleBackend?.(normalizeProfileKey($activeGatewayProfile.get())).catch(err =>
-        notifyError(err, translateNow('notifications.errors.restartHermesFailed'))
-      )
+      void window.hermesDesktop
+        ?.recycleBackend?.(normalizeProfileKey($activeGatewayProfile.get()))
+        .catch(err => notifyError(err, translateNow('notifications.errors.restartHermesFailed')))
     }
   }, [backendRestartRequest])
 
@@ -1169,7 +1169,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // rows (single-profile installs and the legacy primary-SSH path) keep the
     // ambient/id-only path. The helper also clears stale explicit hints before
     // that fallback so an older local stamp cannot steal a remote session.
-    onResumeSession: (sessionId, session) => openSidebarSession(sessionId, session, navigate),
+    onResumeSession: (sessionId, session, intent) => openSidebarSession(sessionId, session, navigate, intent),
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSteerHidden: injectHiddenPrompt,

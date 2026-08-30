@@ -94,15 +94,16 @@ export function openSession(
   // already on screen (open tile, or the main session) would otherwise return
   // at focusOpenSession and never clear its unread dot.
   markSessionRead(storedSessionId)
-  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
-  const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
-  const routedWorkspaceScope = workspaceScope.ownerRoute ? workspaceScope : botWorkspaceScope
 
   let resolved: OpenSessionIntent = intent
 
   if (resolved === 'window') {
     if (canOpenSessionWindow()) {
-      void openSessionInNewWindow(storedSessionId)
+      if (workspaceScope.ownerRoute) {
+        void openSessionInNewWindow(storedSessionId, { ownerRoute: workspaceScope.ownerRoute })
+      } else {
+        void openSessionInNewWindow(storedSessionId)
+      }
 
       return
     }
@@ -110,6 +111,13 @@ export function openSession(
     // No pop-out support → treat like a new tab.
     resolved = 'tab'
   }
+
+  // A native window is an independent surface. Only local tab/main opens may
+  // rewrite the existing tile's workspace owner; doing this before the window
+  // return silently rebound a same-id owner-A tile when opening owner B.
+  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
+  const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
+  const routedWorkspaceScope = workspaceScope.ownerRoute ? workspaceScope : botWorkspaceScope
 
   if (resolved === 'main') {
     // Canonical relationship chats explicitly own the main workspace. Route

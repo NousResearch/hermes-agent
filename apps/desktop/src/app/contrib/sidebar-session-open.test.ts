@@ -4,6 +4,7 @@ import type { SessionInfo } from '@/hermes'
 import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
 
 const mocks = vi.hoisted(() => ({
+  canOpenSessionWindow: vi.fn(() => true),
   forgetSessionOwnerHintsForSession: vi.fn(),
   openSession: vi.fn(),
   prepareSessionOwnerRetarget: vi.fn(),
@@ -25,6 +26,10 @@ vi.mock('@/store/session-states', () => ({
   prepareSessionOwnerRetarget: (...args: unknown[]) => mocks.prepareSessionOwnerRetarget(...args)
 }))
 
+vi.mock('@/store/windows', () => ({
+  canOpenSessionWindow: () => mocks.canOpenSessionWindow()
+}))
+
 import { openSidebarSession } from './sidebar-session-open'
 
 const navigate = vi.fn()
@@ -34,6 +39,8 @@ const session = (profile: string, connectionId: string): SessionInfo =>
 
 describe('openSidebarSession', () => {
   beforeEach(() => {
+    mocks.canOpenSessionWindow.mockReset()
+    mocks.canOpenSessionWindow.mockReturnValue(true)
     mocks.forgetSessionOwnerHintsForSession.mockReset()
     mocks.openSession.mockReset()
     mocks.prepareSessionOwnerRetarget.mockReset()
@@ -43,7 +50,7 @@ describe('openSidebarSession', () => {
     $sidebarSessionsOpenInNewTab.set(true)
   })
 
-  it('uses tab intent by default while routing identical stored ids through the clicked row owner', () => {
+  it('opens duplicate ids in tabs through the clicked exact owner without queueing a main resume', () => {
     const first = session('profile-a', 'connection-a')
     const second = session('profile-b', 'connection-b')
     mocks.sessionOwnerRouteFromRow
@@ -53,18 +60,6 @@ describe('openSidebarSession', () => {
     openSidebarSession('shared-id', first, navigate)
     openSidebarSession('shared-id', second, navigate)
 
-    expect(mocks.sessionOwnerRouteFromRow).toHaveBeenNthCalledWith(1, first)
-    expect(mocks.sessionOwnerRouteFromRow).toHaveBeenNthCalledWith(2, second)
-    expect(mocks.requestSessionResume).toHaveBeenNthCalledWith(1, 'shared-id', {
-      connectionId: 'connection-a',
-      profile: 'profile-a',
-      targetProfile: 'profile-a'
-    })
-    expect(mocks.requestSessionResume).toHaveBeenNthCalledWith(2, 'shared-id', {
-      connectionId: 'connection-b',
-      profile: 'profile-b',
-      targetProfile: 'profile-b'
-    })
     expect(mocks.prepareSessionOwnerRetarget).toHaveBeenNthCalledWith(
       1,
       'shared-id',
@@ -77,6 +72,7 @@ describe('openSidebarSession', () => {
       { connectionId: 'connection-b', profile: 'profile-b', targetProfile: 'profile-b' },
       false
     )
+    expect(mocks.requestSessionResume).not.toHaveBeenCalled()
     expect(mocks.openSession).toHaveBeenNthCalledWith(1, 'shared-id', navigate, 'tab', {
       ownerRoute: { connectionId: 'connection-a', profile: 'profile-a', targetProfile: 'profile-a' },
       workspaceMode: 'sessions'
@@ -87,7 +83,7 @@ describe('openSidebarSession', () => {
     })
   })
 
-  it('uses explicit main intent when the persisted preference selects the main tab', () => {
+  it('queues an exact resume when the persisted preference selects main', () => {
     $sidebarSessionsOpenInNewTab.set(false)
     mocks.sessionOwnerRouteFromRow.mockReturnValue({
       connectionId: 'connection-a',
@@ -97,28 +93,63 @@ describe('openSidebarSession', () => {
 
     openSidebarSession('shared-id', session('profile-a', 'connection-a'), navigate)
 
-    expect(mocks.requestSessionResume).toHaveBeenCalledOnce()
     expect(mocks.prepareSessionOwnerRetarget).toHaveBeenCalledWith(
       'shared-id',
       { connectionId: 'connection-a', profile: 'profile-a', targetProfile: 'profile-a' },
       true
     )
+    expect(mocks.requestSessionResume).toHaveBeenCalledWith('shared-id', {
+      connectionId: 'connection-a',
+      profile: 'profile-a',
+      targetProfile: 'profile-a'
+    })
     expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'main', {
       ownerRoute: { connectionId: 'connection-a', profile: 'profile-a', targetProfile: 'profile-a' },
       workspaceMode: 'sessions'
     })
   })
 
-  it('keeps untagged rows on the ambient backend after clearing stale explicit hints', () => {
+  it('opens an exact-owner window without mutating or queueing the current main surface', () => {
+    mocks.sessionOwnerRouteFromRow.mockReturnValue({ connectionId: 'connection-b', profile: 'profile-b' })
+
+    openSidebarSession('shared-id', session('profile-b', 'connection-b'), navigate, 'window')
+
+    expect(mocks.prepareSessionOwnerRetarget).not.toHaveBeenCalled()
+    expect(mocks.requestSessionResume).not.toHaveBeenCalled()
+    expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'window', {
+      ownerRoute: { connectionId: 'connection-b', profile: 'profile-b' },
+      workspaceMode: 'sessions'
+    })
+  })
+
+  it('fences the current same-id owner when an unavailable window falls back to a tab', () => {
+    mocks.canOpenSessionWindow.mockReturnValue(false)
+    mocks.sessionOwnerRouteFromRow.mockReturnValue({ connectionId: 'connection-b', profile: 'profile-b' })
+
+    openSidebarSession('shared-id', session('profile-b', 'connection-b'), navigate, 'window')
+
+    expect(mocks.prepareSessionOwnerRetarget).toHaveBeenCalledWith(
+      'shared-id',
+      { connectionId: 'connection-b', profile: 'profile-b' },
+      false
+    )
+    expect(mocks.requestSessionResume).not.toHaveBeenCalled()
+    expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'tab', {
+      ownerRoute: { connectionId: 'connection-b', profile: 'profile-b' },
+      workspaceMode: 'sessions'
+    })
+  })
+
+  it('keeps untagged main opens ambient after clearing stale explicit hints', () => {
     const untagged = session('default', '')
+    $sidebarSessionsOpenInNewTab.set(false)
     mocks.sessionOwnerRouteFromRow.mockReturnValue(undefined)
 
     openSidebarSession('shared-id', untagged, navigate)
 
-    expect(mocks.sessionOwnerRouteFromRow).toHaveBeenCalledWith(untagged)
-    expect(mocks.prepareSessionOwnerRetarget).not.toHaveBeenCalled()
+    expect(mocks.prepareSessionOwnerRetarget).toHaveBeenCalledWith('shared-id', undefined, true)
     expect(mocks.forgetSessionOwnerHintsForSession).toHaveBeenCalledWith('shared-id')
     expect(mocks.requestSessionResume).toHaveBeenCalledWith('shared-id')
-    expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'tab', { workspaceMode: 'sessions' })
+    expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'main', { workspaceMode: 'sessions' })
   })
 })

@@ -22,9 +22,12 @@ import {
   $selectedStoredSessionId,
   getRememberedRoute,
   getRememberedSessionId,
+  getRememberedSessionOwner,
+  requestSessionResume,
   sessionBelongsToProfile,
   setRememberedRoute,
-  setRememberedSessionId
+  setRememberedSessionId,
+  setRememberedSessionOwner
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
@@ -163,6 +166,14 @@ export function useDesktopIntegrations({
           !isOverlayView(appViewForPath(route)) &&
           (!routeSession || sessionBelongsToProfile(sessions, routeSession, activeProfile))
         ) {
+          if (routeSession) {
+            const ownerRoute = getRememberedSessionOwner(routeSession, activeProfile)
+
+            if (ownerRoute) {
+              requestSessionResume(routeSession, ownerRoute)
+            }
+          }
+
           navigate(route, { replace: true })
 
           return
@@ -172,9 +183,16 @@ export function useDesktopIntegrations({
         // clear the stale entry so the next cold start won't re-try it.
         if (routeSession) {
           setRememberedRoute(null, activeProfile)
+          setRememberedSessionOwner(null, undefined, activeProfile)
         }
 
         if (last && sessionBelongsToProfile(sessions, last, activeProfile)) {
+          const ownerRoute = getRememberedSessionOwner(last, activeProfile)
+
+          if (ownerRoute) {
+            requestSessionResume(last, ownerRoute)
+          }
+
           navigate(sessionRoute(last), { replace: true })
 
           return
@@ -182,6 +200,7 @@ export function useDesktopIntegrations({
 
         if (last) {
           setRememberedSessionId(null, activeProfile)
+          setRememberedSessionOwner(null, undefined, activeProfile)
         }
       } else {
         restoredRef.current = true
@@ -197,6 +216,7 @@ export function useDesktopIntegrations({
       setRememberedRoute(locationPathname, activeProfile)
     } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname, activeProfile)
+      setRememberedSessionOwner(null, undefined, activeProfile)
     }
   }, [
     activeProfile,
@@ -216,10 +236,12 @@ export function useDesktopIntegrations({
 
     if (getRememberedSessionId(activeProfile) === resumeExhaustedSessionId) {
       setRememberedSessionId(null, activeProfile)
+      setRememberedSessionOwner(null, undefined, activeProfile)
     }
 
     if (routeSessionId(getRememberedRoute(activeProfile) ?? '') === resumeExhaustedSessionId) {
       setRememberedRoute(null, activeProfile)
+      setRememberedSessionOwner(null, undefined, activeProfile)
     }
   }, [activeProfile, profileReady, resumeExhaustedSessionId])
 

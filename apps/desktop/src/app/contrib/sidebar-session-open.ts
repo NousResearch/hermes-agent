@@ -2,8 +2,9 @@ import type { SessionInfo } from '@/hermes'
 import { forgetSessionOwnerHintsForSession, requestSessionResume, sessionOwnerRouteFromRow } from '@/store/session'
 import { prepareSessionOwnerRetarget } from '@/store/session-states'
 import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
+import { canOpenSessionWindow } from '@/store/windows'
 
-import { openSession, type OpenSessionNavigate } from '../open-session'
+import { openSession, type OpenSessionIntent, type OpenSessionNavigate } from '../open-session'
 
 /**
  * Resume through the sidebar row's exact owner when it carries one, then apply
@@ -12,24 +13,33 @@ import { openSession, type OpenSessionNavigate } from '../open-session'
 export function openSidebarSession(
   sessionId: string,
   session: SessionInfo | undefined,
-  navigate: OpenSessionNavigate
+  navigate: OpenSessionNavigate,
+  intent?: Extract<OpenSessionIntent, 'tab' | 'window'>
 ): void {
   const ownerRoute = sessionOwnerRouteFromRow(session)
+  const placement = intent ?? ($sidebarSessionsOpenInNewTab.get() ? 'tab' : 'main')
+  const effectivePlacement = placement === 'window' && !canOpenSessionWindow() ? 'tab' : placement
 
-  const intent = $sidebarSessionsOpenInNewTab.get() ? 'tab' : 'main'
+  if (effectivePlacement !== 'window') {
+    prepareSessionOwnerRetarget(sessionId, ownerRoute, effectivePlacement === 'main')
+  }
 
   if (ownerRoute) {
-    prepareSessionOwnerRetarget(sessionId, ownerRoute, intent === 'main')
-    requestSessionResume(sessionId, ownerRoute)
+    if (effectivePlacement === 'main') {
+      requestSessionResume(sessionId, ownerRoute)
+    }
   } else {
     forgetSessionOwnerHintsForSession(sessionId)
-    requestSessionResume(sessionId)
+
+    if (effectivePlacement === 'main') {
+      requestSessionResume(sessionId)
+    }
   }
 
   openSession(
     sessionId,
     navigate,
-    intent,
+    effectivePlacement,
     ownerRoute ? { ownerRoute, workspaceMode: 'sessions' } : { workspaceMode: 'sessions' }
   )
 }

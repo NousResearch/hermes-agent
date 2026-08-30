@@ -7,7 +7,7 @@ import { PrTag } from '@/app/chat/pr-tag'
 import { ProfileTag } from '@/app/chat/profile-tag'
 import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
-import { openSession } from '@/app/open-session'
+import type { OpenSessionIntent } from '@/app/open-session'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -28,6 +28,7 @@ import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
+import { sessionOwnerRouteFromRow } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
@@ -65,7 +66,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   onPin: () => void
   /** Toggle the persisted read-state watermark. */
   onToggleUnread: () => void
-  onResume: () => void
+  onResume: (intent?: Extract<OpenSessionIntent, 'tab' | 'window'>) => void
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -146,6 +147,7 @@ function SidebarSessionRowImpl({
   const r = t.sidebar.row
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
+  const ownerRoute = sessionOwnerRouteFromRow(session)
   const density = useStore($sessionListDensity)
   const fmt = t.sidebar
 
@@ -311,8 +313,10 @@ function SidebarSessionRowImpl({
         onArchive={onArchive}
         onBranch={onBranch}
         onDelete={onDelete}
+        onOpen={onResume}
         onPin={onPin}
         onToggleUnread={onToggleUnread}
+        ownerRoute={ownerRoute}
         pinned={isPinned}
         profile={session.profile}
         sessionId={session.id}
@@ -340,8 +344,10 @@ function SidebarSessionRowImpl({
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}
+      onOpen={onResume}
       onPin={onPin}
       onToggleUnread={onToggleUnread}
+      ownerRoute={ownerRoute}
       pinned={isPinned}
       profile={session.profile}
       sessionId={session.id}
@@ -422,7 +428,7 @@ function SidebarSessionRowImpl({
           // Middle-click = open in a new tab (browser muscle memory).
           {...middleClickHandlers(() => {
             triggerHaptic('selection')
-            openSession(session.id, () => undefined, 'tab')
+            onResume('tab')
           })}
           onClick={event => {
             // Modifier-click gestures on a row (see `resolveSessionRowClick`):
@@ -452,9 +458,9 @@ function SidebarSessionRowImpl({
             } else if (action === 'pin') {
               onPin()
             } else if (action === 'newTab') {
-              openSession(session.id, () => undefined, 'tab')
+              onResume('tab')
             } else {
-              openSession(session.id, () => undefined, 'window')
+              onResume('window')
             }
           }}
         >

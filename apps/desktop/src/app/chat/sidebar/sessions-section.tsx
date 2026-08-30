@@ -109,7 +109,7 @@ interface SidebarSessionsSectionProps {
   onToggle: () => void
   sessions: SessionInfo[]
   activeSessionId: null | string
-  onResumeSession: (sessionId: string, session?: SessionInfo) => void
+  onResumeSession: (sessionId: string, session?: SessionInfo, intent?: 'tab' | 'window') => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
@@ -275,7 +275,7 @@ export function SidebarSessionsSection({
         onDelete: () => onDeleteSession(session.id),
         onPin: () => onTogglePin(sessionPinId(session)),
         onToggleUnread: () => onToggleUnread(session.id),
-        onResume: () => onResumeSession(session.id, session),
+        onResume: (intent?: 'tab' | 'window') => onResumeSession(session.id, session, intent),
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
@@ -638,7 +638,7 @@ interface SortableSessionRowProps {
   onDelete: () => void
   onPin: () => void
   onToggleUnread: () => void
-  onResume: () => void
+  onResume: (intent?: 'tab' | 'window') => void
 }
 
 function SortableSidebarSessionRow(props: SortableSessionRowProps) {

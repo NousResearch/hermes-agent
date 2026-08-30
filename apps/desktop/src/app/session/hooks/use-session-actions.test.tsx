@@ -80,6 +80,7 @@ import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-r
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
 import {
   $sessionTiles,
+  clearMainSessionOwner,
   knownOwnerForSession,
   requestForOwnedSession,
   sessionTileOwnerRoute
@@ -455,8 +456,9 @@ describe('active stored-session id rotation routing', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
-    setActiveSessionStoredIdRotation(null)
+    clearMainSessionOwner()
     setSelectedStoredSessionId(null)
+    setActiveSessionStoredIdRotation(null)
     vi.restoreAllMocks()
   })
 
@@ -1088,6 +1090,9 @@ describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
+    clearMainSessionOwner()
+    setSelectedStoredSessionId(null)
+    _resetSessionOwnerHintsForTests()
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
@@ -2507,6 +2512,9 @@ describe('resumeSession warm-cache mapping integrity', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
+    clearMainSessionOwner()
+    setSelectedStoredSessionId(null)
+    _resetSessionOwnerHintsForTests()
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])

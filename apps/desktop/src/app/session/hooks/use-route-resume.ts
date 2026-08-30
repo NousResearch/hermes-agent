@@ -4,6 +4,7 @@ import { isNewChatRoute } from '@/app/routes'
 import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
+import { secondarySessionOwnerRoute } from '@/store/windows'
 
 interface RouteResumeOptions {
   activeSessionId: string | null
@@ -181,7 +182,8 @@ export function useRouteResume({
         bootResumeRef.current = false
 
         const ownerRoute =
-          sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
+          (sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined) ??
+          secondarySessionOwnerRoute()
 
         if (ownerRoute) {
           void resumeSession(routedSessionId, true, ownerRoute)
@@ -311,7 +313,13 @@ export function useRouteResume({
       // having fired. A flapping backend could then hit MAX in a couple of
       // re-renders with far fewer than MAX real attempts. (Point 3)
       retryAttemptRef.current += 1
-      void resumeSession(sessionId, true)
+      const ownerRoute = secondarySessionOwnerRoute()
+
+      if (ownerRoute) {
+        void resumeSession(sessionId, true, ownerRoute)
+      } else {
+        void resumeSession(sessionId, true)
+      }
     }, resumeRetryDelayMs(attempt))
 
     return () => clearTimeout(timer)

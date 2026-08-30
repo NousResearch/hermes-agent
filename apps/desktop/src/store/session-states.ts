@@ -55,6 +55,8 @@ import {
   setAwaitingResponse,
   setBusy,
   setMessages,
+  setRememberedSessionOwner,
+  setSelectedStoredSessionId,
   setSessions
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
@@ -94,6 +96,22 @@ const sessionScopeByRuntimeId = new Map<string, string>()
 // (approval.respond) when every durable binding (tile / hint / row) is absent
 // — while durable stored identity keeps outranking it (#97511).
 const sessionOwnerByRuntimeId = new Map<string, SessionOwnerScope>()
+
+// Exact owner currently claimed by the ordinary main chat surface. Kept
+// separately from the multi-owner hint set because duplicate bare ids can make
+// the latter intentionally ambiguous.
+let ordinaryMainSessionOwner: null | { ownerRoute: SessionOwnerRoute; storedSessionId: string } = null
+
+export function mainSessionOwnerRoute(storedSessionId: string): SessionOwnerRoute | undefined {
+  return ordinaryMainSessionOwner?.storedSessionId === storedSessionId
+    ? { ...ordinaryMainSessionOwner.ownerRoute }
+    : undefined
+}
+
+export function clearMainSessionOwner(): void {
+  ordinaryMainSessionOwner = null
+  setRememberedSessionOwner(null, undefined, $activeGatewayProfile.get())
+}
 
 export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
   if (!event.session_id) {
@@ -583,6 +601,7 @@ export function clearAllSessionStates() {
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
+  ordinaryMainSessionOwner = null
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }
@@ -980,6 +999,30 @@ export function sessionTileOwnerRoute(storedSessionId: string): SessionOwnerRout
   return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
 }
 
+/** Admit a source-qualified runtime event only when it matches the durable
+ * exact owner of that stored session. A sidebar retarget can leave owner A's
+ * last session.info event in flight after owner B has claimed the same bare
+ * id; that late event must not replace B's stored->runtime cache entry. Legacy
+ * untagged/profile-only sessions remain permissive because they have no exact
+ * connection identity to compare. */
+export function acceptsSessionRuntimeSource(storedSessionId: string, sourceOwner: SessionOwnerRoute): boolean {
+  const mainOwner =
+    $selectedStoredSessionId.get() === storedSessionId && ordinaryMainSessionOwner?.storedSessionId === storedSessionId
+      ? ordinaryMainSessionOwner.ownerRoute
+      : undefined
+
+  const owner = sessionTileOwnerRoute(storedSessionId) ?? mainOwner ?? getSessionOwnerHint(storedSessionId)
+
+  if (!owner || typeof owner === 'string') {
+    return true
+  }
+
+  return (
+    owner.connectionId.trim() === sourceOwner.connectionId.trim() &&
+    normalizeProfileKey(owner.profile) === normalizeProfileKey(sourceOwner.profile)
+  )
+}
+
 function sessionTileOwner(storedSessionId: string): SessionOwnerScope {
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
 
@@ -1224,6 +1267,7 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const sameMode = (tile?.workspaceMode ?? 'sessions') === scope.workspaceMode
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
+
   // Sessions-mode re-opens (sidebar click on an already-tiled session) pass no
   // route; that is absence of information, not a revocation — keep the exact
   // owner the tile was opened with (a branch child's parent connection) so a
@@ -1231,8 +1275,10 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
   // both ways: they always name their route explicitly.
   const ownerRoute =
     scope.workspaceMode === 'bots' ? scope.ownerRoute : (scope.ownerRoute ?? (sameMode ? tile?.ownerRoute : undefined))
+
   const ownerProfile =
     scope.workspaceMode === 'bots' ? undefined : (scope.ownerProfile ?? (sameMode ? tile?.ownerProfile : undefined))
+
   const workspaceTabTitle = scope.workspaceMode === 'bots' ? scope.workspaceTabTitle : undefined
 
   if (
@@ -1269,14 +1315,12 @@ function sessionOwnerRoutesEqual(a: SessionOwnerRoute | undefined, b: SessionOwn
   )
 }
 
-let ordinaryMainSessionOwner: null | { ownerRoute: SessionOwnerRoute; storedSessionId: string } = null
-
 /** Retire one stored id's live presentation before an ordinary sidebar open
  *  moves its sole surface to a different exact owner. The pane id stays stable,
  *  but the old runtime and warm cache must not satisfy the new owner's open. */
 export function prepareSessionOwnerRetarget(
   storedSessionId: string,
-  ownerRoute: SessionOwnerRoute,
+  ownerRoute: SessionOwnerRoute | undefined,
   willUseMain = false
 ): boolean {
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
@@ -1289,11 +1333,12 @@ export function prepareSessionOwnerRetarget(
 
   const previousOwner = tile?.ownerRoute ?? previousMainOwner ?? getSessionOwnerHint(storedSessionId)
 
-  if (willUseMain || selectedInMain) {
-    ordinaryMainSessionOwner = { ownerRoute: { ...ownerRoute }, storedSessionId }
+  if (willUseMain) {
+    ordinaryMainSessionOwner = ownerRoute ? { ownerRoute: { ...ownerRoute }, storedSessionId } : null
+    setRememberedSessionOwner(storedSessionId, ownerRoute, $activeGatewayProfile.get())
   }
 
-  if (!previousOwner || sessionOwnerRoutesEqual(previousOwner, ownerRoute)) {
+  if (sessionOwnerRoutesEqual(previousOwner, ownerRoute) || (!previousOwner && !tile && !selectedInMain)) {
     return false
   }
 
@@ -1306,7 +1351,7 @@ export function prepareSessionOwnerRetarget(
   }
 
   if (tile) {
-    patchSessionTile(storedSessionId, { error: undefined, runtimeId: undefined })
+    patchSessionTile(storedSessionId, { error: undefined, ownerRoute, runtimeId: undefined })
   }
 
   if (selectedInMain) {
@@ -1314,6 +1359,11 @@ export function prepareSessionOwnerRetarget(
     setAwaitingResponse(false)
     setBusy(false)
     setMessages([])
+
+    if (!willUseMain) {
+      ordinaryMainSessionOwner = null
+      setSelectedStoredSessionId(null)
+    }
   }
 
   return true

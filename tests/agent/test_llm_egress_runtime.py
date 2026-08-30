@@ -1624,6 +1624,56 @@ def test_protected_codex_rejects_unbound_web_search_shaped_replay(
         )
 
 
+def test_protected_codex_elides_bound_web_extract_source_replay(
+    tmp_path, monkeypatch
+):
+    """Raw web-extract source cannot trip the cloud egress scanner."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_web_extract_replay"
+    output = (
+        "source=public\n"
+        "c2VjcmV0LXBheWxvYWQ=\n"
+        "/Users/private/repository/data_loader.py\n"
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "web_extract",
+                    "call_id": call_id,
+                    "arguments": json.dumps(
+                        {
+                            "urls": [
+                                "https://raw.githubusercontent.com/acme/widget/main/app.py"
+                            ]
+                        }
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output,
+                },
+            ],
+        },
+    )
+
+    rendered = authorized["input"][1]["output"]
+    assert receipt.allowed
+    assert "c2VjcmV0LXBheWxvYWQ=" not in rendered
+    assert "/Users/private/repository/data_loader.py" not in rendered
+    assert "raw excerpts omitted" in rendered
+
+
 @pytest.mark.parametrize("structured", (False, True))
 def test_protected_codex_projects_exact_kanban_assignee_roster(
     tmp_path, monkeypatch, structured

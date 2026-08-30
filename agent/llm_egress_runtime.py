@@ -82,13 +82,14 @@ _REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
 _REMOTE_KANBAN_TERMINAL_REPLAY_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_SEARCH_PROJECTION_TOOL_NAMES = frozenset({"search_files"})
 _REMOTE_KANBAN_READ_FILE_PROJECTION_TOOL_NAMES = frozenset({"read_file"})
-_REMOTE_KANBAN_WEB_REPLAY_TOOL_NAMES = frozenset({"web_search"})
+_REMOTE_KANBAN_WEB_REPLAY_TOOL_NAMES = frozenset({"web_extract", "web_search"})
 _REMOTE_KANBAN_FILE_MUTATION_REPLAY_TOOL_NAMES = frozenset({"patch", "write_file"})
 _REMOTE_KANBAN_READONLY_REPLAY_TOOL_NAMES = frozenset(
     {
         "kanban_show",
         "search_files",
         "read_file",
+        "web_extract",
     }
 )
 _GITHUB_LIST_TERMINAL_MAX_ROWS = 100
@@ -2151,7 +2152,11 @@ def _typed_payload(
                     _STRUCTURED_SEARCH_REPLAY_ELISION
                 )
                 continue
-            if is_structured_result and is_web_replay_tool_result:
+            if (
+                is_structured_result
+                and is_web_replay_tool_result
+                and github_api_extract_limit is None
+            ):
                 if structured_text is not None:
                     typed[key] = _project_web_search_replay(structured_text)
                     continue
@@ -2211,6 +2216,7 @@ def _typed_payload(
                 is_web_replay_tool_result
                 and key in {"content", "output"}
                 and isinstance(item, str)
+                and github_api_extract_limit is None
             ):
                 # Search results originated outside the managed workspace and
                 # are useful only as untrusted public evidence. Preserve that

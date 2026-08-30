@@ -788,6 +788,102 @@ def test_protected_codex_projects_bound_github_list_terminal_metadata(
     assert "c2VjcmV0LXBheWxvYWQ=" not in authorized["input"][1]["output"]
 
 
+def test_protected_codex_redacts_base64_like_pr_view_ref(tmp_path, monkeypatch):
+    """A safe projected ref cannot deadlock replay because its spelling is opaque."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_github_pr_view_ref"
+    row = {
+        "number": 90820,
+        "baseRefName": "main",
+        "headRefName": "final-v2-landing",
+        "title": "Kanban worker controls",
+        "url": "https://github.com/NousResearch/hermes-agent/pull/90820",
+        "state": "CLOSED",
+    }
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "terminal",
+                    "call_id": call_id,
+                    "arguments": json.dumps(
+                        {
+                            "command": (
+                                "gh pr view 90820 --repo NousResearch/hermes-agent "
+                                "--json number,baseRefName,headRefName,title,url,state"
+                            )
+                        }
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps(
+                        {"exit_code": 0, "output": json.dumps(row)}
+                    ),
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    projected = json.loads(json.loads(authorized["input"][1]["output"])["output"])
+    assert projected["items"][0]["number"] == 90820
+    assert projected["items"][0]["baseRefName"] == "main"
+    assert "c2VjcmV0LXBheWxvYWQ=" not in authorized["input"][1]["output"]
+
+
+@pytest.mark.parametrize("tool_name", ("write_file", "patch"))
+def test_protected_codex_elides_bound_file_mutation_result(
+    tmp_path, monkeypatch, tool_name
+):
+    """A successful local edit never replays source or diff bytes remotely."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = f"call_{tool_name}_result"
+    unsafe_result = (
+        "updated /Users/private/repository/file.py\n"
+        "+ encoded = 'c2VjcmV0LXBheWxvYWQ='\n"
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": tool_name,
+                    "call_id": call_id,
+                    "arguments": json.dumps({"path": "file.py"}),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": unsafe_result,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert unsafe_result not in json.dumps(authorized)
+    assert "Inspect git diff" in authorized["input"][1]["output"]
+
+
 def test_protected_codex_projects_bound_github_api_extract_metadata(
     tmp_path, monkeypatch
 ):

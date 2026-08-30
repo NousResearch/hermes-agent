@@ -83,6 +83,7 @@ _REMOTE_KANBAN_TERMINAL_REPLAY_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_SEARCH_PROJECTION_TOOL_NAMES = frozenset({"search_files"})
 _REMOTE_KANBAN_READ_FILE_PROJECTION_TOOL_NAMES = frozenset({"read_file"})
 _REMOTE_KANBAN_WEB_REPLAY_TOOL_NAMES = frozenset({"web_search"})
+_REMOTE_KANBAN_FILE_MUTATION_REPLAY_TOOL_NAMES = frozenset({"patch", "write_file"})
 _REMOTE_KANBAN_READONLY_REPLAY_TOOL_NAMES = frozenset(
     {
         "kanban_show",
@@ -116,6 +117,14 @@ _READ_FILE_REPLAY_ELISION = (
 )
 _STRUCTURED_SEARCH_REPLAY_ELISION = (
     "search completed locally; structured output omitted from remote replay."
+)
+_FILE_MUTATION_REPLAY_ELISION = (
+    "local file mutation completed; raw source and diff omitted from remote replay. "
+    "Inspect git diff and status for the exact result."
+)
+_FILE_MUTATION_ARGUMENT_REPLAY = json.dumps(
+    {"path": "<local-file>", "content": "omitted from remote replay"},
+    separators=(",", ":"),
 )
 _REMOTE_KANBAN_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,}\"']+"
@@ -1843,6 +1852,7 @@ def _typed_payload(
     search_projection_tool_call_ids: frozenset[str] = frozenset(),
     read_file_projection_tool_call_ids: frozenset[str] = frozenset(),
     web_replay_tool_call_ids: frozenset[str] = frozenset(),
+    file_mutation_replay_tool_call_ids: frozenset[str] = frozenset(),
     scratch_read_file_tool_call_ids: frozenset[str] = frozenset(),
     git_workspace_diagnostic_call_ids: frozenset[str] = frozenset(),
     git_grep_projection_tool_call_ids: frozenset[str] = frozenset(),
@@ -1946,6 +1956,14 @@ def _typed_payload(
                 or value.get("type") == "function_call_output"
             )
         )
+        is_file_mutation_replay_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in file_mutation_replay_tool_call_ids
+            and (
+                value.get("role") == "tool"
+                or value.get("type") == "function_call_output"
+            )
+        )
         is_scratch_read_file_tool_result = (
             isinstance(output_call_id, str)
             and output_call_id in scratch_read_file_tool_call_ids
@@ -2041,6 +2059,12 @@ def _typed_payload(
             and isinstance(output_call_id, str)
             and output_call_id in terminal_replay_tool_call_ids
         )
+        is_file_mutation_replay_call = (
+            value.get("type") in {"function", "function_call"}
+            and direct_name in _REMOTE_KANBAN_FILE_MUTATION_REPLAY_TOOL_NAMES
+            and isinstance(output_call_id, str)
+            and output_call_id in file_mutation_replay_tool_call_ids
+        )
         typed: dict[Any, Any] = {}
         context_mapping = value.get("role") in {"system", "developer"}
         is_tool_protocol_mapping = (
@@ -2131,6 +2155,9 @@ def _typed_payload(
                 if structured_text is not None:
                     typed[key] = _project_web_search_replay(structured_text)
                     continue
+            if is_structured_result and is_file_mutation_replay_result:
+                typed[key] = GeneratedContextSegment(_FILE_MUTATION_REPLAY_ELISION)
+                continue
             if is_structured_result and is_git_workspace_diagnostic_result:
                 typed[key] = GeneratedContextSegment(
                     _GIT_WORKSPACE_DIAGNOSTIC_REPLAY
@@ -2194,6 +2221,13 @@ def _typed_payload(
                 typed[key] = _project_web_search_replay(item)
                 continue
             if (
+                is_file_mutation_replay_result
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                typed[key] = GeneratedContextSegment(_FILE_MUTATION_REPLAY_ELISION)
+                continue
+            if (
                 is_kanban_assignees_result
                 and key in {"content", "output"}
                 and isinstance(item, str)
@@ -2240,12 +2274,8 @@ def _typed_payload(
                     item, max_rows=github_list_limit
                 )
                 if projected is not None:
-                    typed[key] = _segment_text(
-                        projected,
-                        grant_texts,
-                        used_grants,
-                        sanitized_cap=sanitized_cap,
-                        allow_line_split=True,
+                    typed[key] = GeneratedContextSegment(
+                        redact_remote_unsafe_text(projected)
                     )
                     continue
             if (
@@ -2322,6 +2352,13 @@ def _typed_payload(
                 typed[key] = GeneratedContextSegment(_terminal_replay_command(item))
                 continue
             if (
+                is_file_mutation_replay_call
+                and key == "arguments"
+                and isinstance(item, str)
+            ):
+                typed[key] = GeneratedContextSegment(_FILE_MUTATION_ARGUMENT_REPLAY)
+                continue
+            if (
                 redact_terminal_arguments
                 and direct_name == "terminal"
                 and key == "arguments"
@@ -2365,6 +2402,7 @@ def _typed_payload(
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
                 web_replay_tool_call_ids=web_replay_tool_call_ids,
+                file_mutation_replay_tool_call_ids=file_mutation_replay_tool_call_ids,
                 scratch_read_file_tool_call_ids=scratch_read_file_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
@@ -2414,6 +2452,7 @@ def _typed_payload(
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
                 web_replay_tool_call_ids=web_replay_tool_call_ids,
+                file_mutation_replay_tool_call_ids=file_mutation_replay_tool_call_ids,
                 scratch_read_file_tool_call_ids=scratch_read_file_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
@@ -2741,6 +2780,13 @@ def authorize_agent_sdk_kwargs(
         ),
         web_replay_tool_call_ids=(
             _recognized_tool_call_ids(body, _REMOTE_KANBAN_WEB_REPLAY_TOOL_NAMES)
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        file_mutation_replay_tool_call_ids=(
+            _recognized_tool_call_ids(
+                body, _REMOTE_KANBAN_FILE_MUTATION_REPLAY_TOOL_NAMES
+            )
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

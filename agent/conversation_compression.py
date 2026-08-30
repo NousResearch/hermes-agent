@@ -2337,6 +2337,7 @@ class _CompressionActivityHeartbeat:
         # if a prior timeout/cooldown stamp is still on the agent.
         self._suppressed = False
         self._touch("context compression started", allow_terminal_overwrite=True)
+        self._emit_progress_status()
         self._thread.start()
         return self
 
@@ -2397,11 +2398,38 @@ class _CompressionActivityHeartbeat:
         except Exception:
             logger.debug("compression activity heartbeat touch failed", exc_info=True)
 
+    def _emit_progress_status(self) -> None:
+        """Publish a client-visible ``compacting`` status line.
+
+        Compression can stream for minutes with no deltas, tool events, or
+        status lines reaching remote transports. Idle-progress watchdogs on
+        those clients (e.g. the Android relay app's 180s turn watchdog)
+        treat the silence as a dead turn and fire ``session.interrupt`` —
+        killing a healthy compression mid-flight and rolling back its work,
+        which retriggers on the next prompt and loops forever on sessions
+        near the context ceiling. A periodic ``status_callback`` heartbeat
+        gives every transport a progress event to re-arm on.
+        """
+        status_callback = getattr(self._agent, "status_callback", None)
+        if not status_callback:
+            return
+        try:
+            status_callback(
+                "compacting",
+                f"🗜️ {COMPACTION_STATUS_MARKER} — still summarizing "
+                "earlier conversation so I can continue...",
+            )
+        except Exception:
+            logger.debug(
+                "status_callback error in compression heartbeat", exc_info=True
+            )
+
     def _run(self) -> None:
         while not self._stop.wait(self._interval_seconds):
             if self._should_suppress():
                 return
             self._touch("context compression in progress")
+            self._emit_progress_status()
 
 def _direct_messages_for_pre_compress_memory(messages: Any) -> list[dict[str, Any]]:
     """Return direct user/assistant evidence safe for memory checkpointing.

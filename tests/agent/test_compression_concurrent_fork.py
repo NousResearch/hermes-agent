@@ -167,6 +167,48 @@ def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_p
     assert db.get_compression_lock_holder(session_id) is None
 
 
+def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Path) -> None:
+    """The heartbeat must emit ``compacting`` status events, not just DB touches.
+
+    Remote transports (e.g. the Android relay app) run idle-progress turn
+    watchdogs that ``session.interrupt`` a turn after ~180s with no gateway
+    events. Compression is silent on the event stream, so without periodic
+    ``status_callback`` heartbeats a long compression is killed mid-flight
+    and retriggers forever on sessions near the context ceiling.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_STATUS_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    agent._compression_activity_heartbeat_interval = 0.1
+    touch_calls: list[str] = []
+    agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+
+    def _slow_compress(*_a, **_kw):
+        _wait_for_touch(touch_calls, "context compression in progress")
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent.context_compressor.compress.side_effect = _slow_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    compacting = [event for event, _message in status_events if event == "compacting"]
+    # One emit at heartbeat start plus at least one periodic tick while the
+    # summary call blocks.
+    assert len(compacting) >= 2
+
+
 def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) -> None:
     """A lock loser still closes the structured compaction lifecycle.
 

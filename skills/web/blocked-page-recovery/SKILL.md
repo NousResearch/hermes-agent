@@ -94,7 +94,8 @@ returns markdown. Anonymous access is dead (401 → Turnstile); a key is
 required:
 
 ```bash
-curl -s -H "Authorization: Bearer $JINA_API_KEY" "https://r.jina.ai/{URL}"
+JR_AUTH="Authorization: Bearer $JINA_API_KEY"
+curl -s -H "$JR_AUTH" "https://r.jina.ai/{URL}"
 ```
 
 Handles JS SPAs that archives can't. Skip this route entirely when the env

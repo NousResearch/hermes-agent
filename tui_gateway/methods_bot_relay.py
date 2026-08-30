@@ -217,9 +217,11 @@ def register(server) -> None:
     server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS
     server.get_hosted_room_service = methods_groups.get_hosted_room_service
     server._WORKER_UNAVAILABLE = methods_groups._WORKER_UNAVAILABLE
+    server._profile_name = methods_groups._profile_name
+    server._requested_profile = methods_groups._requested_profile
+    server._api_server_key = methods_groups._api_server_key
+    server._room_link_run_storage_durable = (
+        methods_groups._room_link_run_storage_durable
+    )
     methods_groups.bind_server(server)
     methods_groups.register(server)
-    from . import methods_groups
-
-    methods_groups.register(server)
-    server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS

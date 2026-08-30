@@ -87,6 +87,17 @@ class InternalSessionRPC(Protocol):
         """Interrupt only when the current turn still matches the expected task."""
 
 
+class MemberTransportResolver(Protocol):
+    """Resolve the session transport for one durable room task."""
+
+    def __call__(
+        self,
+        binding: "HostedRoomBinding",
+        task: Mapping[str, Any],
+    ) -> InternalSessionRPC:
+        """Return a local or peer transport without changing task identity."""
+
+
 @dataclass(frozen=True)
 class HostedRoomBinding:
     """Current server-issued authority coordinate for one hosted room."""
@@ -119,7 +130,8 @@ class HostedRoomRuntime:
         db_path: Path | str,
         rooms: Iterable[HostedRoomBinding] | Callable[[], Iterable[HostedRoomBinding]],
         turn_lock: Callable[[str], ContextManager[Any]],
-        rpc: InternalSessionRPC,
+        rpc: InternalSessionRPC | None = None,
+        transport_resolver: MemberTransportResolver | None = None,
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None]
         | None = None,
@@ -132,6 +144,8 @@ class HostedRoomRuntime:
         turn_timeout_seconds: float = 1830.0,
         indeterminate_defer_seconds: float = 60.0,
         max_concurrent_rooms: int = 4,
+        unavailable_retry_min_seconds: float = 1.0,
+        unavailable_retry_max_seconds: float = 30.0,
         process_generation: str | None = None,
     ) -> None:
         if lease_ttl_seconds <= 0:
@@ -150,8 +164,16 @@ class HostedRoomRuntime:
             or max_concurrent_rooms < 1
         ):
             raise ValueError("max_concurrent_rooms must be a positive integer")
+        if not (
+            unavailable_retry_min_seconds > 0
+            and unavailable_retry_max_seconds >= unavailable_retry_min_seconds
+        ):
+            raise ValueError("unavailable retry bounds are invalid")
+        if rpc is None and transport_resolver is None:
+            raise ValueError("rpc or transport_resolver is required")
         self.db_path = Path(db_path)
         self.rpc = rpc
+        self.transport_resolver = transport_resolver
         self.turn_lock = turn_lock
         self.prepare_room = prepare_room
         self.publish_terminal = publish_terminal
@@ -163,6 +185,8 @@ class HostedRoomRuntime:
         self.turn_timeout_seconds = float(turn_timeout_seconds)
         self.indeterminate_defer_seconds = float(indeterminate_defer_seconds)
         self.max_concurrent_rooms = max_concurrent_rooms
+        self.unavailable_retry_min_seconds = float(unavailable_retry_min_seconds)
+        self.unavailable_retry_max_seconds = float(unavailable_retry_max_seconds)
         self.process_generation = process_generation or uuid.uuid4().hex
         self._rooms_provider: Callable[[], Iterable[HostedRoomBinding]]
         if callable(rooms):
@@ -182,7 +206,11 @@ class HostedRoomRuntime:
         self._recovered_leases: set[tuple[str, int]] = set()
         self._inspected_indeterminate_attempts: set[tuple[str, str, int]] = set()
         self._ambiguous_rooms: dict[str, float] = {}
+        self._unavailable_route_retries: dict[
+            tuple[str, str], dict[str, float]
+        ] = {}
         self._blocked_rooms: set[str] = set()
+        self._inspected_indeterminate_attempts: set[tuple[str, str, int]] = set()
         self._status_lock = threading.Lock()
         self._current_tasks: dict[str, state.TaskIdentity] = {}
         self._room_schedule_cursor = 0
@@ -297,16 +325,29 @@ class HostedRoomRuntime:
                 continue
             binding = self._binding_for_room(identity.room_id)
             try:
-                if binding is not None and self._interrupt_stopping_task(
-                    binding, stopping
-                ):
-                    stopping = state.complete_task_cancel(
-                        self.db_path,
-                        identity,
-                        cancel_id=cancel_id,
-                        expected_cancel_generation=stopping["cancel_generation"],
-                        clock=self.clock,
-                    )
+                if binding is not None:
+                    lease = self._ensure_lease(binding)
+                    if self._peer_stop_acknowledged(binding, stopping):
+                        stopping = state.complete_task_cancel(
+                            self.db_path,
+                            identity,
+                            cancel_id=cancel_id,
+                            expected_cancel_generation=stopping["cancel_generation"],
+                            clock=self.clock,
+                        )
+                    elif not self._settle_stopping_completion(
+                        binding, stopping, lease
+                    ):
+                        if self._interrupt_stopping_task(binding, stopping):
+                            stopping = state.complete_task_cancel(
+                                self.db_path,
+                                identity,
+                                cancel_id=cancel_id,
+                                expected_cancel_generation=stopping[
+                                    "cancel_generation"
+                                ],
+                                clock=self.clock,
+                            )
             except Exception as exc:
                 self._record_error(f"stop remains pending: {exc}")
             stopping = state.get_task(self.db_path, identity)
@@ -321,6 +362,50 @@ class HostedRoomRuntime:
             f"cancel kept losing races with task transitions "
             f"(last observed state '{final['status']}')"
         )
+
+    @staticmethod
+    def _info_acknowledges_peer_cancel(
+        info: Mapping[str, Any], task: Mapping[str, Any]
+    ) -> bool:
+        """Accept only one exact peer task attempt's terminal Stop receipt."""
+
+        return (
+            not bool(info.get("active", info.get("running", False)))
+            and str(info.get("status") or "") in {"cancelled", "interrupted"}
+            and str(info.get("task_id") or "") == task["identity"].task_id
+            and int(info.get("execution_generation") or 0)
+            == int(task["execution_generation"])
+        )
+
+    def _peer_stop_acknowledged(
+        self,
+        binding: HostedRoomBinding,
+        task: Mapping[str, Any],
+    ) -> bool:
+        """Probe a peer's exact durable terminal status before reading history."""
+
+        transport = self._transport_for(binding, task)
+        if transport is None or transport is self.rpc:
+            return False
+        profile = task["payload"]["target_profile"]
+        session = transport.resolve_exact(
+            profile=profile,
+            title=room_session_title(binding.room_id),
+            source=ROOM_SESSION_SOURCE,
+        )
+        if session is None:
+            return False
+        resumed = transport.resume(
+            profile=profile,
+            session_id=_session_id(session),
+            source=ROOM_SESSION_SOURCE,
+        )
+        info = transport.info(
+            profile=profile,
+            session_id=_session_id(resumed),
+            source=ROOM_SESSION_SOURCE,
+        )
+        return self._info_acknowledges_peer_cancel(info, task)
 
     def retry_indeterminate(self, identity: state.TaskIdentity) -> dict[str, Any]:
         """Explicitly retry one uncertain attempt under the current room lease."""
@@ -346,7 +431,38 @@ class HostedRoomRuntime:
                 self._blocked_rooms.discard(identity.room_id)
             self.wakeup()
             return retried
-        inspection = self._inspect_local_recovery_session(task)
+        # Explicit Retry may resume the exact stored session. Use the returned
+        # runtime id for every subsequent history/info probe; an automatic
+        # abandoned-attempt scan remains non-resuming for local sessions.
+        inspection = self._inspect_recovery_session(binding, task)
+        if inspection.terminal is not None:
+            resolved = state.resolve_indeterminate_task(
+                self.db_path,
+                identity,
+                lease,
+                expected_execution_generation=task["execution_generation"],
+                expected_cancel_generation=task["cancel_generation"],
+                settlement_id=inspection.terminal.settlement_id,
+                status=inspection.terminal.status,
+                result=inspection.terminal.result,
+                clock=self.clock,
+            )
+            if self.publish_terminal is not None:
+                self.publish_terminal(binding, resolved)
+            return resolved
+        if inspection.status == "cancelled":
+            resolved = state.resolve_indeterminate_cancellation(
+                self.db_path,
+                identity,
+                lease,
+                expected_execution_generation=task["execution_generation"],
+                expected_cancel_generation=task["cancel_generation"],
+                cancel_id=f"remote-cancel:{task['execution_generation']}",
+                clock=self.clock,
+            )
+            if self.publish_terminal is not None:
+                self.publish_terminal(binding, resolved)
+            return resolved
         if inspection.active:
             with self._status_lock:
                 self._blocked_rooms.add(identity.room_id)
@@ -371,7 +487,7 @@ class HostedRoomRuntime:
         binding: HostedRoomBinding,
         task: Mapping[str, Any],
     ) -> bool:
-        transport = self.rpc
+        transport = self._transport_for(binding, task)
         if transport is None:
             return False
         profile = task["payload"]["target_profile"]
@@ -383,8 +499,8 @@ class HostedRoomRuntime:
         if session is None:
             # A local accepted turn cannot survive without its canonical
             # session. Resolution errors raise; an authoritative absence is a
-            # safe Stop acknowledgement.
-            return True
+            # safe Stop acknowledgement. A peer remains uncertain instead.
+            return transport is self.rpc
         resumed = transport.resume(
             profile=profile,
             session_id=_session_id(session),
@@ -398,6 +514,8 @@ class HostedRoomRuntime:
         )
         active = bool(info.get("active", info.get("running", False)))
         if not active:
+            if self._info_acknowledges_peer_cancel(info, task):
+                return True
             # History was checked immediately before this probe. An exact
             # local session that is no longer active cannot keep executing, and
             # after a restart its process-local task marker is expected to be
@@ -416,7 +534,6 @@ class HostedRoomRuntime:
         return result.get("interrupted") is True or str(result.get("status") or "") in {
             "cancelled",
             "interrupted",
-            "stopping",
         }
 
     def _settle_stopping_completion(
@@ -426,7 +543,7 @@ class HostedRoomRuntime:
         lease: state.DriverLease,
     ) -> bool:
         """Publish a terminal receipt that arrived before Stop was acknowledged."""
-        transport = self.rpc
+        transport = self._transport_for(binding, task)
         if transport is None:
             return False
         profile = task["payload"]["target_profile"]
@@ -513,6 +630,15 @@ class HostedRoomRuntime:
         for task in pending:
             try:
                 lease = self._renew_lease_if_needed(binding, lease)
+                if self._peer_stop_acknowledged(binding, task):
+                    state.complete_task_cancel(
+                        self.db_path,
+                        task["identity"],
+                        cancel_id=task["cancel_id"],
+                        expected_cancel_generation=task["cancel_generation"],
+                        clock=self.clock,
+                    )
+                    continue
                 if self._settle_stopping_completion(binding, task, lease):
                     continue
                 if not self._interrupt_stopping_task(binding, task):
@@ -654,6 +780,8 @@ class HostedRoomRuntime:
         for task in queued:
             if self._stop.is_set():
                 return
+            if self._route_retry_is_deferred(task):
+                return
             lease = self._renew_lease_if_needed(binding, lease)
             attempt = state.start_task(
                 self.db_path,
@@ -663,6 +791,44 @@ class HostedRoomRuntime:
                 clock=self.clock,
             )
             self._execute_attempt(binding, task, attempt)
+            current = state.get_task(self.db_path, task["identity"])
+            if current["status"] not in state.TERMINAL_STATUSES:
+                return
+
+    @staticmethod
+    def _route_retry_key(task: Mapping[str, Any]) -> tuple[str, str]:
+        payload = task.get("payload") or {}
+        member_id = str(
+            payload.get("target_member_id") or payload.get("target_profile") or ""
+        )
+        return task["identity"].room_id, member_id
+
+    def _route_retry_is_deferred(self, task: Mapping[str, Any]) -> bool:
+        retry = self._unavailable_route_retries.get(self._route_retry_key(task))
+        return retry is not None and self.clock() < retry["next_attempt_at"]
+
+    def _defer_unavailable_route(self, task: Mapping[str, Any]) -> float:
+        key = self._route_retry_key(task)
+        previous = self._unavailable_route_retries.get(key)
+        delay = (
+            self.unavailable_retry_min_seconds
+            if previous is None
+            else min(
+                self.unavailable_retry_max_seconds,
+                max(
+                    self.unavailable_retry_min_seconds,
+                    previous["delay"] * 2,
+                ),
+            )
+        )
+        self._unavailable_route_retries[key] = {
+            "delay": delay,
+            "next_attempt_at": self.clock() + delay,
+        }
+        return delay
+
+    def _clear_unavailable_route_retry(self, task: Mapping[str, Any]) -> None:
+        self._unavailable_route_retries.pop(self._route_retry_key(task), None)
 
     def _ensure_lease(self, binding: HostedRoomBinding) -> state.DriverLease:
         with self._status_lock:
@@ -719,7 +885,7 @@ class HostedRoomRuntime:
         attempt: state.TaskAttempt,
     ) -> None:
         profile = task["payload"]["target_profile"]
-        transport = self.rpc
+        transport = self._transport_for(binding, task)
         submit_attempted = False
         with self._status_lock:
             self._current_tasks[binding.room_id] = attempt.identity
@@ -804,6 +970,7 @@ class HostedRoomRuntime:
                     execution_generation=attempt.execution_generation,
                     on_terminal=on_terminal,
                 )
+                self._clear_unavailable_route_retry(task)
                 receipt = self._wait_for_terminal(
                     binding,
                     task=task,
@@ -827,7 +994,27 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_error(f"task {attempt.identity.task_id} fenced: {exc}")
         except Exception as exc:
-            if submit_attempted:
+            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+                try:
+                    state.requeue_not_admitted_task(
+                        self.db_path,
+                        attempt,
+                        clock=self.clock,
+                    )
+                except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
+                    self._drop_lease(binding.room_id)
+                    self._ambiguous_rooms[binding.room_id] = attempt.lease.expires_at
+                    self._record_error(
+                        f"task {attempt.identity.task_id} not-admitted proof lost "
+                        f"its fence: {fence_exc}"
+                    )
+                else:
+                    delay = self._defer_unavailable_route(task)
+                    self._record_error(
+                        f"task {attempt.identity.task_id} was not admitted; "
+                        f"queued for retry in {delay:g}s"
+                    )
+            elif submit_attempted:
                 self._drop_lease(binding.room_id)
                 self._ambiguous_rooms[binding.room_id] = attempt.lease.expires_at
                 self._record_error(
@@ -998,13 +1185,60 @@ class HostedRoomRuntime:
         for task in running:
             if task["run_process_generation"] == self.process_generation:
                 continue
-            inspection = self._inspect_local_recovery_session(task)
+            transport = self._transport_for(binding, task)
+            inspection = (
+                self._inspect_local_recovery_session(task)
+                if transport is self.rpc
+                else self._inspect_recovery_session(binding, task)
+            )
             if inspection.terminal is not None:
                 self._harvest_previous_attempt(binding, task, inspection.terminal)
             elif inspection.active:
                 # The prior session still owns the turn. Do not contend for its
                 # lease or submit a duplicate prompt.
                 raise state.LeaseHeldError("recovered session turn is still active")
+
+    def _inspect_recovery_session(
+        self,
+        binding: HostedRoomBinding,
+        task: Mapping[str, Any],
+    ) -> _RecoveryInspection:
+        profile = task["payload"]["target_profile"]
+        transport = self._transport_for(binding, task)
+        with self.turn_lock(profile):
+            session = transport.resolve_exact(
+                profile=profile,
+                title=room_session_title(task["identity"].room_id),
+                source=ROOM_SESSION_SOURCE,
+            )
+            if session is None:
+                return _RecoveryInspection(terminal=None, active=False, status=None)
+            resumed = transport.resume(
+                profile=profile,
+                session_id=_session_id(session),
+                source=ROOM_SESSION_SOURCE,
+            )
+            session_id = _session_id(resumed)
+            receipt = _find_terminal_receipt(
+                transport.history(
+                    profile=profile,
+                    session_id=session_id,
+                    source=ROOM_SESSION_SOURCE,
+                ),
+                task["identity"],
+                task["execution_generation"],
+            )
+            info = transport.info(
+                profile=profile,
+                session_id=session_id,
+                source=ROOM_SESSION_SOURCE,
+            )
+            self._report_pending_action(task, session_id=session_id, info=info)
+            return _RecoveryInspection(
+                terminal=receipt,
+                active=_info_is_active_for(info, task["identity"]),
+                status=str(info.get("status") or "") or None,
+            )
 
     def _inspect_local_recovery_session(
         self,
@@ -1051,10 +1285,10 @@ class HostedRoomRuntime:
             room_id=binding.room_id,
             status="indeterminate",
         )
-        if not unresolved:
-            with self._status_lock:
+        with self._status_lock:
+            if not unresolved:
                 self._blocked_rooms.discard(binding.room_id)
-            return False
+                return False
         for task in unresolved:
             generation = int(task["execution_generation"])
             attempt_key = (
@@ -1062,7 +1296,10 @@ class HostedRoomRuntime:
                 task["identity"].task_id,
                 generation,
             )
-            if attempt_key not in self._inspected_indeterminate_attempts:
+            if (
+                self._transport_for(binding, task) is self.rpc
+                and attempt_key not in self._inspected_indeterminate_attempts
+            ):
                 inspection = self._inspect_local_recovery_session(task)
                 self._inspected_indeterminate_attempts.add(attempt_key)
                 if inspection.terminal is not None:
@@ -1091,7 +1328,48 @@ class HostedRoomRuntime:
                 or task.get("created_at")
                 or self.clock()
             )
-            if self.clock() < deferred_at + self.indeterminate_defer_seconds:
+            deadline = deferred_at + self.indeterminate_defer_seconds
+            should_inspect = (
+                attempt_key not in self._inspected_indeterminate_attempts
+                or self.clock() >= deadline
+            )
+            inspection = _RecoveryInspection(terminal=None, active=False, status=None)
+            if should_inspect:
+                try:
+                    if self._transport_for(binding, task) is not self.rpc:
+                        inspection = self._inspect_recovery_session(binding, task)
+                except Exception as exc:
+                    self._record_error(
+                        f"task {task['identity'].task_id} recovery probe failed: {exc}"
+                    )
+                self._inspected_indeterminate_attempts.add(attempt_key)
+            if inspection.status == "cancelled":
+                state.resolve_indeterminate_cancellation(
+                    self.db_path,
+                    task["identity"],
+                    lease,
+                    expected_execution_generation=task["execution_generation"],
+                    expected_cancel_generation=task["cancel_generation"],
+                    cancel_id=f"remote-cancel:{task['execution_generation']}",
+                    clock=self.clock,
+                )
+                self._inspected_indeterminate_attempts.discard(attempt_key)
+                continue
+            if inspection.terminal is not None:
+                state.resolve_indeterminate_task(
+                    self.db_path,
+                    task["identity"],
+                    lease,
+                    expected_execution_generation=generation,
+                    expected_cancel_generation=task["cancel_generation"],
+                    settlement_id=inspection.terminal.settlement_id,
+                    status=inspection.terminal.status,
+                    result=inspection.terminal.result,
+                    clock=self.clock,
+                )
+                self._inspected_indeterminate_attempts.discard(attempt_key)
+                continue
+            if self.clock() < deadline:
                 with self._status_lock:
                     self._blocked_rooms.add(binding.room_id)
                 return True
@@ -1099,12 +1377,12 @@ class HostedRoomRuntime:
                 self.db_path,
                 task["identity"],
                 lease,
-                expected_execution_generation=task["execution_generation"],
+                expected_execution_generation=generation,
                 expected_cancel_generation=task["cancel_generation"],
                 reason="member_unavailable",
                 clock=self.clock,
             )
-            self._report_pending_action(task, session_id="", info={})
+            self._inspected_indeterminate_attempts.discard(attempt_key)
             if self.publish_terminal is not None:
                 self.publish_terminal(binding, deferred)
         with self._status_lock:
@@ -1156,6 +1434,17 @@ class HostedRoomRuntime:
             ),
             None,
         )
+
+    def _transport_for(
+        self,
+        binding: HostedRoomBinding,
+        task: Mapping[str, Any],
+    ) -> InternalSessionRPC:
+        if self.transport_resolver is not None:
+            return self.transport_resolver(binding, task)
+        if self.rpc is None:
+            raise RuntimeError("hosted room transport is unavailable")
+        return self.rpc
 
     def _resolve_or_create(
         self,

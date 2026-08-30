@@ -11,12 +11,17 @@ from gateway import hosted_rooms
 import tui_gateway.server as server
 
 
-def _stub_session(monkeypatch, *, title):
+def _stub_session(monkeypatch, *, title, profile_home=None):
     monkeypatch.setattr(
         server,
         "_sess_nowait",
         lambda _params, _rid: (
-            {"id": "session-1", "title": title, "source": "bot_room"},
+            {
+                "id": "session-1",
+                "title": title,
+                "source": "bot_room",
+                "profile_home": str(profile_home) if profile_home else None,
+            },
             None,
         ),
     )
@@ -88,12 +93,71 @@ def test_direct_prompt_to_legacy_named_group_reaches_normal_admission(
         "_ensure_active_session_slot",
         lambda _sid, _session: "normal admission reached",
     )
-
     result = server._methods["prompt.submit"](
         "request-legacy", {"session_id": "session-1", "text": "continue"}
     )
 
     assert result["error"] == {"code": 4090, "message": "normal admission reached"}
+
+
+def test_direct_prompt_to_peer_reserved_group_is_rejected_until_revoke(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    profile_home = home / "profiles" / "reviewer"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "reviewer")
+    now = time.time()
+    claims = {
+        "room_id": "room-peer",
+        "home_install_id": "install-home",
+        "authority_gateway_id": "install-home",
+        "authority_epoch": 1,
+        "member_id": "member-reviewer",
+        "target_install_id": "install-target",
+        "target_profile": "reviewer",
+        "issued_at": now,
+    }
+    hosted_rooms.reserve_peer_room(
+        hosted_rooms.default_db_path(),
+        claims=claims,
+        expires_at=now + 300.0,
+        now=now,
+    )
+    _stub_session(
+        monkeypatch,
+        title="Group: room-peer",
+        profile_home=profile_home,
+    )
+
+    rejected = server._methods["prompt.submit"](
+        "request-peer",
+        {"session_id": "session-1", "text": "continue"},
+    )
+    assert rejected["error"]["code"] == 4122
+    assert "home host" in rejected["error"]["message"]
+
+    hosted_rooms.revoke_room_grant_scope(
+        hosted_rooms.default_db_path(),
+        claims=claims,
+        expires_at=now + 300.0,
+        now=now + 150.0,
+    )
+    monkeypatch.setattr(
+        server,
+        "_ensure_active_session_slot",
+        lambda _sid, _session: "normal admission reached",
+    )
+    admitted = server._methods["prompt.submit"](
+        "request-peer-after-revoke",
+        {"session_id": "session-1", "text": "continue"},
+    )
+    assert admitted["error"] == {
+        "code": 4090,
+        "message": "normal admission reached",
+    }
 
 
 def test_direct_prompt_is_refused_when_room_authority_cannot_be_verified(

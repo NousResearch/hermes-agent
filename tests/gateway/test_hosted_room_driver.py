@@ -36,12 +36,16 @@ def _payload(
     target_profile: str = "ops",
     prompt: str = "Inspect the release candidate.",
     source_event_seq: int = 1,
+    target_member_id: str | None = None,
 ):
-    return {
+    payload = {
         "target_profile": target_profile,
         "prompt": prompt,
         "source_event_seq": source_event_seq,
     }
+    if target_member_id is not None:
+        payload["target_member_id"] = target_member_id
+    return payload
 
 
 @pytest.fixture
@@ -625,6 +629,46 @@ def test_current_lease_can_commit_verified_indeterminate_receipt(db):
     assert next_attempt.execution_generation == 1
 
 
+def test_current_lease_can_commit_verified_indeterminate_cancellation(db):
+    clock = FakeClock()
+    running = _identity()
+    first = _lease(db, clock, ttl=5)
+    _admit(db, running, clock, payload=_payload(source_event_seq=1))
+    attempt = driver.start_task(
+        db,
+        running,
+        first,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    clock.advance(5)
+    recovered = _lease(db, clock, process="new-process")
+    driver.recover_room(db, recovered, clock=clock)
+
+    cancelled = driver.resolve_indeterminate_cancellation(
+        db,
+        running,
+        recovered,
+        expected_execution_generation=attempt.execution_generation,
+        expected_cancel_generation=attempt.cancel_generation,
+        cancel_id="remote-cancel:1",
+        clock=clock,
+    )
+    repeated = driver.resolve_indeterminate_cancellation(
+        db,
+        running,
+        recovered,
+        expected_execution_generation=attempt.execution_generation,
+        expected_cancel_generation=attempt.cancel_generation,
+        cancel_id="remote-cancel:1",
+        clock=clock,
+    )
+
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["execution_generation"] == attempt.execution_generation
+    assert repeated["idempotent"] is True
+
+
 def test_indeterminate_retry_is_explicit_and_advances_execution_generation(db):
     clock = FakeClock()
     identity = _identity()
@@ -740,6 +784,60 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         clock=clock,
     )
     assert cancelled["status"] == "cancelled"
+
+
+def test_proven_not_admitted_attempt_returns_to_queue_under_exact_fence(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock)
+    admitted = _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=admitted["cancel_generation"],
+        clock=clock,
+    )
+
+    queued = driver.requeue_not_admitted_task(db, attempt, clock=clock)
+    repeated = driver.requeue_not_admitted_task(db, attempt, clock=clock)
+
+    assert queued["status"] == "queued"
+    assert queued["execution_generation"] == attempt.execution_generation
+    assert queued["payload"] == admitted["payload"]
+    assert queued["run_gateway_id"] is None
+    assert queued["run_process_generation"] is None
+    assert queued["run_lease_generation"] is None
+    assert repeated["idempotent"] is True
+
+
+def test_not_admitted_requeue_rejects_stale_lease_and_task_generation(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock, ttl=5)
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    stale_attempt = driver.TaskAttempt(
+        identity=identity,
+        lease=lease,
+        execution_generation=attempt.execution_generation + 1,
+        cancel_generation=attempt.cancel_generation,
+    )
+
+    with pytest.raises(driver.StaleTaskError, match="lost its fence"):
+        driver.requeue_not_admitted_task(db, stale_attempt, clock=clock)
+
+    clock.advance(5)
+    with pytest.raises(driver.StaleLeaseError):
+        driver.requeue_not_admitted_task(db, attempt, clock=clock)
+
+    assert driver.get_task(db, identity)["status"] == "running"
 
 
 def test_state_survives_sqlite_reopen_and_concurrent_duplicate_admission(db):
@@ -1029,6 +1127,20 @@ def test_payload_digest_is_verified_on_read(db):
 
     with pytest.raises(driver.TaskConflictError, match="integrity"):
         driver.get_task(db, identity)
+
+
+def test_optional_target_member_id_is_durable_and_digest_bound(db):
+    identity = _identity()
+    _admit(
+        db,
+        identity,
+        FakeClock(),
+        payload=_payload(target_member_id="member-remote"),
+    )
+
+    assert driver.get_task(db, identity)["payload"]["target_member_id"] == (
+        "member-remote"
+    )
 
 
 @pytest.mark.parametrize(

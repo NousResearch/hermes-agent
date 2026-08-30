@@ -370,9 +370,31 @@ def _(rid, params: dict) -> dict:
                         RoomProbeUnavailableError,
                         default_db_path,
                         probe_hosted_room,
+                        probe_peer_room_reservation,
                     )
 
                     hosted = probe_hosted_room(default_db_path(), room_id=room_id)
+                    peer = False
+                    if not hosted:
+                        from hermes_constants import named_profile_home
+
+                        session_profile_home = named_profile_home(
+                            str(session.get("profile_home") or "")
+                        )
+                        requested_profile = (
+                            (
+                                session_profile_home.name
+                                if session_profile_home is not None
+                                else ""
+                            )
+                            or str(params.get("profile") or "").strip()
+                            or str(_current_profile_name() or "default").strip()
+                        )
+                        peer = probe_peer_room_reservation(
+                            default_db_path(),
+                            room_id=room_id,
+                            target_profile=requested_profile,
+                        )
                 except RoomProbeUnavailableError:
                     return _err(
                         rid,
@@ -390,11 +412,16 @@ def _(rid, params: dict) -> dict:
                         "Could not verify this group. Try again after the gateway recovers.",
                     )
                 else:
-                    if hosted:
+                    if hosted or peer:
                         return _err(
                             rid,
                             4122,
-                            "This room is managed by its gateway. Update Hermes Desktop to continue it.",
+                            (
+                                "This room is managed by its gateway. "
+                                if hosted
+                                else "This room is managed by its home host. "
+                            )
+                            + "Update Hermes Desktop to continue it.",
                         )
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         return _err(rid, 4090, limit_message)

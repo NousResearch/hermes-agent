@@ -922,6 +922,25 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
+# Leave unset for the safe default: Desktop coordinates cross-gateway rooms and
+# same-gateway rooms can still continue on their own. Set this only to the
+# public HTTPS base URL that another trusted Hermes gateway can reach. The API
+# server key authorizes the initial invitation; scoped grants are signed by a
+# separate installation-private secret and survive API-key rotation. Disbanding
+# a Group Chat revokes its known peer routes; API-key rotation alone does not.
+# Network access should still be limited to the peer gateways (for example with
+# your VPN or firewall).
+# Plain HTTP is accepted only for loopback testing; every reachable peer URL
+# must use HTTPS.
+#
+# gateway:
+#   room_link_url: "https://hermes.example.net"
+#
+# The equivalent environment override is HERMES_ROOM_LINK_URL. After changing
+# it, restart the gateway and reopen New Group Chat > Advanced; Hermes will
+# re-check the selected gateways automatically.
+
 # Startup sweep of session rows orphaned by a dead gateway process.
 # The normal disconnect cleanup runs on an in-process grace timer, so a
 # gateway restart (update, crash, systemd) leaves those rows permanently

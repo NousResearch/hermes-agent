@@ -3449,6 +3449,16 @@ def _get_approval_config() -> dict:
 
 def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    try:
+        from gateway.hosted_room_execution_policy import (
+            current_room_execution_policy,
+        )
+
+        room_policy = current_room_execution_policy()
+        if room_policy is not None:
+            return room_policy.approval_mode
+    except Exception:
+        pass
     mode = _get_approval_config().get("mode", "manual")
     return _normalize_approval_mode(mode)
 

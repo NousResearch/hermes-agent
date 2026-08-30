@@ -240,6 +240,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "bot_room": {
+        "description": "Verified text-only Group Chat turn capabilities",
+        "tools": [],
+        "includes": [],
+    },
+
     # Affordances that only exist because a GUI renderer is on the other end of
     # the connection: read/close the embedded terminal pane, open/read/close the
     # in-app browser, focus a pane, tapback a message.

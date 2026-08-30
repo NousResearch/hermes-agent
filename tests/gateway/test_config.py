@@ -555,6 +555,24 @@ class TestLoadGatewayConfig:
         assert extra["key"] == "sekrit"
         assert extra["model_name"] == "my-hermes"
 
+    def test_room_link_url_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """The supported config path advertises no endpoint until restart."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  room_link_url: https://peer.example.test/hermes\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.room_link_url == "https://peer.example.test/hermes"
+        assert GatewayConfig.from_dict(config.to_dict()).room_link_url == (
+            "https://peer.example.test/hermes"
+        )
+
 
     def test_non_platform_gateway_keys_not_misparsed_as_platforms(self, tmp_path, monkeypatch):
         """Nested-platform discovery must only pick up keys matching the

@@ -1030,6 +1030,43 @@ def test_tombstone_pruning_owns_only_room_log_driver_and_policy_tables(tmp_path)
         )
 
 
+def test_peer_reservation_rejects_stale_or_conflicting_authority(tmp_path):
+    db = tmp_path / "state.db"
+    current = {
+        "room_id": "room-peer",
+        "member_id": "member-peer",
+        "target_profile": "reviewer",
+        "authority_gateway_id": "gateway-current",
+        "authority_epoch": 2,
+    }
+    rooms.reserve_peer_room(db, claims=current, expires_at=300, now=100)
+
+    with pytest.raises(rooms.AuthorityConflictError, match="authority changed"):
+        rooms.reserve_peer_room(
+            db,
+            claims={
+                **current,
+                "authority_gateway_id": "gateway-stale",
+                "authority_epoch": 1,
+            },
+            expires_at=300,
+            now=100,
+        )
+    with pytest.raises(rooms.AuthorityConflictError, match="authority changed"):
+        rooms.reserve_peer_room(
+            db,
+            claims={**current, "authority_gateway_id": "gateway-conflict"},
+            expires_at=300,
+            now=100,
+        )
+    assert rooms.peer_room_is_reserved(
+        db,
+        room_id="room-peer",
+        target_profile="reviewer",
+        now=200,
+    )
+
+
 def test_policy_sync_cannot_recreate_projection_after_room_pruning(
     tmp_path,
     monkeypatch,
@@ -1112,6 +1149,56 @@ def test_migration_reserves_existing_disbanded_room_id_before_pruning(tmp_path):
     _assert_retired_identity_stays_reserved(db, "room-1", fresh_id="room-new")
 
 
+def test_legacy_adoption_fills_missing_targets_but_rejects_target_changes(tmp_path):
+    db = tmp_path / "state.db"
+    legacy_members = [
+        {"member_id": "ops", "profile": "ops", "handle": "ops"},
+    ]
+    targeted_members = [
+        {
+            **legacy_members[0],
+            "target": {"kind": "local", "profile": "ops"},
+        },
+    ]
+    rooms.create_room(
+        db,
+        room_id="legacy-targets",
+        name="Legacy targets",
+        members=legacy_members,
+        authority_gateway_id="legacy",
+        now=1,
+    )
+
+    adopted = rooms.create_room(
+        db,
+        room_id="legacy-targets",
+        name="Legacy targets",
+        members=targeted_members,
+        authority_gateway_id="gateway-a",
+        now=2,
+    )
+
+    assert adopted["members"] == targeted_members
+    with pytest.raises(rooms.RoomConflictError, match="different state"):
+        rooms.create_room(
+            db,
+            room_id="legacy-targets",
+            name="Legacy targets",
+            members=[
+                {
+                    **legacy_members[0],
+                    "target": {
+                        "kind": "peer",
+                        "installation_id": "install-b",
+                        "profile": "ops",
+                    },
+                },
+            ],
+            authority_gateway_id="gateway-a",
+            now=3,
+        )
+
+
 def test_draft_schema_migration_is_safe_across_processes(tmp_path):
     db = tmp_path / "state.db"
     _create_pre_actor_database(db)
@@ -1122,6 +1209,56 @@ def test_draft_schema_migration_is_safe_across_processes(tmp_path):
     assert results == [("legacy", 1)] * 4
     replay = rooms.read_events(db, room_id="room-1")
     assert replay["events"][0]["actor"] == {"kind": "system", "id": "legacy"}
+
+
+def test_legacy_remote_run_receipt_migrates_without_current_lineage_access(
+    tmp_path,
+):
+    db = tmp_path / "state.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """CREATE TABLE hosted_room_remote_runs (
+                room_id TEXT NOT NULL,
+                member_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                execution_generation INTEGER NOT NULL,
+                target_install_id TEXT NOT NULL,
+                target_profile TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (task_id, execution_generation)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_remote_runs VALUES(
+                'room-1', 'member-reviewer', 'task-1', 1, 'install-peer',
+                'reviewer', 'run-legacy', 'session-legacy', 1, 1
+            )"""
+        )
+
+    current = {
+        "room_id": "room-1",
+        "home_install_id": "install-home",
+        "authority_gateway_id": "gateway-home",
+        "authority_epoch": 2,
+        "member_id": "member-reviewer",
+        "target_install_id": "install-peer",
+        "target_profile": "reviewer",
+        "task_id": "task-1",
+        "execution_generation": 1,
+    }
+    assert rooms.remote_run_receipt(db, record=current) is None
+    legacy = rooms.list_remote_run_receipts(db)
+    assert legacy[0]["home_install_id"] == "legacy"
+    assert legacy[0]["authority_gateway_id"] == "legacy"
+
+    rooms.upsert_remote_run_receipt(
+        db,
+        record={**current, "run_id": "run-current", "session_id": "session-current"},
+    )
+    assert rooms.remote_run_receipt(db, record=current)["run_id"] == "run-current"
 
 
 def test_interrupted_draft_schema_migration_rolls_back_atomically(

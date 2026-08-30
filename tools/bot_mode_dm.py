@@ -303,8 +303,23 @@ def message_agent_tool(
             )
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
         label = f"@{peer_profile or peer_name} on peer '{peer_name}'"
+        # Pin the registry-owning profile (#93935): `hermes peer` resolves
+        # bot_peers through load_config(), which is profile-scoped — an
+        # unpinned subprocess inherits THIS gateway's profile context, so a
+        # secondary-profile bot's peer DM ran against an empty registry and
+        # died with "No peer named". The tool-side roster above reads the
+        # machine-root config (the default profile's home), so the CLI must
+        # run in that same profile to see the same registry. Mirrors the
+        # local-teammate path's `-p <resolved>` pin below.
         return _start_delivery(
-            ["hermes", "peer", "dm", dm_target],
+            [
+                "hermes",
+                "-p",
+                _self_profile_name(root),
+                "peer",
+                "dm",
+                dm_target,
+            ],
             prefix + body,
             label,
             stdin_file=True,

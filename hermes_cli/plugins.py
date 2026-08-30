@@ -172,6 +172,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Observer-only platform-native event.  This is deliberately separate from
+    # MessageEvent dispatch: payloads are adapter-normalized metadata and never
+    # enter auth, pairing, transcript, or LLM paths.  Returns are ignored.
+    # Kwargs: platform, event_type, payload (allowlisted primitive data), adapter.
+    "gateway_platform_event",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.

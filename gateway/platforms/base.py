@@ -3119,7 +3119,21 @@ class BasePlatformAdapter(ABC):
     def is_connected(self) -> bool:
         """Check if adapter is currently connected."""
         return self._running
-    
+
+    def emit_plugin_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+        """Emit allowlisted adapter metadata without message/LLM dispatch."""
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook(
+                "gateway_platform_event",
+                platform=getattr(self.platform, "value", str(self.platform)),
+                event_type=event_type,
+                payload=payload,
+                adapter=self,
+            )
+        except Exception:
+            logger.exception("Platform event plugin hook failed: %s", event_type)
+
     def set_message_handler(self, handler: MessageHandler) -> None:
         """
         Set the handler for incoming messages.

@@ -308,6 +308,7 @@ class GatewayBusySessionMixin:
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
+            setattr(event, "_gateway_busy_fifo_admitted", True)
             return
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
@@ -318,6 +319,7 @@ class GatewayBusySessionMixin:
             return
 
         self._enqueue_fifo(session_key, event, adapter)
+        setattr(event, "_gateway_busy_fifo_admitted", True)
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Steerable text for a busy follow-up, transcribing voice-message media first.

@@ -3433,54 +3433,92 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
         return removed
 
-    async def _await_durable_processing(self, session_key: str) -> None:
-        """Wait for the background task chain that owns a durable session."""
+    async def _await_durable_processing(
+        self, session_key: str
+    ) -> ProcessingOutcome | None:
+        """Wait for a durable session owner and return its final outcome."""
         observed_task_ids: set[int] = set()
+        outcome = None
         while True:
             task = getattr(self, "_session_tasks", {}).get(session_key)
             if task is None or task is asyncio.current_task():
-                return
+                return outcome
             task_id = id(task)
             if task_id in observed_task_ids:
-                return
+                return outcome
             observed_task_ids.add(task_id)
             if not inspect.isawaitable(task):
-                return
-            await asyncio.shield(task)
+                return outcome
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                outcome = getattr(task, "_telegram_processing_outcome", None)
+            except Exception:
+                outcome = None
+            else:
+                outcome = getattr(task, "_telegram_processing_outcome", None)
             if getattr(self, "_session_tasks", {}).get(session_key) is task:
-                return
+                return outcome
 
     async def _await_durable_event_processing(
         self, event: Any, session_key: str
     ) -> object:
         """Wait for this event, not merely the preceding session owner."""
         signal = self._durable_processing_complete_event(event)
-        await self._await_durable_processing(session_key)
-        if signal.is_set() or not self._durable_event_in_gateway_fifo(event, session_key):
+        owner_outcome = await self._await_durable_processing(session_key)
+        if signal.is_set():
             return event
+        if (
+            owner_outcome == ProcessingOutcome.SUCCESS
+            and not self._durable_event_in_gateway_fifo(event, session_key)
+        ):
+            return event
+        self._remove_durable_event_from_gateway_fifo(event, session_key)
+        self._defer_durable_event(event)
+        return _DURABLE_DISPATCH_DEFERRED
 
-        wait_task = asyncio.create_task(signal.wait())
-        try:
-            while True:
-                if wait_task.done():
-                    await asyncio.shield(wait_task)
-                    return event
-                if not self._durable_event_in_gateway_fifo(event, session_key):
-                    if getattr(event, "_telegram_processing_started", False):
-                        await asyncio.shield(wait_task)
-                        return event
-                    self._defer_durable_event(event)
-                    return _DURABLE_DISPATCH_DEFERRED
-                done, _ = await asyncio.wait({wait_task}, timeout=0.1)
-                if done:
-                    return event
-        finally:
-            if not wait_task.done():
-                wait_task.cancel()
-                try:
-                    await wait_task
-                except asyncio.CancelledError:
-                    pass
+    def _schedule_durable_fifo_completion(
+        self, event: MessageEvent, session_key: str
+    ) -> None:
+        """Finalize a durable event drained inside an existing session owner."""
+        existing = getattr(event, "_telegram_durable_fifo_completion_task", None)
+        if existing is not None and not existing.done():
+            return
+
+        async def complete() -> None:
+            try:
+                result = await self._await_durable_event_processing(event, session_key)
+                if self._durable_processing_complete_event(event).is_set():
+                    return
+                setattr(event, "_telegram_durable_completion_pending", False)
+                if result is _DURABLE_DISPATCH_DEFERRED:
+                    transitioned = await self._complete_durable_event(
+                        event,
+                        success=False,
+                        delay=_DURABLE_BUSY_RETRY_DELAY_SECONDS,
+                        defer=True,
+                    )
+                else:
+                    transitioned = await self._complete_durable_event(
+                        event, success=True
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("[Telegram] Durable FIFO completion failed")
+                return
+            if not transitioned:
+                logger.warning("[Telegram] Durable FIFO completion was not confirmed")
+
+        task = asyncio.create_task(complete())
+        setattr(event, "_telegram_durable_fifo_completion_task", task)
+        queue = getattr(self, "_inbound_queue", None)
+        register = getattr(queue, "register_lifecycle_task", None)
+        if callable(register):
+            register(task)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> object:
         """Dispatch durable work only after its actual processing boundary."""
@@ -3500,6 +3538,14 @@ class TelegramAdapter(BasePlatformAdapter):
             setattr(event, "_telegram_durable_completion_pending", False)
             return _DURABLE_DISPATCH_DEFERRED
         if durable_ids:
+            fifo_admitted = bool(
+                getattr(event, "_gateway_busy_fifo_admitted", False)
+            )
+            if fifo_admitted or self._durable_event_in_gateway_fifo(
+                event, session_key
+            ):
+                self._schedule_durable_fifo_completion(event, session_key)
+                return _DURABLE_DISPATCH_ASYNC
             if session_key in getattr(self, "_session_tasks", {}):
                 return _DURABLE_DISPATCH_ASYNC
             if callable(getattr(self, "_message_handler", None)):

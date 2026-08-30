@@ -366,8 +366,8 @@ async def test_claimed_durable_telegram_event_does_not_consume_ordinary_busy_cap
 
 
 @pytest.mark.asyncio
-async def test_durable_busy_fifo_waits_for_its_own_processing_completion(tmp_path, monkeypatch):
-    """A volatile FIFO append is not a durable completion boundary."""
+async def test_durable_busy_fifo_consumes_each_in_band_event(tmp_path, monkeypatch):
+    """One owner draining a busy FIFO finalizes every durable event."""
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -397,7 +397,28 @@ async def test_durable_busy_fifo_waits_for_its_own_processing_completion(tmp_pat
         turn=SimpleNamespace(agent=None, busy_ack_ts=0, started_ts=0),
     )
     owner_release = asyncio.Event()
-    owner_task = asyncio.create_task(owner_release.wait())
+    drained_events = []
+
+    async def drain_owner():
+        await owner_release.wait()
+        while runner._queue_depth(session_key, adapter=adapter):
+            queued_event = _dequeue_pending_event(adapter, session_key)
+            queued_event = runner._promote_queued_event(
+                session_key, adapter, queued_event
+            )
+            if queued_event is None:
+                break
+            drained_events.append(queued_event)
+            await asyncio.sleep(0)
+        current_task = asyncio.current_task()
+        assert current_task is not None
+        setattr(
+            current_task,
+            "_telegram_processing_outcome",
+            ProcessingOutcome.SUCCESS,
+        )
+
+    owner_task = asyncio.create_task(drain_owner())
     adapter._active_sessions = {session_key: asyncio.Event()}
     adapter._session_tasks = {session_key: owner_task}
 
@@ -410,12 +431,12 @@ async def test_durable_busy_fifo_waits_for_its_own_processing_completion(tmp_pat
             actionable=True,
             update_kind="message",
             chat_id="7",
-            message_id=str(item["update_id"]),
+            message_id=str(item["message"]["message_id"]),
             session_key=session_key,
             payload=item,
         ),
         lease_owner="gateway:durable-fifo-fence",
-        active_limit=1,
+        active_limit=4,
     )
     adapter._inbound_queue = queue
 
@@ -424,93 +445,78 @@ async def test_durable_busy_fifo_waits_for_its_own_processing_completion(tmp_pat
     runner._peek_session_state = lambda _session_key: state
     runner._session_state = lambda _session_key: state
     runner._is_user_authorized = lambda _source: True
-    runner._effective_busy_input_mode = lambda _source: "queue"
-    runner._effective_busy_text_mode = lambda _source: "queue"
+    runner._effective_busy_input_mode = lambda source: "steer"
+    runner._effective_busy_text_mode = lambda source: "steer"
     runner._agent_has_active_subagents = lambda _agent: False
 
     async def no_compression(_session_key):
         return False
 
     runner._session_has_compression_in_flight = no_compression
-    busy_finished = asyncio.Event()
-    actual_busy_handler = runner._handle_active_session_busy_message
-
-    async def busy_handler(event, key):
-        result = await actual_busy_handler(event, key)
-        busy_finished.set()
-        return result
-
     adapter._message_handler = runner._handle_message
-    adapter._busy_session_handler = busy_handler
+    adapter._busy_session_handler = runner._handle_active_session_busy_message
 
-    update_id = 9003
-    payload_data = {
-        "update_id": update_id,
-        "message": {"message_id": update_id, "chat": {"id": 7}},
-    }
-    await queue.put(payload_data)
-    await queue.get()
-    claim = queue.claim_for_update(update_id)
-    assert claim is not None
-    queue.task_done()
+    update_ids = [9101, 9102, 9103, 9104]
+    message_ids = [8101, 8102, 8103, 8104]
+    texts = ["first", "identical", "identical", "fourth"]
+    events = []
+    claims = []
+    for update_id, message_id, text in zip(update_ids, message_ids, texts):
+        payload_data = {
+            "update_id": update_id,
+            "message": {"message_id": message_id, "chat": {"id": 7}},
+        }
+        await queue.put(payload_data)
+        await queue.get()
+        claim = queue.claim_for_update(update_id)
+        assert claim is not None
+        queue.task_done()
+        claims.append(claim)
+        events.append(
+            MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=claim,
+                message_id=str(message_id),
+                platform_update_id=update_id,
+                metadata={
+                    "telegram_inbound_claimed": True,
+                    "telegram_durable_update_ids": [update_id],
+                    "gateway_session_key": session_key,
+                },
+                allow_gateway_control=False,
+            )
+        )
 
-    event = MessageEvent(
-        text="durable",
-        message_type=MessageType.DOCUMENT,
-        source=source,
-        raw_message=claim,
-        message_id="79",
-        platform_update_id=update_id,
-        metadata={
-            "telegram_inbound_claimed": True,
-            "telegram_durable_update_ids": [update_id],
-            "gateway_session_key": session_key,
-        },
-        allow_gateway_control=False,
-    )
-
-    dispatch_task = asyncio.create_task(
-        adapter._dispatch_and_complete_durable_event(event)
-    )
     try:
-        await asyncio.wait_for(busy_finished.wait(), timeout=1.0)
-        assert runner._queue_depth(session_key, adapter=adapter) == 1
-        await asyncio.wait_for(dispatch_task, timeout=1.0)
-        row = store.get(claim.event_id)
-        assert row is not None
-        assert row.work_state == "leased"
-        assert row.consumed_at is None
+        for event in events:
+            await adapter._dispatch_and_complete_durable_event(event)
+        assert runner._queue_depth(session_key, adapter=adapter) == 4
+        for claim in claims:
+            row = store.get(claim.event_id)
+            assert row is not None
+            assert row.work_state == "leased"
+            assert row.consumed_at is None
 
         owner_release.set()
         await asyncio.wait_for(owner_task, timeout=1.0)
-        await asyncio.sleep(0.05)
-
-        # The owner finishing only proves that the preceding turn ended. The
-        # durable event remains in the inherited FIFO until its own lifecycle
-        # hook runs, so its SQLite claim must still be leased here.
-        assert dispatch_task.done()
-        row = store.get(claim.event_id)
-        assert row is not None
-        assert row.work_state == "leased"
-        assert row.consumed_at is None
-
-        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-        completion = getattr(event, "_telegram_durable_completion_task", None)
-        assert completion is not None
-        await asyncio.wait_for(asyncio.shield(completion), timeout=1.0)
+        await asyncio.wait_for(queue._wait_for_lifecycle_tasks(), timeout=1.0)
     finally:
         if not owner_task.done():
             owner_release.set()
             await owner_task
-        if not dispatch_task.done():
-            dispatch_task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await dispatch_task
 
-    row = store.get(claim.event_id)
-    assert row is not None
-    assert row.work_state == "consumed"
-    assert row.consumed_at is not None
+    assert [event.platform_update_id for event in drained_events] == update_ids
+    assert [event.message_id for event in drained_events] == [
+        str(message_id) for message_id in message_ids
+    ]
+    assert drained_events[1].text == drained_events[2].text == "identical"
+    for claim in claims:
+        row = store.get(claim.event_id)
+        assert row is not None
+        assert row.work_state == "consumed"
+        assert row.consumed_at is not None
 
 
 @pytest.mark.asyncio
@@ -747,7 +753,24 @@ async def test_concurrent_durable_busy_cap_admission_is_replayable(tmp_path, mon
         turn=SimpleNamespace(agent=None, busy_ack_ts=0, started_ts=0),
     )
     owner_release = asyncio.Event()
-    owner_task = asyncio.create_task(owner_release.wait())
+    event_to_cancel = []
+
+    async def cancel_after_draining_event():
+        await owner_release.wait()
+        assert len(event_to_cancel) == 1
+        assert adapter._remove_durable_event_from_gateway_fifo(
+            event_to_cancel[0], ordinary_key
+        )
+        current_task = asyncio.current_task()
+        assert current_task is not None
+        setattr(
+            current_task,
+            "_telegram_processing_outcome",
+            ProcessingOutcome.CANCELLED,
+        )
+        raise asyncio.CancelledError
+
+    owner_task = asyncio.create_task(cancel_after_draining_event())
 
     adapter._active_sessions = {ordinary_key: asyncio.Event()}
     adapter._session_tasks = {ordinary_key: owner_task}
@@ -847,6 +870,7 @@ async def test_concurrent_durable_busy_cap_admission_is_replayable(tmp_path, mon
         )
 
     events = [durable_event(update_id, claim) for update_id, claim in zip(update_ids, claims)]
+    event_to_cancel.append(events[0])
     dispatch_tasks = [
         asyncio.create_task(adapter._dispatch_and_complete_durable_event(event))
         for event in events
@@ -856,30 +880,19 @@ async def test_concurrent_durable_busy_cap_admission_is_replayable(tmp_path, mon
     # the serialized second caller one scheduling turn to observe the full cap.
     await asyncio.sleep(0)
     owner_release.set()
-    await asyncio.wait_for(owner_task, timeout=1.0)
-    await asyncio.sleep(0.05)
-
-    # The first durable event was admitted below the ordinary cap and is now
-    # staged in the inherited FIFO. It cannot be consumed until its own
-    # processing lifecycle reports success.
-    first_row = store.get("telegram:111:9301")
-    assert first_row is not None
-    assert first_row.work_state == "leased"
-    assert first_row.consumed_at is None
-    await adapter.on_processing_complete(events[0], ProcessingOutcome.SUCCESS)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(owner_task, timeout=1.0)
     await asyncio.gather(*dispatch_tasks)
-    completion = getattr(events[0], "_telegram_durable_completion_task", None)
-    assert completion is not None
-    await asyncio.wait_for(asyncio.shield(completion), timeout=1.0)
+    await asyncio.wait_for(queue._wait_for_lifecycle_tasks(), timeout=1.0)
 
+    # The admitted durable event left the FIFO under an owner that reported
+    # cancellation. It and the concurrent cap rejection must both be replayable.
     rows = [store.get(f"telegram:111:{update_id}") for update_id in update_ids]
     assert all(row is not None for row in rows)
-    assert sorted(row.work_state for row in rows) == ["consumed", "queued"]
-    replayable_id = next(update_id for update_id, row in zip(update_ids, rows) if row.work_state == "queued")
-    replayable_row = store.get(f"telegram:111:{replayable_id}")
-    assert replayable_row.dispatch_state == "pending"
-    assert replayable_row.consumed_at is None
-    assert queue.claim_for_update(replayable_id) is None
+    assert [row.work_state for row in rows] == ["queued", "queued"]
+    assert all(row.dispatch_state == "pending" for row in rows)
+    assert all(row.consumed_at is None for row in rows)
+    assert all(queue.claim_for_update(update_id) is None for update_id in update_ids)
 
     queued_events = list(state.conversation.queued_events)
     pending = adapter._pending_messages.get(ordinary_key)
@@ -891,8 +904,8 @@ async def test_concurrent_durable_busy_cap_admission_is_replayable(tmp_path, mon
             "telegram_durable_update_ids", []
         )
     }
-    assert replayable_id not in volatile_ids
-    assert runner._queue_depth(ordinary_key, adapter=adapter) == 32
+    assert not volatile_ids.intersection(update_ids)
+    assert runner._queue_depth(ordinary_key, adapter=adapter) == 31
 
     if not owner_task.done():
         owner_task.cancel()

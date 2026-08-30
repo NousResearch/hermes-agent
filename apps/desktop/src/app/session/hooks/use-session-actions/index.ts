@@ -2012,6 +2012,19 @@ export function useSessionActions({
         const effectiveBranchMessages = responseBranchMessages.length ? responseBranchMessages : branchMessages
         const routedSessionId = branched.stored_session_id ?? branched.session_id
         const preview = effectiveBranchMessages.map(({ content }) => content).find(Boolean) ?? null
+
+        // Record the exact owner and pin its socket THE MOMENT the create
+        // returns, before the optimistic row / tile publication can lose a
+        // race with the gateway pruner. A draft branch child exists only as a
+        // runtime on the owning backend (the stored row lands on first turn),
+        // so a prune in this gap orphan-reaps it and the tile enters the
+        // resume→reclaim flicker loop (#93892 shape). Mirrors the two routed
+        // creates at the top of this file.
+        if (ownerRoute) {
+          setSessionOwnerHint(routedSessionId, ownerRoute)
+          holdSessionOwnerUntilForeground(routedSessionId, ownerRoute)
+        }
+
         // Draft until submit: nest under the parent at the parent's recency so it
         // doesn't bubble to the top until a real message lands (backend persists
         // + auto-names it then). The selected row survives refreshes (sessionsToKeep).
@@ -2068,7 +2081,17 @@ export function useSessionActions({
         if (parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
           await resumeSession(routedSessionId)
         } else {
-          openSessionTile(routedSessionId, 'center')
+          // Carry the exact owner onto the tile: its persisted ownerRoute is
+          // what pins the owning backend's socket in the gateway keep-set
+          // (openTileGatewayScopes) for the tile's whole lifetime. Without it
+          // a remote-owned branch child's tile pinned nothing, the pruner
+          // closed the owner socket, the backend reaped the draft runtime,
+          // and the tile looped resume→reclaim until the storm breaker
+          // latched "Couldn't open this session".
+          openSessionTile(routedSessionId, 'center', undefined, null, {
+            ownerRoute,
+            workspaceMode: 'sessions'
+          })
           patchSessionTile(routedSessionId, { runtimeId: branched.session_id })
           revealTreePane(`session-tile:${routedSessionId}`)
         }

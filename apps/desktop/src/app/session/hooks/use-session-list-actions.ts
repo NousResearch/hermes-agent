@@ -38,7 +38,7 @@ import {
   setSessions,
   setSessionsLoading
 } from '@/store/session'
-import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
+import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
 
@@ -81,6 +81,15 @@ function sessionsToKeep(scope?: string): Set<string> {
     ...$pinnedSessionIds.get(),
     ...getRecentlySettledSessionIds()
   ])
+
+  // Open tiles are user-visible state exactly like the selected row: a branch
+  // child is a DRAFT until its first real turn, so the aggregator can't return
+  // it — without this the next background refresh silently dropped the
+  // optimistic `draft: branch #N` row while its tab was open, and the sidebar
+  // showed no trace of the branch until first send.
+  for (const tile of $sessionTiles.get()) {
+    keep.add(tile.storedSessionId)
+  }
 
   const active = $selectedStoredSessionId.get()
 

@@ -932,6 +932,9 @@ class _OutputScan:
 
     def __init__(self, response_status: Optional[str]) -> None:
         self.content_parts, self.reasoning_parts, self.tool_calls = [], [], []
+        # Commentary is held aside until the whole output list is known: promotion
+        # below depends on tool_calls and saw_final_answer_phase.
+        self.commentary_parts: List[str] = []
         self.reasoning_items_raw, self.message_items_raw = [], []
         self.has_incomplete_items = response_status in _INCOMPLETE_STATUSES
         self.saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
@@ -963,6 +966,36 @@ class _OutputScan:
                         )
             elif item_type == "custom_tool_call" or (item_type == "function_call" and item_status not in _INCOMPLETE_STATUSES):
                 self.tool_calls.append(_response_tool_call(item, item_type, len(self.tool_calls)))
+        self._promote_commentary()
+
+    def _promote_commentary(self) -> None:
+        """Route held-aside commentary once the whole output list is known.
+
+        Chat-completions providers deliver narration and a tool call in ONE assistant
+        message, so a skill can report to the user and checkpoint in the same turn. The
+        Responses API splits that into a ``commentary`` message item plus a
+        ``function_call`` item; routing commentary to the reasoning channel made that
+        narration render as thinking text and vanish from persisted ``content``,
+        silently dropping user-facing reports on any surface that rebuilds history from
+        the database.
+
+        A turn carrying tool calls cannot be the final answer, so the leak the original
+        guard was written for is impossible there: promote to content and restore
+        chat-completions parity. Two shapes keep the old routing -- with no tool calls
+        commentary is an unfinished turn feeding the incomplete-continuation path, and
+        with a ``final_answer`` item present content already holds the real answer.
+        The interim callback still surfaces commentary in both cases.
+
+        Replay is unaffected: history resends ``codex_message_items`` verbatim and skips
+        ``content`` whenever those items exist, so the text is never sent twice.
+        """
+        if not self.commentary_parts:
+            return
+        if self.tool_calls and not self.saw_final_answer_phase:
+            self.content_parts[:0] = self.commentary_parts
+        else:
+            self.reasoning_parts.extend(self.commentary_parts)
+        self.commentary_parts = []
 
     def _message(self, item: Any, item_status: Optional[str]) -> None:
         normalized_phase = _lower_or_none(getattr(item, "phase", None))
@@ -972,9 +1005,15 @@ class _OutputScan:
         message_text = _extract_responses_message_text(item)
         if not message_text:
             return
-        # commentary/analysis text is mid-turn narration, never the final answer: route it
-        # to the reasoning channel; the exact item is still preserved for replay/cache.
-        (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
+        # ``analysis`` is provider scratchpad and always goes to the reasoning channel.
+        # ``commentary`` is mid-turn narration: held aside for _promote_commentary()
+        # below. The exact item is still preserved for replay/cache either way.
+        if normalized_phase == "analysis":
+            self.reasoning_parts.append(message_text)
+        elif is_commentary_phase:
+            self.commentary_parts.append(message_text)
+        else:
+            self.content_parts.append(message_text)
         item_id = getattr(item, "id", None)
         self.message_items_raw.append(_message_item(
             [{"type": "output_text", "text": message_text}], status=_normalize_responses_message_status(item_status),

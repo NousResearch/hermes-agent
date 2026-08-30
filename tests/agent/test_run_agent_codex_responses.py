@@ -1901,6 +1901,73 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     assert "inspect the repository" in assistant_message.codex_message_items[0]["content"][0]["text"]
 
 
+def _codex_commentary_tool_response(commentary: str):
+    """Commentary narration plus a tool call, with no final-answer item.
+
+    The shape a skill produces when it reports to the user and checkpoints in
+    the same turn (report in content, one clarify in tool_calls).
+    """
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                phase="commentary",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=commentary)],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="clarify",
+                arguments='{"questions":[{"question":"Continue?"}]}',
+            ),
+        ],
+        status="completed",
+    )
+
+
+def test_normalize_codex_response_promotes_commentary_to_content_on_tool_turn(monkeypatch):
+    """A report emitted alongside a tool call reaches assistant content.
+
+    Chat-completions providers put narration and a tool call in one message.
+    Routing Responses commentary to the reasoning channel made that narration
+    render as thinking text and persist with empty content, silently dropping
+    user-facing reports. A tool-call turn is never the final answer, so there
+    is no answer to leak.
+    """
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    report = "### Alerts\n\n- **Virgin Media:** August bill available - GBP 35.00."
+    assistant_message, finish_reason = _normalize_codex_response(
+        _codex_commentary_tool_response(report)
+    )
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.content == report
+    assert not (assistant_message.reasoning or "")
+    # The exact item is still preserved for replay/cache continuity, so
+    # history resends it verbatim rather than the promoted content.
+    assert assistant_message.codex_message_items[0]["phase"] == "commentary"
+    assert report in assistant_message.codex_message_items[0]["content"][0]["text"]
+
+
+def test_normalize_codex_response_keeps_analysis_phase_out_of_content(monkeypatch):
+    """``analysis`` is provider scratchpad and stays on the reasoning channel."""
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = _codex_commentary_tool_response("scratchpad musing")
+    response.output[0].phase = "analysis"
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert (assistant_message.content or "") == ""
+    assert "scratchpad musing" in (assistant_message.reasoning or "")
+
+
 def test_normalize_codex_response_does_not_fallback_to_output_text_for_commentary_only(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response

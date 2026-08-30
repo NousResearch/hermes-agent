@@ -104,7 +104,15 @@ def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int
             continue
     for f in entries:
         try:
-            if f.is_file() and f.stat().st_mtime < cutoff:
+            # Inspect the directory entry itself. ``Path.is_file()`` and
+            # ``Path.stat()`` follow symlinks, which both leaves dangling
+            # result aliases behind forever and applies retention using the
+            # target's timestamp rather than the artifact's timestamp.
+            entry_stat = os.lstat(f)
+            is_result_artifact = stat.S_ISREG(entry_stat.st_mode) or stat.S_ISLNK(
+                entry_stat.st_mode
+            )
+            if is_result_artifact and entry_stat.st_mtime < cutoff:
                 f.unlink()
                 removed += 1
         except OSError:

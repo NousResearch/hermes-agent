@@ -1155,6 +1155,24 @@ class TestSpillover:
 
     @pytest.mark.skipif(
         sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX symlink timestamps",
+    )
+    def test_cleanup_ages_symlink_artifact_without_following_target(self):
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        outside = spill_dir.parent / "outside.txt"
+        outside.write_text("keep", encoding="utf-8")
+        alias = spill_dir / "expired.txt"
+        alias.symlink_to(outside)
+        stale = time.time() - (48 * 3600)
+        os.utime(alias, (stale, stale), follow_symlinks=False)
+
+        assert cleanup_spillover_cache(max_age_hours=24) == 1
+        assert not alias.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "keep"
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
         reason="requires POSIX directory symlinks",
     )
     def test_cleanup_refuses_symlinked_private_directory(self):

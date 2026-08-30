@@ -92,21 +92,24 @@ class MicroCompactionMixin:
     def _build_micro_summary_prompt(self, existing_summary: str, exchange_text: str) -> List[Dict[str, str]]:
         """Build the prompt messages for a single-exchange micro-summary."""
         summary_block = existing_summary if existing_summary.strip() else "(No previous summary yet.)"
+        _merge_prose = (
+            "Merge the exchange's key decisions, requirements, file paths, and "
+            "open questions into the summary.  Preserve the summary's structure.  "
+            "Drop resolved details that are no longer relevant.  Add new decisions, "
+            "file paths, and open questions."
+        )
+        _custom_instructions = self._effective_summary_instructions()
+        _guidance = _custom_instructions if _custom_instructions else _merge_prose
         user_prompt = (
             "You are a summarization agent creating a compact record of an "
             "ongoing conversation.  You are given a running summary and the "
-            "next exchange from the conversation.  Merge the exchange's key "
-            "decisions, requirements, file paths, and open questions into the "
-            "summary.  Preserve the summary's structure.  Drop resolved details "
-            "that are no longer relevant.  Add new decisions, file paths, and "
-            "open questions.\n\n"
+            "next exchange from the conversation.  "
+            + _guidance
+            + "\n\n"
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary \u2014 replace any that appear "
             "with [REDACTED].\n\n"
         )
-        _custom_instructions = self._effective_summary_instructions()
-        if _custom_instructions:
-            user_prompt = user_prompt + _custom_instructions + "\n\n"
         user_prompt = user_prompt + (
             f"## Current Running Summary\n{summary_block}\n\n"
             f"## Next Exchange to Merge\n{exchange_text}\n\n"

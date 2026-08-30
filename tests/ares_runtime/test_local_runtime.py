@@ -834,22 +834,111 @@ def test_materialize_reuses_a_complete_existing_release_without_rebuilding(
     assert runtime._release_source(revision) == source
 
 
-def test_materialize_refuses_an_incomplete_existing_release_without_rebuilding(
+def test_materialize_quarantines_an_incomplete_nonactive_release_then_rebuilds(
     tmp_path: Path, monkeypatch
 ) -> None:
     runtime = _runtime(tmp_path)
-    revision = "a" * 40
-    _release(runtime, revision)
+    source_repository = _repository(tmp_path / "source")
+    (source_repository / "canonical.txt").write_text("canonical\n", encoding="utf-8")
+    revision = _commit(source_repository, "canonical source")
+    incomplete_source = _release(runtime, revision)
+    (incomplete_source / "preserved.txt").write_text("old incomplete release\n", encoding="utf-8")
+    runtime._atomic_link(runtime.paths.previous_link, incomplete_source.resolve())
+
+    def mark_ready(source: Path, *, desktop: bool) -> None:
+        assert desktop is False
+        assert not runtime._installed_release_source(source)
+        python = runtime._python_for(source)
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_text("python", encoding="utf-8")
+        python.chmod(0o755)
+
+    monkeypatch.setattr(runtime, "_build_runtime", mark_ready)
+
+    runtime._materialize(str(source_repository), revision, desktop=False)
+
+    rebuilt = runtime._release_source(revision)
+    assert (rebuilt / "canonical.txt").read_text(encoding="utf-8") == "canonical\n"
+    assert not (rebuilt / "preserved.txt").exists()
+    quarantines = sorted((runtime.paths.data_root / "quarantine" / "incomplete-releases").glob(f"{revision}.*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "source" / "preserved.txt").read_text(encoding="utf-8") == "old incomplete release\n"
+    assert runtime.previous_release() == (revision, rebuilt.resolve())
+
+
+def test_materialize_restores_incomplete_release_when_recovery_build_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    source_repository = _repository(tmp_path / "source")
+    (source_repository / "canonical.txt").write_text("canonical\n", encoding="utf-8")
+    revision = _commit(source_repository, "canonical source")
+    incomplete_source = _release(runtime, revision)
+    (incomplete_source / "preserved.txt").write_text("old incomplete release\n", encoding="utf-8")
+    runtime._atomic_link(runtime.paths.previous_link, incomplete_source.resolve())
     monkeypatch.setattr(
         runtime,
         "_build_runtime",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("incomplete release was rebuilt")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected build failure")),
     )
 
-    with pytest.raises(AresLocalRuntimeError, match="incomplete"):
-        runtime._materialize("unused", revision, desktop=False)
+    with pytest.raises(RuntimeError, match="injected build failure"):
+        runtime._materialize(str(source_repository), revision, desktop=False)
+
+    restored = runtime._release_source(revision)
+    assert (restored / "preserved.txt").read_text(encoding="utf-8") == "old incomplete release\n"
+    assert runtime.previous_release() == (revision, restored.resolve())
+    assert not list((runtime.paths.data_root / "quarantine" / "incomplete-releases").glob(f"{revision}.*"))
+
+
+def test_materialize_refuses_to_quarantine_an_incomplete_active_release(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    source_repository = _repository(tmp_path / "source")
+    (source_repository / "canonical.txt").write_text("canonical\n", encoding="utf-8")
+    revision = _commit(source_repository, "canonical source")
+    incomplete_source = _release(runtime, revision)
+    runtime._activate(revision)
+    monkeypatch.setattr(
+        runtime,
+        "_build_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("build must not run")),
+    )
+
+    with pytest.raises(AresLocalRuntimeError, match="active Ares release"):
+        runtime._materialize(str(source_repository), revision, desktop=False)
+
+    assert runtime.active_release() == (revision, incomplete_source.resolve())
+    assert not list((runtime.paths.data_root / "quarantine" / "incomplete-releases").glob(f"{revision}.*"))
+
+
+def test_materialize_restores_incomplete_release_when_staging_cleanup_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    source_repository = _repository(tmp_path / "source")
+    (source_repository / "canonical.txt").write_text("canonical\n", encoding="utf-8")
+    revision = _commit(source_repository, "canonical source")
+    incomplete_source = _release(runtime, revision)
+    (incomplete_source / "preserved.txt").write_text("old incomplete release\n", encoding="utf-8")
+    runtime._atomic_link(runtime.paths.previous_link, incomplete_source.resolve())
+    monkeypatch.setattr(
+        runtime,
+        "_build_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected build failure")),
+    )
+    monkeypatch.setattr(
+        "ares_runtime.local_runtime.shutil.rmtree",
+        lambda _path: (_ for _ in ()).throw(OSError("injected cleanup failure")),
+    )
+
+    with pytest.raises(AresLocalRuntimeError, match="staging cleanup failed"):
+        runtime._materialize(str(source_repository), revision, desktop=False)
+
+    restored = runtime._release_source(revision)
+    assert (restored / "preserved.txt").read_text(encoding="utf-8") == "old incomplete release\n"
+    assert runtime.previous_release() == (revision, restored.resolve())
 
 
 def test_upstream_candidate_reuse_never_rebuilds_the_installed_release(

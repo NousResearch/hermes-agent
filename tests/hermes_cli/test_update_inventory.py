@@ -29,6 +29,10 @@ def fleet(monkeypatch, tmp_path):
     work_home.mkdir(parents=True)
     _write_state(default_home, 100, sha="a" * 40, version="1.0")
     _write_state(work_home, 200)  # pre-stamp gateway: no code identity
+    def _fake_read_process_cmdline(pid: int) -> str:
+        if pid == 200:
+            return "python -m hermes_cli.main gateway run -p work"
+        return "python -m hermes_cli.main gateway run"
 
     import re
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: default_home)
@@ -36,6 +40,7 @@ def fleet(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.profiles._PROFILE_ID_RE", re.compile(r"^[a-z0-9][a-z0-9_-]*$"), raising=False)
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid in (100, 200))
     monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda all_profiles=False: {100})
+    monkeypatch.setattr("gateway.status._read_process_cmdline", _fake_read_process_cmdline)
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
     monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda exclude_pids=None: [])
     monkeypatch.setattr(

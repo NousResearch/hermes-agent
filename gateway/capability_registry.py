@@ -341,34 +341,37 @@ class CapabilityRegistry:
                 )
         return receipt
 
-    def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
-        """Resolve exactly one active, unexpired, non-expanding local profile."""
+    def _resolve_with_connection(
+        self,
+        conn: object,
+        signature: CapabilitySignature,
+    ) -> RegistryResolution:
+        """Resolve using the caller's already-open board transaction."""
         if not isinstance(signature, CapabilitySignature):
             raise TypeError("signature must be a CapabilitySignature")
         try:
-            with self._connection() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT profile_id, signature_hash, permissions_hash, domain,
-                           actions_json, evidence_class, requested_permissions_json, expires_at
-                    FROM capability_profiles AS profiles
-                    WHERE status = 'active' AND signature_hash = ?
-                      AND permissions_hash = ? AND evidence_class = ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM specialist_profile_revocations AS revocations
-                          WHERE revocations.capability_profile_id = profiles.id
-                            AND revocations.profile_id = profiles.profile_id
-                            AND revocations.signature_hash = profiles.signature_hash
-                            AND revocations.permissions_hash = profiles.permissions_hash
-                      )
-                    ORDER BY profile_id, id
-                    """,
-                    (
-                        signature.signature_hash,
-                        signature.permissions_hash,
-                        signature.evidence_class,
-                    ),
-                ).fetchall()
+            rows = conn.execute(
+                """
+                SELECT profile_id, signature_hash, permissions_hash, domain,
+                       actions_json, evidence_class, requested_permissions_json, expires_at
+                FROM capability_profiles AS profiles
+                WHERE status = 'active' AND signature_hash = ?
+                  AND permissions_hash = ? AND evidence_class = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM specialist_profile_revocations AS revocations
+                      WHERE revocations.capability_profile_id = profiles.id
+                        AND revocations.profile_id = profiles.profile_id
+                        AND revocations.signature_hash = profiles.signature_hash
+                        AND revocations.permissions_hash = profiles.permissions_hash
+                  )
+                ORDER BY profile_id, id
+                """,
+                (
+                    signature.signature_hash,
+                    signature.permissions_hash,
+                    signature.evidence_class,
+                ),
+            ).fetchall()
         except Exception as exc:
             return RegistryResolution(
                 status="unavailable",
@@ -409,3 +412,17 @@ class CapabilityRegistry:
         if len(matches) > 1:
             return RegistryResolution("ambiguous", None, "multiple active capability profiles matched the requested scope")
         return RegistryResolution("no_match", None, "no active unexpired profile matched the requested scope")
+
+    def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
+        """Resolve exactly one active, unexpired declaration identity."""
+        if not isinstance(signature, CapabilitySignature):
+            raise TypeError("signature must be a CapabilitySignature")
+        try:
+            with self._connection() as conn:
+                return self._resolve_with_connection(conn, signature)
+        except Exception as exc:
+            return RegistryResolution(
+                status="unavailable",
+                profile=None,
+                reason=f"local capability registry unavailable: {type(exc).__name__}",
+            )

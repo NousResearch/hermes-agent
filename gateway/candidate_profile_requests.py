@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Literal
 
 from gateway.capability_registry import CapabilityRegistry, CapabilitySignature, RegistryResolution
-from hermes_cli import kanban_db
 
 
 CandidateRequestStatus = Literal["candidate", "duplicate", "cooldown", "rejected"]
@@ -42,8 +41,8 @@ _POLICY = {
     "requested_permissions": "explicit-local-read-only",
 }
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS candidate_profile_requests (
+_SCHEMA_STATEMENTS = (
+    """CREATE TABLE IF NOT EXISTS candidate_profile_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id TEXT NOT NULL UNIQUE,
     request_hash TEXT NOT NULL,
@@ -56,18 +55,18 @@ CREATE TABLE IF NOT EXISTS candidate_profile_requests (
     reason_code TEXT NOT NULL,
     cooldown_until INTEGER,
     created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_candidate_request_identity
-ON candidate_profile_requests(request_hash, id);
-CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_update
+)""",
+    """CREATE INDEX IF NOT EXISTS idx_candidate_request_identity
+ON candidate_profile_requests(request_hash, id)""",
+    """CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_update
 BEFORE UPDATE ON candidate_profile_requests BEGIN
     SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
-END;
-CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_delete
+END""",
+    """CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_delete
 BEFORE DELETE ON candidate_profile_requests BEGIN
     SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
-END;
-"""
+END""",
+)
 
 
 def _canonical_json(value: object) -> str:
@@ -76,6 +75,18 @@ def _canonical_json(value: object) -> str:
 
 def _hash(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _kanban_db():
+    """Load board storage only when candidate I/O begins."""
+    from hermes_cli import kanban_db
+
+    return kanban_db
+
+
+def _initialize_schema(conn: object) -> None:
+    for statement in _SCHEMA_STATEMENTS:
+        conn.execute(statement)
 
 
 DEFAULT_POLICY_DIGEST = _hash(_POLICY)
@@ -163,9 +174,10 @@ class CandidateProfileRequests:
         self._clock = clock
 
     @contextmanager
-    def _connection(self) -> Iterator[object]:
-        with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
-            conn.executescript(_SCHEMA)
+    def _connection(self, registry: CapabilityRegistry) -> Iterator[object]:
+        # Reuse the registry connection so resolution and insertion share one
+        # BEGIN IMMEDIATE transaction and one exact board snapshot.
+        with registry._connection() as conn:
             yield conn
 
     def open_or_reuse(
@@ -183,15 +195,6 @@ class CandidateProfileRequests:
             raise TypeError("signature must be a CapabilitySignature")
         if not isinstance(source_key, str) or not source_key.strip() or len(source_key) > _MAX_SOURCE_KEY_CHARS:
             raise ValueError("source_key must be a bounded non-empty string")
-
-        local_resolution = CapabilityRegistry(db_path=self._db_path, board=self._board).resolve(signature)
-        if local_resolution.status != "no_match":
-            return CandidateProfileRequest(
-                request_id="",
-                status="rejected",
-                profile_id=None,
-                reason=f"candidate request requires a local no-match; resolution was {local_resolution.status}",
-            )
 
         evidence_refs = _sanitize_evidence(envelope)
         reason_code = _capability_rejection(signature)
@@ -215,8 +218,21 @@ class CandidateProfileRequests:
         )
         now = int(self._clock())
 
-        with self._connection() as conn:
-            with kanban_db.write_txn(conn):
+        registry = CapabilityRegistry(db_path=self._db_path, board=self._board)
+        with self._connection(registry) as conn:
+            with _kanban_db().write_txn(conn):
+                local_resolution = registry._resolve_with_connection(conn, signature)
+                if local_resolution.status != "no_match":
+                    return CandidateProfileRequest(
+                        request_id="",
+                        status="rejected",
+                        profile_id=None,
+                        reason=(
+                            "candidate request requires a local no-match; "
+                            f"resolution was {local_resolution.status}"
+                        ),
+                    )
+                _initialize_schema(conn)
                 latest = conn.execute(
                     """
                     SELECT request_id, lifecycle_status, cooldown_until

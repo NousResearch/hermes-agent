@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
+import subprocess
+import sys
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -125,6 +130,51 @@ def test_local_ambiguity_is_preserved_without_candidate_side_effect(tmp_path):
     assert table is None
 
 
+def test_profile_registration_between_precheck_and_insert_creates_no_candidate(
+    tmp_path, monkeypatch
+):
+    CapabilityRegistry, _, _ = _registry_api()
+    CandidateProfileRequests, _, _ = _candidate_api()
+    db_path = tmp_path / "candidates.db"
+    signature = _repository_review()
+    competing_registry = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": signature},
+    )
+    original_connection = CandidateProfileRequests._connection
+
+    @contextmanager
+    def connection_after_registration(self, *args, **kwargs):
+        competing_registry.register_configured_profile("repository-reviewer")
+        with original_connection(self, *args, **kwargs) as conn:
+            yield conn
+
+    monkeypatch.setattr(
+        CandidateProfileRequests,
+        "_connection",
+        connection_after_registration,
+    )
+
+    result = CandidateProfileRequests(db_path=db_path).open_or_reuse(
+        signature,
+        source_key="gateway:registration-race",
+    )
+
+    assert result.status == "rejected"
+    assert result.request_id == ""
+    with _kanban_db().connect_closing(db_path) as conn:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'candidate_profile_requests'"
+        ).fetchone()
+        row_count = (
+            conn.execute("SELECT COUNT(*) FROM candidate_profile_requests").fetchone()[0]
+            if table is not None
+            else 0
+        )
+    assert row_count == 0
+
+
 def test_duplicate_source_and_scope_reuses_candidate(tmp_path):
     CandidateProfileRequests, _, _ = _candidate_api()
     requests = CandidateProfileRequests(db_path=tmp_path / "candidates.db")
@@ -190,3 +240,44 @@ def test_candidate_rows_are_append_only(tmp_path):
                 "UPDATE candidate_profile_requests SET lifecycle_status = 'active' WHERE request_id = ?",
                 (result.request_id,),
             )
+
+
+def test_import_before_hermes_home_does_not_pin_candidate_storage(tmp_path):
+    repo = Path(__file__).resolve().parents[2]
+    late_home = tmp_path / "late-home"
+    code = """
+import os
+import sys
+
+os.environ.pop("HERMES_HOME", None)
+import gateway.candidate_profile_requests as candidate_module
+assert "hermes_cli.kanban_db" not in sys.modules
+os.environ["HERMES_HOME"] = sys.argv[1]
+signature = candidate_module.CapabilitySignature(
+    domain="repository-evidence",
+    actions=("read",),
+    evidence_class="diagnostic-only",
+    requested_permissions=("repository-evidence:read",),
+)
+result = candidate_module.CandidateProfileRequests().open_or_reuse(
+    signature,
+    source_key="subprocess:late-home",
+)
+assert result.status == "candidate"
+"""
+    env = os.environ.copy()
+    env.pop("HERMES_HOME", None)
+    env["PYTHONPATH"] = str(repo)
+
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(late_home)],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (late_home / "kanban.db").is_file()

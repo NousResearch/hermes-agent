@@ -770,11 +770,10 @@ def _resolve_source_profile(src: str) -> tuple[str | None, str | None]:
             return pin, None
         return None, (
             f"browser.real_profile_pin is set to '{pin}' but that profile "
-            f"directory does not exist under {src!r}. Fix the pin (run: "
-            "`python3 -c \"import json; "
-            "print(json.load(open(input()))['profile']['info_cache'])\" "
-            "against '<user-data-dir>/Local State' to list profiles) or "
-            "remove it to fall back to last-used."
+            f"directory does not exist under {src!r}. Profile directories are "
+            "named like 'Default' or 'Profile 2' — list them with: "
+            f"ls {src!r}. Fix the pin, or remove it to fall back to the "
+            "last-used profile."
         )
     return _last_used_profile(src), None
 

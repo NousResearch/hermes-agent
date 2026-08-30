@@ -1572,14 +1572,26 @@ class CredentialPool:
             exc,
         )
         try:
-            from agent.anthropic_credentials import mark_rotation_consumed_uncommitted
+            from agent.anthropic_credentials import (
+                mark_rotation_consumed_uncommitted,
+                spent_rotation_source_path,
+            )
 
             # Quarantining the row is not enough on its own: the singleton file
             # still holds the spent pair, ``load_pool()`` re-seeds it, and the
             # read-only resolver (``_resolve_anthropic_pool_token``) would hand
             # it back as a working token.  Record the fingerprints so every
-            # resolution step in this process recognises it as consumed.
-            mark_rotation_consumed_uncommitted(entry.access_token, entry.refresh_token)
+            # resolution step in this process recognises it as consumed — and,
+            # for singleton-backed sources, persist them to the shared source's
+            # sidecar registry (we hold that source's path-keyed lock on this
+            # path) so OTHER processes/profiles sharing the credential file
+            # adopt the terminal verdict too instead of leasing the stale pair
+            # or re-POSTing the spent refresh token from a fresh interpreter.
+            mark_rotation_consumed_uncommitted(
+                entry.access_token,
+                entry.refresh_token,
+                source_path=spent_rotation_source_path(entry.source),
+            )
         except Exception:  # pragma: no cover - never block the quarantine
             logger.debug("Failed to record consumed rotation fingerprints", exc_info=True)
         self._mark_exhausted(
@@ -1618,7 +1630,32 @@ class CredentialPool:
     ) -> Optional[PooledCredential]:
         try:
             if self.provider == "anthropic":
-                from agent.anthropic_credentials import refresh_anthropic_oauth_pure
+                from agent.anthropic_credentials import (
+                    is_rotation_consumed_uncommitted,
+                    refresh_anthropic_oauth_pure,
+                    spent_rotation_source_path,
+                )
+
+                # Never POST a refresh token another process already spent.
+                # The durable sidecar verdict (written by whichever process
+                # rotated the pair and lost the commit) is what a fresh
+                # interpreter sees here; without this check, process B would
+                # replay the consumed single-use token and burn the family
+                # into ``invalid_grant``.
+                _entry_source_path = spent_rotation_source_path(entry.source)
+                if is_rotation_consumed_uncommitted(
+                    entry.refresh_token, source_path=_entry_source_path
+                ) or is_rotation_consumed_uncommitted(
+                    entry.access_token, source_path=_entry_source_path
+                ):
+                    return self._fail_closed_unpersisted_rotation(
+                        entry,
+                        RuntimeError(
+                            "credential pair was rotated by another process but the "
+                            "rotation never committed (spent-rotation sidecar verdict)"
+                        ),
+                        store=str(_entry_source_path or "credential store"),
+                    )
 
                 refreshed = refresh_anthropic_oauth_pure(
                     entry.refresh_token,
@@ -2896,7 +2933,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                 changed = True
             return changed, active_sources
 
-        from agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
+        from agent.anthropic_credentials import (
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
+        )
 
         for source_name, creds in (
             ("hermes_pkce", read_hermes_oauth_credentials()),

@@ -112,24 +112,116 @@ class CredentialPersistError(RuntimeError):
 # explicit verdict the resolver happily hands that already-consumed credential
 # back from a later source and the caller reads a silent success.
 #
-# Kept as non-reversible digests, process-local, and bounded: a spent secret is
-# spent forever, so entries never need clearing (a re-auth mints new tokens
-# with new fingerprints).
+# Kept as non-reversible digests and bounded: a spent secret is spent forever,
+# so entries never need clearing (a re-auth mints new tokens with new
+# fingerprints).
+#
+# The registry has TWO scopes, because the credential it protects does:
+#   * process-local (this OrderedDict) — fast path, always recorded;
+#   * durable sidecar file next to the shared credential source — the
+#     authority boundary of ``claude_code``/``hermes_pkce`` is the shared
+#     singleton file, which other Hermes processes/profiles read with fresh
+#     interpreters.  A process-local verdict only stops the process that
+#     lost the commit from lying to itself; the sidecar stops every OTHER
+#     process from leasing the stale pair or re-POSTing the spent refresh
+#     token.  The sidecar stores only one-way fingerprints (never secrets)
+#     and is written under the same path-keyed cross-process lock that
+#     serializes refreshes of that source.
 _SPENT_ROTATION_LOCK = threading.Lock()
 _SPENT_ROTATION_FINGERPRINTS: "OrderedDict[str, None]" = OrderedDict()
 _SPENT_ROTATION_MAX_TRACKED = 64
+_SPENT_ROTATION_SIDECAR_VERSION = 1
 
 
-def mark_rotation_consumed_uncommitted(*secrets: Any) -> None:
+def _spent_rotation_sidecar_path(source_path: Path) -> Path:
+    """Sidecar registry path for a shared credential source file."""
+    return source_path.with_name(source_path.name + ".hermes-spent-rotations.json")
+
+
+def spent_rotation_source_path(source: Any) -> Optional[Path]:
+    """Map a pool-entry source to the shared singleton file it borrows from.
+
+    Only singleton-backed sources have a cross-process authority boundary;
+    profile-owned rows are already protected by the process-local registry
+    plus the pool quarantine.
+    """
+    if source == "claude_code":
+        return claude_code_credentials_path()
+    if source == "hermes_pkce":
+        return _get_hermes_oauth_file()
+    return None
+
+
+def _read_spent_rotation_sidecar(source_path: Optional[Path]) -> set:
+    if source_path is None:
+        return set()
+    try:
+        raw = json.loads(
+            _spent_rotation_sidecar_path(source_path).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return set()
+    fingerprints = raw.get("fingerprints") if isinstance(raw, dict) else None
+    if not isinstance(fingerprints, list):
+        return set()
+    return {fp for fp in fingerprints if isinstance(fp, str) and fp}
+
+
+def _append_spent_rotation_sidecar(source_path: Path, fingerprints: list) -> None:
+    """Merge fingerprints into the sidecar registry (atomic replace).
+
+    Callers on the refresh path already hold the path-keyed cross-process
+    lock for ``source_path``, so concurrent merge-writes are serialized.
+    Fail-soft: a sidecar write failure must never mask the fail-closed
+    verdict already recorded in the process-local registry.
+    """
+    sidecar = _spent_rotation_sidecar_path(source_path)
+    try:
+        merged = _read_spent_rotation_sidecar(source_path)
+        merged.update(fingerprints)
+        bounded = sorted(merged)[-_SPENT_ROTATION_MAX_TRACKED * 4 :]
+        payload = json.dumps(
+            {
+                "version": _SPENT_ROTATION_SIDECAR_VERSION,
+                "comment": (
+                    "Non-secret one-way fingerprints of Anthropic OAuth "
+                    "credentials whose rotation was consumed server-side but "
+                    "never durably committed. Written by Hermes so sibling "
+                    "processes sharing this credential source fail closed "
+                    "instead of replaying a spent single-use refresh token."
+                ),
+                "fingerprints": bounded,
+            },
+            indent=2,
+        )
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        tmp = sidecar.with_name(sidecar.name + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, sidecar)
+    except Exception:
+        logger.debug(
+            "Failed to persist spent-rotation fingerprints to %s", sidecar,
+            exc_info=True,
+        )
+
+
+def mark_rotation_consumed_uncommitted(
+    *secrets: Any, source_path: Optional[Path] = None
+) -> None:
     """Record secrets consumed by a refresh whose replacement never committed.
 
     Called from every commit-failure path (the direct resolver here and
     ``CredentialPool._fail_closed_unpersisted_rotation``).  Recording the
     *pre-rotation* pair is what lets later resolution steps recognise the stale
     copy they read back off disk as unusable rather than as a working token.
+
+    When ``source_path`` names the shared singleton file the credential was
+    borrowed from, the verdict is additionally persisted to that source's
+    sidecar registry so other processes/profiles sharing the file adopt it too.
     """
     from agent.credential_persistence import fingerprint_secret_value
 
+    recorded: list = []
     with _SPENT_ROTATION_LOCK:
         for secret in secrets:
             value = str(secret or "").strip()
@@ -138,14 +230,24 @@ def mark_rotation_consumed_uncommitted(*secrets: Any) -> None:
             fingerprint = fingerprint_secret_value(value)
             if not fingerprint:
                 continue
+            recorded.append(fingerprint)
             _SPENT_ROTATION_FINGERPRINTS.pop(fingerprint, None)
             _SPENT_ROTATION_FINGERPRINTS[fingerprint] = None
             while len(_SPENT_ROTATION_FINGERPRINTS) > _SPENT_ROTATION_MAX_TRACKED:
                 _SPENT_ROTATION_FINGERPRINTS.popitem(last=False)
+    if recorded and source_path is not None:
+        _append_spent_rotation_sidecar(source_path, recorded)
 
 
-def is_rotation_consumed_uncommitted(secret: Any) -> bool:
-    """True when *secret* belongs to a rotation that was spent but not committed."""
+def is_rotation_consumed_uncommitted(
+    secret: Any, *, source_path: Optional[Path] = None
+) -> bool:
+    """True when *secret* belongs to a rotation that was spent but not committed.
+
+    Checks the process-local registry first, then (when ``source_path`` is
+    given) the durable sidecar registry of the shared credential source, so a
+    fresh interpreter in another process still sees the terminal verdict.
+    """
     from agent.credential_persistence import fingerprint_secret_value
 
     value = str(secret or "").strip()
@@ -155,7 +257,9 @@ def is_rotation_consumed_uncommitted(secret: Any) -> bool:
     if not fingerprint:
         return False
     with _SPENT_ROTATION_LOCK:
-        return fingerprint in _SPENT_ROTATION_FINGERPRINTS
+        if fingerprint in _SPENT_ROTATION_FINGERPRINTS:
+            return True
+    return fingerprint in _read_spent_rotation_sidecar(source_path)
 
 
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
@@ -434,6 +538,19 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
                 logger.debug("No refresh token available — cannot refresh")
                 return None
 
+            # Another process may have spent this refresh token and lost the
+            # commit; its durable sidecar verdict is authoritative for the
+            # shared source. POSTing it again would just burn the family into
+            # ``invalid_grant``.
+            if is_rotation_consumed_uncommitted(
+                refresh_token, source_path=claude_code_credentials_path()
+            ):
+                logger.debug(
+                    "Refresh token was already consumed by an uncommitted rotation "
+                    "- refusing to replay it; re-run 'claude setup-token'"
+                )
+                return None
+
             try:
                 refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
             except Exception as e:
@@ -470,6 +587,7 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
                     creds.get("accessToken", ""),
                     (current or {}).get("accessToken", ""),
                     (current or {}).get("refreshToken", ""),
+                    source_path=claude_code_credentials_path(),
                 )
                 return None
 
@@ -563,7 +681,9 @@ def _write_claude_code_credentials(
 def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Resolve a token from Claude Code credential files, refreshing if needed."""
     creds = creds or read_claude_code_credentials()
-    if creds and is_rotation_consumed_uncommitted(creds.get("accessToken", "")):
+    if creds and is_rotation_consumed_uncommitted(
+        creds.get("accessToken", ""), source_path=claude_code_credentials_path()
+    ):
         # This process already rotated this pair and failed to commit the
         # replacement.  The file still holds the spent copy; treating it as
         # usable is exactly the silent success this transaction fails closed
@@ -646,9 +766,15 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
         # rotation that was consumed upstream but never committed comes back
         # here looking healthy.  Enumeration is deliberately read-only
         # (refresh=False), which means nothing on this path would otherwise
-        # notice that the credential is spent.
-        if is_rotation_consumed_uncommitted(token) or is_rotation_consumed_uncommitted(
-            getattr(entry, "refresh_token", None)
+        # notice that the credential is spent.  Singleton-backed sources also
+        # consult the durable sidecar registry: the failed commit may have
+        # happened in a DIFFERENT process, whose process-local verdict this
+        # interpreter never saw.
+        entry_source_path = spent_rotation_source_path(getattr(entry, "source", None))
+        if is_rotation_consumed_uncommitted(
+            token, source_path=entry_source_path
+        ) or is_rotation_consumed_uncommitted(
+            getattr(entry, "refresh_token", None), source_path=entry_source_path
         ):
             logger.debug(
                 "Skipping Anthropic pool entry %s: rotated-but-uncommitted credential",

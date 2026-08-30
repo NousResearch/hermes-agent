@@ -252,3 +252,140 @@ def test_successful_commit_leaves_the_credential_usable(
 
     assert AA.resolve_anthropic_token() == _ROTATED_ACCESS
     assert AA._SPENT_ROTATION_FINGERPRINTS == {}
+
+
+# ---------------------------------------------------------------------------
+# Cross-process durability of the verdict (sidecar registry)
+# ---------------------------------------------------------------------------
+
+
+def test_failed_commit_persists_the_verdict_to_the_sidecar(
+    hermes_home, claude_credentials, monkeypatch
+):
+    """The verdict must outlive this process: it lands in the sidecar file."""
+    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    _break_durable_write(monkeypatch)
+
+    assert AA._refresh_oauth_token(AA.read_claude_code_credentials()) is None
+
+    sidecar = AA._spent_rotation_sidecar_path(claude_credentials)
+    assert sidecar.exists(), "the terminal verdict must be durably persisted"
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    fingerprints = set(payload["fingerprints"])
+    from agent.credential_persistence import fingerprint_secret_value
+
+    assert fingerprint_secret_value(_STALE_REFRESH) in fingerprints
+    assert fingerprint_secret_value(_STALE_ACCESS) in fingerprints
+    # Non-secret invariant: no raw token material may reach the sidecar.
+    raw = sidecar.read_text(encoding="utf-8")
+    for secret in (_STALE_ACCESS, _STALE_REFRESH, _ROTATED_ACCESS, _ROTATED_REFRESH):
+        assert secret not in raw
+
+
+_SECOND_PROCESS_WITNESS = r"""
+import json
+import sys
+
+cred_path_str, sidecar_dir = sys.argv[1], sys.argv[2]
+
+from pathlib import Path
+
+import agent.anthropic_credentials as AA
+
+cred_path = Path(cred_path_str)
+AA.claude_code_credentials_path = lambda: cred_path
+AA._read_claude_code_credentials_from_keychain = lambda *a, **k: None
+
+posted = []
+
+
+def _must_not_post(refresh_token, *a, **kw):
+    posted.append(refresh_token)
+    raise AssertionError("process B replayed a spent refresh token")
+
+
+AA.refresh_anthropic_oauth_pure = _must_not_post
+
+creds = AA.read_claude_code_credentials()
+result = {
+    "registry_empty": len(AA._SPENT_ROTATION_FINGERPRINTS) == 0,
+    "sidecar_verdict_access": AA.is_rotation_consumed_uncommitted(
+        creds["accessToken"], source_path=cred_path
+    ),
+    "sidecar_verdict_refresh": AA.is_rotation_consumed_uncommitted(
+        creds["refreshToken"], source_path=cred_path
+    ),
+    "resolved": AA._resolve_claude_code_token_from_credentials(creds),
+    "posted": posted,
+}
+print(json.dumps(result))
+"""
+
+
+def test_second_process_adopts_the_terminal_verdict(
+    hermes_home, claude_credentials, monkeypatch, tmp_path
+):
+    """Two-process witness: A rotates and loses the commit; B fails closed.
+
+    Process B runs in a fresh interpreter whose process-local registry is
+    empty, sharing only the credential file (and its sidecar). B must neither
+    lease the stale access token nor POST the spent refresh token — the exact
+    cross-process gap the process-local OrderedDict could not cover.
+    """
+    import subprocess
+    import sys
+
+    # Process A: successful POST, failed durable commit.
+    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
+    _break_durable_write(monkeypatch)
+    assert AA._refresh_oauth_token(AA.read_claude_code_credentials()) is None
+    assert AA._spent_rotation_sidecar_path(claude_credentials).exists()
+
+    # Process B: fresh interpreter, same shared credential source.
+    import agent as _agent_pkg
+
+    repo_root = str(
+        __import__("pathlib").Path(_agent_pkg.__file__).resolve().parents[1]
+    )
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(hermes_home)
+    env["PYTHONPATH"] = repo_root
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        env.pop(var, None)
+
+    proc = subprocess.run(
+        [sys.executable, "-c", _SECOND_PROCESS_WITNESS, str(claude_credentials), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, f"witness failed:\n{proc.stdout}\n{proc.stderr}"
+    verdict = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert verdict["registry_empty"], "precondition: B must start with no local verdict"
+    assert verdict["sidecar_verdict_access"], "B must see A's verdict via the sidecar"
+    assert verdict["sidecar_verdict_refresh"]
+    assert verdict["resolved"] is None, "B must not lease the stale access token"
+    assert verdict["posted"] == [], "B must not POST the spent refresh token"
+
+
+def test_control_second_process_without_sidecar_still_resolves(
+    hermes_home, claude_credentials, monkeypatch
+):
+    """Independent-credential control: no verdict, no quarantine.
+
+    With no failed rotation recorded anywhere, the shared file's (valid)
+    credential resolves normally in this process — proving the sidecar gate
+    only fires on a recorded verdict, not on every read.
+    """
+    fresh = dict(
+        json.loads(claude_credentials.read_text(encoding="utf-8"))
+    )
+    fresh["claudeAiOauth"]["expiresAt"] = int(time.time() * 1000) + 3_600_000
+    claude_credentials.write_text(json.dumps(fresh), encoding="utf-8")
+
+    assert not AA._spent_rotation_sidecar_path(claude_credentials).exists()
+    creds = AA.read_claude_code_credentials()
+    assert AA._resolve_claude_code_token_from_credentials(creds) == _STALE_ACCESS

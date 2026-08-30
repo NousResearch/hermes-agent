@@ -1466,10 +1466,8 @@ class TestQuickSnapshot:
 
 
 
-    def test_oversized_db_suppresses_pruning(self, hermes_home, capsys):
-        """#68805: an oversized state.db skipped for size must suppress
-        pruning so the older complete snapshot (containing the only
-        recoverable database) is preserved.
+    def test_oversized_db_preserves_latest_recovery_copy(self, hermes_home, capsys):
+        """#68805: an oversized state.db must preserve its latest recovery copy.
 
         Reproduces the reviewer's scenario: keep=1 + a state.db exceeding
         the size cap → the new snapshot omits state.db, failed_dbs stays
@@ -1498,7 +1496,7 @@ class TestQuickSnapshot:
         assert not (second_dir / "state.db").exists()
 
         # Manifest must record the oversized skip
-        with open(second_dir / "manifest.json") as f:
+        with open(second_dir / "manifest.json", encoding="utf-8") as f:
             meta = json.load(f)
         assert "state.db" in meta.get("oversized_skipped", [])
 
@@ -1513,7 +1511,44 @@ class TestQuickSnapshot:
         assert second_id in snap_ids
 
         out = capsys.readouterr().out
-        assert "skipping state.db" in out.lower() or "skipping snapshot prune" in out.lower()
+        assert "skipping state.db" in out.lower()
+
+    def test_alternating_db_failures_preserve_latest_copy_of_each_db(
+        self, hermes_home, monkeypatch
+    ):
+        """A partial snapshot may be the latest recovery source for another DB."""
+        from hermes_cli import backup
+
+        executions_db = hermes_home / "cron" / "executions.db"
+        with sqlite3.connect(executions_db) as conn:
+            conn.execute("CREATE TABLE executions (id INTEGER PRIMARY KEY)")
+
+        real_safe_copy = backup._safe_copy_db
+        failed_name = "executions.db"
+
+        def selective_safe_copy(src, dst):
+            if src.name == failed_name:
+                return False
+            return real_safe_copy(src, dst)
+
+        monkeypatch.setattr(backup, "_safe_copy_db", selective_safe_copy)
+        first_id = backup.create_quick_snapshot(
+            label="state-only", hermes_home=hermes_home, keep=10
+        )
+        assert first_id is not None
+
+        _advance_backup_clock()
+        failed_name = "state.db"
+        second_id = backup.create_quick_snapshot(
+            label="executions-only", hermes_home=hermes_home, keep=1
+        )
+        assert second_id is not None
+
+        root = hermes_home / "state-snapshots"
+        assert (root / first_id / "state.db").exists()
+        assert not (root / first_id / "cron" / "executions.db").exists()
+        assert not (root / second_id / "state.db").exists()
+        assert (root / second_id / "cron" / "executions.db").exists()
 
     @pytest.mark.parametrize("incomplete_kind", ["oversized", "failed"])
     def test_repeated_incomplete_snapshots_prune_stale_partial_copies(
@@ -1537,7 +1572,8 @@ class TestQuickSnapshot:
         for index in range(3):
             _advance_backup_clock()
             (hermes_home / ".env").write_text(
-                f"OPENROUTER_API_KEY=rotated-test-key-{index}\n"
+                f"OPENROUTER_API_KEY=rotated-test-key-{index}\n",
+                encoding="utf-8",
             )
             partial_id = backup.create_quick_snapshot(
                 label=f"partial-{index}",

@@ -1,5 +1,6 @@
 .DS_Store
 /venv/
+/venv
 /venv.old/
 /venv.stale.runtime-*/
 /bin/

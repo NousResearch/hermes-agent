@@ -1,7 +1,7 @@
 ---
 name: apple-reminders
-description: "Apple Reminders via remindctl: add, list, complete."
-version: 1.0.0
+description: "Use when managing Apple Reminders with remindctl."
+version: 1.0.1
 author: Hermes Agent
 license: MIT
 platforms: [macos]
@@ -33,7 +33,7 @@ Use `remindctl` to manage Apple Reminders directly from the terminal. Tasks sync
 ## When NOT to Use
 
 - Scheduling agent alerts → use the cronjob tool instead
-- Calendar events → use Apple Calendar or Google Calendar
+- Calendar events → use the user's canonical calendar service.
 - Project task management → use GitHub Issues, Notion, etc.
 - If user says "remind me" but means an agent alert → clarify first
 
@@ -125,6 +125,8 @@ Accepted by `--due` and date filters:
 
 ## Rules
 
-1. When user says "remind me", clarify: Apple Reminders (syncs to phone) vs agent cronjob alert
-2. Always confirm reminder content and due date before creating
-3. Use `--json` for programmatic parsing
+1. When "remind me" is genuinely ambiguous between Apple Reminders and an agent-delivered alert, infer from context or clarify only if the destination materially changes the outcome.
+2. A direct user instruction authorizes the specified reminder mutation; do not ask for duplicate confirmation. Ask only for a missing binding field that cannot be safely inferred.
+3. Use `--json` for programmatic parsing. For add/edit, capture the returned reminder ID, then run `remindctl info <id> --json` and compare title, list, `dueDate`, `alarmDate`, recurrence, notes, URL, and priority wherever applicable before reporting success or retrying.
+4. For complete/delete, capture the prior ID and list, execute once, then re-list the affected reminder or list with JSON and verify the requested state or absence. Reconcile an uncertain first attempt before retrying.
+5. For list create/delete, re-list all lists and verify exact presence or absence. Report partial bulk outcomes explicitly rather than claiming total success.

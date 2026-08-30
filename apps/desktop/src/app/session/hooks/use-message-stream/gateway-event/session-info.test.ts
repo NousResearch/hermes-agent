@@ -192,6 +192,34 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     expect(ctx.deps.updateSessionState).not.toHaveBeenCalled()
   })
 
+  it('adopts an untagged rebuilt runtime from the active primary source', () => {
+    $selectedStoredSessionId.set('shared-id')
+    prepareSessionOwnerRetarget('shared-id', { connectionId: 'primary-source', profile: 'default' }, true)
+    setActiveSessionId('runtime-old')
+    setCurrentCwd('/repo/old')
+
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-old',
+      cwd: '/repo/rebuilt',
+      explicitSid: 'runtime-rebuilt',
+      storedSessionId: 'shared-id'
+    })
+
+    ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-old', {
+      ...createClientSessionState('shared-id'),
+      awaitingResponse: false,
+      busy: false,
+      streamId: null
+    })
+
+    handleSessionInfoEvent(ctx)
+
+    expect($activeSessionId.get()).toBe('runtime-rebuilt')
+    expect(ctx.deps.activeSessionIdRef.current).toBe('runtime-rebuilt')
+    expect($currentCwd.get()).toBe('/repo/rebuilt')
+    expect($workspaceCwdOwner.get()).toBe('shared-id')
+  })
+
   it("does not let owner A's stale rebuilt-runtime info capture owner B's main pane", () => {
     $selectedStoredSessionId.set('shared-id')
     prepareSessionOwnerRetarget('shared-id', { connectionId: 'source-b', profile: 'default' }, true)

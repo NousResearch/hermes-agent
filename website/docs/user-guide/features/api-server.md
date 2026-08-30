@@ -250,7 +250,10 @@ Returns a machine-readable description of the API server's stable surface for ex
   "auth": {"type": "bearer", "required": true},
   "features": {
     "chat_completions": true,
+    "chat_completions_streaming": true,
     "responses_api": true,
+    "responses_streaming": true,
+    "reasoning_streaming": true,
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
@@ -260,6 +263,14 @@ Returns a machine-readable description of the API server's stable surface for ex
 ```
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
+
+Clients that render model thinking should check `features.reasoning_streaming`
+before subscribing to reasoning events. When it is `true`, consume the
+surface-specific reasoning channel (`reasoning.delta`,
+`choices[0].delta.reasoning_content`, or `response.reasoning_text.delta`)
+instead of the legacy synthetic `_thinking` tool-progress event. If the flag is
+absent or `false`, fall back to rendering assistant text without a live
+reasoning view.
 
 ## Browser-extension control
 

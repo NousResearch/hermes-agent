@@ -650,6 +650,7 @@ class TestRunEventCallback:
 
             def run_conversation(self, user_message, conversation_history, task_id):
                 del user_message, conversation_history, task_id
+                self.reasoning_callback("")
                 self.reasoning_callback("check facts")
                 self.tool_progress_callback(
                     "reasoning.available", "_thinking", "answer misclassified", None
@@ -1103,6 +1104,7 @@ class TestChatCompletionsEndpoint:
     async def test_stream_emits_reasoning_content_before_answer(self, adapter):
         """OpenAI-compatible SSE keeps reasoning separate from answer text."""
         async def fake_run(**kwargs):
+            kwargs["reasoning_callback"]("")
             kwargs["reasoning_callback"]("check ")
             kwargs["reasoning_callback"]("facts")
             kwargs["stream_delta_callback"]("answer")
@@ -1783,6 +1785,7 @@ class TestResponsesStreaming:
     async def test_stream_emits_reasoning_item_and_live_deltas(self, adapter):
         """Responses SSE must stream reasoning and retain it in output items."""
         async def fake_run(**kwargs):
+            kwargs["reasoning_callback"]("")
             kwargs["reasoning_callback"]("check ")
             kwargs["reasoning_callback"]("facts")
             kwargs["stream_delta_callback"]("answer")
@@ -1791,7 +1794,9 @@ class TestResponsesStreaming:
                 "messages": [{
                     "role": "assistant",
                     "content": "answer",
-                    "reasoning_content": "check facts",
+                    # Live deltas are authoritative when the completed
+                    # provider payload contains an augmented representation.
+                    "reasoning_content": "check facts plus final-only detail",
                 }],
                 "session_id": "responses-reasoning-session",
             }, {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}

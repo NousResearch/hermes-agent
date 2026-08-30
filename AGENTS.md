@@ -9,6 +9,14 @@ repository runtime before an agent is released; inside those worktrees use
 `./.venv/bin/python`. Do not install Hermes dependencies into the LunaBot environment at
 `/Users/mikedemott/LunaBot-default/.venv`; that environment belongs to LunaBot/TradingBotV18.
 
+
+## VS Code Studio Access
+
+- Shared launcher: `/Users/mikedemott/.local/bin/vscode-studio`.
+- Open this canonical Hermes workspace with `vscode-studio hermes`.
+- Open only curated workspaces or specific files; do not open `/Users/mikedemott/Codex` or network drives from Hermes agents.
+- VS Code is for inspection/editing ergonomics only; tests and runtime evidence still come from explicit commands.
+
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 This root file holds only what applies everywhere. Each area has its own `AGENTS.md` (aim for
 ~8k chars; `agent/subdirectory_hints.py` delivers up to 32k and truncates head/tail with a warning

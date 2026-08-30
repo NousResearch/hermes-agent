@@ -499,6 +499,7 @@ export interface GatewayEventHandlerContext {
   system: {
     bellOnComplete: boolean
     bellOnClarify?: boolean
+    bellOnApproval?: boolean
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }

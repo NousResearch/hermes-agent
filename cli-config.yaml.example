@@ -1774,6 +1774,12 @@ display:
   #   false: Silent (default)
   bell_on_clarify: false
 
+  # Play terminal bell when a dangerous-command approval prompt opens.
+  # Same mechanism as bell_on_complete (\\a) — works over SSH.
+  #   true:  Ring on every approval prompt
+  #   false: Silent (default)
+  bell_on_approval: false
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

@@ -420,7 +420,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
-  const { bellOnClarify, bellOnComplete, stdout, sys } = ctx.system
+  const { bellOnApproval, bellOnClarify, bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
   const { submitLiteralRef, submitRef } = ctx.submission
@@ -1250,6 +1250,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               }
         })
         setStatus('waiting for input…')
+
         // Same BEL mechanism as bell_on_complete — works over SSH, triggers tmux bell-action
         if (bellOnClarify && stdout?.isTTY) {
           stdout.write('\x07')
@@ -1273,6 +1274,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
         })
         setStatus('approval needed')
+
+        // Same BEL mechanism as bell_on_complete — works over SSH, triggers tmux bell-action
+        if (bellOnApproval && stdout?.isTTY) {
+          stdout.write('\x07')
+        }
 
         return
       }

@@ -2496,15 +2496,23 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         try:
             # Bounded: a wedged CLOSE-WAIT socket can make this close hang
-            # forever and freeze the reconnect ladder (#66377).
-            await asyncio.wait_for(polling_req.shutdown(), timeout=_DRAIN_TIMEOUT)
+            # forever and freeze the reconnect ladder (#66377). The wall-clock
+            # deadline helper — not asyncio.wait_for — because httpcore's pool
+            # close runs under AsyncShieldCancellation and a cancellation-
+            # resistant close wedges wait_for itself forever (#58236/#63309);
+            # same primitive as the general-pool drain (#98094).
+            await _await_with_thread_deadline(
+                polling_req.shutdown(), timeout=_DRAIN_TIMEOUT
+            )
         except Exception:
             logger.debug(
                 "[%s] Polling request shutdown failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
         try:
-            await asyncio.wait_for(polling_req.initialize(), timeout=_DRAIN_TIMEOUT)
+            await _await_with_thread_deadline(
+                polling_req.initialize(), timeout=_DRAIN_TIMEOUT
+            )
             logger.debug(
                 "[%s] Polling request pool drained before reconnect", self.name
             )

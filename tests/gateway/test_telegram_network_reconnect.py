@@ -327,6 +327,63 @@ async def test_reconnect_stop_deadline_does_not_wait_for_cancel_cleanup(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_reconnect_drain_survives_cancellation_resistant_close(monkeypatch):
+    """A cancellation-resistant polling-pool close must not wedge the ladder.
+
+    Distinct from ``test_reconnect_continues_if_drain_hangs``: that test's
+    ``_hang`` is cancellable, so the pre-existing ``asyncio.wait_for`` bound
+    also releases. httpcore's pool close runs under ``AsyncShieldCancellation``
+    (#58236/#63309) — a close that shields its cleanup keeps ``wait_for``
+    pending forever even after the timeout fires, wedging the tracked
+    ``_polling_error_task`` and every escalation gate behind it. The drain
+    must use the wall-clock deadline helper (abandon, not cancel-await),
+    same primitive as the general-pool drain (#98094).
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_app, mock_polling_req = _make_mock_app()
+    release_close = asyncio.Event()
+    close_cancelled = asyncio.Event()
+
+    async def _shielded_close():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            close_cancelled.set()
+            # Cancellation-resistant cleanup: swallows the cancel and waits.
+            await release_close.wait()
+            raise
+
+    mock_polling_req.shutdown = AsyncMock(side_effect=_shielded_close)
+    mock_polling_req.initialize = AsyncMock()
+    adapter._app = mock_app
+
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.05, raising=False)
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        recovery = asyncio.create_task(
+            adapter._handle_polling_network_error(Exception("Timed out"))
+        )
+        done, _ = await asyncio.wait({recovery}, timeout=2)
+
+    try:
+        assert recovery in done, (
+            "reconnect remained blocked waiting for cancellation-shielded "
+            "polling-pool shutdown() cleanup"
+        )
+        assert close_cancelled.is_set(), "drain must have cancelled the close"
+        # Ladder still advanced: polling pool rebuilt and polling restarted.
+        mock_polling_req.initialize.assert_awaited_once()
+        mock_app.updater.start_polling.assert_awaited_once()
+        assert adapter._polling_error_task is None or adapter._polling_error_task.done()
+    finally:
+        release_close.set()
+        if not recovery.done():
+            recovery.cancel()
+        await asyncio.gather(recovery, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_force_escalates_wedged_recovery_task(monkeypatch):
     """#66377: the heartbeat is an independent, cause-agnostic watchdog.
 

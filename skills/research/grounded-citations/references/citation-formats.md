@@ -53,10 +53,12 @@ consistency is the reason not to reset the ledger between pages of one build.
 
 ## Research papers
 
-Hand off to the `grounded-citations` skill. Export with
-`--style bibtex` into `references.bib`, then follow that skill's citation
-verification (it greps `\cite{...}` against the .bib). The ledger's job ends at
-producing verified URL entries; venue formatting is that skill's domain.
+Use the `arxiv` skill to discover papers and generate BibTeX entries, then save
+those entries in `references.bib`. Before delivery, verify that every
+`\cite{...}` key in the draft has a matching bibliography entry. Keep the web
+evidence ledger separate: `sources.py render --style bibtex` emits ledger keys
+such as `source1` and must not overwrite the paper bibliography. Venue
+formatting remains a separate step.
 
 ## Code and config artifacts
 

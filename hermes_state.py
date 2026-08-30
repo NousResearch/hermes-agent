@@ -14134,8 +14134,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session = self.get_session(session_id)
         return bool(session and self._is_explicit_fork_child_row(session))
 
-    def latest_conversation_boundary(self, session_key: str) -> Optional[float]:
-        """When the most recent conversation boundary closed for *session_key*.
+    def latest_conversation_boundary(
+        self, session_key: str
+    ) -> Optional[Tuple[int, float]]:
+        """How many conversation boundaries this key has crossed, and when.
 
         A boundary is a row this key ended at an intentional conversation
         break — the ``_RESET_END_REASONS`` set (``/new``, ``/switch``, idle,
@@ -14144,19 +14146,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         so the two agree on where one conversation stops and the next begins
         and cannot drift.
 
-        Returns ``None`` when the key has never been reset.  The value is a
-        monotonically advancing ``ended_at``: each reset appends a newer
-        boundary, so a generation derived from it can never roll back to a
-        previous one.  Read-only; ``agent/prompt_cache_scope.py`` uses it to
-        keep a host-declared conversation key from outliving the conversation
-        it names.
+        Returns ``(count, latest_ended_at)``, or ``None`` when the key has
+        never been reset.  BOTH halves are reported because each one alone has
+        a narrow way to repeat a previous generation:
+
+        - ``ended_at`` is wall-clock, so a backwards NTP correction between two
+          resets writes a SMALLER boundary and ``MAX`` keeps returning the older
+          one — the next conversation would reuse the previous generation;
+        - ``count`` survives that, but retention pruning of an old ended row
+          decrements it.
+
+        The two fail under different conditions, so the pair only repeats a
+        generation if both happen at once.  A spurious change is merely one cold
+        prompt-cache bucket; a repeated one would put two conversations on the
+        same routing key, so the pair is biased toward changing.  Read-only;
+        ``agent/prompt_cache_scope.py`` uses it to keep a host-declared
+        conversation key from outliving the conversation it names.
         """
         if not session_key:
             return None
         with self._read_ctx() as conn:
             row = conn.execute(
                 f"""
-                SELECT MAX(ended_at) AS boundary
+                SELECT COUNT(*) AS crossings, MAX(ended_at) AS boundary
                 FROM sessions
                 WHERE session_key = ?
                   AND ended_at IS NOT NULL
@@ -14165,7 +14177,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (session_key,),
             ).fetchone()
         boundary = row["boundary"] if row is not None else None
-        return float(boundary) if boundary is not None else None
+        if boundary is None:
+            return None
+        return int(row["crossings"] or 0), float(boundary)
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")

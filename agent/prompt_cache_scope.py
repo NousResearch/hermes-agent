@@ -116,8 +116,13 @@ def _conversation_generation(session_key: str, session_db: Any) -> str:
     - stable across a host's per-response physical ids (no boundary is written
       when nothing was reset, so every reply hashes the same value), and
     - rotating on every conversation replacement, ``/new`` and the policy
-      auto-resets alike, monotonically — ``ended_at`` only moves forward, so a
-      retired generation can never be reused.
+      auto-resets alike.
+
+    The marker pairs the boundary COUNT with the latest ``ended_at`` because
+    each alone can repeat a previous generation under a different rare
+    condition — a backwards clock correction defeats the timestamp, retention
+    pruning defeats the count — and the two do not fail together (see
+    ``SessionDB.latest_conversation_boundary``).
 
     No counter is introduced anywhere: the marker is read from state the
     reset paths already write, and it is read on the memoized resolution path,
@@ -132,8 +137,10 @@ def _conversation_generation(session_key: str, session_db: Any) -> str:
     boundary = reader(session_key)
     if boundary is None:
         return ""
-    # Fixed-point so the carrier is byte-identical across repr differences.
-    return f"{float(boundary):.6f}"
+    # (crossings, ended_at). Fixed-point on the timestamp so the carrier is
+    # byte-identical across repr differences between platforms.
+    crossings, ended_at = boundary
+    return f"{int(crossings)}:{float(ended_at):.6f}"
 
 
 def declared_conversation_scope(agent: Any) -> Optional[str]:

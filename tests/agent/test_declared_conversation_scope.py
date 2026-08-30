@@ -507,3 +507,30 @@ class TestConversationGenerationRotates:
         agent = _agent("sess-A", LegacyDB(), self.KEY)
         scope = declared_conversation_scope(agent)
         assert scope is not None and scope.startswith("gwk_")
+
+    def test_a_backwards_clock_does_not_reuse_a_generation(self, db):
+        """An NTP correction between two resets must not merge them.
+
+        ``MAX(ended_at)`` alone would keep returning the earlier, larger
+        timestamp; the boundary COUNT is what separates them.
+        """
+        first = self._keyed(db, "sess-clock-1")
+        scope_first = resolve_prompt_cache_scope(first)
+        db.end_session("sess-clock-1", "session_reset")
+
+        second = self._keyed(db, "sess-clock-2")
+        scope_second = resolve_prompt_cache_scope(second)
+        db.end_session("sess-clock-2", "session_reset")
+        # The clock went backwards: this boundary lands BEFORE the first one.
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET ended_at = ("
+                "  SELECT MIN(ended_at) FROM sessions WHERE ended_at IS NOT NULL"
+                ") - 60 WHERE id = ?",
+                ("sess-clock-2",),
+            )
+            db._conn.commit()
+
+        third = self._keyed(db, "sess-clock-3")
+        scope_third = resolve_prompt_cache_scope(third)
+        assert len({scope_first, scope_second, scope_third}) == 3

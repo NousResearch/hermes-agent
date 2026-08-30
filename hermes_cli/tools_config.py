@@ -50,7 +50,7 @@ PLATFORMS = {k: {"label": info.label, "default_toolset": info.default_toolset} f
 # --- Toolset Registry ---
 # Toolsets shown in the configurator: (toolset key in toolsets.py TOOLSETS, label, description).
 CONFIGURABLE_TOOLSETS = [
-    ("search",          "🔎 Web Search",               "web_search only"),
+    ("search",          "🔍 Web Search",               "web_search only"),
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),

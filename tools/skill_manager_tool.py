@@ -692,15 +692,19 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
 
-    def _matches(skill_md: Path) -> bool:
-        if skill_md.parent.name == name:
-            return True
-        # Categorized form: the full relative path of the skill dir.
-        try:
-            rel = skill_md.parent.resolve().relative_to(_skills_dir().resolve())
-        except ValueError:
-            return False
-        return str(rel) == name
+    # Resolve the local skills root once — the categorized form matches the
+    # skill dir's path RELATIVE to that root. Only computed lazily (bare-name
+    # lookups never need it) and never for external dirs (relative_to raises).
+    _resolved_root: Optional[Path] = None
+
+    def _local_root() -> Path:
+        nonlocal _resolved_root
+        if _resolved_root is None:
+            try:
+                _resolved_root = _skills_dir().resolve()
+            except Exception:
+                _resolved_root = _skills_dir()
+        return _resolved_root
 
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
@@ -708,8 +712,19 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
         for skill_md in skills_dir.rglob("SKILL.md"):
             if is_excluded_skill_path(skill_md):
                 continue
-            if _matches(skill_md):
+            # Fast path first: the bare directory name. Avoids the resolve()
+            # machinery entirely on the common match.
+            if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
+            # Categorized form (``category/skill-name``): compare the skill
+            # dir's POSIX relative path so the lookup works on Windows too.
+            if "/" in name or "\\" in name:
+                try:
+                    rel = skill_md.parent.resolve().relative_to(_local_root())
+                except ValueError:
+                    continue
+                if rel.as_posix() == name:
+                    return {"path": skill_md.parent}
     return None
 
 

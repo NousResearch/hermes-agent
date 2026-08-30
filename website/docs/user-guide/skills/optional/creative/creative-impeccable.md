@@ -1,14 +1,14 @@
 ---
-title: "Impeccable"
+title: "Impeccable — Frontend design guidance, upstream-maintained (impeccable)"
 sidebar_label: "Impeccable"
-description: "Design guidance for frontend work — /impeccable init, craft, critique, audit, polish, bolder, quieter, animate, typeset, layout, and 18 more sub-commands, pl..."
+description: "Frontend design guidance, upstream-maintained (impeccable)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Impeccable
 
-Design guidance for frontend work — /impeccable init, craft, critique, audit, polish, bolder, quieter, animate, typeset, layout, and 18 more sub-commands, plus a deterministic anti-slop detector CLI. Use for websites, landing pages, dashboards, product UI, components, and design systems.
+Frontend design guidance, upstream-maintained (impeccable).
 
 ## Skill metadata
 
@@ -19,8 +19,9 @@ Design guidance for frontend work — /impeccable init, craft, critique, audit, 
 | Version | `4.1.2` |
 | Author | Paul Bakaus (pbakaus) |
 | License | Apache-2.0 |
+| Platforms | linux, macos, windows |
 | Tags | `design`, `frontend`, `ui`, `ux`, `web-design`, `anti-slop` |
-| Related skills | `premium-webapp-ui`, [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs) |
+| Related skills | [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs) |
 
 ## Reference: full SKILL.md
 

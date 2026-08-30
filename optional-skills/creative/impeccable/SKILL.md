@@ -1,14 +1,15 @@
 ---
 name: impeccable
-description: Design guidance for frontend work — /impeccable init, craft, critique, audit, polish, bolder, quieter, animate, typeset, layout, and 18 more sub-commands, plus a deterministic anti-slop detector CLI. Use for websites, landing pages, dashboards, product UI, components, and design systems.
+description: Frontend design guidance, upstream-maintained (impeccable).
 version: 4.1.2
 author: Paul Bakaus (pbakaus)
 license: Apache-2.0
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [design, frontend, ui, ux, web-design, anti-slop]
     category: creative
-    related_skills: [premium-webapp-ui, claude-design, popular-web-designs]
+    related_skills: [claude-design, popular-web-designs]
     upstream:
       repo: pbakaus/impeccable
       path: .hermes/skills/impeccable

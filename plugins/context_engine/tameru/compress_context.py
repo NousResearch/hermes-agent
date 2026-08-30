@@ -8,6 +8,7 @@ the query signal is too weak to justify a cut.
 from __future__ import annotations
 
 import hashlib
+import bisect
 import json
 import math
 import os
@@ -25,7 +26,9 @@ from .contract_gates import (
     distinctive_query_terms,
     query_has_distinctive_selectors,
 )
+from .industrial import IndustrialLimits, IndustrialResult, industrial_preprocess
 from .supersession import apply_supersession
+from .unicode_profile import script_of, search_units, token_units
 
 try:  # optional semantic tier — never required
     from .semantic import resolve_tier  # noqa: F401
@@ -79,6 +82,7 @@ _DOTTED_RE = re.compile(r"\b[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+\b")
 _QUOTED_RE = re.compile(r"[\"']([^\"']{2,64})[\"']")
 _CAPS_RE = re.compile(r"\b[A-Z]{2,24}\b")
 _URI_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+")
+_FAST_ACCOUNTING_PUNCT = frozenset("§…×–—“”‘’")
 
 
 @dataclass
@@ -110,10 +114,61 @@ class CompressResult:
         return asdict(self)
 
 
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(str(text).encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _bounded_id_manifest(ids: Iterable[int], limit: int) -> list[int] | dict[str, Any]:
+    ordered = sorted(int(item) for item in ids)
+    resolved = max(0, int(limit))
+    if len(ordered) <= resolved:
+        return ordered
+    head_count = (resolved + 1) // 2
+    tail_count = resolved - head_count
+    encoded = json.dumps(ordered, separators=(",", ":")).encode("ascii")
+    return {
+        "count": len(ordered),
+        "head": ordered[:head_count],
+        "tail": ordered[-tail_count:] if tail_count else [],
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _receipt_hashes(
+    source: str,
+    output: str,
+    industrial: IndustrialResult,
+    *,
+    mode: str,
+    strategy: str,
+    budget_ratio: Optional[float],
+    citations: bool,
+) -> dict[str, str]:
+    config = {
+        "budget_ratio": budget_ratio,
+        "citations": bool(citations),
+        "limits": asdict(industrial.limits),
+        "mode": mode,
+        "strategy": strategy,
+    }
+    config_bytes = json.dumps(
+        config, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return {
+        "source_sha256": _sha256_text(source),
+        "output_sha256": _sha256_text(output),
+        "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+    }
+
+
 def estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    return max(1, len(_TOKEN_RE.findall(text)))
+    if text.isascii() or all(
+        ord(char) < 128 or char in _FAST_ACCOUNTING_PUNCT for char in text
+    ):
+        return max(1, len(_TOKEN_RE.findall(text)))
+    return max(1, len(token_units(text)))
 
 
 def _norm_newlines(text: str) -> str:
@@ -666,6 +721,18 @@ def _extract_terms(query: str) -> list[str]:
             or 0x0E00 <= o <= 0x0E7F
         )
         if (len(term) <= 2 and not is_cjk) or term in _STOP or term in _KANA_STOP or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    for raw in search_units(query or "")[:128]:
+        term = raw.strip("؟?!.،,;:…\"'()[]")
+        if not term or term in seen or term in _STOP or term in _KANA_STOP:
+            continue
+        representative = next((char for char in term if char.isalnum()), term[0])
+        script = script_of(representative)
+        if script in {"han", "kana", "hangul", "arabic"}:
+            continue
+        if len(term) <= 2 and script in {None, "latin", "greek", "cyrillic"}:
             continue
         seen.add(term)
         terms.append(term)
@@ -1936,6 +2003,8 @@ def _render(
     citations: bool = False,
     reorder_best: bool = False,
 ) -> str:
+    chronological_blocks = sorted(blocks, key=lambda block: block["start"])
+    block_starts = [block["start"] for block in chronological_blocks]
     order = sorted((b for b in blocks if b["id"] in kept), key=lambda b: b["start"])
     if reorder_best and len(order) >= 3:
         # Lost-in-the-middle mitigation (LongLLMLingua / twotrim): models
@@ -1954,7 +2023,13 @@ def _render(
                 # knows it can recall the exact head/tail by hash later.
                 # Only emit citations when they're net-positive: the stub
                 # tokens must be less than the dropped block tokens they replace.
-                dropped = [x for x in blocks if x["id"] not in kept and x["start"] > prev_end and x["end"] < b["start"]]
+                left = bisect.bisect_right(block_starts, prev_end)
+                right = bisect.bisect_left(block_starts, b["start"])
+                dropped = [
+                    block
+                    for block in chronological_blocks[left:right]
+                    if block["id"] not in kept and block["end"] < b["start"]
+                ]
                 gap_tokens = 0
                 dropped_tokens = 0
                 for d in dropped:
@@ -2848,6 +2923,7 @@ def compress_context(
     summary_models: Iterable[str] | str | None = None,
     summary_timeout: float | None = None,
     summary_allow_remote: bool | None = None,
+    limits: IndustrialLimits | None = None,
 ) -> CompressResult:
     caller_text = str(context or "")
     requested_mode = (mode or "adaptive").strip().lower()
@@ -2858,8 +2934,53 @@ def compress_context(
     mode_norm = (
         "adaptive" if requested_mode in {"compiler", "precision"} else requested_mode
     )
+    industrial = industrial_preprocess(caller_text, query or "", limits)
+    if industrial.hard_fail_open:
+        tokens = estimate_tokens(caller_text)
+        reason = industrial.reason or "industrial preflight failed open"
+        fail_result = CompressResult(
+            compressed_text=caller_text,
+            original_tokens=tokens,
+            kept_tokens=tokens,
+            tokens_saved_pct=0.0,
+            policy_name="local-fail-open",
+            mode=requested_mode,
+            keep_ratio=1.0,
+            tokens_saved=0,
+            kept_line_ratio=1.0,
+            compression_risk="high",
+            confidence=0.0,
+            content_type=industrial.profile.format,
+            fail_open=True,
+            reasons=[reason],
+            receipt={
+                "schema_version": "1",
+                "engine": "tameru",
+                "policy": "local-fail-open",
+                "query_hash": hashlib.sha256(
+                    (query or "").encode("utf-8")
+                ).hexdigest()[:12],
+                "savings_pct": 0.0,
+                "risk": "high",
+                "industrial": industrial.to_dict(),
+            },
+        )
+        assert fail_result.receipt is not None
+        fail_result.receipt.update(
+            _receipt_hashes(
+                caller_text,
+                caller_text,
+                industrial,
+                mode=requested_mode,
+                strategy=strategy,
+                budget_ratio=budget_ratio,
+                citations=citations,
+            )
+        )
+        return fail_result
     original_text = _norm_newlines(caller_text)
-    text = strip_ansi(original_text)
+    industrial_text = industrial.text if industrial.applied else caller_text
+    text = strip_ansi(_norm_newlines(industrial_text))
     text = unwrap_hermes_tool(text)
     text = preprocess_test_runner(text, query or "")
     if not text.strip():
@@ -2966,17 +3087,74 @@ def compress_context(
                     ).hexdigest()[:12],
                     "savings_pct": round((1.0 - keep_ratio) * 100.0, 2),
                     "risk": summary_risk,
+                    "industrial": industrial.to_dict(),
+                    **_receipt_hashes(
+                        caller_text,
+                        result_text,
+                        industrial,
+                        mode=requested_mode,
+                        strategy=strategy,
+                        budget_ratio=budget_ratio,
+                        citations=citations,
+                    ),
                 },
             )
         # LLM failed or returned a longer result — fall through to extract.
         strategy_norm = "extract"
 
     lines, content_type = preprocess(text, query or "")
+    if industrial.applied:
+        content_type = industrial.profile.format
     if not query_has_distinctive_selectors(query or ""):
         # Do not fingerprint-collapse logs or crush JSON on a generic query.
         lines = text.split("\n")
         content_type = route_content_type(lines)
     blocks = segment_blocks(lines)
+    if len(blocks) > industrial.limits.max_blocks:
+        tokens = estimate_tokens(caller_text)
+        reason = (
+            f"block limit exceeded: {len(blocks)} > "
+            f"{industrial.limits.max_blocks}"
+        )
+        receipt = {
+            "schema_version": "1",
+            "engine": "tameru",
+            "policy": "local-fail-open",
+            "query_hash": hashlib.sha256(
+                (query or "").encode("utf-8")
+            ).hexdigest()[:12],
+            "savings_pct": 0.0,
+            "risk": "high",
+            "industrial": industrial.to_dict(),
+        }
+        receipt.update(
+            _receipt_hashes(
+                caller_text,
+                caller_text,
+                industrial,
+                mode=requested_mode,
+                strategy=strategy,
+                budget_ratio=budget_ratio,
+                citations=citations,
+            )
+        )
+        return CompressResult(
+            compressed_text=caller_text,
+            original_tokens=tokens,
+            kept_tokens=tokens,
+            tokens_saved_pct=0.0,
+            policy_name="local-fail-open",
+            mode=requested_mode,
+            keep_ratio=1.0,
+            tokens_saved=0,
+            kept_line_ratio=1.0,
+            compression_risk="high",
+            confidence=0.0,
+            content_type=industrial.profile.format,
+            fail_open=True,
+            reasons=[reason],
+            receipt=receipt,
+        )
     scored = score_blocks(blocks, query or "")
 
     # v0.10.0 (G2, KVzip sink semantics): pinned blocks are exempt from
@@ -3169,6 +3347,8 @@ def compress_context(
         line_keep = len(kept_line_idx) / max(1, len(lines))
 
     reasons = sorted({scored[i]["reason"] for i in kept if i < len(scored)})
+    if industrial.applied:
+        reasons.append(f"industrial adapter: {industrial.profile.format}")
     if freeze_cache_saturated:
         reasons.append("freeze cache capacity reached")
     result_text = compressed
@@ -3255,13 +3435,31 @@ def compress_context(
         "schema_version": "1",
         "engine": "tameru",
         "policy": policy,
-        "kept_ids": sorted(i for i in kept if i < len(scored)),
-        "dropped_ids": sorted(b["id"] for b in scored if b["id"] not in kept),
+        "kept_ids": _bounded_id_manifest(
+            (i for i in kept if i < len(scored)),
+            industrial.limits.max_receipt_ids,
+        ),
+        "dropped_ids": _bounded_id_manifest(
+            (b["id"] for b in scored if b["id"] not in kept),
+            industrial.limits.max_receipt_ids,
+        ),
         "query_hash": query_hash,
         "savings_pct": savings,
         "risk": risk,
         "verifier": verifier,
+        "industrial": industrial.to_dict(),
     }
+    receipt.update(
+        _receipt_hashes(
+            caller_text,
+            result_text,
+            industrial,
+            mode=requested_mode,
+            strategy=strategy,
+            budget_ratio=budget_ratio,
+            citations=citations,
+        )
+    )
     __cr.receipt = receipt
 
     # v0.10.0 (G1 memorix checkpoints): append-only audit log, opt-in.
@@ -3285,12 +3483,19 @@ def compress_context(
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "query_hash": query_hash,
                 "policy": policy,
-                "kept": len(receipt["kept_ids"]),
+                "kept": len(kept),
                 "total": len(scored),
                 "savings_pct": savings,
                 "risk": risk,
                 "fail_open": fail_open,
                 "top_dropped": top_dropped,
+                "industrial_format": industrial.profile.format,
+                "industrial_applied": industrial.applied,
+                "direction": industrial.profile.direction,
+                "scripts": industrial.profile.scripts,
+                "input_chars": industrial.profile.characters,
+                "input_lines": industrial.profile.lines,
+                "profile_truncated": industrial.profile.profile_truncated,
             }
             log_file = log_path / "compactions.jsonl"
             fd = os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -3306,11 +3511,27 @@ def compress_context(
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     import argparse
+    limit_defaults = IndustrialLimits()
     p = argparse.ArgumentParser(description="Local query-aware extractive compressor")
     p.add_argument("context_file", help="Path to context text (or - for stdin)")
     p.add_argument("query")
-    p.add_argument("--mode", default="adaptive", choices=["adaptive", "fixed", "compiler"])
+    p.add_argument(
+        "--mode",
+        default="adaptive",
+        choices=["adaptive", "fixed", "compiler", "precision"],
+    )
     p.add_argument("--budget-ratio", type=float, default=None)
+    p.add_argument("--max-input-chars", type=int, default=limit_defaults.max_input_chars)
+    p.add_argument("--max-lines", type=int, default=limit_defaults.max_lines)
+    p.add_argument("--max-records", type=int, default=limit_defaults.max_records)
+    p.add_argument("--max-record-chars", type=int, default=limit_defaults.max_record_chars)
+    p.add_argument("--max-fields", type=int, default=limit_defaults.max_fields)
+    p.add_argument("--max-profile-chars", type=int, default=limit_defaults.max_profile_chars)
+    p.add_argument("--max-bidi-controls", type=int, default=limit_defaults.max_bidi_controls)
+    p.add_argument("--max-bidi-overrides", type=int, default=limit_defaults.max_bidi_overrides)
+    p.add_argument("--max-query-chars", type=int, default=limit_defaults.max_query_chars)
+    p.add_argument("--max-blocks", type=int, default=limit_defaults.max_blocks)
+    p.add_argument("--max-receipt-ids", type=int, default=limit_defaults.max_receipt_ids)
     p.add_argument("--ccr", action="store_true", default=None,
                    help="Enable CCR reversible store (on by default)")
     p.add_argument("--no-ccr", dest="ccr", action="store_false",
@@ -3334,6 +3555,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     # Resolve ccr/citations defaults (None = use library default True)
     ccr_val = True if args.ccr is None else args.ccr
     citations_val = True if args.citations is None else args.citations
+    limits = IndustrialLimits(
+        max_input_chars=args.max_input_chars,
+        max_lines=args.max_lines,
+        max_records=args.max_records,
+        max_record_chars=args.max_record_chars,
+        max_fields=args.max_fields,
+        max_profile_chars=args.max_profile_chars,
+        max_bidi_controls=args.max_bidi_controls,
+        max_bidi_overrides=args.max_bidi_overrides,
+        max_query_chars=args.max_query_chars,
+        max_blocks=args.max_blocks,
+        max_receipt_ids=args.max_receipt_ids,
+    )
     # Load decision cache if provided
     decision_cache = None
     if args.decision_cache:
@@ -3357,6 +3591,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         citations=citations_val,
         decision_cache=decision_cache,
         strategy=args.strategy,
+        limits=limits,
     )
     if args.stats:
         stats = out.to_dict()

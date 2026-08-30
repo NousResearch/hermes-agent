@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .unicode_profile import matching_shadow, script_of, search_units
+
 GENERIC_WORDS = frozenset(
     {
         "what",
@@ -115,7 +117,8 @@ def distinctive_query_terms(query: str) -> list[str]:
     """Return first-seen distinctive selectors; empty if the query is generic."""
     if not query or not str(query).strip():
         return []
-    text = str(query)
+    raw_text = str(query)
+    text = matching_shadow(raw_text)
     seen: set[str] = set()
     out: list[str] = []
 
@@ -126,11 +129,20 @@ def distinctive_query_terms(query: str) -> list[str]:
         seen.add(key)
         out.append(key)
 
-    for m in LATIN_IDENT_RE.findall(text):
+    for m in LATIN_IDENT_RE.findall(raw_text):
         _add(m)
     for m in _HYPHEN_RE.findall(text):
         if len(m) >= 3:
             _add(m)
+    for unit in search_units(text)[:128]:
+        representative = next((char for char in unit if char.isalnum()), unit[0])
+        script = script_of(representative)
+        if (
+            script not in {"han", "kana", "hangul", "arabic", "thai", "latin"}
+            and any(ord(char) > 127 for char in unit)
+            and len(unit) >= 2
+        ):
+            _add(unit)
     nl = NON_LATIN_RE.search(text)
     if nl:
         sentinel = f"script:{nl.group(0)}"

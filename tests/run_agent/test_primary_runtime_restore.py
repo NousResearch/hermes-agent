@@ -790,3 +790,79 @@ class TestRateLimitCooldown:
 
         # second call should not have extended the cooldown
         assert second_cooldown == first_cooldown
+
+
+# =============================================================================
+# request_overrides travels through the switch_model snapshot (#75091 seam)
+# =============================================================================
+
+
+class TestSwitchModelRequestOverridesSnapshot:
+    """switch_model rebuilds _primary_runtime; it must carry request_overrides
+    so a post-switch transport recovery or fallback restore reinstates the
+    switched-to identity's overrides, not a stale or empty set."""
+
+    def _switch(self, agent, **kwargs):
+        from agent.agent_runtime_helpers import switch_model
+
+        with (
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch(
+                "agent.model_metadata.get_model_context_length",
+                return_value=128_000,
+            ),
+        ):
+            switch_model(
+                agent,
+                new_model=kwargs.get("new_model", "gpt-4o"),
+                new_provider=kwargs.get("new_provider", "openai"),
+                base_url=kwargs.get("base_url", "https://api.openai.com/v1"),
+                api_key=kwargs.get("api_key", "sk-test-1234567890"),
+            )
+
+    def test_switch_snapshot_carries_request_overrides(self):
+        overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
+        agent = _make_agent(request_overrides=overrides)
+        self._switch(agent)
+        rt = agent._primary_runtime
+        assert rt.get("request_overrides") == overrides
+        assert rt["request_overrides"] is not agent.request_overrides
+
+    def test_switch_then_recover_restores_current_overrides(self):
+        """After /model switch, a transport recovery must reinstate the
+        overrides that were live at switch time — not drop them."""
+        overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
+        agent = _make_agent(provider="custom", request_overrides=overrides)
+        self._switch(
+            agent,
+            new_model="local-model",
+            new_provider="custom",
+            base_url="https://my-llm.example.com/v1",
+        )
+        # A fallback activation mid-turn clobbers the live overrides…
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+        error = _make_transport_error("ReadTimeout")
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+        assert result is True
+        # …and recovery restores the switch-time snapshot.
+        assert agent.request_overrides == overrides
+
+    def test_switch_then_restore_restores_current_overrides(self):
+        overrides = {"extra_body": {"reasoning": {"effort": "high"}}}
+        agent = _make_agent(provider="custom", request_overrides=overrides)
+        self._switch(
+            agent,
+            new_model="local-model",
+            new_provider="custom",
+            base_url="https://my-llm.example.com/v1",
+        )
+        agent._fallback_activated = True
+        agent.request_overrides = {"extra_body": {"fallback_only": True}}
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+        assert result is True
+        assert agent.request_overrides == overrides

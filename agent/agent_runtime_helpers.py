@@ -3286,6 +3286,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        # Request-level overrides (extra_body etc.) must travel with the
+        # switched-to identity; without this, a post-switch transport
+        # recovery or fallback restore would resurrect the PRE-switch
+        # overrides via the stale init-time snapshot (#75091 seam).
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",

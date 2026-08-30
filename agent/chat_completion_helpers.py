@@ -2674,6 +2674,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         old_model = agent.model
         old_provider = agent.provider
+        old_base_url = agent.base_url
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -2843,18 +2844,49 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # Keep whatever reasoning_config was active — don't break the fallback swap.
 
         # Re-resolve extra_body for the fallback provider (Closes #75091).
-        # The primary's provider-specific extra_body (e.g. reasoning_effort)
-        # must not ride along onto the fallback provider, which is a different
-        # API that may reject those fields.  Clear the stale extra_body first,
-        # then re-resolve from the fallback provider's config.
+        # The OLD provider's custom_providers-contributed extra_body (e.g. a
+        # vendor-specific reasoning toggle) must not ride along onto the
+        # fallback provider, which is a different API that may reject those
+        # fields.  Removal is KEY-SCOPED: only keys the old provider's
+        # custom_providers entry contributed (value unchanged since init)
+        # are dropped; the fallback provider's own extra_body is then merged
+        # back in.  Caller/profile-provided extra_body keys
+        # (request_overrides passed at init, which win over provider config
+        # per _merge_custom_provider_extra_body precedence) MUST survive the
+        # swap untouched.
         try:
-            from agent.agent_init import _merge_custom_provider_extra_body
+            from agent.agent_init import (
+                _custom_provider_extra_body_for_agent,
+                _merge_custom_provider_extra_body,
+            )
             _custom_providers = getattr(agent, "_custom_providers", None) or []
-            # Strip the primary's extra_body so it doesn't contaminate the
-            # fallback (existing_extra_body in _merge wins on conflict).
+            # What did the OLD provider's config contribute?
+            _old_provider_eb = _custom_provider_extra_body_for_agent(
+                provider=old_provider,
+                model=old_model,
+                base_url=old_base_url,
+                custom_providers=_custom_providers,
+            ) or {}
             _overrides = dict(getattr(agent, "request_overrides", {}) or {})
-            _overrides.pop("extra_body", None)
-            agent.request_overrides = _overrides
+            _existing_eb = _overrides.get("extra_body")
+            if isinstance(_existing_eb, dict) and _old_provider_eb:
+                _scrubbed = dict(_existing_eb)
+                for _k, _v in _old_provider_eb.items():
+                    # Drop only keys the old provider contributed: the value
+                    # must still match what its config injected — a caller
+                    # override of the same key would have won at init and
+                    # differ, so it survives.  Keys the new provider
+                    # redefines are re-added with the NEW provider's value
+                    # by the merge below.
+                    if _k in _scrubbed and _scrubbed[_k] == _v:
+                        _scrubbed.pop(_k)
+                if _scrubbed:
+                    _overrides["extra_body"] = _scrubbed
+                else:
+                    _overrides.pop("extra_body", None)
+                agent.request_overrides = _overrides
+            # Merge in the fallback provider's own extra_body (existing
+            # caller-provided keys win on conflict inside the merge helper).
             _merge_custom_provider_extra_body(agent, _custom_providers)
             logger.info(
                 "Fallback %s: extra_body resolved: %s",

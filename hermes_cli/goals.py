@@ -481,6 +481,11 @@ _DB_BOOTSTRAP_LOCK = threading.Lock()
 _DB_BOOTSTRAP_INFLIGHT: Dict[str, threading.Event] = {}
 _GOAL_GENERATION_LOCK = threading.Lock()
 _GOAL_GENERATIONS: Dict[Tuple[str, str], int] = {}
+_UNCONDITIONAL_GOAL_PERSIST = object()
+
+
+class ConcurrentGoalStateChange(RuntimeError):
+    """The persisted goal changed after its authoritative snapshot was read."""
 
 
 def _goal_generation_key(session_id: str) -> Tuple[str, str]:
@@ -654,8 +659,10 @@ def load_goal(session_id: str) -> Optional[GoalState]:
         return None
 
 
-def load_goal_authoritative(session_id: str) -> Optional[GoalState]:
-    """Read canonical goal state, raising when storage is unavailable or corrupt."""
+def load_goal_snapshot_authoritative(
+    session_id: str,
+) -> Tuple[Optional[GoalState], Optional[str]]:
+    """Read canonical goal state and its exact optimistic-concurrency token."""
     session_id = (session_id or "").strip()
     if not session_id:
         raise ValueError("session identity is required")
@@ -667,11 +674,35 @@ def load_goal_authoritative(session_id: str) -> Optional[GoalState]:
     except Exception as exc:
         raise RuntimeError("persisted goal read failed") from exc
     if not raw:
-        return None
+        return None, raw
     try:
-        return GoalState.from_json(raw)
+        return GoalState.from_json(raw), raw
     except Exception as exc:
         raise RuntimeError("persisted goal state is invalid") from exc
+
+
+def load_goal_authoritative(session_id: str) -> Optional[GoalState]:
+    """Read canonical goal state, raising when storage is unavailable or corrupt."""
+    state, _raw = load_goal_snapshot_authoritative(session_id)
+    return state
+
+
+def save_goal_if_unchanged(
+    session_id: str, state: GoalState, *, expected_raw: Optional[str]
+) -> str:
+    """Persist ``state`` only if canonical storage still matches ``expected_raw``."""
+    db = _get_session_db()
+    if db is None:
+        raise RuntimeError("session goal storage is unavailable")
+    raw = state.to_json()
+    try:
+        saved = db.compare_and_set_meta(_meta_key(session_id), expected_raw, raw)
+    except Exception as exc:
+        raise RuntimeError("persisted goal write failed") from exc
+    if not saved:
+        raise ConcurrentGoalStateChange("persisted goal changed during mutation")
+    _bump_goal_generation(session_id)
+    return raw
 
 
 def save_goal(session_id: str, state: GoalState) -> bool:
@@ -1112,13 +1143,42 @@ class GoalManager:
     canonical user-role message to feed back into ``run_conversation``.
     """
 
-    def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        default_max_turns: int = DEFAULT_MAX_TURNS,
+        _state_snapshot: Any = _UNCONDITIONAL_GOAL_PERSIST,
+        _expected_raw: Any = _UNCONDITIONAL_GOAL_PERSIST,
+    ):
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
-        self._state: Optional[GoalState] = load_goal(session_id)
+        self._state: Optional[GoalState] = (
+            load_goal(session_id)
+            if _state_snapshot is _UNCONDITIONAL_GOAL_PERSIST
+            else _state_snapshot
+        )
         self._loaded_json = self._state.to_json() if self._state is not None else None
         self._dirty_since: Optional[float] = None
         self._seen_generation = _goal_generation(session_id)
+        self._expected_raw = _expected_raw
+
+    @classmethod
+    def from_authoritative_snapshot(
+        cls,
+        session_id: str,
+        state: Optional[GoalState],
+        persisted_raw: Optional[str],
+        *,
+        default_max_turns: int = DEFAULT_MAX_TURNS,
+    ) -> "GoalManager":
+        """Build a manager whose next mutation must match ``persisted_raw``."""
+        return cls(
+            session_id,
+            default_max_turns=default_max_turns,
+            _state_snapshot=state,
+            _expected_raw=persisted_raw,
+        )
 
     # --- introspection ------------------------------------------------
 
@@ -1140,6 +1200,8 @@ class GoalManager:
 
     def refresh(self) -> Optional[GoalState]:
         """Reload state written by another manager without losing a failed local write."""
+        if self._expected_raw is not _UNCONDITIONAL_GOAL_PERSIST:
+            return self._state
         try:
             if self.refresh_if_stale():
                 return self._state
@@ -1206,11 +1268,23 @@ class GoalManager:
 
     # --- mutation -----------------------------------------------------
 
+    def _persist_mutation(self, state: GoalState) -> bool:
+        if self._expected_raw is _UNCONDITIONAL_GOAL_PERSIST:
+            return save_goal(self.session_id, state)
+        self._expected_raw = save_goal_if_unchanged(
+            self.session_id, state, expected_raw=self._expected_raw
+        )
+        return True
+
     def _save(self) -> Optional[GoalState]:
         if self._state is None:
             return None
         self._state.updated_at = time.time()
-        saved = save_goal(self.session_id, self._state)
+        try:
+            saved = self._persist_mutation(self._state)
+        except Exception:
+            self._dirty_since = self._state.updated_at
+            raise
         self._dirty_since = None if saved else self._state.updated_at
         if saved:
             self._loaded_json = self._state.to_json()
@@ -1821,12 +1895,14 @@ def run_kanban_goal_loop(
 
 
 __all__ = [
-    "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "draft_contract", "run_gate",
+    "ConcurrentGoalStateChange", "GoalState", "GoalContract", "GoalGate", "GoalManager",
+    "parse_contract", "draft_contract", "run_gate",
     "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
     "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
-    "DEFAULT_MAX_TURNS", "load_goal", "load_goal_authoritative", "save_goal", "clear_goal",
+    "DEFAULT_MAX_TURNS", "load_goal", "load_goal_authoritative", "load_goal_snapshot_authoritative",
+    "save_goal", "save_goal_if_unchanged", "clear_goal",
     "migrate_goal_to_session", "judge_goal",
     "run_kanban_goal_loop",
 ]

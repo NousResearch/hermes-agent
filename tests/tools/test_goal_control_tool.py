@@ -454,6 +454,70 @@ def test_status_returns_stop_and_error_reasons_from_persisted_state(tmp_path, mo
     assert result["state"]["error_reason"] == "transport timeout"
 
 
+def test_pause_does_not_resurrect_concurrently_cleared_goal(tmp_path, monkeypatch):
+    _home(tmp_path, monkeypatch)
+    original = goals.GoalState(goal="Active work", status="active", max_turns=8)
+    cleared = goals.GoalState(
+        goal="Active work",
+        status="cleared",
+        max_turns=8,
+        last_reason="operator-cleared",
+    )
+    goals.save_goal("session-current", original)
+    db = goals._get_session_db()
+    real_get_meta = db.get_meta
+    injected = False
+
+    def _get_then_clear(key):
+        nonlocal injected
+        raw = real_get_meta(key)
+        if not injected:
+            injected = True
+            db.set_meta(key, cleared.to_json())
+        return raw
+
+    monkeypatch.setattr(db, "get_meta", _get_then_clear)
+
+    result = _call("pause", session_id="session-current")
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "concurrent_state_change"
+    assert goals.load_goal("session-current").to_json() == cleared.to_json()
+
+
+def test_set_does_not_overwrite_concurrently_created_goal(tmp_path, monkeypatch):
+    _home(tmp_path, monkeypatch)
+    winner = goals.GoalState(
+        goal="Concurrent winner",
+        status="active",
+        max_turns=6,
+    )
+    db = goals._get_session_db()
+    real_get_meta = db.get_meta
+    injected = False
+
+    def _get_then_set(key):
+        nonlocal injected
+        raw = real_get_meta(key)
+        if not injected:
+            injected = True
+            db.set_meta(key, winner.to_json())
+        return raw
+
+    monkeypatch.setattr(db, "get_meta", _get_then_set)
+
+    result = _call(
+        "set",
+        session_id="session-current",
+        condition="Stale setter",
+        max_turns=5,
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "concurrent_state_change"
+    assert goals.load_goal("session-current").to_json() == winner.to_json()
+
+
 def test_failed_persistence_never_returns_success(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch)
 
@@ -461,8 +525,8 @@ def test_failed_persistence_never_returns_success(tmp_path, monkeypatch):
         def get_meta(self, _key):
             return None
 
-        def set_meta(self, _key, _value):
-            return None
+        def compare_and_set_meta(self, _key, _expected, _value):
+            return True
 
     monkeypatch.setattr(goals, "_get_session_db", lambda: _DroppedWriteDB())
 
@@ -484,8 +548,8 @@ def test_dropped_budget_update_is_not_mistaken_for_success(tmp_path, monkeypatch
         def get_meta(self, _key):
             return raw
 
-        def set_meta(self, _key, _value):
-            return None
+        def compare_and_set_meta(self, _key, _expected, _value):
+            return True
 
     monkeypatch.setattr(goals, "_get_session_db", lambda: _DroppedUpdateDB())
 

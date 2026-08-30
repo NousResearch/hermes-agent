@@ -248,6 +248,7 @@ class TestChildAgentContextIsolation(unittest.TestCase):
             self.assertIsNone(child_state["_memory_store"])
             self.assertIsNone(child_state["_memory_manager"])
             self.assertIn(active_soul, prompt)
+            self.assertEqual(prompt.count(active_soul), 1)
             self.assertNotIn(ambient_soul, prompt)
             self.assertNotIn(ambient_context, prompt)
             self.assertNotIn(memory_marker, prompt)

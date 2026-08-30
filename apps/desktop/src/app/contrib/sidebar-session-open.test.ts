@@ -152,4 +152,40 @@ describe('openSidebarSession', () => {
     expect(mocks.requestSessionResume).toHaveBeenCalledWith('shared-id')
     expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'main', { workspaceMode: 'sessions' })
   })
+
+  it('keeps a profile-only row ambient with default tab placement', () => {
+    mocks.sessionOwnerRouteFromRow.mockReturnValue(undefined)
+
+    openSidebarSession('shared-id', session('remote-profile', ''), navigate)
+
+    expect(mocks.prepareSessionOwnerRetarget).toHaveBeenCalledWith('shared-id', undefined, false)
+    expect(mocks.forgetSessionOwnerHintsForSession).toHaveBeenCalledWith('shared-id')
+    expect(mocks.requestSessionResume).not.toHaveBeenCalled()
+    expect(mocks.openSession).toHaveBeenCalledWith('shared-id', navigate, 'tab', { workspaceMode: 'sessions' })
+  })
+
+  it('keeps an ownerless server-search row ambient', () => {
+    mocks.sessionOwnerRouteFromRow.mockReturnValue(undefined)
+
+    openSidebarSession('server-only-id', { id: 'server-only-id' } as SessionInfo, navigate)
+
+    expect(mocks.prepareSessionOwnerRetarget).toHaveBeenCalledWith('server-only-id', undefined, false)
+    expect(mocks.forgetSessionOwnerHintsForSession).toHaveBeenCalledWith('server-only-id')
+    expect(mocks.openSession).toHaveBeenCalledWith('server-only-id', navigate, 'tab', {
+      workspaceMode: 'sessions'
+    })
+  })
+
+  it('preserves explicit window intent without inventing an owner for a generic row', () => {
+    mocks.sessionOwnerRouteFromRow.mockReturnValue(undefined)
+
+    openSidebarSession('server-only-id', { id: 'server-only-id' } as SessionInfo, navigate, 'window')
+
+    expect(mocks.prepareSessionOwnerRetarget).not.toHaveBeenCalled()
+    expect(mocks.forgetSessionOwnerHintsForSession).toHaveBeenCalledWith('server-only-id')
+    expect(mocks.requestSessionResume).not.toHaveBeenCalled()
+    expect(mocks.openSession).toHaveBeenCalledWith('server-only-id', navigate, 'window', {
+      workspaceMode: 'sessions'
+    })
+  })
 })

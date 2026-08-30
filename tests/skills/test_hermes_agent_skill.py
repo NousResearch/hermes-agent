@@ -67,3 +67,12 @@ def test_the_index_is_published_where_the_skill_says_it_is(skill_text):
     spec.loader.exec_module(gen)
 
     assert f"{gen.SITE_BASE}/llms.txt" in skill_text
+
+
+def test_busy_reference_lists_status_subcommand():
+    from hermes_cli.commands import COMMAND_REGISTRY
+
+    busy_command = next(command for command in COMMAND_REGISTRY if command.name == "busy")
+    slash_commands = (SKILL_DIR / "references" / "slash-commands.md").read_text(encoding="utf-8")
+    assert "status" in busy_command.subcommands
+    assert f"/busy {busy_command.args_hint}" in slash_commands

@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         slice: ${{ fromJSON(github.repository == 'NousResearch/hermes-agent' && '["1/1"]' || '["1/12", "2/12", "3/12", "4/12", "5/12", "6/12", "7/12", "8/12", "9/12", "10/12", "11/12", "12/12"]') }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 60 || 30 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -105,7 +105,14 @@ jobs:
         # set is identical to the list the removed matrix job used to pass in.
         run: |
           source .venv/bin/activate
-          scripts/run_tests.sh
+          if [ "${GITHUB_REPOSITORY}" = "NousResearch/hermes-agent" ]; then
+            scripts/run_tests.sh
+          else
+            # A hosted fork runner can occasionally lose its child process
+            # while the job remains marked in progress. Bound that failure so
+            # it produces a clear CI result instead of consuming hours.
+            timeout --signal=TERM --kill-after=60s 25m scripts/run_tests.sh
+          fi
         env:
           # This is the maximum number of test FILES that run together.
           # run_tests_parallel.py starts one pytest subprocess for each file

@@ -1569,6 +1569,30 @@ def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
 
+def _inherit_parent_capabilities(
+    parent_agent, override_provider, override_base_url
+) -> Optional[dict]:
+    """Return the parent's endpoint-trust capability map for a child, or None.
+
+    The trusted-proxy capability map (``agent.capabilities``, e.g.
+    ``openai_native_compaction`` from a custom_providers entry) is a trust
+    decision scoped to one provider+endpoint. A child inherits it ONLY when
+    it runs against the parent's exact route — any delegation override that
+    changes provider or base_url stays DEFAULT-DENY, matching the /model
+    switch posture (#94036/#97292).
+    """
+    if override_provider or override_base_url:
+        return None
+    parent_caps = getattr(parent_agent, "capabilities", None)
+    if not isinstance(parent_caps, dict):
+        return None
+    return {
+        key: value
+        for key, value in parent_caps.items()
+        if isinstance(key, str) and isinstance(value, bool)
+    }
+
+
 def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> Optional[str]:
     """Return the base URL the parent is actually calling, not a stale attribute.
 
@@ -1786,6 +1810,16 @@ def _build_child_agent(
     if not override_base_url:
         effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
     effective_api_key = override_api_key or parent_api_key
+    # Same-class follow-up to #94036/#97292: the trusted-proxy capability map
+    # (`agent.capabilities`, e.g. ``openai_native_compaction`` from a
+    # custom_providers entry) is an endpoint-scoped trust decision. Children
+    # inherit it ONLY when they run against the parent's exact provider and
+    # base_url — a provider- or endpoint-changing delegation override stays
+    # DEFAULT-DENY, matching the /model switch posture. Without this, a child
+    # on the same trusted proxy silently falls back to local summarization.
+    child_capabilities = _inherit_parent_capabilities(
+        parent_agent, override_provider, override_base_url
+    )
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
@@ -1967,6 +2001,7 @@ def _build_child_agent(
                 api_key=effective_api_key,
                 model=effective_model,
                 provider=effective_provider,
+                capabilities=child_capabilities,
                 api_mode=effective_api_mode,
                 acp_command=effective_acp_command,
                 acp_args=effective_acp_args,

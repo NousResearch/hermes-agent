@@ -3,12 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TodoItem } from '@/lib/todos'
 
 import {
+  $todoContinuationsBySession,
   $todoRevisionsBySession,
   $todosBySession,
+  applyTodoContinuationSnapshot,
   clearActiveSessionTodos,
+  clearAllTodoContinuations,
   clearSessionTodos,
+  clearTodoContinuation,
+  resolveTodoPresentation,
   restoreSessionTodosFromSnapshot,
   setSessionTodos,
+  type TodoContinuationSnapshot,
   todosForHydration
 } from './todos'
 
@@ -21,6 +27,7 @@ describe('setSessionTodos finished-list auto-clear', () => {
 
   afterEach(() => {
     clearSessionTodos('s1')
+    clearAllTodoContinuations()
     vi.useRealTimers()
   })
 
@@ -61,6 +68,7 @@ describe('clearActiveSessionTodos (turn-end cleanup)', () => {
 
   afterEach(() => {
     clearSessionTodos('s1')
+    clearAllTodoContinuations()
     vi.useRealTimers()
   })
 
@@ -70,6 +78,26 @@ describe('clearActiveSessionTodos (turn-end cleanup)', () => {
     clearActiveSessionTodos('s1')
 
     expect($todosBySession.get().s1).toBeUndefined()
+  })
+
+  it('keeps unfinished rows when authoritative active continuation will render them statically', () => {
+    setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'in_progress')])
+    $todoContinuationsBySession.set({ s1: { revision: 1, state: 'active' } })
+
+    clearActiveSessionTodos('s1')
+
+    expect($todosBySession.get().s1).toHaveLength(2)
+  })
+
+  it('keeps unfinished rows with an authoritative paused stop reason', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')])
+    $todoContinuationsBySession.set({
+      s1: { revision: 2, state: 'paused', stopReason: 'Goal stopped after an error' }
+    })
+
+    clearActiveSessionTodos('s1')
+
+    expect($todosBySession.get().s1).toHaveLength(1)
   })
 
   it('leaves a finished list to its normal linger instead of clearing immediately', () => {
@@ -86,6 +114,105 @@ describe('clearActiveSessionTodos (turn-end cleanup)', () => {
     clearActiveSessionTodos('s1')
 
     expect($todosBySession.get().s1).toBeUndefined()
+  })
+})
+
+describe('authoritative todo continuation snapshots', () => {
+  afterEach(() => {
+    clearSessionTodos('s1')
+    clearAllTodoContinuations()
+  })
+
+  it('retires retained unfinished rows when a newer none snapshot arrives after turn end', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')])
+    applyTodoContinuationSnapshot('s1', { revision: 4, state: 'active' })
+    clearActiveSessionTodos('s1')
+
+    applyTodoContinuationSnapshot('s1', { revision: 5, state: 'none' })
+
+    expect($todosBySession.get().s1).toBeUndefined()
+  })
+
+  it('per-session reset clears its snapshot and revision high-water mark only', () => {
+    applyTodoContinuationSnapshot('s1', { revision: 4, state: 'paused' })
+    applyTodoContinuationSnapshot('s2', { revision: 8, state: 'active' })
+
+    clearTodoContinuation('s1')
+    applyTodoContinuationSnapshot('s1', { revision: 1, state: 'active' })
+
+    expect($todoContinuationsBySession.get()).toEqual({
+      s1: { revision: 1, state: 'active' },
+      s2: { revision: 8, state: 'active' }
+    })
+  })
+
+  it('global reset clears snapshots and revision high-water marks', () => {
+    applyTodoContinuationSnapshot('s1', { revision: 4, state: 'paused' })
+
+    clearAllTodoContinuations()
+    applyTodoContinuationSnapshot('s1', { revision: 1, state: 'active' })
+
+    expect($todoContinuationsBySession.get().s1).toEqual({ revision: 1, state: 'active' })
+  })
+
+  it('keeps the newest revision and clears explicit none state', () => {
+    applyTodoContinuationSnapshot('s1', { revision: 4, state: 'paused', stopReason: 'Turn budget exhausted' })
+    applyTodoContinuationSnapshot('s1', { revision: 3, state: 'active' })
+
+    expect($todoContinuationsBySession.get().s1).toMatchObject({ revision: 4, state: 'paused' })
+
+    applyTodoContinuationSnapshot('s1', { revision: 5, state: 'none' })
+    expect($todoContinuationsBySession.get().s1).toBeUndefined()
+  })
+})
+
+describe('todo presentation state', () => {
+  const active = [todo('done', 'completed'), todo('current', 'in_progress'), todo('next', 'pending')]
+
+  const continuation = (state: TodoContinuationSnapshot['state'], stopReason?: string): TodoContinuationSnapshot => ({
+    revision: 3,
+    state,
+    stopReason
+  })
+
+  it('marks an authoritative live turn as working and counts only remaining tasks', () => {
+    expect(resolveTodoPresentation(active, { turnLive: true })).toEqual({ kind: 'working', remaining: 2 })
+  })
+
+  it('hides unfinished rows after completion when there is no authoritative goal', () => {
+    expect(resolveTodoPresentation(active, { turnLive: false })).toEqual({ kind: 'hidden', remaining: 2 })
+  })
+
+  it('shows unfinished rows as continuing for an authoritative active goal without a spinner', () => {
+    expect(resolveTodoPresentation(active, { continuation: continuation('active'), turnLive: false })).toEqual({
+      kind: 'continuing',
+      remaining: 2
+    })
+  })
+
+  it('shows paused and error-stopped goals as paused with the backend stop reason', () => {
+    expect(
+      resolveTodoPresentation(active, {
+        continuation: continuation('paused', 'Goal stopped after a provider error'),
+        turnLive: false
+      })
+    ).toEqual({ kind: 'paused', remaining: 2, stopReason: 'Goal stopped after a provider error' })
+  })
+
+  it('restores unfinished history only when authoritative continuation state permits it', () => {
+    expect(todosForHydration(active, continuation('active'))).toEqual(active)
+    expect(todosForHydration(active, continuation('paused', 'Turn budget exhausted'))).toEqual(active)
+    expect(todosForHydration(active)).toBeNull()
+    expect(todosForHydration(active, continuation('none'))).toBeNull()
+  })
+
+  it('classifies a finished list independently of turn or goal state for the existing linger', () => {
+    const finished = [todo('done', 'completed'), todo('skipped', 'cancelled')]
+
+    expect(resolveTodoPresentation(finished, { continuation: continuation('active'), turnLive: true })).toEqual({
+      kind: 'finished',
+      remaining: 0
+    })
   })
 })
 

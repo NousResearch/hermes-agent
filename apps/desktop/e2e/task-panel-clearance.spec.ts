@@ -97,7 +97,7 @@ test.describe('working-session task-panel clearance', () => {
     fixture!.mock.releaseHeldStream()
     await page.waitForTimeout(1_000)
     await reopenWorkingSession(page)
-    await expect(activeSurface(page).getByText('Tasks 1/5')).toBeVisible({ timeout: 30_000 })
+    await expect(activeSurface(page).getByText('Running — Tasks 1/5')).toBeVisible({ timeout: 30_000 })
 
     // Reproduce the stale geometry at the foreground boundary. Active turns
     // disable Chromium's background throttling, so visibility can stay `visible`

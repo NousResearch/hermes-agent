@@ -69,6 +69,26 @@ def _auth_env(name: str, default: str = "") -> str:
     return _platform_gate_env(name, default)
 
 
+def _platform_declares_allowed_users_env(platform) -> bool:
+    """Whether a plugin platform's registry entry declares ``allowed_users_env``.
+
+    Such platforms (Buzz, DingTalk, …) document ``PlatformConfig.extra
+    .allowed_users`` as the config-file spelling of that env allowlist, so
+    the live adapter's extra is a valid authorization source when the env
+    var is absent (#98738 / #82871). Built-in platforms and unknown entries
+    return False.
+    """
+    if platform is None:
+        return False
+    try:
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(platform.value)
+        return bool(entry and entry.allowed_users_env)
+    except Exception:
+        return False
+
+
 def _coerce_allow_set(raw) -> set[str]:
     """Parse allowlist values from config or env var into a set of strings.
 
@@ -692,8 +712,26 @@ class GatewayAuthorizationMixin:
                     adapter_allow = extra.get("group_allow_from")
                 else:
                     adapter_allow = extra.get("allow_from")
+                if not adapter_allow and _platform_declares_allowed_users_env(source.platform):
+                    # Plugin platforms whose registry entry declares
+                    # ``allowed_users_env`` (e.g. Buzz) carry the same
+                    # operator-configured allowlist in
+                    # ``PlatformConfig.extra.allowed_users``. Under multiplex
+                    # the YAML→env bridge is first-writer-wins, so only the
+                    # default profile's list ever reaches the env var read
+                    # above; consult the live (profile-routed) adapter's own
+                    # config so a secondary profile's allowlist authorizes its
+                    # users (#98738 / #82871). An absent/empty entry changes
+                    # nothing here — the default-deny below still applies.
+                    adapter_allow = extra.get("allowed_users")
                 if adapter_allow:
                     allowed = _coerce_allow_set(adapter_allow)
+                    normalize = getattr(adapter, "normalize_user_id", None)
+                    if callable(normalize):
+                        # Ids and allowlist entries may use different
+                        # spellings of the same principal (e.g. Buzz hex
+                        # pubkeys vs npubs) — normalize the entries.
+                        allowed = {normalize(entry) or entry for entry in allowed}
                     if user_id in allowed or "*" in allowed:
                         return True
             # No allowlists configured -- check global allow-all flag

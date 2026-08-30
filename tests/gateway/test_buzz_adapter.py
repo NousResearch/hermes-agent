@@ -143,6 +143,234 @@ class TestBuzzAdapterInit:
         assert adapter.relay_url == "https://env.relay"
 
 
+# ── Multiplex secondary-profile scope (#98738) ─────────────────────────────
+
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("BUZZ_RELAY_URL", "https://default.relay")
+    monkeypatch.setenv("BUZZ_CHANNELS", "chan-a,chan-b,chan-c")
+    monkeypatch.setenv("BUZZ_HOME_CHANNEL", "chan-a")
+    monkeypatch.setenv("BUZZ_POLL_INTERVAL", "9")
+    monkeypatch.setenv("BUZZ_CLI_PATH", "/default/bin/buzz")
+    monkeypatch.setenv("BUZZ_TRANSPORT", "poll")
+    monkeypatch.setenv("BUZZ_ALLOWED_USERS", "default-user-npub")
+    monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", "/default/creds.json")
+    monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1default")
+
+
+class TestMultiplexProfileScope:
+
+    def test_secondary_extra_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env, tmp_path
+    ):
+        """The secondary profile's PlatformConfig is authoritative (#98738)."""
+        from gateway.config import PlatformConfig
+
+        cli = tmp_path / "buzz"
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        multiplex_scope()
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "relay_url": "https://profile.relay",
+                "channels": ["pchan"],
+                "home_channel": "pchan",
+                "poll_interval": 2,
+                "cli_path": str(cli),
+                "transport": "websocket",
+                "allowed_users": [SELF_NPUB],
+            },
+        )
+        adapter = BuzzAdapter(cfg)
+        assert adapter.relay_url == "https://profile.relay"
+        assert adapter.channels == ["pchan"]
+        assert adapter.home_channel == "pchan"
+        assert adapter.poll_interval == 2.0
+        assert adapter.cli_path == str(cli)
+        assert adapter.transport == "websocket"
+        assert adapter._allowed_pubkeys == {SELF_PUBKEY}
+
+    def test_secondary_missing_keys_fail_closed(
+        self, multiplex_scope, default_profile_env
+    ):
+        """Keys absent from the profile's config must NOT borrow the default
+        profile's bridged env values — that would connect this adapter to the
+        default profile's relay and watch its channels."""
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter.relay_url == ""
+        assert adapter.channels == []
+        assert adapter.home_channel == ""
+        assert adapter.poll_interval == _buzz_mod._DEFAULT_POLL_INTERVAL
+        assert adapter.transport == "auto"
+        assert adapter._allowed_pubkeys == set()
+
+    def test_secondary_credentials_file_not_borrowed(
+        self, multiplex_scope, default_profile_env, tmp_path, monkeypatch
+    ):
+        """BUZZ_CREDENTIALS_FILE in env points at the DEFAULT profile's key
+        file; the scoped adapter must not read the default identity's key."""
+        default_creds = tmp_path / "default-creds.json"
+        default_creds.write_text(
+            json.dumps({"nsec": "nsec1default-identity"}), encoding="utf-8"
+        )
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(default_creds))
+        multiplex_scope()
+        # Scope has no key: the profile is unconfigured and must fail closed
+        # to "" rather than resolving the default profile's credentials.
+        assert _buzz_mod._resolve_private_key({}) == ""
+
+    def test_default_profile_unscoped_keeps_env_precedence(
+        self, monkeypatch, default_profile_env
+    ):
+        """Multiplex ON but no scope (the DEFAULT profile constructs
+        unscoped): env is its own bridge output and still wins."""
+        from agent.secret_scope import set_multiplex_active
+        from gateway.config import PlatformConfig
+
+        set_multiplex_active(True)
+        try:
+            adapter = BuzzAdapter(
+                PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"})
+            )
+        finally:
+            set_multiplex_active(False)
+        assert adapter.relay_url == "https://default.relay"
+
+    def test_check_requirements_scoped_reads_profile_config(
+        self, multiplex_scope, default_profile_env, tmp_path
+    ):
+        """The gate must consult the profile's own config.yaml + secret scope,
+        not the default profile's env values."""
+        import yaml
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        creds = tmp_path / "creds.json"
+        creds.write_text(json.dumps({"nsec": "nsec1profile"}), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "gateway": {
+                        "platforms": {
+                            "buzz": {
+                                "enabled": True,
+                                "extra": {
+                                    "relay_url": "https://profile.relay",
+                                    "credentials_file": str(creds),
+                                },
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        multiplex_scope()
+        token = set_hermes_home_override(str(tmp_path))
+        try:
+            # The default profile's env relay+key must NOT pass the gate on
+            # their own for a profile without a buzz config...
+            assert check_requirements() is True  # profile config passes
+        finally:
+            reset_hermes_home_override(token)
+
+        # A profile whose config.yaml has no buzz entry fails closed even
+        # though the default profile's env values are present.
+        empty_home = tmp_path / "empty-profile"
+        empty_home.mkdir()
+        multiplex_scope()
+        token = set_hermes_home_override(str(empty_home))
+        try:
+            assert check_requirements() is False
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_env_enablement_scoped_returns_none(self, multiplex_scope, default_profile_env):
+        """Scoped env enablement must not fabricate Buzz for a profile from
+        the default profile's env values."""
+        multiplex_scope()
+        assert _env_enablement() is None
+
+    def test_apply_yaml_config_scoped_skips_env_bridge(
+        self, multiplex_scope, default_profile_env, monkeypatch
+    ):
+        """A secondary profile's YAML values must not be pinned into the
+        process env for every other profile (first-writer-wins)."""
+        for var in ("BUZZ_RELAY_URL", "BUZZ_HOME_CHANNEL", "BUZZ_CHANNELS"):
+            monkeypatch.delenv(var, raising=False)
+        multiplex_scope()
+        _buzz_mod._apply_yaml_config(
+            {},
+            {"extra": {"relay_url": "https://profile.relay", "home_channel": "pchan"}},
+        )
+        import os as _os
+
+        assert "BUZZ_RELAY_URL" not in _os.environ
+        assert "BUZZ_HOME_CHANNEL" not in _os.environ
+        assert "BUZZ_CHANNELS" not in _os.environ
+
+    def test_standalone_send_scoped_uses_profile_extra(
+        self, multiplex_scope, default_profile_env, monkeypatch, tmp_path
+    ):
+        multiplex_scope()
+        from gateway.config import PlatformConfig
+
+        cli = tmp_path / "buzz"
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        calls = {}
+
+        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=None):
+            calls["relay"] = relay_url
+            return 0, '{"event_id": "e1"}', ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+        monkeypatch.setattr(
+            _buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1profile"
+        )
+        result = asyncio.run(
+            _standalone_send(
+                PlatformConfig(
+                    enabled=True,
+                    extra={"relay_url": "https://profile.relay", "cli_path": str(cli)},
+                ),
+                "chan-x",
+                "hello",
+            )
+        )
+        assert result.get("success") is True
+        assert calls["relay"] == "https://profile.relay"
+
+
 # ── CLI error contract ────────────────────────────────────────────────────
 
 

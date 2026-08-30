@@ -168,3 +168,113 @@ def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     assert violation is not None
     assert "wecom" in violation
     assert "open policy" in violation
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Plugin-platform extra.allowed_users fallback (#98738 / #82871)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _make_buzz_multiplex_runner(monkeypatch, extra):
+    """Runner whose secondary 'coder' profile runs a live Buzz adapter."""
+    from gateway.run import GatewayRunner
+    from tests.gateway.test_buzz_adapter import _normalize_user_ref
+
+    for key in (
+        "BUZZ_ALLOWED_USERS",
+        "BUZZ_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+
+    adapter = SimpleNamespace(
+        config=PlatformConfig(enabled=True, extra=extra),
+        # The Buzz adapter exposes this hook so npub allowlist entries match
+        # the hex-pubkey user ids the gateway authorizes.
+        normalize_user_id=_normalize_user_ref,
+    )
+    runner.adapters = {}
+    runner._profile_adapters = {"coder": {Platform.BUZZ: adapter}}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+    return runner
+
+
+def _buzz_source(user_id):
+    return SessionSource(
+        platform=Platform.BUZZ,
+        user_id=user_id,
+        chat_id="chat-1",
+        user_name="member",
+        chat_type="dm",
+        profile="coder",
+    )
+
+
+def _patch_buzz_registry(monkeypatch, allowed_users_env="BUZZ_ALLOWED_USERS"):
+    from gateway.platform_registry import platform_registry
+
+    real_get = platform_registry.get
+
+    def _get(key):
+        if key == "buzz":
+            return SimpleNamespace(allowed_users_env=allowed_users_env)
+        return real_get(key)
+
+    monkeypatch.setattr(platform_registry, "get", _get)
+
+
+def test_secondary_buzz_extra_allowed_users_authorizes_listed_user(monkeypatch):
+    """A secondary profile's extra.allowed_users must authorize its users when
+    the env var only ever carried the default profile's list (#98738/#82871)."""
+    from tests.gateway.test_buzz_adapter import SELF_NPUB, SELF_PUBKEY
+
+    runner = _make_buzz_multiplex_runner(
+        monkeypatch, extra={"allowed_users": [SELF_NPUB]}
+    )
+    _patch_buzz_registry(monkeypatch)
+
+    # user_id arrives as the hex pubkey while the allowlist entry is an npub.
+    assert runner._is_user_authorized(_buzz_source(SELF_PUBKEY)) is True
+
+
+def test_secondary_buzz_extra_allowed_users_denies_unlisted_sender(monkeypatch):
+    """Default-deny is preserved: a sender not in the profile's allowlist
+    stays denied even though the adapter-level list admitted the message."""
+    from tests.gateway.test_buzz_adapter import SELF_PUBKEY
+
+    runner = _make_buzz_multiplex_runner(
+        monkeypatch, extra={"allowed_users": ["npub1" + "b" * 56]}
+    )
+    _patch_buzz_registry(monkeypatch)
+
+    assert runner._is_user_authorized(_buzz_source(SELF_PUBKEY)) is False
+
+
+def test_secondary_buzz_without_extra_allowlist_stays_default_deny(monkeypatch):
+    """No extra.allowed_users configured: nothing changes, the default-deny
+    path applies (no fail-open via an empty list)."""
+    from tests.gateway.test_buzz_adapter import SELF_PUBKEY
+
+    runner = _make_buzz_multiplex_runner(monkeypatch, extra={})
+    _patch_buzz_registry(monkeypatch)
+
+    assert runner._is_user_authorized(_buzz_source(SELF_PUBKEY)) is False
+
+
+def test_extra_allowed_users_not_consulted_without_registry_declaration(monkeypatch):
+    """The fallback is gated on the platform's registry entry declaring
+    allowed_users_env — a platform without that contract keeps the previous
+    behavior even if its extra happens to hold an allowed_users key."""
+    from tests.gateway.test_buzz_adapter import SELF_PUBKEY
+
+    runner = _make_buzz_multiplex_runner(
+        monkeypatch, extra={"allowed_users": ["someone"]}
+    )
+    _patch_buzz_registry(monkeypatch, allowed_users_env="")
+
+    assert runner._is_user_authorized(_buzz_source("someone")) is False

@@ -10978,6 +10978,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
+        #   {"action": "reply_and_skip", "text": ...}-> send fixed reply; terminate before auth/LLM
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
@@ -10998,6 +10999,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not isinstance(_result, dict):
                     continue
                 _action = _result.get("action")
+                if _action == "reply_and_skip":
+                    _text = _result.get("text")
+                    if isinstance(_text, str) and _text.strip():
+                        return _text
+                    logger.warning("pre_gateway_dispatch reply_and_skip ignored: missing text")
+                    return None
                 if _action == "skip":
                     logger.info(
                         "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",

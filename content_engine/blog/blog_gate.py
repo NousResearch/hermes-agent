@@ -13,7 +13,7 @@ Checks (in order):
   2. blog_reviewer.review — voice, accuracy, hype, structure (LLM second opinion)
   3. Em-dash Unicode scan (U+2014, U+2013)
   4. Minimum word count vs stream word_target
-  5. Required section check ("What I'd try next" or "Takeaway")
+  5. Meaningful closing-section check (decision, implication, reflection, etc.)
   6. External link presence (AI/PM streams only; builder exempt)
 
 The reviewer LLM call degrades to neutral pass on infra failure (never blocks
@@ -57,17 +57,20 @@ def _word_count(body: str) -> int:
 
 
 def _has_required_section(body: str) -> bool:
-    """Check for 'What I'd try next' or 'Takeaway' H2 section.
+    """Check that the final H2 gives the article a real closing move.
 
-    Matches the same heuristic as article_gates._has_takeaway but also
-    accepts '## Takeaway' as a standalone heading.
+    Keep the helper name for callers, but do not require a ritual takeaway
+    heading. A decision, implication, reflection, limitation or boundary is
+    equally valid when it is the final section.
     """
-    for line in body.splitlines():
-        if line.startswith("## "):
-            head = line.lower()
-            if any(kw in head for kw in ("try next", "takeaway", "try this")):
-                return True
-    return False
+    closing_terms = (
+        "try next", "takeaway", "try this", "reflection", "implication",
+        "decision", "boundary", "limitation", "limitations", "trade-off",
+        "tradeoffs", "what changes", "next move", "bottom line",
+    )
+    headings = [line[3:].strip().lower() for line in body.splitlines()
+                if line.startswith("## ")]
+    return bool(headings and any(term in headings[-1] for term in closing_terms))
 
 
 def _has_external_link(body: str) -> bool:
@@ -123,9 +126,12 @@ def adhoc_check(draft: dict, stream: str = "ai") -> tuple[str, list[str]]:
     if wc < min_words:
         issues.append(f"Post too short: {wc} words (min {min_words} for {stream} stream)")
 
-    # 5. Required section: "What I'd try next" or "Takeaway".
+    # 5. Require a meaningful closing section, without forcing a ritual heading.
     if not _has_required_section(body):
-        issues.append("Missing required section: '## What I'd try next' or '## Takeaway'")
+        issues.append(
+            "Missing meaningful closing section (e.g. decision, implication, "
+            "reflection or boundary)"
+        )
 
     # 6. External link presence + dead-link check (AI/PM/research only;
     # builder exempt). The research-roundup stream explicitly requires

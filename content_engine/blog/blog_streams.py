@@ -76,17 +76,20 @@ STREAMS: dict[str, dict] = {
         "source": "research-paper",
         "format": "essay",
         "voice": (
-            "Educational for the PM market: translate AI research findings into "
-            "product-management practice. Explain the concept plainly, then apply it "
-            "to PM work -- workflows, adoption, skills, decisions. Authoritative but "
-            "accessible; minimal jargon. Personal experience is occasional seasoning, "
-            "not the substance."
+            "Technically fluent product-management analysis. Translate the technical "
+            "mechanism into product choices, user impact, delivery constraints, "
+            "adoption, risk, cost and ownership. Use Sahil's real experience and "
+            "judgement when the supplied material supports it. Write plainly, take a "
+            "bounded position, and keep uncertainty where it matters. Do not write "
+            "like a software manual or a generic PM thought-leadership post."
         ),
         "structure": (
-            "1) the research concept explained simply; 2) why it matters for PMs; "
-            "3) concrete application (workflow / adoption / skill); 4) a short "
-            "'## Reflection' section with a considered personal take. Every post "
-            "carries the reflective section."
+            "Choose the form that fits the evidence. Start with the real problem, "
+            "observation or decision; explain only the technical mechanism needed to "
+            "understand it; then connect it to the product consequence, trade-off, "
+            "experiment or decision rule. Use a reflective personal take when the source "
+            "supports it. End when the argument is complete rather than adding a "
+            "ritual takeaway heading."
         ),
         "word_target": 1500,
         "section_target": 5,

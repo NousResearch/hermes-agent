@@ -61,7 +61,19 @@ def test_check_rejects_no_takeaway():
     )
     res = ag.check(_draft(body=body))
     assert not res.passed
-    assert any("takeaway" in i.lower() or "try" in i.lower() for i in res.issues)
+    assert any("meaningful closing section" in i.lower() for i in res.issues)
+
+
+def test_check_accepts_decision_as_closing_section():
+    body = (
+        "# T\n\nLede. Lede. Lede.\n\n"
+        "## A\n\n" + ("body " * 30) + "\n\n"
+        "## B\n\n" + ("body " * 30) + "\n\n"
+        "## C\n\n" + ("body " * 30) + "\n\n"
+        "## Decision\n\n" + ("Choose the smaller change first. " * 20) + "\n"
+    )
+    res = ag.check(_draft(body=body))
+    assert not any("takeaway" in issue.lower() for issue in res.issues)
 
 
 def test_data_integrity_flags_fabricated_number():

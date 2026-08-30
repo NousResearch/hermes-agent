@@ -202,6 +202,10 @@ def test_has_required_section_takeaway():
     assert _has_required_section("## Takeaway\nsome text")
 
 
+def test_has_required_section_accepts_reflection_as_closing_move():
+    assert _has_required_section("## Mechanism\nbody\n## Reflection\nsome text")
+
+
 def test_has_required_section_missing():
     assert not _has_required_section("## Something else\nsome text")
 
@@ -314,7 +318,7 @@ def test_adhoc_check_fails_on_missing_takeaway(mock_gate, mock_review):
     draft = _make_draft(_NO_TAKEAWAY_BODY, stream="ai")
     status, issues = adhoc_check(draft, "ai")
     assert status == "fail"
-    assert any("required section" in i.lower() for i in issues)
+    assert any("meaningful closing section" in i.lower() for i in issues)
 
 
 @patch("blog.blog_gate._blog_review")

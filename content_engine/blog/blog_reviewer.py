@@ -23,9 +23,27 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Optional
 
 from llm_generate import _call_llm, _llm_configs
+
+
+HOUSE_STYLE_PATH = Path(__file__).resolve().parents[1] / "docs" / "sahilblog-house-style-v1.md"
+
+
+def _load_house_style() -> str:
+    """Load the shared editorial contract for the independent review."""
+    try:
+        return HOUSE_STYLE_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return (
+            "The article should sound like a technically fluent product manager: "
+            "concrete, opinionated and plain. Technical detail must support a "
+            "product decision, user impact, delivery trade-off, cost, risk or "
+            "measurable outcome. Each paragraph must move the argument forward. "
+            "Do not invent experience or specifics."
+        )
 
 
 def _build_rubric_prompt(draft: dict, stream: str) -> dict:
@@ -47,6 +65,9 @@ def _build_rubric_prompt(draft: dict, stream: str) -> dict:
         "## Stream structure rule",
         structure,
         "",
+        "## SahilBlog house style (primary editorial contract)",
+        _load_house_style(),
+        "",
         "## Rubric (score each 0-10, 10 = best)",
         "- accuracy_risk: Are stated facts and numbers grounded in real context",
         "  or fabricated? 10 = all grounded, 0 = fabricated.",
@@ -55,8 +76,16 @@ def _build_rubric_prompt(draft: dict, stream: str) -> dict:
         "  proprietary internals, API keys, or implementation secrets? 10 = no",
         "  leakage, 0 = full leak.",
         "- hype_honesty: Is the hype-vs-reality honest? 10 = candid, 0 = oversold.",
-        "- structure: British English, zero em-dashes, proper H2 sections, no",
-        "  AI-isms ('Let's dive in', 'Great question', etc.)?",
+        "- structure: British English, proportionate headings, readable movement,",
+        "  and no AI-isms ('Let's dive in', 'Great question', etc.)?",
+        "- flow: Does each paragraph add a fact, mechanism, example, distinction,",
+        "  consequence, decision or limitation, with a natural bridge to the next?",
+        "- technical_pm_lens: Does the technical explanation support a product",
+        "  choice, user impact, delivery constraint, cost, risk, adoption or ownership?",
+        "- material_integrity: Are personal experience, numbers, examples and",
+        "  authority claims supported by the supplied draft/context rather than invented?",
+        "- formulaicness: Does the article avoid a forced universal skeleton, ritual",
+        "  'Signal:' callouts, repeated thesis restatements and ceremonial endings?",
         "",
         "## Output format (STRICT JSON, no prose)",
         "Return exactly this JSON shape:",
@@ -64,7 +93,8 @@ def _build_rubric_prompt(draft: dict, stream: str) -> dict:
         ' "claims_to_verify": [<strings>], "rubric": {',
         '   "accuracy_risk": <int>, "voice_fidelity": <int>,',
         '   "secret_sauce_leakage": <int>, "hype_honesty": <int>,',
-        '   "structure": <int>}}',
+        '   "structure": <int>, "flow": <int>, "technical_pm_lens": <int>,',
+        '   "material_integrity": <int>, "formulaicness": <int>}}',
         "",
         "Score is the overall average of rubric dimensions. passed is true when",
         "score >= 6 AND issues is empty. claims_to_verify lists any specific",

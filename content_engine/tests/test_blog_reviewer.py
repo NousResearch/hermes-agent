@@ -25,6 +25,19 @@ def test_review_degrades_to_pass_when_model_unavailable(monkeypatch):
     assert r["degraded"] is True
 
 
+def test_reviewer_prompt_includes_house_style_and_flow_dimensions():
+    """The independent reviewer receives the same style contract as the writer."""
+    prompts = br._build_rubric_prompt(
+        {"title": "A technical PM article", "body_md": "## Section\n\nText."},
+        "pm",
+    )
+    assert "## SahilBlog house style (primary editorial contract)" in prompts["system"]
+    assert "flow:" in prompts["system"]
+    assert "technical_pm_lens:" in prompts["system"]
+    assert "material_integrity:" in prompts["system"]
+    assert "formulaicness:" in prompts["system"]
+
+
 def test_review_parses_valid_json(monkeypatch):
     """When the LLM returns valid JSON, the reviewer parses it."""
     raw = json.dumps({

@@ -62,13 +62,20 @@ def _h2_count(body: str) -> int:
 
 
 def _has_takeaway(body: str) -> bool:
-    """Heuristic: a top-level H2 whose heading mentions 'try next' / 'takeaway' / 'try this'."""
-    for line in body.splitlines():
-        if line.startswith("## "):
-            head = line.lower()
-            if "try next" in head or "takeaway" in head or "try this" in head:
-                return True
-    return False
+    """Return whether the final H2 is a meaningful closing section.
+
+    The historical name is retained for compatibility, but a blog does not
+    need a ritual ``What I'd try next`` heading. Accept headings that close an
+    argument through a decision, implication, reflection or boundary.
+    """
+    closing_terms = (
+        "try next", "takeaway", "try this", "reflection", "implication",
+        "decision", "boundary", "limitation", "limitations", "trade-off",
+        "tradeoffs", "what changes", "next move", "bottom line",
+    )
+    headings = [line[3:].strip().lower() for line in body.splitlines()
+                if line.startswith("## ")]
+    return bool(headings and any(term in headings[-1] for term in closing_terms))
 
 
 def _fabricated_numbers(body: str, context: str) -> list[str]:
@@ -146,9 +153,12 @@ def check(draft: dict) -> GateResult:
         issues.append(f"Need at least 3 H2 sections, found {h2}")
         slop_score += 2
 
-    # 4. Article-only: takeaway / "what I'd try next" heading.
+    # 4. Article-only: meaningful final closing section.
     if not _has_takeaway(body_clean):
-        issues.append("Missing takeaway section (e.g. '## What I'd try next')")
+        issues.append(
+            "Missing meaningful closing section (e.g. decision, implication, "
+            "reflection or boundary)"
+        )
         slop_score += 2
 
     # 5. Data integrity (fabricated numbers) now runs inside the shared gate_post

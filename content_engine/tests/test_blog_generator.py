@@ -50,6 +50,18 @@ def test_build_blog_prompt_includes_stream_voice(monkeypatch):
     assert "k1" in prompts["user"]
 
 
+def test_build_blog_prompt_includes_house_style_without_ritual_ending():
+    """The shared style is primary and the old fixed ending is not mandatory."""
+    plan = {"topic_id": "t1", "title_hint": "technical PM angle",
+            "tags": [], "source": "manual",
+            "signals": [{"signal_id": "t1", "summary": "a real decision"}]}
+    prompts = bg.build_blog_prompt("ai", plan, context_blob="", kb_snippets=[])
+    assert "## SahilBlog house style (primary editorial contract)" in prompts["system"]
+    assert "The writing can discuss APIs, webhooks, queues" in prompts["system"]
+    assert "One final `## What I'd try next` section" not in prompts["system"]
+    assert "let the article form follow the material" in prompts["system"]
+
+
 def test_build_blog_prompt_includes_approved_idea_editorial_brief():
     """A purpose-led intake brief reaches the writer instead of dying in routing."""
     plan = {

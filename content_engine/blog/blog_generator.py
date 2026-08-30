@@ -31,6 +31,28 @@ from blog.source_grounding import ground_post
 from blog.blog_gate import case_study_check as _case_study_check
 
 
+HOUSE_STYLE_PATH = Path(__file__).resolve().parents[1] / "docs" / "sahilblog-house-style-v1.md"
+
+
+def _load_house_style() -> str:
+    """Load the shared SahilBlog style contract without making it mandatory.
+
+    The contract is repository-owned and deliberately separate from the
+    per-brand voice skill. A short fallback keeps the generator usable in
+    packaged or test environments where the docs directory is absent.
+    """
+    try:
+        return HOUSE_STYLE_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return (
+            "Write as a technically fluent product manager. Explain the "
+            "mechanism only as far as it supports a product decision, user "
+            "impact, delivery trade-off, cost, risk or measurable outcome. "
+            "Use concrete evidence, varied natural prose and no invented "
+            "experience or specifics. Let the article's form follow its material."
+        )
+
+
 def enrich_signal(sig: dict) -> str:
     """Per-signal rich context blob via context_enrich."""
     return context_enrich.enrich(sig) or ""
@@ -131,10 +153,10 @@ def build_blog_prompt(stream: str, plan: dict, context_blob: str,
         "- No AI-isms. No 'Let's dive in' / 'In today's world' / 'Great question'.",
         "- No invented statistics. Cite only numbers and terms that appear in the context.",
         "- Prefer concrete specifics over abstraction every time.",
-        f"- Structure: {section_target}+ `## H2` sections in prose. The illustrator "
-        "keys off these headings, so every H2 must be a real section title.",
+        f"- Structure: use {section_target} as a planning target, not a rigid "
+        "template. Use H2 headings only for real changes of subject; let the "
+        "article form follow the material.",
         "- One `# Title` (specific, not clickbait).",
-        "- One `## What I'd try next` or `## Takeaway` section at the end.",
     ]
     if retry_feedback:
         rules.append(f"- Previous attempt rejected: {retry_feedback}")
@@ -143,13 +165,15 @@ def build_blog_prompt(stream: str, plan: dict, context_blob: str,
     stream_mandatory = ""
     if stream == "pm":
         stream_mandatory = (
-            "- MANDATORY: The post MUST end with a `## Reflection` section "
-            "containing a short, considered personal take. This is non-negotiable."
+            "- If the supplied material contains a personal observation or decision, "
+            "use it to ground the article's conclusion. Do not manufacture a "
+            "`## Reflection` section when the material does not support one."
         )
     elif stream == "builder":
         stream_mandatory = (
-            "- MANDATORY: Include a candid reality-check section comparing the "
-            "hype vs the real practice. Honest about what is harder than it looks."
+            "- When the article describes a real build or infrastructure change, "
+            "state the supported trade-offs and what remains unproven. Do not add "
+            "a ceremonial reality-check section if the material has no such detail."
         )
     elif stream == "research":
         stream_mandatory = (
@@ -202,17 +226,22 @@ def build_blog_prompt(stream: str, plan: dict, context_blob: str,
         "",
         "## Brand voice (use exactly)", voice,
         "",
+        "## SahilBlog house style (primary editorial contract)", _load_house_style(),
+        "",
         "## Per-stream structure rule", s.get("structure", ""),
         "",
         _DEPTH_CONTRACT,
         "",
-        "## Structure (mandatory)",
-        f"- One `# Title` (specific, not clickbait).",
-        f"- 2-3 sentence lede / hook paragraph immediately after the title.",
-        f"- {section_target}+ `## H2` sections moving from problem to mechanism to "
-        "worked example to trade-offs.",
-        "- One `## How to apply this` section with concrete steps.",
-        "- One final `## What I'd try next` section.",
+        "## Structure (follow the argument)",
+        "- One `# Title` (specific, not clickbait).",
+        "- Open with the concrete problem, observation, decision or result as "
+        "early as the supplied material allows.",
+        f"- Use roughly {section_target} or fewer `## H2` sections only when "
+        "they mark a real change of subject. Move from situation to mechanism "
+        "to product consequence, evidence, trade-off or boundary as the topic "
+        "requires; do not force every stage.",
+        "- Include a practical next move, decision rule or implication only when "
+        "the evidence supports one. A short, complete ending is valid.",
         stream_mandatory,
         "",
         "## Rules", *rules,
@@ -285,6 +314,8 @@ def _build_research_roundup_prompt(
         f"'research' (Approach A lane).",
         "",
         "## Brand voice (use exactly)", voice,
+        "",
+        "## SahilBlog house style (primary editorial contract)", _load_house_style(),
         "",
         "## Per-stream structure rule", s.get("structure", ""),
         "",

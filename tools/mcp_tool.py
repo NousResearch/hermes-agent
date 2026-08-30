@@ -504,9 +504,13 @@ def _reset_server_error(server_name: str) -> None:
 _parallel_safe_servers: set = set()
 # registry tool name -> raw server name (the generated name is lossy; never re-parse it).
 _mcp_tool_server_names: Dict[str, str] = {}
+# Read-only MCP tools eligible for execute_code, keyed by (registry scope,
+# registry name). Profiles can register the same name with different servers
+# or annotations, so this authority must never be process-global.
+_mcp_tool_read_only: Dict[tuple[Optional[str], str], str] = {}
 
 # Dedicated event loop in a background daemon thread; _lock guards the loop handles, _servers,
-# the status maps and the PID ledgers.
+# status/provenance maps (including _mcp_tool_read_only), and PID ledgers.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 _lock = threading.Lock()

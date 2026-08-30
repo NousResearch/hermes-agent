@@ -533,6 +533,22 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return bool(server_name and _server_key(server_name) in _core._parallel_safe_servers)
 
 
+def get_read_only_mcp_tools() -> Dict[str, str]:
+    """Return ``{registry_name: raw_server_name}`` for live read-only MCP tools.
+
+    Inclusion requires the exact boolean ``readOnlyHint=True`` captured at
+    discovery and successful ownership of that registry name. Generated MCP
+    utilities, collisions, stale entries, and malformed annotations fail closed.
+    """
+    scope = _core._mcp_registry_scope()
+    with _core._lock:
+        return {
+            tool_name: server_name
+            for (tool_scope, tool_name), server_name in _core._mcp_tool_read_only.items()
+            if tool_scope == scope
+        }
+
+
 def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:
     """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
     status (connected / disabled / connecting / failed / configured) and error for failed.

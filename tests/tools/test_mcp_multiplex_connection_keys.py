@@ -12,13 +12,14 @@ import pytest
 from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 
 
-def _tool():
+def _tool(read_only=None):
     return SimpleNamespace(name="t", description="d", inputSchema={"type": "object", "properties": {}},
-                           annotations=None)
+                           annotations=(SimpleNamespace(read_only_hint=read_only)
+                                        if read_only is not None else None))
 
 
-def _server(name, cfg):
-    return SimpleNamespace(name=name, session=object(), _config=cfg, _tools=[_tool()], tool_timeout=30,
+def _server(name, cfg, read_only=None):
+    return SimpleNamespace(name=name, session=object(), _config=cfg, _tools=[_tool(read_only)], tool_timeout=30,
                            initialize_result=None, _registered_tool_names=[], _sampling=None)
 
 
@@ -39,7 +40,7 @@ def two_profiles(tmp_path, monkeypatch):
                "_server_connect_errors", "_server_connect_retry_after", "_server_connect_failures",
                "_server_error_counts", "_server_breaker_opened_at", "_lazy_server_configs",
                "_mcp_tool_server_names", "_orphaned_adopters", "_parallel_safe_servers",
-               "_server_trust_levels", "_tool_read_only_hints")
+               "_server_trust_levels", "_tool_read_only_hints", "_mcp_tool_read_only")
     saved = {n: type(getattr(core, n))(getattr(core, n)) for n in ledgers}
     for n in ledgers:
         getattr(core, n).clear()
@@ -148,6 +149,30 @@ def test_same_named_server_with_other_mtls_identity_is_a_separate_connection(two
     two_profiles("b")
     reg.register_connected_into_current_scope({"x": cfg_b})
     assert "x" in disc._select_new_servers({"x": cfg_b})
+
+
+def test_execute_code_read_only_classification_is_profile_scoped(two_profiles):
+    import tools.mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+
+    cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
+    cfg_b = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer B"}}
+    tool_name = "mcp__x__t"
+
+    two_profiles("a")
+    srv_a = _server("x", cfg_a, read_only=True)
+    disc._adopt_server("x", srv_a)
+    reg._register_server_tools("x", srv_a, cfg_a)
+    assert disc.get_read_only_mcp_tools() == {tool_name: "x"}
+
+    two_profiles("b")
+    srv_b = _server("x", cfg_b, read_only=False)
+    disc._adopt_server("x", srv_b)
+    reg._register_server_tools("x", srv_b, cfg_b)
+    assert disc.get_read_only_mcp_tools() == {}
+
+    two_profiles("a")
+    assert disc.get_read_only_mcp_tools() == {tool_name: "x"}
 
 
 def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profiles):

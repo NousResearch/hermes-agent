@@ -161,6 +161,105 @@ describe('speaker labels', () => {
 
     expect(chat.groupSpeakerLabel('default')).toBe('Hermes')
   })
+
+  it('renders MIDI for a source-qualified remote default', async () => {
+    const { chat, rounds } = await loadRoom()
+    const data = await import('./data')
+
+    const midi = {
+      connectionId: 'midi',
+      connectionLabel: 'MIDI',
+      name: 'default',
+      remoteSource: true,
+      sourceScoped: true
+    }
+
+    data.$botMeta.set({ default: { title: 'Assistant' }, 'midi::default': { title: 'MIDI' } })
+
+    expect(
+      rounds.formatGroupChatLine(
+        { from: { connectionId: 'midi', kind: 'member', name: 'default', source: 'MIDI' }, text: 'present' } as GroupMessage,
+        'builder',
+        [midi]
+      )
+    ).toBe('MIDI [MIDI]: present')
+    expect(chat.groupSpeakerLabel({ connectionId: 'midi', kind: 'member', name: 'default' }, [midi])).toBe('MIDI')
+  })
+
+  it('resolves a legacy MIDI entry only through one matching member', async () => {
+    const { rounds } = await loadRoom()
+    const data = await import('./data')
+
+    const midi = {
+      connectionId: 'midi',
+      connectionLabel: 'MIDI',
+      name: 'default',
+      remoteSource: true,
+      sourceScoped: true
+    }
+
+    data.$botMeta.set({ default: { title: 'Assistant' }, 'midi::default': { title: 'MIDI' } })
+
+    expect(
+      rounds.formatGroupChatLine(
+        { from: { kind: 'member', name: 'default', source: 'MIDI' }, text: 'legacy' } as GroupMessage,
+        'builder',
+        [midi]
+      )
+    ).toBe('MIDI [MIDI]: legacy')
+  })
+
+  it('never gives an unresolved remote default the local Assistant title', async () => {
+    const { rounds } = await loadRoom()
+    const data = await import('./data')
+
+    data.$botMeta.set({ default: { title: 'Assistant' } })
+
+    expect(
+      rounds.formatGroupChatLine(
+        {
+          from: { connectionId: 'unknown', kind: 'member', name: 'default', source: 'Unknown host' },
+          text: 'reply'
+        } as GroupMessage,
+        'builder'
+      )
+    ).toBe('Unknown host [Unknown host]: reply')
+  })
+
+  it('fails closed for an unmatched source-only legacy remote default', async () => {
+    const { rounds } = await loadRoom()
+    const data = await import('./data')
+
+    data.$botMeta.set({ default: { title: 'Assistant' } })
+
+    expect(
+      rounds.formatGroupChatLine(
+        { from: { kind: 'member', name: 'default', source: 'MIDI' }, text: 'legacy' } as GroupMessage,
+        'builder',
+        []
+      )
+    ).toBe('MIDI [MIDI]: legacy')
+  })
+
+  it('fails closed for an ambiguous source-only legacy remote default', async () => {
+    const { rounds } = await loadRoom()
+    const data = await import('./data')
+
+    const twins = [
+      { connectionId: 'midi-a', connectionLabel: 'MIDI', name: 'default', remoteSource: true, sourceScoped: true },
+      { connectionId: 'midi-b', connectionLabel: 'MIDI', name: 'default', remoteSource: true, sourceScoped: true }
+    ]
+
+    data.$botMeta.set({ default: { title: 'Assistant' } })
+
+    expect(
+      rounds.formatGroupChatLine(
+        { from: { kind: 'member', name: 'default', source: 'MIDI' }, text: 'legacy' } as GroupMessage,
+        'builder',
+        twins
+      )
+    ).toBe('MIDI [MIDI]: legacy')
+  })
 })
 
 // #93127: duplicate room delivery. Two raceable paths existed: a member turn
@@ -371,6 +470,24 @@ describe('durable projection', () => {
 })
 
 describe('gateway mirror', () => {
+  it('preserves a remote message connectionId in the bounded mirror', async () => {
+    const { chat } = await loadRoom()
+
+    const snapshot = chat.groupChatSyncSnapshot({
+      Research: {
+        log: [
+          {
+            at: 1,
+            from: { connectionId: 'midi', kind: 'member', name: 'default', source: 'MIDI' },
+            text: 'present'
+          }
+        ]
+      }
+    } as unknown as Record<string, GroupChat>)
+
+    expect(snapshot.rooms['name:Research'].log[0].from.connectionId).toBe('midi')
+  })
+
   it('mirrors room messages and members through bounded profile metadata', async () => {
     const room = await loadRoom()
 

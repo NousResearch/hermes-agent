@@ -870,7 +870,8 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
         name: member.name,
         ...(member.remoteSource
           ? {
-              source: member.connectionLabel || member.connectionId
+              source: member.connectionLabel || member.connectionId,
+              connectionId: member.connectionId
             }
           : {})
       },

@@ -1198,6 +1198,15 @@ function releaseTurnLeasesForScope(scope: string): void {
   }
 }
 
+/** A routed turn lease is authoritative proof that this socket still owns
+ * running work. Connection re-homes clear transient session/UI stores, so the
+ * normal live-work keep-set can be empty while the backend turn is active. */
+function hasTurnLeaseForScope(scope: string): boolean {
+  const prefix = `${scope}\u0000`
+
+  return [...g.turnLeases.keys()].some(key => key.startsWith(prefix))
+}
+
 /**
  * Keep a routed Desktop prompt's socket alive after prompt.submit ACKs.
  *
@@ -1670,6 +1679,9 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       // its whole active lifetime; the live-work pruner must not undo that
       // pin between drain ticks or the socket churn returns.
       relayRetained(entry) ||
+      // prompt.submit ACKs before the turn completes. The turn lease, rather
+      // than transient renderer state, owns this socket until a terminal event.
+      hasTurnLeaseForScope(key) ||
       // A mounted tile / the primary thread is bound to a runtime on this
       // socket (#93892) — pinned for as long as that surface is mounted.
       foregroundPinned(entry) ||
@@ -1680,15 +1692,6 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       // an orphaned lease expires on its own.
       (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now)
     ) {
-      continue
-    }
-
-    // The route is no longer live work. Release turn leases first so their
-    // counted request holds cannot outlive a disposed route or leave a stale
-    // release closure attached to a later same-key socket.
-    releaseTurnLeasesForScope(key)
-
-    if (g.secondaries.get(key) !== entry) {
       continue
     }
 

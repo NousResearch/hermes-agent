@@ -32,6 +32,7 @@ const { hostMock } = vi.hoisted(() => ({
   hostMock: {
     agents: vi.fn(),
     profileRoutes: undefined as unknown,
+    retainProfileSocket: vi.fn(() => vi.fn()),
     request: vi.fn(),
     requestProfile: vi.fn(),
     state: { connectionId: { get: vi.fn(() => 'local') }, profile: { get: () => 'default' } }
@@ -82,6 +83,7 @@ async function mergedRoster(
 ): Promise<RowFixture[]> {
   hostMock.state.connectionId.get.mockReturnValue(liveConnectionId as string)
   hostMock.request.mockResolvedValue(local)
+  hostMock.requestProfile.mockResolvedValue(local)
 
   if (union) {
     hostMock.agents.mockResolvedValue(union)
@@ -125,6 +127,37 @@ describe('no union roster', () => {
     expect(rows[0].last_session?.id).toBe('s1')
   })
 
+  it('source-scopes every rich row when the active remote union lookup fails', async () => {
+    const rows = await mergedRoster(
+      {
+        profiles: [
+          { display_name: 'MIDI', name: 'default' },
+          { display_name: 'Brokkr', name: 'brokkr' }
+        ]
+      },
+      null,
+      'midi'
+    )
+
+    expect(rows).toHaveLength(2)
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          connectionId: 'midi',
+          name: 'default',
+          sourceScoped: true,
+          route: { connectionId: 'midi', mode: 'remote', profile: 'default', targetProfile: 'default' }
+        }),
+        expect.objectContaining({
+          connectionId: 'midi',
+          name: 'brokkr',
+          sourceScoped: true,
+          route: { connectionId: 'midi', mode: 'remote', profile: 'brokkr', targetProfile: 'brokkr' }
+        })
+      ])
+    )
+  })
+
   it('appends nothing when the union is empty', async () => {
     const rows = await mergedRoster(
       { profiles: [{ last_session: { id: 's1', last_active: 1 }, name: 'default' }] },
@@ -136,6 +169,63 @@ describe('no union roster', () => {
 })
 
 describe('the active source annotates; other sources append', () => {
+  it('reads rich identity from the exact active connection and retains that route across roster polls', async () => {
+    hostMock.state.connectionId.get.mockReturnValue('midi')
+    hostMock.request.mockResolvedValue({ profiles: [{ display_name: 'Assistant', name: 'default' }] })
+    hostMock.requestProfile.mockResolvedValue({ profiles: [{ display_name: 'MIDI', name: 'default' }] })
+    hostMock.agents.mockResolvedValue({
+      agents: [
+        {
+          connectionId: 'midi',
+          connectionKind: 'remote',
+          connectionLabel: 'MIDI',
+          handle: 'default-midi',
+          profile: 'default'
+        },
+        {
+          connectionId: 'local',
+          connectionKind: 'local',
+          connectionLabel: 'This device',
+          handle: 'default-this-device',
+          profile: 'default'
+        }
+      ],
+      primaryConnectionId: 'local'
+    })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+
+    const { result, unmount } = renderHook(() => useRoster(), { wrapper })
+
+    await waitFor(() => expect(result.current.data).toBeTruthy())
+
+    const midi = result.current.data?.profiles?.find(row => row.connectionId === 'midi' && row.name === 'default')
+    const local = result.current.data?.profiles?.find(row => row.connectionId === 'local' && row.name === 'default')
+
+    expect(hostMock.requestProfile).toHaveBeenCalledWith(
+      { connectionId: 'midi', mode: 'remote', profile: 'default', targetProfile: 'default' },
+      'profiles.list',
+      {}
+    )
+    expect(hostMock.request).not.toHaveBeenCalled()
+    expect(hostMock.retainProfileSocket).toHaveBeenCalledWith({
+      connectionId: 'midi',
+      mode: 'remote',
+      profile: 'default',
+      targetProfile: 'default'
+    })
+    expect(midi?.display_name).toBe('MIDI')
+    expect(local).toMatchObject({ connectionId: 'local', remoteSource: true })
+
+    const release = hostMock.retainProfileSocket.mock.results[0]?.value
+    unmount()
+    expect(release).toHaveBeenCalledOnce()
+  })
+
   it('keeps rich fields on the annotated row and tags the rest by source', async () => {
     const rows = await mergedRoster(
       { profiles: [{ last_session: { id: 's1', last_active: 1 }, name: 'research' }] },
@@ -581,7 +671,7 @@ describe('a stalled profiles.list cannot pin the spinner forever', () => {
     // Bots sidebar on a spinner with no error card. The 5s refetchInterval and
     // the gateway-open effect already recover drops.
     hostMock.state.connectionId.get.mockReturnValue('local')
-    hostMock.request.mockRejectedValue(new Error('state.db is locked'))
+    hostMock.requestProfile.mockRejectedValue(new Error('state.db is locked'))
 
     const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
 
@@ -594,6 +684,6 @@ describe('a stalled profiles.list cannot pin the spinner forever', () => {
     await waitFor(() => expect(result.current.isError).toBe(true), { timeout: 5000 })
 
     expect(result.current.isLoading).toBe(false)
-    expect(hostMock.request.mock.calls.length).toBeGreaterThan(1)
+    expect(hostMock.requestProfile.mock.calls.length).toBeGreaterThan(1)
   })
 })

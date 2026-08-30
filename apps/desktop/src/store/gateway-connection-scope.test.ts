@@ -48,6 +48,7 @@ const {
   ensureGatewayForProfile,
   openGatewayForAgent,
   pruneSecondaryGateways,
+  retainGatewayForSessionTurn,
   setPrimaryGateway,
   setPrimaryGatewayConnectionId
 } = await import('./gateway')
@@ -167,6 +168,21 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     pruneSecondaryGateways(new Set(['conn:homelab::default']))
 
     expect(gatewayMocks.closed).toEqual([])
+  })
+
+  it('keeps a background connection open while its routed turn lease is active', async () => {
+    await expect(ensureGatewayForAgent('midi', 'brokkr')).resolves.toBe(true)
+    const releaseTurn = await retainGatewayForSessionTurn('midi', 'brokkr', 'runtime-brokkr')
+
+    await expect(ensureGatewayForAgent('local', 'default')).resolves.toBe(true)
+    pruneSecondaryGateways(new Set())
+
+    expect(gatewayMocks.closed).not.toContain('wss://midi.invalid/api/ws?profile=brokkr')
+
+    releaseTurn()
+    pruneSecondaryGateways(new Set())
+
+    expect(gatewayMocks.closed).toContain('wss://midi.invalid/api/ws?profile=brokkr')
   })
 
   it('still keeps a local (profile-keyed) secondary via its bare profile name', async () => {

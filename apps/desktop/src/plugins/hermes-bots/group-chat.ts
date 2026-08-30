@@ -223,6 +223,11 @@ export function groupChatSyncSnapshot(
       from: {
         kind: entry?.from?.kind === 'member' ? 'member' : 'user',
         name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
+        ...(entry?.from?.connectionId
+          ? {
+              connectionId: String(entry.from.connectionId).slice(0, 128)
+            }
+          : {}),
         ...(entry?.from?.source
           ? {
               source: String(entry.from.source).slice(0, 128)
@@ -1222,14 +1227,70 @@ export const GROUP_CHAT_MAX_MEMBERS = 6
  *  thinking…" in group rooms). The untitled primary profile is literally
  *  named "default" — render it as Hermes (matching displayName and the
  *  @hermes handle) so the main agent never loses its name in rooms. */
-export function groupSpeakerLabel(name?: null | string) {
-  const trimmed = (name || '').trim()
+export function groupSpeakerLabel(speaker?: GroupMessageAuthor | null | string, members: GroupMember[] = []) {
+  const entry: Partial<GroupMessageAuthor> =
+    speaker && typeof speaker === 'object' ? speaker : { name: speaker || undefined }
+
+  const trimmed = String(entry?.name || '').trim()
 
   if (!trimmed) {
     return trimmed
   }
 
-  // Bot Mode title (edit dialog) — same first rung as displayName().
+  // Resolve remote speakers through their immutable registry owner. A bare
+  // profile lookup makes MIDI's `default` borrow this device's `default`
+  // title. Legacy entries may infer an owner only from one unique member with
+  // the same profile and source label.
+  const connectionId = String(entry?.connectionId || '').trim()
+  const source = String(entry?.source || '').trim()
+
+  const candidates = members.filter(member => {
+    if (String(member?.name || '').trim() !== trimmed) {
+      return false
+    }
+
+    return connectionId
+      ? String(member?.connectionId || '').trim() === connectionId
+      : Boolean(source) && String(member?.connectionLabel || '').trim() === source
+  })
+
+  const member = candidates.length === 1 ? candidates[0] : null
+  const owner = connectionId || String(member?.connectionId || '').trim()
+
+  // A source-bearing legacy entry that cannot prove one owner is remote but
+  // unresolved. Fail closed to its source label instead of borrowing local
+  // metadata for the same bare profile name.
+  if (source && !owner) {
+    return trimmed.toLowerCase() === 'default' ? source : trimmed
+  }
+
+  if (owner && owner !== 'local') {
+    const scopedTitle = String($botMeta.get()?.[`${owner}::${trimmed}`]?.title || '').trim()
+
+    if (scopedTitle) {
+      return scopedTitle
+    }
+
+    const roster = $lastRoster.get()
+
+    const row = Array.isArray(roster)
+      ? roster.find(bot => bot?.name === trimmed && String(bot?.connectionId || '').trim() === owner)
+      : null
+
+    const remoteTitle = String(
+      row?.ui_meta?.['hermes-bots']?.title || row?.title || row?.display_name || ''
+    ).trim()
+
+    if (remoteTitle) {
+      return remoteTitle
+    }
+
+    // Fail closed. An unresolved remote speaker must never inherit the local
+    // default title.
+    return String(member?.connectionLabel || source || owner).trim()
+  }
+
+  // Local speakers retain the existing title and display-name precedence.
   const title = String($botMeta.get()?.[trimmed]?.title || '').trim()
 
   if (title) {

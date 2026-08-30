@@ -137,6 +137,9 @@ export interface Attachment {
 export interface GroupMessageAuthor {
   kind: 'member' | 'user'
   name: string
+  /** Registry owner of a member-authored message. Required on new remote
+   * entries; absent only on legacy room logs. */
+  connectionId?: string
   /** Connection label, present when the speaker lives on another machine. */
   source?: string
 }

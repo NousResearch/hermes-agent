@@ -15493,13 +15493,35 @@ async function probeSshProfileInventory(connection) {
   }
 }
 
+/** Resolve the descriptor needed for roster REST without opening a remote
+ * gateway socket. URL/cloud sources already expose /api/profiles directly;
+ * building their ordinary connection descriptor would mint a fresh OAuth WS
+ * ticket and register/touch a pooled backend on every five-second roster poll.
+ * Local sources still use the normal owner-claimed path because a real local
+ * process descriptor is required. SSH sources are filtered by the caller. */
+async function rosterDescriptorForRegistryConnection(connection: any) {
+  if (connection.kind === 'remote' || connection.kind === 'cloud') {
+    const authMode = normAuthMode(connection.authMode)
+
+    return {
+      authMode,
+      baseUrl: normalizeRemoteBaseUrl(connection.url),
+      connectionId: connection.id,
+      headers: decryptRemoteHeaders(connection.headers),
+      sharedRemote: true,
+      token: authMode === 'oauth' ? null : decryptDesktopSecret(connection.token)
+    }
+  }
+
+  return backendDialClaims.run(backendScopeKey(connection.id, null), () =>
+    ensureRegistryBackend(connection.id, null)
+  )
+}
+
 async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRegistry()) {
-  // One dead source must not wedge the whole roster: ensureRegistryBackend on
-  // an unreachable remote can block up to the 45s readiness timeout, and the
-  // Bot Mode poll runs every 5s — each poll queued behind the dead dial, so
-  // the renderer painted stale rows for the entire outage (and the roster IPC
-  // hung >30s in live repro). Bound each source's enumeration; a timeout is
-  // reported like any other unreachable source and retried on the next poll.
+  // One dead source must not wedge the whole roster. Even direct /api/profiles
+  // requests can stall behind a network timeout; bound each source so one
+  // unreachable gateway is reported independently and retried by the caller.
   const perSourceTimeoutMs = 10_000
 
   const withEnumerationDeadline = async <T>(work: Promise<T>): Promise<T> => {
@@ -15558,15 +15580,8 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             }
           }
 
-          // Claim-guarded (#90812): this ~5s roster poll can race a renderer's
-          // own reconnect dial for the same connection; coalescing avoids
-          // bootstrapping a second SSH tunnel / remote dashboard.
           const descriptor: any = await withEnumerationDeadline(
-            Promise.resolve(
-              backendDialClaims.run(backendScopeKey(connection.id, null), () =>
-                ensureRegistryBackend(connection.id, null)
-              )
-            )
+            Promise.resolve(rosterDescriptorForRegistryConnection(connection))
           )
 
           const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })

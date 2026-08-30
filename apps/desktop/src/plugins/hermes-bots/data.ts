@@ -7,6 +7,7 @@
  */
 
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
+import { useEffect, useMemo } from 'react'
 
 import { displayName } from './labels'
 import {
@@ -632,10 +633,35 @@ interface UnionRoster {
 }
 
 export function useRoster() {
-  const activeConnectionId = useValue(host.state.connectionId)
+  const activeConnectionId = String(useValue(host.state.connectionId) || '').trim()
+  const activeProfile = String(useValue(host.state.profile) || 'default').trim() || 'default'
+
+  const activeRoute = useMemo<ProfileRoute | null>(
+    () =>
+      activeConnectionId
+        ? {
+            connectionId: activeConnectionId,
+            mode: activeConnectionId === 'local' ? 'local' : 'remote',
+            profile: activeProfile,
+            targetProfile: activeProfile
+          }
+        : null,
+    [activeConnectionId, activeProfile]
+  )
+
+  // The roster refreshes on an interval. Keep the exact active route's socket
+  // across those requests so each tick cannot dial, send one profiles.list,
+  // then tear the WebSocket down. Local routes return a no-op retention.
+  useEffect(() => {
+    if (!activeRoute || typeof host.retainProfileSocket !== 'function') {
+      return undefined
+    }
+
+    return host.retainProfileSocket(activeRoute)
+  }, [activeRoute])
 
   return useQuery({
-    queryKey: [...ROSTER_KEY, activeConnectionId],
+    queryKey: [...ROSTER_KEY, activeConnectionId, activeProfile],
     queryFn: async () => {
       // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
       // against each bot's last local meta write, and a fetch issued before
@@ -662,17 +688,58 @@ export function useRoster() {
         }
       }
 
-      // Owner routing is ambient in the SDK now (post-#92731): requestForBot
-      // resolves the active owner itself, no captured route needed here.
-      const activeBot = {
-        name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
-      }
+      // Identity and data authority must come from the same connection. During
+      // a re-home the ambient $gateway can still be local while connectionId
+      // already says MIDI; reading through it smears local display_name/title
+      // onto the MIDI row and renders "Assistant (@default-midi)". Route the
+      // rich list through the exact owner. Legacy/unscoped builds keep the
+      // ambient fallback.
+      const local =
+        activeRoute && typeof host.requestProfile === 'function'
+          ? await host.requestProfile<RosterSnapshot>(activeRoute, 'profiles.list', {})
+          : await requestForBot<RosterSnapshot>({ name: activeProfile }, 'profiles.list', {})
 
-      const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+      // `profiles.list` is authoritative for rich profile data but does not
+      // carry Desktop's registry owner. Do not wait for the best-effort union
+      // lookup to add that owner: if host.agents() fails, bare MIDI rows are
+      // otherwise mistaken for laptop-local profiles and every click dials
+      // ensureGatewayForProfile(name). Scope every rich row to the active
+      // remote connection immediately; a successful union merge fills in the
+      // presentation fields (label/handle) without changing this owner.
+      const ownedLocal =
+        activeRoute && activeConnectionId !== 'local' && Array.isArray(local?.profiles)
+          ? {
+              ...local,
+              profiles: local.profiles.map(row => {
+                const name = String(row?.name || '').trim()
+
+                if (!name) {
+                  return row
+                }
+
+                const targetProfile = String(row?.targetProfile || name).trim() || name
+
+                return {
+                  ...row,
+                  connectionId: activeConnectionId,
+                  connectionKind: 'remote',
+                  targetProfile,
+                  route: {
+                    connectionId: activeConnectionId,
+                    mode: 'remote' as const,
+                    profile: name,
+                    targetProfile
+                  },
+                  sourceScoped: true
+                }
+              })
+            }
+          : local
+
       // Newer backends inject the teammate-messaging protocol into every
       // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
       // carry a second copy. Older gateways lack the flag: keep appending.
-      serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
+      serverInjectsProtocol = Boolean(ownedLocal?.bot_mode_protocol)
 
       // Multi-source desktops (hermes-agent #86875) also expose the union
       // agent roster across every registered connection. Merge agents from
@@ -683,7 +750,7 @@ export function useRoster() {
         try {
           const union = await host.agents()
           const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
-          const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
+          const merged = mergeMultiSourceRoster(ownedLocal, union, activeConnectionId, previous)
           const sources = Array.isArray(union?.sources) ? union.sources : []
 
           return {
@@ -698,7 +765,7 @@ export function useRoster() {
       }
 
       return {
-        ...(local && typeof local === 'object' ? local : {}),
+        ...(ownedLocal && typeof ownedLocal === 'object' ? ownedLocal : {}),
         fetchedAt: issuedAt
       }
     },

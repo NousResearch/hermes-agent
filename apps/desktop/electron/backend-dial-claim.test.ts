@@ -169,13 +169,19 @@ describe('main.ts wiring for #90812', () => {
     expect(body).toContain('ensureBackend(profile)')
   })
 
-  it('routes the roster-enumeration probe through the single-owner claim', () => {
+  it('enumerates URL-backed roster sources without dialing a gateway or minting a WebSocket ticket', () => {
+    const resolverStart = mainSource.indexOf('async function rosterDescriptorForRegistryConnection')
     const handlerStart = mainSource.indexOf('async function enumerateRegistryAgentSources')
+    expect(resolverStart).toBeGreaterThan(-1)
     expect(handlerStart).toBeGreaterThan(-1)
+    const resolver = mainSource.slice(resolverStart, handlerStart)
     const body = mainSource.slice(handlerStart, handlerStart + 3_700)
 
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
-    expect(body).toContain('ensureRegistryBackend(connection.id, null)')
+    expect(resolver).toContain("connection.kind === 'remote' || connection.kind === 'cloud'")
+    expect(resolver).not.toContain('buildRemoteConnection(')
+    expect(resolver).not.toContain('mintGatewayWsTicket(')
+    expect(body).toContain('rosterDescriptorForRegistryConnection(connection)')
+    expect(body).not.toContain('ensureRegistryBackend(connection.id, null)')
     expect(body).toContain("getJsonForBackend(descriptor, '/api/profiles'")
   })
 

@@ -494,7 +494,7 @@ describe('requestForSessionProfile', () => {
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
   })
 
-  it('releases turn leases when their route is pruned and creates a fresh route next time', async () => {
+  it('does not let ordinary pruning release an active routed turn lease', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
     installDesktop()
@@ -508,10 +508,10 @@ describe('requestForSessionProfile', () => {
     expect(secondaryGateways[0].close).not.toHaveBeenCalled()
 
     pruneSecondaryGateways(new Set())
-    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
 
     await requestForSessionProfile(route, ambient as never, 'session.resume', { session_id: 'rt-pruned' })
-    expect(secondaryGateways).toHaveLength(2)
+    expect(secondaryGateways).toHaveLength(1)
   })
 
   it('releases a retained turn when its owning socket closes without a terminal event', async () => {

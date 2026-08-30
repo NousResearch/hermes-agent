@@ -156,7 +156,7 @@ export function rotateGroupSpeakers(members: GroupMember[], round: number) {
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
-export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
+export function formatGroupChatLine(entry: GroupMessage, viewerName: string, members: GroupMember[] = []) {
   // Attachments are staged into each member's session as real payloads; the
   // transcript line names them so the delta text and the bytes line up.
   const attached =
@@ -179,7 +179,7 @@ export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
+  return `${groupSpeakerLabel(entry.from, members)}${suffix}${source}: ${entry.text}${attached}`
 }
 
 interface GroupChatTurnPromptInput {
@@ -620,7 +620,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
           viewer: member,
           deltaLines: delta
             .slice(-GROUP_CHAT_HISTORY_LIMIT)
-            .map((e: GroupMessage) => formatGroupChatLine(e, member.name))
+            .map((e: GroupMessage) => formatGroupChatLine(e, member.name, members))
         })
 
         // Images riding this delta (user attachments — member entries don't
@@ -716,7 +716,8 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
               name: member.name,
               ...(member.remoteSource
                 ? {
-                    source: member.connectionLabel || member.connectionId
+                    source: member.connectionLabel || member.connectionId,
+                    connectionId: member.connectionId
                   }
                 : {})
             },
@@ -796,7 +797,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                 // that cites it.
                 deltaLines: delta
                   .slice(-GROUP_CHAT_HISTORY_LIMIT)
-                  .map((e: GroupMessage) => formatGroupChatLine(e, member.name))
+                  .map((e: GroupMessage) => formatGroupChatLine(e, member.name, members))
               })
 
               updateGroupChat(group, (r: GroupChatRoom) => {
@@ -840,7 +841,8 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                     name: member.name,
                     ...(member.remoteSource
                       ? {
-                          source: member.connectionLabel || member.connectionId
+                          source: member.connectionLabel || member.connectionId,
+                          connectionId: member.connectionId
                         }
                       : {})
                   },

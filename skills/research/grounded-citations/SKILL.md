@@ -25,9 +25,10 @@ the fetched page text), claims from model knowledge are flagged `[unverified]`,
 and `verify --evidence` fails any draft whose cited sources carry no evidence.
 
 This skill covers answers in chat, written documents (markdown, PDF, docx,
-slides), and research reports. It does not cover academic BibTeX pipelines —
-for conference papers use the `arxiv` skill, which this skill
-feeds (see `references/citation-formats.md`).
+slides), and research reports. It does not cover full academic manuscript or
+venue-formatting pipelines. Use the `arxiv` skill for paper discovery and
+BibTeX generation, then apply the verification procedure in
+`references/citation-formats.md`.
 
 ## When to Use
 

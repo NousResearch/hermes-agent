@@ -1905,3 +1905,66 @@ class TestOpenVikingEnvWriter:
         assert env.read_text(encoding="utf-8").splitlines() == [
             "A=1", "OPENAI_API_KEY=new", "B=2",
         ]
+
+
+def test_initialize_threads_gateway_user_identity(monkeypatch):
+    """The gateway threads user_id into initialize() so memory providers can
+    scope per-user data (#98498). OpenViking used to drop it, attributing
+    every unnamed preference to the single configured tenant user."""
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://viking.example")
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            pass
+
+        def health(self):
+            return False
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1", platform="cli", user_id="alice")
+
+    assert provider._user_id == "alice"
+    # The configured tenant stays the shared data space, untouched.
+    assert provider._user != "alice"
+
+    # Without a gateway identity nothing changes (single-user instances).
+    provider2 = OpenVikingMemoryProvider()
+    provider2.initialize("session-2", platform="cli")
+    assert provider2._user_id == ""
+
+
+@pytest.mark.parametrize("user_peer_id", ["alice", ""])
+def test_turn_payloads_use_runtime_user_identity_on_every_write_path(user_peer_id):
+    messages = [
+        {"role": "user", "content": "remember I like tea"},
+        {"role": "assistant", "content": "noted"},
+    ]
+
+    batch = OpenVikingMemoryProvider._messages_to_openviking_batch(
+        messages, assistant_peer_id="hermes", user_peer_id=user_peer_id
+    )
+    provider = _make_provider_with_session("sid", turn_count=0)
+    provider._user_id = user_peer_id
+    provider._agent = "hermes"
+    posted = []
+
+    class Client:
+        def post(self, path, payload):
+            posted.append((path, payload))
+
+    openviking_module._TurnUpload(
+        provider, "sid", [], "remember I like tea", "noted"
+    ).post(Client())
+
+    expected_peer = {"peer_id": user_peer_id} if user_peer_id else {}
+    assert batch[0] == {
+        "role": "user",
+        "parts": [{"type": "text", "text": "remember I like tea"}],
+        **expected_peer,
+    }
+    assert batch[1]["peer_id"] == "hermes"
+    assert posted[0][1]["messages"][0] == batch[0]
+    assert posted[0][1]["messages"][1]["peer_id"] == "hermes"

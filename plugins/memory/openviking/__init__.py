@@ -1161,11 +1161,17 @@ class _TurnUpload:
         if self.batch_messages and self.next_index == len(self.batch_messages):
             return
         # Plain-text fallback: one user + one assistant message.
+        user_message: Dict[str, Any] = {
+            "role": "user",
+            "parts": [{"type": "text", "text": self.user_content[:4000]}],
+        }
+        if self.provider._user_id:
+            user_message["peer_id"] = self.provider._user_id
         assistant_message: Dict[str, Any] = {"role": "assistant", "parts": [{"type": "text", "text": _message_text(self.assistant_content)[:4000]}]}
         if self.provider._agent:
             assistant_message["peer_id"] = self.provider._agent
         client.post(f"/api/v1/sessions/{self.sid}/messages/batch",
-                    {"messages": [{"role": "user", "parts": [{"type": "text", "text": self.user_content[:4000]}]}, assistant_message]})
+                    {"messages": [user_message, assistant_message]})
 
     def run(self) -> None:
         try:
@@ -1208,6 +1214,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def __init__(self):
         self._client: Optional[_VikingClient] = None
         self._endpoint = self._api_key = self._account = self._user = self._agent = ""
+        # The gateway sender is a peer inside the configured OpenViking user.
+        # It is not the OpenViking tenant identity stored in ``self._user``.
+        self._user_id = ""
         self._session_id, self._turn_count, self._hermes_home = "", 0, ""
         # (conn snapshot, user): keyed on the snapshot so every client built from it
         # shares the resolved user and a /reload invalidates it.
@@ -1406,6 +1415,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
+        self._user_id = str(kwargs.get("user_id") or "").strip()
         self._hermes_home = str(kwargs.get("hermes_home") or "").strip() or str(_hermes_home_path())
         self._acquire_run_lock()
         self._profile_prefetched_sessions.clear()
@@ -1961,7 +1971,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return [message for message in messages[start_idx : end_idx + 1] if isinstance(message, dict)]
 
     @staticmethod
-    def _messages_to_openviking_batch(messages: List[Dict[str, Any]], *, assistant_peer_id: str = "") -> List[Dict[str, Any]]:
+    def _messages_to_openviking_batch(
+        messages: List[Dict[str, Any]],
+        *,
+        assistant_peer_id: str = "",
+        user_peer_id: str = "",
+    ) -> List[Dict[str, Any]]:
         """Convert Hermes canonical messages into OpenViking batch payloads.
 
         Recall-tool calls/results are dropped (re-ingesting recalled memory would
@@ -1969,13 +1984,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
         whose result is in the slice is emitted only via its result part.
         """
         assistant_peer_id = str(assistant_peer_id or "").strip()
+        user_peer_id = str(user_peer_id or "").strip()
         dict_messages = [m for m in messages if isinstance(m, dict)]
         tool_calls_by_id, completed_tool_ids, skipped_tool_ids = _index_tool_calls(dict_messages)
         payload_messages: List[Dict[str, Any]] = []
         pending_tool_parts: List[Dict[str, Any]] = []
 
         def emit(role: str, parts: List[Dict[str, Any]]) -> None:
-            peer = {"peer_id": assistant_peer_id} if role == "assistant" and assistant_peer_id else {}
+            peer_id = assistant_peer_id if role == "assistant" else user_peer_id if role == "user" else ""
+            peer = {"peer_id": peer_id} if peer_id else {}
             payload_messages.append({"role": role, "parts": parts, **peer})
 
         def flush_tool_parts() -> None:
@@ -2029,7 +2046,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if message.get("role") == "user":
                 message["content"] = user_content  # first user message carries the skill-stripped text
                 break
-        batch_messages = self._messages_to_openviking_batch(turn_messages, assistant_peer_id=self._agent)
+        batch_messages = self._messages_to_openviking_batch(
+            turn_messages,
+            assistant_peer_id=self._agent,
+            user_peer_id=self._user_id,
+        )
         if env_var_enabled(_SYNC_TRACE_ENV):
             logger.info(
                 "OpenViking sync_turn trace: session_arg=%r cached_session=%r messages_param_supported=true messages_present=%s "

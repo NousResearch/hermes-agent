@@ -2279,7 +2279,9 @@ def cmd_update(args):
         _finalize_update_receipt(1, f"{type(_update_exc).__name__}: {_update_exc}")
         raise
     else:
-        _finalize_update_receipt(0, "completed at command boundary")
+        from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
+
+        _finalize_update_receipt(0, COMMAND_BOUNDARY_STOP_REASON)
         _update_handoff_exit_code = 0
     finally:
         _update_lock.release()

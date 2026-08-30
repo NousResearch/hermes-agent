@@ -243,8 +243,10 @@ class TestMCPParallelSafetyProvenance:
         second_tool = "mcp__foo_bar__second"
         with mcp_tool._lock:
             saved_map = dict(mcp_tool._mcp_tool_server_names)
+            saved_read_only = dict(mcp_tool._mcp_tool_read_only)
             saved_parallel = set(mcp_tool._parallel_safe_servers)
             mcp_tool._mcp_tool_server_names.clear()
+            mcp_tool._mcp_tool_read_only.clear()
             mcp_tool._parallel_safe_servers.clear()
             mcp_tool._parallel_safe_servers.add("foo-bar")
 
@@ -262,6 +264,8 @@ class TestMCPParallelSafetyProvenance:
             with mcp_tool._lock:
                 mcp_tool._mcp_tool_server_names.clear()
                 mcp_tool._mcp_tool_server_names.update(saved_map)
+                mcp_tool._mcp_tool_read_only.clear()
+                mcp_tool._mcp_tool_read_only.update(saved_read_only)
                 mcp_tool._parallel_safe_servers.clear()
                 mcp_tool._parallel_safe_servers.update(saved_parallel)
 

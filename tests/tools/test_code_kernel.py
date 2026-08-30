@@ -101,6 +101,16 @@ class TestSessionStatePersistence(unittest.TestCase):
             second = _run("print(_j.dumps({'k': 1}))")
         self.assertIn('{"k": 1}', second["output"])
 
+    def test_changed_rpc_budget_restarts_kernel(self):
+        """A persistent RPC server must not keep a stale configured budget."""
+        with _kernel_config(max_mcp_tool_calls=1):
+            _run("x = 41")
+        with _kernel_config(max_mcp_tool_calls=2):
+            second = _run("print('x' in dir())")
+        self.assertEqual(second["status"], "success", second)
+        self.assertEqual(second["kernel"]["reused"], False)
+        self.assertIn("False", second["output"])
+
 
 class TestKernelLifecycle(unittest.TestCase):
     def test_kernel_exits_when_its_backend_parent_dies(self):

@@ -315,6 +315,7 @@ class SessionKernel:
         self.death_pipe_w: Optional[int] = None
         self.tool_call_log: List = []
         self.tool_call_counter: List[int] = [0]
+        self.mcp_tool_call_counter: List[int] = [0]
         # Cells currently attached (bumped under the registry lock on selection, dropped when the
         # cell settles). Reaping/cap-eviction skip attached kernels: tearing one down mid-spawn
         # rmtree'd the staging dir under the spawner and killed live cells.
@@ -450,7 +451,8 @@ atexit.register(shutdown_all_kernels)
 
 
 def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
-                 sandbox_tools: frozenset) -> None:
+                 sandbox_tools: frozenset, mcp_tools: frozenset,
+                 max_mcp_tool_calls: int) -> None:
     """Serve tool RPC for the kernel's whole life: ``_rpc_server_loop`` returns on disconnect or
     its 300s idle timeout, and a kernel idles longer between cells, so re-accept until teardown
     (the client stub reconnects: HERMES_RPC_PERSISTENT). The serving thread carries NO frozen
@@ -465,7 +467,9 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
     while not kernel.stop_event.is_set():
         _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
                          max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
-                         dispatch=_dispatch)
+                         dispatch=_dispatch, mcp_tools=mcp_tools,
+                         mcp_tool_call_counter=kernel.mcp_tool_call_counter,
+                         max_mcp_tool_calls=max_mcp_tool_calls)
 
 
 def _stdout_reader(kernel: SessionKernel) -> None:
@@ -580,14 +584,16 @@ def _parent_process_handle(child_env: Dict[str, str]):
 
 
 def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
-           sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "") -> None:
+           sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "",
+           mcp_tools: frozenset = frozenset(), max_mcp_tool_calls: int = 0) -> None:
     from tools.code_execution_env import _build_child_env
     from tools.code_execution_tool import generate_hermes_tools_module
     kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_")
     kernel.rpc_token = secrets.token_urlsafe(32)
     kernel.sentinel = "@@HERMES-KERNEL-" + secrets.token_urlsafe(16) + "@@"
     rpc_endpoint = _bind_rpc_socket(kernel)
-    for name, src in (("hermes_tools.py", generate_hermes_tools_module(list(sandbox_tools))),
+    for name, src in (("hermes_tools.py", generate_hermes_tools_module(
+                           list(sandbox_tools), mcp_tools=list(mcp_tools))),
                       ("hermes_kernel_runner.py", KERNEL_RUNNER_SOURCE)):
         Path(kernel.tmpdir, name).write_text(src, encoding="utf-8")
     child_env = _build_child_env(rpc_endpoint=rpc_endpoint, rpc_token=kernel.rpc_token,
@@ -622,7 +628,9 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
             os.close(death_r)
     # Deliberately NOT propagate_context_to_thread: that would freeze the spawning cell's
     # context/callbacks into the server thread for life. Authority is rebound per cell.
-    for target, args in ((_rpc_forever, (kernel, max_tool_calls, sandbox_tools)),
+    for target, args in ((_rpc_forever, (
+                             kernel, max_tool_calls, sandbox_tools, mcp_tools,
+                             max_mcp_tool_calls)),
                          (_stdout_reader, (kernel,)), (_stderr_reader, (kernel,))):
         threading.Thread(target=target, args=args, daemon=True).start()
 
@@ -697,7 +705,9 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
     cell_status = payload.get("status", "")
     result: Dict[str, Any] = {
         "status": status, "output": stdout_text, "exit_code": 0,
-        "tool_calls_made": kernel.tool_call_counter[0], "duration_seconds": duration,
+        "tool_calls_made": kernel.tool_call_counter[0],
+        "mcp_tool_calls_made": kernel.mcp_tool_call_counter[0],
+        "duration_seconds": duration,
         "kernel": {"mode": "session", "reused": reused,
                    "execution_count": kernel.execution_count, "state_reset": state_reset},
     }
@@ -744,16 +754,31 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
 
 def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
-    sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
+    sandbox_tools: frozenset, mcp_tools: frozenset,
+    timeout: int, max_tool_calls: int, max_mcp_tool_calls: int,
+    reset: bool, is_interrupted,
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
-    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
+    # The long-lived RPC thread captures both call budgets at spawn. Include
+    # them in the identity so a config change cannot keep enforcing stale
+    # limits until an unrelated kernel reset.
+    key = (
+        _resolve_owner(task_id) or "",
+        mode,
+        child_python,
+        child_cwd,
+        tuple(sorted(sandbox_tools)),
+        max_tool_calls,
+        max_mcp_tool_calls,
+    )
     exec_start = time.monotonic()
     kernel, state_reset = _acquire_kernel(key, reset)
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
-                         sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
+                         sandbox_tools=sandbox_tools, mcp_tools=mcp_tools,
+                         timeout=timeout, max_tool_calls=max_tool_calls,
+                         max_mcp_tool_calls=max_mcp_tool_calls,
                          is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset)
     finally:
         with _REGISTRY.lock:
@@ -767,7 +792,8 @@ def execute_in_session_kernel(
 
 
 def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, child_python: str,
-              child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
+              child_cwd: str, sandbox_tools: frozenset, mcp_tools: frozenset,
+              timeout: int, max_tool_calls: int, max_mcp_tool_calls: int,
               is_interrupted, exec_start: float, state_reset: bool) -> str:
     reused = kernel.proc is not None
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
@@ -777,10 +803,13 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
         try:
             if kernel.proc is None:
                 _spawn(kernel, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
-                       sandbox_tools=sandbox_tools, max_tool_calls=max_tool_calls)
+                       sandbox_tools=sandbox_tools, mcp_tools=mcp_tools,
+                       max_tool_calls=max_tool_calls,
+                       max_mcp_tool_calls=max_mcp_tool_calls)
             assert kernel.proc is not None and kernel.proc.stdin is not None
             # Per-cell tool budget: the RPC loop enforces counter < max; reset without restarting.
             kernel.tool_call_counter[0] = 0
+            kernel.mcp_tool_call_counter[0] = 0
             kernel.raw.drain(), kernel.stderr.drain()  # raw output leaked between cells belongs to no cell
             kernel.cell_authority = authority
             kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
@@ -797,6 +826,7 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
             logger.error("session kernel failed: %s: %s", type(exc).__name__, exc, exc_info=True)
             _REGISTRY.discard(key, kernel)
             return _error_result(str(exc), tool_calls_made=kernel.tool_call_counter[0],
+                                 mcp_tool_calls_made=kernel.mcp_tool_call_counter[0],
                                  duration=round(time.monotonic() - exec_start, 2))
         finally:
             # The cell has settled on every path: its tool authority retires with it, so

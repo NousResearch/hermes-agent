@@ -243,6 +243,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
 
     class NonRotatingCompressAgent:
         last_instance = None
+        compress_kwargs = None
 
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
@@ -260,6 +261,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
             # session row id, the same task_id the main turn hands to
             # run_conversation.
             self.compress_task_id = _kwargs.get("task_id")
+            type(self).compress_kwargs = dict(_kwargs)
             # No session_db → cannot rotate: session_id is UNCHANGED, and this
             # is a failure-to-rotate, not an in-place success.
             return ([{"role": "assistant", "content": "summary only"}], None)
@@ -345,6 +347,12 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     result = await runner._handle_message(event)
 
     assert result == "ok"
+    # Hygiene compaction must forward the live session task_id (the dedup
+    # bucket that survives compaction), not the "default" fallback that
+    # resets the skill_view/read_file stub pointer across the boundary (#98206).
+    # In this test the live session_id is "sess-1" — the same task_id the
+    # main turn hands to run_conversation.
+    assert NonRotatingCompressAgent.compress_kwargs["task_id"] == "sess-1"
     # The transcript must NOT be rewritten — the original is preserved.
     runner.session_store.rewrite_transcript.assert_not_called()
     # #98206: hygiene compaction must scope the dedup reset to the LIVE

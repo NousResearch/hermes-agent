@@ -479,6 +479,32 @@ def _meta_key(session_id: str) -> str:
 _DB_CACHE: Dict[str, Any] = {}
 _DB_BOOTSTRAP_LOCK = threading.Lock()
 _DB_BOOTSTRAP_INFLIGHT: Dict[str, threading.Event] = {}
+_GOAL_GENERATION_LOCK = threading.Lock()
+_GOAL_GENERATIONS: Dict[Tuple[str, str], int] = {}
+
+
+def _goal_generation_key(session_id: str) -> Tuple[str, str]:
+    """Profile-scoped key for invalidating cached goal managers in this process."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = str(get_hermes_home())
+    except Exception:  # pragma: no cover - defensive import fallback
+        home = ""
+    return home, session_id
+
+
+def _goal_generation(session_id: str) -> int:
+    with _GOAL_GENERATION_LOCK:
+        return _GOAL_GENERATIONS.get(_goal_generation_key(session_id), 0)
+
+
+def _bump_goal_generation(session_id: str) -> int:
+    key = _goal_generation_key(session_id)
+    with _GOAL_GENERATION_LOCK:
+        generation = _GOAL_GENERATIONS.get(key, 0) + 1
+        _GOAL_GENERATIONS[key] = generation
+        return generation
 
 # How long a loop-thread caller waits for an ALREADY-RUNNING bootstrap before degrading to None.
 # Normal SessionDB init is ~10-100ms so a mid-bootstrap call usually picks the cached instance up;
@@ -628,6 +654,26 @@ def load_goal(session_id: str) -> Optional[GoalState]:
         return None
 
 
+def load_goal_authoritative(session_id: str) -> Optional[GoalState]:
+    """Read canonical goal state, raising when storage is unavailable or corrupt."""
+    session_id = (session_id or "").strip()
+    if not session_id:
+        raise ValueError("session identity is required")
+    db = _get_session_db()
+    if db is None:
+        raise RuntimeError("session goal storage is unavailable")
+    try:
+        raw = db.get_meta(_meta_key(session_id))
+    except Exception as exc:
+        raise RuntimeError("persisted goal read failed") from exc
+    if not raw:
+        return None
+    try:
+        return GoalState.from_json(raw)
+    except Exception as exc:
+        raise RuntimeError("persisted goal state is invalid") from exc
+
+
 def save_goal(session_id: str, state: GoalState) -> bool:
     """Persist a goal to SessionDB and report whether the write succeeded."""
     if not session_id:
@@ -641,6 +687,7 @@ def save_goal(session_id: str, state: GoalState) -> bool:
     except Exception as exc:
         logger.debug("GoalManager: set_meta failed: %s", exc)
         return False
+    _bump_goal_generation(session_id)
     return True
 
 
@@ -1071,6 +1118,7 @@ class GoalManager:
         self._state: Optional[GoalState] = load_goal(session_id)
         self._loaded_json = self._state.to_json() if self._state is not None else None
         self._dirty_since: Optional[float] = None
+        self._seen_generation = _goal_generation(session_id)
 
     # --- introspection ------------------------------------------------
 
@@ -1078,8 +1126,25 @@ class GoalManager:
     def state(self) -> Optional[GoalState]:
         return self.refresh()
 
+    def refresh_if_stale(self) -> bool:
+        """Authoritatively reload after another manager persisted this session."""
+        target_generation = _goal_generation(self.session_id)
+        if target_generation == self._seen_generation:
+            return False
+        persisted = load_goal_authoritative(self.session_id)
+        self._state = None if persisted is None or persisted.status == "cleared" else persisted
+        self._loaded_json = self._state.to_json() if self._state is not None else None
+        self._dirty_since = None
+        self._seen_generation = target_generation
+        return True
+
     def refresh(self) -> Optional[GoalState]:
         """Reload state written by another manager without losing a failed local write."""
+        try:
+            if self.refresh_if_stale():
+                return self._state
+        except Exception:
+            return self._state
         if (
             self._dirty_since is None
             and self._state is not None
@@ -1149,6 +1214,7 @@ class GoalManager:
         self._dirty_since = None if saved else self._state.updated_at
         if saved:
             self._loaded_json = self._state.to_json()
+            self._seen_generation = _goal_generation(self.session_id)
         return self._state
 
     def _require_goal(self) -> GoalState:
@@ -1182,6 +1248,19 @@ class GoalManager:
         )
         return self._save()
 
+    def update(self, goal: str, *, max_turns: Optional[int] = None) -> Optional[GoalState]:
+        """Update text/budget while preserving lifecycle state and consumed turns."""
+        goal = (goal or "").strip()
+        if not goal:
+            raise ValueError("goal text is empty")
+        self.refresh()
+        if self._state is None or self._state.status not in {"active", "paused"}:
+            return None
+        self._state.goal = goal
+        if max_turns is not None:
+            self._state.max_turns = int(max_turns)
+        return self._save()
+
     def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
         """Attach or replace the completion contract on the active goal."""
         self.refresh()
@@ -1210,15 +1289,20 @@ class GoalManager:
             self._state.turns_used = 0
         return self._save()
 
-    def clear(self) -> None:
+    def clear(self, *, reason: Optional[str] = None) -> Optional[GoalState]:
         self.refresh()
         if self._state is None:
-            return
+            return None
         self._state.status = "cleared"
+        if reason is not None:
+            self._state.paused_reason = None
+            self._state.last_reason = reason
+        cleared = self._state
         self._save()
         self._state = None
         if self._dirty_since is None:
             self._loaded_json = None
+        return cleared
 
     def mark_done(self, reason: str) -> None:
         self.refresh()
@@ -1742,6 +1826,7 @@ __all__ = [
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
     "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
-    "DEFAULT_MAX_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
+    "DEFAULT_MAX_TURNS", "load_goal", "load_goal_authoritative", "save_goal", "clear_goal",
+    "migrate_goal_to_session", "judge_goal",
     "run_kanban_goal_loop",
 ]

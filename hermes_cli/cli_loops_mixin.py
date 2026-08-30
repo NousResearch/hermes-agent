@@ -466,7 +466,15 @@ class CLILoopsMixin:
                     max_turns = 20
                 return GoalManager(session_id=sid, default_max_turns=max_turns)
             return make
-        return self._session_bound_manager("_goal_manager", "goal manager", load)
+        manager = self._session_bound_manager("_goal_manager", "goal manager", load)
+        if manager is None:
+            return None
+        try:
+            manager.refresh_if_stale()
+        except Exception as exc:
+            logging.warning("goal manager refresh failed closed: %s", exc)
+            return None
+        return manager
 
     def _get_heartbeat_manager(self):
         """HeartbeatManager bound to the current session_id (see ``_session_bound_manager``)."""

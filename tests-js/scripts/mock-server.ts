@@ -400,6 +400,22 @@ const BATCH_CLARIFY_TURN: ScriptedTurn = {
   toolCalls: [{ name: 'clarify', args: { questions: BATCH_CLARIFY_QUESTIONS } }],
 }
 
+/**
+ * A marker that makes the mock emit a ONE-ENTRY batch clarify — the exact
+ * payload shape every single question takes since the `questions[]`-only
+ * schema (#95907). Coverage gap called out in #98645: nothing exercised
+ * `questions:[{question, choices}]` before this.
+ */
+export const SINGLE_BATCH_CLARIFY_TRIGGER = 'E2E_SINGLE_BATCH_CLARIFY_TRIGGER'
+export const SINGLE_BATCH_CLARIFY_QUESTIONS = [
+  { question: 'Pick a single-batch drink?', choices: ['Espresso', 'Latte'] },
+]
+
+const SINGLE_BATCH_CLARIFY_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'clarify', args: { questions: SINGLE_BATCH_CLARIFY_QUESTIONS } }],
+}
+
 function includesBatchClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BATCH_CLARIFY_TRIGGER)
@@ -411,6 +427,22 @@ function includesBatchClarifyTrigger(value: unknown): boolean {
 
   if (value && typeof value === 'object') {
     return Object.values(value).some(includesBatchClarifyTrigger)
+  }
+
+  return false
+}
+
+function includesSingleBatchClarifyTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(SINGLE_BATCH_CLARIFY_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesSingleBatchClarifyTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesSingleBatchClarifyTrigger)
   }
 
   return false
@@ -757,6 +789,27 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
                 streamScriptedTurn(res, model, BATCH_CLARIFY_TURN)
               } else {
                 nonStreamingScriptedTurn(res, model, BATCH_CLARIFY_TURN)
+              }
+
+              return
+            }
+          }
+
+          if (includesSingleBatchClarifyTrigger(parsed.messages)) {
+            // Unlike the 2-question trigger (fresh conversation), this one
+            // shares history with it, so "any tool result" would false-positive
+            // — match only THIS turn's answered result by its question text.
+            const hasOwnToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some(
+                (message: { role?: string }) =>
+                  message?.role === 'tool' && JSON.stringify(message).includes('single-batch'),
+              )
+
+            if (!hasOwnToolResult) {
+              if (stream) {
+                streamScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
+              } else {
+                nonStreamingScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
               }
 
               return

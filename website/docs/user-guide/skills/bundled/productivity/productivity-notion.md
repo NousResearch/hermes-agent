@@ -15,7 +15,7 @@ Notion API + ntn CLI: pages, databases, markdown, Workers.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity/notion` |
+| Path | `skills/productivity\notion` |
 | Version | `2.0.0` |
 | Author | community |
 | License | MIT |

@@ -15,7 +15,7 @@ Frontend design guidance, upstream-maintained (impeccable).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/impeccable` |
-| Path | `optional-skills/creative/impeccable` |
+| Path | `optional-skills/creative\impeccable` |
 | Version | `4.1.2` |
 | Author | Paul Bakaus (pbakaus) |
 | License | Apache-2.0 |

@@ -3777,13 +3777,15 @@ class TestCompressionSkipsWhenSummaryWouldInflate:
             # Force lazy resolution while the mock is active (#fixture-pattern)
             _ = c.context_length
 
-        # Build 100 messages with ~600 chars each (≈150 tokens).
-        # middle ≈ 95 * 150 = 14,250 tokens  →  budget = max(2000, 14250*0.20)=2850
-        # guard: 14250 > 2850 + 500 ✓  (compression proceeds)
+        # Build 100 messages each large enough that the tail budget (10K)
+        # can only hold a handful, leaving a substantial compressible middle.
+        # With ~2000 tokens/message the tail fits ~5 messages → middle = ~93
+        # messages = ~186K tokens → budget = max(2000, 186K*0.20) = 37,200.
+        # Guard: 186000 > 37200 + 500 ✓  (compression proceeds)
         msgs = []
         for i in range(100):
             role = "user" if i % 2 == 0 else "assistant"
-            msgs.append({"role": role, "content": f"Message {i}: " + "x" * 580})
+            msgs.append({"role": role, "content": f"Message {i}: " + "x" * 8000})
 
         with patch.object(c, "_generate_summary", return_value="Mock summary"):
             result = c.compress(msgs, current_tokens=160_000)

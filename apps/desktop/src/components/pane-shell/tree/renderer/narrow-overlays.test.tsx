@@ -1,4 +1,6 @@
+import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
@@ -21,6 +23,13 @@ beforeAll(() => {
 })
 
 const disposers: (() => void)[] = []
+const $sessionsUnread = atom(0)
+
+const LiveSessionsTitle = () => {
+  const unread = useStore($sessionsUnread)
+
+  return <span data-testid="sessions-live-title">sessions {unread}</span>
+}
 
 const registerPane = (id: string, title: string, data: Record<string, unknown>, body: string) => {
   disposers.push(
@@ -37,8 +46,14 @@ const registerPane = (id: string, title: string, data: Record<string, unknown>, 
 beforeEach(() => {
   window.localStorage.clear()
   $hiddenTreePanes.set(new Set())
+  $sessionsUnread.set(2)
 
-  registerPane('sessions', 'sessions', { collapsible: true, placement: 'left', width: '237px' }, 'session rows')
+  registerPane(
+    'sessions',
+    'sessions',
+    { collapsible: true, placement: 'left', tabTitle: () => <LiveSessionsTitle />, width: '237px' },
+    'session rows'
+  )
   registerPane('bots', 'Bots', { collapsible: true, placement: 'left', width: '260px' }, 'bot roster')
   registerPane('workspace', 'workspace', { placement: 'main', uncloseable: true }, 'chat')
 
@@ -90,5 +105,15 @@ describe('narrow overlay of a stacked zone', () => {
 
     expect(getByTestId('sessions-body')).toBeTruthy()
     expect(overlayTab('sessions')).toBeNull()
+  })
+
+  it('renders the pane live tab title and updates its unread count', () => {
+    const { getByTestId } = render(<NarrowOverlays />)
+
+    revealPane('sessions')
+    expect(getByTestId('sessions-live-title').textContent).toBe('sessions 2')
+
+    act(() => $sessionsUnread.set(4))
+    expect(getByTestId('sessions-live-title').textContent).toBe('sessions 4')
   })
 })

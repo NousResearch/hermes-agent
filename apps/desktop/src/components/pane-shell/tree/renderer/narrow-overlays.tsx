@@ -176,7 +176,7 @@ export function NarrowOverlays() {
                     }
                   }}
                 >
-                  <PaneTabLabel>{pane.title ?? pane.id}</PaneTabLabel>
+                  <PaneTabLabel>{paneChrome(pane).tabTitle?.() ?? pane.title ?? pane.id}</PaneTabLabel>
                 </PaneTab>
               ))}
             </PaneTabStrip>

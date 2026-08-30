@@ -36,6 +36,14 @@ function stripPowerShellNoise(stdout) {
     .filter(line => line.trim() && !line.trimStart().startsWith('#< CLIXML'))
 }
 
+// Keep long probes out of the remote command line. Windows' default OpenSSH
+// command shell is commonly cmd.exe, whose command-line limit is 8191 chars.
+// SshConnection.exec already supports streaming stdin to the remote command.
+function powerShellStdinCommand() {
+  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Console]::In.ReadToEnd()).Invoke()'
+}
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
@@ -86,14 +94,16 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
     'Assert-NoReparse $python $false',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
-  ].join(';')
+  ].join('\r\n')
 
   // Windows OpenSSH may serialize PowerShell's progress stream as
   // "#< CLIXML <Objs ...>...</Objs>" blocks into the same stdout the
   // probe parses, ahead of, after, or on the same line as the probe JSON
   // (module auto-load racing the exec read). stripPowerShellNoise drops every
   // block; the JSON is the last meaningful line.
-  const lines = stripPowerShellNoise(await ssh.exec(powerShellCommand(script)))
+  const lines = stripPowerShellNoise(
+    await ssh.exec(powerShellStdinCommand(), { stdinData: `${script}\r\n` })
+  )
 
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 

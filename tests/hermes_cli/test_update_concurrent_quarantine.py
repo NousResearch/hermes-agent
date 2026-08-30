@@ -757,6 +757,52 @@ def test_leftover_holders_that_are_all_gateways_are_nominated(monkeypatch):
     assert cli_main._leftover_pausable_gateway_pids(matches) == [300, 301]
 
 
+def test_plain_update_refuses_to_tree_kill_its_gateway_ancestor(
+    monkeypatch, capsys
+):
+    """#98814: terminal-launched update must survive to report the refusal."""
+    import hermes_cli.gateway as gateway_cli
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(
+        gateway_cli,
+        "_is_pid_ancestor_of_current_process",
+        lambda pid: pid == 300,
+    )
+
+    refused = update_cmd._refuse_gateway_ancestor_tree_kill(
+        [300, 301], gateway_mode=False
+    )
+
+    assert refused is True
+    output = capsys.readouterr().out
+    assert "taskkill /T" in output
+    assert "`/update`" in output
+    assert "separate terminal" in output
+
+
+def test_gateway_handoff_keeps_leftover_gateway_recovery(monkeypatch, capsys):
+    """The detached `/update` hand-off still owns leftover gateway cleanup."""
+    import hermes_cli.gateway as gateway_cli
+    import hermes_cli.update_cmd as update_cmd
+
+    ancestry_checks = []
+    monkeypatch.setattr(
+        gateway_cli,
+        "_is_pid_ancestor_of_current_process",
+        lambda pid: ancestry_checks.append(pid) or True,
+    )
+
+    assert (
+        update_cmd._refuse_gateway_ancestor_tree_kill(
+            [300], gateway_mode=True
+        )
+        is False
+    )
+    assert ancestry_checks == []
+    assert capsys.readouterr().out == ""
+
+
 def test_one_non_gateway_holder_keeps_the_hard_refusal(monkeypatch):
     """A REPL/backend holder means the guard must abort exactly as before."""
     monkeypatch.setitem(
@@ -1012,6 +1058,51 @@ def test_update_gate_still_aborts_on_non_gateway_concurrent(
     assert "--force" in captured
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_update_impl_refuses_before_terminating_gateway_ancestor(
+    _winp, monkeypatch, capsys
+):
+    """#98814: the live holder path must gate the destructive call itself."""
+    import gateway.status as status_mod
+    import hermes_cli.gateway as gateway_cli
+
+    holder = (
+        300,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main gateway run",
+    )
+    monkeypatch.setattr(
+        gateway_cli,
+        "_is_pid_ancestor_of_current_process",
+        lambda pid: pid == 300,
+    )
+
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=None
+    ), patch.object(
+        cli_main, "_run_pre_update_backup", return_value=None
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", return_value=None
+    ), patch.object(
+        cli_main, "_detect_venv_python_processes", return_value=[holder]
+    ), patch.object(
+        cli_main, "_leftover_pausable_gateway_pids", return_value=[300]
+    ), patch.object(
+        cli_main, "_resume_windows_gateways_after_update"
+    ) as resume, patch.object(
+        status_mod, "terminate_pid"
+    ) as terminate:
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main._cmd_update_impl(_update_args(), gateway_mode=False)
+
+    assert excinfo.value.code == 2
+    terminate.assert_not_called()
+    resume.assert_called_once_with(None)
+    output = capsys.readouterr().out
+    assert "taskkill /T" in output
+    assert "`/update`" in output
+
+
 def test_stop_service_refuses_pid_reuse_before_sc_stop(monkeypatch):
     import hermes_cli.update_cmd as update_cmd
 
@@ -1031,6 +1122,5 @@ def test_stop_service_refuses_pid_reuse_before_sc_stop(monkeypatch):
         )
 
     assert calls == []
-
 
 

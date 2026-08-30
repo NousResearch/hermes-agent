@@ -18,9 +18,9 @@ on:
 permissions:
   contents: read
 
-# PR runs collapse to the newest commit. A push to main is never cancelled:
-# each one saves the store cache that later PRs restore from, so cancelling a
-# merge would leave the next PR to build from nothing.
+# PR runs collapse to the newest commit. An upstream push to main is never
+# cancelled: each one saves the store cache that later PRs restore from. Fork
+# pushes skip the build that already passed on the PR.
 concurrency:
   group: nix-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -33,6 +33,7 @@ jobs:
   # flake inputs. On push the classifier fails open and every lane is true.
   detect:
     name: Detect affected areas
+    if: github.event_name == 'pull_request' || github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

@@ -321,6 +321,46 @@ describe('useDesktopIntegrations', () => {
     })
   })
 
+
+
+  describe('resume-exhausted write barrier (#98467)', () => {
+    it('does not re-persist an exhausted session on a session-list refresh', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/exhausted-session')
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'exhausted-session')
+
+      const sessions = [session({ id: 'exhausted-session', profile: 'default' })]
+
+      const result = render({ profileReady: true, sessions })
+
+      // The cleanup effect drops the remembered exhausted session...
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/exhausted-session',
+        profileReady: true,
+        resumeExhaustedSessionId: 'exhausted-session',
+        resumeLastSession: true,
+        routedSessionId: 'exhausted-session',
+        sessions
+      })
+
+      // ...and a routine session-list refresh (same sessions, ordinary re-render)
+      // must not write the dead id back into remembered navigation.
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/exhausted-session',
+        profileReady: true,
+        resumeExhaustedSessionId: 'exhausted-session',
+        resumeLastSession: true,
+        routedSessionId: 'exhausted-session',
+        sessions: [...sessions, session({ id: 'other-session', profile: 'default' })]
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
+>>>>>>> a771a14a49 (fix(desktop): stop re-persisting an exhausted session after cleanup (#98467))
+    })
+  })
+
   describe('ownership validation', () => {
     it('refuses to restore a session route owned by another profile', () => {
       window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/ai-session')

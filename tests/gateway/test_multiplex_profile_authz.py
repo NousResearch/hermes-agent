@@ -174,6 +174,12 @@ def test_secondary_open_policy_fails_startup_guard(monkeypatch):
 # Plugin-platform extra.allowed_users fallback (#98738 / #82871)
 # ─────────────────────────────────────────────────────────────────────
 
+# Buzz has no static Platform member: plugin platforms get a dynamic
+# member created on demand by Platform._missing_ (value lookup). Resolve
+# it that way — attribute access only works after an earlier lookup in
+# the same process, which a fresh CI shard cannot rely on.
+_BUZZ = Platform("buzz")
+
 
 def _make_buzz_multiplex_runner(monkeypatch, extra):
     """Runner whose secondary 'coder' profile runs a live Buzz adapter."""
@@ -198,7 +204,7 @@ def _make_buzz_multiplex_runner(monkeypatch, extra):
         normalize_user_id=_normalize_user_ref,
     )
     runner.adapters = {}
-    runner._profile_adapters = {"coder": {Platform.BUZZ: adapter}}
+    runner._profile_adapters = {"coder": {_BUZZ: adapter}}
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
     return runner
@@ -206,7 +212,7 @@ def _make_buzz_multiplex_runner(monkeypatch, extra):
 
 def _buzz_source(user_id):
     return SessionSource(
-        platform=Platform.BUZZ,
+        platform=_BUZZ,
         user_id=user_id,
         chat_id="chat-1",
         user_name="member",

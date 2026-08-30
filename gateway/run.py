@@ -19781,6 +19781,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=session_key,
         )
 
+    async def _prepare_clarify_reply_text(self, event) -> str:
+        """Return raw text or successful voice transcripts for a clarify reply."""
+        if not self._pending_event_audio_paths(event):
+            return (event.text or "").strip()
+
+        _, successful_transcripts = await self._transcribe_pending_audio_event_once(
+            event, "",
+        )
+        return "\n\n".join(
+            transcript.strip()
+            for transcript in successful_transcripts
+            if transcript.strip()
+        )
+
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         state = self._peek_session_state(session_key)
         if state is None or not state.persistent.native_image_paths:

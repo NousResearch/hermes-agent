@@ -457,6 +457,7 @@ class TestF6ExecutorSaturation:
             assert returned is messages
             # The cancelled attempt must not leave the durable lock held.
             assert db.get_compression_lock_holder(session_id) is None
+            db.close()
 
 
 class TestS3IdleChargedFromLastProgress:
@@ -480,6 +481,7 @@ class TestS3IdleChargedFromLastProgress:
                 system_prompt_fallback="fb",
                 idle_timeout_seconds=idle,
                 total_ceiling_seconds=5.0,
+                stall_fallback=False,
             )
         finally:
             elapsed = time.monotonic() - t0

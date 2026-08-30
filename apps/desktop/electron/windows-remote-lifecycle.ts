@@ -24,7 +24,7 @@ function powerShellCommand(script) {
 // command shell is commonly cmd.exe, whose command-line limit is 8191 chars.
 // SshConnection.exec already supports streaming stdin to the remote command.
 function powerShellStdinCommand() {
-  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Console]::In.ReadToEnd()).Invoke()'
+  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
 }
 
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
@@ -75,7 +75,7 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join('\r\n')
 
-  const output = await ssh.exec(powerShellStdinCommand(), { stdinData: `${script}\r\n` })
+  const output = await ssh.exec(powerShellStdinCommand(), { stdinData: `${encodedPowerShell(script)}\r\n` })
 
   return JSON.parse(String(output || '').trim())
 }

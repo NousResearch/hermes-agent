@@ -7,6 +7,7 @@ claim for a given fire. Single-machine deployments always win (unaffected).
 These exercise the real store against a temp HERMES_HOME (no mocks) per the
 E2E-over-mocks discipline for file-touching code.
 """
+from datetime import datetime, timedelta, timezone
 import threading
 import time
 
@@ -24,15 +25,44 @@ def temp_home(tmp_path, monkeypatch):
 def test_claim_succeeds_once_then_blocks(temp_home):
     """First claim for a fire wins; a second claim for the same fire loses, and
     next_run_at is advanced (a re-delivery for the old time can't re-fire)."""
-    from cron.jobs import create_job, claim_job_for_fire, get_job
+    from cron import jobs
 
-    job = create_job(prompt="x", schedule="every 5m", name="t")
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="t")
     jid = job["id"]
-    before = get_job(jid)["next_run_at"]
+    stored = jobs.load_jobs()
+    stored[0]["next_run_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=1)
+    ).isoformat()
+    jobs.save_jobs(stored)
+    before_job = jobs.get_job(jid)
+    assert before_job is not None
+    before = before_job["next_run_at"]
 
-    assert claim_job_for_fire(jid) is True
-    assert claim_job_for_fire(jid) is False
-    assert get_job(jid)["next_run_at"] != before
+    assert jobs.claim_job_for_fire(jid) is True
+    assert jobs.claim_job_for_fire(jid) is False
+    claimed_job = jobs.get_job(jid)
+    assert claimed_job is not None
+    assert claimed_job["next_run_at"] != before
+
+
+def test_external_interval_claim_advances_from_due_slot(temp_home, monkeypatch):
+    """External scheduler jitter must not shift an interval's persisted phase."""
+    from cron import jobs
+
+    due = datetime(2026, 8, 30, 12, 5, tzinfo=timezone.utc)
+    now = due + timedelta(milliseconds=250)
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: now)
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="phase-locked")
+    stored = jobs.load_jobs()
+    stored[0]["next_run_at"] = due.isoformat()
+    jobs.save_jobs(stored)
+
+    claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
+
+    assert isinstance(claimed, dict)
+    assert datetime.fromisoformat(claimed["next_run_at"]) == due + timedelta(
+        minutes=5
+    )
 
 
 def test_claim_oneshot_cannot_be_double_claimed(temp_home):

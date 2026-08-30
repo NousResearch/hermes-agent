@@ -47,6 +47,46 @@ describe('model-status-label', () => {
     )
   })
 
+  it('shows the provider between the model name and the state', () => {
+    expect(formatModelStatusLabel('gpt-5.5', { provider: 'openai', reasoningEffort: 'medium' })).toBe(
+      'GPT-5.5 · openai · Med'
+    )
+    expect(formatModelStatusLabel('qwen3-max', { provider: 'custom:my_pool', reasoningEffort: '' })).toBe(
+      'Qwen3 Max · custom:my_pool · Med'
+    )
+  })
+
+  it('hides the provider when the model id already carries the same prefix', () => {
+    expect(formatModelStatusLabel('openai/gpt-5.5', { provider: 'openai', reasoningEffort: 'high' })).toBe(
+      'GPT-5.5 · High'
+    )
+    // Case-insensitive: the catalog slug and the id prefix may differ only in case.
+    expect(formatModelStatusLabel('OpenAI/gpt-5.5', { provider: 'openai' })).toBe('GPT-5.5 · Med')
+  })
+
+  it('keeps the provider when the id prefix names a different upstream', () => {
+    // OpenRouter ids carry the upstream vendor prefix; the row's provider is
+    // still openrouter — both halves are information, so both show.
+    expect(formatModelStatusLabel('openrouter/anthropic/claude-opus-4.8', { provider: 'openrouter' })).toBe(
+      'Opus 4.8 · openrouter · Med'
+    )
+  })
+
+  it('omits the provider when it is unknown', () => {
+    expect(formatModelStatusLabel('gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
+    expect(formatModelStatusLabel('gpt-5.5', { provider: '  ', reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
+  })
+
+  it('splits the label into styled parts for the composer pill', () => {
+    expect(
+      modelStatusLabelParts('gpt-5.5', { fastMode: true, provider: 'openai', reasoningEffort: 'high' })
+    ).toEqual({ meta: 'Fast High', name: 'GPT-5.5', provider: 'openai' })
+    // The dedupe lives in the parts, so both renderers agree.
+    expect(modelStatusLabelParts('openai/gpt-5.5', { provider: 'openai' }).provider).toBe('')
+    expect(modelStatusLabelParts('openai/gpt-5.5', { provider: 'nous' }).provider).toBe('nous')
+    expect(modelStatusLabelParts('', { provider: 'nous' })).toEqual({ meta: '', name: 'No model', provider: '' })
+  })
+
   it('falls back to the profile default effort, then to medium', () => {
     expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
     expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')

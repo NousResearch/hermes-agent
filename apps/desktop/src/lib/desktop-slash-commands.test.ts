@@ -7,7 +7,10 @@ import {
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashUnavailableMessage,
+  desktopSubcommandAllowlist,
+  desktopSubcommandUnavailableMessage,
   filterDesktopCommandsCatalog,
+  filterDesktopSubcommandCompletions,
   isDesktopSlashCommand,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
@@ -113,8 +116,19 @@ describe('desktop slash command curation', () => {
     rememberDesktopCommandsCatalog(undefined)
 
     expect(isDesktopSlashSuggestion('/skills')).toBe(true)
-    expect(isDesktopSlashCommand('/skills')).toBe(true)
-    expect(desktopSlashUnavailableMessage('/skills')).toBeNull()
+    expect(isDesktopSlashCommand('/skills pending')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/skills pending')).toBeNull()
+    expect(desktopSubcommandAllowlist('/skills')).toEqual(['pending', 'approve', 'reject', 'diff', 'approval'])
+    expect(desktopSubcommandUnavailableMessage('/skills', '')).toContain('needs a subcommand')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'install demo')).toContain('not available')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'approve write-1')).toBeNull()
+    expect(
+      filterDesktopSubcommandCompletions('/skills ', [
+        { text: 'pending' },
+        { text: 'install' },
+        { text: 'approval on' }
+      ])
+    ).toEqual([{ text: 'pending' }, { text: 'approval on' }])
   })
 
   it('routes /compress through the session-compression action', () => {

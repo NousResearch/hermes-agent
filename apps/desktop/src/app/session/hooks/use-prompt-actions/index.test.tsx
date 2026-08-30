@@ -39,11 +39,17 @@ import { uploadComposerAttachment, usePromptActions } from '.'
 
 // Suites in this file reuse the same stored-id constants. The module-level
 // single-flight resume map (and drift-recovery cache) would otherwise leak a
-// never-settling in-flight promise from one test into the next.
+// never-settling promise from one test into the next.
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
   vi.mocked(getLatestSessionMessages).mockReset()
   vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: 'session' }))
+})
+
+afterEach(() => {
+  // Suite-local catalog overrides (see the /skills scope test) must not leak
+  // into other suites through the module-level remembered catalog.
+  rememberDesktopCommandsCatalog(undefined)
 })
 
 vi.mock('@/hermes', () => ({

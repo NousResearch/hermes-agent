@@ -11,6 +11,7 @@ import {
   desktopSlashDescription,
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
+  filterDesktopSubcommandCompletions,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
   rankSkillCommands,
@@ -221,7 +222,13 @@ export function useSlashCompletions(options: {
         const isArgCompletion = replaceFrom > 1
         const prefix = isArgCompletion ? text.slice(0, replaceFrom) : ''
 
-        const decorated = (result.items ?? [])
+        // Commands narrowed by `desktop_subcommands` (e.g. /skills exposes
+        // only its review slice here) must not suggest the subcommands the
+        // exec gate would refuse — filter before the arg-stub rewrite so the
+        // token under test is the bare subcommand word.
+        const scopedItems = filterDesktopSubcommandCompletions(text, result.items ?? [])
+
+        const decorated = scopedItems
           .map(item => {
             if (!isArgCompletion) {
               return item

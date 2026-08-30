@@ -3,7 +3,7 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, gateway_help_lines, infer_argument_mode, resolve_command
+from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 
@@ -40,6 +40,17 @@ class TestCommandRegistry:
                     # This should only happen if the alias points to the same entry
                     assert resolve_command(alias).name == cmd.name or alias == cmd.name, \
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
+
+    def test_skills_desktop_meta_limits_exec_to_review_subcommands(self):
+        skills = resolve_command("skills")
+        assert skills is not None
+        assert skills.desktop is None
+        assert command_desktop_meta(skills) == {
+            "argument_mode": "options",
+            "desktop": None,
+            "desktop_subcommands": ["pending", "approve", "reject", "diff", "approval"],
+        }
+        assert set(skills.desktop_subcommands or ()) <= set(skills.subcommands)
 
 
     def test_argument_mode_infers_text_from_any_args_hint(self):

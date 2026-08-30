@@ -11,6 +11,8 @@ export interface CommandsCatalogSection {
 export interface CommandCatalogMeta {
   argument_mode?: 'mixed' | 'options' | 'text' | null
   desktop?: string | null
+  /** Subcommands the desktop surface may offer and forward; absent = all. */
+  desktop_subcommands?: readonly string[] | null
 }
 
 export interface CommandsCatalogLike {
@@ -147,6 +149,14 @@ export interface DesktopCommandSpec {
   hidden?: boolean
   /** Composer behavior for text following the command token. */
   argumentMode?: DesktopSlashArgumentMode
+  /**
+   * Subcommands (first argument token) the desktop may forward when the
+   * command is exec-routed. Absent = the whole family is allowed. Registry
+   * commands declare this as `desktop_subcommands` so a desktop-relevant
+   * review slice can be exposed without widening CLI-hub mutations
+   * (e.g. `/skills install`).
+   */
+  desktopSubcommands?: readonly string[]
 }
 
 const exec = (): DesktopCommandSurface => ({ kind: 'exec' })
@@ -296,7 +306,8 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     name: '/skills',
     description: 'Search, install, inspect, or manage skills',
     surface: exec(),
-    argumentMode: 'options'
+    argumentMode: 'options',
+    desktopSubcommands: ['pending', 'approve', 'reject', 'diff', 'approval']
   }
 ]
 
@@ -453,8 +464,19 @@ function specFromCatalog(command: string): DesktopCommandSpec | null {
     name,
     surface: exec(),
     hidden: entry.desktop === 'hidden',
-    argumentMode: asArgumentMode(entry.argument_mode)
+    argumentMode: asArgumentMode(entry.argument_mode),
+    desktopSubcommands: asSubcommandList(entry.desktop_subcommands)
   }
+}
+
+function asSubcommandList(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) {
+    return undefined
+  }
+
+  const subs = value.filter((sub): sub is string => typeof sub === 'string' && sub.trim() !== '')
+
+  return subs.length > 0 ? subs : undefined
 }
 
 function isAliasCommand(command: string): boolean {
@@ -507,6 +529,67 @@ export function resolveDesktopCommand(command: string): DesktopCommandSpec | nul
   }
 
   return local ?? specFromCatalog(command)
+}
+
+/** Subcommands the desktop may forward for *command*; null = unrestricted. */
+export function desktopSubcommandAllowlist(command: string): readonly string[] | null {
+  return resolveDesktopCommand(command)?.desktopSubcommands ?? null
+}
+
+/**
+ * Execution gate for exec-routed commands whose spec narrows the family to a
+ * subcommand allowlist (see `desktop_subcommands` on the Python registry).
+ * The first argument token must name an allowed subcommand — anything else
+ * (including a bare command, which the CLI would answer with its interactive
+ * hub) stays off the desktop exec path. Returns the message to render instead
+ * of forwarding, or null when the command may run.
+ */
+export function desktopSubcommandUnavailableMessage(command: string, arg: string): string | null {
+  const allowed = desktopSubcommandAllowlist(command)
+
+  if (!allowed) {
+    return null
+  }
+
+  const display = command.trim().startsWith('/') ? command.trim() : `/${command.trim()}`
+  const first = arg.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+
+  if (!first) {
+    return `${display} needs a subcommand here: ${allowed.join(', ')}.`
+  }
+
+  if (!allowed.some(sub => sub.toLowerCase() === first)) {
+    return `${display} ${first} is not available in the desktop app — use the terminal for it. Available here: ${allowed.join(', ')}.`
+  }
+
+  return null
+}
+
+/**
+ * Drop backend `complete.slash` items whose subcommand token the exec gate
+ * above would refuse, so the popover never suggests a dead end. Only applies
+ * once the query is past the command token (`/skills …`); command-stage
+ * completions pass through untouched.
+ */
+export function filterDesktopSubcommandCompletions<T extends { text: string }>(
+  text: string,
+  items: readonly T[]
+): T[] {
+  const command = normalizeCommand(text)
+  const allowed = desktopSubcommandAllowlist(command)
+  const rest = text.slice(command.length)
+
+  // Only the argument stage (`/skills …`, including a bare trailing space)
+  // carries subcommand items; command-token completions pass through.
+  if (!allowed || !rest.startsWith(' ')) {
+    return [...items]
+  }
+
+  return items.filter(item => {
+    const sub = item.text.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+
+    return sub !== '' && allowed.some(entry => entry.toLowerCase() === sub)
+  })
 }
 
 function isKnownHermesSlashCommand(command: string): boolean {

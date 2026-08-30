@@ -60,7 +60,7 @@ class TestZeroMatchProbe:
 
     def test_hidden_probe_prunes_dependency_trees_and_keeps_local_ignored(self, proj, monkeypatch):
         d = proj / "proj"
-        dependency = d / "node_modules" / "package"
+        dependency = d / "node_modules" / "package" / ".hidden"
         dependency.mkdir(parents=True)
         dependency_file = dependency / "dependency.js"
         dependency_file.write_text("BOUNDED_HIDDEN_TOKEN = true\n")

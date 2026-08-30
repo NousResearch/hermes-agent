@@ -31,7 +31,7 @@ export const sessionRowEstimate = (density: SessionListDensity) =>
  *  estimate paints a brief gap that self-measurement closes, while an
  *  undersized one paints rows over their neighbours (and the divider below)
  *  on a cold start, before any measurement can correct it. */
-export const SESSION_CARD_ROW_ESTIMATE_PX = 96
+export const SESSION_CARD_ROW_ESTIMATE_PX = 101
 
 export function sessionRowDetails(session: SessionInfo, fmt: SessionRowFormatters): SessionRowDetails {
   const preview = oneLine(session.preview)

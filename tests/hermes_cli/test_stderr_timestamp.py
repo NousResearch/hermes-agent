@@ -72,6 +72,15 @@ def test_main_captures_stdout_separately(tmp_path):
     assert error_path.read_text(encoding="utf-8").endswith(" failed\n")
 
 
+def test_rotation_config_falls_back_for_malformed_values(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_logging._read_logging_config",
+        lambda: ("INFO", "not-a-size", "not-a-count"),
+    )
+
+    assert stderr_timestamp._rotation_config() == (5, 3)
+
+
 @pytest.mark.skipif(
     sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows"
 )

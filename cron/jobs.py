@@ -861,19 +861,40 @@ def _natural_every_to_cron(rest: str) -> Optional[str]:
         "monday 9am"      -> "0 9 * * 1"
         "day at 9am"      -> "0 9 * * *"
         "weekday at 9am"  -> "0 9 * * 1-5"
+        "monday, wednesday at 9am" -> "0 9 * * 1,3"
 
     Returning None lets ``parse_schedule`` fall back to the interval
     (``every 30m``) path, so existing duration schedules are unaffected.
     """
-    tokens = rest.lower().split()
+    tokens = rest.lower().replace(",", " ").split()
     if not tokens:
         return None
-    day_token = tokens[0]
-    dow = _WEEKDAY_TO_CRON_DOW.get(day_token) or _DAYSPEC_TO_CRON_DOW.get(day_token)
-    if dow is None:
-        return None
 
-    time_tokens = tokens[1:]
+    # Consume one or more leading day tokens: a keyword spec ("weekdays"),
+    # a single weekday, or a comma/"and"-separated weekday list
+    # ("monday, wednesday at 9am").
+    day_token = tokens[0]
+    dow = _DAYSPEC_TO_CRON_DOW.get(day_token)
+    idx = 1
+    if dow is None:
+        days = []
+        while idx <= len(tokens):
+            tok = tokens[idx - 1]
+            if tok == "and":
+                idx += 1
+                continue
+            mapped = _WEEKDAY_TO_CRON_DOW.get(tok)
+            if mapped is None:
+                break
+            if mapped not in days:
+                days.append(mapped)
+            idx += 1
+        if not days:
+            return None
+        dow = ",".join(days)
+        idx -= 1
+
+    time_tokens = tokens[idx:]
     # Optional "at" separator: "every day at 9am".
     if time_tokens and time_tokens[0] == "at":
         time_tokens = time_tokens[1:]

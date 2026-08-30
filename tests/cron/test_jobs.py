@@ -129,6 +129,28 @@ class TestParseSchedule:
         pytest.importorskip("croniter")
         assert parse_schedule("every weekend at 10am")["expr"] == "0 10 * * 0,6"
 
+    def test_no_every_prefix_natural_forms(self):
+        # The Desktop dialog advertises these WITHOUT the "every" prefix
+        # (#51975 repro): they must parse identically.
+        pytest.importorskip("croniter")
+        assert parse_schedule("weekdays at 9am")["expr"] == "0 9 * * 1-5"
+        assert parse_schedule("monday at 9:30")["expr"] == "30 9 * * 1"
+        assert parse_schedule("daily at 7am")["expr"] == "0 7 * * *"
+
+    def test_weekday_list_forms(self):
+        # Comma/"and"-separated day lists from the #51975 repro.
+        pytest.importorskip("croniter")
+        assert parse_schedule("Monday, Wednesday at 9am")["expr"] == "0 9 * * 1,3"
+        assert parse_schedule("monday and friday at 5pm")["expr"] == "0 17 * * 1,5"
+        assert parse_schedule("every tue, thu 8am")["expr"] == "0 8 * * 2,4"
+
+    def test_natural_form_negatives_still_reject(self):
+        pytest.importorskip("croniter")
+        with pytest.raises(ValueError):
+            parse_schedule("monday banana at 9am")
+        with pytest.raises(ValueError):
+            parse_schedule("funday at 9am")
+
     def test_every_time_formats(self):
         pytest.importorskip("croniter")
         # 24-hour, explicit minutes, noon/midnight, bare hour.

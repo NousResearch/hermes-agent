@@ -105,7 +105,16 @@ class TestPathResolution:
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+        # An explicit board qualification must not be shadowed by the legacy
+        # path pin, otherwise `--board` can silently read the default DB.
+        assert kb.kanban_db_path(board="ignored") == (
+            fresh_home / "kanban" / "boards" / "ignored" / "kanban.db"
+        )
+        kb.create_board("scoped")
+        with kb.scoped_current_board("scoped"):
+            assert kb.kanban_db_path() == (
+                fresh_home / "kanban" / "boards" / "scoped" / "kanban.db"
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -481,12 +481,21 @@ def _board_path(
 ) -> Path:
     """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
     for the ``default`` board, else ``board_dir(slug)/leaf``."""
-    if env_var:
+    if board is None and env_var:
         override = os.environ.get(env_var, "").strip()
         if override:
             return Path(override).expanduser()
     slug = _normalize_board_slug(board)
+    # CLI/API board qualification is implemented with a context-local scope
+    # so all existing connect() call sites share one selection. Treat that
+    # scope as explicit too; otherwise the legacy DB-path pin below shadows
+    # `--board` and routes requests back to the default database.
+    if slug is None and _CURRENT_BOARD_OVERRIDE.get():
+        slug = _normalize_board_slug(_CURRENT_BOARD_OVERRIDE.get())
     if slug is None:
+        override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+        if override:
+            return Path(override).expanduser()
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home().joinpath(*default_parts)

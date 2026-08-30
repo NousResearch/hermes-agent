@@ -7645,7 +7645,13 @@ def _normalize_todo_state(value: object) -> dict | None:
         revision = max(0, int(value.get("revision") or 0))
     except (TypeError, ValueError):
         return None
-    return {"todos": list(value["todos"]), "revision": revision}
+    todos = list(value["todos"])
+    # Unused TodoStore snapshot() is {todos: [], revision: 0}. Attaching
+    # that on resume stamps a client watermark and blocks unversioned
+    # tool.start merges. An empty list at revision >= 1 is a real clear.
+    if not todos and revision == 0:
+        return None
+    return {"todos": todos, "revision": revision}
 
 
 def _session_todo_state(session: dict) -> dict | None:

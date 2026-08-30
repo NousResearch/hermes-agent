@@ -399,8 +399,8 @@ function ChatRuntimeBoundary({
   )
 
   const transcriptWindow = useMemo(
-    () => ({ olderAvailable, expandWindow, revealMessage, timelineEntries }),
-    [expandWindow, olderAvailable, revealMessage, timelineEntries]
+    () => ({ olderAvailable, expandWindow, revealMessage, revealScope: runtimeId || storedId || '', timelineEntries }),
+    [expandWindow, olderAvailable, revealMessage, runtimeId, storedId, timelineEntries]
   )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({

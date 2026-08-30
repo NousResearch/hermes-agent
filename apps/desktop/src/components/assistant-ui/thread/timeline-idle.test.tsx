@@ -1,6 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { onRevealMessageRequest } from '@/store/thread-scroll'
 
 import { TranscriptWindowProvider } from './transcript-window'
 
@@ -140,6 +142,7 @@ describe('ThreadTimeline with a bounded runtime window', () => {
           olderAvailable: true,
           expandWindow: vi.fn(),
           revealMessage,
+          revealScope: 'runtime-1',
           timelineEntries
         }}
       >
@@ -164,11 +167,14 @@ describe('ThreadTimeline with a bounded runtime window', () => {
 
     vi.stubGlobal('CSS', { escape: (value: string) => value })
 
+    const frames: FrameRequestCallback[] = []
     const frame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
-      callback(performance.now() + 200)
+      frames.push(callback)
 
-      return 1
+      return frames.length
     })
+    const revealDom = vi.fn(() => true)
+    const unsubscribeReveal = onRevealMessageRequest(revealDom)
 
     surface.dataset.sessionAnchor = 'timeline-test'
     viewport.dataset.slot = 'aui_thread-viewport'
@@ -192,6 +198,7 @@ describe('ThreadTimeline with a bounded runtime window', () => {
           olderAvailable: true,
           expandWindow: vi.fn(),
           revealMessage,
+          revealScope: 'runtime-1',
           timelineEntries
         }}
       >
@@ -224,6 +231,7 @@ describe('ThreadTimeline with a bounded runtime window', () => {
           olderAvailable: true,
           expandWindow: vi.fn(),
           revealMessage,
+          revealScope: 'runtime-1',
           timelineEntries
         }}
       >
@@ -231,8 +239,56 @@ describe('ThreadTimeline with a bounded runtime window', () => {
       </TranscriptWindowProvider>
     )
 
+    act(() => {
+      while (frames.length) {
+        frames.shift()?.(performance.now() + 200)
+      }
+    })
+
+    expect(revealDom).toHaveBeenCalledWith('runtime-1', 'u0')
     expect(viewport.scrollTop).toBe(92)
+    unsubscribeReveal()
     frame.mockRestore()
+  })
+
+  it('cancels a pending hidden-target jump when the runtime scope changes', () => {
+    messages = transcript(6).slice(4)
+    const timelineEntries = transcript(6).map((message, index) => ({ id: message.id, preview: `prompt ${index}` }))
+    const frames: FrameRequestCallback[] = []
+    const frame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.push(callback)
+
+      return frames.length
+    })
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame')
+    const value = (revealScope: string) => ({
+      olderAvailable: true,
+      expandWindow: vi.fn(),
+      revealMessage: vi.fn(),
+      revealScope,
+      timelineEntries
+    })
+    const { rerender } = renderTimeline(
+      <TranscriptWindowProvider value={value('runtime-1')}>
+        <ThreadTimeline />
+      </TranscriptWindowProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'prompt 0' }))
+    expect(frames).toHaveLength(1)
+    const staleFrame = frames[0]
+
+    rerender(
+      <TranscriptWindowProvider value={value('runtime-2')}>
+        <ThreadTimeline />
+      </TranscriptWindowProvider>
+    )
+
+    expect(cancelFrame).toHaveBeenCalledWith(1)
+    act(() => staleFrame(performance.now() + 200))
+    expect(frames).toHaveLength(1)
+    frame.mockRestore()
+    cancelFrame.mockRestore()
   })
 })
 

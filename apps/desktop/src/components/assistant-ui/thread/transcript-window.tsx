@@ -9,6 +9,8 @@ export interface TranscriptWindowValue {
   expandWindow: () => void
   /** Full set of loaded user prompts, including prompts outside the runtime window. */
   timelineEntries?: readonly TimelineEntry[]
+  /** Runtime/session identity that scopes DOM reveal requests to one pane. */
+  revealScope?: string
   /** Materialize a hidden prompt before the timeline scrolls to it. */
   revealMessage?: (messageId: string) => void
 }

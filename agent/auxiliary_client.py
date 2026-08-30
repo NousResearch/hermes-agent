@@ -9463,6 +9463,7 @@ class _ChatStreamAccumulator:
         self._total_ceiling = total_ceiling
         self.content_parts: List[str] = []
         self.reasoning_parts: List[str] = []
+        self.reasoning_details: List[Any] = []
         self.tool_calls_acc: Dict[int, Dict[str, Any]] = {}
         self.finish_reason = None
         self.usage = None
@@ -9507,6 +9508,24 @@ class _ChatStreamAccumulator:
         if reasoning_piece and isinstance(reasoning_piece, str):
             self.reasoning_parts.append(reasoning_piece)
             made_progress = True
+        # OpenRouter-compatible reasoning models may stream their entire
+        # thinking phase through ``reasoning_details`` instead of
+        # ``reasoning`` / ``reasoning_content``.  Treat only details carrying
+        # actual text as forward progress: structural/signed envelopes must
+        # not keep an otherwise stalled compression alive indefinitely.
+        reasoning_details = getattr(delta, "reasoning_details", None)
+        if reasoning_details is None:
+            model_extra = getattr(delta, "model_extra", None)
+            if isinstance(model_extra, dict):
+                reasoning_details = model_extra.get("reasoning_details")
+        if isinstance(reasoning_details, list):
+            for detail in reasoning_details:
+                self.reasoning_details.append(detail)
+                if isinstance(detail, dict) and any(
+                    isinstance(detail.get(field), str) and detail[field]
+                    for field in ("summary", "thinking", "content", "text")
+                ):
+                    made_progress = True
         for tc in (getattr(delta, "tool_calls", None) or []):
             idx = getattr(tc, "index", 0) or 0
             acc = self.tool_calls_acc.setdefault(
@@ -9548,6 +9567,7 @@ class _ChatStreamAccumulator:
             content="".join(self.content_parts),
             tool_calls=tool_calls,
             reasoning="".join(self.reasoning_parts) or None,
+            reasoning_details=self.reasoning_details or None,
         )
         choice = SimpleNamespace(
             index=0,

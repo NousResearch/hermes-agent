@@ -412,10 +412,12 @@ describe('connection-aware plugin host APIs', () => {
 
       // Same backend, deadline with settlement margin: the answer gets through.
       const withMargin = host.requestProfile(route, 'bot_relay.deliver', {}, CEILING_MS + SETTLEMENT_MS * 180)
+
       const withMarginSettled = expect(withMargin).resolves.toEqual({
         reason: 'ok',
         reply: 'delivered'
       })
+
       await vi.advanceTimersByTimeAsync(CEILING_MS + SETTLEMENT_MS)
       await withMarginSettled
     } finally {

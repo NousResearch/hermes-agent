@@ -54,8 +54,9 @@ const RELAY_DRAIN_INTERVAL_MS = 30_000
 const RELAY_TURN_LOCK_WAIT_MS = 120_000 // bot_mode.turn_wait_seconds default
 const RELAY_TURN_ATTEMPT_MS = 600_000 // subprocess.run(..., timeout=600)
 const RELAY_TURN_MAX_ATTEMPTS = 2 // first attempt + the policy-gated re-run
-const RELAY_DELIVER_BACKEND_CEILING_MS =
-  RELAY_TURN_LOCK_WAIT_MS + RELAY_TURN_ATTEMPT_MS * RELAY_TURN_MAX_ATTEMPTS
+
+const RELAY_DELIVER_BACKEND_CEILING_MS = RELAY_TURN_LOCK_WAIT_MS + RELAY_TURN_ATTEMPT_MS * RELAY_TURN_MAX_ATTEMPTS
+
 // Settlement + transport headroom on top of the ceiling, so a backend that
 // answers at its own limit still wins the race against this timer.
 const RELAY_DELIVER_SETTLEMENT_MARGIN_MS = 180_000

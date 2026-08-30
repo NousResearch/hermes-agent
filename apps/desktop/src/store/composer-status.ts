@@ -10,6 +10,7 @@ import { $goalsBySession, type GoalStatus } from './goals'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
 import { $sessions, lineageAliases } from './session'
+import { markRuntimeGone, noteRuntimeAlive } from './runtime-gone'
 import { $sessionStates } from './session-states'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
@@ -441,11 +442,19 @@ export async function refreshBackgroundProcesses(sid: string): Promise<void> {
     const result = await gateway.request<{ processes?: GatewayProcessEntry[] }>('process.list', { session_id: sid })
 
     reconcileBackgroundProcesses(sid, result?.processes ?? [])
+    // The binding answered, so it is healthy: refund the stored session's
+    // recovery budget (a heal that stuck must not count against the next one).
+    noteRuntimeAlive(sid)
   } catch (error) {
     // A gone session never comes back under this runtime id: stop polling it,
     // or the 5s timer hammers the gateway with 4001s for the window's lifetime.
     if (isSessionGoneForBackgroundPolling(error)) {
       goneSessions.add(sid)
+      // Latching stops the storm; it does not make the window usable again.
+      // This poll is the only caller that runs while the user is idle, so it is
+      // the only one that can carry the gateway's "resume the stored session"
+      // verdict to the view before the user types into a dead binding.
+      markRuntimeGone(sid)
 
       return
     }

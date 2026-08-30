@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
+    _list_boards,
     _kanban_dispatch_allowed,
     _release_singleton_lock,
     _resolve_auto_decompose_settings,
@@ -35,6 +36,81 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
+
+
+def _kanban_db_file_signature(
+    db_path: Path,
+) -> Optional[tuple[tuple[Any, ...], ...]]:
+    """Return a cheap, fail-open signature for a board's SQLite files.
+
+    The database and its WAL/SHM sidecars are tracked separately so file
+    replacement, truncation, in-place writes, and sidecar lifecycle changes
+    all invalidate a cached poll. A missing file is a stable state; any other
+    stat failure is uncertainty and falls back to querying SQLite.
+    """
+    signature: list[tuple[Any, ...]] = []
+    for suffix in ("", "-wal", "-shm"):
+        path = db_path if not suffix else Path(f"{db_path}{suffix}")
+        try:
+            stat_result = os.stat(path)
+        except FileNotFoundError:
+            signature.append(("missing",))
+            continue
+        except OSError:
+            return None
+        signature.append(
+            (
+                "present",
+                getattr(stat_result, "st_dev", 0),
+                getattr(stat_result, "st_ino", 0),
+                getattr(stat_result, "st_size", 0),
+                getattr(stat_result, "st_mtime_ns", 0),
+                getattr(stat_result, "st_ctime_ns", 0),
+            )
+        )
+    return tuple(signature)
+
+
+def _kanban_poll_signature(kb: Any) -> Optional[tuple[tuple[Any, ...], ...]]:
+    """Return one stable signature for all currently visible board paths."""
+    board_signatures: list[tuple[Any, ...]] = []
+    seen_paths: set[str] = set()
+    for board_meta in _list_boards(kb):
+        slug = board_meta.get("slug") or kb.DEFAULT_BOARD
+        db_path = board_meta.get("db_path")
+        try:
+            path = Path(db_path).expanduser() if db_path else kb.kanban_db_path(slug)
+            key = str(path.resolve())
+        except Exception:
+            path = Path(str(db_path or slug))
+            key = f"slug:{slug}"
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        try:
+            signature = _kanban_db_file_signature(path)
+        except Exception:
+            return None
+        if signature is None:
+            return None
+        board_signatures.append((key, *signature))
+    return tuple(sorted(board_signatures, key=lambda item: str(item[0])))
+
+
+def _kanban_poll_context(runner: Any, notifier_profile: Optional[str]) -> tuple[Any, ...]:
+    """Describe the adapter/profile ownership that controls eligible rows."""
+    profile_adapters = getattr(runner, "_profile_adapters", {})
+    return (
+        notifier_profile,
+        runner._owns_kanban_dispatcher_lock(),
+        tuple(sorted(str(platform) for platform in runner.adapters)),
+        tuple(
+            sorted(
+                (str(profile), tuple(sorted(str(platform) for platform in adapters)))
+                for profile, adapters in profile_adapters.items()
+            )
+        ),
+    )
 
 
 class GatewayKanbanWatchersMixin:
@@ -92,6 +168,11 @@ class GatewayKanbanWatchersMixin:
         notifier_profile = getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name()
         self._kanban_notifier_profile = notifier_profile
 
+        # Cache only after the complete board set is stable across a query.
+        # Any uncertain stat, ownership change, hourly GC pass, or concurrent
+        # writer falls back to the normal collector on the next tick.
+        poll_cache: Optional[tuple[Any, ...]] = None
+
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
@@ -108,10 +189,32 @@ class GatewayKanbanWatchersMixin:
                     _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
                     _retention = _gc_retention_days()
 
-                deliveries = await asyncio.to_thread(
-                    _notifier_collect, self, _kb,
-                    notifier_profile=notifier_profile, gc_due=_gc_due, gc_retention_days=_retention,
-                )
+                poll_context = _kanban_poll_context(self, notifier_profile)
+                before_signature = _kanban_poll_signature(_kb)
+                current_poll = (before_signature, poll_context)
+                if not _gc_due and before_signature is not None and poll_cache == current_poll:
+                    deliveries = []
+                    logger.debug("kanban notifier: boards unchanged; skipping database query")
+                else:
+                    collection = await asyncio.to_thread(
+                        _notifier_collect,
+                        self,
+                        _kb,
+                        notifier_profile=notifier_profile,
+                        gc_due=_gc_due,
+                        gc_retention_days=_retention,
+                    )
+                    deliveries = collection
+                    after_signature = _kanban_poll_signature(_kb)
+                    poll_cache = (
+                        current_poll
+                        if (
+                            collection.query_ok
+                            and before_signature is not None
+                            and after_signature == before_signature
+                        )
+                        else None
+                    )
                 for d in deliveries:
                     await _KanbanNotification(
                         self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,

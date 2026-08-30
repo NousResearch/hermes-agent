@@ -207,6 +207,7 @@ export function useMainApp(gw: GatewayClient) {
   // Bumped by the gateway `reaction` event (core-detected affection).
   const goodVibesTick = useStore($goodVibesTick)
   const [bellOnComplete, setBellOnComplete] = useState(false)
+  const [bellOnClarify, setBellOnClarify] = useState(false)
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
@@ -578,7 +579,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy, turnStartedAt])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setBellOnClarify, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
 
   useEffect(() => {
@@ -857,7 +858,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog
         },
         submission: { submitLiteralRef, submitRef },
-        system: { bellOnComplete, stdout, sys },
+        system: { bellOnComplete, bellOnClarify, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,
@@ -868,6 +869,7 @@ export function useMainApp(gw: GatewayClient) {
       }),
     [
       appendMessage,
+      bellOnClarify,
       bellOnComplete,
       composerActions.setInput,
       gateway,

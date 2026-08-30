@@ -5259,6 +5259,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        # bell_on_clarify: play terminal bell (\a) when agent asks a clarify question — same mechanism as bell_on_complete
+        self.bell_on_clarify = CLI_CONFIG["display"].get("bell_on_clarify", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
         # reasoning_full: when reasoning display is on, print the post-response
@@ -16211,6 +16213,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_freetext = is_open_ended
         self._clarify_multi_base = None
 
+        # Bell on clarify (same mechanism as bell_on_complete — \\a over SSH)
+        if getattr(self, "bell_on_clarify", False):
+            try:
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
         # Trigger an immediate prompt_toolkit repaint from this (non-main)
         # thread. Modal prompts must paint at once and must not be gated by the
         # _invalidate throttle / resize guard — see _paint_now / _invalidate (#41098).
@@ -16402,6 +16412,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_state = state
         self._clarify_batch_set_active(state, 0)
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
+        if getattr(self, "bell_on_clarify", False):
+            try:
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+            except Exception:
+                pass
         self._paint_now()
 
         _last_countdown_refresh = _time.monotonic()

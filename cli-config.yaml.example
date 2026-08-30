@@ -1768,6 +1768,12 @@ display:
   #   false: Silent (default)
   bell_on_complete: false
 
+  # Play terminal bell when the agent asks a clarification question.
+  # Same mechanism as bell_on_complete (\\a) — works over SSH.
+  #   true:  Ring on every clarify prompt
+  #   false: Silent (default)
+  bell_on_clarify: false
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

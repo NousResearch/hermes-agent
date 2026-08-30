@@ -98,6 +98,54 @@ REQUIRED_PROFILES = (
 ) - {"root"}
 
 
+# Model-routing immutability guard (Sahil-approved 30/08/26). When the
+# approved baseline exists (governance/model-routing-baseline.json, created
+# via P6 snapshot after explicit sign-off), any change to model-routing
+# surfaces on root or profile configs is DRIFT (exit 1). Without a baseline
+# the guard is fail-open and silent — matching the legacy contract above —
+# because there is no approved state to compare against.
+MODEL_GUARD_SURFACES = (
+    "model",
+    "fallback_providers",
+    "providers",
+    "credential_pool_strategies",
+)
+MODEL_GUARD_BASELINE = "governance/model-routing-baseline.json"
+
+
+def _model_routing_sig(cfg: dict) -> str:
+    import hashlib as _hashlib
+    import json as _json
+    routing = {k: cfg.get(k) for k in MODEL_GUARD_SURFACES}
+    return _hashlib.sha256(
+        _json.dumps(routing, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+
+
+def _check_model_guard(drift, home: Path, label: str, cfg: dict) -> None:
+    try:
+        raw = (home / MODEL_GUARD_BASELINE).read_bytes()
+        baseline = __import__("json").loads(raw)
+        sigs = baseline.get("sig", {})
+    except FileNotFoundError:
+        return  # fail-open: no approved baseline yet
+    except Exception as e:
+        drift.add(f"model-guard: unreadable baseline ({e})")
+        return
+    approved = sigs.get(label)
+    actual = _model_routing_sig(cfg)
+    if approved is None:
+        drift.add(
+            f"model-guard: {label} not in approved baseline "
+            f"(actual {actual}) — re-baseline only after explicit approval"
+        )
+    elif approved != actual:
+        drift.add(
+            f"model-guard: {label} model routing CHANGED "
+            f"{approved}→{actual} without approval — immutable without Sahil"
+        )
+
+
 # Deployed-cron candidate roots, in priority order. The scripts-dir copy
 # deployed under HERMES_HOME/scripts has no checkout above it, so the
 # derivation falls through to the executor-provided runtime root or the
@@ -308,6 +356,7 @@ def run_checks(home: Path, drift: Drift) -> None:
     _check_curator_safety(drift, "config.yaml", root_cfg.get("curator"))
     _check_budgets(drift, "config.yaml", root_cfg, profile="root")
     _check_root_cli_toolsets(drift, root_cfg)
+    _check_model_guard(drift, home, "root", root_cfg)
 
     profiles_dir = home / "profiles"
     seen_profiles: set[str] = set()
@@ -322,6 +371,7 @@ def run_checks(home: Path, drift: Drift) -> None:
         seen_profiles.add(name)
         cfg = _load_yaml(cfg_path)
         label = f"profiles/{name}/config.yaml"
+        _check_model_guard(drift, home, label, cfg)
 
         # Schema version: every profile config on disk must match the code.
         _record_schema_mismatch(schema_mismatches, cfg)

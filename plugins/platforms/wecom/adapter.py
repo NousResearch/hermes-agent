@@ -284,7 +284,7 @@ class ReplyQueue:
         # Serial-coalesce state
         self.coalesced_body: Optional[Dict[str, Any]] = None
         self.coalesce_count: int = 0
-        self.ack_timeout_task: Optional[asyncio.Task] = None
+
 
 
 
@@ -1044,7 +1044,7 @@ class WeComAdapter(BasePlatformAdapter):
     # (see docs/rca-wecom-stream-final-ack-timeout-duplicate.md).
 
     _REPLY_ACK_TIMEOUT = 15.0
-    _INTERMEDIATE_ACK_TIMEOUT = 5.0  # matches official SDK's per-frame ack timeout
+
 
     async def _send_reply_queued(
         self,
@@ -1095,15 +1095,6 @@ class WeComAdapter(BasePlatformAdapter):
                 _pending_stream.get("finish", "N/A"),
                 time.monotonic() - (pending_frame.sent_at or time.monotonic()),
             )
-            # Cancel the intermediate timeout watchdog BEFORE awaiting the
-            # fence.  The watchdog calls frame.future.cancel(), which would
-            # propagate CancelledError through asyncio.shield() and unwind
-            # the final path before finish=true is ever sent.  Disarming
-            # first ensures only the 15s _REPLY_ACK_TIMEOUT governs the
-            # fence wait.
-            if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
-                queue.ack_timeout_task.cancel()
-                queue.ack_timeout_task = None
             try:
                 await asyncio.wait_for(
                     asyncio.shield(pending_frame.future),
@@ -1252,10 +1243,6 @@ class WeComAdapter(BasePlatformAdapter):
                 req_id, elapsed, _body.get("errcode", "N/A"),
             )
             frame.future.set_result(payload)
-        # Cancel the timeout watchdog for this frame
-        if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
-            queue.ack_timeout_task.cancel()
-            queue.ack_timeout_task = None
         queue.pending_ack = None
         # Check for coalesced content to flush; if present, schedule send
         if queue.coalesced_body is not None:
@@ -1270,10 +1257,6 @@ class WeComAdapter(BasePlatformAdapter):
         for queue in list(self._reply_queues.values()):
             if queue.pending_ack and not queue.pending_ack.future.done():
                 queue.pending_ack.future.set_exception(error)
-            # Cancel timeout watchdog
-            if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
-                queue.ack_timeout_task.cancel()
-            queue.ack_timeout_task = None
             # Clear coalesced buffer
             queue.coalesced_body = None
             queue.coalesce_count = 0
@@ -2442,8 +2425,12 @@ class WeComAdapter(BasePlatformAdapter):
     ) -> None:
         """Send an intermediate frame and register it as the in-flight pending ACK.
 
-        Also starts the ACK timeout watchdog.  Called both for fresh sends and
-        for flushing coalesced content after an ACK arrives.
+        Pure serial: waits for the ACK to arrive (resolved by
+        ``_resolve_reply_ack``) before the slot is freed for the next frame.
+        No intermediate timeout — if the ACK never arrives, the WebSocket
+        heartbeat / reconnect detects the dead connection and
+        ``_fail_reply_queues`` cleans up.  This eliminates the race where a
+        late ACK for a timed-out frame falsely resolves a successor.
         """
         # Create future for THIS frame's ack
         future: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -2475,63 +2462,7 @@ class WeComAdapter(BasePlatformAdapter):
                 future.cancel()
             raise
 
-        # Start the ACK timeout watchdog — if WeCom doesn't ACK within
-        # _INTERMEDIATE_ACK_TIMEOUT, we clear the slot and flush coalesced.
-        # Skip if the ACK already arrived during the _send_json await
-        # (e.g. synchronous mock or ultra-fast server response).
-        if not future.done():
-            if queue.ack_timeout_task is not None and not queue.ack_timeout_task.done():
-                queue.ack_timeout_task.cancel()
-            queue.ack_timeout_task = asyncio.get_running_loop().create_task(
-                self._intermediate_ack_timeout_handler(normalized_req_id, frame)
-            )
 
-    async def _intermediate_ack_timeout_handler(
-        self, req_id: str, frame: "ReplyFrame",
-    ) -> None:
-        """Watchdog: if the in-flight intermediate frame's ACK doesn't arrive
-        within ``_INTERMEDIATE_ACK_TIMEOUT``, clear the slot and flush any
-        coalesced content.  Non-fatal — just advances to the next frame."""
-        try:
-            await asyncio.sleep(self._INTERMEDIATE_ACK_TIMEOUT)
-        except asyncio.CancelledError:
-            return
-
-        queue = self._reply_queues.get(req_id)
-        if queue is None:
-            return
-
-        # Only act if the timed-out frame is still the pending one
-        if queue.pending_ack is not frame:
-            return
-
-        elapsed = time.monotonic() - (frame.sent_at or time.monotonic())
-        logger.info(
-            "[ACK-SERIAL] req_id=%s ack_timeout elapsed=%.1fs — advancing to coalesced",
-            req_id, elapsed,
-        )
-
-        # Cancel the stale future and clear the slot
-        if not frame.future.done():
-            frame.future.cancel()
-        queue.pending_ack = None
-
-        # Flush coalesced content if any
-        if queue.coalesced_body is not None:
-            coalesced_body = queue.coalesced_body
-            queue.coalesced_body = None
-            queue.coalesce_count = 0
-            try:
-                await self._send_intermediate_serial(req_id, queue, coalesced_body)
-            except Exception:
-                logger.warning(
-                    "[ACK-SERIAL] req_id=%s failed to flush coalesced frame after timeout",
-                    req_id, exc_info=True,
-                )
-        else:
-            # No coalesced content and slot timed out — cleanup
-            if queue.pending_ack is None:
-                self._reply_queues.pop(req_id, None)
 
     def _flush_coalesced(self, req_id: str) -> None:
         """Schedule sending coalesced content after an ACK resolves.

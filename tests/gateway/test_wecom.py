@@ -999,9 +999,7 @@ class TestSendStreamFrame:
                 if queue and queue.pending_ack and not queue.pending_ack.future.done():
                     queue.pending_ack.future.set_result({"errcode": 0, "errmsg": "ok"})
                     queue.pending_ack = None
-                    if queue.ack_timeout_task and not queue.ack_timeout_task.done():
-                        queue.ack_timeout_task.cancel()
-                        queue.ack_timeout_task = None
+
                     # Don't pop queue — it may be reused for next frame
 
         async def mock_send_reply_queued(reply_req_id, body, *, is_final=False, skip_if_pending=False):
@@ -1223,9 +1221,7 @@ class TestSendStreamFrameFailures:
                 if queue and queue.pending_ack and not queue.pending_ack.future.done():
                     queue.pending_ack.future.set_result({"errcode": 0, "errmsg": "ok"})
                     queue.pending_ack = None
-                    if queue.ack_timeout_task and not queue.ack_timeout_task.done():
-                        queue.ack_timeout_task.cancel()
-                        queue.ack_timeout_task = None
+
 
         adapter._send_json = AsyncMock(side_effect=_auto_ack_send_json)
 
@@ -1480,9 +1476,7 @@ class TestSerialCoalesceFrameFlow:
                 if queue and queue.pending_ack and not queue.pending_ack.future.done():
                     queue.pending_ack.future.set_result({"errcode": 0, "errmsg": "ok"})
                     queue.pending_ack = None
-                    if queue.ack_timeout_task and not queue.ack_timeout_task.done():
-                        queue.ack_timeout_task.cancel()
-                        queue.ack_timeout_task = None
+
 
         async def mock_send_queued(reply_req_id, body, **kwargs):
             is_final = kwargs.get("is_final", False)

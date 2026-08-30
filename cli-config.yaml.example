@@ -1225,8 +1225,11 @@ platform_toolsets:
 #         # append  = Hermes defaults first, then user priority
 #         # replace = only the list below defines priority
 #         priority_mode: prepend
+#         # Priority is applied across core + plugin + skill commands before
+#         # the cap, so a listed skill command always keeps a menu slot.
 #         priority:
 #           - my_plugin_command
+#           - my-important-skill
 #   slack:
 #     extra:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit

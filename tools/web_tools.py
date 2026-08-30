@@ -97,7 +97,20 @@ def _probe(provider, method: str, context: str = "") -> Optional[bool]:
         return None
 
 
-def _get_backend() -> str:
+_SEARCH_ONLY_WEB_BACKENDS = frozenset({"searxng", "brave-free", "ddgs", "xai"})
+
+
+def _backend_supports_capability(backend: str, capability: str) -> bool:
+    """Consult registered capability declarations, with a pre-discovery built-in fallback."""
+    provider = _registered_web_provider(backend)
+    if provider is not None:
+        capable = _probe(provider, f"supports_{capability}")
+        if capable is not None:
+            return capable
+    return capability != "extract" or backend not in _SEARCH_ONLY_WEB_BACKENDS
+
+
+def _get_backend(capability: Optional[str] = None) -> str:
     """Shared web backend name. A stored ``web.backend`` is returned as-is — no availability probe, no
     fallback — so a broken selection surfaces the vendor's honest error rather than silently rerouting.
     The managed ``use_gateway`` selection also resolves to firecrawl with no ladder. Autodetect runs
@@ -112,10 +125,10 @@ def _get_backend() -> str:
         return "firecrawl"
 
     # Never-configured install.
-    return _autodetect_backend() or _keyless_backend() or "firecrawl"  # default (backward compat)
+    return _autodetect_backend(capability) or _keyless_backend(capability) or "firecrawl"  # default (backward compat)
 
 
-def _autodetect_backend() -> Optional[str]:
+def _autodetect_backend(capability: Optional[str] = None) -> Optional[str]:
     """Autodetect rungs above the keyless tier, or None. Explicit user credentials beat the managed-gateway
     probe (a Nous OAuth token's tier may not grant web access; the gateway then fails at runtime with no
     fallback). Free tiers trail paid."""
@@ -128,17 +141,18 @@ def _autodetect_backend() -> Optional[str]:
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")), ("ddgs", _ddgs_package_importable()),
     )
     for backend, available in backend_candidates:
-        if available:
+        if available and (capability is None or _backend_supports_capability(backend, capability)):
             return backend
 
     # Plugin-contributed providers (built-ins are covered above); probe the held object directly.
     for provider in _list_registered_web_providers():
-        if provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "is_available"):
+        if (provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "is_available")
+                and (capability is None or _backend_supports_capability(provider.name, capability))):
             return provider.name
     return None
 
 
-def _keyless_backend() -> Optional[str]:
+def _keyless_backend(capability: Optional[str] = None) -> Optional[str]:
     """Keyless free-tier backend name, or None. Strictly the last autodetect rung so it never
     pre-empts a keyed backend. Discovery must run first: reachable from contexts that haven't
     loaded plugins (subprocess runs, delegate children)."""
@@ -148,7 +162,8 @@ def _keyless_backend() -> Optional[str]:
         if _keyless_tier_enabled():
             for name in _keyless_preference():
                 provider = _registered_web_provider(name)
-                if provider is not None and _probe(provider, "is_keyless_available"):
+                if (provider is not None and _probe(provider, "is_keyless_available")
+                        and (capability is None or _backend_supports_capability(name, capability))):
                     return name
     except Exception as exc:
         logger.debug("keyless fallback walk failed: %s", exc)
@@ -167,7 +182,7 @@ def _managed_web_search() -> bool:
     selected = read_selection("web")
     if selected is not None:
         return selected == NOUS_MANAGED_PROVIDER
-    backend = _autodetect_backend()
+    backend = _autodetect_backend("search")
     if backend == "firecrawl":
         return not (_has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")) and _is_tool_gateway_ready()
     from tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
@@ -181,14 +196,14 @@ def _get_search_backend() -> str:
     pin = _configured_backend("search_backend")
     if pin and pin != NOUS_MANAGED_PROVIDER:
         return pin
-    return "perplexity" if _managed_web_search() else _get_backend()
+    return "perplexity" if _managed_web_search() else _get_backend("search")
 
 
 def _get_extract_backend() -> str:
     """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect.
     A ``nous`` pin is managed Firecrawl; the client picks the gateway route for that capability."""
     pin = _configured_backend("extract_backend")
-    return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin or _get_backend()
+    return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin or _get_backend("extract")
 
 
 def _ddgs_package_importable() -> bool:
@@ -229,7 +244,7 @@ _BUILTIN_AVAILABILITY = {
 _LEGACY_WEB_BACKENDS = frozenset(_BUILTIN_AVAILABILITY)
 
 
-def _is_backend_available(backend: str) -> bool:
+def _is_backend_available(backend: str, capability: Optional[str] = None) -> bool:
     """True when *backend* is usable — the single availability chokepoint. Non-legacy names delegate to the
     registered provider's ``is_available()`` (unregistered names fall through); built-ins use cheap probes.
 
@@ -240,6 +255,8 @@ def _is_backend_available(backend: str) -> bool:
     #32698). Built-in backends keep their cheap hardcoded probes below.
     """
     backend = (backend or "").lower().strip()
+    if capability and not _backend_supports_capability(backend, capability):
+        return False
     provider = None if backend in _LEGACY_WEB_BACKENDS else _registered_web_provider(backend)
     if provider is not None:
         return _probe(provider, "is_available") or False

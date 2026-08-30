@@ -411,6 +411,80 @@ class TestBackendSelection:
             assert _get_backend() == "firecrawl"
 
 
+class TestCapabilityAwareSelection:
+    """Auto-detect must skip backends that cannot serve the capability (#98618).
+
+    With ddgs installed and no extract-capable credentials, extract used to
+    resolve to the search-only ddgs: selection reported it "available" and
+    the failure only surfaced at call time with the search-only error.
+    """
+
+    def test_extract_skips_search_only_ddgs(self):
+        """ddgs importable + no credentials → extract falls through to the
+        firecrawl default instead of search-only ddgs; search keeps ddgs."""
+        from tools.web_tools import _get_extract_backend, _get_search_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=True), \
+             patch("tools.web_tools._list_registered_web_providers", return_value=[]), \
+             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
+            assert _get_extract_backend() == "firecrawl"
+            assert _get_search_backend() == "ddgs"
+
+    def test_extract_prefers_extract_capable_tavily_over_ddgs(self):
+        """Capability filtering must not drop extract-capable backends:
+        a Tavily key still wins over an importable ddgs for extract."""
+        from tools.web_tools import _get_extract_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=True), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            assert _get_extract_backend() == "tavily"
+
+    def test_extract_skips_searxng(self):
+        """A search-only credential (SEARXNG_URL) never satisfies extract —
+        it falls through to the firecrawl default."""
+        from tools.web_tools import _get_extract_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._list_registered_web_providers", return_value=[]), \
+             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False), \
+             patch.dict(os.environ, {"SEARXNG_URL": "http://searxng.local"}):
+            assert _get_extract_backend() == "firecrawl"
+
+    def test_capability_check_uses_registered_provider(self):
+        """A registered provider's supports_extract() wins over any static map."""
+        from tools.web_tools import _backend_supports_capability
+        provider = MagicMock()
+        provider.supports_search.return_value = True
+        provider.supports_extract.return_value = False
+        with patch("tools.web_tools._registered_web_provider", return_value=provider):
+            assert _backend_supports_capability("custom-backend", "search") is True
+            assert _backend_supports_capability("custom-backend", "extract") is False
+
+    def test_capability_check_static_map_without_registry(self):
+        """Registry absent (plugins not loaded) → the static search-only map
+        applies; unknown backends stay extract-capable so a custom provider's
+        strict selection is never silently dropped."""
+        from tools.web_tools import _backend_supports_capability
+        with patch("tools.web_tools._registered_web_provider", return_value=None):
+            assert _backend_supports_capability("ddgs", "search") is True
+            assert _backend_supports_capability("ddgs", "extract") is False
+            assert _backend_supports_capability("brave-free", "extract") is False
+            assert _backend_supports_capability("tavily", "extract") is True
+            assert _backend_supports_capability("never-heard-of", "extract") is True
+
+    def test_is_backend_available_capability_gate(self):
+        """_is_backend_available(backend, capability="extract") reports False
+        for a reachable search-only backend asked about extract (#98618)."""
+        from tools.web_tools import _is_backend_available
+        with patch("tools.web_tools._ddgs_package_importable", return_value=True), \
+             patch("tools.web_tools._registered_web_provider", return_value=None):
+            assert _is_backend_available("ddgs") is True
+            assert _is_backend_available("ddgs", capability="search") is True
+            assert _is_backend_available("ddgs", capability="extract") is False
+
+
 class TestParallelClientConfig:
     """Test suite for Parallel client initialization."""
 

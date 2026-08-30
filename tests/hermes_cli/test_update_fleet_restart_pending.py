@@ -84,6 +84,12 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(
+        update_cmd, "_restart_macos_launchd_gateways", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
         hermes_main,
         "_get_origin_url",
         lambda *a, **k: "https://github.com/NousResearch/hermes-agent.git",

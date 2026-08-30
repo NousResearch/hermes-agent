@@ -2442,6 +2442,8 @@ export const ja = defineLocale({
     connectedProvider: provider => `${provider} が接続されました`,
     connectedPicking: provider => `${provider} が接続されました。デフォルトモデルを選択中...`,
     signInFailed: 'サインインに失敗しました。再試行してください。',
+    signInExpired:
+      '承認待ちでタイムアウトしました。多くの場合、開いたタブのサインインページが止まっている（サーバー側の問題）ためです。そのページでサインインを完了してから再試行してください。解決しない場合は API キーまたは CLI を利用してください。',
     pickDifferentProvider: '別のプロバイダーを選択',
     signInWith: provider => `${provider} でサインイン`,
     openedBrowser: provider => `${provider} をブラウザーで開きました。`,

@@ -2352,6 +2352,8 @@ export const zhHant = defineLocale({
     connectedProvider: provider => `${provider} 已連線`,
     connectedPicking: provider => `${provider} 已連線。正在選擇預設模型...`,
     signInFailed: '登入失敗，請重試。',
+    signInExpired:
+      '等待授權逾時。通常是因為登入頁面在開啟的分頁中卡住（伺服器端問題）——請在該頁面完成登入後重試。若仍失敗，請改用 API 金鑰或 CLI 方式。',
     pickDifferentProvider: '選擇其他提供方',
     signInWith: provider => `使用 ${provider} 登入`,
     openedBrowser: provider => `已在瀏覽器中開啟 ${provider}。`,

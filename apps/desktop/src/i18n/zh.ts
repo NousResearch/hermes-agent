@@ -2963,6 +2963,8 @@ export const zh: Translations = {
     connectedProvider: provider => `${provider} 已连接`,
     connectedPicking: provider => `${provider} 已连接。正在选择默认模型...`,
     signInFailed: '登录失败，请重试。',
+    signInExpired:
+      '等待授权超时。通常是因为登录页面在打开的标签页中卡住（服务端问题）——请在该页面完成登录后重试。若仍失败，请改用 API 密钥或 CLI 方式。',
     pickDifferentProvider: '选择其他提供方',
     signInWith: provider => `使用 ${provider} 登录`,
     openedBrowser: provider => `已在浏览器中打开 ${provider}。`,

@@ -2169,6 +2169,8 @@ export const ar = defineLocale({
     connectedProvider: provider => `تم ربط ${provider}`,
     connectedPicking: provider => `تم ربط ${provider}. جار اختيار نموذج افتراضي...`,
     signInFailed: 'فشل تسجيل الدخول. حاول مرة أخرى.',
+    signInExpired:
+      'انتهت مهلة انتظار التفويض. السبب الأكثر شيوعًا هو تعطّل صفحة تسجيل الدخول في تبويب المتصفح (مشكلة من جهة الخادم) — أكمل تسجيل الدخول هناك ثم أعد المحاولة. إذا استمر الفشل، استخدم مفتاح API أو واجهة سطر الأوامر بدلاً من ذلك.',
     pickDifferentProvider: 'اختر مزوداً آخر',
     signInWith: provider => `تسجيل الدخول عبر ${provider}`,
     openedBrowser: provider => `فتحنا ${provider} في المتصفح.`,

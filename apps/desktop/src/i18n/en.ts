@@ -2798,6 +2798,8 @@ export const en: Translations = {
     connectedProvider: provider => `${provider} connected`,
     connectedPicking: provider => `${provider} connected. Picking a default model...`,
     signInFailed: 'Sign-in failed. Try again.',
+    signInExpired:
+      'Sign-in expired waiting for authorization. This usually means the sign-in page stalled in the opened tab (server-side issue) — finish signing in there, then try again. If it keeps failing, use an API key or the CLI fallback instead.',
     pickDifferentProvider: 'Pick a different provider',
     signInWith: provider => `Sign in with ${provider}`,
     openedBrowser: provider => `We opened ${provider} in your browser.`,

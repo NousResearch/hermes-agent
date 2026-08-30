@@ -146,7 +146,7 @@ def test_same_dir_link_without_extension_is_ignored(monkeypatch):
     """Prose targets that aren't file links (no extension) never fetch."""
     from tools.skills_hub import _referenced_support_paths
 
-    skill = "---\nname: x\ndescription: x\---\nsee [notes](NOTES) and `README`\n"
+    skill = "---\nname: x\ndescription: x\n---\nsee [notes](NOTES) and `README`\n"
     assert _referenced_support_paths(skill) == set()
 
 
@@ -155,7 +155,7 @@ def test_same_dir_link_query_and_fragment_are_stripped():
     from tools.skills_hub import _referenced_support_paths
 
     skill = (
-        "---\nname: x\ndescription: x\---\n"
+        "---\nname: x\ndescription: x\n---\n"
         "[a](CONTEXT-FORMAT.md?raw=1) [b](DEEPENING.md#usage)\n"
     )
     assert _referenced_support_paths(skill) == {"CONTEXT-FORMAT.md", "DEEPENING.md"}
@@ -165,7 +165,7 @@ def test_case_variant_of_skill_md_is_never_a_sibling_entry():
     """skill.md must not ship as a bundle file (case-insensitive FS collision)."""
     from tools.skills_hub import _referenced_support_paths
 
-    skill = "---\nname: x\ndescription: x\---\n[home](skill.md)\n"
+    skill = "---\nname: x\ndescription: x\n---\n[home](skill.md)\n"
     assert _referenced_support_paths(skill) == set()
 
 
@@ -173,7 +173,7 @@ def test_case_folded_sibling_collision_drops_the_pair():
     """A.md + a.md would collide on install — neither ships."""
     from tools.skills_hub import _referenced_support_paths
 
-    skill = "---\nname: x\ndescription: x\---\n[a](A.md) [a2](a.md)\n"
+    skill = "---\nname: x\ndescription: x\n---\n[a](A.md) [a2](a.md)\n"
     assert _referenced_support_paths(skill) == set()
 
 
@@ -242,10 +242,10 @@ def test_github_source_fetch_downloads_full_skill_directory(monkeypatch):
         "See [audit](reference/audit.md) and run `node scripts/pin.mjs`.\n"
     )
     fetched: list = []
-    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path: skill_md)
+    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path, ref=None: skill_md)
     monkeypatch.setattr(
         source, "_fetch_file_bytes",
-        lambda _repo, path: fetched.append(path) or b"content-of-" + path.encode(),
+        lambda _repo, path, ref=None: fetched.append(path) or b"content-of-" + path.encode(),
     )
     source._tree_cache["owner/repo"] = (
         "main",
@@ -275,20 +275,35 @@ def test_github_source_fetch_downloads_full_skill_directory(monkeypatch):
     }
 
 
-def test_github_source_fetch_still_requires_linked_references(monkeypatch):
-    """A SKILL.md-linked references/ path missing from the tree rejects the bundle."""
+def test_github_source_fetch_dangling_linked_reference_warns_not_aborts(monkeypatch):
+    """A SKILL.md-linked references/ path absent from the tree installs
+    without the file (dangling links are prose over-matches / repo-only dev
+    tools — #66760/#90081); a SYMLINKED referenced path still hard-rejects."""
     source = GitHubSource(GitHubAuth())
     skill_md = (
         "---\nname: dangling\ndescription: d\n---\n"
         "Read [the guide](references/guide.md).\n"
     )
-    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path: skill_md)
-    monkeypatch.setattr(source, "_fetch_file_bytes", lambda _repo, path: b"x")
+    monkeypatch.setattr(source, "_fetch_file_content", lambda _repo, path, ref=None: skill_md)
+    monkeypatch.setattr(source, "_fetch_file_bytes", lambda _repo, path, ref=None: b"x")
+
+    # Missing entirely -> installs without it.
     source._tree_cache["owner/repo"] = (
         "main",
         [{"path": "skill/SKILL.md", "type": "blob", "mode": "100644"}],
     )
+    bundle = source.fetch("owner/repo/skill")
+    assert bundle is not None
+    assert "references/guide.md" not in bundle.files
 
+    # Present as a symlink -> hard rejection.
+    source._tree_cache["owner/repo"] = (
+        "main",
+        [
+            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/references/guide.md", "type": "blob", "mode": "120000"},
+        ],
+    )
     assert source.fetch("owner/repo/skill") is None
 
 

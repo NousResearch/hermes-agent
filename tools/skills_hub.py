@@ -220,11 +220,16 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         except ValueError:
             return None
         if safe.split("/", 1)[0] in _ALLOWED_SUPPORT_DIRS:
-            # Prose globs/placeholders — e.g. ``references/type-*.md`` or
-            # ``references/type-<name>.md`` (which the regex truncates to the
-            # bare prefix ``references/type-``) — are agent instructions, not
-            # files. Only tokens that can name an actual file are references.
-            if re.search(r"[*?<>]", safe) or "." not in safe.rsplit("/", 1)[-1]:
+            # Prose placeholders — e.g. ``references/type-<name>.md`` (which
+            # the link regex truncates at ``<`` to the bare prefix
+            # ``references/type-``) — are agent instructions, not files.
+            # Glob shapes (*, ?, []) were already rejected on the raw
+            # candidate above; a truncated placeholder leaves a basename
+            # ending in a separator, which no real file uses. No extension
+            # requirement: extensionless support files
+            # (``references/LICENSE``) are legitimate.
+            base = safe.rsplit("/", 1)[-1]
+            if re.search(r"[*?<>]", safe) or not re.search(r"[A-Za-z0-9]$", base):
                 continue
             paths.add(safe)
     for match in _SAMEDIR_LINK_RE.finditer(normalized):
@@ -789,13 +794,15 @@ class GitHubSource(SkillSource):
             # install, and the scanner sees MORE this way, not less.
             branch, entries = tree
             prefix = f"{skill_path.rstrip('/')}/"
+            symlinked: set = set()
             for item in entries:
-                if item.get("type") != "blob" or item.get("mode") == "120000":
-                    continue
                 item_path = item.get("path", "")
                 if not item_path.startswith(prefix):
                     continue
                 rel_path = item_path[len(prefix):]
+                if item.get("type") != "blob" or item.get("mode") == "120000":
+                    symlinked.add(rel_path)
+                    continue
                 if rel_path == "SKILL.md":
                     continue
                 base = rel_path.rsplit("/", 1)[-1]
@@ -812,16 +819,27 @@ class GitHubSource(SkillSource):
                                    "file; continuing without it: %s", item_path)
                     continue
                 files[rel_path] = content
-            # A support file SKILL.md links must actually exist as a regular
-            # file — a missing or symlinked referenced path rejects the
-            # bundle rather than installing a skill with dangling links.
+            # A SKILL.md-linked support path that isn't in the tree is a
+            # dangling link — a repo-only dev tool, prose over-match, or a
+            # file the author forgot to push. Warn and install without it
+            # rather than aborting the whole install (#66760/#90081): the
+            # skill body still works, and the gap is visible in the log.
+            # A referenced path that IS in the tree but as a symlink (or any
+            # non-regular entry) stays a hard rejection — that shape is an
+            # escape attempt, not a forgotten file.
             for rel_path in sorted(referenced):
-                if rel_path not in files:
+                if rel_path in symlinked:
                     logger.warning(
-                        "Referenced skill support file is missing: %s%s",
-                        prefix, rel_path,
+                        "Rejected non-regular referenced file in skill "
+                        "bundle: %s%s", prefix, rel_path,
                     )
                     return None
+                if rel_path not in files:
+                    logger.warning(
+                        "Referenced skill support file is missing; "
+                        "continuing without it: %s%s",
+                        prefix, rel_path,
+                    )
             revision = self._tree_revisions.get(repo) or branch
         else:
             for rel_path in referenced:

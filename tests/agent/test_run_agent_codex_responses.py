@@ -894,6 +894,43 @@ def test_extract_responses_message_text_reads_refusal_parts():
     assert _extract_responses_message_text(mixed) == "Hello. But no more."
 
 
+def test_consume_codex_stream_preserves_reasoning_summary_boundaries():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    legacy_reasoning = []
+    structured_reasoning = []
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.reasoning_summary_part.added", item_id="rs_first", summary_index=0),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                item_id="rs_first",
+                summary_index=0,
+                delta="Inspecting",
+            ),
+            SimpleNamespace(type="response.reasoning_summary_part.done", item_id="rs_first", summary_index=0),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                item_id="rs_first",
+                summary_index=1,
+                delta="Checking",
+            ),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=legacy_reasoning.append,
+        on_reasoning_event=lambda phase, item_id, text="": structured_reasoning.append((phase, item_id, text)),
+    )
+
+    assert legacy_reasoning == []
+    assert structured_reasoning == [
+        ("start", "rs_first:summary:0", ""),
+        ("delta", "rs_first:summary:0", "Inspecting"),
+        ("end", "rs_first:summary:0", ""),
+        ("delta", "rs_first:summary:1", "Checking"),
+    ]
+
+
 def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
     from agent.codex_runtime import _consume_codex_event_stream
 

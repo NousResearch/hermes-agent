@@ -449,6 +449,52 @@ def _resolve_crash_grace_seconds() -> int:
     return DEFAULT_CRASH_GRACE_SECONDS
 
 
+# ---------------------------------------------------------------------------
+# Global dispatch circuit breaker (fleet-wide provider-outage gate)
+# ---------------------------------------------------------------------------
+# On 2026-08-30 the OpenRouter monthly-key 403 bounced every worker at spawn
+# inside ~2s (rc=0, protocol violation), and the dispatcher retried through 22
+# crashed runs before a human parked the cards. A per-card failure budget can't
+# see this — each retry is "legitimately" from one card's viewpoint. So the
+# fix is a FLEET-wide breaker: when a worker exits fast+clean with a provider
+# 4xx/5xx in its log, pause ALL dispatch, alert ONCE, and probe-resume.
+#
+# A worker that exits within this window with rc=0 and a provider 4xx/5xx in
+# its log is the provider-outage signature — not a genuine worker fault.
+CIRCUIT_FAST_EXIT_SECONDS = 10
+# Probe cadence between paused probes ("every 5-10 min"). Overridable so tests
+# and operators can tighten/loosen it.
+DEFAULT_CIRCUIT_PROBE_INTERVAL_SECONDS = 300
+# Hard timeout for a single probe request (bounded network call).
+DEFAULT_CIRCUIT_PROBE_TIMEOUT_SECONDS = 30
+# State row id for the singleton dispatch_circuit row.
+CIRCUIT_ROW_ID = 1
+# Outbox file for alerts delivered by the no_agent cron (same channel as
+# budget-watch). Relative to the board root; "default" board keeps the legacy
+# kanban root.
+CIRCUIT_OUTBOX_FILENAME = "circuit-outbox.json"
+
+
+def _resolve_circuit_probe_interval_seconds() -> int:
+    """Return the probe interval (seconds) between paused probes.
+
+    Reads ``HERMES_KANBAN_CIRCUIT_PROBE_INTERVAL_SECONDS``; falls back to
+    ``DEFAULT_CIRCUIT_PROBE_INTERVAL_SECONDS``. A value of 0 disables probes
+    (the breaker stays paused until manually closed).
+    """
+    raw = os.environ.get(
+        "HERMES_KANBAN_CIRCUIT_PROBE_INTERVAL_SECONDS", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_CIRCUIT_PROBE_INTERVAL_SECONDS
+
+
 def _resolve_rate_limit_cooldown_seconds() -> int:
     """Return the rate-limit requeue cooldown in seconds.
 
@@ -1512,6 +1558,22 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+-- Global dispatch circuit breaker (fleet-wide provider-outage gate). A single
+-- row (id=1) records whether the dispatcher is paused because a provider-side
+-- outage (e.g. OpenRouter 403/429/5xx at worker spawn) tripped it. When
+-- state='open' the dispatcher spawns NO workers fleet-wide; a cheap probe
+-- every CIRCUIT_PROBE_INTERVAL_SECONDS closes it again. The reason field is
+-- the detection signature (a serialized signature string); the outbox state
+-- lives in a sibling JSON file so the no_agent alert cron can deliver it.
+CREATE TABLE IF NOT EXISTS dispatch_circuit (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    state          TEXT NOT NULL DEFAULT 'closed',   -- 'open' | 'closed'
+    reason         TEXT NOT NULL DEFAULT '',
+    opened_at      INTEGER,
+    last_probe_at   INTEGER,
+    probe_count     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
@@ -8130,6 +8192,320 @@ class DispatchResult:
     spawned. ``None`` when memory was fine/unknown and the guard imposed
     no restriction. Reclaim/promotion bookkeeping still ran either way;
     deferred tasks stay queued for the next tick."""
+    frozen_by_circuit: bool = False
+    """True when this tick spawned nothing because the global dispatch circuit
+    breaker is open (state='open') — a provider-side outage paused dispatch
+    fleet-wide. Tasks stay queued; a successful probe later closes the breaker
+    and the next tick resumes spawning. Distinct from ``memory_pressure``
+    (which is host-memory pressure, not provider outages)."""
+
+
+# ---------------------------------------------------------------------------
+# Global dispatch circuit breaker helpers
+# ---------------------------------------------------------------------------
+
+def _circuit_outbox_path(board: Optional[str] = None) -> Path:
+    """Path to the circuit alert outbox (JSON) for a board.
+
+    Mirrors ``worker_logs_dir`` semantics: the ``default`` board uses the legacy
+    kanban root, other boards nest under ``kanban/boards/<slug>/``. The outbox
+    is a file the no_agent alert cron watches; a signature inside drives dedup
+    so a paused breaker does not re-alert every tick.
+    """
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / CIRCUIT_OUTBOX_FILENAME
+    return board_dir(slug) / CIRCUIT_OUTBOX_FILENAME
+
+
+def _ensure_dispatch_circuit_row(conn: sqlite3.Connection) -> None:
+    """Ensure the singleton ``dispatch_circuit`` row (id=1) exists (closed)."""
+    conn.execute(
+        "INSERT OR IGNORE INTO dispatch_circuit (id, state, reason, "
+        "opened_at, last_probe_at, probe_count) "
+        "VALUES (?, 'closed', '', NULL, NULL, 0)",
+        (CIRCUIT_ROW_ID,),
+    )
+
+
+def _circuit_status(conn: sqlite3.Connection) -> dict:
+    """Return the current circuit state as a dict with defaults for a fresh DB."""
+    _ensure_dispatch_circuit_row(conn)
+    row = conn.execute(
+        "SELECT state, reason, opened_at, last_probe_at, probe_count "
+        "FROM dispatch_circuit WHERE id = ?",
+        (CIRCUIT_ROW_ID,),
+    ).fetchone()
+    if row is None:
+        return {"state": "closed", "reason": "", "opened_at": None,
+                "last_probe_at": None, "probe_count": 0}
+    keys = row.keys()
+    return {
+        "state": row["state"],
+        "reason": row["reason"],
+        "opened_at": row["opened_at"] if "opened_at" in keys else None,
+        "last_probe_at": row["last_probe_at"],
+        "probe_count": row["probe_count"],
+    }
+
+
+def _circuit_open(conn: sqlite3.Connection) -> bool:
+    """True when the global dispatch circuit breaker is open (paused)."""
+    try:
+        return _circuit_status(conn).get("state") == "open"
+    except Exception:
+        # Uninitialized/corrupt — treat as closed (not paused). Safe default:
+        # never block dispatch on a bookkeeping read failure.
+        return False
+
+
+def _circuit_trip(
+    conn: sqlite3.Connection,
+    reason: str,
+    *,
+    board: Optional[str] = None,
+) -> None:
+    """Open (pause) the global dispatch circuit breaker.
+
+    ``reason`` is a human-readable detection signature stored for the alert /
+    audit trail. The breaker stays open until a probe succeeds and closes it.
+    """
+    _ensure_dispatch_circuit_row(conn)
+    conn.execute(
+        "UPDATE dispatch_circuit SET state = 'open', reason = ?, "
+        "opened_at = COALESCE(opened_at, ?) WHERE id = ?",
+        (reason[:500], int(time.time()), CIRCUIT_ROW_ID),
+    )
+
+
+def _circuit_close(conn: sqlite3.Connection) -> None:
+    """Close (resume) the global breaker. ``last_probe_at`` is bumped so a
+    resume is not immediately re-probed on the next tick."""
+    _ensure_dispatch_circuit_row(conn)
+    conn.execute(
+        "UPDATE dispatch_circuit SET state = 'closed', last_probe_at = ? "
+        "WHERE id = ?",
+        (int(time.time()), CIRCUIT_ROW_ID),
+    )
+
+
+def _circuit_probe(probe_fn=None) -> bool:
+    """Run one cheap real probe that the provider is back.
+
+    ``probe_fn`` (test hook) returns True when the provider is healthy. The
+    default probe issues a tiny completion on the default model via OpenRouter;
+    any error (network, 4xx/5xx, missing key) returns False — the breaker stays
+    paused. Bounded by ``DEFAULT_CIRCUIT_PROBE_TIMEOUT_SECONDS`` so a hang
+    never blocks a dispatch tick indefinitely.
+    """
+    if probe_fn is not None:
+        try:
+            return bool(probe_fn())
+        except Exception:
+            return False
+    key = _circuit_openrouter_api_key()
+    if not key:
+        return False
+    import json as _json
+    import urllib.error as _uerror
+    import urllib.request as _urequest
+    model = os.environ.get(
+        "HERMES_KANBAN_CIRCUIT_PROBE_MODEL",
+        "deepseek/deepseek-v4-flash-0731",
+    ).strip() or "deepseek/deepseek-v4-flash-0731"
+    body = _json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+    }).encode()
+    req = _urequest.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with _urequest.urlopen(
+            req, timeout=DEFAULT_CIRCUIT_PROBE_TIMEOUT_SECONDS
+        ) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _circuit_openrouter_api_key() -> Optional[str]:
+    """Return the OpenRouter API key used for the probe (env or ``~/.hermes``)."""
+    val = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if val:
+        return val
+    try:
+        env_path = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+        env_file = env_path / ".env"
+        for line in env_file.read_text(errors="ignore").splitlines():
+            if line.startswith("OPENROUTER_API_KEY="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'") or None
+    except Exception:
+        pass
+    return None
+
+
+def _circuit_dispatch_paused(
+    conn: sqlite3.Connection,
+    *,
+    circuit_probe_fn=None,
+    board: Optional[str] = None,
+) -> DispatchResult:
+    """Run the paused tick: possibly probe to resume, never spawn.
+
+    Called in place of the ready/review spawn loops when the circuit is open.
+    If due for a probe and the probe succeeds, the breaker closes (resumes)
+    and a resume alert is queued; the remainder of THIS tick still returns
+    paused so a health-checking caller sees a clean ``frozen_by_circuit``
+    result — the next tick spawns normally. Returns the result to return from
+    ``_dispatch_once_locked``.
+    """
+    result = DispatchResult(frozen_by_circuit=True)
+    st = _circuit_status(conn)
+    interval = _resolve_circuit_probe_interval_seconds()
+    due = interval > 0 and (
+        st.get("last_probe_at") is None
+        or (time.time() - int(st.get("last_probe_at") or 0)) >= interval
+    )
+    if due:
+        with write_txn(conn):
+            now = int(time.time())
+            conn.execute(
+                "UPDATE dispatch_circuit SET last_probe_at = ?, "
+                "probe_count = probe_count + 1 WHERE id = ?",
+                (now, CIRCUIT_ROW_ID),
+            )
+        ok = _circuit_probe(probe_fn=circuit_probe_fn)
+        if ok:
+            with write_txn(conn):
+                _circuit_close(conn)
+            _queue_circuit_alert(
+                conn, "resumed",
+                "kanban dispatch resumed — provider probe succeeded; "
+                "circuit breaker closed.",
+                board=board,
+            )
+            _log.info(
+                "kanban dispatch: circuit breaker probe succeeded; "
+                "dispatch resumed."
+            )
+    return result
+
+
+def _detect_provider_outage(
+    task_id: str,
+    started_at: Optional[int],
+    reaped_at: Optional[int],
+    *,
+    board: Optional[str] = None,
+) -> bool:
+    """True when a dead worker shows the provider-outage-at-spawn signature.
+
+    A worker that (a) exited cleanly within ``CIRCUIT_FAST_EXIT_SECONDS`` of
+    being spawned (rc=0, which also implies no real work / no tool calls) AND
+    (b) has a provider-side HTTP 4xx/5xx (billing / rate-limit / auth) in its
+    log is the fleet-wide outage signature — NOT a genuine worker fault.
+    ``_RESPAWN_BLOCKER_RE`` is the same auth/quota pattern the respawn guard
+    already trusts, so detection reuses the established auth-pool
+    classification. No log, or a missing/inconclusive runtime, is conservatively
+    False: we only trip the fleet-wide breaker on a positive, grounded signal.
+
+    Timing measure: ``reaped_at - started_at`` is the worker's ACTUAL runtime,
+    taken from the reap registry (``_RECENT_WORKER_EXITS``). We deliberately do
+    NOT use ``time.time() - started_at`` here — by the time
+    ``detect_crashed_workers`` inspects a dead worker it has already survived
+    the ``DEFAULT_CRASH_GRACE_SECONDS`` (30s) launch window, so elapsed
+    wall-clock at inspection time is always past the fast-exit window and the
+    fingerprint would never fire. The spawn-bounce it fingerprints is a short
+    *runtime*, not a short *wait-until-inspected*.
+    """
+    if started_at is not None and reaped_at is not None:
+        try:
+            runtime = int(reaped_at) - int(started_at)
+        except (TypeError, ValueError):
+            # Inconclusive timestamps — don't trip on a guess.
+            return False
+        if runtime >= CIRCUIT_FAST_EXIT_SECONDS or runtime < 0:
+            # Ran too long to be the spawn bounce, or the clock is inconsistent
+            # (reaped before started) — not confidently the outage fingerprint.
+            return False
+    try:
+        log = _read_worker_log_text(task_id, board=board)
+    except Exception:
+        log = ""
+    if not log:
+        return False
+    return bool(_RESPAWN_BLOCKER_RE.search(log)) and bool(
+        re.search(r"\b(403|429|4\d\d|5\d\d|forbidden|too_many_requests|"
+                 r"monthly\s*limit|credits|quota|forbidden)\b",
+                 log, re.IGNORECASE))
+
+
+def _read_worker_log_text(
+    task_id: str, *, board: Optional[str] = None,
+    limit: int = 20000,
+) -> str:
+    """Return the tail of a worker log as text for outage-signature scanning."""
+    import io
+    try:
+        path = worker_log_path(task_id, board=board)
+        if not path.exists():
+            return ""
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - limit))
+            data = f.read()
+        return data.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _queue_circuit_alert(
+    conn: sqlite3.Connection,
+    kind: str,
+    message: str,
+    *,
+    board: Optional[str] = None,
+) -> None:
+    """Append one alert to the circuit outbox (dedup by kind+board).
+
+    The no_agent cron (``kanban-circuit-watch.py``) delivers the newest
+    unsent alert exactly once via the budget-watch delivery channel and clears
+    the outbox, so a paused breaker does not nag on every tick.
+    """
+    path = _circuit_outbox_path(board=board)
+    saw = False
+    data = {}
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(errors="ignore") or "{}")
+            if isinstance(data, dict):
+                last = data.get("messages", [])
+                if isinstance(last, list) and last:
+                    if last[-1].get("kind") == kind:
+                        saw = True
+        if not saw:
+            messages = []
+            if isinstance(data, dict) and isinstance(data.get("messages", []), list):
+                messages = data.get("messages", [])
+            messages.append({
+                "kind": kind, "message": message, "at": int(time.time()),
+            })
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"messages": messages}))
+    except Exception:
+        _log.warning("kanban circuit: failed to queue %s alert", kind,
+                     exc_info=True)
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -8897,7 +9273,7 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(conn: sqlite3.Connection, *, board: Optional[str] = None) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and restores the task's source phase.
@@ -8972,25 +9348,72 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # a retry usually completes; the corrective sentence below is
                 # surfaced to the retry worker via the prior-attempt error in
                 # ``build_worker_context`` (guidance approach from #61817).
-                protocol_violation = True
-                error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation. "
-                    "If the prior run already did the work, verify it and "
-                    "report the result via kanban_complete; a run that ends "
-                    "without a terminal kanban call counts as failed no "
-                    "matter what it did."
+                #
+                # Provider-outage-at-spawn check FIRST: a clean exit within
+                # CIRCUIT_FAST_EXIT_SECONDS AND a provider 4xx/5xx in the log is
+                # the fleet-wide outage signature (rc=0, no real work / no tool
+                # calls) — NOT a worker fault. It is handled like the
+                # rate-limited path: the task is released to its source phase
+                # WITHOUT counting a failure, and the GLOBAL dispatch circuit
+                # breaker is tripped so the whole fleet pauses instead of
+                # retrying 22 cards into the same wall (2026-08-30 incident).
+                _reaped = _recent_worker_exits.get(int(pid))
+                _reaped_at = int(_reaped[1]) if _reaped else None
+                provider_outage = _detect_provider_outage(
+                    row["id"], started_at, _reaped_at, board=board,
                 )
-                event_kind = "protocol_violation"
-                event_payload = {
-                    "pid": pid,
-                    "claimer": row["claim_lock"],
-                    "exit_code": code,
-                    # Durable marker for _protocol_violation_streak: _end_run
-                    # copies this payload into the run metadata, which is how
-                    # the violation-only retry budget is derived later.
-                    "protocol_violation": True,
-                }
+                if provider_outage:
+                    protocol_violation = False
+                    _circuit_trip(
+                        conn,
+                        f"provider outage at spawn (pid {pid} fast+clean rc=0 "
+                        f"with provider HTTP 4xx/5xx in log)",
+                        board=board,
+                    )
+                    _queue_circuit_alert(
+                        conn,
+                        "tripped",
+                        "DISPATCH PAUSED: provider-side outage detected at spawn "
+                        "(worker exited within 10s, rc=0, provider HTTP 4xx/5xx in "
+                        "log). Global dispatch circuit breaker opened fleet-wide. "
+                        "A cheap probe will re-check every few minutes and "
+                        "resume automatically when the provider is back.",
+                        board=board,
+                    )
+                    rate_limited_exit = True
+                    error_text = (
+                        f"pid {pid} exited cleanly (rc=0) with a provider-side "
+                        f"HTTP 4xx/5xx in the worker log — provider outage "
+                        f"detected; released to source + fleet dispatch paused "
+                        f"(no failure counted)"
+                    )
+                    event_kind = "provider_outage"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                        "provider_outage": True,
+                    }
+                else:
+                    protocol_violation = True
+                    error_text = (
+                        "worker exited cleanly (rc=0) without calling "
+                        "kanban_complete or kanban_block — protocol violation. "
+                        "If the prior run already did the work, verify it and "
+                        "report the result via kanban_complete; a run that ends "
+                        "without a terminal kanban call counts as failed no "
+                        "matter what it did."
+                    )
+                    event_kind = "protocol_violation"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                        # Durable marker for _protocol_violation_streak: _end_run
+                        # copies this payload into the run metadata, which is how
+                        # the violation-only retry budget is derived later.
+                        "protocol_violation": True,
+                    }
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
                 # quota (EX_TEMPFAIL sentinel). This is NOT a task failure —
@@ -9867,6 +10290,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    circuit_probe_fn=None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -9902,6 +10326,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            circuit_probe_fn=circuit_probe_fn,
         )
         _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
@@ -9922,6 +10347,7 @@ def dispatch_once(
                 default_assignee=default_assignee,
                 max_in_progress_per_profile=max_in_progress_per_profile,
                 reconcile_orphans=reconcile_orphans,
+                circuit_probe_fn=circuit_probe_fn,
             )
             # Still under the dispatch lock: run the periodic PASSIVE WAL
             # checkpoint (see _maybe_checkpoint_wal; the -wal file size is
@@ -9949,6 +10375,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    circuit_probe_fn=None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -9999,7 +10426,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -10080,6 +10507,23 @@ def _dispatch_once_locked(
                 "limiting to at most 1 new worker this tick"
             )
             spawn_budget = 1
+
+    # Global dispatch circuit breaker: when a provider-side outage (e.g.
+    # OpenRouter 403/429/5xx at spawn) tripped it, pause ALL dispatch — spawn
+    # no workers in either the ready or review lane. Reclaim/promotion above
+    # already ran (cheap, local-bookkeeping) so cards stay correctly queued; they
+    # just wait for a successful probe to close the breaker. Do NOT touch
+    # per-card failure semantics — the tripping card was already released back
+    # to its source status with no failure counted by detect_crashed_workers.
+    if _circuit_open(conn):
+        _log.warning(
+            "kanban dispatch: circuit breaker open (provider outage); "
+            "pause dispatch fleet-wide this tick"
+        )
+        _log.debug("kanban dispatch: circuit open; running probe-resume check")
+        return _circuit_dispatch_paused(
+            conn, circuit_probe_fn=circuit_probe_fn, board=board,
+        )
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "

@@ -7,7 +7,7 @@ import { stopDesktopBackgroundServices } from './desktop-background-shutdown'
 describe('Desktop background-service shutdown', () => {
   it('runs the resolved Hermes gateway stop --all command and waits for exit', async () => {
     const child = new EventEmitter() as EventEmitter & { kill: ReturnType<typeof vi.fn> }
-    child.kill = vi.fn()
+    child.kill = vi.fn(() => true)
     const spawnFn = vi.fn(() => child)
     const resolveBackend = vi.fn(args => ({
       command: '/runtime/bin/hermes',
@@ -42,7 +42,7 @@ describe('Desktop background-service shutdown', () => {
   it('bounds a hung stop command and reports failure', async () => {
     vi.useFakeTimers()
     const child = new EventEmitter() as EventEmitter & { kill: ReturnType<typeof vi.fn> }
-    child.kill = vi.fn()
+    child.kill = vi.fn(() => true)
 
     const stopped = stopDesktopBackgroundServices({
       resolveBackend: args => ({ command: 'hermes', args }),

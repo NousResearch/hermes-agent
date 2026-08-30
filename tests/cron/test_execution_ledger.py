@@ -673,7 +673,9 @@ def test_retention_reads_execution_retention_from_config(monkeypatch, tmp_path):
     # A distinctive cap: neither the 1000 default nor a round number, so a
     # pass cannot be a coincidence of the old behaviour.
     cap = 7
-    (home / "config.yaml").write_text(f"cron:\n  execution_retention: {cap}\n")
+    (home / "config.yaml").write_text(
+        f"cron:\n  execution_retention: {cap}\n", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     assert executions._terminal_execution_retention() == cap
@@ -699,7 +701,9 @@ def test_module_level_override_still_wins_over_config(monkeypatch, tmp_path):
 
     home = tmp_path / "home"
     (home / "cron").mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text("cron:\n  execution_retention: 500\n")
+    (home / "config.yaml").write_text(
+        "cron:\n  execution_retention: 500\n", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 3)
 

@@ -386,6 +386,131 @@ _READ_OPEN_RETRY_SECONDS = 60.0
 # the correct trade against a process-wide wedge the supervisor cannot see.
 _READ_POOL_MAX = 8
 
+# Hard ceiling on read-only connections ALIVE at once in this PROCESS, across
+# every state.db it has open.
+#
+# _READ_POOL_MAX bounds one file. A multiplexed gateway serves N profiles from
+# one process and each profile has its OWN state.db, so a per-file ceiling
+# still lets the descriptor cost grow with the profile count — the same shape
+# as the per-instance bug, one level out (#98573).
+#
+# Three profiles' worth. Past it, readers on the (N+1)th file degrade to their
+# writer connection instead of opening descriptors, which is the same trade
+# _READ_POOL_MAX makes and for the same reason: a slow read path is
+# recoverable, a process-wide EMFILE is not.
+_READ_POOL_PROCESS_MAX = 24
+
+# Warn when one process accumulates more than this many SessionDB handles on a
+# single file. Not a limit — writer connections cannot be rationed the way read
+# connections can — a diagnostic for the duplicate-handle class of bug.
+_HANDLES_PER_PATH_WARN = 4
+
+# Descriptors kept in reserve for everything that is NOT this module: httpx
+# sockets, terminal subprocess pipes, log files.
+#
+# The ceilings above bound Hermes's SQLite descriptors, which is only ever part
+# of the fd table. The #98573 report is exactly that case: ~20 state.db
+# descriptors were not the whole 256, they were the share that pushed httpx and
+# terminal pipes over, and the EMFILE surfaced in tools/terminal_tool.py rather
+# than here. So the read pool also yields when the PROCESS is close to its
+# limit, whatever is consuming it.
+_FD_HEADROOM_RESERVE = 64
+
+# The fd count is a directory listing; cache it briefly so a burst of reads
+# does not turn one syscall per query. Stale by at most this long, which can
+# let through at most the ceiling's worth of opens — already bounded above.
+_FD_USAGE_CACHE_SECONDS = 0.25
+
+_process_read_permits = threading.BoundedSemaphore(_READ_POOL_PROCESS_MAX)
+
+# Count of read opens refused because the process was low on descriptors. The
+# only externally visible signal that the guard is firing; guarded by
+# _read_budgets_lock.
+_read_open_denied_fd_headroom = 0
+
+_fd_usage_lock = threading.Lock()
+_fd_usage_cache: "tuple[float, Optional[int]]" = (0.0, None)
+
+
+def _open_fd_count() -> Optional[int]:
+    """Descriptors open in THIS process, or None when it cannot be measured.
+
+    ``/proc/self/fd`` on Linux, ``/dev/fd`` on macOS and the BSDs. Windows has
+    neither, and no RLIMIT_NOFILE to compare against, so the guard is inert
+    there — which is correct: the CRT limit is thousands of handles, not 256.
+    """
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        try:
+            return len(os.listdir(fd_dir))
+        except OSError as exc:
+            if exc.errno in (errno.EMFILE, errno.ENFILE):
+                # The probe itself could not get a descriptor. That IS the
+                # answer: there is no headroom.
+                return -1
+            continue
+    return None
+
+
+def _fd_soft_limit() -> Optional[int]:
+    """The process's soft RLIMIT_NOFILE, or None when there is no usable one."""
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        return None
+    if soft in (resource.RLIM_INFINITY, -1):
+        return None
+    return int(soft)
+
+
+def _fd_headroom_ok() -> bool:
+    """Whether the process can spare a descriptor for a new read connection.
+
+    Fails OPEN when the platform cannot be measured (Windows, no fd directory,
+    unlimited RLIMIT_NOFILE): an unmeasurable platform is not a tight one, and
+    refusing every read there would be a self-inflicted convoy. Fails CLOSED
+    only on evidence — a measured shortfall, or a probe that could not get a
+    descriptor of its own.
+    """
+    soft = _fd_soft_limit()
+    if soft is None:
+        return True
+
+    global _fd_usage_cache
+    now = time.monotonic()
+    with _fd_usage_lock:
+        stamp, cached = _fd_usage_cache
+        fresh = cached is not None and (now - stamp) < _FD_USAGE_CACHE_SECONDS
+    if not fresh:
+        cached = _open_fd_count()
+        with _fd_usage_lock:
+            _fd_usage_cache = (now, cached)
+
+    if cached is None:
+        return True
+    if cached < 0:
+        return False
+    return (soft - cached) > _FD_HEADROOM_RESERVE
+
+
+def _reclaim_idle_read_conn_anywhere() -> bool:
+    """Close one idle read connection on ANY path in this process.
+
+    The process ceiling is shared across files, so the connection that has to
+    go to make room may belong to a different database entirely — a profile
+    that has been quiet for an hour should not hold descriptors the profile
+    being served right now needs.
+    """
+    with _read_budgets_lock:
+        budgets = list(_read_budgets.values())
+    for budget in budgets:
+        if budget.reclaim_idle():
+            return True
+    return False
+
 
 class _PathReadBudget:
     """The read-connection permits for ONE database file, shared process-wide.
@@ -417,27 +542,88 @@ class _PathReadBudget:
         # peers' budget object; __del__ still runs close() and returns the
         # permits.
         self._members: "weakref.WeakSet[SessionDB]" = weakref.WeakSet()
+        self._duplicate_handles_warned = False
 
     def register(self, db: "SessionDB") -> None:
         with self._lock:
             self._members.add(db)
+            handles = len(self._members)
+            warn = (
+                handles > _HANDLES_PER_PATH_WARN
+                and not self._duplicate_handles_warned
+            )
+            if warn:
+                self._duplicate_handles_warned = True
+        if warn:
+            # The read connections are capped; the WRITER connection each
+            # handle holds is not, and cannot be — a SessionDB without one
+            # cannot write. The only real bound on writers is not opening
+            # redundant handles in the first place (which is what
+            # GatewayRunner borrowing SessionStore's handle does, #98573), so
+            # the next duplicate should be visible before it becomes an
+            # incident rather than inferred from an lsof after one.
+            logger.warning(
+                "%d live SessionDB handles on %s in this process; each holds "
+                "its own writer connection (read connections are capped at %d "
+                "for the file). A long-lived process should share one handle "
+                "per path.",
+                handles,
+                db.db_path,
+                _READ_POOL_MAX,
+            )
 
     def acquire(self, requester: "SessionDB") -> bool:
-        """Take a permit, reclaiming an idle peer connection if need be."""
-        if self.permits.acquire(blocking=False):
+        """Take a permit for a new read connection, or refuse.
+
+        Three gates, broadest first: the process's descriptor headroom, the
+        process-wide read ceiling, then this file's ceiling. Refusing means
+        the caller serves the read from the locked writer connection — slower,
+        never an error.
+        """
+        if not _fd_headroom_ok():
+            global _read_open_denied_fd_headroom
+            with _read_budgets_lock:
+                _read_open_denied_fd_headroom += 1
+            return False
+        if not self._acquire_process_permit():
+            return False
+        if self._acquire_path_permit(requester):
             return True
-        if not self._reclaim_idle(requester):
+        _process_read_permits.release()
+        return False
+
+    def release(self) -> None:
+        """Return one connection's permits. Pairs with a successful acquire()."""
+        self.permits.release()
+        _process_read_permits.release()
+
+    def _acquire_process_permit(self) -> bool:
+        if _process_read_permits.acquire(blocking=False):
+            return True
+        if not _reclaim_idle_read_conn_anywhere():
             return False
         # Another thread may take the freed permit first; that is a legitimate
         # loss, and the caller degrades to the writer lock rather than looping.
+        return _process_read_permits.acquire(blocking=False)
+
+    def _acquire_path_permit(self, requester: "SessionDB") -> bool:
+        if self.permits.acquire(blocking=False):
+            return True
+        if not self.reclaim_idle(exclude=requester):
+            return False
         return self.permits.acquire(blocking=False)
 
-    def _reclaim_idle(self, requester: "SessionDB") -> bool:
-        """Close one idle pooled connection held by a peer. True if one went."""
+    def reclaim_idle(self, exclude: "Optional[SessionDB]" = None) -> bool:
+        """Close one idle pooled connection held by a member. True if one went.
+
+        Closing it runs release(), which returns both the path permit and the
+        process permit, so this is the single reclaim primitive both ceilings
+        use.
+        """
         with self._lock:
-            peers = [db for db in self._members if db is not requester]
-        for peer in peers:
-            if peer._evict_one_idle_read_conn():
+            members = [db for db in self._members if db is not exclude]
+        for member in members:
+            if member._evict_one_idle_read_conn():
                 return True
         return False
 
@@ -5029,7 +5215,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             with self._read_conns_lock:
                 self._read_open_failed_at = time.monotonic()
             logger.debug("read-only connection open failed for %s", self.db_path, exc_info=True)
-            self._read_permits.release()
+            self._read_budget.release()
             return None
         except BaseException:
             # Anything else (a non-sqlite3 extension-load failure, MemoryError,
@@ -5038,7 +5224,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # permanently shrinks the read path by one slot for the life of the
             # process.
             self._discard_partial_read_conn(conn)
-            self._read_permits.release()
+            self._read_budget.release()
             raise
         return conn
 
@@ -5097,7 +5283,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except Exception as exc:
             logger.warning("read-conn close failed for %s: %s", self.db_path, exc)
         finally:
-            self._read_permits.release()
+            self._read_budget.release()
 
     def _checkout_read_conn(self) -> Optional[sqlite3.Connection]:
         """Borrow a read connection from the pool, opening one on a miss.
@@ -13768,6 +13954,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # =========================================================================
     # Export and cleanup
     # =========================================================================
+
+    def is_explicit_fork_child(self, session_id: str) -> bool:
+        session = self.get_session(session_id)
+        return bool(session and self._is_explicit_fork_child_row(session))
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
         """True when ``session`` is a branch, delegate, or tool child of its parent.

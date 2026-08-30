@@ -35,6 +35,7 @@ holds POSIX locks on that inode, so raw descriptor counts lag the real
 connection count and make such assertions flaky.
 """
 
+import queue
 import threading
 
 import pytest
@@ -481,3 +482,167 @@ def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
         second._close_read_conn(conn)
     finally:
         second.close()
+
+
+# ── The process ceiling, and the descriptors this module does not own ──
+#
+# _READ_POOL_MAX bounds ONE file. A multiplexed gateway serves N profiles from
+# one process and each has its own state.db, so a per-file ceiling still lets
+# the cost grow with the profile count -- the per-instance bug one level out.
+# And Hermes's SQLite descriptors are only ever a share of the fd table: the
+# #98573 report is a process where ~20 state.db handles were the share that
+# pushed httpx sockets and terminal subprocess pipes past 256, and the EMFILE
+# surfaced in tools/terminal_tool.py, not here.
+
+
+@pytest.mark.requires_wal
+def test_peak_is_bounded_across_many_database_files(tmp_path):
+    """Read connections must be capped for the PROCESS, not just per file."""
+    import hermes_state
+    from hermes_state import SessionDB, _READ_POOL_MAX, _READ_POOL_PROCESS_MAX
+
+    n_files = (_READ_POOL_PROCESS_MAX // _READ_POOL_MAX) + 2
+    dbs = []
+    try:
+        for i in range(n_files):
+            d = SessionDB(db_path=tmp_path / f"p{i}" / "state.db")
+            d.create_session(session_id="s1", source="cli", model="m")
+            d.append_message("s1", role="user", content="graphiti")
+            dbs.append(d)
+
+        # Fill every pool, one file at a time.
+        held = []
+        for d in dbs:
+            for _ in range(_READ_POOL_MAX):
+                conn = d._checkout_read_conn()
+                if conn is None:
+                    break
+                held.append((d, conn))
+
+        assert len(held) <= _READ_POOL_PROCESS_MAX, (
+            f"{len(held)} read connections open across {n_files} files; the "
+            f"process ceiling is {_READ_POOL_PROCESS_MAX}. Per-file bounds "
+            f"alone let the descriptor cost grow with the profile count."
+        )
+        assert len(held) > _READ_POOL_MAX, (
+            "the process ceiling must be wider than one file's, or a "
+            "multiplexed gateway serves every profile from the writer lock"
+        )
+        total_live = sum(_live_count(d.db_path) for d in dbs)
+        assert total_live <= _READ_POOL_PROCESS_MAX + n_files, (
+            f"{total_live} live connections process-wide (ceiling "
+            f"{_READ_POOL_PROCESS_MAX} read + {n_files} writers)"
+        )
+
+        for d, conn in held:
+            d._close_read_conn(conn)
+    finally:
+        for d in dbs:
+            d.close()
+        assert hermes_state._process_read_permits.acquire(blocking=False), (
+            "close() stranded a process permit"
+        )
+        hermes_state._process_read_permits.release()
+
+
+@pytest.mark.requires_wal
+def test_idle_connections_are_reclaimed_across_database_files(tmp_path):
+    """A quiet profile's idle connections must not starve the busy one."""
+    from hermes_state import SessionDB, _READ_POOL_MAX, _READ_POOL_PROCESS_MAX
+
+    quiet = []
+    try:
+        # Saturate the process ceiling with IDLE connections on other files.
+        for i in range(_READ_POOL_PROCESS_MAX // _READ_POOL_MAX):
+            d = SessionDB(db_path=tmp_path / f"q{i}" / "state.db")
+            quiet.append(d)
+            conns = [d._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
+            assert all(c is not None for c in conns)
+            for c in conns:
+                d._read_pool.put_nowait(c)
+
+        busy = SessionDB(db_path=tmp_path / "busy" / "state.db")
+        quiet.append(busy)
+        conn = busy._checkout_read_conn()
+        assert conn is not None, (
+            "idle connections on quiet profiles starved the profile being "
+            "served; its reads silently fell back to the writer lock"
+        )
+        busy._close_read_conn(conn)
+    finally:
+        for d in quiet:
+            d.close()
+
+
+@pytest.mark.requires_wal
+def test_no_read_connection_is_opened_without_descriptor_headroom(db, monkeypatch):
+    """Low on fds, the read path yields to the rest of the process.
+
+    The descriptors this module rations are shared with httpx sockets and
+    subprocess pipes, and EMFILE lands on whoever asks next -- which in the
+    report was terminal_tool, not SQLite.
+    """
+    import hermes_state
+
+    # Drain the pool so the next read must OPEN rather than reuse.
+    while True:
+        try:
+            db._close_read_conn(db._read_pool.get_nowait())
+        except queue.Empty:
+            break
+
+    monkeypatch.setattr(hermes_state, "_fd_soft_limit", lambda: 256)
+    monkeypatch.setattr(hermes_state, "_open_fd_count", lambda: 250)
+    monkeypatch.setattr(hermes_state, "_fd_usage_cache", (0.0, None))
+
+    assert db._get_read_conn() is None, "a read connection was opened with 6 fds left"
+    # The read still has to work -- degradation, not failure.
+    assert db.get_session("s1") is not None
+    assert hermes_state._read_open_denied_fd_headroom > 0, (
+        "the guard fired without leaving a trace to diagnose it from"
+    )
+
+    monkeypatch.setattr(hermes_state, "_open_fd_count", lambda: 10)
+    monkeypatch.setattr(hermes_state, "_fd_usage_cache", (0.0, None))
+    conn = db._get_read_conn()
+    assert conn is not None, "headroom returned but the read path stayed degraded"
+    db._close_read_conn(conn)
+
+
+def test_fd_headroom_guard_fails_open_where_it_cannot_measure(monkeypatch):
+    """No RLIMIT_NOFILE (Windows) means unmeasurable, not tight."""
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "_fd_soft_limit", lambda: None)
+    assert hermes_state._fd_headroom_ok() is True
+
+    # A probe that could not get a descriptor of its own is evidence, not
+    # absence of evidence.
+    monkeypatch.setattr(hermes_state, "_fd_soft_limit", lambda: 256)
+    monkeypatch.setattr(hermes_state, "_open_fd_count", lambda: -1)
+    monkeypatch.setattr(hermes_state, "_fd_usage_cache", (0.0, None))
+    assert hermes_state._fd_headroom_ok() is False
+
+
+@pytest.mark.requires_wal
+def test_duplicate_handles_on_one_path_are_reported(db, caplog):
+    """Writer connections cannot be capped, so duplicates must be visible."""
+    import logging
+
+    from hermes_state import SessionDB, _HANDLES_PER_PATH_WARN
+
+    extra = []
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            for _ in range(_HANDLES_PER_PATH_WARN):
+                extra.append(SessionDB(db_path=db.db_path))
+        assert any(
+            "live SessionDB handles on" in r.getMessage()
+            for r in caplog.records
+        ), (
+            f"{_HANDLES_PER_PATH_WARN + 1} handles on one file went unreported; "
+            f"each holds a writer connection nothing bounds"
+        )
+    finally:
+        for d in extra:
+            d.close()

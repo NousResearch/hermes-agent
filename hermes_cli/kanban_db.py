@@ -3571,8 +3571,13 @@ def create_task(
                 )
                 # An explicit initial_status="blocked" (human-ops review) takes
                 # precedence — a blocked card is never dispatched anyway, and we
-                # must not clobber VALID_INITIAL_STATUSES semantics.
-                if assignee_unknown and task_status != "blocked":
+                # must not clobber VALID_INITIAL_STATUSES semantics. A blocked
+                # + unknown-assignee card stays blocked, so it must NOT get the
+                # "parked in triage" comment below (which would be a lie).
+                assignee_parked_in_triage = (
+                    assignee_unknown and task_status != "blocked"
+                )
+                if assignee_parked_in_triage:
                     task_status = "triage"
                     if _assignee_parked is not None:
                         _assignee_parked["assignee"] = assignee
@@ -3638,7 +3643,7 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
-                if assignee_unknown:
+                if assignee_parked_in_triage:
                     conn.execute(
                         "INSERT INTO task_comments "
                         "(task_id, author, body, created_at) "
@@ -7554,12 +7559,12 @@ def decompose_triage_task(
             # can be dispatched as authoritative. An unknown (phantom)
             # assignee likewise parks the child in triage so the PM can fix the
             # routing rather than have the dispatcher strand or silently drop it.
-            child_status = "triage" if (child.get("triage") or (
-                assignee is not None and not _assignee_is_known(assignee)
-            )) else "todo"
             assignee_unknown = assignee is not None and not _assignee_is_known(
                 assignee
             )
+            child_status = "triage" if (
+                child.get("triage") or assignee_unknown
+            ) else "todo"
             # Per-child override wins; otherwise inherit the root's
             # workspace. A child that sets workspace_kind without a path
             # falls back to the root path only when kinds match (so a

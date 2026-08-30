@@ -32,7 +32,10 @@ def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=No
     )
 
 
-def test_decompose_creates_children_and_promotes_root(kanban_home, all_assignees_spawnable):
+def test_decompose_creates_children_and_promotes_root(kanban_home):
+    # No ``all_assignees_spawnable`` needed: the autouse assignee neutralizer
+    # (root conftest) already patches profile_exists->True for kanban tests.
+    # (Verified in Rodge review t_788d2b96 follow-up.)
     with kb.connect() as conn:
         tid = _create_triage(conn, title="ship a feature")
         assert kb.get_task(conn, tid).status == "triage"
@@ -88,9 +91,12 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+@pytest.mark.real_assignees
 def test_create_known_assignee_not_parked(kanban_home):
     """A real assignee (``default`` is Agent Smith, always spawnable) does NOT
-    get triage-parked."""
+    get triage-parked. Marked ``real_assignees`` so the autouse assignee
+    neutralizer is skipped and this exercises the REAL ``profile_exists``
+    ``('default')->True`` path against on-disk profile dirs."""
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="good", assignee="default")
         task = kb.get_task(conn, tid)
@@ -111,6 +117,29 @@ def test_create_unknown_assignee_parked_in_triage(kanban_home):
     assert task.status == "triage"
     assert task.assignee == "engineer"
     assert any("unknown assignee" in (c.body or "") for c in comments)
+
+
+@pytest.mark.real_assignees
+def test_create_blocked_unknown_assignee_not_comment_parked(kanban_home):
+    """A card with an explicit ``initial_status="blocked"`` and an unknown
+    assignee stays BLOCKED (no triage clobber) and must NOT get the 'parked
+    in triage' system comment — the parking comment is gated on actually
+    being moved to triage (Rodge review t_788d2b96 finding 1)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="human ops", assignee="phantom", initial_status="blocked"
+        )
+        task = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.assignee == "phantom"
+    assert not any(
+        "parked in triage" in (c.body or "") for c in comments
+    )
+    assert not any(
+        "unknown assignee" in (c.body or "") for c in comments
+    )
 
 
 @pytest.mark.real_assignees

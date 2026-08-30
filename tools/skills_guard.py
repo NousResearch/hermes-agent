@@ -194,13 +194,13 @@ THREAT_PATTERNS = [
     # `evil.com/?u=localhost` does not qualify. A hostile skill that hides
     # its real destination behind a variable never matched these same-line
     # literal patterns in the first place.
-    (r'curl\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
+    (r'curl\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
      "env_exfil_curl", "critical", "exfiltration",
      "curl command interpolating secret environment variable"),
-    (r'wget\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
+    (r'wget\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b',
      "env_exfil_wget", "critical", "exfiltration",
      "wget command interpolating secret environment variable"),
-    (r'fetch\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|API)',
+    (r'fetch\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD)S?\b',
      "env_exfil_fetch", "critical", "exfiltration",
      "fetch() call interpolating secret environment variable"),
     (r'httpx?\.(get|post|put|patch)\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*(KEY|TOKEN|SECRET|PASSWORD)',

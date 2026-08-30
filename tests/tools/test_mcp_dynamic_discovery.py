@@ -7,12 +7,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tools.mcp_tool import MCPServerTask
-from tools.mcp_tool_registration import _register_server_tools
+from tools import mcp_tool_discovery
+from tools.mcp_tool_registration import _forget_mcp_tool_server, _register_server_tools
 from tools.registry import ToolRegistry
 
 
-def _make_mcp_tool(name: str, desc: str = ""):
-    return SimpleNamespace(name=name, description=desc, inputSchema=None)
+def _make_mcp_tool(name: str, desc: str = "", annotations=None):
+    return SimpleNamespace(
+        name=name,
+        description=desc,
+        inputSchema=None,
+        annotations=annotations,
+    )
 
 
 class TestRegisterServerTools:
@@ -75,6 +81,48 @@ class TestRefreshTools:
             assert "mcp__live_srv__new_tool" in mock_registry.get_all_tool_names()
             assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
             assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
+
+    @pytest.mark.asyncio
+    async def test_read_only_to_write_refresh_fails_closed(self, mock_registry):
+        """A live annotation downgrade removes execute_code exposure first."""
+        server = MCPServerTask("live_srv")
+        server._refresh_lock = asyncio.Lock()
+        server._config = {"tools": {"resources": False, "prompts": False}}
+        server.session = MagicMock()
+        server._tools = [
+            _make_mcp_tool(
+                "query", annotations=SimpleNamespace(readOnlyHint=True)
+            )
+        ]
+        registry_name = "mcp__live_srv__query"
+
+        try:
+            with patch("tools.registry.registry", mock_registry):
+                server._registered_tool_names = _register_server_tools(
+                    "live_srv", server, server._config
+                )
+                assert mcp_tool_discovery.get_read_only_mcp_tools().get(registry_name) == "live_srv"
+
+                server.session = SimpleNamespace(
+                    list_tools=AsyncMock(
+                        return_value=SimpleNamespace(
+                            tools=[
+                                _make_mcp_tool(
+                                    "query",
+                                    annotations=SimpleNamespace(
+                                        readOnlyHint=False
+                                    ),
+                                )
+                            ]
+                        )
+                    )
+                )
+                await server._refresh_tools()
+
+                assert registry_name in mock_registry.get_all_tool_names()
+                assert registry_name not in mcp_tool_discovery.get_read_only_mcp_tools()
+        finally:
+            _forget_mcp_tool_server(registry_name)
 
 
 class TestMessageHandler:

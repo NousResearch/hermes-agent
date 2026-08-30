@@ -134,12 +134,19 @@ class MCPServerHealthMixin:
     async def _refresh_tools(self):
         """Re-fetch tools on ``tools/list_changed`` and update the registry. The lock serializes rapid-fire
         notifications; after the list_tools ``await`` all mutations are synchronous — atomic on the event loop."""
+        from tools.registry import registry
         if not self._advertises_tools():
             return  # tools/list would raise MCPError(-32601)
         async with self._refresh_lock:
             old_tool_names = set(self._registered_tool_names)
             async with self._rpc_lock:
                 new_mcp_tools = await _core._paginate_full_list(self.session.list_tools, "tools", self.name)
+            # Drop the old execute_code classification before examining the
+            # refreshed list. Registration restores only exact current
+            # readOnlyHint=True tools, so annotation downgrades fail closed.
+            for tool_name in old_tool_names:
+                if registry.get_toolset_for_tool(tool_name) == f"mcp-{self.name}":
+                    _forget_mcp_tool_server(tool_name)
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
             self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})

@@ -150,7 +150,7 @@ Fallback behavior in `project` mode: if `VIRTUAL_ENV` / `CONDA_PREFIX` is unset,
 Security-critical invariants are identical across both modes:
 
 - environment scrubbing (API keys, tokens, credentials stripped)
-- tool whitelist (scripts cannot call `execute_code` recursively, `delegate_task`, or MCP tools)
+- tool whitelist (scripts cannot call `execute_code` recursively or `delegate_task`; MCP tools remain off by default and only explicitly exposed `readOnlyHint: true` tools are eligible)
 - resource limits (timeout, stdout cap, tool-call cap)
 
 Switching mode changes where scripts run and which interpreter runs them, not what credentials they can see or which tools they can call.
@@ -163,6 +163,7 @@ Switching mode changes where scripts run and which interpreter runs them, not wh
 | **Stdout** | 50 KB | Output truncated with `[output truncated at 50KB]` notice |
 | **Stderr** | 10 KB | Included in output on non-zero exit for debugging |
 | **Tool calls** | 50 per execution | Error returned when limit reached |
+| **MCP tool calls** | 10 per execution | Separate sub-limit; applies only when read-only MCP exposure is enabled |
 
 All limits are configurable via `config.yaml`:
 
@@ -172,7 +173,16 @@ code_execution:
   mode: project      # project (default) | strict
   timeout: 300       # Max seconds per script (default: 300)
   max_tool_calls: 50 # Max tool calls per execution (default: 50)
+  expose_mcp_tools: false  # true, or a list of exact MCP server/tool names
+  max_mcp_tool_calls: 10   # Separate read-only MCP sub-budget (default: 10)
 ```
+
+MCP exposure is deliberately off by default. With `expose_mcp_tools: true`,
+only session-visible tools whose MCP discovery annotation is exactly
+`readOnlyHint: true` receive stubs. A list narrows exposure to exact raw MCP
+server names or full registry tool names. Missing/false annotations and all
+write-capable tools fail closed. The `execute_code` schema lists only the MCP
+names; it does not duplicate their descriptions or parameter schemas.
 
 ## How Tool Calls Work Inside Scripts
 

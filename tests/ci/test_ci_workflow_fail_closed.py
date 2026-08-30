@@ -23,6 +23,11 @@ def _ci_workflow() -> dict:
     )
 
 
+def _workflow(name: str) -> dict:
+    yaml = pytest.importorskip("yaml")
+    return yaml.safe_load(
+        (_REPO / ".github/workflows" / name).read_text(encoding="utf-8")
+    )
 def test_fork_python_suite_uses_twelve_balanced_slices():
     """Fork runners must split the full suite finely enough to avoid long tail jobs."""
     yaml = pytest.importorskip("yaml")
@@ -81,6 +86,32 @@ def test_fork_python_suite_has_a_process_tree_watchdog():
         fork_timeout - watchdog_timeout - shutdown_grace
         >= _MINIMUM_FORK_JOB_HEADROOM_SECONDS
     )
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "job_name", "must_run_after_failed_needs"),
+    [
+        ("ci.yaml", "detect", False),
+        ("ci.yaml", "osv-scanner", False),
+        ("ci.yaml", "all-checks-pass", True),
+        ("ci.yaml", "ci-timings", True),
+        ("nix.yml", "detect", False),
+    ],
+)
+def test_fork_main_push_skips_duplicate_validation(
+    workflow_name: str, job_name: str, must_run_after_failed_needs: bool
+):
+    """A fork merge must not repeat the PR validation that just passed."""
+    condition = str(_workflow(workflow_name)["jobs"][job_name].get("if", ""))
+    normalized = re.sub(r"\s+", "", condition)
+    fork_guard = (
+        "github.event_name=='pull_request'||"
+        "github.repository=='NousResearch/hermes-agent'"
+    )
+
+    assert fork_guard in normalized
+    if must_run_after_failed_needs:
+        assert normalized.startswith("always()&&(")
 
 
 def test_required_gate_rejects_cancelled_detect_job(tmp_path):

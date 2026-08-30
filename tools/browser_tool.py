@@ -1596,7 +1596,8 @@ def _real_profile_cdp() -> tuple:
         if browser is None:
             return None, (
                 "browser.use_real_profile is on, but your default browser is not a "
-                "supported Chromium browser (Chrome, Edge, Brave, Chromium). "
+                "supported Chromium browser (Chrome, Edge, Brave, Brave Origin, "
+                "Chromium). "
                 "Real-profile browsing requires a Chromium default; set one or turn "
                 "the toggle off."
             )
@@ -1610,7 +1611,8 @@ def _real_profile_cdp() -> tuple:
                 "browser.use_real_profile is on, but your default browser is a "
                 "pre-release Chromium channel (Beta / Dev / Canary), which "
                 "real-profile browsing does not support. Set your default to a "
-                "stable Chrome / Edge / Brave / Chromium, or turn the toggle off."
+                "stable Chrome / Edge / Brave / Brave Origin / Chromium, or turn "
+                "the toggle off."
             )
 
         # Reuse BEFORE writing anything. A shared copy-browser may already be up

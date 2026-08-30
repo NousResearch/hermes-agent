@@ -27,6 +27,7 @@ _DARWIN_APPS = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Brave Origin.app/Contents/MacOS/Brave Origin",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 )
 
@@ -37,6 +38,13 @@ _WINDOWS_BROWSER_GROUPS = (
         (("Chromium", "Application", "chrome.exe"), ("Chromium", "Application", "chromium.exe")),
     ),
     (("brave.exe", "brave"), (("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),)),
+    (
+        ("brave-origin.exe", "brave-origin"),
+        (
+            ("BraveSoftware", "Brave-Origin", "Application", "brave.exe"),
+            ("BraveSoftware", "Brave-Origin", "Application", "brave-origin.exe"),
+        ),
+    ),
     (("msedge.exe", "msedge"), (("Microsoft", "Edge", "Application", "msedge.exe"),)),
 )
 
@@ -53,7 +61,7 @@ _LINUX_BROWSER_GROUPS = (
         ("/usr/bin/chromium-browser", "/usr/bin/chromium"),
     ),
     (
-        ("brave-browser", "brave-browser-stable", "brave", "brave-origin", "brave-origin-nightly"),
+        ("brave-browser", "brave-browser-stable", "brave"),
         (
             "/usr/bin/brave-browser",
             "/usr/bin/brave-browser-stable",
@@ -61,9 +69,20 @@ _LINUX_BROWSER_GROUPS = (
             "/snap/bin/brave",
             "/opt/brave.com/brave/brave-browser",
             "/opt/brave.com/brave/brave",
+            "/opt/brave-bin/brave",
+        ),
+    ),
+    # Brave Origin is a SEPARATE product identity (side-by-side installable
+    # with Brave), so it gets its own group: the executable fallback in
+    # chromium_executable() matches by group, and mixing Origin binaries into
+    # the brave group would let a "brave" lookup resolve to the Origin binary
+    # (or vice versa) — driving the wrong browser's profile.
+    (
+        ("brave-origin", "brave-origin-nightly"),
+        (
+            "/usr/bin/brave-origin",
             "/opt/brave.com/brave-origin/brave-origin",
             "/opt/brave.com/brave-origin-nightly/brave-origin",
-            "/opt/brave-bin/brave",
         ),
     ),
     (
@@ -93,7 +112,12 @@ _LINUX_INSTALL_PATHS = tuple(path for _, paths in _LINUX_BROWSER_GROUPS for path
 # ---------------------------------------------------------------------------
 
 # Canonical Chromium browser keys we support for real-profile driving.
-_CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium")
+# ``brave-origin`` is Brave's standalone paid build: same Chromium core, but a
+# fully distinct install identity (BraveSoftware/Brave-Origin product path,
+# ``BraveOHTML`` ProgId, ``com.brave.Browser.origin`` bundle id) so it
+# side-by-side installs with regular Brave — its profile is NOT under
+# Brave-Browser and must never be conflated with the ``brave`` key.
+_CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium", "brave-origin")
 
 # Windows UserChoice ProgId prefixes → canonical browser key. Matched
 # case-insensitively by prefix so version suffixes (e.g. ``ChromeHTML.X``)
@@ -104,6 +128,9 @@ _CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium")
 _WINDOWS_PROGID_MAP = (
     ("chromehtml", "chrome"),
     ("msedgehtm", "edge"),
+    # Brave Origin stable is ``BraveOHTML`` (brave-core install_static). Listed
+    # before ``bravehtml`` for clarity; the prefixes don't collide either way.
+    ("braveohtml", "brave-origin"),
     ("bravehtml", "brave"),
     ("chromiumhtm", "chromium"),
 )
@@ -117,6 +144,9 @@ _WINDOWS_CHANNEL_PROGIDS = (
     "chromebhtml", "chromedhtml", "chromesshtml", "chromecanaryhtml",
     "msedgebhtml", "msedgedhtml", "msedgechtml",
     "bravebetahtml", "bravenightlyhtml",
+    # Brave Origin channels (brave-core install_static): Beta=BraveOBHTML,
+    # Dev=BraveODHTML, Nightly/SxS=BraveOSHTM (no trailing L — 10-char cap).
+    "braveobhtml", "braveodhtml", "braveoshtm",
 )
 
 # Linux xdg default-web-browser .desktop name fragments → canonical STABLE key.
@@ -128,6 +158,11 @@ _LINUX_DESKTOP_MAP = (
     ("google-chrome", "chrome"),
     ("com.google.chrome", "chrome"),
     ("chromium", "chromium"),
+    # ORDER MATTERS: ``brave-origin.desktop`` contains the bare ``brave``
+    # fragment, so the substring scan must hit the Origin entry first —
+    # otherwise an Origin default resolves to stable Brave and real-profile
+    # mode drives a DIFFERENT browser's profile (wrong-principal, #95549).
+    ("brave-origin", "brave-origin"),
     ("brave", "brave"),
     ("microsoft-edge", "edge"),
     ("com.microsoft.edge", "edge"),
@@ -141,6 +176,7 @@ _LINUX_CHANNEL_FRAGMENTS = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
     "microsoft-edge-beta", "microsoft-edge-dev", "microsoft-edge-canary",
     "brave-browser-beta", "brave-browser-nightly", "brave-browser-dev",
+    "brave-origin-beta", "brave-origin-nightly", "brave-origin-dev",
 )
 
 # Where sandboxed Linux packages keep the profile instead of $XDG_CONFIG_HOME.
@@ -161,6 +197,10 @@ _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"),
     ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"),
+    # Brave Origin reuses the Brave bundle id with an ``.origin`` suffix
+    # (Homebrew cask: com.brave.Browser.origin). Exact matching keeps it from
+    # ever being read as plain ``com.brave.browser``.
+    ("com.brave.browser.origin", "brave-origin"),
     ("org.chromium.chromium", "chromium"),
 )
 
@@ -169,6 +209,8 @@ _DARWIN_CHANNEL_BUNDLES = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
     "com.microsoft.edgemac.beta", "com.microsoft.edgemac.dev", "com.microsoft.edgemac.canary",
     "com.brave.browser.beta", "com.brave.browser.nightly",
+    "com.brave.browser.origin.beta", "com.brave.browser.origin.dev",
+    "com.brave.browser.origin.nightly",
 )
 
 # Sentinel returned when the OS default is a recognized-but-unsupported
@@ -200,6 +242,11 @@ def _real_profile_relparts(browser: str) -> tuple:
             ("Chromium",),
             ("Chromium", "User Data"),
             "chromium",
+        ),
+        "brave-origin": (
+            ("BraveSoftware", "Brave-Origin"),
+            ("BraveSoftware", "Brave-Origin", "User Data"),
+            "BraveSoftware/Brave-Origin",
         ),
     }[browser]
 
@@ -258,6 +305,7 @@ def chromium_executable(browser: str, system: str | None = None) -> str | None:
             "chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "chromium": "/Applications/Chromium.app/Contents/MacOS/Chromium",
             "brave": "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "brave-origin": "/Applications/Brave Origin.app/Contents/MacOS/Brave Origin",
             "edge": "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         }[browser]
         return app if os.path.isfile(app) else None
@@ -266,6 +314,10 @@ def chromium_executable(browser: str, system: str | None = None) -> str | None:
             "chrome": (("Google", "Chrome", "Application", "chrome.exe"),),
             "chromium": (("Chromium", "Application", "chrome.exe"), ("Chromium", "Application", "chromium.exe")),
             "brave": (("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),),
+            "brave-origin": (
+                ("BraveSoftware", "Brave-Origin", "Application", "brave.exe"),
+                ("BraveSoftware", "Brave-Origin", "Application", "brave-origin.exe"),
+            ),
             "edge": (("Microsoft", "Edge", "Application", "msedge.exe"),),
         }[browser]
         bases = [
@@ -280,6 +332,7 @@ def chromium_executable(browser: str, system: str | None = None) -> str | None:
         "chrome": ("google-chrome", "google-chrome-stable"),
         "chromium": ("chromium-browser", "chromium"),
         "brave": ("brave-browser", "brave-browser-stable", "brave"),
+        "brave-origin": ("brave-origin",),
         "edge": ("microsoft-edge", "microsoft-edge-stable"),
     }[browser]
     for name in linux:

@@ -595,7 +595,7 @@ DEFAULT_CONFIG = {
         # never contends with the user's running browser. Turning this back off
         # deletes the snapshot store (~/.hermes/browser-profile/) so copied
         # credentials don't outlive consent. Only Chromium-family default
-        # browsers are supported (Chrome, Edge, Brave, Chromium); a non-Chromium
+        # browsers are supported (Chrome, Edge, Brave, Brave Origin, Chromium); a non-Chromium
         # default (e.g. Firefox) fails closed with a clear message. Default
         # false. Also gates the browser_exec ``local`` argument, which forces a
         # real-profile local session even under a cloud browser backend. Toggle

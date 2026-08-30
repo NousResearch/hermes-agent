@@ -42,6 +42,29 @@ class TestRealProfileResolvers:
         assert m["chromehtml"] == "chrome"
         assert m["msedgehtm"] == "edge"
         assert m["bravehtml"] == "brave"
+        assert m["braveohtml"] == "brave-origin"
+
+    def test_brave_origin_data_dirs(self):
+        import hermes_cli.browser_connect as bc
+        with patch.dict(os.environ, {"LOCALAPPDATA": r"C:\Users\T\AppData\Local"}, clear=False):
+            win = bc.real_profile_data_dir("brave-origin", "Windows")
+        assert win and win.endswith(ntpath.join("BraveSoftware", "Brave-Origin", "User Data"))
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": "/home/t/.config"}, clear=False):
+            assert (
+                bc.real_profile_data_dir("brave-origin", "Linux")
+                == "/home/t/.config/BraveSoftware/Brave-Origin"
+            )
+        mac = bc.real_profile_data_dir("brave-origin", "Darwin")
+        assert mac and mac.endswith("Library/Application Support/BraveSoftware/Brave-Origin")
+
+    def test_brave_origin_channel_progids_fail_closed(self):
+        import hermes_cli.browser_connect as bc
+        # Beta=BraveOBHTML, Dev=BraveODHTML, Nightly=BraveOSHTM must be caught
+        # by the channel list, and must be checked BEFORE the stable map — note
+        # none of them share the braveohtml stable prefix, but ordering is the
+        # invariant the detector relies on for the other families.
+        for chan in ("braveobhtml", "braveodhtml", "braveoshtm"):
+            assert chan in bc._WINDOWS_CHANNEL_PROGIDS
 
     def test_detect_default_non_chromium_is_none(self):
         import hermes_cli.browser_connect as bc

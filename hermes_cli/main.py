@@ -13298,7 +13298,7 @@ def main():
     )
     browser_close.add_argument(
         "--browser",
-        help="Override detected default browser (chrome/edge/brave/chromium)",
+        help="Override detected default browser (chrome/edge/brave/brave-origin/chromium)",
     )
 
     def _dispatch_browser(_args):

@@ -206,7 +206,7 @@ losing unsaved tabs), then retries. If the profile is still locked after that
 to fully quit the browser — it won't loop or kill again on its own.
 :::
 
-- **Supported browsers:** Chrome, Edge, Brave, Chromium (whichever is your OS
+- **Supported browsers:** Chrome, Edge, Brave, Brave Origin, Chromium (whichever is your OS
   default). A non-Chromium default (e.g. Firefox) fails closed with a clear
   message rather than guessing.
 - **Works on any backend.** On a local backend it's automatic once the toggle

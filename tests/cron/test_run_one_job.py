@@ -78,6 +78,21 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j2", True)
 
 
+def test_run_one_job_publishes_failure_as_chaining_context(monkeypatch):
+    """A downstream job should receive the useful error, not an empty response."""
+    calls = _patch_pipeline(
+        monkeypatch,
+        success=False,
+        final="",
+        error="upstream feed returned HTTP 503",
+    )
+
+    ok = s.run_one_job({"id": "j2", "name": "t"})
+
+    assert ok is True
+    assert ("save", "j2", "upstream feed returned HTTP 503") in calls
+
+
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
     """An exception escaping the run body must not become a silent error row."""
     delivered = []

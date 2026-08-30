@@ -1,8 +1,9 @@
 """compression.summary_instructions prompt contracts.
 
-Unset keeps the default Be CONCRETE sentence. When set, that sentence is
-replaced on batch compact and the same string is appended after the
-NEVER/[REDACTED] block on micro-compact. The value is inserted verbatim.
+Unset keeps the default structured compact template (Goal / Session Log
+sections and Be CONCRETE sentence). When set, that template is replaced by
+the configured string on batch compact, and the micro merge-structure prose
+is replaced on micro-compact. The value is inserted verbatim.
 """
 
 from unittest.mock import MagicMock, patch
@@ -81,9 +82,11 @@ def test_unset_keeps_default_concrete_sentence():
 
     assert _DEFAULT_CONCRETE in prompt
     assert _CUSTOM not in prompt
+    assert "## Goal" in prompt
+    assert "Use this exact structure" in prompt
 
 
-def test_set_replaces_concrete_and_keeps_surrounding_template():
+def test_set_replaces_template_with_custom_outcome():
     compressor = _make_compressor()
     compressor.summary_instructions = _CUSTOM
     prompt = _capture_batch_prompt(compressor)
@@ -91,11 +94,30 @@ def test_set_replaces_concrete_and_keeps_surrounding_template():
     assert _CUSTOM in prompt
     assert _DEFAULT_CONCRETE not in prompt
     assert "Be CONCRETE" not in prompt
-    assert "Target ~" in prompt
-    assert "Write only the summary body" in prompt
-    assert "## Goal" in prompt
+    assert "## Goal" not in prompt
+    assert "Use this exact structure" not in prompt
+    assert "TURNS TO SUMMARIZE" in prompt
+    assert "NEVER" in prompt
     assert "[REDACTED]" in prompt
     # Verbatim: braces in the user string must not be interpolated.
+    assert "{prices}" in prompt
+
+
+def test_iterative_set_replaces_template_with_custom_rules():
+    compressor = _make_compressor()
+    compressor.summary_instructions = _CUSTOM
+    compressor._previous_summary = "Prior checkpoint: fixed auth bug."
+    prompt = _capture_batch_prompt(compressor)
+
+    assert _CUSTOM in prompt
+    assert _DEFAULT_CONCRETE not in prompt
+    assert "## Goal" not in prompt
+    assert "Use this exact structure" not in prompt
+    assert "Update the previous summary using these rules:" in prompt
+    assert "PREVIOUS SUMMARY:" in prompt
+    assert "NEW TURNS TO INCORPORATE:" in prompt
+    assert "NEVER" in prompt
+    assert "[REDACTED]" in prompt
     assert "{prices}" in prompt
 
 
@@ -109,7 +131,7 @@ def test_set_with_focus_topic_appends_focus_after_custom():
     assert prompt.index(_CUSTOM) < prompt.index('FOCUS TOPIC: "authentication"')
 
 
-def test_micro_set_appends_after_redacted_keeps_merge_prose():
+def test_micro_set_replaces_merge_prose():
     compressor = _make_compressor()
     compressor.summary_instructions = _CUSTOM
     messages = compressor._build_micro_summary_prompt(
@@ -119,12 +141,14 @@ def test_micro_set_appends_after_redacted_keeps_merge_prose():
 
     prompt = messages[1]["content"]
     assert _CUSTOM in prompt
-    assert "Merge the exchange" in prompt
+    assert "Merge the exchange" not in prompt
+    assert "Preserve the summary's structure" not in prompt
     assert "NEVER" in prompt
     assert "[REDACTED]" in prompt
     assert "Return ONLY the updated summary" in prompt
-    assert prompt.index("[REDACTED]") < prompt.index(_CUSTOM)
-    assert prompt.index(_CUSTOM) < prompt.index("## Current Running Summary")
+    assert "## Current Running Summary" in prompt
+    assert "## Next Exchange to Merge" in prompt
+    assert prompt.index(_CUSTOM) < prompt.index("NEVER")
     assert "{prices}" in prompt
 
 
@@ -135,6 +159,7 @@ def test_whitespace_only_is_unset():
 
     assert _DEFAULT_CONCRETE in prompt
     assert _CUSTOM not in prompt
+    assert "## Goal" in prompt
 
 
 def test_none_and_non_string_are_unset():
@@ -144,3 +169,4 @@ def test_none_and_non_string_are_unset():
         prompt = _capture_batch_prompt(compressor)
         assert _DEFAULT_CONCRETE in prompt
         assert _CUSTOM not in prompt
+        assert "## Goal" in prompt

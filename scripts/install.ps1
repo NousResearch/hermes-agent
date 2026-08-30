@@ -2174,8 +2174,21 @@ function Recover-DivergedUpdate {
         }
     }
 
+    # Rebase preserves each commit's author, but Git still needs a committer.
+    # Reuse HEAD's author without changing repository or global configuration.
+    $committerNameOutput = @(git -c windows.appendAtomically=false show -s --format=%an HEAD 2>$null)
+    $committerNameExit = $LASTEXITCODE
+    $committerName = ($committerNameOutput -join "`n").Trim()
+    $committerEmailOutput = @(git -c windows.appendAtomically=false show -s --format=%ae HEAD 2>$null)
+    $committerEmailExit = $LASTEXITCODE
+    $committerEmail = ($committerEmailOutput -join "`n").Trim()
+    if (($committerNameExit -ne 0) -or (-not $committerName) -or
+        ($committerEmailExit -ne 0) -or (-not $committerEmail)) {
+        throw "Could not recover a committer identity from HEAD; refusing to rewrite it"
+    }
+
     Write-Info "Preserving locally carried history and merge topology onto $RemoteRef..."
-    git -c windows.appendAtomically=false -c rebase.updateRefs=false rebase --rebase-merges --onto $RemoteRef $forkPoint
+    git -c windows.appendAtomically=false -c "user.name=$committerName" -c "user.email=$committerEmail" -c rebase.updateRefs=false rebase --rebase-merges --onto $RemoteRef $forkPoint
     if ($LASTEXITCODE -eq 0) { return }
 
     Write-Err "Rebase conflicted; aborting so the original checkout is restored."

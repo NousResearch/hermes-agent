@@ -16,6 +16,14 @@ INSTALL_PS1 = ROOT / "scripts" / "install.ps1"
 GIT = ["git", "-c", "user.name=Hermes Test", "-c", "user.email=test@example.invalid"]
 
 
+@pytest.fixture(autouse=True)
+def _require_explicit_git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Match CI hosts where Git cannot synthesize a committer identity."""
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+
+
 def _git(
     repo: Path, *args: str, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
@@ -161,6 +169,9 @@ def test_installer_preserves_only_genuine_local_commit(
     assert _git(
         install, "log", "--format=%s", f"{remote}..HEAD"
     ).stdout.splitlines() == ["genuine local commit"]
+    assert _git(install, "log", "--format=%an <%ae>", f"{remote}..HEAD").stdout.strip() == (
+        "Hermes Test <test@example.invalid>"
+    )
     assert not (install / "obsolete.txt").exists()
     assert discarded != remote
 

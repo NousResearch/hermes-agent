@@ -1471,7 +1471,7 @@ show_manual_install_hint() {
 
 recover_diverged_update() {
     local remote_ref="$1"
-    local fork_point head merge_commits merge_commit merge_payload
+    local fork_point head merge_commits merge_commit merge_payload committer_name committer_email
 
     # remote_ref..HEAD is unsafe after a force-push because it includes old
     # upstream commits that the remote intentionally discarded. The tracking
@@ -1507,8 +1507,17 @@ recover_diverged_update() {
         fi
     done
 
+    # Rebase preserves each commit's author, but Git still needs a committer.
+    # Reuse HEAD's author without changing repository or global configuration.
+    if ! committer_name="$(git show -s --format=%an HEAD)" || [ -z "$committer_name" ] ||
+       ! committer_email="$(git show -s --format=%ae HEAD)" || [ -z "$committer_email" ]; then
+        log_error "Could not recover a committer identity from HEAD; refusing to rewrite it."
+        return 1
+    fi
+
     log_info "Preserving locally carried history and merge topology onto $remote_ref..."
-    if git -c rebase.updateRefs=false rebase --rebase-merges --onto "$remote_ref" "$fork_point"; then
+    if git -c "user.name=$committer_name" -c "user.email=$committer_email" \
+        -c rebase.updateRefs=false rebase --rebase-merges --onto "$remote_ref" "$fork_point"; then
         return 0
     fi
 

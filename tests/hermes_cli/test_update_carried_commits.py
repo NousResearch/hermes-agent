@@ -6,10 +6,20 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from hermes_cli.update_cmd import _recover_diverged_update
 
 GIT = ["git", "-c", "user.name=Hermes Test", "-c", "user.email=test@example.invalid"]
 REMOTE_REF = "refs/remotes/origin/main"
+
+
+@pytest.fixture(autouse=True)
+def _require_explicit_git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Match CI hosts where Git cannot synthesize a committer identity."""
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
 
 
 def _git(
@@ -83,6 +93,9 @@ def test_rewritten_upstream_preserves_only_genuine_local_commit(tmp_path: Path) 
     assert _git(
         repo, "log", "--format=%s", f"{rewritten}..HEAD"
     ).stdout.splitlines() == ["genuine local commit"]
+    assert _git(repo, "log", "--format=%an <%ae>", f"{rewritten}..HEAD").stdout.strip() == (
+        "Hermes Test <test@example.invalid>"
+    )
     assert not (repo / "obsolete.txt").exists()
     assert (repo / "local.txt").read_text(encoding="utf-8") == "local\n"
 

@@ -278,10 +278,24 @@ def _recover_diverged_update(
                 "rebase that could lose the merge resolution"
             )
 
+    identity_result = subprocess.run(
+        git_cmd + ["show", "-s", "--format=%an%x00%ae", "HEAD"],
+        cwd=cwd,
+        **_GIT_TEXT_KW,
+    )
+    identity = identity_result.stdout.rstrip("\n").split("\0")
+    if identity_result.returncode != 0 or len(identity) != 2 or not all(identity):
+        return False, "could not recover a committer identity from HEAD; refusing to rewrite it"
+    committer_name, committer_email = identity
+
     print(f"  → Preserving locally carried history and merge topology onto {remote_ref}...")
     result = subprocess.run(
         git_cmd
         + [
+            "-c",
+            f"user.name={committer_name}",
+            "-c",
+            f"user.email={committer_email}",
             "-c",
             "rebase.updateRefs=false",
             "rebase",

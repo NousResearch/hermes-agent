@@ -4495,6 +4495,132 @@ class TestCompressionFallbackContextFilter:
         assert _task_minimum_context_length(None) is None
 
 
+class TestConfiguredFallbackCandidateFailures:
+    """A failing configured candidate must not abort the remaining chain."""
+
+    def test_sync_chain_continues_after_connection_error(self, monkeypatch):
+        from agent.auxiliary_client import call_llm
+
+        primary = MagicMock(name="primary")
+        first_fallback = MagicMock(name="first_fallback")
+        second_fallback = MagicMock(name="second_fallback")
+        response = _DummyResponse()
+
+        primary.chat.completions.create.side_effect = ConnectionError("primary refused")
+        first_fallback.chat.completions.create.side_effect = ConnectionError("fallback refused")
+        second_fallback.chat.completions.create.return_value = response
+
+        entries = [
+            {"provider": "first", "model": "first-model"},
+            {"provider": "second", "model": "second-model"},
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("primary", "primary-model", None, None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (primary, "primary-model"),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries},
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            lambda entry: (
+                (first_fallback, "first-model")
+                if entry is entries[0]
+                else (second_fallback, "second-model")
+            ),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.get_model_context_length",
+            lambda *args, **kwargs: 1_048_576,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._transient_retry_count",
+            lambda: 0,
+        )
+
+        result = call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+        assert result is response
+        first_fallback.chat.completions.create.assert_called_once()
+        second_fallback.chat.completions.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_chain_continues_after_connection_error(self, monkeypatch):
+        from agent.auxiliary_client import async_call_llm
+
+        primary = MagicMock(name="primary_async")
+        primary.chat.completions.create = AsyncMock(
+            side_effect=ConnectionError("primary refused")
+        )
+        first_sync = MagicMock(name="first_sync")
+        second_sync = MagicMock(name="second_sync")
+        first_async = MagicMock(name="first_async")
+        second_async = MagicMock(name="second_async")
+        first_async.chat.completions.create = AsyncMock(
+            side_effect=ConnectionError("fallback refused")
+        )
+        response = _DummyResponse()
+        second_async.chat.completions.create = AsyncMock(return_value=response)
+
+        entries = [
+            {"provider": "first", "model": "first-model"},
+            {"provider": "second", "model": "second-model"},
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("primary", "primary-model", None, None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (primary, "primary-model"),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries},
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            lambda entry: (
+                (first_sync, "first-model")
+                if entry is entries[0]
+                else (second_sync, "second-model")
+            ),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._to_async_client",
+            lambda client, model, **kwargs: (
+                (first_async, model) if client is first_sync else (second_async, model)
+            ),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.get_model_context_length",
+            lambda *args, **kwargs: 1_048_576,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._transient_retry_count",
+            lambda: 0,
+        )
+
+        result = await async_call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+        assert result is response
+        first_async.chat.completions.create.assert_awaited_once()
+        second_async.chat.completions.create.assert_awaited_once()
+
+
 class TestCustomEndpointApiKeyInheritance:
     """Issue #9318: when an auxiliary task uses provider=custom with an
     explicit base_url but empty api_key, the custom_key fallback chain must

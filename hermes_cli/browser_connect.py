@@ -610,6 +610,33 @@ def _secure_snapshot_root(path: str) -> None:
         logger.debug("could not secure real-profile snapshot dir %s: %s", path, e)
 
 
+def _secure_snapshot_contents(dst: str) -> None:
+    """Owner-only modes for every file/dir INSIDE the snapshot (#96729).
+
+    ``_secure_snapshot_root`` covers the top-level dirs, but the copied files
+    inherit the umask: ``shutil.copy2`` preserves the source's mode (Chrome
+    keeps its own profile 0644 inside a 0700 dir) and ``sqlite3.connect`` on
+    the backup destination creates plain umask files — so Cookies / Login
+    Data / Web Data landed 0644 and any nested profile subdir 0755. The 0700
+    parents contain the damage by default, but the documented
+    ``HERMES_HOME_MODE`` hatch (nginx traversal) makes world-readable children
+    a real exposure — these are the user's live session cookies. Reconciled
+    through the house helpers (``_secure_dir`` / ``_secure_file``) on EVERY
+    snapshot pass, so older snapshots heal too; both helpers already carry the
+    managed-mode / container carve-outs. Best-effort: never blocks a launch.
+    """
+    try:
+        from hermes_cli.config import _secure_dir, _secure_file
+
+        for root, dirs, files in os.walk(dst):
+            for d in dirs:
+                _secure_dir(os.path.join(root, d))
+            for f in files:
+                _secure_file(os.path.join(root, f))
+    except Exception as e:  # best-effort, same policy as _secure_snapshot_root
+        logger.debug("could not secure real-profile snapshot contents %s: %s", dst, e)
+
+
 # Auth files that are SQLite databases: on Windows a running Chrome holds these
 # with an exclusive lock, so a raw file copy raises WinError 32 ("being used by
 # another process") and a naive best-effort skip leaves the copy signed-out.
@@ -1059,6 +1086,12 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
                 fh.write(source_profile)
         except OSError as e:
             logger.debug("real-profile snapshot: could not write done marker: %s", e)
+        # Owner-only modes for everything the copies above created — copy2
+        # preserves Chrome's 0644 and sqlite backup files land umask-wide;
+        # these are the user's session cookies (#96729). Runs AFTER the marker
+        # write so the marker itself is covered, and on every pass so
+        # snapshots from older builds heal on their next launch.
+        _secure_snapshot_contents(dst)
     except OSError as e:
         return None, f"could not snapshot the '{browser}' profile into {dst}: {e}"
     return dst, None

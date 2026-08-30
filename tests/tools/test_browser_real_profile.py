@@ -139,6 +139,53 @@ class TestSnapshotRealProfile:
         assert dst is None
         assert err and "was not found" in err
 
+    def test_snapshot_files_are_owner_only(self, tmp_path, monkeypatch):
+        """Every copied file must be 0600 and every dir 0700 (#96729).
+
+        copy2 preserves Chrome's 0644 source modes and sqlite-backup files
+        land umask-wide, so without explicit reconciliation the user's
+        session-cookie copies are group/world-readable.
+        """
+        import stat
+
+        import hermes_cli.browser_connect as bc
+        src = self._make_profile(tmp_path / "real")
+        home = tmp_path / "hermes-home"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        old_umask = os.umask(0o022)  # the common default that produced 0644
+        try:
+            dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        finally:
+            os.umask(old_umask)
+        assert err is None and dst
+        offenders = []
+        for root, dirs, files in os.walk(dst):
+            for d in dirs:
+                mode = stat.S_IMODE(os.stat(os.path.join(root, d)).st_mode)
+                if mode & 0o077:
+                    offenders.append((os.path.join(root, d), oct(mode)))
+            for f in files:
+                mode = stat.S_IMODE(os.stat(os.path.join(root, f)).st_mode)
+                if mode & 0o077:
+                    offenders.append((os.path.join(root, f), oct(mode)))
+        assert not offenders, f"group/world-accessible snapshot entries: {offenders}"
+
+    def test_existing_lax_snapshot_heals_on_refresh(self, tmp_path, monkeypatch):
+        """A snapshot left 0644 by an older build tightens on the next pass."""
+        import stat
+
+        import hermes_cli.browser_connect as bc
+        src = self._make_profile(tmp_path / "real")
+        home = tmp_path / "hermes-home"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None and dst
+        cookies = os.path.join(dst, "Default", "Cookies")
+        os.chmod(cookies, 0o644)  # simulate the pre-fix on-disk state
+        dst2, err2 = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err2 is None and dst2 == dst
+        assert stat.S_IMODE(os.stat(cookies).st_mode) == 0o600
+
 
 class TestRealProfileCdpLaunch:
     """The agent-browser-based launcher in browser_tool._real_profile_cdp."""
@@ -564,12 +611,14 @@ class TestSnapshotIsCredentialStore:
         (tmp_path / "real" / "Local State").write_text("{}")
         (src / "Cookies").write_text("db")
         monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
-        called = {}
+        called = {"paths": []}
         with patch("hermes_cli.config._secure_dir",
-                   side_effect=lambda p: called.__setitem__("p", p)):
+                   side_effect=lambda p: called["paths"].append(p)):
             dst, err = bc.snapshot_real_profile("chrome", src=str(tmp_path / "real"))
         assert err is None
-        assert called.get("p") == dst  # secured through the canonical owner
+        # Secured through the canonical owner; since #96729 the walk also
+        # secures every nested dir, so dst is IN the set rather than last.
+        assert dst in called["paths"]
 
 
 class TestReviewBugFixes:

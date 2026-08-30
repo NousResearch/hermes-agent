@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -216,6 +220,74 @@ def test_permission_variant_registration_is_not_hidden_by_revoked_version(tmp_pa
     assert resolution.status == "active_match"
     assert resolution.profile == "repository-reviewer"
     assert renewed_declaration_id != original_declaration_id
+
+
+def test_unregistered_permission_expansion_does_not_reuse_narrow_declaration(tmp_path):
+    CapabilityRegistry, CapabilitySignature = _registry_api()
+    original = _repository_read_signature()
+    db_path = tmp_path / "registry.db"
+    CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": original},
+    ).register_configured_profile("repository-reviewer")
+    expanded = CapabilitySignature(
+        domain=original.domain,
+        actions=original.actions,
+        evidence_class=original.evidence_class,
+        requested_permissions=(
+            "repository-evidence:metadata",
+            "repository-evidence:read",
+        ),
+    )
+
+    resolution = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": expanded},
+    ).resolve(expanded)
+
+    assert resolution.status == "no_match"
+    assert resolution.profile is None
+
+
+def test_import_before_hermes_home_does_not_pin_kanban_paths(tmp_path):
+    repo = Path(__file__).resolve().parents[2]
+    late_home = tmp_path / "late-home"
+    code = """
+import os
+import sys
+
+os.environ.pop("HERMES_HOME", None)
+import gateway.capability_registry as registry_module
+assert "hermes_cli.kanban_db" not in sys.modules
+os.environ["HERMES_HOME"] = sys.argv[1]
+signature = registry_module.CapabilitySignature(
+    domain="repository-evidence",
+    actions=("read",),
+    evidence_class="diagnostic-only",
+    requested_permissions=("repository-evidence:read",),
+)
+registry = registry_module.CapabilityRegistry(
+    configured_profiles={"reviewer": signature},
+)
+registry.register_configured_profile("reviewer")
+assert registry.resolve(signature).status == "active_match"
+"""
+    env = os.environ.copy()
+    env.pop("HERMES_HOME", None)
+    env["PYTHONPATH"] = str(repo)
+
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(late_home)],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (late_home / "kanban.db").is_file()
 
 
 def test_each_revocation_binds_the_latest_unrevoked_generation(tmp_path):

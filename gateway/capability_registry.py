@@ -17,9 +17,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from hermes_cli import kanban_db
-
-
 _MAX_EXPIRY_TIMESTAMP = 253402300799
 _PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,95}$")
 _REASON_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -86,6 +83,13 @@ def _canonical_tokens(values: tuple[str, ...], *, field: str) -> tuple[str, ...]
 def _hash_payload(payload: object) -> str:
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _kanban_db():
+    """Load board storage only when registry I/O begins."""
+    from hermes_cli import kanban_db
+
+    return kanban_db
 
 
 def _expiry_timestamp(expires_at: datetime | int | float | None) -> int | None:
@@ -183,7 +187,7 @@ class CapabilityRegistry:
     @contextmanager
     def _connection(self) -> Iterator[object]:
         """Open the board-local registry connection after idempotent schema setup."""
-        with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
+        with _kanban_db().connect_closing(self._db_path, board=self._board) as conn:
             conn.executescript(_SCHEMA)
             yield conn
 
@@ -206,7 +210,7 @@ class CapabilityRegistry:
         created_at = int(time.time())
         expires_at_timestamp = _expiry_timestamp(expires_at)
         with self._connection() as conn:
-            with kanban_db.write_txn(conn):
+            with _kanban_db().write_txn(conn):
                 existing = conn.execute(
                     """
                     SELECT profiles.id FROM capability_profiles AS profiles
@@ -281,7 +285,7 @@ class CapabilityRegistry:
         if isinstance(created_at, bool) or not isinstance(created_at, int):
             raise ValueError("now must be an integer timestamp")
         with self._connection() as conn:
-            with kanban_db.write_txn(conn):
+            with _kanban_db().write_txn(conn):
                 declaration = conn.execute(
                     """
                     SELECT profiles.id, revocations.revocation_hash
@@ -348,7 +352,8 @@ class CapabilityRegistry:
                     SELECT profile_id, signature_hash, permissions_hash, domain,
                            actions_json, evidence_class, requested_permissions_json, expires_at
                     FROM capability_profiles AS profiles
-                    WHERE status = 'active' AND signature_hash = ? AND evidence_class = ?
+                    WHERE status = 'active' AND signature_hash = ?
+                      AND permissions_hash = ? AND evidence_class = ?
                       AND NOT EXISTS (
                           SELECT 1 FROM specialist_profile_revocations AS revocations
                           WHERE revocations.capability_profile_id = profiles.id
@@ -358,7 +363,11 @@ class CapabilityRegistry:
                       )
                     ORDER BY profile_id, id
                     """,
-                    (signature.signature_hash, signature.evidence_class),
+                    (
+                        signature.signature_hash,
+                        signature.permissions_hash,
+                        signature.evidence_class,
+                    ),
                 ).fetchall()
         except Exception as exc:
             return RegistryResolution(
@@ -368,7 +377,6 @@ class CapabilityRegistry:
             )
 
         now = int(time.time())
-        requested_permissions = set(signature.requested_permissions)
         matches: set[str] = set()
         for row in rows:
             if not _unexpired(row["expires_at"], now=now):
@@ -387,7 +395,7 @@ class CapabilityRegistry:
                 or stored.permissions_hash != row["permissions_hash"]
                 or stored.domain != signature.domain
                 or stored.actions != signature.actions
-                or not set(stored.requested_permissions) <= requested_permissions
+                or stored.requested_permissions != signature.requested_permissions
             ):
                 continue
             matches.add(row["profile_id"])

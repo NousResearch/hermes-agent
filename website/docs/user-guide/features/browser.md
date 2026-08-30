@@ -236,7 +236,9 @@ to fully quit the browser — it won't loop or kill again on its own.
 - **Security framing:** this is a consent-gated convenience, not an isolation
   boundary. A page the agent visits runs with your real logins, so only enable
   it when you want the agent acting as you. Off by default.
-- **Desktop:** toggle it in **Settings → Browser → Use My Real Browser Profile**.
+- **Desktop:** toggle it in **Capabilities → Tools → Browser → Use My Real
+  Browser Profile** (the switch sits above the backend options), or in
+  Settings → Config under the `browser` section.
 
 ### Camofox local mode
 

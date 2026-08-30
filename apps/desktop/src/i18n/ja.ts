@@ -1140,6 +1140,16 @@ export const ja = defineLocale({
         selectedMessage: backend => `ターミナルコマンドは ${backend} で実行されます。新しいセッションに適用されます。`,
         failedSelect: backend => `${backend} の選択に失敗しました`,
         needsSetupHint: 'このバックエンドは今すぐ選択できますが、セットアップが完了するまでコマンドは失敗します。'
+      },
+      browserRealProfile: {
+        label: '実際のブラウザプロファイルを使用',
+        description:
+          '既定ブラウザのログイン情報と Cookie を管理されたスナップショットにコピーし、エージェントはそれを使ってブラウジングします。実際のプロファイルが直接開かれることはありません。新しいセッションに適用されます。',
+        enabledTitle: '実プロファイルブラウジング：オン',
+        enabledMessage: '新しいセッションは既定ブラウザプロファイルのスナップショットでブラウジングします。',
+        disabledTitle: '実プロファイルブラウジング：オフ',
+        disabledMessage: 'プロファイルのスナップショットは削除され、新しいセッションはクリーンなブラウザを使用します。',
+        failedSave: '実プロファイル設定を保存できませんでした'
       }
     }
   },

@@ -147,7 +147,8 @@ class TestWriteThroughPreservesSchema:
         # levels, read-only hints...); isolate them so the probe server never leaks into
         # later tests such as ``discover_mcp_tools() == []`` assertions.
         for attr in ("_lazy_server_tool_names", "_lazy_server_configs", "_lazy_server_fingerprints",
-                     "_mcp_tool_server_names", "_server_trust_levels", "_tool_read_only_hints"):
+                     "_mcp_tool_server_names", "_mcp_tool_read_only",
+                     "_server_trust_levels", "_tool_read_only_hints"):
             monkeypatch.setattr(mt, attr, {})
         server = mt.MCPServerTask("probe_srv")
         server._tools = [

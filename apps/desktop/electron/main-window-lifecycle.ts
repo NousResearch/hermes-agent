@@ -2,6 +2,15 @@ type MainWindowLike = {
   isDestroyed: () => boolean
 }
 
+/**
+ * Stop-gap lifecycle policy: closing the final Desktop window means quitting
+ * the app, including on macOS. Quitting enters the existing backend shutdown
+ * coordinator, which owns the app-spawned CLI/serve trees and cron scheduler.
+ */
+export function shouldQuitAfterWindowAllClosed(): true {
+  return true
+}
+
 type EnsureMainWindowOptions<T extends MainWindowLike> = {
   isReady: boolean
   createWindow: () => unknown

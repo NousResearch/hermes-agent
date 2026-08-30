@@ -234,7 +234,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { ensureMainWindow } from './main-window-lifecycle'
+import { ensureMainWindow, shouldQuitAfterWindowAllClosed } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -3384,13 +3384,9 @@ async function readCommitLog(cwd, branch, isShallow) {
 let updateInFlight = false
 
 // Set to true when the desktop is about to quit so a detached swap/install/
-// uninstall script can take over. On macOS, app.quit() closes windows but
-// window-all-closed deliberately keeps the process alive (standard Electron
-// macOS convention). Without this flag the process never exits — the detached
-// hand-off script spins its PID-wait for the full timeout, and the user sees a
-// blank app with no window (and an uninstall that appears to do nothing). When
-// set, window-all-closed calls app.quit() on every platform so the process
-// actually dies and the hand-off script can proceed immediately.
+// uninstall script can take over. This also bypasses the active-work prompt:
+// the app is replacing itself rather than abandoning the user's work, and the
+// detached hand-off script must not be stranded behind a modal.
 let isQuittingForHandoff = false
 
 // Quit-guard latches: one while the confirmation is on screen (a second
@@ -18412,13 +18408,11 @@ app.on('before-quit', event => {
 })
 
 app.on('window-all-closed', () => {
-  // macOS convention: keep the process alive in the Dock when the user closes
-  // the last window. But when we're handing off to a detached updater / swap /
-  // uninstall script, the process MUST exit so the script can replace or remove
-  // the bundle and relaunch — without this the script's PID-wait spins to its
-  // full timeout and the user is left with an invisible app (or an uninstall
-  // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  // Stop-gap: closing the last window means the user closed Hermes, including
+  // on macOS. Enter the normal quit path so the active-work guard runs and the
+  // bounded teardown stops app-owned CLI/backend trees, pooled profiles, PTYs,
+  // and the backend-hosted cron scheduler.
+  if (shouldQuitAfterWindowAllClosed()) {
     app.quit()
   }
 })

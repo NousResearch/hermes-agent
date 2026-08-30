@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { ensureMainWindow } from './main-window-lifecycle'
+import { ensureMainWindow, shouldQuitAfterWindowAllClosed } from './main-window-lifecycle'
+
+test('closing the last desktop window quits on every platform', () => {
+  assert.equal(shouldQuitAfterWindowAllClosed(), true)
+})
 
 test('recreates a destroyed primary window without focusing it', () => {
   const destroyedWindow = {

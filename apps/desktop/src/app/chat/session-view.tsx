@@ -14,9 +14,11 @@ import {
   $currentReasoningEffort,
   $messages,
   $selectedStoredSessionId,
-  $turnStartedAt
+  $sessions,
+  $turnStartedAt,
+  idsShareLineage
 } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import { $sessionStates, $workingSessionIds } from '@/store/session-states'
 
 import { lastVisibleMessageIsUser } from './thread-loading'
 
@@ -82,14 +84,48 @@ function primaryField<T>(select: (state: ClientSessionState) => T, $draft: Reada
 const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $messages)
 
 /**
- * Turn-busy for the workspace pane. A selected stored session that has no
- * slice yet (cold resume) must stay idle — the global `$busy` atom is a
- * leftover from whichever session last published, and inheriting it is how
- * focusing B while A runs marked B busy. The draft atom is only for a true
- * new chat (no stored id) so the first-send optimistic lock still paints.
+ * Turn-busy for the workspace pane.
+ *
+ * Two ids name one conversation and they move on different clocks: the STORED
+ * id (selection/route/composer queue key) flips synchronously on navigate,
+ * while the RUNTIME id keying `$primaryState` only rebinds after
+ * `resumeSession()` lands — and is nulled outright on the cold path. So for
+ * the whole switch window this pane holds session A's stored id alongside B's
+ * (or no) runtime slice.
+ *
+ * Answering "idle" across that window is what fired the composer's
+ * level-triggered queue auto-drain into a session still running its turn. Two
+ * rules keep it honest:
+ *
+ * 1. A slice is authoritative only when it BELONGS to the selected session —
+ *    otherwise it is the outgoing session's state and says nothing about this
+ *    one (the warm-cache switch, where the runtime id is never nulled).
+ * 2. With no usable slice, an unknown defers to the authoritative working set
+ *    rather than guessing the permissive answer. The set already publishes
+ *    every lineage alias, so a compression tip matches its root.
+ *    This is the same oracle `use-background-queue-drain` consults offscreen.
+ *
+ * The global `$busy` atom stays reserved for a true new chat (no stored id) so
+ * the first-send optimistic lock still paints. Inheriting it for a selected
+ * session is how focusing B while A ran marked B busy.
  */
-const $primaryBusy = computed([$primaryState, $busy, $selectedStoredSessionId], (state, draftBusy, selected) =>
-  state ? state.busy : selected ? false : draftBusy
+const $primaryBusy = computed(
+  [$primaryState, $busy, $selectedStoredSessionId, $workingSessionIds, $sessions],
+  (state, draftBusy, selected, working, sessions) => {
+    if (!selected) {
+      return state ? state.busy : draftBusy
+    }
+
+    // An unpersisted conversation has no stored id yet; its slice is the only
+    // account of itself, so keep trusting it.
+    const sliceStoredId = state?.storedSessionId
+
+    if (state && (!sliceStoredId || idsShareLineage(sliceStoredId, selected, sessions))) {
+      return state.busy
+    }
+
+    return working.includes(selected)
+  }
 )
 
 export const PRIMARY_SESSION_VIEW: SessionView = {

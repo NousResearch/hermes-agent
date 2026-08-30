@@ -46,7 +46,7 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 ### In chat with `/cron`
 
 ```bash
-/cron add 30m "Remind me to check the build"
+/cron add "in 30m" "Remind me to check the build"
 /cron add "every 2h" "Check server status"
 /cron add "every 1h" "Summarize new feed items" --skill blogwatcher
 /cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill maps
@@ -779,14 +779,15 @@ The agent's final response is automatically delivered to the job's `deliver:` ta
 ### Relative delays (one-shot)
 
 ```text
-30m     → Run once in 30 minutes
-2h      → Run once in 2 hours
-1d      → Run once in 1 day
+in 30m  → Run once in 30 minutes
+in 2h   → Run once in 2 hours
+in 1d   → Run once in 1 day
 ```
 
 ### Intervals (recurring)
 
 ```text
+30m          → Every 30 minutes (bare durations are recurring)
 every 30m    → Every 30 minutes
 every 2h     → Every 2 hours
 every 1d     → Every day
@@ -827,7 +828,7 @@ Times accept `9am`, `9:30pm`, `14:00`, bare 24-hour hours (`at 7`), `noon`, and 
 
 | Schedule type | Default repeat | Behavior |
 |--------------|----------------|----------|
-| One-shot (`30m`, timestamp) | 1 | Runs once |
+| One-shot (`in 30m`, timestamp) | 1 | Runs once |
 | Interval (`every 2h`) | forever | Runs until removed |
 | Cron expression | forever | Runs until removed |
 

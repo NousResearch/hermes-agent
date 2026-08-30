@@ -135,7 +135,7 @@ describe('mergeDelegateRows', () => {
     expect(merged[0]!.model).toBeUndefined()
   })
 
-  it('falls back to task order only when both sides agree on the shape', () => {
+  it('does not infer ownership from matching cardinality and task index', () => {
     const rows = delegateRowsFromCall({ tasks: [{ goal: 'A' }, { goal: 'B' }] }, undefined, 'call-3')
 
     const merged = mergeDelegateRows(
@@ -147,7 +147,23 @@ describe('mergeDelegateRows', () => {
       'call-3'
     )
 
-    expect(merged.map(r => r.model)).toEqual(['m0', 'm1'])
+    expect(merged).toEqual(rows)
+  })
+
+  it('fails closed when multiple running rows share one legacy goal', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'Same legacy goal' }, { goal: 'Same legacy goal' }] },
+      undefined,
+      'call-duplicate-goal'
+    )
+
+    const merged = mergeDelegateRows(
+      rows,
+      [subagent({ id: 'native-child', goal: 'Same legacy goal', model: 'must-not-leak' })],
+      'call-duplicate-goal'
+    )
+
+    expect(merged).toEqual(rows)
   })
 
   it('keeps settled historical calls isolated from the only post-prune live child', () => {
@@ -296,5 +312,75 @@ describe('mergeDelegateRows', () => {
         subagentId: 'sa-concurrent-b'
       }
     ])
+  })
+
+  it('accepts an event-time ownership promotion for a parked legacy call', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'Legacy child' }] },
+      { status: 'dispatched', goals: ['Legacy child'] },
+      'legacy-call'
+    )
+
+    const merged = mergeDelegateRows(
+      rows,
+      [
+        subagent({
+          delegateCallId: 'legacy-call',
+          delegateRowIndex: 0,
+          goal: 'Legacy child',
+          id: 'native-child',
+          model: 'native-model'
+        })
+      ],
+      'legacy-call'
+    )
+
+    expect(merged[0]).toMatchObject({
+      goal: 'Legacy child',
+      id: 'native-child',
+      model: 'native-model',
+      subagentId: 'native-child'
+    })
+  })
+
+  it('renders a promoted native child only in its exact legacy row', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'First legacy child' }, { goal: 'Second legacy child' }] },
+      { status: 'dispatched', goals: ['First legacy child', 'Second legacy child'] },
+      'legacy-batch'
+    )
+
+    const promotedSecond = subagent({
+      delegateCallId: 'legacy-batch',
+      delegateRowIndex: 1,
+      goal: 'Second legacy child',
+      id: 'native-second',
+      model: 'second-model',
+      taskIndex: 1
+    })
+
+    const merged = mergeDelegateRows(rows, [promotedSecond], 'legacy-batch')
+
+    expect(merged[0]).toMatchObject({
+      activity: [],
+      goal: 'First legacy child',
+      id: 'legacy-batch:0',
+      status: 'dispatched'
+    })
+    expect(merged[0]!.model).toBeUndefined()
+    expect(merged[1]).toMatchObject({
+      goal: 'Second legacy child',
+      id: 'native-second',
+      model: 'second-model',
+      subagentId: 'native-second'
+    })
+
+    const missingIndex = mergeDelegateRows(
+      rows,
+      [subagent({ delegateCallId: 'legacy-batch', goal: 'Second legacy child', id: 'native-without-index' })],
+      'legacy-batch'
+    )
+
+    expect(missingIndex).toEqual(rows)
   })
 })

@@ -206,7 +206,7 @@ async function assertLiveCCard(card: ReturnType<ReturnType<typeof delegateCards>
   await expect(card).toContainText(DELEGATE_CARD_GOALS.c)
   await expect(card).toContainText('Mock Model')
   await expect(card).toContainText(C_TERMINAL_ACTIVITY)
-  await expect(card).toContainText(/\b\d+s\b/)
+  await expect(card.getByText(/^\d+s$/)).toHaveCount(1)
   await expect(card.getByRole('button', { name: DELEGATE_CARD_GOALS.c, exact: true })).toBeEnabled()
   await expect(card.getByLabel('Running')).toHaveCount(1)
 }

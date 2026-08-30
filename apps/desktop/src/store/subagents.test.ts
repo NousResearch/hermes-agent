@@ -7,6 +7,7 @@ import {
   buildSubagentTree,
   clearSessionSubagents,
   failedSubagentCount,
+  promoteDelegateFallbackOwnership,
   pruneDelegateFallbackSubagents,
   pruneFinishedSessionSubagents,
   reconcileSubagentSnapshot,
@@ -134,6 +135,56 @@ describe('subagent store', () => {
     pruneDelegateFallbackSubagents('s1')
 
     expect(listFor('s1').map(item => item.id)).toEqual(['sa-0-xyz'])
+  })
+
+  it('promotes exactly one matching fallback only for a creation-capable native event', () => {
+    upsertSubagent('s1', { goal: 'owned goal', status: 'running', subagent_id: 'delegate-tool:call-owned:0', task_index: 0 })
+
+    expect(
+      promoteDelegateFallbackOwnership('s1', { goal: 'owned goal', status: 'running', subagent_id: 'native-owned' })
+    ).toMatchObject({ delegate_call_id: 'call-owned', delegate_row_index: 0 })
+    expect(
+      promoteDelegateFallbackOwnership('s1', { goal: 'different', status: 'running', subagent_id: 'native-other' })
+    ).not.toHaveProperty('delegate_call_id')
+  })
+
+  it('fails closed when fallback ownership promotion is ambiguous', () => {
+    upsertSubagent('s1', { goal: 'same goal', status: 'running', subagent_id: 'delegate-tool:call-a:0', task_index: 0 })
+    upsertSubagent('s1', { goal: 'same goal', status: 'running', subagent_id: 'delegate-tool:call-b:0', task_index: 0 })
+
+    const ambiguous = promoteDelegateFallbackOwnership('s1', {
+      goal: 'same goal',
+      status: 'running',
+      subagent_id: 'native-child'
+    })
+
+    expect(ambiguous).not.toHaveProperty('delegate_call_id')
+    expect(ambiguous).not.toHaveProperty('delegate_row_index')
+  })
+
+  it('preserves promoted fallback ownership across later native events', () => {
+    upsertSubagent('s1', { goal: 'second', status: 'running', subagent_id: 'delegate-tool:call-batch:1', task_index: 1 })
+
+    const promoted = promoteDelegateFallbackOwnership('s1', {
+      goal: 'second',
+      status: 'running',
+      subagent_id: 'native-second',
+      task_index: 1
+    })
+
+    upsertSubagent('s1', promoted, true, 'subagent.start')
+    upsertSubagent(
+      's1',
+      { status: 'running', subagent_id: 'native-second', task_index: 1, text: 'still working' },
+      false,
+      'subagent.progress'
+    )
+
+    expect(listFor('s1').find(item => item.id === 'native-second')).toMatchObject({
+      delegateCallId: 'call-batch',
+      delegateRowIndex: 1,
+      stream: [{ kind: 'progress', text: 'still working' }]
+    })
   })
 
   // Contract: the status-bar "Agents" indicator and the Spawn-tree panel read

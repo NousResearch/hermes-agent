@@ -14,6 +14,10 @@ export interface SubagentStreamEntry {
 
 export interface SubagentProgress {
   id: string
+  /** Delegate tool call that uniquely owned this child before native events arrived. */
+  delegateCallId?: string
+  /** Exact fallback row promoted with the delegate call. */
+  delegateRowIndex?: number
   parentId: null | string
   goal: string
   /** The child's own stored session id — lets UIs open its session window. */
@@ -141,6 +145,35 @@ const asTail = (v: unknown): TailEntry[] =>
 const idOf = (p: SubagentPayload) =>
   str(p.subagent_id) || `${str(p.parent_id) || 'root'}:${num(p.task_index) ?? 0}:${str(p.goal)}`
 
+const fallbackOwnership = (id: string): { callId: string; rowIndex: number } | undefined => {
+  const match = /^delegate-tool:(.+):(\d+)$/.exec(id)
+
+  return match ? { callId: match[1]!, rowIndex: Number(match[2]) } : undefined
+}
+
+export function promoteDelegateFallbackOwnership(sid: string, payload: SubagentPayload): SubagentPayload {
+  const goal = str(payload.goal).replace(/\s+/g, ' ').trim().toLowerCase()
+
+  if (!goal) {
+    return payload
+  }
+
+  const candidates = ($subagentsBySession.get()[sid] ?? []).filter(
+    item =>
+      item.id.startsWith('delegate-tool:') && item.goal.replace(/\s+/g, ' ').trim().toLowerCase() === goal
+  )
+
+  if (candidates.length !== 1) {
+    return payload
+  }
+
+  const ownership = fallbackOwnership(candidates[0]!.id)
+
+  return ownership
+    ? { ...payload, delegate_call_id: ownership.callId, delegate_row_index: ownership.rowIndex }
+    : payload
+}
+
 const appendStream = (stream: SubagentStreamEntry[], entry: SubagentStreamEntry) => {
   const last = stream.at(-1)
 
@@ -210,6 +243,8 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
 
   return {
     id: prev?.id ?? idOf(payload),
+    delegateCallId: str(payload.delegate_call_id) || prev?.delegateCallId,
+    delegateRowIndex: num(payload.delegate_row_index) ?? prev?.delegateRowIndex,
     parentId: str(payload.parent_id) || prev?.parentId || null,
     goal: str(payload.goal) || prev?.goal || 'Subagent',
     sessionId: str(payload.child_session_id) || prev?.sessionId,

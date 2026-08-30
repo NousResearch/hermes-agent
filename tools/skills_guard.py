@@ -184,19 +184,29 @@ def _content_contract_re(file_alt: str) -> str:
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
+    # All five env_exfil_* patterns share a loopback exemption: a request
+    # whose same-line literal destination is scheme-anchored loopback
+    # (http(s)://localhost, 127.0.0.1, [::1]) cannot move data off the
+    # machine, so a secret-shaped query param on it is a local session
+    # token, not exfiltration (e.g. impeccable's live-mode
+    # `fetch('http://localhost:'+PORT+'/status?token='+TOKEN)`). The
+    # exemption requires the scheme immediately before the loopback host —
+    # `evil.com/?u=localhost` does not qualify. A hostile skill that hides
+    # its real destination behind a variable never matched these same-line
+    # literal patterns in the first place.
+    (r'curl\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
      "env_exfil_curl", "critical", "exfiltration",
      "curl command interpolating secret environment variable"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
+    (r'wget\s+(?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
      "env_exfil_wget", "critical", "exfiltration",
      "wget command interpolating secret environment variable"),
-    (r'fetch\s*\([^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|API)',
+    (r'fetch\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|API)',
      "env_exfil_fetch", "critical", "exfiltration",
      "fetch() call interpolating secret environment variable"),
-    (r'httpx?\.(get|post|put|patch)\s*\([^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
+    (r'httpx?\.(get|post|put|patch)\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
      "env_exfil_httpx", "critical", "exfiltration",
      "HTTP library call with secret variable"),
-    (r'requests\.(get|post|put|patch)\s*\([^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
+    (r'requests\.(get|post|put|patch)\s*\((?![^\n]*https?://(?:localhost|127\.0\.0\.1|\[::1\]))[^\n]*(KEY|TOKEN|SECRET|PASSWORD)',
      "env_exfil_requests", "critical", "exfiltration",
      "requests library call with secret variable"),
 

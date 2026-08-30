@@ -1158,11 +1158,27 @@ class TestInstallPathSafety:
     """
 
     @pytest.fixture
-    def isolated_skills_dir(self, tmp_path, monkeypatch):
+    def isolated_skills_dir(self, tmp_path):
+        import tools.skills_hub as hub
+
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        monkeypatch.setattr("tools.skills_hub.SKILLS_DIR", skills_dir)
-        return skills_dir
+        # SKILLS_DIR is a PEP 562 dynamic attribute (resolved per-access via
+        # module __getattr__). monkeypatch.setattr must NOT be used here: it
+        # captures __getattr__'s live-resolved Path as the "original" value
+        # and re-installs it as a REAL module attribute on teardown, which
+        # permanently shadows dynamic resolution — every later test in the
+        # process then sees this test's tmp dir as the skills root. Set the
+        # override attribute directly and delete it on teardown so the
+        # module returns to dynamic resolution.
+        setattr(hub, "SKILLS_DIR", skills_dir)
+        try:
+            yield skills_dir
+        finally:
+            try:
+                delattr(hub, "SKILLS_DIR")
+            except AttributeError:
+                pass
 
     @pytest.fixture
     def patch_lock_file(self, monkeypatch):

@@ -670,22 +670,47 @@ class GitHubSource(SkillSource):
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
         tree = self._get_repo_tree(repo)
         if tree is not None:
+            # Download the FULL skill directory, not just SKILL.md-linked
+            # paths. Link-driven fetching silently dropped every support file
+            # a skill keeps under a non-canonical dir name (`reference/`,
+            # `agents/`, root-level LICENSE/params files) or that only a
+            # reference file links — the exact gap the optional-skills live
+            # fetch already works around (see _fetch_live_optional_bundle).
+            # Everything still flows through quarantine + scan before
+            # install, and the scanner sees MORE this way, not less.
             branch, entries = tree
             prefix = f"{skill_path.rstrip('/')}/"
-            entries_by_path = {item.get("path", ""): item for item in entries}
-            for rel_path in sorted(referenced):
-                item_path = f"{prefix}{rel_path}"
-                item = entries_by_path.get(item_path)
-                if item is None:
-                    logger.warning("Referenced skill support file is missing: %s", item_path)
-                    return None
+            for item in entries:
                 if item.get("type") != "blob" or item.get("mode") == "120000":
-                    logger.warning("Rejected non-regular file in skill bundle: %s", item_path)
+                    continue
+                item_path = item.get("path", "")
+                if not item_path.startswith(prefix):
+                    continue
+                rel_path = item_path[len(prefix):]
+                if rel_path == "SKILL.md":
+                    continue
+                base = rel_path.rsplit("/", 1)[-1]
+                if base.startswith(".") or base.endswith(".pyc") or "__pycache__" in rel_path.split("/"):
+                    continue
+                try:
+                    rel_path = _validate_bundle_rel_path(rel_path)
+                except ValueError:
+                    logger.warning("Rejected unsafe file path in skill bundle: %s", item_path)
                     return None
                 content = self._fetch_file_bytes(repo, item_path)
                 if content is None:
                     return None
                 files[rel_path] = content
+            # A support file SKILL.md links must actually exist as a regular
+            # file — a missing or symlinked referenced path rejects the
+            # bundle rather than installing a skill with dangling links.
+            for rel_path in sorted(referenced):
+                if rel_path not in files:
+                    logger.warning(
+                        "Referenced skill support file is missing: %s%s",
+                        prefix, rel_path,
+                    )
+                    return None
             revision = self._tree_revisions.get(repo) or branch
         else:
             for rel_path in referenced:
@@ -3423,6 +3448,16 @@ class OptionalSkillSource(SkillSource):
         else:
             skill_dir = resolved
 
+        # Upstream-maintained entries: the local dir is a catalog stub whose
+        # frontmatter points at the real skill in an external repo the
+        # upstream project maintains (e.g. impeccable's Hermes-native bundle
+        # under pbakaus/impeccable:.hermes/skills/impeccable). Install pulls
+        # the live content from there instead of vendoring a fork here.
+        upstream = self._upstream_pointer(skill_dir)
+        if upstream is not None:
+            rel_id = skill_dir.resolve().relative_to(self._optional_dir.resolve()).as_posix()
+            return self._fetch_from_upstream(upstream, rel_id)
+
         files: Dict[str, Union[str, bytes]] = {}
         for f in skill_dir.rglob("*"):
             if (
@@ -3549,6 +3584,11 @@ class OptionalSkillSource(SkillSource):
         if "SKILL.md" not in files:
             return None
 
+        # Live-fetched catalog stubs redirect the same way local ones do.
+        upstream = self._upstream_pointer_from_content(files["SKILL.md"])
+        if upstream is not None:
+            return self._fetch_from_upstream(upstream, rel)
+
         logger.info("Optional skill '%s' fetched from live repo (not in local checkout)", rel)
         return SkillBundle(
             name=rel.rsplit("/", 1)[-1],
@@ -3597,6 +3637,87 @@ class OptionalSkillSource(SkillSource):
 
         self._remote_dirs = dirs
         return dirs
+
+    def _upstream_pointer(self, skill_dir: Path) -> Optional[Dict[str, str]]:
+        """Return the upstream pointer for a catalog-stub skill dir, if any.
+
+        A stub declares ``metadata.hermes.upstream`` in its SKILL.md
+        frontmatter:
+
+            metadata:
+              hermes:
+                upstream:
+                  repo: pbakaus/impeccable
+                  path: .hermes/skills/impeccable
+
+        Returns ``{"repo": ..., "path": ...}`` or None for normal
+        (fully-vendored) optional skills.
+        """
+        skill_md = skill_dir / "SKILL.md"
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        return self._upstream_pointer_from_content(content)
+
+    def _upstream_pointer_from_content(self, content: Union[str, bytes]) -> Optional[Dict[str, str]]:
+        """Parse ``metadata.hermes.upstream`` out of SKILL.md content."""
+        if isinstance(content, bytes):
+            try:
+                content = content.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        fm = self._parse_frontmatter(content)
+        meta_block = fm.get("metadata")
+        if not isinstance(meta_block, dict):
+            return None
+        hermes_meta = meta_block.get("hermes")
+        if not isinstance(hermes_meta, dict):
+            return None
+        upstream = hermes_meta.get("upstream")
+        if not isinstance(upstream, dict):
+            return None
+        repo = str(upstream.get("repo", "")).strip().strip("/")
+        path = str(upstream.get("path", "")).strip().strip("/")
+        # repo must be exactly owner/name; path must be a clean relative path.
+        if not repo or repo.count("/") != 1 or not path:
+            return None
+        parts = [p for p in path.split("/") if p not in ("", ".")]
+        if not parts or any(p == ".." for p in parts):
+            return None
+        return {"repo": repo, "path": "/".join(parts)}
+
+    def _fetch_from_upstream(self, upstream: Dict[str, str], rel_id: str) -> Optional[SkillBundle]:
+        """Fetch an upstream-maintained optional skill from its external repo.
+
+        Delegates to GitHubSource.fetch() (full-directory download through the
+        git tree, symlink/unsafe-path rejection, quarantine + scan downstream)
+        but re-labels the bundle as an official catalog entry so trust,
+        identifier, and update tracking stay in the optional-skills namespace.
+        """
+        github = self._get_github()
+        bundle = github.fetch(f"{upstream['repo']}/{upstream['path']}")
+        if bundle is None:
+            logger.warning(
+                "Upstream fetch failed for optional skill %s (%s:%s)",
+                rel_id, upstream["repo"], upstream["path"],
+            )
+            return None
+        return SkillBundle(
+            name=bundle.name,
+            files=bundle.files,
+            source="official",
+            identifier=f"official/{rel_id}",
+            # Curated-catalog endorsement, but the content comes live from a
+            # third-party repo — "trusted", not "builtin", so a dangerous
+            # scan verdict still blocks install (INSTALL_POLICY).
+            trust_level="trusted",
+            metadata={
+                **bundle.metadata,
+                "upstream_repo": upstream["repo"],
+                "upstream_path": upstream["path"],
+            },
+        )
 
     def _find_skill_dir(self, name: str) -> Optional[Path]:
         """Find a skill directory by name anywhere in optional-skills/."""
@@ -4670,5 +4791,11 @@ def unified_search(query: str, sources: List[SkillSource],
         elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
             seen[r.identifier] = r
     deduped = list(seen.values())
+
+    # Stable-sort by trust rank before truncating: the limit cut must not
+    # drop a builtin/official catalog entry because a high-volume community
+    # source (skills.sh mirrors every repo) happened to finish first and
+    # flood the merged list. Insertion order is preserved within each rank.
+    deduped.sort(key=lambda r: -_TRUST_RANK.get(r.trust_level, 0))
 
     return deduped[:limit]

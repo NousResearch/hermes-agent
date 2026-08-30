@@ -8068,6 +8068,11 @@ class AIAgent:
         auto-compress abort.  Auto-compress callers use the default
         ``force=False``.
         """
+        # Per-attempt signal consumed by turn-start preflight. A stalled
+        # compression must not be mistaken for a structural no-op and followed
+        # by the oversized provider request it was meant to prevent.
+        self._last_compression_timed_out = False
+
         from agent.conversation_compression import (
             CompressionCommitFence,
             compress_context,
@@ -8194,6 +8199,7 @@ class AIAgent:
                     timeout_cause["progress_observed"] = progress_observed
 
                 def _on_timeout(idle, waited, since_progress):
+                    self._last_compression_timed_out = True
                     total_exhausted = timeout_cause["total_exhausted"]
                     progress_observed = timeout_cause["progress_observed"]
                     if total_exhausted:

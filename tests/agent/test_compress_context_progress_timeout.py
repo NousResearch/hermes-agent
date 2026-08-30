@@ -467,6 +467,7 @@ class TestCompressContextForwarderOwnsTimeout:
 
         assert out_msgs is original
         assert out_prompt == "sys"
+        assert agent._last_compression_timed_out is True
         assert calls["n"] == 1
         agent._emit_warning.assert_called_once()
         assert agent.context_compressor._consecutive_timeout_failures == 1
@@ -643,5 +644,6 @@ class TestCompressContextForwarderOwnsTimeout:
             commit_fence=fence,
         )
         assert seen["fence"] is fence
+        assert agent._last_compression_timed_out is False
         assert prompt == "sys"
         assert msgs[0]["content"] == "ok"

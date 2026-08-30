@@ -405,6 +405,21 @@ def compression_made_progress(
 _compression_made_progress = compression_made_progress
 
 
+class PreflightCompressionTimedOut(RuntimeError):
+    """Raised when an oversized turn cannot safely finish preflight."""
+
+
+def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
+    """Stop an oversized turn instead of sending its unchanged provider payload."""
+    if not getattr(agent, "_last_compression_timed_out", False):
+        return
+    raise PreflightCompressionTimedOut(
+        "Context compression timed out before it could commit while the request "
+        f"was still approximately {request_tokens:,} tokens. The provider call "
+        "was not sent. Run /compress and wait for it to finish, then retry."
+    )
+
+
 def _review_fork_first_request_pending(agent: Any) -> bool:
     """Whether a detached review fork has yet to send its first provider request.
 
@@ -1169,6 +1184,7 @@ def build_turn_context(
                 if not _compression_made_progress(
                     _orig_len, len(messages), _orig_tokens, _preflight_tokens
                 ):
+                    _fail_closed_after_preflight_timeout(agent, _preflight_tokens)
                     _preflight_compression_blocked = True
                     break  # Cannot compress further: neither rows nor tokens moved
                 conversation_history = conversation_history_after_compression(

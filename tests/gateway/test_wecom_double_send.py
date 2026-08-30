@@ -41,11 +41,16 @@ properties, it does not re-implement the delivery lifecycle.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer import (
+    GatewayStreamConsumer,
+    StreamConsumerConfig,
+    should_suppress_duplicate_final_send,
+)
 
 
 CHAT_ID = "chat-1"
@@ -539,31 +544,21 @@ class TestOrphanQueueAckRouting:
 
 
 def _gateway_dedup_load_gate(consumer, final_text: str) -> bool:
-    """Mirror of the run.py delivery-boundary dedup added with the RCA fix.
+    """Delivery-boundary dedup decision for the run.py DUPLICATE-RISK gate.
 
-    When a stream consumer existed for a turn but the suppression flags
-    (final_response_sent / final_content_delivered) were NOT observed —
-        the ack-pending race where the gateway's flush cancelled the
-    consumer mid-finalize while WeCom already rendered the frame — run.py
-    now dedupes on CONTENT before emitting the normal final-send: if the
-    consumer has already delivered the exact final text (visible prefix /
-    recorded segments match), the redundant send is suppressed, so a slow
-    WeCom final-frame ack can never produce a second bubble.
-
-    Reads the REAL consumer's ``has_delivered_text`` — the same attribute
-    run.py consults — and does not re-implement the delivery lifecycle.
+    Thin alias over the REAL decision the gateway executes —
+    ``gateway.stream_consumer.should_suppress_duplicate_final_send`` — so this
+    test exercises the exact code run.py calls (no re-implementation mirror, per
+    review). When a stream consumer existed for a turn but the suppression flags
+    (final_response_sent / final_content_delivered) were NOT observed — the
+    ack-pending race where the gateway's flush cancelled the consumer
+    mid-finalize while WeCom already rendered the frame — run.py now dedupes on
+    CONTENT before emitting the normal final-send: if the consumer has already
+    delivered the exact final text (visible prefix / recorded segments match),
+    the redundant send is suppressed, so a slow WeCom final-frame ack can never
+    produce a second bubble.
     """
-    _final = final_text or ""
-    _is_empty_sentinel = not _final or _final == "(empty)"
-    if _is_empty_sentinel:
-        return False
-    try:
-        _has_delivered = getattr(consumer, "has_delivered_text", None)
-        if not callable(_has_delivered):
-            return False
-        return bool(_has_delivered(_final))
-    except Exception:
-        return False
+    return should_suppress_duplicate_final_send(consumer, final_text)
 
 
 class TestDeliveryBoundaryDedup:
@@ -648,3 +643,35 @@ class TestDeliveryBoundaryDedup:
             assert consumer.has_delivered_text(final_text) is False
         finally:
             await _cleanup_adapter(adapter)
+
+
+class TestRunPyWiresRealDedupGate:
+    """The DUPLICATE-RISK branch in gateway/run.py must execute the *same*
+    importable decision this test suite exercises, not an inline re-implementation.
+
+    run.py is a ~32k-line script (not importable as a module), so rather than
+    re-implementing its branch here (which review flagged: a typo in the real
+    run.py branch would ship green under a mirror-only test), we parse the
+    actual run.py source and assert the gate body imports and calls
+    ``should_suppress_duplicate_final_send`` with the stream consumer and the
+    final text. This binds the live call site to the tested helper.
+    """
+
+    def test_duplicate_risk_gate_calls_the_imported_helper(self):
+        run_py_path = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
+        assert run_py_path.exists(), run_py_path
+        src = run_py_path.read_text(encoding="utf-8")
+
+        # The gate branch must import the shared helper.
+        assert "from gateway.stream_consumer import (" in src
+        # The import must name the exact decision function (not a local/renamed
+        # duplicate that could silently diverge from what the tests exercise).
+        assert "should_suppress_duplicate_final_send," in src
+        # The gate must call it with the stream consumer and the final text.
+        assert (
+            "_sc_has_final = bool(should_suppress_duplicate_final_send(_sc, _final))"
+            in src
+        )
+
+        # Compile check: the file must remain valid Python after the edits.
+        compile(src, run_py_path, "exec")

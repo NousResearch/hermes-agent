@@ -30757,25 +30757,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     # The flush bound must cover a native-stream consumer's
                     # finalize. WeCom's adapter awaits the final-frame ack up
-                    # to _REPLY_ACK_TIMEOUT (15s), plus up to another 15s
-                    # draining a pending intermediate ack before the final,
-                    # and on ack-timeout synthesises delivery (returns
-                    # success). A hard 5s cap cancels the consumer mid-
-                    # finalize: WeCom has already rendered the frame but
-                    # ``_final_content_delivered`` is never set, so the
-                    # gateway's suppression below fails and the normal
-                    # final-send duplicates it
-                    # (rca-wecom-stream-final-ack-timeout-duplicate). Keep
-                    # 5s for edit/draft consumers (their finalize is a local
-                    # API round-trip, fast); extend only for native streaming
-                    # where server ack is in the loop. The happy path returns
-                    # the moment the task completes, regardless of this cap.
+                    # to _REPLY_ACK_TIMEOUT, plus up to another window draining
+                    # a pending intermediate ack before the final, and on ack-
+                    # timeout synthesises delivery (returns success). A hard 5s
+                    # cap cancels the consumer mid-finalize. (B2 already
+                    # optimistically sets the delivery flags before the ack
+                    # await, which closes the pure ack-await duplicate; this
+                    # longer bound is defense-in-depth that prevents cancelling
+                    # a native consumer *before* it reaches B2's optimistic
+                    # mark at all — the residual `_abandon_native_stream` and
+                    # best-effort "DO NOT mark" paths B2 does not cover.)
+                    # Keep 5s for edit/draft consumers (their finalize is a
+                    # local API round-trip, fast); extend only for native
+                    # streaming where server ack is in the loop. The happy
+                    # path returns the moment the task completes, regardless
+                    # of this cap. Deliberate trade-off: a slow WeCom ack
+                    # holds the session "busy" (releasing _running_agent_state
+                    # below) up to the cap instead of 5s — correctness over
+                    # best-case latency, and only in the slow-ack case.
                     _flush_sc = (
                         stream_consumer_holder[0]
                         if stream_consumer_holder
                         else None
                     )
-                    _flush_timeout = 32.0 if (
+                    # Derive the bound from the adapter's own ack timeout
+                    # (default 15s) rather than hardcoding: finalize = drain
+                    # (1×) + ack (1×) + margin, so 2× + 4s ≈ 34s worst case.
+                    # Tracks adapter._REPLY_ACK_TIMEOUT automatically if it
+                    # changes.
+                    _ack_to = float(
+                        getattr(
+                            getattr(_flush_sc, "adapter", None),
+                            "_REPLY_ACK_TIMEOUT",
+                            15.0,
+                        )
+                    )
+                    _flush_timeout = (2.0 * _ack_to + 4.0) if (
                         _flush_sc is not None
                         and getattr(_flush_sc, "_use_native_streaming", False)
                     ) else 5.0
@@ -30992,14 +31009,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # suppresses on an exact content match, so genuinely distinct
                 # content is never dropped and delivery semantics for distinct
                 # messages are unchanged.
+                #
+                # Note: `has_delivered_text` also consults
+                # `_delivered_commentary_texts`, which include temporary
+                # progress bubbles that are deleted after the turn. If a final
+                # response ever exactly equals a deleted commentary string, the
+                # dedup would suppress a message the user never keeps. In
+                # practice commentary is "Searching…"-style and never equals a
+                # real final answer (and the exact-match check is the only
+                # suppress path), so this is accepted as vanishingly unlikely.
                 # See docs/rca-wecom-stream-final-ack-timeout-duplicate.md.
-                _sc_has_final = False
-                try:
-                    _has_delivered = getattr(_sc, "has_delivered_text", None)
-                    if callable(_has_delivered):
-                        _sc_has_final = bool(_has_delivered(_final))
-                except Exception:
-                    _sc_has_final = False
+                from gateway.stream_consumer import (
+                    should_suppress_duplicate_final_send,
+                )
+                _sc_has_final = bool(should_suppress_duplicate_final_send(_sc, _final))
                 if _sc_has_final:
                     response["already_sent"] = True
                     logger.info(

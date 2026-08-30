@@ -155,6 +155,42 @@ def ensure_closed_code_fences(text: str) -> str:
     return text
 
 
+def should_suppress_duplicate_final_send(consumer, final_text: str) -> bool:
+    """Delivery-boundary dedup decision for the gateway's DUPLICATE-RISK gate.
+
+    When a stream consumer existed for a turn but the normal suppression flags
+    (``final_response_sent`` / ``final_content_delivered``) were NOT observed,
+    the gateway consults this before emitting the normal final-send. Returns
+    True only when the consumer has already delivered the exact final text to
+    the platform (``has_delivered_text`` — visible prefix / recorded segments
+    match), in which case the redundant send is suppressed because WeCom has it
+    on screen and a second send would duplicate (\"回复了两条\").
+
+    This is defense-in-depth on top of the B2 optimistic-mark fix
+    (stream_consumer.py ``_final_response_sent``/``_final_content_delivered``
+    set before the ack await): B2 already closes the "cancelled mid-finalize
+    ack-await" window, but it does NOT cover the residual paths where the
+    consumer was cancelled or a native dispatch failed *before* reaching the
+    finalize send while content had already been rendered on the wire (the
+    ``_abandon_native_stream`` CancelledError path and the best-effort
+    "DO NOT mark" finalize at the dispatch-failure fallback).
+
+    Exact-content match only — distinctly different content always returns
+    False, so delivery semantics for genuinely distinct messages are unchanged.
+    ``(empty)`` (the gateway's empty-response sentinel) never matches.
+    """
+    _final = final_text or ""
+    if not _final or _final == "(empty)":
+        return False
+    try:
+        _has_delivered = getattr(consumer, "has_delivered_text", None)
+        if not callable(_has_delivered):
+            return False
+        return bool(_has_delivered(_final))
+    except Exception:
+        return False
+
+
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""

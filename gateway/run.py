@@ -6963,6 +6963,13 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+            # Thread the platform-side inbound message id onto the persisted
+            # user turn so a turn interrupted by a gateway restart is durably
+            # recorded WITH its id — restart drain-window recovery dedups
+            # against has_platform_message_id, and without this the
+            # interrupted turn is invisible to that check.
+            if ctx.event_message_id is not None:
+                _conversation_kwargs["persist_user_platform_id"] = str(ctx.event_message_id)
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)

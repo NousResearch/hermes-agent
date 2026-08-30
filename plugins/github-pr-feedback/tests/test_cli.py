@@ -1463,6 +1463,26 @@ def test_cron_wrapper_classifies_successful_merges_as_partial_success(
     assert module._cron_exit_code(json.dumps(payload), process_returncode) == expected
 
 
+def test_cron_wrapper_keeps_completed_scan_green_for_ci_metadata_gap() -> None:
+    script_path = (
+        Path(__file__).resolve().parents[1] / "scripts" / "github-pr-feedback-scan.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "github_pr_feedback_cron_status_soft_gap", script_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    payload = {
+        "status": "degraded",
+        "skipped": {"duplicate": 189, "github_ci_state_unavailable": 28},
+        "repair": {"status": "ok"},
+        "merge": {"status": "ok"},
+    }
+    assert module._cron_exit_code(json.dumps(payload), 1) == 0
+
+
 @pytest.mark.parametrize("configured", [None, "hermes", "/missing/hermes"])
 def test_cron_wrapper_fails_cleanly_without_an_executable_absolute_hermes_path(
     configured: str | None,

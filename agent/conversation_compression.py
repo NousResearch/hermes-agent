@@ -1102,6 +1102,7 @@ def _retry_compression_on_fallback_chain(
     idle_timeout_seconds: float,
     total_ceiling_seconds: float,
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
+    on_timeout_cause: Optional[Callable[[bool, bool], None]] = None,
     telemetry_agent: Any = None,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
 ) -> Optional[Tuple[list, str]]:
@@ -1176,6 +1177,7 @@ def _retry_compression_on_fallback_chain(
                 idle_timeout_seconds=idle,
                 total_ceiling_seconds=ceiling,
                 on_commit_overrun=on_commit_overrun,
+                on_timeout_cause=on_timeout_cause,
                 fence=retry_fence,
                 telemetry_agent=telemetry_agent,
                 stall_fallback=False,
@@ -1213,6 +1215,7 @@ def run_compress_context_with_progress_timeout(
     idle_timeout_seconds: float,
     total_ceiling_seconds: float,
     on_timeout: Optional[Callable[[float, float, float], None]] = None,
+    on_timeout_cause: Optional[Callable[[bool, bool], None]] = None,
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     fence: Optional[CompressionCommitFence] = None,
     telemetry_agent: Any = None,
@@ -1247,7 +1250,10 @@ def run_compress_context_with_progress_timeout(
 
     ``system_prompt_fallback`` may be a string or a zero-arg callable resolved
     only on the timeout path, so successful compression never pays for (or
-    fails on) an eager prompt rebuild.
+    fails on) an eager prompt rebuild. ``on_timeout_cause`` receives whether
+    the total ceiling expired and whether provider progress was observed before
+    ``on_timeout`` runs, allowing hosts to report the timeout accurately while
+    preserving the existing three-argument timeout callback contract.
 
     ``stall_fallback`` (default on) makes an aborted stall attempt the
     configured ``auxiliary.compression.fallback_chain`` once — pinned onto a
@@ -1395,6 +1401,15 @@ def run_compress_context_with_progress_timeout(
             # another automatic attempt cannot overlap the unchanged source.
             fence.retain_compression_lock_until_worker_done()
 
+        if on_timeout_cause is not None:
+            try:
+                on_timeout_cause(total_exhausted, fence.progress_observed)
+            except Exception:
+                logger.debug(
+                    "compress_context timeout-cause callback failed",
+                    exc_info=True,
+                )
+
         cancelled: Optional[bool] = None
         while cancelled is None:
             # F1: ``begin_commit`` retains the fence lock until
@@ -1493,6 +1508,7 @@ def run_compress_context_with_progress_timeout(
                 idle_timeout_seconds=idle,
                 total_ceiling_seconds=ceiling,
                 on_commit_overrun=on_commit_overrun,
+                on_timeout_cause=on_timeout_cause,
                 telemetry_agent=telemetry_agent,
                 new_fence=new_fence,
             )

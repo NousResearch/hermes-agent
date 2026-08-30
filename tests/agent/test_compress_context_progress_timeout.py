@@ -483,6 +483,73 @@ class TestCompressContextForwarderOwnsTimeout:
             provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
         )
 
+    def test_owned_total_ceiling_reports_progress_accurately(self, monkeypatch):
+        from run_agent import AIAgent
+        from agent.context_compressor import ContextCompressor
+
+        agent = object.__new__(AIAgent)
+        agent.session_id = "s1"
+        agent._cached_system_prompt = "sys"
+        agent._emit_warning = MagicMock()
+        agent._touch_activity = MagicMock()
+        agent._build_system_prompt = MagicMock(return_value="sys")
+        agent._conversation_root_id = MagicMock(return_value=None)
+        agent.context_compressor = MagicMock()
+        agent.context_compressor._consecutive_timeout_failures = 0
+        agent.context_compressor.record_timeout_failure = (
+            ContextCompressor.record_timeout_failure.__get__(
+                agent.context_compressor, MagicMock
+            )
+        )
+        agent.context_compressor._record_compression_failure_cooldown = MagicMock()
+
+        release = threading.Event()
+
+        def streaming_compress(agent_obj, messages, system_message, **kwargs):
+            fence = kwargs["commit_fence"]
+            while not fence.deadline_exceeded:
+                fence.touch_progress()
+                time.sleep(0.005)
+            release.wait(timeout=2)
+            return messages, "sys"
+
+        monkeypatch.setattr(
+            "agent.conversation_compression.compress_context",
+            streaming_compress,
+        )
+        monkeypatch.setattr(
+            "agent.conversation_compression.resolve_context_compression_timeouts",
+            lambda compression_cfg=None: (0.05, 0.15),
+        )
+        monkeypatch.setattr(
+            "agent.conversation_compression.resolve_compression_fallback_route",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "agent.portal_tags.get_conversation_context",
+            lambda: object(),
+        )
+
+        original = [{"role": "user", "content": "stay"}]
+        try:
+            out_msgs, out_prompt = AIAgent._compress_context(
+                agent, original, "sys"
+            )
+        finally:
+            release.set()
+
+        assert out_msgs is original
+        assert out_prompt == "sys"
+        warning = agent._emit_warning.call_args.args[0]
+        assert "total ceiling" in warning
+        assert "summary output was observed" in warning
+        assert "no output" not in warning
+        cooldown_error = (
+            agent.context_compressor._record_compression_failure_cooldown
+            .call_args.args[1]
+        )
+        assert "total ceiling exhausted" in cooldown_error
+
     def test_fallback_prompt_resolved_lazily_on_timeout(self, monkeypatch):
         """Eager prompt rebuild must not run before compression starts."""
         from run_agent import AIAgent

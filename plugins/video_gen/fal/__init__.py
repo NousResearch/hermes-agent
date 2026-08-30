@@ -1,7 +1,7 @@
 """FAL.ai video generation backend.
 
 The user picks a **model family** (e.g. "Pixverse v6"); the plugin routes to its text-to-video endpoint without
-``image_url`` and to its image-to-video endpoint otherwise (gemini-omni-flash is i2v only). Active-family precedence:
+``image_url`` and to its image-to-video endpoint otherwise. Active-family precedence:
 tool ``model=`` → ``FAL_VIDEO_MODEL`` env → ``video_gen.fal.model`` → ``video_gen.model`` (family id or an endpoint
 path containing one) → ``DEFAULT_MODEL``. Auth via ``FAL_KEY`` or the managed Nous gateway; output is an HTTPS URL.
 """
@@ -74,8 +74,10 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
                                 "xai/grok-imagine-video/v1.5/text-to-video", "xai/grok-imagine-video/v1.5/image-to-video", duration_int=True,
                                 image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"),  # aspect is t2v-only
                                 resolutions=("480p", "720p", "1080p"), durations=(1, 15), audio_native=True),
-    "gemini-omni-flash": _family("Gemini Omni Flash (via FAL)", "~60-120s", "premium", "Google. Image-to-video with audio, physics-grounded motion, 3-10s.",
-                                 None, "google/gemini-omni-flash/image-to-video", duration_int=True, aspect_ratios=("16:9", "9:16"), durations=(3, 10), audio_native=True),
+    # v1.1 (Aug 2026) added text-to-video and a 360p-4k resolution enum; v1.0 was image-only.
+    "gemini-omni-flash": _family("Gemini Omni Flash 1.1 (via FAL)", "~60-120s", "premium", "Google. Text & image to video with native audio, physics-grounded motion, up to 4K, 3-10s.",
+                                 "google/gemini-omni-flash/v1.1/text-to-video", "google/gemini-omni-flash/v1.1/image-to-video", duration_int=True,
+                                 aspect_ratios=("16:9", "9:16"), resolutions=("360p", "720p", "1080p", "4k"), durations=(3, 10), audio_native=True),
     # Kling 3.0 core tiers: t2v declares aspect_ratio, i2v derives it from `start_image_url`; string duration enum "3".."15";
     # generate_audio is a real toggle (default on, audio-on costs more); no resolution or seed keys in the v3 schemas.
     "kling-v3": _family("Kling 3.0 (Standard)", "~60-180s", "premium", "Kuaishou frontier core model. Cinematic motion, native audio, 3-15s.",

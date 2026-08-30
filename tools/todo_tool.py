@@ -357,7 +357,7 @@ TODO_SCHEMA = {
     # parameter schema below — the description teaches behavior, not
     # structure the params already define.
     "description": (
-        "Manage your task list for the current session. Use for complex tasks "
+        "Track a task list for multi-step work (3+ steps). Use for complex tasks "
         "with 3+ steps or when the user provides multiple tasks. "
         "For 'all N items' tasks, enumerate every instance as its own checklist "
         "item so none are silently dropped. "

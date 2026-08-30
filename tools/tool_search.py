@@ -259,8 +259,16 @@ _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 # Config override: ``tools.tool_search.defer`` (list of tool names);
 # ``[]`` restores the legacy everything-eager behavior, any other list
 # replaces this default wholesale. Names here are POST-rename.
+#
+# ``clarify`` was in the original curated set but was pulled back to eager
+# after the maintainer A/B (PR #97979, 288 runs × 3 model tiers): with the
+# schema visible models used structured clarify 18/18 on ambiguous tasks;
+# deferred, usage collapsed to 7/18 (gpt-terra 0/6) — models fell back to
+# plain-text questions, losing the structured-choice UX and costing an
+# extra user round-trip. The ask-the-user affordance has to be ambient to
+# fire; a catalog stub is not enough. (~250 tok to keep it eager.)
 _DEFAULT_DEFERRED_TOOLS = frozenset({
-    "computer_use", "session_search", "clarify", "image_generate",
+    "computer_use", "session_search", "image_generate",
     "todo_list", "process_manage", "cronjob_manage",
     # Desktop GUI surface (desktop_ui + project toolsets)
     "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
@@ -277,7 +285,7 @@ def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) 
       set, or the user's ``tools.tool_search.defer`` override) — this is
       the 2026-08 revision of the old "core never defers" rule: core tools
       in the WORKING set (terminal, files, memory, ...) still never defer,
-      but the curated event-triggered set (computer_use, clarify, the GUI
+      but the curated event-triggered set (computer_use, the GUI
       surface, ...) hides behind the bridge by default; OR
     * it is registered with an MCP toolset prefix; OR
     * it is neither in ``_HERMES_CORE_TOOLS`` nor a session-gated GUI

@@ -172,6 +172,35 @@ class TestClassification:
         # computer_use IS in the curated defer set → behind the bridge.
         assert "computer_use" not in names
 
+    def test_clarify_stays_eager_by_default(self):
+        """PR #97979 A/B verdict (288 runs, 3 model tiers): clarify deferred
+        collapsed structured ask-the-user usage 18/18 → 7/18 (gpt-terra 0/6);
+        models fell back to plain-text questions. The ask-the-user affordance
+        must stay ambient — clarify is NOT in the curated default defer set,
+        and assembles as a direct tool even when the bridge is active."""
+        from tools.registry import discover_builtin_tools
+        from tools.tool_search import (
+            _DEFAULT_DEFERRED_TOOLS,
+            ToolSearchConfig,
+            assemble_tool_defs,
+        )
+
+        assert "clarify" not in _DEFAULT_DEFERRED_TOOLS
+
+        discover_builtin_tools()
+        assembled = assemble_tool_defs(
+            [
+                _td("clarify", "Ask the user clarifying questions"),
+                _td("computer_use", "Drive the OS"),
+            ],
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert assembled.activated  # computer_use still activates the bridge
+        names = {td["function"]["name"] for td in assembled.tool_defs}
+        assert "clarify" in names
+        assert "computer_use" not in names
+
     def test_unknown_tool_not_deferrable(self):
         """Defensive: a tool name we cannot resolve to a registry entry must
         not be claimed as deferrable. This protects against the OpenClaw

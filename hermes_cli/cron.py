@@ -442,7 +442,22 @@ def cron_status():
         hb_age = get_ticker_heartbeat_age()
         ok_age = get_ticker_success_age()
 
-        if hb_age is not None and hb_age > STALE_AFTER:
+        if hb_age is None:
+            # No heartbeat file means the ticker thread has never started.
+            # This can occur when:
+            # - Gateway is running but not in a profile with cron enabled,
+            # - Gateway was started moments ago (heartbeat is written after startup),
+            # - Or a configuration issue is blocking the ticker from starting at all.
+            print(color(
+                "⚠ Gateway is running but the cron ticker has not reported a heartbeat.",
+                Colors.YELLOW,
+            ))
+            if pids:
+                print(f"  PID: {', '.join(map(str, pids))}")
+            print("  Cron jobs will NOT fire until the ticker writes its first heartbeat.")
+            print("  If the gateway just started, wait ~60s and re-run `hermes cron status`.")
+            print("  If heartbeat never appears, restart: hermes gateway restart")
+        elif hb_age > STALE_AFTER:
             # No heartbeat at all → the ticker thread is gone.
             print(color(
                 "⚠ Gateway is running but the cron ticker looks STALLED — "
@@ -452,7 +467,7 @@ def cron_status():
             if pids:
                 print(f"  PID: {', '.join(map(str, pids))}")
             print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
-        elif hb_age is not None and ok_age is not None and ok_age > STALE_AFTER:
+        elif ok_age is not None and ok_age > STALE_AFTER:
             # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
             # long time → ticks are failing every iteration.
             print(color(

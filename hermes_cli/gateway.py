@@ -139,13 +139,17 @@ def _get_service_pids(all_profiles: bool = False) -> set:
     # --- systemd (Linux): user and system scopes ---
     # systemd always lists every hermes-gateway* unit regardless of scope.
     if supports_systemd_services():
+        if all_profiles:
+            pattern = "hermes-gateway*"
+        else:
+            pattern = get_service_name()
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
                 result = subprocess.run(
                     scope_args
                     + [
                         "list-units",
-                        "hermes-gateway*",
+                        pattern,
                         "--plain",
                         "--no-legend",
                         "--no-pager",

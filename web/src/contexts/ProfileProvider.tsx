@@ -1,15 +1,20 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import { useLocation, useSearchParams } from "react-router";
 import { api, setManagementProfile } from "@/lib/api";
 import { ProfileContext } from "@/contexts/profile-context";
+import { profileSelectionSearchParams } from "@/lib/profile-search-params";
 import {
   dashboardInitialProfile,
+  dashboardServingProfile,
   initialProfileScope,
   shouldAdoptActiveProfile,
 } from "@/lib/profile-bootstrap";
@@ -42,14 +47,18 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const { pathname } = useLocation();
   const [profiles, setProfiles] = useState<string[]>([]);
-  const [currentProfile, setCurrentProfile] = useState("default");
+  const [bootstrapComplete, setBootstrapComplete] = useState(false);
+  const [currentProfile, setCurrentProfile] = useState(
+    () => dashboardServingProfile() || "default",
+  );
   const bootstrapProfile = dashboardInitialProfile();
+  const mayAdoptActiveProfile = useRef(searchParams.get("profile") === null);
 
   // An explicit URL wins; profile-less deep links inherit the unified-launch
   // preselection injected by the server. Afterwards state leads and the URL
   // follows.
-  const [profile, setProfileState] = useState(
-    () => initialProfileScope(searchParams, bootstrapProfile),
+  const [profile, setProfileState] = useState(() =>
+    initialProfileScope(searchParams, bootstrapProfile),
   );
 
   // A profile param that CHANGED (e.g. the Profiles page's "Manage skills &
@@ -70,10 +79,17 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   // changed, so fetches fired by child effects in the same commit see it.
   setManagementProfile(profile);
 
+  // A late bootstrap reply must not override an explicit link or selection.
+  useLayoutEffect(() => {
+    if (urlProfile !== null) mayAdoptActiveProfile.current = false;
+  }, [urlProfile]);
+
   // Re-assert ?profile= after navigations that dropped it (bare nav links)
   // and after state-only changes. No-ops when already in sync.
   useEffect(() => {
     if ((profile || "") === (urlProfile ?? "")) return;
+    // Wait for the initial scope decision, unless the user already chose one.
+    if (!bootstrapComplete && mayAdoptActiveProfile.current) return;
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -84,7 +100,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       { replace: true },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname, urlProfile, profile]);
+  }, [bootstrapComplete, pathname, urlProfile, profile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,28 +110,38 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       .then(([profilesRes, info]) => {
         if (cancelled) return;
 
-        setProfiles(profilesRes.profiles.map((p) => p.name));
+        startTransition(() => {
+          setProfiles(profilesRes.profiles.map((p) => p.name));
 
-        const current = info.current || "default";
-        const active = info.active || "default";
-        setCurrentProfile(current);
+          const current = info.current || "default";
+          const active = info.active || "default";
+          setCurrentProfile(current);
 
-        // Explicit URL and unified-launch bootstrap scopes win. Without
-        // either, align the switcher with the sticky active profile so Chat
-        // and management pages match what Profiles shows as "active".
-        if (
-          shouldAdoptActiveProfile(
-            urlProfile,
-            bootstrapProfile,
-            current,
-            active,
-          )
-        ) {
-          setManagementProfile(active);
-          setProfileState(active);
-        }
+          // Explicit URL and unified-launch bootstrap scopes win. Without
+          // either, align the switcher with the sticky active profile so Chat
+          // and management pages match what Profiles shows as "active".
+          if (
+            mayAdoptActiveProfile.current &&
+            shouldAdoptActiveProfile(
+              urlProfile,
+              bootstrapProfile,
+              current,
+              active,
+            )
+          ) {
+            setProfileState(active);
+            setSearchParams(
+              (prev) =>
+                profileSelectionSearchParams(prev, active, profile, current),
+              { replace: true },
+            );
+          }
+          setBootstrapComplete(true);
+        });
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setBootstrapComplete(true);
+      });
 
     return () => {
       cancelled = true;
@@ -125,19 +151,17 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
   const setProfile = useCallback(
     (name: string) => {
-      setManagementProfile(name);
-      setProfileState(name);
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          if (name) next.set("profile", name);
-          else next.delete("profile");
-          return next;
-        },
-        { replace: true },
-      );
+      mayAdoptActiveProfile.current = false;
+      startTransition(() => {
+        setProfileState(name);
+        setSearchParams(
+          (prev) =>
+            profileSelectionSearchParams(prev, name, profile, currentProfile),
+          { replace: true },
+        );
+      });
     },
-    [setSearchParams],
+    [currentProfile, profile, setSearchParams],
   );
 
   const value = useMemo(

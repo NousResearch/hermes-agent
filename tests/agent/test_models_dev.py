@@ -106,6 +106,29 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
         assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
+        assert PROVIDER_TO_MODELS_DEV["deepinfra"] == "deepinfra"
+
+    def test_deepinfra_resolves_vision_from_registry(self):
+        """deepinfra-served models resolve capabilities through models.dev.
+
+        Without the PROVIDER_TO_MODELS_DEV entry, get_model_capabilities
+        bails before ever consulting the registry and returns None even for
+        vision-capable models (e.g. zai-org/GLM-5.3-Flash on deepinfra).
+        """
+        registry = {
+            "deepinfra": {"id": "deepinfra", "models": {
+                "zai-org/GLM-5.3-Flash": {
+                    "id": "zai-org/GLM-5.3-Flash",
+                    "attachment": True,
+                    "modalities": {"input": ["text", "image", "video", "pdf"]},
+                    "limit": {"context": 1000000, "output": 131072},
+                },
+            }},
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("deepinfra", "zai-org/GLM-5.3-Flash")
+        assert caps is not None
+        assert caps.supports_vision is True
 
     def test_xai_oauth_uses_xai_catalog(self):
         assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"

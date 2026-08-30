@@ -48,6 +48,7 @@ import urllib.parse
 import zipfile
 
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
+from hermes_cli.install_identity import get_install_id as _shared_get_install_id
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -3523,66 +3524,12 @@ _TOPOLOGY_CACHE_TTL = 10.0
 # fact it reveals is "these addresses are the same box", which is the feature.
 # It must never change across restarts/updates, so reads are cached for the
 # process lifetime and the file is written once, atomically.
-_INSTALL_ID_FILENAME = "install_id"
-_INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-_INSTALL_ID_CACHE: Dict[str, Optional[str]] = {"value": None}
-_INSTALL_ID_LOCK = threading.Lock()
-
-
-def _read_or_create_install_id() -> Optional[str]:
-    """Read (or mint + persist) the install id under the root Hermes home.
-
-    Returns ``None`` only when the id can neither be read nor persisted (e.g.
-    a read-only filesystem) — an unpersisted id would violate the stability
-    contract, so callers omit the field rather than emit a churning value.
-    """
-    import uuid
-
-    from hermes_constants import get_default_hermes_root
-
-    root = get_default_hermes_root()
-    path = root / _INSTALL_ID_FILENAME
-    try:
-        existing = path.read_text(encoding="utf-8").strip().lower()
-        if _INSTALL_ID_RE.match(existing):
-            return existing
-    except FileNotFoundError:
-        pass
-    except (OSError, UnicodeDecodeError):
-        return None
-
-    minted = uuid.uuid4().hex
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        # Atomic replace so a crash mid-write can't leave a truncated id that
-        # would be regenerated (i.e. changed) on the next boot.
-        fd, tmp_name = tempfile.mkstemp(dir=str(root), prefix=".install_id-")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(minted + "\n")
-            os.replace(tmp_name, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-            raise
-    except OSError:
-        return None
-    return minted
+_INSTALL_ID_CACHE: Dict[str, Optional[str]] = {"root": None, "value": None}
 
 
 def get_install_id() -> Optional[str]:
-    """Process-lifetime-cached stable install id (see _read_or_create_install_id)."""
-    cached = _INSTALL_ID_CACHE["value"]
-    if cached:
-        return cached
-    with _INSTALL_ID_LOCK:
-        cached = _INSTALL_ID_CACHE["value"]
-        if cached:
-            return cached
-        value = _read_or_create_install_id()
-        if value:
-            _INSTALL_ID_CACHE["value"] = value
-        return value
+    """Process-lifetime-cached stable install id."""
+    return _shared_get_install_id(cache=_INSTALL_ID_CACHE)
 
 
 # Serializes read-modify-write cycles over config.yaml for handlers that run

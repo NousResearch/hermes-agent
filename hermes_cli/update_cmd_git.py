@@ -238,11 +238,16 @@ def _recover_diverged_update(
     if not fork_point:
         return False, "could not determine the previous upstream fork point; refusing to rewrite HEAD"
 
-    local_commits = _count_commits_between(git_cmd, cwd, fork_point, "HEAD")
-    if local_commits < 0:
-        return False, "could not determine whether HEAD contains local commits"
+    head_result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "HEAD"],
+        cwd=cwd,
+        **_GIT_TEXT_KW,
+    )
+    head = head_result.stdout.strip() if head_result.returncode == 0 else ""
+    if not head:
+        return False, "could not determine the current HEAD; refusing to rewrite it"
 
-    if local_commits == 0:
+    if head == fork_point:
         result = subprocess.run(
             git_cmd + ["reset", "--hard", remote_ref],
             cwd=cwd,
@@ -273,10 +278,7 @@ def _recover_diverged_update(
                 "rebase that could lose the merge resolution"
             )
 
-    print(
-        f"  → Preserving {local_commits} locally carried commit(s) and merge topology "
-        f"onto {remote_ref}..."
-    )
+    print(f"  → Preserving locally carried history and merge topology onto {remote_ref}...")
     result = subprocess.run(
         git_cmd
         + [

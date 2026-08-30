@@ -2144,28 +2144,13 @@ function Recover-DivergedUpdate {
         throw "Could not determine the previous upstream fork point; refusing to rewrite HEAD"
     }
 
-    $localCommitOutput = @(git -c windows.appendAtomically=false rev-list --count "$forkPoint..HEAD" 2>$null)
-    $countExit = $LASTEXITCODE
-    if ($countExit -ne 0) {
-        throw "Could not determine whether HEAD contains locally carried commits (exit $countExit)"
+    $headOutput = @(git -c windows.appendAtomically=false rev-parse --verify HEAD 2>$null)
+    $headExit = $LASTEXITCODE
+    $head = ($headOutput -join "").Trim()
+    if (($headExit -ne 0) -or (-not $head)) {
+        throw "Could not determine the current HEAD; refusing to rewrite it"
     }
-    # Native PowerShell output records have their process newline removed and
-    # cannot distinguish a final terminator from EOF. Across all installers the
-    # final newline is therefore optional. Do not trim or join records: padding
-    # and additional captured lines are malformed output.
-    $localCommitText = if ($localCommitOutput.Count -eq 1) { [string]$localCommitOutput[0] } else { "" }
-    $localCommitCount = 0
-    # Shared lexical contract: the raw record is 1..9 ASCII digits. Enforce its
-    # spelling bound before TryParse; nine digits inherently represent a value
-    # no greater than 999999999.
-    if (($localCommitOutput.Count -ne 1) -or
-        ($localCommitText -notmatch '^[0-9]+$') -or
-        ($localCommitText.Length -gt 9) -or
-        (-not [int]::TryParse($localCommitText, [ref]$localCommitCount))) {
-        throw "Could not parse local commit count; refusing to rewrite HEAD"
-    }
-
-    if ($localCommitCount -eq 0) {
+    if ($head -eq $forkPoint) {
         git -c windows.appendAtomically=false reset --hard "$RemoteRef"
         if ($LASTEXITCODE -ne 0) { throw "git reset --hard $RemoteRef failed (exit $LASTEXITCODE)" }
         return
@@ -2189,7 +2174,7 @@ function Recover-DivergedUpdate {
         }
     }
 
-    Write-Info "Preserving $localCommitCount locally carried commit(s) and merge topology onto $RemoteRef..."
+    Write-Info "Preserving locally carried history and merge topology onto $RemoteRef..."
     git -c windows.appendAtomically=false -c rebase.updateRefs=false rebase --rebase-merges --onto $RemoteRef $forkPoint
     if ($LASTEXITCODE -eq 0) { return }
 
@@ -2338,9 +2323,9 @@ function Install-Repository {
                 } else {
                     git -c windows.appendAtomically=false checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                    # Preserve unique local commits by rebasing them onto the
-                    # fetched remote. Reset only when the count proves there
-                    # are no commits unique to HEAD.
+                    # Preserve unique local history by rebasing it onto the
+                    # fetched remote. Reset only when the recovered fork point
+                    # is HEAD itself.
                     git -c windows.appendAtomically=false pull --ff-only origin $Branch
                     if ($LASTEXITCODE -ne 0) {
                         Write-Warn "Fast-forward not possible; checking for locally carried commits..."

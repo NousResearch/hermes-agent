@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { latestSessionTodos, mergeTodoItems, nextTodosFromToolEvent, parseTodoPatch, parseTodoRevision, parseTodos, todoTree } from './todos'
+import {
+  latestSessionTodos,
+  mergeTodoItems,
+  nextTodosFromToolEvent,
+  parseTodoPatch,
+  parseTodoRevision,
+  parseTodos,
+  todoTree
+} from './todos'
 
 describe('todoTree', () => {
   it('orders parents before children with depths', () => {

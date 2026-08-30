@@ -166,6 +166,7 @@ export function mergeTodoItems(current: readonly TodoItem[], patch: readonly Tod
     if (index === undefined) {
       next.push({ content: item.content?.trim() || '(no description)', id: item.id, status: item.status })
       indexById.set(item.id, next.length - 1)
+
       continue
     }
 

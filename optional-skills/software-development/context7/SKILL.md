@@ -33,7 +33,9 @@ No install or API key is required. Anonymous requests have a lower rate limit.
 
 `CONTEXT7_API_KEY` is optional and raises limits according to the user's Context7
 plan. It is a secret: keep it in the active Hermes profile's `.env`, never in a
-prompt, committed file, or command argument.
+prompt, committed file, or command argument. The helper trims surrounding whitespace,
+treats an empty value as anonymous access, and sends a non-empty key only in the
+`Authorization` header — never in the URL, query parameters, or process arguments.
 
 Resolve `scripts/context7.py` from the `skill_dir` returned by `skill_view` for this
 skill. Do not assume a machine-specific installation path.
@@ -102,6 +104,8 @@ terminal(command='python "<skill_dir>/scripts/context7.py" lookup react "useStat
   compare it with the project's lockfile.
 - **Rate limiting:** HTTP `429` means the anonymous or plan quota is exhausted. Wait
   for the reset or use `CONTEXT7_API_KEY`; do not loop aggressively.
+- **Bounded responses:** responses larger than 2 MiB are rejected with a readable
+  error instead of being loaded into the model context.
 - **Redirected IDs:** the helper follows one Context7 library-ID redirect. If a moved
   ID still fails, search again and use the current ID.
 - **Retrieval quality:** `--fast` skips LLM reranking and may lower relevance.

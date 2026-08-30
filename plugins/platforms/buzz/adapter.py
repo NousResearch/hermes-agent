@@ -830,11 +830,17 @@ class BuzzAdapter(BasePlatformAdapter):
         message = json.loads(raw)
         if not isinstance(message, list) or len(message) < 2 or message[0] != "AUTH":
             raise ConnectionError("Buzz relay did not send a NIP-42 AUTH challenge")
+        # BUZZ_AUTH_TAG is per-identity NIP-OA owner attestation, so it must
+        # resolve through the profile secret scope (#98738): inside a scoped
+        # multiplex profile a missing tag fails closed to "" instead of
+        # attaching the default profile's tag from os.environ, while
+        # single-profile and unscoped default-profile reads keep the legacy
+        # env behavior (the wrapper falls back to os.environ there).
         event = build_auth_event(
             private_key=self._private_key,
             challenge=str(message[1]),
             relay_url=self._websocket_url(),
-            auth_tag_json=os.getenv("BUZZ_AUTH_TAG", ""),
+            auth_tag_json=_get_scoped_secret("BUZZ_AUTH_TAG", "") or "",
         )
         await websocket.send(json.dumps(["AUTH", event], separators=(",", ":")))
         while True:

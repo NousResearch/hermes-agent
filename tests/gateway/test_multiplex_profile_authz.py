@@ -284,3 +284,83 @@ def test_extra_allowed_users_not_consulted_without_registry_declaration(monkeypa
     _patch_buzz_registry(monkeypatch, allowed_users_env="")
 
     assert runner._is_user_authorized(_buzz_source("someone")) is False
+
+
+def test_extra_allowed_users_wildcard_authorizes_any_sender(monkeypatch):
+    """\"*\" in the profile's extra.allowed_users keeps the env-var wildcard
+    semantics: any sender is authorized (still gated on the registry
+    declaration)."""
+    from tests.gateway.test_buzz_adapter import SELF_PUBKEY
+
+    runner = _make_buzz_multiplex_runner(monkeypatch, extra={"allowed_users": ["*"]})
+    _patch_buzz_registry(monkeypatch)
+
+    assert runner._is_user_authorized(_buzz_source(SELF_PUBKEY)) is True
+
+
+def test_extra_allowed_users_blank_entries_are_dropped_not_denials(monkeypatch):
+    """Blank/whitespace entries are dropped at parse; an otherwise-empty
+    list behaves like the absent case (default-deny), not like a wildcard."""
+    from tests.gateway.test_buzz_adapter import SELF_PUBKEY
+
+    runner = _make_buzz_multiplex_runner(
+        monkeypatch, extra={"allowed_users": ["", "   ", ","]}
+    )
+    _patch_buzz_registry(monkeypatch)
+
+    assert runner._is_user_authorized(_buzz_source(SELF_PUBKEY)) is False
+
+
+def test_extra_allowed_users_case_insensitive_hex_and_uppercase_npub(monkeypatch):
+    """Entry spellings normalize to the same principal: upper-case hex and
+    upper-case npub entries both match the hex user id Buzz dispatches
+    (entries are normalized; the inbound id is already hex)."""
+    from tests.gateway.test_buzz_adapter import SELF_NPUB, SELF_PUBKEY
+
+    runner = _make_buzz_multiplex_runner(
+        monkeypatch, extra={"allowed_users": [SELF_PUBKEY.upper(), SELF_NPUB.upper()]}
+    )
+    _patch_buzz_registry(monkeypatch)
+
+    assert runner._is_user_authorized(_buzz_source(SELF_PUBKEY)) is True
+
+
+def test_adapter_intake_and_central_authz_agree_on_the_same_list(monkeypatch):
+    """Policy-layer agreement (#98738): a sender admitted by the adapter's
+    construction-time intake allowlist (extra.allowed_users normalized to
+    hex) is exactly the sender the central check authorizes, and an
+    unlisted sender is rejected at BOTH layers."""
+    from gateway.session import SessionSource as _SessionSource
+
+    from tests.gateway.test_buzz_adapter import SELF_NPUB, SELF_PUBKEY
+
+    monkeypatch.delenv("BUZZ_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("BUZZ_ALLOW_ALL_USERS", raising=False)
+
+    other_hex = "b" * 64
+    adapter_extra = {"allowed_users": [SELF_NPUB]}
+
+    # Layer 1 — adapter intake: construction normalizes npub entries to hex.
+    from tests.gateway.test_buzz_adapter import _make_adapter as _base_adapter
+
+    adapter = _base_adapter(adapter_extra)
+    assert adapter._allowed_pubkeys == {SELF_PUBKEY}
+
+    # Layer 2 — central authz over the same adapter config.
+    runner = _make_buzz_multiplex_runner(monkeypatch, extra=adapter_extra)
+    _patch_buzz_registry(monkeypatch)
+
+    for sender, admitted in ((SELF_PUBKEY, True), (other_hex, False)):
+        # Adapter layer: intake filter admits/denies...
+        assert (sender in adapter._allowed_pubkeys) is admitted
+        # ...and central authz returns the SAME verdict for that sender.
+        assert runner._is_user_authorized(
+            _SessionSource(
+                platform=_BUZZ,
+                user_id=sender,
+                chat_id="chat-1",
+                user_name="member",
+                chat_type="dm",
+                profile="coder",
+            )
+        ) is admitted

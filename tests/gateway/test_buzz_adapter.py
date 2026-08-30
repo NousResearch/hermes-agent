@@ -43,6 +43,7 @@ _ENV_VARS = (
     "BUZZ_ALLOWED_USERS",
     "BUZZ_ALLOW_ALL_USERS",
     "BUZZ_POLL_INTERVAL",
+    "BUZZ_AUTH_TAG",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
 )
@@ -180,6 +181,7 @@ def default_profile_env(monkeypatch):
     monkeypatch.setenv("BUZZ_ALLOWED_USERS", "default-user-npub")
     monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", "/default/creds.json")
     monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1default")
+    monkeypatch.setenv("BUZZ_AUTH_TAG", '["auth","default-profile-tag","","x"]')
 
 
 class TestMultiplexProfileScope:
@@ -369,6 +371,221 @@ class TestMultiplexProfileScope:
         )
         assert result.get("success") is True
         assert calls["relay"] == "https://profile.relay"
+
+    def test_secondary_partial_extra_fills_missing_keys_from_defaults(
+        self, multiplex_scope, default_profile_env
+    ):
+        """Partial config: configured keys win, unconfigured keys fall back to
+        their own defaults — never to the default profile's env values."""
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        adapter = BuzzAdapter(
+            PlatformConfig(enabled=True, extra={"relay_url": "https://profile.relay"})
+        )
+        assert adapter.relay_url == "https://profile.relay"
+        assert adapter.channels == []
+        assert adapter.home_channel == ""
+        assert adapter.poll_interval == _buzz_mod._DEFAULT_POLL_INTERVAL
+        assert adapter.transport == "auto"
+        assert adapter._allowed_pubkeys == set()
+
+    def test_ws_auth_tag_not_borrowed_from_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """BUZZ_AUTH_TAG is per-identity NIP-OA owner attestation: a scoped
+        secondary profile without one must not sign its NIP-42 auth event
+        with the default profile's tag from os.environ (#98738)."""
+        import asyncio as _asyncio
+
+        multiplex_scope()
+        adapter = BuzzAdapter.__new__(BuzzAdapter)
+        adapter._private_key = "00" * 31 + "03"
+        adapter._websocket_url = lambda: "wss://relay.example"
+
+        class _FakeWS:
+            def __init__(self):
+                self.sent = []
+
+            async def recv(self):
+                if self.sent:
+                    return json.dumps(["OK", self.sent[0][1]["id"], True, "ok"])
+                return json.dumps(["AUTH", "challenge-1"])
+
+            async def send(self, raw):
+                self.sent.append(json.loads(raw))
+
+        ws = _FakeWS()
+        _asyncio.run(adapter._authenticate_websocket(ws))
+        tags = [t for t in ws.sent[0][1]["tags"] if t and t[0] == "auth"]
+        assert tags == []
+
+    def test_ws_auth_tag_scoped_profile_uses_its_own_tag(
+        self, multiplex_scope
+    ):
+        """Positive control: a tag present in the profile's own secret scope
+        IS attached to the NIP-42 auth event."""
+        import asyncio as _asyncio
+
+        profile_tag = json.dumps(["auth", "p" * 64, "", "q" * 128])
+        multiplex_scope({"BUZZ_AUTH_TAG": profile_tag})
+        adapter = BuzzAdapter.__new__(BuzzAdapter)
+        adapter._private_key = "00" * 31 + "03"
+        adapter._websocket_url = lambda: "wss://relay.example"
+
+        class _FakeWS:
+            def __init__(self):
+                self.sent = []
+
+            async def recv(self):
+                if self.sent:
+                    return json.dumps(["OK", self.sent[0][1]["id"], True, "ok"])
+                return json.dumps(["AUTH", "challenge-1"])
+
+            async def send(self, raw):
+                self.sent.append(json.loads(raw))
+
+        ws = _FakeWS()
+        _asyncio.run(adapter._authenticate_websocket(ws))
+        tags = [t for t in ws.sent[0][1]["tags"] if t and t[0] == "auth"]
+        assert tags == [json.loads(profile_tag)]
+
+    def test_ws_auth_tag_unscoped_default_profile_keeps_env(
+        self, default_profile_env
+    ):
+        """The default profile constructs unscoped even under multiplex, so
+        its env-provided auth tag still applies (legacy behavior kept)."""
+        import asyncio as _asyncio
+
+        from agent.secret_scope import set_multiplex_active
+
+        set_multiplex_active(True)
+        try:
+            adapter = BuzzAdapter.__new__(BuzzAdapter)
+            adapter._private_key = "00" * 31 + "03"
+            adapter._websocket_url = lambda: "wss://relay.example"
+
+            class _FakeWS:
+                def __init__(self):
+                    self.sent = []
+
+                async def recv(self):
+                    if self.sent:
+                        return json.dumps(["OK", self.sent[0][1]["id"], True, "ok"])
+                    return json.dumps(["AUTH", "challenge-1"])
+
+                async def send(self, raw):
+                    self.sent.append(json.loads(raw))
+
+            ws = _FakeWS()
+            _asyncio.run(adapter._authenticate_websocket(ws))
+        finally:
+            set_multiplex_active(False)
+        tags = [t for t in ws.sent[0][1]["tags"] if t and t[0] == "auth"]
+        assert tags == [["auth", "default-profile-tag", "", "x"]]
+
+    def test_validate_config_scoped_extra_is_authoritative(
+        self, multiplex_scope, default_profile_env, tmp_path
+    ):
+        """Scoped validation reads the profile's extra, not the default
+        profile's env relay/key: unconfigured fails closed, configured
+        passes via its own credentials file."""
+        creds = tmp_path / "creds.json"
+        creds.write_text(json.dumps({"nsec": "nsec1profile"}), encoding="utf-8")
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        assert validate_config(PlatformConfig(enabled=True, extra={})) is False
+        assert (
+            validate_config(
+                PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "relay_url": "https://profile.relay",
+                        "credentials_file": str(creds),
+                    },
+                )
+            )
+            is True
+        )
+
+    def test_validate_config_unscoped_keeps_env_precedence(
+        self, default_profile_env
+    ):
+        """Single-profile/unscoped: env relay + env key still validate even
+        with an empty extra mapping."""
+        from gateway.config import PlatformConfig
+
+        assert validate_config(PlatformConfig(enabled=True, extra={})) is True
+
+    def test_standalone_send_scoped_target_falls_back_to_profile_home(
+        self, multiplex_scope, default_profile_env, monkeypatch, tmp_path
+    ):
+        """With no explicit chat_id, the scoped standalone send targets the
+        profile's own home_channel — never the default profile's env one."""
+        multiplex_scope()
+        from gateway.config import PlatformConfig
+
+        cli = tmp_path / "buzz"
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        calls = {}
+
+        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=None):
+            calls["args"] = args
+            return 0, '{"event_id": "e1"}', ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+        monkeypatch.setattr(
+            _buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1profile"
+        )
+        result = asyncio.run(
+            _standalone_send(
+                PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "relay_url": "https://profile.relay",
+                        "cli_path": str(cli),
+                        "home_channel": "pchan",
+                    },
+                ),
+                "",
+                "hello",
+            )
+        )
+        assert result.get("success") is True
+        assert calls["args"][calls["args"].index("--channel") + 1] == "pchan"
+
+    def test_standalone_send_scoped_without_target_fails_closed(
+        self, multiplex_scope, default_profile_env, monkeypatch, tmp_path
+    ):
+        """No chat_id and no profile home_channel: the error is returned —
+        the default profile's env BUZZ_HOME_CHANNEL must not be borrowed."""
+        multiplex_scope()
+        from gateway.config import PlatformConfig
+
+        cli = tmp_path / "buzz"
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=None):
+            raise AssertionError("CLI must not run without a resolved target")
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+        monkeypatch.setattr(
+            _buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1profile"
+        )
+        result = asyncio.run(
+            _standalone_send(
+                PlatformConfig(
+                    enabled=True,
+                    extra={"relay_url": "https://profile.relay", "cli_path": str(cli)},
+                ),
+                "",
+                "hello",
+            )
+        )
+        assert result == {
+            "error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"
+        }
 
 
 # ── CLI error contract ────────────────────────────────────────────────────

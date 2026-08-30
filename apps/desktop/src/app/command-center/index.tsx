@@ -31,9 +31,10 @@ import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { $sessions, sessionPinId } from '@/store/session'
+import { $sessionProfilesTruncated, $sessions, sessionPinId } from '@/store/session'
 import { confirmSharedGatewayRestart } from '@/store/system-actions'
 
+import { SidebarLoadMoreRow } from '../chat/sidebar/load-more-row'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -64,6 +65,10 @@ interface CommandCenterViewProps {
   // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
   onNavigateRoute?: (path: string) => void
   onOpenSession: (sessionId: string) => void
+  /** Grows the shared session window (bumpSessionsLimit + refetch), same
+   *  mechanism as the sidebar's recents "load more". Renders the Sessions
+   *  list's bottom-right button when the backend page is capped. */
+  onLoadMoreSessions?: () => Promise<void> | void
 }
 
 function formatTimestamp(value?: number | null): string {
@@ -135,7 +140,13 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
   )
 }
 
-export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
+export function CommandCenterView({
+  initialSection,
+  onClose,
+  onDeleteSession,
+  onLoadMoreSessions,
+  onOpenSession
+}: CommandCenterViewProps) {
   const { t } = useI18n()
   const cc = t.commandCenter
   // $sessions ticks on every streaming token (title updates, new sessions),
@@ -144,9 +155,13 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
   const sessions = useStoreSelector($sessions, s => (section === 'sessions' ? s : EMPTY_SESSIONS))
   const pinnedSessionIds = useStoreSelector($pinnedSessionIds, s => (section === 'sessions' ? s : EMPTY_PINNED))
+  // Mirrors the sidebar: any profile whose backend page was capped means there
+  // is more to load, so the Sessions list gets a "load more" affordance.
+  const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
 
   const [query, setQuery] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionInfo | null>(null)
+  const [loadMorePending, setLoadMorePending] = useState(false)
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [logFile, setLogFile] = useState<(typeof LOG_FILES)[number]>('agent')
@@ -253,6 +268,25 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   })
 
   const sessionListHasResults = filteredSessions.length > 0
+
+  // Same cap semantics as the sidebar's recents ("Load more" visible when any
+  // profile's backend page was truncated). Reuses the shared $sessions window:
+  // bumping the limit on the sidebar refetches into the same store both read.
+  const hasMoreSessions = Object.values(sessionProfilesTruncated).some(Boolean)
+
+  const onLoadMore = useCallback(async () => {
+    if (!onLoadMoreSessions || loadMorePending) {
+      return
+    }
+
+    setLoadMorePending(true)
+
+    try {
+      await Promise.resolve(onLoadMoreSessions())
+    } finally {
+      setLoadMorePending(false)
+    }
+  }, [loadMorePending, onLoadMoreSessions])
 
   // Client-side substring filter over the fetched tail (matches `hermes logs --search`).
   const visibleLogs = useMemo(() => {
@@ -372,12 +406,13 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           </header>
 
           {section === 'sessions' ? (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {!sessionListHasResults ? (
-                <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
-              ) : (
-                <ul>
-                  {filteredSessions.map(session => {
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {!sessionListHasResults ? (
+                  <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
+                ) : (
+                  <ul>
+                    {filteredSessions.map(session => {
                     const pinId = sessionPinId(session)
                     const pinned = pinnedSessionIds.includes(pinId)
 
@@ -420,6 +455,16 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     )
                   })}
                 </ul>
+                )}
+              </div>
+              {hasMoreSessions && !debouncedQuery && (
+                <div className="flex shrink-0 items-end justify-end">
+                  <SidebarLoadMoreRow
+                    loading={loadMorePending}
+                    onClick={() => void onLoadMore()}
+                    step={0}
+                  />
+                </div>
               )}
             </div>
           ) : section === 'usage' ? (

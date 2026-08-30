@@ -99,34 +99,19 @@ or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 ## Permission modes and logged-in browser profiles
 
 Hermes maps its existing approval UX onto cua-driver's immutable runtime
-modes. Permission mode, capability manifest approval, and the existing-profile
-grant are launch settings. They cannot change after the runtime starts:
+modes. Permission mode and capability manifest approval are launch settings.
+They cannot change after the runtime starts:
 
-| Hermes session | cua-driver mode | Human intervention | `existing_profile` |
-|---|---|---|---|
-| Manual or smart approvals (default) | `standard` | Normal Hermes approvals; Cua stops at its protected boundary | Refuses unless `computer_use.grant_existing_profile: true` (one-time config opt-in) |
-| `computer_use.permission_mode: bounded` + reviewed manifest | private `bounded` daemon | You review and approve the capability manifest once, at launch | Allowed only within the manifest's declared profiles/origins/tools; everything else fails closed |
-| `--yolo`, `/yolo`, or `approvals.mode: off` | private `unrestricted` daemon | One explicit Hermes risk acceptance; no runtime Cua prompts | Refuses unless `computer_use.grant_existing_profile: true`; YOLO does not substitute for this grant |
+| Hermes session | cua-driver mode | Human intervention |
+|---|---|---|
+| Manual or smart approvals (default) | `standard` | Normal Hermes approvals; Cua stops at its protected boundary |
+| `computer_use.permission_mode: bounded` + reviewed manifest | private `bounded` daemon | You review and approve the capability manifest once, at launch |
+| `--yolo`, `/yolo`, or `approvals.mode: off` | private `unrestricted` daemon | One explicit Hermes risk acceptance; no runtime Cua prompts |
 
-### Attaching to your signed-in browser
-
-The agent can drive a Chrome/Edge window you already have open — including a
-signed-in profile — **without restarting the browser, copying the profile, or
-touching your tabs**. Because DevTools access exposes that profile's live
-pages, cookies, and storage, cua-driver requires an explicit human grant that
-ordinary tool approval cannot substitute for. You opt in once, in config.yaml:
-
-```yaml
-computer_use:
-  grant_existing_profile: true
-```
-
-Hermes then launches the cua-driver runtime with the trusted-launcher grant
-(`--grant existing-profile`), and the standard capture/click/type actions
-succeed against the exact `(pid, window_id)` of that signed-in window. Leave
-it `false` (the default) and existing-profile attachment fails closed;
-driver-owned isolated profiles work either way and are what the agent
-prefers.
+Browser work — including pages in a signed-in profile — goes through the
+`browser` toolset (`browser_exec`), not `computer_use`. The former
+`computer_use.grant_existing_profile` opt-in was removed along with the typed
+browser route; a leftover key in config.yaml is ignored.
 
 ### Bounded mode for repeatable automation
 
@@ -167,14 +152,13 @@ public session name is only a label for cursor identity and session-scoped
 state. It does not select, share, or keep a runtime alive. Turning `/yolo` off,
 resetting or closing the Hermes session, cancellation cleanup, or process exit
 closes that transport session. Hermes also stops private runtimes that it
-launched for bounded, unrestricted, or existing-profile access. One Hermes
-conversation cannot change another runtime's mode or grants. On macOS, a
-standard runtime with an existing-profile grant uses a fresh CuaDriver.app
-daemon on a private socket. Bounded and unrestricted modes use a private
+launched for bounded or unrestricted access. One Hermes
+conversation cannot change another runtime's mode or grants. Bounded and
+unrestricted modes use a private
 embedded service under the Hermes host identity.
 
 `smart` approval remains `standard`: an LLM classification cannot stand in for
-a reviewed manifest or a launch-time grant.
+a reviewed manifest.
 
 <div class="alert alert--warning">
 
@@ -444,7 +428,6 @@ Permission mode and manifest (see
 computer_use:
   permission_mode: standard        # standard (default) | bounded
   capability_manifest: ""          # capability manifest path, required for bounded
-  grant_existing_profile: false    # opt-in: attach in standard or unrestricted mode
 ```
 
 Override the driver binary path (tests / CI / local builds):

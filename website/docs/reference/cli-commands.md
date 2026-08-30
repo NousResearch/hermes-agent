@@ -1485,7 +1485,7 @@ Registering raw Cua MCP tools is an alternative when you need Cua's low-level
 tool vocabulary. `cua-driver skills install` detects Hermes and links Cua's
 skill pack into the Hermes skills directory automatically.
 
-Permission mode, capability-manifest approval, and the existing-profile grant
+Permission mode and capability-manifest approval
 belong to runtime launch. In bounded mode Hermes passes Cua's canonical
 `--capability-manifest` and `--approve-capability-manifest` flags. Every MCP
 transport owns a private lifecycle session inside its runtime. Public session

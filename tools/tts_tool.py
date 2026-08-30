@@ -266,6 +266,26 @@ def _get_default_output_dir() -> str:
     return str(get_hermes_dir("cache/audio", "audio_cache"))
 
 DEFAULT_OUTPUT_DIR = _get_default_output_dir()
+_DEFAULT_OUTPUT_DIR_AT_IMPORT = DEFAULT_OUTPUT_DIR
+
+def _default_output_dir() -> str:
+    """Return the active profile's audio output dir at call time.
+
+    Same bug class as skills_tool (f8723c478) and skills_sync (#65828):
+    long-lived multi-profile runtimes (dashboard console, TUI/Desktop backend,
+    cron, kanban workers) import this module once under the launch
+    HERMES_HOME and later scope requests to a different profile via
+    ``hermes_constants.set_hermes_home_override()`` — a frozen module
+    constant keeps writing synthesized audio into the launch profile's
+    cache instead of the active profile's (#98749). Keep the legacy
+    ``DEFAULT_OUTPUT_DIR`` module attribute for tests and external patchers;
+    when it has not been patched, re-resolve from the live profile-scoped
+    HERMES_HOME on every call.
+    """
+    configured = DEFAULT_OUTPUT_DIR
+    if configured != _DEFAULT_OUTPUT_DIR_AT_IMPORT:
+        return configured
+    return _get_default_output_dir()
 
 # ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
@@ -3498,7 +3518,7 @@ def _text_to_speech_single(
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir = Path(_default_output_dir())
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
@@ -3856,7 +3876,7 @@ def text_to_speech_tool(
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        out_dir = Path(_default_output_dir())
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
@@ -4739,7 +4759,7 @@ if __name__ == "__main__":
     print(f"  MiniMax:    {minimax_status}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
-    print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
+    print(f"\n  Output dir: {_default_output_dir()}")
 
     provider = _get_provider(config)
     print(f"  Configured provider: {provider}")

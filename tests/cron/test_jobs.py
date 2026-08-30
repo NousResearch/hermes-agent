@@ -412,6 +412,32 @@ class TestJobCRUD:
         with pytest.raises(ValueError, match="Invalid repeat"):
             create_job(prompt="Bad", schedule="every 1h", repeat="banana")
 
+    def test_update_repeat_string_forms_coerced(self, tmp_cron_dir):
+        """The UPDATE path must coerce repeat the same way create does.
+
+        Before this fix, update_job({"repeat": "forever"}) stored the raw
+        string, and the next mark_job_run died with
+        "'str' object has no attribute 'get'". Same class as the create-path
+        TypeError (#66824/#64520/#7142/#71987/#95706) — the bare-value and
+        dict shapes both route through normalize_repeat_value now.
+        """
+        from cron.jobs import mark_job_run, update_job
+
+        job = create_job(prompt="t", schedule="every 1h", repeat=2)
+        mark_job_run(job["id"], success=True)  # completed=1
+
+        updated = update_job(job["id"], {"repeat": "forever"})
+        assert updated["repeat"]["times"] is None
+        assert updated["repeat"]["completed"] == 1  # counter preserved
+        mark_job_run(job["id"], success=True)  # must not raise
+
+        updated = update_job(job["id"], {"repeat": {"times": "3"}})
+        assert updated["repeat"]["times"] == 3
+        assert updated["repeat"]["completed"] == 2
+
+        with pytest.raises(ValueError, match="Invalid repeat"):
+            update_job(job["id"], {"repeat": "banana"})
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)

@@ -774,6 +774,36 @@ def ensure_dirs():
 # Schedule Parsing
 # =============================================================================
 
+def normalize_repeat_value(repeat: Any) -> Optional[int]:
+    """Coerce a repeat value from any entry point into ``Optional[int]``.
+
+    The tool schema exposes ``repeat`` as an integer, but agents and users
+    legitimately pass the user-facing strings ``'forever'``/``'once'`` or
+    numeric strings (``'3'``). Uncoerced strings previously died with
+    ``'<=' not supported between instances of 'str' and 'int'`` at create
+    (#66824/#64520/#7142/#71987/#95706) and were stored raw by update paths,
+    breaking ``mark_job_run`` later. Semantics: ``'forever'``-family -> None
+    (infinite), ``'once'``-family -> 1, numeric -> int, 0/negative -> None,
+    anything else -> ValueError (never store garbage).
+    """
+    if repeat is None:
+        return None
+    if isinstance(repeat, str):
+        repeat_str = repeat.strip().lower()
+        if repeat_str in ("forever", "infinite", "inf", "none", ""):
+            return None
+        if repeat_str in ("once", "one", "1x"):
+            return 1
+        try:
+            repeat = int(repeat_str)
+        except ValueError:
+            raise ValueError(
+                f"Invalid repeat value {repeat!r}: use an integer, "
+                f"'forever', or 'once'."
+            )
+    return None if repeat <= 0 else int(repeat)
+
+
 def parse_duration(s: str) -> int:
     """
     Parse duration string into minutes.
@@ -2248,29 +2278,10 @@ def create_job(
     parsed_schedule = parse_schedule(schedule)
 
     # Normalize repeat: treat 0 or negative values as None (infinite).
-    # Also coerce the documented string forms ('forever' -> None,
-    # 'once' -> 1, numeric strings -> int) — the tool schema exposes repeat
-    # as an integer but agents legitimately pass the user-facing strings
-    # 'forever'/'once', which previously died with
-    # "'<=' not supported between instances of 'str' and 'int'"
-    # (#66824/#64520/#7142). Coerce here so every entry point (tool, CLI,
-    # API, dashboard) inherits the fix.
-    if isinstance(repeat, str):
-        repeat_str = repeat.strip().lower()
-        if repeat_str in ("forever", "infinite", "inf", "none", ""):
-            repeat = None
-        elif repeat_str in ("once", "one", "1x"):
-            repeat = 1
-        else:
-            try:
-                repeat = int(repeat_str)
-            except ValueError:
-                raise ValueError(
-                    f"Invalid repeat value {repeat!r}: use an integer, "
-                    f"'forever', or 'once'."
-                )
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    # String forms ('forever'/'once'/numeric) coerce via
+    # normalize_repeat_value — the shared chokepoint with update paths
+    # (#66824/#64520/#7142/#71987/#95706).
+    repeat = normalize_repeat_value(repeat)
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
@@ -2525,6 +2536,25 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["reasoning_effort"] = _normalize_reasoning_effort(
                     updates["reasoning_effort"]
                 )
+
+            # Normalize repeat the same way create_job does. Callers pass
+            # either the stored dict shape ({"times": N, "completed": M}) or
+            # a bare value ("forever", "once", 3, "3"); bare values coerce
+            # through normalize_repeat_value and preserve the completed
+            # counter. A raw string stored here previously broke
+            # mark_job_run ('str' has no .get) and repeat accounting.
+            if "repeat" in updates:
+                _rp = updates["repeat"]
+                if isinstance(_rp, dict):
+                    _rp = dict(_rp)
+                    _rp["times"] = normalize_repeat_value(_rp.get("times"))
+                    _rp.setdefault("completed", (job.get("repeat") or {}).get("completed", 0))
+                    updates["repeat"] = _rp
+                else:
+                    updates["repeat"] = {
+                        "times": normalize_repeat_value(_rp),
+                        "completed": (job.get("repeat") or {}).get("completed", 0),
+                    }
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

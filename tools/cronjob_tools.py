@@ -1917,8 +1917,12 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Coerce string forms ('forever'/'once'/'3') and 0/negative
+                # via the shared chokepoint — a bare `repeat <= 0` here
+                # raised TypeError for string repeats on the UPDATE path
+                # (create was fixed first; same class).
+                from cron.jobs import normalize_repeat_value
+                normalized_repeat = normalize_repeat_value(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state

@@ -211,6 +211,73 @@ def _promote_to_pipeline(task_id, board, stage):
     except Exception:
         return False
 
+def _null_ctx():
+    import contextlib
+    return contextlib.nullcontext()
+
+
+def _route_to_backlog(board, task_id):
+    """S3 gate (Sahil 30/08/26): move a triage task to backlog instead of
+    promoting it. Used for proposal-prefixed tasks and tasks whose parent
+    proposal is archived/backlog — they await explicit Sahil approval."""
+    db_path = _get_board_db(board)
+    if not db_path or not os.path.exists(db_path):
+        return False
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            if write_lock is not None:
+                ctx = write_lock(conn)
+            else:
+                ctx = None
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE tasks SET status='backlog', status_reason=? "
+                "WHERE id=? AND status='triage'",
+                ("Backlog (S3 gate 30/08/26): proposal/idea task — awaiting explicit Sahil build approval.", task_id),
+            )
+            moved = conn.execute("SELECT changes()").fetchone()[0]
+            if moved:
+                conn.execute(
+                    "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?,?,?,?)",
+                    (task_id, "commented",
+                     json.dumps({"by": "triage-processor", "action": "triage -> backlog (S3 proposal/parent gate)"}),
+                     int(time.time())))
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def _parent_not_active(board, task_id):
+    """True when the task traces to a parent proposal that is archived or
+    backlog — its family must not auto-promote without Sahil's approval."""
+    db_path = _get_board_db(board)
+    if not db_path or not os.path.exists(db_path):
+        return False
+    statuses = []
+    try:
+        conn = sqlite3.connect(db_path)
+        # via 'from_decompose_of' creation events
+        for row in conn.execute(
+                "SELECT t2.status FROM task_events e "
+                "JOIN tasks t ON t.id = e.task_id "
+                "JOIN tasks t2 ON t2.id = json_extract(e.payload, '$.from_decompose_of') "
+                "WHERE e.task_id = ? AND e.kind = 'created'", (task_id,)):
+            statuses.append(row[0])
+        # via task_links (children of the proposal root)
+        for row in conn.execute(
+                "SELECT t2.status FROM task_links l JOIN tasks t2 ON t2.id = l.parent_id "
+                "WHERE l.child_id = ?", (task_id,)):
+            statuses.append(row[0])
+        conn.close()
+    except Exception:
+        pass
+    return any(s in ("archived", "backlog") for s in statuses)
+
+
 def classify_task(title, body, *, pipeline_mode=None):
     """Classify triage task: AUTO-PROMOTE vs NEEDS HUMAN, and tier (fast/full).
 
@@ -333,8 +400,17 @@ def main():
         # identified by pipeline_mode in the DB — the CLI list JSON does
         # not expose it. These ALWAYS auto-promote into the feature
         # pipeline; keyword classification must not touch them.
-        pipeline_mode = _read_task_pipeline_mode(board, task_id)
-        classification, tier = classify_task(title, body, pipeline_mode=pipeline_mode)
+
+        # S3 GATE (Sahil 30/08/26): proposal-prefixed tasks and tasks whose
+        # parent proposal is archived/backlog must NOT auto-promote — they
+        # wait in backlog until Sahil explicitly approves them as work.
+        task_pipeline_mode = _read_task_pipeline_mode(board, task_id)
+        if not task_pipeline_mode and (
+                title.lower().startswith('proposal:') or _parent_not_active(board, task_id)):
+            if _route_to_backlog(board, task_id):
+                continue  # routed to backlog; skip classification entirely
+        classification, tier = classify_task(title, body, pipeline_mode=task_pipeline_mode)
+
         # WS-2 board routing: auto-assign unassigned tasks based on keywords
         # EXCEPT pipeline-owned tasks: their assignee follows the pipeline's
         # own stage-owner routing. Keyword-routing a feature task to octacon/
@@ -342,7 +418,7 @@ def main():
         # dispatcher's stage-owner reassignment kicks in.
         routed_board, routed_assignee = None, None
         if not assignee or not assignee.strip():
-            if not pipeline_mode:
+            if not task_pipeline_mode:
                 routed_board, routed_assignee = _route_task(title, body)
 
         if classification == 'AUTO-PROMOTE':

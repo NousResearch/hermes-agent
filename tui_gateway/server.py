@@ -7645,31 +7645,34 @@ def _attach_todo_state(payload: dict, session: dict) -> dict:
     return payload
 
 
-def _read_persisted_todo_state(db, session_id: str) -> dict | None:
-    """Derive the latest todo snapshot from the session's stored transcript.
+def _todo_state_from_history(history) -> dict | None:
+    """Derive the latest todo snapshot from an already-loaded transcript.
 
     Used by resume paths that answer before an AIAgent (and its live
-    TodoStore) exists. The canonical todo tool results already persist in the
-    session DB as ordinary tool messages, so the latest one paired with an
-    assistant ``todo`` tool call IS the durable snapshot — no side table.
+    TodoStore) exists. The canonical todo tool results already persist in
+    conversation history as ordinary tool messages, so the latest one paired
+    with an assistant ``todo`` tool call IS the durable snapshot — no side
+    table and no extra transcript read (each resume path passes the history
+    it already loaded).
     """
-    getter = getattr(db, "get_messages_as_conversation", None)
-    if not callable(getter):
+    if not isinstance(history, list) or not history:
         return None
     try:
         from tools.todo_tool import MAX_TODO_RESULT_CHARS
 
-        raw = getter(session_id, include_ancestors=True)
-        history: list = list(raw) if isinstance(raw, list) else []
         todo_call_ids: set[str] = set()
         for msg in history:
+            if not isinstance(msg, dict):
+                continue
             for call in msg.get("tool_calls") or []:
                 if (call.get("function") or {}).get("name") == "todo":
                     cid = call.get("id")
                     if cid:
                         todo_call_ids.add(cid)
+        if not todo_call_ids:
+            return None
         for msg in reversed(history):
-            if msg.get("role") != "tool":
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
                 continue
             if msg.get("tool_call_id") not in todo_call_ids:
                 continue
@@ -7686,7 +7689,7 @@ def _read_persisted_todo_state(db, session_id: str) -> dict | None:
                 continue
         return None
     except Exception:
-        logger.debug("failed to read persisted todo state", exc_info=True)
+        logger.debug("failed to derive todo state from history", exc_info=True)
         return None
 
 
@@ -10508,6 +10511,11 @@ def _schedule_resume_hydration(
                 session["display_history_prefix"] = prefix
                 session["resume_hydrating"] = False
                 session["resume_message_count"] = len(display_history)
+            # Deferred resumes answered before the transcript existed; cache
+            # the derived todo snapshot now so later payload attaches carry it.
+            todo_state = _todo_state_from_history(history)
+            if todo_state is not None and session.get("todo_state") is None:
+                session["todo_state"] = todo_state
             session["resume_history_ready"].set()
             _emit(
                 "session.resume_progress",

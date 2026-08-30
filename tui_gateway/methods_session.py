@@ -565,10 +565,8 @@ def _(rid, params: dict) -> dict:
                 target = tip
                 found = db.get_session(target) or found
 
-        # A full snapshot is cheap to read and makes every resume path an
-        # authoritative recovery point for task UI state, including deferred
-        # agent builds and reconnects that missed the live event.
-        resume_todo_state = _read_persisted_todo_state(db, target)
+        # Todo snapshots are derived from each path's already-loaded history
+        # (see _todo_state_from_history) — no extra transcript read here.
 
         # Every interactive resume path materializes the model history, even when
         # omit_messages suppresses the response copy. Count the complete lineage
@@ -690,7 +688,7 @@ def _(rid, params: dict) -> dict:
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
                 profile_home=profile_home,
                 lazy=True,
-                todo_state=resume_todo_state,
+                todo_state=_todo_state_from_history(history),
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _reuse_live_response(*live)
@@ -762,7 +760,6 @@ def _(rid, params: dict) -> dict:
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
-                todo_state=resume_todo_state,
             )
             record["resume_history_ready"] = threading.Event()
             record["resume_hydrating"] = True
@@ -862,7 +859,7 @@ def _(rid, params: dict) -> dict:
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
-                todo_state=resume_todo_state,
+                todo_state=_todo_state_from_history(history),
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _reuse_live_response(*live)

@@ -170,6 +170,40 @@ def test_run_slash_reclaim_running_task(kanban_home):
     assert "ready" in out2.lower()
 
 
+def test_unblock_reason_records_operator_outside_worker(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "default")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="validated intake")
+        assert kb.block_task(conn, task_id, reason="awaiting operator")
+
+    output = kc.run_slash(f"unblock {task_id} --reason 'validated for local repair'")
+
+    assert f"Unblocked {task_id}" in output
+    with kb.connect_closing() as conn:
+        comments = kb.list_comments(conn, task_id)
+    assert [(comment.author, comment.body) for comment in comments] == [
+        ("operator", "UNBLOCK: validated for local repair")
+    ]
+
+
+def test_unblock_reason_records_profile_inside_worker(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "repair-worker")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_12345678")
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="worker retry")
+        assert kb.block_task(conn, task_id, reason="transient")
+
+    output = kc.run_slash(f"unblock {task_id} --reason 'worker retry'")
+
+    assert f"Unblocked {task_id}" in output
+    with kb.connect_closing() as conn:
+        comments = kb.list_comments(conn, task_id)
+    assert [(comment.author, comment.body) for comment in comments] == [
+        ("repair-worker", "UNBLOCK: worker retry")
+    ]
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -180,5 +214,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

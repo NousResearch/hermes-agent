@@ -210,6 +210,14 @@ def _profile_author() -> str:
         return "user"
 
 
+def _unblock_author() -> str:
+    """Distinguish an operator CLI transition from a worker retry."""
+
+    if str(os.environ.get("HERMES_KANBAN_TASK") or "").strip():
+        return _profile_author()
+    return "operator"
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",

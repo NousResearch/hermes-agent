@@ -81,3 +81,20 @@ def test_adapter_preserves_image_only_user_message_across_checkpoint():
         {"role": "assistant", "content": "checkpoint turn"},
         {"role": "user", "content": "after checkpoint"},
     ]
+
+
+def test_image_only_user_message_is_retained_with_interleaved_assistant():
+    image_user = {
+        "role": "user",
+        "content": [_RESPONSES_IMAGE_PART],
+    }
+    items = [
+        image_user,
+        {"role": "assistant", "content": "I see the screenshot."},
+        _CHECKPOINT,
+        {"role": "user", "content": "what was in that screenshot?"},
+    ]
+    out = prune_pre_checkpoint_items(items)
+    assert out[0] == _CHECKPOINT
+    assert out[1] == image_user
+    assert out[2] == {"role": "user", "content": "what was in that screenshot?"}

@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         slice: ${{ fromJSON(github.repository == 'NousResearch/hermes-agent' && '["1/1"]' || '["1/12", "2/12", "3/12", "4/12", "5/12", "6/12", "7/12", "8/12", "9/12", "10/12", "11/12", "12/12"]') }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 60 || 30 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,14 +108,10 @@ jobs:
           if [ "${GITHUB_REPOSITORY}" = "NousResearch/hermes-agent" ]; then
             scripts/run_tests.sh
           else
-            # A hosted fork runner can occasionally lose a test descendant
-            # while the job stays marked in progress. Run the whole command
-            # under a recursive process-tree supervisor so the watchdog can
-            # terminate workers even when they start separate sessions.
-            python scripts/ci/timebox_process.py \
-              --timeout-seconds 1500 \
-              --grace-seconds 60 \
-              -- scripts/run_tests.sh --slice "${{ matrix.slice }}"
+            # A hosted fork runner can occasionally lose its child process
+            # while the job remains marked in progress. Bound that failure so
+            # it produces a clear CI result instead of consuming hours.
+            timeout --signal=TERM --kill-after=60s 25m scripts/run_tests.sh
           fi
         env:
           # This is the maximum number of test FILES that run together.

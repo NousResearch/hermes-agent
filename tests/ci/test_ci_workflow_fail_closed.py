@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,26 @@ def test_fork_python_suite_uses_twelve_balanced_slices():
 
     assert all(f'"{index}/12"' in slice_expression for index in range(1, 13))
     assert '"1/1"' in slice_expression
+
+
+def test_fork_python_suite_has_a_server_enforced_timeout():
+    """GitHub must stop a lost fork runner without relying on its shell."""
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(
+        (_REPO / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+    )
+    timeout_expression = workflow["jobs"]["test"]["timeout-minutes"]
+    match = re.fullmatch(
+        r"\$\{\{\s*github\.repository\s*==\s*'([^']+)'\s*"
+        r"&&\s*(\d+)\s*\|\|\s*(\d+)\s*\}\}",
+        str(timeout_expression),
+    )
+
+    assert match is not None
+    upstream_repository, upstream_timeout, fork_timeout = match.groups()
+    assert upstream_repository == "NousResearch/hermes-agent"
+    assert int(upstream_timeout) == 60
+    assert int(fork_timeout) <= 30
 
 
 def test_required_gate_rejects_cancelled_detect_job(tmp_path):

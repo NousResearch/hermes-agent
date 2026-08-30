@@ -374,6 +374,7 @@ async def test_session_chat_stream_emits_live_reasoning_deltas(adapter, session_
     session_id = session_db.create_session("reasoning-stream-session", "api_server")
 
     async def fake_run(**kwargs):
+        kwargs["reasoning_callback"]("")
         kwargs["reasoning_callback"]("check ")
         kwargs["reasoning_callback"]("evidence")
         # This legacy completion-time callback contains assistant content, not

@@ -311,11 +311,14 @@ class RoutingDecision:
 
 @dataclass(frozen=True, slots=True)
 class LocalCIAuditPolicy:
-    """Opt-in, read-only local CI coverage for repositories without Actions."""
+    """Opt-in exact-head local CI coverage for configured pull requests."""
 
     assignee: str
     post_results: bool
     repositories: frozenset[str] = frozenset()
+    required_for_open_prs: bool = False
+    max_dispatches_per_scan: int = 1
+    max_open_prs_per_scan: int = 300
 
     def applies_to(self, repository: str) -> bool:
         return not self.repositories or repository in self.repositories
@@ -656,11 +659,30 @@ def _parse_local_ci_audit(raw: object) -> LocalCIAuditPolicy | None:
     if not isinstance(raw, Mapping):
         raise ValueError("local_ci_audit must be a mapping")
     required = {"enabled", "assignee", "post_results"}
-    if not required.issubset(raw) or set(raw).difference(required | {"repositories"}):
+    optional = {
+        "repositories",
+        "required_for_open_prs",
+        "max_dispatches_per_scan",
+        "max_open_prs_per_scan",
+    }
+    if not required.issubset(raw) or set(raw).difference(required | optional):
         raise ValueError("local_ci_audit has missing or unknown fields")
     enabled = raw["enabled"]
     post_results = raw["post_results"]
-    if not isinstance(enabled, bool) or not isinstance(post_results, bool):
+    required_for_open_prs = raw.get("required_for_open_prs", False)
+    max_dispatches_per_scan = raw.get("max_dispatches_per_scan", 1)
+    max_open_prs_per_scan = raw.get("max_open_prs_per_scan", 300)
+    if (
+        not isinstance(enabled, bool)
+        or not isinstance(post_results, bool)
+        or not isinstance(required_for_open_prs, bool)
+        or not isinstance(max_dispatches_per_scan, int)
+        or isinstance(max_dispatches_per_scan, bool)
+        or max_dispatches_per_scan < 1
+        or not isinstance(max_open_prs_per_scan, int)
+        or isinstance(max_open_prs_per_scan, bool)
+        or max_open_prs_per_scan < 1
+    ):
         raise ValueError("local_ci_audit booleans are invalid")
     assignee = _nonempty_string(raw["assignee"], "local_ci_audit assignee")
     repositories = (
@@ -671,7 +693,12 @@ def _parse_local_ci_audit(raw: object) -> LocalCIAuditPolicy | None:
     if not enabled:
         return None
     return LocalCIAuditPolicy(
-        assignee=assignee, post_results=post_results, repositories=repositories
+        assignee=assignee,
+        post_results=post_results,
+        repositories=repositories,
+        required_for_open_prs=required_for_open_prs,
+        max_dispatches_per_scan=max_dispatches_per_scan,
+        max_open_prs_per_scan=max_open_prs_per_scan,
     )
 
 

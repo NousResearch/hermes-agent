@@ -793,6 +793,7 @@ class ScanController:
             return _scan_result(created, skipped)
         for repository in self._policy.targets:
             target = self._policy.targets[repository]
+            local_ci_dispatched = 0
             actions_enabled: bool | None = None
             actions_state_unavailable = False
             if (
@@ -810,6 +811,23 @@ class ScanController:
             except Exception:  # noqa: BLE001 - an adapter failure must not admit work.
                 skipped["github_error"] += 1
                 continue
+            # GitHub's list order is not a merge-train policy. Preserve a
+            # deterministic oldest-first queue so an old failing PR cannot be
+            # indefinitely bypassed by newer arrivals.
+            pull_requests = tuple(sorted(pull_requests, key=lambda pull: pull.number))
+            if (
+                self._policy.local_ci_audit is not None
+                and self._policy.local_ci_audit.applies_to(repository)
+                and len(pull_requests)
+                > self._policy.local_ci_audit.max_open_prs_per_scan
+            ):
+                skipped["local_ci_open_pr_scan_cap"] += (
+                    len(pull_requests)
+                    - self._policy.local_ci_audit.max_open_prs_per_scan
+                )
+                pull_requests = pull_requests[
+                    : self._policy.local_ci_audit.max_open_prs_per_scan
+                ]
             if actions_enabled and pull_requests:
                 # actions_enabled is only the repo-level Actions on/off toggle;
                 # it stays True through a billing lockout, where every job
@@ -883,6 +901,20 @@ class ScanController:
                         scanned_at=self._clock(),
                     )
                 current, feedback_items = snapshot
+                local_ci_receipt_status = None
+                if (
+                    self._policy.local_ci_audit is not None
+                    and self._policy.local_ci_audit.applies_to(repository)
+                ):
+                    local_ci_receipt_status = self._ledger.exact_receipt_status(
+                        FeedbackReceipt(
+                            repository=pull_request.base_repository,
+                            pr_number=pull_request.number,
+                            feedback_kind="pr_local_ci",
+                            feedback_id=_local_ci_feedback_id(pull_request),
+                            head_sha=pull_request.head_sha,
+                        )
+                    )
                 feedback_pending = False
                 base_refresh_pending = False
                 base_head_cache: dict[tuple[str, str, str], str | None] = {}
@@ -998,10 +1030,14 @@ class ScanController:
                         pass
                     elif feedback_pending:
                         skipped["feedback_pending"] += 1
+                    elif local_ci_receipt_status is not None:
+                        skipped["local_ci_exact_head_seen"] += 1
                     elif actions_state_unavailable:
                         skipped["github_ci_state_unavailable"] += 1
-                    elif actions_enabled:
+                    elif actions_enabled and not self._policy.local_ci_audit.required_for_open_prs:
                         skipped["github_ci_enabled"] += 1
+                    elif local_ci_dispatched >= self._policy.local_ci_audit.max_dispatches_per_scan:
+                        skipped["local_ci_dispatch_cap"] += 1
                     elif attempted >= MAX_ADMISSIONS_PER_SCAN:
                         skipped["admission_cap"] += 1
                     else:
@@ -1012,6 +1048,7 @@ class ScanController:
                             attempted += 1
                         if audit_error is None:
                             created += 1
+                            local_ci_dispatched += 1
                         else:
                             skipped[audit_error] += 1
         return _scan_result(created, skipped)
@@ -2231,7 +2268,17 @@ def _local_ci_task(
     control_home: Path,
     post_results: bool,
 ) -> KanbanTask:
-    """Build a read-only, exact-head audit task for a PR without GitHub CI."""
+    """Build a read-only, exact-head audit task for a configured PR."""
+
+    actions_must_be_disabled = not bool(
+        policy.local_ci_audit and policy.local_ci_audit.required_for_open_prs
+    )
+    actions_precondition = (
+        "Confirm repository GitHub Actions remain disabled before running. "
+        if actions_must_be_disabled
+        else "GitHub Actions may remain enabled; this policy requires the independent local CI "
+        "receipt alongside hosted checks. "
+    )
 
     comment_scope = (
         "After re-reading the PR and confirming the head is still exact, post one factual audit "
@@ -2244,7 +2291,8 @@ def _local_ci_task(
     instructions = (
         "Audit this pull request read-only from the exact receipt worktree. Re-read the canonical "
         "PR first and require its head to equal expected_head_sha; otherwise stop fail-closed. "
-        "Confirm repository GitHub Actions remain disabled before running. Do not edit source files. "
+        + actions_precondition
+        + "Do not edit source files. "
         "Do not publish, approve, or merge any change. Bootstrap only the worktree-local ignored environment if "
         "needed. Do not manually duplicate the CI lane commands. Create the authoritative typed "
         "receipt by running exactly: "
@@ -2266,7 +2314,7 @@ def _local_ci_task(
         "repository": receipt.repository,
         "pr_number": receipt.pr_number,
         "expected_head_sha": receipt.head_sha,
-        "github_actions_enabled": False,
+        "github_actions_required_disabled": actions_must_be_disabled,
         "post_results": post_results,
     }
     return KanbanTask(

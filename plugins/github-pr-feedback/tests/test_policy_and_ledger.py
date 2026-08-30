@@ -516,6 +516,32 @@ def test_enabled_policy_parses_a_bounded_local_ci_audit_lane(tmp_path: Path) -> 
     assert policy.local_ci_audit is not None
     assert policy.local_ci_audit.assignee == "pr-local-ci-auditor"
     assert policy.local_ci_audit.post_results is True
+    assert policy.local_ci_audit.required_for_open_prs is False
+    assert policy.local_ci_audit.max_dispatches_per_scan == 1
+    assert policy.local_ci_audit.max_open_prs_per_scan == 300
+
+
+def test_enabled_policy_parses_bounded_required_local_ci_settings(
+    tmp_path: Path,
+) -> None:
+    repository_path = tmp_path / "widgets"
+    initialize_git_worktree(repository_path)
+    raw = enabled_raw_config(repository_path)
+    raw["local_ci_audit"] = {
+        "enabled": True,
+        "assignee": "pr-local-ci-auditor",
+        "post_results": True,
+        "required_for_open_prs": True,
+        "max_dispatches_per_scan": 2,
+        "max_open_prs_per_scan": 17,
+    }
+
+    policy = load_policy(raw)
+
+    assert policy.local_ci_audit is not None
+    assert policy.local_ci_audit.required_for_open_prs is True
+    assert policy.local_ci_audit.max_dispatches_per_scan == 2
+    assert policy.local_ci_audit.max_open_prs_per_scan == 17
 
 
 @pytest.mark.parametrize(

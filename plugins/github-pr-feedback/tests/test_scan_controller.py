@@ -40,10 +40,20 @@ def test_scan_admission_budget_covers_a_large_pr_repair_queue() -> None:
 
 
 class FakeGitHub:
-    def __init__(self, pull_request: PullRequest, feedback: tuple[Feedback, ...], current: PullRequest | None = None) -> None:
+    def __init__(
+        self,
+        pull_request: PullRequest,
+        feedback: tuple[Feedback, ...],
+        current: PullRequest | None = None,
+        pull_requests: tuple[PullRequest, ...] | None = None,
+    ) -> None:
         self.pull_request = pull_request
         self.feedback = feedback
         self.current = current or pull_request
+        self.pull_requests = pull_requests
+        self.current_by_number = {
+            item.number: item for item in (pull_requests or (pull_request,))
+        }
         self.current_calls: list[tuple[str, int]] = []
         self.feedback_calls: list[tuple[str, int]] = []
         self.branch_calls: list[tuple[str, str]] = []
@@ -56,16 +66,19 @@ class FakeGitHub:
     ) -> tuple[PullRequest, ...]:
         assert repository == self.pull_request.base_repository
         assert owner_login == self.pull_request.author_login
-        return (self.pull_request,)
+        return self.pull_requests or (self.pull_request,)
 
     def list_feedback(self, repository: str, number: int) -> tuple[Feedback, ...]:
-        assert (repository, number) == (self.pull_request.base_repository, self.pull_request.number)
+        assert repository == self.pull_request.base_repository
+        assert number in self.current_by_number
         self.feedback_calls.append((repository, number))
         return self.feedback
 
     def get_pull_request(self, repository: str, number: int) -> PullRequest:
         self.current_calls.append((repository, number))
-        return self.current
+        if number == self.current.number:
+            return self.current
+        return self.current_by_number[number]
 
     def actions_enabled(self, repository: str) -> bool:
         assert repository == self.pull_request.base_repository
@@ -1491,7 +1504,7 @@ def test_scan_dispatches_one_read_only_exact_head_ci_audit_when_actions_are_disa
         "repository": "acme/widgets",
         "pr_number": 17,
         "expected_head_sha": sha,
-        "github_actions_enabled": False,
+        "github_actions_required_disabled": True,
         "post_results": True,
     }
     assert "Do not edit source files" in task.instructions
@@ -1591,6 +1604,123 @@ def test_scan_does_not_dispatch_local_ci_when_github_actions_are_enabled(
     assert result.created == 0
     assert result.skipped["github_ci_enabled"] == 1
     assert kanban.tasks == []
+    ledger.close()
+
+
+def test_scan_dispatches_local_ci_when_policy_requires_it_despite_hosted_actions(
+    tmp_path: Path,
+) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    raw = {
+        "enabled": True,
+        "repositories": [
+            {
+                "base_repository": "acme/widgets",
+                "head_repository": "acme/widgets",
+                "local_path": str(local_path),
+                "owner_login": "owner",
+                "branch_prefixes": ["codex/"],
+            }
+        ],
+        "reviewer_logins": ["owner"],
+        "reviewer_associations": [],
+        "not_before": "2026-08-24T00:00:00Z",
+        "assignee": "repair-agent",
+        "board": "repairs",
+        "local_ci_audit": {
+            "enabled": True,
+            "assignee": "pr-local-ci-auditor",
+            "post_results": True,
+            "required_for_open_prs": True,
+        },
+    }
+    policy = load_policy(raw)
+    github = FakeGitHub(admitted_pull_request(sha), ())
+    kanban = RecordingKanban()
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+
+    result = ScanController(policy, ledger, github, kanban, RecordingLocalGit()).scan()
+
+    assert result.created == 1
+    assert [task.title for task in kanban.tasks] == ["Local PR CI audit: acme/widgets#17"]
+    assert "GitHub Actions remain disabled" not in kanban.tasks[0].instructions
+    assert "may remain enabled" in kanban.tasks[0].instructions
+    assert kanban.tasks[0].evidence["github_actions_required_disabled"] is False
+    ledger.close()
+
+
+def test_scan_dispatches_local_ci_oldest_pull_request_first(tmp_path: Path) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    older = PullRequest(
+        17, "OPEN", "acme/widgets", "acme/widgets", "owner", "codex/older", sha
+    )
+    newer = PullRequest(
+        18, "OPEN", "acme/widgets", "acme/widgets", "owner", "codex/newer", sha
+    )
+    policy = configured_policy(
+        local_path,
+        not_before="2026-08-24T00:00:00Z",
+        local_ci_audit=True,
+    )
+    github = FakeGitHub(newer, (), pull_requests=(newer, older))
+    github.actions_are_enabled = False
+    kanban = RecordingKanban()
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+
+    result = ScanController(policy, ledger, github, kanban, RecordingLocalGit()).scan()
+
+    assert result.created == 1
+    assert result.skipped["local_ci_dispatch_cap"] == 1
+    assert [task.title for task in kanban.tasks] == [
+        "Local PR CI audit: acme/widgets#17",
+    ]
+    ledger.close()
+
+
+def test_scan_bounds_oldest_first_per_pr_reads_for_local_ci(tmp_path: Path) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    older = PullRequest(
+        17, "OPEN", "acme/widgets", "acme/widgets", "owner", "codex/older", sha
+    )
+    newer = PullRequest(
+        18, "OPEN", "acme/widgets", "acme/widgets", "owner", "codex/newer", sha
+    )
+    raw = {
+        "enabled": True,
+        "repositories": [
+            {
+                "base_repository": "acme/widgets",
+                "head_repository": "acme/widgets",
+                "local_path": str(local_path),
+                "owner_login": "owner",
+                "branch_prefixes": ["codex/"],
+            }
+        ],
+        "reviewer_logins": ["reviewer"],
+        "reviewer_associations": [],
+        "not_before": "2026-08-24T00:00:00Z",
+        "assignee": "repair-agent",
+        "board": "repairs",
+        "local_ci_audit": {
+            "enabled": True,
+            "assignee": "pr-local-ci-auditor",
+            "post_results": True,
+            "required_for_open_prs": True,
+            "max_open_prs_per_scan": 1,
+        },
+    }
+    github = FakeGitHub(newer, (), pull_requests=(newer, older))
+    kanban = RecordingKanban()
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+
+    result = ScanController(
+        load_policy(raw), ledger, github, kanban, RecordingLocalGit()
+    ).scan()
+
+    assert result.created == 1
+    assert result.skipped["local_ci_open_pr_scan_cap"] == 1
+    assert github.feedback_calls == [("acme/widgets", 17)]
+    assert github.current_calls == [("acme/widgets", 17)]
     ledger.close()
 
 
@@ -1928,7 +2058,7 @@ def test_duplicate_local_ci_receipts_do_not_starve_a_new_head_after_comment_fixe
     result = ScanController(policy, ledger, github, kanban, RecordingLocalGit()).scan()
 
     assert result.created == 1
-    assert result.skipped["duplicate"] == MAX_ADMISSIONS_PER_SCAN
+    assert result.skipped["local_ci_exact_head_seen"] == MAX_ADMISSIONS_PER_SCAN
     assert result.skipped.get("admission_cap", 0) == 0
     assert [task.evidence["pr_number"] for task in kanban.tasks] == [repaired.number]
     ledger.close()

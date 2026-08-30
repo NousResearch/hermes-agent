@@ -41,7 +41,7 @@ for task_id in task_ids:
             out = f"{RESULTS}/{arm}__{task_id}__rep{rep}.json"
             if os.path.exists(out):
                 try:
-                    with open(out) as f:
+                    with open(out, encoding="utf-8") as f:
                         rec = json.load(f)
                     if rec.get("error") is None or rec.get("score", 0) > 0:
                         continue  # keep good/attempted records
@@ -70,7 +70,7 @@ def run_cell(cell):
                    "total_tokens": None, "wall_s": round(time.time() - t0, 1),
                    "bridge_calls": None, "tool_calls_total": None,
                    "tool_counts": {}, "raw_xml_noise": False}
-            with open(out, "w") as f:
+            with open(out, "w", encoding="utf-8") as f:
                 json.dump(rec, f, indent=1)
             return (cell, "WORKER_ERR", p.stderr[-300:])
         return (cell, "OK", p.stdout.strip().splitlines()[-1] if p.stdout.strip() else "")
@@ -80,7 +80,7 @@ def run_cell(cell):
                "api_turns": None, "total_tokens": None,
                "wall_s": round(time.time() - t0, 1), "bridge_calls": None,
                "tool_calls_total": None, "tool_counts": {}, "raw_xml_noise": False}
-        with open(out, "w") as f:
+        with open(out, "w", encoding="utf-8") as f:
             json.dump(rec, f, indent=1)
         return (cell, "TIMEOUT", "")
 

@@ -39,7 +39,7 @@ hermes_home = os.path.join(tmp_root, ".hermes")
 workspace = os.path.join(tmp_root, "ws")
 os.makedirs(hermes_home)
 os.makedirs(workspace)
-with open(os.path.join(hermes_home, "config.yaml"), "w") as f:
+with open(os.path.join(hermes_home, "config.yaml"), "w", encoding="utf-8") as f:
     f.write("model:\n  provider: openrouter\n  model: %s\n" % MODEL)
 
 os.environ["HERMES_HOME"] = hermes_home
@@ -356,10 +356,10 @@ record = {
 }
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
-with open(OUT + ".transcript.json", "w") as f:
+with open(OUT + ".transcript.json", "w", encoding="utf-8") as f:
     json.dump({"messages": messages, "events": EVENTS, "callback_log": CALLBACK_LOG},
               f, default=str)
-with open(OUT, "w") as f:
+with open(OUT, "w", encoding="utf-8") as f:
     json.dump(record, f, indent=1, default=str)
 print(json.dumps({k: record[k] for k in ("arm", "model", "task", "rep", "score",
                                           "api_turns", "total_tokens", "wall_s",

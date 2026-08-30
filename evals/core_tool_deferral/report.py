@@ -15,7 +15,7 @@ def load(model):
     for p in glob.glob(f"{BASE}/{model}/*.json"):
         if p.endswith(".transcript.json"):
             continue
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             recs.append(json.load(f))
     return recs
 

@@ -30,14 +30,14 @@ IMG_URL = "https://img.eval.local/fern-forge.png"
 def _w(ws, rel, content):
     p = os.path.join(ws, rel)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w") as f:
+    with open(p, "w", encoding="utf-8") as f:
         f.write(content)
 
 
 def _read(ws, rel):
     p = os.path.join(ws, rel)
     try:
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             return f.read()
     except OSError:
         return None

@@ -1062,9 +1062,9 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
-        f"  - Duration: '30m', '2h', '1d' (one-shot)\n"
-        f"  - Interval: 'every 30m', 'every 2h' (recurring)\n"
-        f"  - Weekly/daily: 'every monday 9am', 'every day at 9am' (recurring)\n"
+        f"  - Interval: '30m', 'every 30m', 'every 2h' (recurring)\n"
+        f"  - One-shot delay: 'in 30m', 'in 2h' (fires once)\n"
+        f"  - Weekly/daily: 'every monday 9am', 'weekdays at 9am' (recurring)\n"
         f"  - Cron: '0 9 * * *' (cron expression)\n"
         f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
     )

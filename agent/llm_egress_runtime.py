@@ -2141,6 +2141,23 @@ def _typed_payload(
                 or is_read_file_projection_tool_result
                 or is_scratch_read_file_tool_result
             ):
+                if (
+                    source_metadata is not None
+                    and not is_scratch_read_file_tool_result
+                    and structured_text is not None
+                ):
+                    typed[key] = _segment_read_file_presentation(
+                        structured_text,
+                        source_metadata,
+                        grant_texts,
+                        used_grants,
+                        registry=registry,
+                        session_id=request_identity[0],
+                        turn_id=request_identity[1],
+                        request_id=request_identity[2],
+                        policy_digest=request_identity[3],
+                    )
+                    continue
                 typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
                 continue
             if is_structured_result and (
@@ -2181,7 +2198,17 @@ def _typed_payload(
                 # expose raw stdout to the remote firewall.
                 typed[key] = GeneratedContextSegment(_terminal_replay_result(""))
                 continue
-            if is_read_file_result and key == "content" and isinstance(item, str):
+            if (
+                (
+                    is_read_file_result
+                    or (
+                        is_read_file_projection_tool_result
+                        and source_metadata is not None
+                    )
+                )
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
                 if is_scratch_read_file_tool_result:
                     typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
                     continue
@@ -2639,35 +2666,96 @@ def _route_field(route: Any, name: str, default: Any = None) -> Any:
 def _restore_source_provenance_sidecar(
     body: Mapping[str, Any], sidecar: Any
 ) -> dict[str, Any]:
-    """Reattach only exact content-bound metadata to internal message copies."""
+    """Reattach exact content-bound metadata after either wire conversion.
+
+    Chat Completions retains tool messages, while Codex Responses converts
+    them to ``function_call_output`` items.  The latter must recover the same
+    internal envelope before typing; otherwise a verified read is mistaken
+    for untrusted structured output and silently elided.
+    """
 
     restored = dict(body)
     messages = restored.get("messages")
-    if not isinstance(messages, list) or not isinstance(sidecar, list):
+    if not isinstance(sidecar, list):
         return restored
-    copied_messages = list(messages)
+    if isinstance(messages, list):
+        copied_messages = list(messages)
+        changed = False
+        for entry in sidecar:
+            if not isinstance(entry, Mapping):
+                continue
+            index = entry.get("message_index")
+            if not isinstance(index, int) or isinstance(index, bool):
+                continue
+            if index < 0 or index >= len(copied_messages):
+                continue
+            message = copied_messages[index]
+            if not isinstance(message, Mapping):
+                continue
+            content = message.get("content")
+            if (
+                message.get("role") != "tool"
+                or not isinstance(content, str)
+                or message.get("tool_call_id") != entry.get("tool_call_id")
+                or entry.get("content_sha256")
+                != sha256(content.encode("utf-8")).hexdigest()
+            ):
+                continue
+            copied = dict(message)
+            copied["_source_provenance"] = {
+                key: entry[key]
+                for key in (
+                    "request_id",
+                    "source_grant_digests",
+                    "content_sha256",
+                    "presentation_kind",
+                )
+                if key in entry
+            }
+            copied_messages[index] = copied
+            changed = True
+        if changed:
+            restored["messages"] = copied_messages
+
+    input_items = restored.get("input")
+    if not isinstance(input_items, list) or not isinstance(sidecar, list):
+        return restored
+    copied_input = list(input_items)
     changed = False
     for entry in sidecar:
         if not isinstance(entry, Mapping):
             continue
-        index = entry.get("message_index")
-        if not isinstance(index, int) or isinstance(index, bool):
+        expected_sha = entry.get("content_sha256")
+        original_call_id = entry.get("tool_call_id")
+        if not isinstance(expected_sha, str) or not isinstance(original_call_id, str):
             continue
-        if index < 0 or index >= len(copied_messages):
+        try:
+            from agent.codex_responses_adapter import _clamp_responses_call_id
+
+            expected_call_id = _clamp_responses_call_id(original_call_id)
+        except Exception:
+            expected_call_id = original_call_id
+        candidates: list[int] = []
+        for index, item in enumerate(copied_input):
+            if not isinstance(item, Mapping):
+                continue
+            output = item.get("output")
+            output_text = (
+                _structured_tool_output_text(output)
+                if isinstance(output, (list, Mapping))
+                else output
+            )
+            if (
+                item.get("type") == "function_call_output"
+                and item.get("call_id") == expected_call_id
+                and isinstance(output_text, str)
+                and sha256(output_text.encode("utf-8")).hexdigest() == expected_sha
+            ):
+                candidates.append(index)
+        if len(candidates) != 1:
             continue
-        message = copied_messages[index]
-        if not isinstance(message, Mapping):
-            continue
-        content = message.get("content")
-        if (
-            message.get("role") != "tool"
-            or not isinstance(content, str)
-            or message.get("tool_call_id") != entry.get("tool_call_id")
-            or entry.get("content_sha256")
-            != sha256(content.encode("utf-8")).hexdigest()
-        ):
-            continue
-        copied = dict(message)
+        index = candidates[0]
+        copied = dict(copied_input[index])
         copied["_source_provenance"] = {
             key: entry[key]
             for key in (
@@ -2678,10 +2766,10 @@ def _restore_source_provenance_sidecar(
             )
             if key in entry
         }
-        copied_messages[index] = copied
+        copied_input[index] = copied
         changed = True
     if changed:
-        restored["messages"] = copied_messages
+        restored["input"] = copied_input
     return restored
 
 

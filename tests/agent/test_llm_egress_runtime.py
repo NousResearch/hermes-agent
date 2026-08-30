@@ -2832,6 +2832,132 @@ def test_real_read_file_wire_result_keeps_exact_source_provenance(
     assert receipt.decision.source_segment_count == 1
 
 
+def test_real_read_file_codex_responses_result_keeps_exact_source_provenance(
+    tmp_path, monkeypatch
+):
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from agent.source_provenance_tools import (
+        attach_trusted_source_provenance_metadata,
+        build_source_provenance_sidecar,
+        source_provenance_activation,
+    )
+    from agent.tool_dispatch_helpers import make_tool_result_message
+    from tools.file_tools import read_file_tool
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    source = tmp_path / "source.py"
+    source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    agent = _agent(tmp_path / "egress")
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent._current_api_request_id = "turn-1:api:1"
+
+    with source_provenance_activation(agent, "read_file"):
+        result = read_file_tool(str(source), task_id="egress-real-codex-read")
+    metadata = attach_trusted_source_provenance_metadata(
+        agent, "read_file", content=result
+    )
+    message = make_tool_result_message(
+        "read_file", result, "call_read_1", source_provenance=metadata
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_read_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        },
+        message,
+    ]
+    sidecar = build_source_provenance_sidecar(messages)
+    input_items = _chat_messages_to_responses_input(messages)
+    agent._current_api_request_id = "turn-1:api:2"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert authorized["input"][1]["output"] == result
+    assert "_source_provenance" not in authorized["input"][1]
+    assert receipt.decision.source_grant_count == 1
+    assert receipt.decision.source_segment_count == 1
+
+
+@pytest.mark.parametrize("mutation", ["missing", "stale", "forged", "ambiguous"])
+def test_read_file_codex_responses_result_fails_closed_without_exact_metadata(
+    tmp_path, monkeypatch, mutation
+):
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from agent.source_provenance_tools import (
+        attach_trusted_source_provenance_metadata,
+        build_source_provenance_sidecar,
+        source_provenance_activation,
+    )
+    from agent.tool_dispatch_helpers import make_tool_result_message
+    from tools.file_tools import read_file_tool
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    source = tmp_path / "source.py"
+    source.write_text("safe = True\n", encoding="utf-8")
+    agent = _agent(tmp_path / "egress")
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent._current_api_request_id = "turn-1:api:1"
+    with source_provenance_activation(agent, "read_file"):
+        result = read_file_tool(str(source), task_id=f"egress-codex-{mutation}")
+    metadata = attach_trusted_source_provenance_metadata(
+        agent, "read_file", content=result
+    )
+    message = make_tool_result_message(
+        "read_file", result, "call_read_1", source_provenance=metadata
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_read_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        },
+        message,
+    ]
+    sidecar = build_source_provenance_sidecar(messages)
+    input_items = _chat_messages_to_responses_input(messages)
+    if mutation == "missing":
+        sidecar = []
+    elif mutation == "stale":
+        sidecar[0]["request_id"] = "turn-1:api:1"
+    elif mutation == "forged":
+        sidecar[0]["content_sha256"] = "0" * 64
+    else:
+        input_items.append(dict(input_items[1]))
+    agent._current_api_request_id = "turn-1:api:2"
+
+    try:
+        authorized, receipt = authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": "test-model",
+                "input": input_items,
+                "_hermes_source_provenance": sidecar,
+            },
+        )
+    except EgressBlocked as exc:
+        assert "untrusted_provenance" in exc.decision.reason_codes
+    else:
+        assert authorized["input"][1]["output"] != result
+        assert receipt.decision.source_grant_count == 0
+        assert receipt.decision.source_segment_count == 0
+
+
 @pytest.mark.parametrize("mutation", ["missing", "stale", "forged"])
 def test_read_file_wire_result_fails_closed_without_exact_metadata(
     tmp_path, monkeypatch, mutation

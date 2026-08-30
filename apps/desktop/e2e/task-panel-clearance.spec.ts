@@ -39,7 +39,7 @@ async function reopenWorkingSession(page: Page): Promise<void> {
   await row.click()
   await expect(activeSurface(page).locator('[data-slot="aui_thread-viewport"]')).toContainText(
     'Task-panel clearance line 24',
-    { timeout: 30_000 },
+    { timeout: 30_000 }
   )
 }
 
@@ -64,7 +64,7 @@ async function clearanceMetrics(page: Page): Promise<ClearanceMetrics> {
       distanceFromBottom: viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop,
       latestMessageBottom: latest.getBoundingClientRect().bottom,
       statusPanelTop: status.getBoundingClientRect().top,
-      viewportHeight: viewport.clientHeight,
+      viewportHeight: viewport.clientHeight
     }
   })
 }
@@ -74,7 +74,7 @@ test.describe('working-session task-panel clearance', () => {
 
   test.beforeEach(async () => {
     fixture = await setupMockBackend({
-      mockServer: { holdFirstCompletionContaining: TASK_PANEL_RESUME_TRIGGER },
+      mockServer: { holdFirstCompletionContaining: TASK_PANEL_RESUME_TRIGGER }
     })
     await waitForAppReady(fixture, 120_000)
   })
@@ -126,7 +126,7 @@ test.describe('working-session task-panel clearance', () => {
           following: viewport.dataset.following,
           latestMessageBottom: latest.getBoundingClientRect().bottom,
           statusPanelTop: status.getBoundingClientRect().top,
-          visibility: document.visibilityState,
+          visibility: document.visibilityState
         }
       })
 

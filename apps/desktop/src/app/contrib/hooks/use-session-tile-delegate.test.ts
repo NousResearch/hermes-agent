@@ -2,6 +2,7 @@ import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesModule from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $activeSessionId,
   $messages,
@@ -31,6 +32,15 @@ vi.mock('@/store/gateway', async importActual => ({
 
 const { getLatestSessionMessages } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(next => {
+    resolve = next
+  })
+
+  return { promise, resolve }
+}
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
   ({
@@ -248,6 +258,63 @@ describe('useSessionTileDelegate resumeTile', () => {
       'session.resume',
       expect.anything()
     )
+  })
+
+  it('fences a late same-id owner resume and converges both callers on the clicked owner', async () => {
+    const ownerA = { connectionId: 'source-a', profile: 'profile-a' }
+    const ownerB = { connectionId: 'source-b', profile: 'profile-b' }
+    const rowA = row({ connection_id: ownerA.connectionId, id: 'shared-id', profile: ownerA.profile })
+    const rowB = row({ connection_id: ownerB.connectionId, id: 'shared-id', profile: ownerB.profile })
+    const resumeA = deferred<{ session_id: string }>()
+    const resumeB = deferred<{ session_id: string }>()
+    const runtimeIdByStoredSessionIdRef = { current: new Map<string, string>() }
+    const sessionStateByRuntimeIdRef = { current: new Map<string, ReturnType<typeof createClientSessionState>>() }
+    const updateSessionState = vi.fn((runtimeId, updater, storedSessionId) => {
+      const next = updater(
+        sessionStateByRuntimeIdRef.current.get(runtimeId) ?? createClientSessionState(storedSessionId ?? null)
+      )
+
+      sessionStateByRuntimeIdRef.current.set(runtimeId, next)
+
+      if (storedSessionId) {
+        runtimeIdByStoredSessionIdRef.current.set(storedSessionId, runtimeId)
+      }
+
+      return next
+    })
+
+    setSessions([rowA, rowB])
+    openSessionTile('shared-id', 'center', undefined, undefined, {
+      ownerRoute: ownerA,
+      workspaceMode: 'sessions'
+    })
+    vi.mocked(requestGatewayForAgent).mockImplementation(((connectionId: string) =>
+      connectionId === ownerA.connectionId ? resumeA.promise : resumeB.promise) as never)
+    renderTile(
+      vi.fn(async () => ({}) as never),
+      { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState }
+    )
+
+    const first = sessionTileDelegate()!.resumeTile('shared-id')
+
+    await vi.waitFor(() =>
+      expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'profile-a', 'session.resume', expect.anything())
+    )
+
+    openSidebarSession('shared-id', rowB, vi.fn())
+    const second = sessionTileDelegate()!.resumeTile('shared-id')
+
+    await vi.waitFor(() =>
+      expect(requestGatewayForAgent).toHaveBeenCalledWith('source-b', 'profile-b', 'session.resume', expect.anything())
+    )
+
+    resumeA.resolve({ session_id: 'runtime-a' })
+    await Promise.resolve()
+    resumeB.resolve({ session_id: 'runtime-b' })
+
+    await expect(Promise.all([first, second])).resolves.toEqual(['runtime-b', 'runtime-b'])
+    expect(requestGatewayForAgent).toHaveBeenCalledTimes(2)
+    expect(updateSessionState.mock.calls.some(([runtimeId]) => runtimeId === 'runtime-a')).toBe(false)
   })
 
   it('keeps a same-owner same-id tile warm and only focuses its existing surface', async () => {

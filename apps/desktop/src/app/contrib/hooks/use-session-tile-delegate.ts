@@ -20,13 +20,17 @@ import { requestForSessionProfile, type SessionOwnerScope } from '@/store/sessio
 import {
   $sessionTiles,
   publishSessionState,
+  sessionTileDelegate,
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
 import type { SessionResumeResult } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
-import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
+import {
+  sessionResumeFlightKey,
+  singleFlightSessionResume
+} from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import {
   chatMessageArraysEquivalent,
@@ -193,6 +197,12 @@ export function useSessionTileDelegate({
       return requestForSessionProfile<T>(owner, requestGateway, method, params, timeoutMs)
     }
 
+    // Keep the full tile hydration in flight, not only its resume RPC. A
+    // same-id owner retarget can settle the new owner's RPC while the stale
+    // caller is still unwinding; retaining the flight through the cache write
+    // lets that stale caller join the winner instead of minting a duplicate.
+    const tileResumeByOwner = new Map<string, Promise<string>>()
+
     setSessionTileDelegate({
       archiveSession: async storedSessionId => {
         await archiveSession(storedSessionId)
@@ -283,7 +293,6 @@ export function useSessionTileDelegate({
         const existing =
           runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
           $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
-
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
         const refreshTranscript = options?.refreshTranscript === true
 
@@ -315,113 +324,165 @@ export function useSessionTileDelegate({
         // launch-profile DB and fork the conversation into the wrong profile —
         // the same cross-profile bleed the recovery resumes had (#67603).
         const owner = await ownerForStoredSession(storedSessionId)
+        const ownerFlightKey = sessionResumeFlightKey(storedSessionId, owner)
+        const existingOwnerResume = tileResumeByOwner.get(ownerFlightKey)
 
-        const restScope =
-          owner && typeof owner === 'object'
-            ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
-            : owner
-
-        const prefetchPromise = getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
-
-        if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
-          const prefetch = await prefetchPromise
-          // Deltas and completion may land while REST is in flight.
-          updateSessionState(
-            existing,
-            state => {
-              const merged = mergeTileTranscript(state.messages, prefetch?.messages, state.streamId ?? cached.streamId)
-
-              return chatMessageArraysEquivalent(state.messages, merged) ? state : { ...state, messages: merged }
-            },
-            storedSessionId
-          )
-
-          return existing
+        if (existingOwnerResume) {
+          return existingOwnerResume
         }
 
-        // #94724 no-owner recovery: dispatching the resume through the same
-        // fail-closed gate as the window's RPC dispatcher keeps an unknown
-        // owner off the ambient socket, and the wrapper opens the stored
-        // transcript read-only instead of dead-ending the tile — the id-only
-        // REST read routes no live session at all.
-        const outcome = await resumeWithStoredTranscriptFallback(
-          storedSessionId,
-          () => {
-            assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
+        const ownerResume = (async () => {
+          const restScope =
+            owner && typeof owner === 'object'
+              ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
+              : owner
 
-            return singleFlightSessionResume(storedSessionId, () =>
-              requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
-                session_id: storedSessionId,
-                cols: 96,
-                omit_messages: true,
-                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
-              })
+          const prefetchPromise = getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
+
+          if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
+            const prefetch = await prefetchPromise
+            // Deltas and completion may land while REST is in flight.
+            updateSessionState(
+              existing,
+              state => {
+                const merged = mergeTileTranscript(
+                  state.messages,
+                  prefetch?.messages,
+                  state.streamId ?? cached.streamId
+                )
+
+                return chatMessageArraysEquivalent(state.messages, merged) ? state : { ...state, messages: merged }
+              },
+              storedSessionId
             )
-          },
-          async () => {
-            const stored = (await prefetchPromise) ?? (await fetchStoredTranscriptAcrossBackends(storedSessionId))
 
-            if (!stored) {
-              throw new Error('stored transcript unavailable on every reachable backend')
+            return existing
+          }
+
+          // #94724 no-owner recovery: dispatching the resume through the same
+          // fail-closed gate as the window's RPC dispatcher keeps an unknown
+          // owner off the ambient socket, and the wrapper opens the stored
+          // transcript read-only instead of dead-ending the tile — the id-only
+          // REST read routes no live session at all.
+          const outcome = await resumeWithStoredTranscriptFallback(
+            storedSessionId,
+            () => {
+              assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
+
+              return singleFlightSessionResume(
+                storedSessionId,
+                () =>
+                  requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
+                    session_id: storedSessionId,
+                    cols: 96,
+                    omit_messages: true,
+                    ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+                  }),
+                owner
+              )
+            },
+            async () => {
+              const stored = (await prefetchPromise) ?? (await fetchStoredTranscriptAcrossBackends(storedSessionId))
+
+              if (!stored) {
+                throw new Error('stored transcript unavailable on every reachable backend')
+              }
+
+              return stored
+            }
+          )
+
+          const currentTileOwner = sessionTileOwnerRoute(storedSessionId)
+
+          if (currentTileOwner && sessionResumeFlightKey(storedSessionId, currentTileOwner) !== ownerFlightKey) {
+            // The new owner's concurrent resume may have finished between the
+            // stale RPC settling and this fence. Its cache write is the existing
+            // runtime-binding seam; reuse that winner even when its transcript is
+            // legitimately empty instead of minting a second runtime for the new
+            // owner. The owner-retarget path invalidates the old binding before
+            // dispatch, and this stale outcome has not published anything yet.
+            const currentRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+            if (currentRuntimeId) {
+              return currentRuntimeId
             }
 
-            return stored
+            const delegate = sessionTileDelegate()
+
+            if (!delegate) {
+              throw new Error('session owner changed while resume was in flight')
+            }
+
+            return delegate.resumeTile(storedSessionId, options)
           }
-        )
 
-        const prefetch = await prefetchPromise
+          const prefetch = await prefetchPromise
 
-        if (outcome.mode === 'read-only') {
-          const readOnlyId = readOnlyRuntimeIdFor(storedSessionId)
+          if (outcome.mode === 'read-only') {
+            const readOnlyId = readOnlyRuntimeIdFor(storedSessionId)
+
+            updateSessionState(
+              readOnlyId,
+              state => ({
+                ...state,
+                busy: false,
+                awaitingResponse: false,
+                messages:
+                  state.messages.length > 0 ? state.messages : toChatMessages(outcome.transcript?.messages ?? [])
+              }),
+              storedSessionId
+            )
+
+            notify({
+              kind: 'info',
+              title: translateNow('desktop.readOnlyTranscriptTitle'),
+              message: translateNow('desktop.readOnlyTranscriptBody')
+            })
+
+            return readOnlyId
+          }
+
+          const resumed = outcome.resumed
+
+          const runtimeId = resumed?.session_id
+
+          if (!runtimeId) {
+            throw new Error('resume returned no session id')
+          }
+
+          const info = resumed?.info
 
           updateSessionState(
-            readOnlyId,
+            runtimeId,
             state => ({
               ...state,
-              busy: false,
-              awaitingResponse: false,
-              messages: state.messages.length > 0 ? state.messages : toChatMessages(outcome.transcript?.messages ?? [])
+              busy: Boolean(info?.running),
+              // Persist the session's own model/provider from resume so the tile
+              // pill does not wait on a chrome-scoped catalog read (#93892).
+              ...(typeof info?.model === 'string' ? { model: info.model } : {}),
+              ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
+              ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+              ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
+              messages:
+                state.messages.length > 0
+                  ? state.messages
+                  : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
             }),
             storedSessionId
           )
 
-          notify({
-            kind: 'info',
-            title: translateNow('desktop.readOnlyTranscriptTitle'),
-            message: translateNow('desktop.readOnlyTranscriptBody')
-          })
+          return runtimeId
+        })()
 
-          return readOnlyId
+        tileResumeByOwner.set(ownerFlightKey, ownerResume)
+
+        try {
+          return await ownerResume
+        } finally {
+          if (tileResumeByOwner.get(ownerFlightKey) === ownerResume) {
+            tileResumeByOwner.delete(ownerFlightKey)
+          }
         }
-
-        const resumed = outcome.resumed
-
-        const runtimeId = resumed?.session_id
-
-        if (!runtimeId) {
-          throw new Error('resume returned no session id')
-        }
-
-        const info = resumed?.info
-
-        updateSessionState(
-          runtimeId,
-          state => ({
-            ...state,
-            busy: Boolean(info?.running),
-            // Persist the session's own model/provider from resume so the tile
-            // pill does not wait on a chrome-scoped catalog read (#93892).
-            ...(typeof info?.model === 'string' ? { model: info.model } : {}),
-            ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-            ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
-            ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
-            messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
-          }),
-          storedSessionId
-        )
-
-        return runtimeId
       },
       submitToSession: async (runtimeId, text) => {
         // A read-only stored-transcript tile has no live runtime to submit

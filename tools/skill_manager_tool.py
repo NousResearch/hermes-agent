@@ -1954,7 +1954,15 @@ def skill_manage(
         from tools import skill_ledger as _ledger
         _pre = _find_skill(name)
         _ledger_before_dir = _pre["path"] if _pre else None
-        _ledger_before = _ledger.capture_before(_ledger_before_dir)
+        # delete destroys the whole package; consolidation may have re-homed
+        # support files out of the tree first, so complete the capture from
+        # the newest curator backup or rollback restores a hollow skill
+        # (#96962). Other actions capture disk state only.
+        _ledger_before = _ledger.capture_before(
+            _ledger_before_dir,
+            complete_package=(action == "delete"),
+            skill=name,
+        )
     except Exception:
         pass
 

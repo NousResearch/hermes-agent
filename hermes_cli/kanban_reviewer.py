@@ -69,8 +69,12 @@ def validate_reviewer_result(payload: Mapping[str, Any]) -> ReviewerResult:
         raise ValueError("ambiguity_or_blocker_reason must be non-empty when supplied")
     if verdict == "CHANGES_REQUESTED" and not findings:
         raise ValueError("CHANGES_REQUESTED requires concrete findings")
+    if verdict == "CHANGES_REQUESTED" and reason is not None:
+        raise ValueError("CHANGES_REQUESTED cannot contain ambiguity_or_blocker_reason")
     if verdict == "BLOCKED" and not _text(reason):
         raise ValueError("BLOCKED requires ambiguity_or_blocker_reason")
+    if verdict == "BLOCKED" and findings:
+        raise ValueError("BLOCKED cannot contain findings")
     if verdict == "APPROVED" and findings:
         raise ValueError("APPROVED cannot contain findings")
     return ReviewerResult(verdict, payload["summary"].strip(), tuple(findings), reason.strip() if reason else None)
@@ -83,8 +87,16 @@ def _canonical(result: ReviewerResult) -> str:
 
 
 def _audit(conn, task_id: str, kind: str, payload: Mapping[str, Any]) -> None:
-    with kb.write_txn(conn):
-        kb._append_event(conn, task_id, kind, dict(payload))
+    with kb.write_txn(conn, allow_nested=True):
+        kb._append_event(conn, task_id, kind, kb.redact_review_value(dict(payload)))
+
+
+def _correction_task_ids(conn, task_id: str) -> set[str]:
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key LIKE ? AND status != 'archived'",
+        (f"reviewer-correction:{task_id}:%",),
+    ).fetchall()
+    return {row["id"] for row in rows}
 
 
 def submit_reviewer_result(conn, task_id: str, payload: Mapping[str, Any], *, reviewer: str = "reviewer") -> dict[str, Any]:
@@ -94,17 +106,19 @@ def submit_reviewer_result(conn, task_id: str, payload: Mapping[str, Any], *, re
     correction. Correction children are idempotent by reviewed task + canonical
     result and are capped at three cycles.
     """
+    safe_payload = kb.redact_review_value(payload)
+    safe_reviewer = str(kb.redact_review_value(reviewer))
     try:
-        result = validate_reviewer_result(payload)
+        result = validate_reviewer_result(safe_payload)
     except (TypeError, ValueError) as exc:
-        _audit(conn, task_id, "reviewer_result_rejected", {"schema_version": 1, "reason": str(exc), "reviewer": reviewer})
+        _audit(conn, task_id, "reviewer_result_rejected", {"schema_version": 1, "reason": str(exc), "reviewer": safe_reviewer})
         return {"accepted": False, "reason": str(exc), "verdict": None}
     task = kb.get_task(conn, task_id)
     if task is None:
         return {"accepted": False, "reason": "unknown task", "verdict": result.verdict}
     canonical = _canonical(result)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:24]
-    base = {"schema_version": 1, "verdict": result.verdict, "reviewer": reviewer, "payload": json.loads(canonical), "payload_digest": digest}
+    base = {"schema_version": 1, "verdict": result.verdict, "reviewer": safe_reviewer, "payload": json.loads(canonical), "payload_digest": digest}
     if result.verdict == "APPROVED":
         if task.status != "done":
             kb.complete_task(conn, task_id, summary=result.summary, result="approved")
@@ -115,14 +129,53 @@ def submit_reviewer_result(conn, task_id: str, payload: Mapping[str, Any], *, re
             kb.block_task(conn, task_id, reason=result.ambiguity_or_blocker_reason or result.summary, kind="needs_input")
         _audit(conn, task_id, "reviewer_result_blocked", base)
         return {"accepted": True, "verdict": result.verdict, "task_id": task_id, "correction_task_id": None}
-    prior = conn.execute("SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = 'reviewer_correction_created'", (task_id,)).fetchone()["n"]
+    correction_ids = _correction_task_ids(conn, task_id)
+    key = f"reviewer-correction:{task_id}:{digest}"
+    existing = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (key,),
+    ).fetchone()
+    if existing:
+        return {
+            "accepted": True,
+            "verdict": result.verdict,
+            "task_id": task_id,
+            "correction_task_id": existing["id"],
+            "cycle": len(correction_ids),
+        }
+    prior = len(correction_ids)
     if prior >= MAX_CORRECTION_CYCLES:
         kb.block_task(conn, task_id, reason="maximum reviewer correction cycles reached", kind="needs_input")
         _audit(conn, task_id, "reviewer_result_escalated", {**base, "cycle": prior})
         return {"accepted": True, "verdict": result.verdict, "task_id": task_id, "correction_task_id": None, "escalated": True}
-    key = f"reviewer-correction:{task_id}:{digest}"
-    correction = kb.create_task(conn, title=f"Correction for {task.title}", body=result.summary, assignee=task.assignee or "builder", parents=[task_id], idempotency_key=key)
-    _audit(conn, task_id, "reviewer_correction_created", {**base, "cycle": prior + 1, "correction_task_id": correction})
+    handoff = {
+        "summary": result.summary,
+        "findings": list(result.findings),
+        "verification_targets": [
+            evidence
+            for finding in result.findings
+            for evidence in finding["verification_evidence"]
+        ],
+    }
+    body = json.dumps(kb.redact_review_value(handoff), ensure_ascii=False, sort_keys=True)
+    with kb.write_txn(conn):
+        correction = kb.create_task(
+            conn,
+            title=f"Correction for {task.title}",
+            body=body,
+            assignee=task.assignee or "builder",
+            parents=[task_id],
+            idempotency_key=key,
+        )
+        # The reviewed task is provenance for this correction, not an
+        # unfinished dependency. Keep the native link for traceability while
+        # exposing the correction to the dispatcher immediately.
+        conn.execute(
+            "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
+            (correction,),
+        )
+        _audit(conn, task_id, "reviewer_correction_created", {**base, "cycle": prior + 1, "correction_task_id": correction, "handoff": handoff})
     return {"accepted": True, "verdict": result.verdict, "task_id": task_id, "correction_task_id": correction, "cycle": prior + 1}
 
 

@@ -1656,6 +1656,25 @@ class _CodexCompletionsAdapter:
         # same behavior as the main agent's Codex transport.
         extra_body = kwargs.get("extra_body") or {}
         if isinstance(extra_body, dict):
+            # Fast mode / Priority Processing is a top-level Responses field.
+            # Auxiliary callers express provider controls through
+            # auxiliary.<task>.extra_body, so project service_tier here just as
+            # the main Codex transport projects request_overrides. xAI's
+            # Responses endpoint rejects this field; keep the same xAI-only
+            # guard as agent/transports/codex.py.
+            service_tier = extra_body.get("service_tier")
+            client_base_url = str(getattr(self._client, "base_url", "") or "")
+            is_xai_responses = (
+                base_url_host_matches(client_base_url, "x.ai")
+                or base_url_host_matches(client_base_url, "api.x.ai")
+            )
+            if (
+                isinstance(service_tier, str)
+                and service_tier.strip()
+                and not is_xai_responses
+            ):
+                resp_kwargs["service_tier"] = service_tier.strip()
+
             reasoning_cfg = extra_body.get("reasoning")
             if isinstance(reasoning_cfg, dict):
                 if reasoning_cfg.get("enabled") is False:

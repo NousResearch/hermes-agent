@@ -198,3 +198,84 @@ async def test_post_turn_verified_goal_absence_remains_a_silent_noop(monkeypatch
     assert adapter.callbacks == {}
 
 
+@pytest.mark.asyncio
+async def test_late_goal_read_failure_from_real_hook_is_reported_without_judge_or_enqueue(
+    monkeypatch, caplog
+):
+    """A read failing after gateway precheck must not end continuation silently."""
+    from hermes_cli import goals
+
+    active_raw = goals.GoalState(goal="finish the task").to_json()
+    db_calls = 0
+
+    class ReadableGoalDB:
+        def get_meta(self, _key):
+            return active_raw
+
+    class FailingGoalDB:
+        def get_meta(self, _key):
+            raise OSError("sensitive staged-store details")
+
+    def staged_goal_db():
+        nonlocal db_calls
+        db_calls += 1
+        if db_calls < 3:
+            return ReadableGoalDB()
+        return FailingGoalDB()
+
+    monkeypatch.setattr(goals, "_get_session_db", staged_goal_db)
+    judge = MagicMock(side_effect=AssertionError("goal judge must not run"))
+    monkeypatch.setattr(goals, "judge_goal", judge)
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    adapter = FakeAdapter()
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner.config = SimpleNamespace(
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    runner._warm_goals_session_db = AsyncMock()
+    runner._goal_max_turns_from_config = MagicMock(return_value=20)
+    runner._enqueue_fifo = MagicMock()
+    runner._post_turn_loop_completion = AsyncMock()
+
+    async def run_inline(func, *args):
+        return func(*args)
+
+    runner._run_in_executor_with_context = run_inline
+    session_entry = SimpleNamespace(session_id="late-goal-read-failure-session")
+    runner.session_store = MagicMock()
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        get_or_create_session=AsyncMock(return_value=session_entry),
+    )
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="parent-channel",
+        thread_id="thread-123",
+        user_id="user-1",
+    )
+    expected_notice = "Goal status unavailable: persisted goal read failed"
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        await runner._run_post_turn_hooks(
+            agent_result={"final_response": "partial progress"},
+            source=source,
+            is_internal=False,
+        )
+
+    assert db_calls == 3
+    judge.assert_not_called()
+    runner._enqueue_fifo.assert_not_called()
+    runner._post_turn_loop_completion.assert_awaited_once()
+    assert adapter.calls == []
+    assert len(adapter.callbacks) == 1
+    assert expected_notice in caplog.text
+    assert "sensitive staged-store details" not in caplog.text
+
+    _, callback = next(iter(adapter.callbacks.values()))
+    await callback()
+    assert [call["content"] for call in adapter.calls] == [expected_notice]
+    assert "sensitive staged-store details" not in adapter.calls[0]["content"]
+
+

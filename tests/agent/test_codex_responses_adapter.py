@@ -1,12 +1,16 @@
+import sys
+import unicodedata
 from types import SimpleNamespace
 
 import pytest
 
 from agent.codex_responses_adapter import (
+    _FORMAT_CONTROL_RE,
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
     _sanitize_replayed_fn_name,
     _format_responses_error,
+    _has_format_control,
     _normalize_codex_response,
     _neutralize_harmony_tokens,
     _preflight_codex_api_kwargs,
@@ -119,6 +123,37 @@ def test_harmony_neutralizer_handles_format_controls_anywhere_in_token():
 
     for token in disguised:
         assert _neutralize_harmony_tokens(token) == "<｜start｜>"
+
+
+def test_cf_class_matches_unicodedata():
+    """The hardcoded Cf character class must stay equal to the live category.
+
+    ``_has_format_control`` trades ``unicodedata.category`` for a compiled class
+    to keep preflight off a per-character Python loop.  If a Unicode revision
+    adds or moves a Cf codepoint the class would silently stop covering it and
+    a disguised Harmony token could slip through, so re-derive it here.
+    """
+    derived = {cp for cp in range(sys.maxunicode + 1)
+               if unicodedata.category(chr(cp)) == "Cf"}
+    matched = {cp for cp in range(sys.maxunicode + 1)
+               if _FORMAT_CONTROL_RE.fullmatch(chr(cp))}
+
+    assert matched == derived, (
+        "hardcoded Cf class drifted from unicodedata "
+        f"(unicode {unicodedata.unidata_version}); "
+        f"missing={sorted(derived - matched)[:8]} extra={sorted(matched - derived)[:8]}"
+    )
+
+
+def test_has_format_control_agrees_with_unicodedata_on_mixed_text():
+    ascii_only = "def f(x): return [y for y in x if y < 3] | s"
+    assert _has_format_control(ascii_only) is False
+
+    non_ascii_clean = "değişkenlerin çoğu güncellendi <|start|> şüpheli durum yok"
+    assert _has_format_control(non_ascii_clean) is False
+
+    for cf in ("​", "­", "﻿", "⁠", "\U000e0001"):
+        assert _has_format_control(f"prefix {cf} suffix") is True
 
 
 def test_codex_api_preflight_sanitizes_tuple_values_in_tool_schemas():

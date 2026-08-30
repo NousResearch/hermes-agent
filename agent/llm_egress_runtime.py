@@ -82,6 +82,7 @@ _REMOTE_KANBAN_PROJECTION_TOOL_NAMES = frozenset({"kanban_show"})
 _REMOTE_KANBAN_TERMINAL_REPLAY_TOOL_NAMES = frozenset({"terminal"})
 _REMOTE_KANBAN_SEARCH_PROJECTION_TOOL_NAMES = frozenset({"search_files"})
 _REMOTE_KANBAN_READ_FILE_PROJECTION_TOOL_NAMES = frozenset({"read_file"})
+_REMOTE_KANBAN_WEB_REPLAY_TOOL_NAMES = frozenset({"web_search"})
 _REMOTE_KANBAN_READONLY_REPLAY_TOOL_NAMES = frozenset(
     {
         "kanban_show",
@@ -210,6 +211,59 @@ def _project_bound_search_files(value: str) -> GeneratedContextSegment:
         )
     )
     return GeneratedContextSegment(safe)
+
+
+def _project_web_search_replay(value: str) -> SanitizedSegment:
+    """Keep bounded public result identity, never raw page/search excerpts."""
+
+    start = value.find("{") if isinstance(value, str) else -1
+    end = value.rfind("}") if isinstance(value, str) else -1
+    try:
+        payload = json.loads(value[start : end + 1]) if 0 <= start <= end else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = None
+
+    raw_results: Any = None
+    if isinstance(payload, Mapping):
+        search = payload.get("search")
+        if isinstance(search, Mapping):
+            raw_results = search.get("web")
+        if raw_results is None:
+            raw_results = payload.get("results")
+
+    results: list[dict[str, str]] = []
+    if isinstance(raw_results, list):
+        for raw in raw_results[:20]:
+            if not isinstance(raw, Mapping):
+                continue
+            projected: dict[str, str] = {}
+            for key in ("url", "title"):
+                item = raw.get(key)
+                if not isinstance(item, str):
+                    continue
+                candidate = redact_remote_unsafe_text(
+                    redact_sensitive_text(
+                        item,
+                        force=True,
+                        redact_url_credentials=True,
+                    )
+                )
+                try:
+                    projected[key] = validate_sanitized_text(candidate, max_bytes=2_048)
+                except (TypeError, ValueError):
+                    continue
+            if projected:
+                results.append(projected)
+
+    projection = {
+        "kind": "web results",
+        "results": results,
+        "raw excerpts omitted": True,
+    }
+    rendered = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
+    return SanitizedSegment(validate_sanitized_text(rendered))
+
+
 _APPLICATION_IDENTIFIER_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_-])(?:t_[0-9a-f]{8}|[0-9a-f]{40}|[0-9a-f]{64}|"
     r"[a-z][a-z0-9]{0,31}(?:[_-][a-z][a-z0-9]{0,31}){1,7}"
@@ -1788,6 +1842,7 @@ def _typed_payload(
     elided_kanban_tool_call_ids: frozenset[str] = frozenset(),
     search_projection_tool_call_ids: frozenset[str] = frozenset(),
     read_file_projection_tool_call_ids: frozenset[str] = frozenset(),
+    web_replay_tool_call_ids: frozenset[str] = frozenset(),
     scratch_read_file_tool_call_ids: frozenset[str] = frozenset(),
     git_workspace_diagnostic_call_ids: frozenset[str] = frozenset(),
     git_grep_projection_tool_call_ids: frozenset[str] = frozenset(),
@@ -1878,6 +1933,14 @@ def _typed_payload(
         is_read_file_projection_tool_result = (
             isinstance(output_call_id, str)
             and output_call_id in read_file_projection_tool_call_ids
+            and (
+                value.get("role") == "tool"
+                or value.get("type") == "function_call_output"
+            )
+        )
+        is_web_replay_tool_result = (
+            isinstance(output_call_id, str)
+            and output_call_id in web_replay_tool_call_ids
             and (
                 value.get("role") == "tool"
                 or value.get("type") == "function_call_output"
@@ -2064,6 +2127,10 @@ def _typed_payload(
                     _STRUCTURED_SEARCH_REPLAY_ELISION
                 )
                 continue
+            if is_structured_result and is_web_replay_tool_result:
+                if structured_text is not None:
+                    typed[key] = _project_web_search_replay(structured_text)
+                    continue
             if is_structured_result and is_git_workspace_diagnostic_result:
                 typed[key] = GeneratedContextSegment(
                     _GIT_WORKSPACE_DIAGNOSTIC_REPLAY
@@ -2112,6 +2179,19 @@ def _typed_payload(
                 and isinstance(item, str)
             ):
                 typed[key] = _project_bound_search_files(item)
+                continue
+            if (
+                is_web_replay_tool_result
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                # Search results originated outside the managed workspace and
+                # are useful only as untrusted public evidence. Preserve that
+                # evidence after the same path/secret/encoding redaction used
+                # for remote-safe generated context, while keeping it charged
+                # to the sanitized-text budget. The exact call-id binding is
+                # required so arbitrary tool output cannot claim this lane.
+                typed[key] = _project_web_search_replay(item)
                 continue
             if (
                 is_kanban_assignees_result
@@ -2284,6 +2364,7 @@ def _typed_payload(
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
+                web_replay_tool_call_ids=web_replay_tool_call_ids,
                 scratch_read_file_tool_call_ids=scratch_read_file_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
@@ -2332,6 +2413,7 @@ def _typed_payload(
                 elided_kanban_tool_call_ids=elided_kanban_tool_call_ids,
                 search_projection_tool_call_ids=search_projection_tool_call_ids,
                 read_file_projection_tool_call_ids=read_file_projection_tool_call_ids,
+                web_replay_tool_call_ids=web_replay_tool_call_ids,
                 scratch_read_file_tool_call_ids=scratch_read_file_tool_call_ids,
                 git_workspace_diagnostic_call_ids=git_workspace_diagnostic_call_ids,
                 git_grep_projection_tool_call_ids=git_grep_projection_tool_call_ids,
@@ -2654,6 +2736,11 @@ def authorize_agent_sdk_kwargs(
             _recognized_tool_call_ids(
                 body, _REMOTE_KANBAN_READ_FILE_PROJECTION_TOOL_NAMES
             )
+            if protected_kanban_remote and protected_provider_route
+            else frozenset()
+        ),
+        web_replay_tool_call_ids=(
+            _recognized_tool_call_ids(body, _REMOTE_KANBAN_WEB_REPLAY_TOOL_NAMES)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

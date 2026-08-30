@@ -1434,6 +1434,100 @@ def test_protected_codex_rejects_unknown_structured_tool_output(tmp_path, monkey
         )
 
 
+@pytest.mark.parametrize(
+    "unsafe_text",
+    (
+        "c2VjcmV0LXBheWxvYWQ=",
+        "API_TOKEN=not-a-real-secret-token-123456789",
+    ),
+)
+def test_protected_codex_redacts_bound_web_search_replay(
+    tmp_path, monkeypatch, unsafe_text
+):
+    """Public search evidence remains usable without replaying unsafe atoms."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+    call_id = "call_web_search_replay"
+    output = (
+        '<external_tool_result source="web_search">\n'
+        + json.dumps(
+            {
+                "search": {
+                    "web": [
+                        {
+                            "url": "https://example.com/result",
+                            "title": "Public result",
+                            "description": (
+                                f"Untrusted public snippet {unsafe_text} "
+                                "from /Users/private/repository/file.py"
+                            ),
+                        }
+                    ]
+                }
+            }
+        )
+        + "\n</external_tool_result>"
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "web_search",
+                    "call_id": call_id,
+                    "arguments": json.dumps({"query": "public source"}),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output,
+                },
+            ],
+        },
+    )
+
+    rendered = authorized["input"][1]["output"]
+    assert receipt.allowed
+    assert "https://example.com/result" in rendered
+    assert "Public result" in rendered
+    assert unsafe_text not in rendered
+    assert "/Users/private/repository/file.py" not in rendered
+
+
+def test_protected_codex_rejects_unbound_web_search_shaped_replay(
+    tmp_path, monkeypatch
+):
+    """A web-shaped result receives no exemption without an exact call binding."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_mode = "codex_responses"
+
+    with pytest.raises(EgressBlocked, match="base64_payload"):
+        authorize_agent_sdk_kwargs(
+            agent,
+            {
+                "model": agent.model,
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_unbound_web_result",
+                        "output": "c2VjcmV0LXBheWxvYWQ=",
+                    }
+                ],
+            },
+        )
+
+
 @pytest.mark.parametrize("structured", (False, True))
 def test_protected_codex_projects_exact_kanban_assignee_roster(
     tmp_path, monkeypatch, structured

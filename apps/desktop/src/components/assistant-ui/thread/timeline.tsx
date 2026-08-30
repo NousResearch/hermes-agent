@@ -162,7 +162,7 @@ export const ThreadTimeline: FC = () => {
 /** Derived prompt rail for a VISIBLE surface. Split out so the hook body — and
  *  the transcript subscription it opens — never runs for a background tab. */
 const ActiveThreadTimeline: FC = () => {
-  const { revealMessage, revealScope, timelineEntries } = useTranscriptWindow()
+  const { cancelReveal, revealMessage, revealScope, timelineEntries } = useTranscriptWindow()
 
   // Cheap in the selector, expensive only when it changes: the ids alone tell
   // us whether the RAIL changed. Prompt text is immutable once sent, and an
@@ -254,6 +254,7 @@ const ActiveThreadTimeline: FC = () => {
   const jump = useCallback(
     (id: string) => {
       cancelPendingJump()
+      cancelReveal?.()
 
       if (scrollToPrompt(rootRef.current, id)) {
         return
@@ -300,7 +301,7 @@ const ActiveThreadTimeline: FC = () => {
 
       jumpFrameRef.current = window.requestAnimationFrame(retry)
     },
-    [cancelPendingJump, revealMessage, revealScope]
+    [cancelPendingJump, cancelReveal, revealMessage, revealScope]
   )
 
   useLayoutEffect(() => {

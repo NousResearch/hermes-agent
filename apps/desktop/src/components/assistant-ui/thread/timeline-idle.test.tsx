@@ -133,12 +133,14 @@ describe('ThreadTimeline popover', () => {
 describe('ThreadTimeline with a bounded runtime window', () => {
   it('keeps older prompts in the rail and asks the window to reveal hidden targets', () => {
     messages = transcript(2)
+    const cancelReveal = vi.fn()
     const revealMessage = vi.fn()
     const timelineEntries = transcript(6).map((message, index) => ({ id: message.id, preview: `prompt ${index}` }))
 
     renderTimeline(
       <TranscriptWindowProvider
         value={{
+          cancelReveal,
           olderAvailable: true,
           expandWindow: vi.fn(),
           revealMessage,
@@ -154,11 +156,20 @@ describe('ThreadTimeline with a bounded runtime window', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'prompt 0' }))
 
+    expect(cancelReveal).toHaveBeenCalledOnce()
     expect(revealMessage).toHaveBeenCalledWith('u0')
+    expect(cancelReveal.mock.invocationCallOrder[0]).toBeLessThan(revealMessage.mock.invocationCallOrder[0])
+
+    fireEvent.click(screen.getByRole('button', { name: 'prompt 1' }))
+
+    expect(cancelReveal).toHaveBeenCalledTimes(2)
+    expect(revealMessage).toHaveBeenNthCalledWith(2, 'u1')
+    expect(cancelReveal.mock.invocationCallOrder[1]).toBeLessThan(revealMessage.mock.invocationCallOrder[1])
   })
 
   it('scrolls to the prompt after the window materializes it', () => {
     messages = transcript(6).slice(4)
+    const cancelReveal = vi.fn()
     const revealMessage = vi.fn()
     const timelineEntries = transcript(6).map((message, index) => ({ id: message.id, preview: `prompt ${index}` }))
     const surface = globalThis.document.createElement('div')
@@ -195,6 +206,7 @@ describe('ThreadTimeline with a bounded runtime window', () => {
     const { rerender } = render(
       <TranscriptWindowProvider
         value={{
+          cancelReveal,
           olderAvailable: true,
           expandWindow: vi.fn(),
           revealMessage,
@@ -208,6 +220,7 @@ describe('ThreadTimeline with a bounded runtime window', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'prompt 0' }))
+    expect(cancelReveal).toHaveBeenCalledOnce()
     expect(revealMessage).toHaveBeenCalledWith('u0')
 
     const target = globalThis.document.createElement('div')
@@ -228,6 +241,7 @@ describe('ThreadTimeline with a bounded runtime window', () => {
     rerender(
       <TranscriptWindowProvider
         value={{
+          cancelReveal,
           olderAvailable: true,
           expandWindow: vi.fn(),
           revealMessage,
@@ -247,6 +261,11 @@ describe('ThreadTimeline with a bounded runtime window', () => {
 
     expect(revealDom).toHaveBeenCalledWith('runtime-1', 'u0')
     expect(viewport.scrollTop).toBe(92)
+
+    fireEvent.click(screen.getByRole('button', { name: 'prompt 0' }))
+
+    expect(cancelReveal).toHaveBeenCalledTimes(2)
+    expect(revealMessage).toHaveBeenCalledOnce()
     unsubscribeReveal()
     frame.mockRestore()
   })

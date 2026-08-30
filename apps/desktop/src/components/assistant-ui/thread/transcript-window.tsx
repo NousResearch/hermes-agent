@@ -11,6 +11,8 @@ export interface TranscriptWindowValue {
   timelineEntries?: readonly TimelineEntry[]
   /** Runtime/session identity that scopes DOM reveal requests to one pane. */
   revealScope?: string
+  /** Cancel an abandoned targeted store-window expansion. */
+  cancelReveal?: () => void
   /** Materialize a hidden prompt before the timeline scrolls to it. */
   revealMessage?: (messageId: string) => void
 }

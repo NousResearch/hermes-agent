@@ -3263,6 +3263,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent
+            _session_todo_state(current)
             # Baseline for the per-turn config sync; the profile home
             # override is still active here.
             current["config_model_seen"] = _config_model_target()
@@ -7603,6 +7604,95 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
     return f"{text}{suffix}" if text else None
 
 
+def _normalize_todo_state(value: object) -> dict | None:
+    """Return a client-safe full todo snapshot or ``None`` when malformed."""
+    if not isinstance(value, dict) or not isinstance(value.get("todos"), list):
+        return None
+    try:
+        revision = max(0, int(value.get("revision") or 0))
+    except (TypeError, ValueError):
+        return None
+    return {"todos": list(value["todos"]), "revision": revision}
+
+
+def _session_todo_state(session: dict) -> dict | None:
+    """Return the newest live/cached todo snapshot for a runtime session."""
+    cached = _normalize_todo_state(session.get("todo_state"))
+    live = None
+    agent = session.get("agent")
+    store = getattr(agent, "_todo_store", None)
+    snapshot = getattr(store, "snapshot", None)
+    if callable(snapshot):
+        try:
+            live = _normalize_todo_state(snapshot())
+        except Exception:
+            logger.debug("failed to read live todo state", exc_info=True)
+
+    if live is not None and (
+        cached is None or live["revision"] >= cached["revision"]
+    ):
+        cached = live
+    if cached is not None:
+        session["todo_state"] = cached
+    return cached
+
+
+def _attach_todo_state(payload: dict, session: dict) -> dict:
+    """Attach the authoritative todo snapshot to a session response."""
+    state = _session_todo_state(session)
+    if state is not None:
+        payload["todo_state"] = state
+    return payload
+
+
+def _todo_state_from_history(history) -> dict | None:
+    """Derive the latest todo snapshot from an already-loaded transcript.
+
+    Used by resume paths that answer before an AIAgent (and its live
+    TodoStore) exists. The canonical todo tool results already persist in
+    conversation history as ordinary tool messages, so the latest one paired
+    with an assistant ``todo`` tool call IS the durable snapshot — no side
+    table and no extra transcript read (each resume path passes the history
+    it already loaded).
+    """
+    if not isinstance(history, list) or not history:
+        return None
+    try:
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+
+        todo_call_ids: set[str] = set()
+        for msg in history:
+            if not isinstance(msg, dict):
+                continue
+            for call in msg.get("tool_calls") or []:
+                if (call.get("function") or {}).get("name") in ("todo_list", "todo"):
+                    cid = call.get("id")
+                    if cid:
+                        todo_call_ids.add(cid)
+        if not todo_call_ids:
+            return None
+        for msg in reversed(history):
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            if msg.get("tool_call_id") not in todo_call_ids:
+                continue
+            content = msg.get("content", "")
+            if (
+                not isinstance(content, str)
+                or len(content) > MAX_TODO_RESULT_CHARS
+                or '"todos"' not in content
+            ):
+                continue
+            try:
+                return _normalize_todo_state(json.loads(content))
+            except Exception:
+                continue
+        return None
+    except Exception:
+        logger.debug("failed to derive todo state from history", exc_info=True)
+        return None
+
+
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
@@ -7659,13 +7749,15 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         result_text = _tool_result_text(result)
         if result_text:
             payload["result_text"] = result_text
-    if name == "todo_list":
-        try:
-            data = json.loads(result)
-            if isinstance(data, dict) and isinstance(data.get("todos"), list):
-                payload["todos"] = data.get("todos")
-        except Exception:
-            pass
+    todo_state = None
+    if name in ("todo_list", "todo"):  # legacy alias: pre-rename replays
+        todo_state = _normalize_todo_state(payload.get("result"))
+        if todo_state is not None:
+            payload.update(todo_state)
+            if session is not None:
+                cached = _normalize_todo_state(session.get("todo_state"))
+                if cached is None or todo_state["revision"] >= cached["revision"]:
+                    session["todo_state"] = todo_state
     try:
         from agent.display import render_edit_diff_with_delta
 
@@ -7680,8 +7772,18 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             payload["inline_diff"] = "\n".join(rendered)
     except Exception:
         pass
-    if _tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name):
+    if (
+        _tool_progress_enabled(sid)
+        or payload.get("inline_diff")
+        or _tool_lifecycle_required_for_ui(name)
+        or name in ("todo_list", "todo")
+    ):
         _emit("tool.complete", sid, payload)
+    # Task state is application data, not optional tool-progress chrome. A
+    # dedicated full-snapshot event lets every client reconcile immediately
+    # without interpreting provider text or partial merge arguments.
+    if todo_state is not None:
+        _emit("todo.updated", sid, todo_state)
 
 
 def _on_tool_progress(
@@ -8872,6 +8974,7 @@ def _init_session(
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
         }
+        _session_todo_state(_sessions[sid])
     _init_owns_db = False
     if session_db is not None:
         db = session_db
@@ -10244,6 +10347,7 @@ def _deferred_session_record(
     lazy: bool = False,
     model_override=None,
     resume_runtime_overrides: dict | None = None,
+    todo_state: dict | None = None,
 ) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold
     resume) — _init_session's shape minus the agent."""
@@ -10280,6 +10384,7 @@ def _deferred_session_record(
         "source": source,
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
+        "todo_state": todo_state,
         "transport": current_transport() or _stdio_transport,
     }
 
@@ -10406,6 +10511,11 @@ def _schedule_resume_hydration(
                 session["display_history_prefix"] = prefix
                 session["resume_hydrating"] = False
                 session["resume_message_count"] = len(display_history)
+            # Deferred resumes answered before the transcript existed; cache
+            # the derived todo snapshot now so later payload attaches carry it.
+            todo_state = _todo_state_from_history(history)
+            if todo_state is not None and session.get("todo_state") is None:
+                session["todo_state"] = todo_state
             session["resume_history_ready"].set()
             _emit(
                 "session.resume_progress",
@@ -10709,7 +10819,7 @@ def _live_session_payload(
         payload["pending_approval"] = approval
     if clarify := _pending_clarify_request_payload(sid):
         payload["pending_clarify"] = clarify
-    return payload
+    return _attach_todo_state(payload, session)
 
 
 def _main_runtime_from_agent(agent) -> dict | None:

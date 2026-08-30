@@ -9,6 +9,8 @@ export interface ActiveTool {
 export interface TodoItem {
   content: string
   id: string
+  /** Optional id of another item — renders this as a nested subtask. */
+  parent?: string
   status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
 

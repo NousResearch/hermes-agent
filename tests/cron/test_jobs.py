@@ -41,9 +41,28 @@ class TestParseDuration:
         assert parse_duration("120minutes") == 120
 
 
+    def test_bare_units_default_to_one(self):
+        assert parse_duration("hour") == 60
+        assert parse_duration("hr") == 60
+        assert parse_duration("h") == 60
+        assert parse_duration("minute") == 1
+        assert parse_duration("m") == 1
+        assert parse_duration("day") == 1440
+        assert parse_duration("d") == 1440
+
+    def test_every_bare_unit_schedule(self):
+        result = parse_schedule("every hour")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == 60
+        result = parse_schedule("every day")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == 1440
+
     def test_invalid_raises(self):
         with pytest.raises(ValueError):
             parse_duration("abc")
+        with pytest.raises(ValueError):
+            parse_duration("hourx")
         with pytest.raises(ValueError):
             parse_duration("30x")
         with pytest.raises(ValueError):

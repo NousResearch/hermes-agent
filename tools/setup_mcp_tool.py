@@ -77,7 +77,8 @@ SETUP_MCP_SCHEMA = {
         "Propose an MCP server as an inline consent card (install a catalog "
         "entry, re-enable a disabled server, or run OAuth); blocks until the "
         "user acts. Use when they ask to add an MCP or a task clearly needs "
-        "a missing one. Never re-ask after a decline — on declined/"
+        "a missing one. Never hand-edit mcp_servers config for them — always "
+        "use this tool. Never re-ask after a decline — on declined/"
         "unanswered, continue without it. Catalog names: `hermes mcp "
         "catalog` in the terminal."
     ),

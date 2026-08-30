@@ -133,6 +133,23 @@ class TestParseLoopArgs:
         p = parse_loop_args("2m poll --times zero")
         assert p["error"] is not None
 
+    def test_no_start_now_flag_anymore(self):
+        from hermes_cli.loops import parse_loop_args
+
+        # Immediate first wakeup is the default now; --start-now was never
+        # released, so the token is NOT parsed as a flag.
+        p = parse_loop_args("1h check the deploy status")
+        assert "start_now" not in p
+        assert p["interval_seconds"] == 3600
+        assert p["prompt"] == "check the deploy status"
+        assert p["error"] is None
+
+    def test_start_now_word_in_prompt_kept_verbatim(self):
+        from hermes_cli.loops import parse_loop_args
+
+        p = parse_loop_args("1h read the file called start-now.md")
+        assert p["prompt"] == "read the file called start-now.md"
+
     def test_interval_only_is_error(self):
         from hermes_cli.loops import parse_loop_args
 
@@ -290,12 +307,12 @@ class TestPersistence:
 
 
 class TestTickLifecycle:
-    def test_not_due_immediately(self, hermes_home):
+    def test_due_immediately_on_create(self, hermes_home):
         from hermes_cli.loops import LoopManager
 
         mgr = LoopManager(session_id="t1")
         mgr.set("poll", interval_seconds=300)
-        assert mgr.is_due() is False
+        assert mgr.is_due() is True
 
     def test_due_after_interval(self, hermes_home):
         from hermes_cli.loops import LoopManager
@@ -303,6 +320,22 @@ class TestTickLifecycle:
         mgr = LoopManager(session_id="t2")
         state = mgr.set("poll", interval_seconds=300)
         state.next_due_at = time.time() - 1
+        assert mgr.is_due() is True
+
+    def test_not_due_once_rescheduled(self, hermes_home):
+        from hermes_cli.loops import LoopManager
+
+        mgr = LoopManager(session_id="t2a")
+        state = mgr.set("poll", interval_seconds=300)
+        state.next_due_at = time.time() + 300
+        assert mgr.is_due() is False
+
+    def test_self_paced_due_immediately_on_create(self, hermes_home):
+        from hermes_cli.loops import LoopManager
+
+        mgr = LoopManager(session_id="t2c")
+        state = mgr.set("keep refining")
+        assert state.mode == "self_paced"
         assert mgr.is_due() is True
 
     def test_fire_marks_awaiting_and_blocks_refire(self, hermes_home):
@@ -578,6 +611,16 @@ class TestDispatchLoopCommand:
         result = dispatch_loop_command(mgr, "keep fixing the tests")
         assert result["created"] is True
         assert "Self-paced" in result["output"]
+
+    def test_create_fires_immediately(self, hermes_home):
+        from hermes_cli.loops import LoopManager, dispatch_loop_command
+
+        mgr = LoopManager(session_id="d2a")
+        result = dispatch_loop_command(mgr, "1h check the deploy")
+        assert result["created"] is True
+        assert "Loop set" in result["output"]
+        assert "fires now" in result["output"]
+        assert mgr.is_due() is True
 
     def test_status_empty(self, hermes_home):
         from hermes_cli.loops import LoopManager, dispatch_loop_command

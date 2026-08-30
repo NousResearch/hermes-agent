@@ -18,6 +18,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
 from agent.credential_persistence import (
+    fingerprint_secret_value,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
 )
@@ -86,6 +87,14 @@ _TERMINAL_AUTH_REASONS = frozenset({
     "unauthorized_client",  # RFC 6749: client no longer authorized
     "refresh_token_reused", # Single-use refresh token consumed by another process
 })
+
+# Locally generated terminal reason (no HTTP status involved): a refresh POST
+# rotated a single-use pair but the replacement never reached its
+# authoritative store, so the pre-rotation token still on disk is already
+# spent and no retry can recover it.  Kept out of _TERMINAL_AUTH_REASONS —
+# that set classifies upstream-reported 401 reasons — and handled explicitly
+# in _is_terminal_auth_failure().
+CREDENTIAL_PERSIST_FAILED_REASON = "credential_persist_failed"
 
 # How long a DEAD manual credential is preserved before being pruned.
 # Manual entries (``manual:*``) are independent credentials with no singleton
@@ -862,13 +871,18 @@ class CredentialPool:
 
         Returns False for non-401 status codes — 429 rate limits and 402
         billing failures are transient by nature and should keep TTL semantics.
+        The one status-independent case is
+        ``CREDENTIAL_PERSIST_FAILED_REASON``: no upstream response is involved
+        at all, the rotated pair simply never became durable and only a
+        re-auth can recover it.
         """
+        raw_reason = normalized_error.get("reason")
+        reason = raw_reason.strip().lower() if isinstance(raw_reason, str) else ""
+        if reason == CREDENTIAL_PERSIST_FAILED_REASON:
+            return True
         if status_code != 401:
             return False
-        reason = normalized_error.get("reason")
-        if not isinstance(reason, str):
-            return False
-        return reason.strip().lower() in _TERMINAL_AUTH_REASONS
+        return reason in _TERMINAL_AUTH_REASONS
 
     def _mark_exhausted(
         self,
@@ -926,7 +940,7 @@ class CredentialPool:
         if self.provider != "anthropic" or entry.source != "claude_code":
             return entry
         try:
-            from agent.anthropic_adapter import read_claude_code_credentials
+            from agent.anthropic_credentials import read_claude_code_credentials
             creds = read_claude_code_credentials()
             if not creds:
                 return entry
@@ -965,6 +979,71 @@ class CredentialPool:
                 return updated
         except Exception as exc:
             logger.debug("Failed to sync from credentials file: %s", exc)
+        return entry
+
+    def _sync_anthropic_entry_from_pool_store(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Adopt an Anthropic token pair rotated by another pool instance.
+
+        Unlike ``_sync_anthropic_entry_from_credentials_file`` (which only
+        helps ``entry.source == "claude_code"`` by re-reading
+        ``~/.claude/.credentials.json``), this re-reads the exact persisted
+        row from the credential-pool store itself
+        (``~/.hermes/auth.json`` / profile equivalent), so it works for
+        every *pool-owned* Anthropic source - ``hermes_pkce`` and
+        dashboard-issued ``manual:dashboard_pkce`` entries alike. Called
+        while the shared cross-process auth-store lock is held, mirroring
+        ``_sync_xai_oauth_entry_from_pool_store``.
+
+        Borrowed sources (``claude_code``) are deliberately excluded: they
+        are reference-only rows, so ``sanitize_borrowed_credential_payload``
+        strips ``access_token``/``refresh_token`` before the row reaches
+        ``auth.json``.  Re-reading such a row yields an entry whose tokens
+        are empty, which differs from the live in-memory pair and would
+        otherwise be adopted as a rotation performed by another process --
+        replacing a usable credential with a blank one, and returning
+        before the authoritative ``~/.claude/.credentials.json`` re-read
+        ever happens.  The pool store is not token authority for those
+        sources; the singleton file is.
+        """
+        if self.provider != "anthropic":
+            return entry
+        if is_borrowed_credential_source(entry.source, self.provider):
+            return entry
+        try:
+            persisted = next(
+                (
+                    payload
+                    for payload in read_credential_pool(self.provider)
+                    if isinstance(payload, dict) and payload.get("id") == entry.id
+                ),
+                None,
+            )
+            if not isinstance(persisted, dict):
+                return entry
+            stored = PooledCredential.from_dict(self.provider, persisted)
+            if not (stored.access_token or "").strip() and not (
+                stored.refresh_token or ""
+            ).strip():
+                # A row carrying no token material at all cannot be a
+                # rotation performed by another process; adopting it would
+                # blank the live entry.  Belt-and-braces behind the
+                # borrowed-source refusal above, for any future source that
+                # sanitizes its secrets on write.
+                return entry
+            if (
+                stored.access_token != entry.access_token
+                or stored.refresh_token != entry.refresh_token
+            ):
+                logger.debug(
+                    "Pool entry %s: adopting Anthropic OAuth tokens rotated by another pool instance",
+                    entry.id,
+                )
+                self._replace_entry(entry, stored)
+                return stored
+        except Exception as exc:
+            logger.debug("Failed to sync Anthropic OAuth entry from credential pool: %s", exc)
         return entry
 
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
@@ -1382,11 +1461,22 @@ class CredentialPool:
         # resolve_codex_runtime_credentials()).  When a waiter finally acquires
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
-        if self.provider in ("openai-codex", "xai-oauth"):
+        # Anthropic's OAuth refresh tokens are single-use too (see
+        # agent/anthropic_credentials.py::_refresh_oauth_token), so the same
+        # cross-process serialization Codex/xAI get is required here.
+        # Previously "anthropic" was excluded from this tuple: two Hermes
+        # processes racing to refresh the same stale token would both POST,
+        # the loser got invalid_grant, and — for any source other than
+        # "claude_code" (hermes_pkce, dashboard-issued manual entries) —
+        # there was no recovery path at all, so the loser was marked
+        # exhausted despite a valid token existing on disk from the winner.
+        if self.provider in ("openai-codex", "xai-oauth", "anthropic"):
             sync_entry = (
                 self._sync_codex_entry_from_auth_store
                 if self.provider == "openai-codex"
                 else self._sync_xai_oauth_entry_from_pool_store
+                if self.provider == "xai-oauth"
+                else self._sync_anthropic_entry_from_pool_store
             )
             with _auth_store_lock(
                 timeout_seconds=self._single_use_refresh_lock_timeout()
@@ -1398,6 +1488,31 @@ class CredentialPool:
                         if not force and not self._entry_needs_refresh(entry):
                             return entry
                     return self._refresh_entry_impl(entry, force=force)
+                # claude_code first: the shared credentials file - not the
+                # pool store - is this source's token authority, so the
+                # path-keyed lock and the authoritative re-read must be
+                # entered before any adopt-and-return shortcut can fire.
+                if self.provider == "anthropic" and synced.source == "claude_code":
+                    # claude_code entries are NOT profile-owned: the refresh
+                    # token lives in a single shared ~/.claude/.credentials.json
+                    # (or macOS Keychain) that every Hermes profile's pool
+                    # reads from. The profile-scoped lock above only protects
+                    # THIS profile's auth.json, so two different profiles (or
+                    # a fleet worker + a CLI session) racing to refresh the
+                    # same shared token would still both POST it. Take the
+                    # dedicated shared-file lock (inner, per the ordering
+                    # invariant documented on ``_auth_store_lock``) so the
+                    # whole sync -> POST -> write-back sequence for this
+                    # source is atomic across profiles too, not just within
+                    # one. This does not (and cannot) protect against the
+                    # official `claude` CLI itself rotating the token
+                    # out-of-band — that race is handled by the existing
+                    # sync-and-retry-once fallback in ``_refresh_entry_impl``.
+                    with self._claude_code_credentials_lock():
+                        synced = self._sync_anthropic_entry_from_credentials_file(synced)
+                        if synced.refresh_token != entry.refresh_token:
+                            return synced
+                        return self._refresh_entry_impl(synced, force=force)
                 if (
                     synced.access_token != entry.access_token
                     or synced.refresh_token != entry.refresh_token
@@ -1405,6 +1520,89 @@ class CredentialPool:
                     return synced
                 return self._refresh_entry_impl(synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
+
+    def _claude_code_credentials_lock(self):
+        """Cross-process lock over the shared claude_code credentials file.
+
+        Distinct from the per-profile ``_auth_store_lock()`` above: this one
+        is keyed to ``claude_code_credentials_path()`` itself, so it
+        serializes every profile (and every Hermes process) that might
+        refresh a ``claude_code``-sourced Anthropic entry, not just callers
+        sharing one profile's ``auth.json``.
+        """
+        from agent.anthropic_credentials import claude_code_credentials_path
+
+        return _auth_store_lock(
+            timeout_seconds=self._single_use_refresh_lock_timeout(),
+            target_path=claude_code_credentials_path(),
+        )
+
+    def _fail_closed_unpersisted_rotation(
+        self,
+        entry: PooledCredential,
+        exc: BaseException,
+        *,
+        store: str,
+    ) -> None:
+        """Quarantine an entry whose rotated pair never reached its store.
+
+        Anthropic refresh tokens are single-use, and for ``claude_code`` /
+        ``hermes_pkce`` sources the singleton file — not ``auth.json`` — is the
+        authoritative copy: ``_seed_from_singletons()`` re-reads it on every
+        ``load_pool()`` and overwrites the pool entry with whatever it finds.
+
+        So when the refresh POST succeeded but the singleton write failed, the
+        rotation is not durable: the replacement pair exists only in memory,
+        while the consumed pre-rotation pair survives on disk and would be
+        re-seeded over any pool row we persisted. Persisting or returning the
+        rotated entry here would report a success that a restart silently
+        undoes, and the next refresh would replay the spent token
+        (``invalid_grant`` / ``refresh_token_reused``).
+
+        Fail closed instead: never expose or persist the rotated pair, and mark
+        the entry terminally so it leaves rotation and surfaces as an explicit
+        re-auth requirement rather than a silent fallback to another provider.
+        """
+        logger.error(
+            "Anthropic %s refresh rotated the single-use token but could not commit it "
+            "to %s (%s) — failing closed and quarantining the credential; "
+            "re-authenticate to recover",
+            entry.source,
+            store,
+            exc,
+        )
+        try:
+            from agent.anthropic_credentials import (
+                mark_rotation_consumed_uncommitted,
+                spent_rotation_source_path,
+            )
+
+            # Quarantining the row is not enough on its own: the singleton file
+            # still holds the spent pair, ``load_pool()`` re-seeds it, and the
+            # read-only resolver (``_resolve_anthropic_pool_token``) would hand
+            # it back as a working token.  Record the fingerprints so every
+            # resolution step in this process recognises it as consumed — and,
+            # for singleton-backed sources, persist them to the shared source's
+            # sidecar registry (we hold that source's path-keyed lock on this
+            # path) so OTHER processes/profiles sharing the credential file
+            # adopt the terminal verdict too instead of leasing the stale pair
+            # or re-POSTing the spent refresh token from a fresh interpreter.
+            mark_rotation_consumed_uncommitted(
+                entry.access_token,
+                entry.refresh_token,
+                source_path=spent_rotation_source_path(entry.source),
+            )
+        except Exception:  # pragma: no cover - never block the quarantine
+            logger.debug("Failed to record consumed rotation fingerprints", exc_info=True)
+        self._mark_exhausted(
+            entry,
+            None,
+            {
+                "reason": CREDENTIAL_PERSIST_FAILED_REASON,
+                "message": f"rotated credential was not durably written to {store}: {exc}",
+            },
+        )
+        return None
 
     def _single_use_refresh_lock_timeout(self) -> float:
         """Lock timeout for single-use-refresh-token providers.
@@ -1418,6 +1616,8 @@ class CredentialPool:
             "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS"
             if self.provider == "openai-codex"
             else "HERMES_XAI_REFRESH_TIMEOUT_SECONDS"
+            if self.provider == "xai-oauth"
+            else "HERMES_ANTHROPIC_REFRESH_TIMEOUT_SECONDS"
         )
         refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
         return max(
@@ -1430,7 +1630,32 @@ class CredentialPool:
     ) -> Optional[PooledCredential]:
         try:
             if self.provider == "anthropic":
-                from agent.anthropic_adapter import refresh_anthropic_oauth_pure
+                from agent.anthropic_credentials import (
+                    is_rotation_consumed_uncommitted,
+                    refresh_anthropic_oauth_pure,
+                    spent_rotation_source_path,
+                )
+
+                # Never POST a refresh token another process already spent.
+                # The durable sidecar verdict (written by whichever process
+                # rotated the pair and lost the commit) is what a fresh
+                # interpreter sees here; without this check, process B would
+                # replay the consumed single-use token and burn the family
+                # into ``invalid_grant``.
+                _entry_source_path = spent_rotation_source_path(entry.source)
+                if is_rotation_consumed_uncommitted(
+                    entry.refresh_token, source_path=_entry_source_path
+                ) or is_rotation_consumed_uncommitted(
+                    entry.access_token, source_path=_entry_source_path
+                ):
+                    return self._fail_closed_unpersisted_rotation(
+                        entry,
+                        RuntimeError(
+                            "credential pair was rotated by another process but the "
+                            "rotation never committed (spent-rotation sidecar verdict)"
+                        ),
+                        store=str(_entry_source_path or "credential store"),
+                    )
 
                 refreshed = refresh_anthropic_oauth_pure(
                     entry.refresh_token,
@@ -1447,14 +1672,42 @@ class CredentialPool:
                 # see the latest tokens.
                 if entry.source == "claude_code":
                     try:
-                        from agent.anthropic_adapter import _write_claude_code_credentials
+                        from agent.anthropic_credentials import _write_claude_code_credentials
                         _write_claude_code_credentials(
                             refreshed["access_token"],
                             refreshed["refresh_token"],
                             refreshed["expires_at_ms"],
                         )
                     except Exception as wexc:
-                        logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
+                        # Authoritative commit failed: do not mark, persist or
+                        # return the rotation as successful.  Returning from
+                        # inside this ``try`` deliberately bypasses the
+                        # ``except Exception`` recovery below — that path
+                        # re-POSTs, and there is nothing left to retry with.
+                        return self._fail_closed_unpersisted_rotation(
+                            entry, wexc, store="~/.claude/.credentials.json"
+                        )
+                # Same rationale for the singleton source hermes_pkce:
+                # _seed_from_singletons() reads ~/.hermes/.anthropic_oauth.json
+                # on every load_pool() and will re-seed the pre-refresh (and
+                # already-consumed, single-use) token pair over this fresh one
+                # unless the singleton is updated in step with the pool entry.
+                # Do not use endswith here: manual:hermes_pkce is already
+                # pool-owned, and creating a singleton for it would introduce
+                # a second authority for the same refresh-token family.
+                elif entry.source == "hermes_pkce":
+                    try:
+                        from agent.anthropic_credentials import _write_hermes_oauth_credentials
+                        _write_hermes_oauth_credentials(
+                            refreshed["access_token"],
+                            refreshed["refresh_token"],
+                            refreshed["expires_at_ms"],
+                        )
+                    except Exception as wexc:
+                        # Same transaction rule as claude_code above.
+                        return self._fail_closed_unpersisted_rotation(
+                            entry, wexc, store="~/.hermes/.anthropic_oauth.json"
+                        )
             elif self.provider == "openai-codex":
                 # Adopt fresher tokens from auth.json before spending the
                 # refresh_token — single-use tokens consumed by another Hermes
@@ -1512,11 +1765,27 @@ class CredentialPool:
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Retrying refresh with synced token from credentials file")
                     try:
-                        from agent.anthropic_adapter import refresh_anthropic_oauth_pure
+                        from agent.anthropic_credentials import refresh_anthropic_oauth_pure
                         refreshed = refresh_anthropic_oauth_pure(
                             synced.refresh_token,
                             use_json=synced.source.endswith("hermes_pkce"),
                         )
+                        # Commit to the authoritative singleton BEFORE marking
+                        # or persisting the pool row.  The previous order
+                        # persisted an "ok" entry that a failed write left
+                        # unbacked, and the next load_pool() re-seeded the
+                        # consumed pair straight over it.
+                        try:
+                            from agent.anthropic_credentials import _write_claude_code_credentials
+                            _write_claude_code_credentials(
+                                refreshed["access_token"],
+                                refreshed["refresh_token"],
+                                refreshed["expires_at_ms"],
+                            )
+                        except Exception as wexc:
+                            return self._fail_closed_unpersisted_rotation(
+                                synced, wexc, store="~/.claude/.credentials.json"
+                            )
                         updated = replace(
                             synced,
                             access_token=refreshed["access_token"],
@@ -1528,15 +1797,6 @@ class CredentialPool:
                         )
                         self._replace_entry(synced, updated)
                         self._persist()
-                        try:
-                            from agent.anthropic_adapter import _write_claude_code_credentials
-                            _write_claude_code_credentials(
-                                refreshed["access_token"],
-                                refreshed["refresh_token"],
-                                refreshed["expires_at_ms"],
-                            )
-                        except Exception as wexc:
-                            logger.debug("Failed to write refreshed token to credentials file (retry path): %s", wexc)
                         return updated
                     except Exception as retry_exc:
                         logger.debug("Retry refresh also failed: %s", retry_exc)
@@ -1544,6 +1804,31 @@ class CredentialPool:
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
+            elif self.provider == "anthropic":
+                # Backstop for non-claude_code sources (hermes_pkce,
+                # manual:dashboard_pkce): the in-lock pre-check in
+                # _refresh_entry() should already have adopted a winner's
+                # rotated token before this POST was even attempted, but if
+                # the failure still happened (e.g. the winner persisted
+                # between our pre-check and our POST), re-read the pool
+                # store once more before giving up.
+                synced = self._sync_anthropic_entry_from_pool_store(entry)
+                if synced.refresh_token != entry.refresh_token:
+                    logger.debug(
+                        "Anthropic OAuth refresh failed but pool store has newer tokens — adopting"
+                    )
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    return updated
             # For xai-oauth: same race as nous — another process may have
             # consumed the refresh token between our proactive sync and the
             # HTTP call.  Re-check auth.json and adopt the fresh tokens if
@@ -2033,6 +2318,14 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
+            if entry.auth_type == AUTH_TYPE_OAUTH and not (
+                entry.access_token or ""
+            ).strip():
+                # A borrowed OAuth row that failed to hydrate (or a
+                # sanitized row read straight off disk) carries no access
+                # token.  The API-key guard at the top of the loop does not
+                # cover it, and leasing it would send an empty bearer.
+                continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
@@ -2490,11 +2783,23 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     field_updates = {}
     extra_updates = {}
     _field_names = {f.name for f in fields(existing)}
+    incoming_token = payload.get("access_token")
     token_changed = (
-        "access_token" in payload
-        and payload["access_token"] is not None
-        and payload["access_token"] != existing.access_token
+        incoming_token is not None
+        and incoming_token != existing.access_token
     )
+    if token_changed and not existing.access_token:
+        # Borrowed sources (``claude_code``, env-backed rows, ...) are written
+        # to auth.json without their secret: a reloaded entry carries only a
+        # ``secret_fingerprint``.  Comparing the freshly re-seeded token against
+        # that empty string reports a rotation on *every* load, which silently
+        # cleared the DEAD/exhausted state the previous process had just
+        # persisted — resurrecting a quarantined credential on restart.
+        # Compare fingerprints instead, so only a genuinely different secret
+        # counts as a rotation.
+        known_fingerprint = existing.extra.get("secret_fingerprint")
+        if isinstance(known_fingerprint, str) and known_fingerprint:
+            token_changed = fingerprint_secret_value(incoming_token) != known_fingerprint
     for key, value in payload.items():
         if key in {"id", "priority"} or value is None:
             continue
@@ -2628,7 +2933,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                 changed = True
             return changed, active_sources
 
-        from agent.anthropic_adapter import read_claude_code_credentials, read_hermes_oauth_credentials
+        from agent.anthropic_credentials import (
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
+        )
 
         for source_name, creds in (
             ("hermes_pkce", read_hermes_oauth_credentials()),

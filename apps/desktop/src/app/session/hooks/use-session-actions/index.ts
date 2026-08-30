@@ -118,6 +118,7 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
+import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import {
   dropTranscriptTail,
   dropTranscriptTailEverywhere,
@@ -1173,6 +1174,8 @@ export function useSessionActions({
                   ? false
                   : resolveResumedBusy(activated.running ?? cachedViewState.busy, Boolean(latestCachedState?.busy))
 
+              restoreSessionTodosFromSnapshot(cachedRuntimeId, activated.todo_state, running)
+
               const activatedTurnStartedAt =
                 typeof activated.turn_started_at === 'number' && activated.turn_started_at > 0
                   ? activated.turn_started_at * 1000
@@ -1612,6 +1615,8 @@ export function useSessionActions({
           (resumed as { running?: boolean }).running,
           Boolean(sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.busy)
         )
+
+        restoreSessionTodosFromSnapshot(resumed.session_id, resumed.todo_state, resumedRunning)
 
         // Crash-survivable turn progress: fold a journaled in-flight tail
         // (persisted by use-session-state-cache while the turn streamed;

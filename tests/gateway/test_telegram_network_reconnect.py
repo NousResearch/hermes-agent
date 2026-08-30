@@ -149,13 +149,69 @@ async def test_initialize_still_runs_when_shutdown_fails():
     mock_app, mock_polling_req = _make_mock_app()
     mock_polling_req.shutdown = AsyncMock(side_effect=Exception("shutdown boom"))
     adapter._app = mock_app
+    general_req = mock_app.bot._request[1]
 
     with patch("asyncio.sleep", new_callable=AsyncMock):
         await adapter._handle_polling_network_error(Exception("Bad Gateway"))
 
     # initialize MUST be called even though shutdown raised
     mock_polling_req.initialize.assert_called_once()
+    # Generic polling errors must leave concurrent Bot API sends untouched.
+    general_req.shutdown.assert_not_called()
+    general_req.initialize.assert_not_called()
     mock_app.updater.start_polling.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_drains_general_pool_after_pool_timeout():
+    """A confirmed bootstrap pool timeout must rebuild both request pools."""
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_app, mock_polling_req = _make_mock_app()
+    general_req = AsyncMock()
+    general_req.shutdown = AsyncMock()
+    general_req.initialize = AsyncMock()
+    mock_app.bot._request = (mock_polling_req, general_req)
+    adapter._app = mock_app
+
+    error = Exception(
+        "Pool timeout: All connections in the connection pool are occupied. "
+        "Request was not sent to Telegram."
+    )
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(error)
+
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
+    mock_polling_req.shutdown.assert_awaited_once()
+    mock_polling_req.initialize.assert_awaited_once()
+    mock_app.updater.start_polling.assert_awaited_once()
+    await _complete_current_polling_generation(adapter)
+
+
+@pytest.mark.asyncio
+async def test_general_pool_drain_is_bounded_when_close_hangs(monkeypatch):
+    """A wedged general-pool close must not freeze the reconnect ladder."""
+    adapter = _make_adapter()
+    mock_app, mock_polling_req = _make_mock_app()
+
+    async def _hang(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    general_req = AsyncMock()
+    general_req.shutdown = AsyncMock(side_effect=_hang)
+    general_req.initialize = AsyncMock(side_effect=_hang)
+    mock_app.bot._request = (mock_polling_req, general_req)
+    adapter._app = mock_app
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.05, raising=False)
+
+    await asyncio.wait_for(
+        adapter._drain_general_connections_after_pool_timeout(), timeout=1
+    )
+
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
 
 
 @pytest.mark.asyncio

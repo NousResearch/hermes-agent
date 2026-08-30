@@ -473,17 +473,20 @@ def _(rid, params: dict) -> dict:
                     history = live.get("history") or []
                     return _ok(
                         rid,
-                        {
-                            "session_id": live_sid,
-                            "stored_session_id": str(live.get("session_key") or ""),
-                            "message_count": len(history),
-                            "messages": [] if omit_messages else _history_to_messages(history),
-                            "info": {
-                                "model": _resolve_model(),
-                                "lazy": True,
-                                "profile_name": profile or "",
+                        _attach_todo_state(
+                            {
+                                "session_id": live_sid,
+                                "stored_session_id": str(live.get("session_key") or ""),
+                                "message_count": len(history),
+                                "messages": [] if omit_messages else _history_to_messages(history),
+                                "info": {
+                                    "model": _resolve_model(),
+                                    "lazy": True,
+                                    "profile_name": profile or "",
+                                },
                             },
-                        },
+                            live,
+                        ),
                     )
 
                 # Stranded-session adoption (#93296 follow-up): before session
@@ -561,6 +564,9 @@ def _(rid, params: dict) -> dict:
             if tip and tip != target:
                 target = tip
                 found = db.get_session(target) or found
+
+        # Todo snapshots are derived from each path's already-loaded history
+        # (see _todo_state_from_history) — no extra transcript read here.
 
         # Every interactive resume path materializes the model history, even when
         # omit_messages suppresses the response copy. Count the complete lineage
@@ -682,6 +688,7 @@ def _(rid, params: dict) -> dict:
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
                 profile_home=profile_home,
                 lazy=True,
+                todo_state=_todo_state_from_history(history),
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _reuse_live_response(*live)
@@ -704,19 +711,22 @@ def _(rid, params: dict) -> dict:
             messages = [] if omit_messages else _history_to_messages(display_history)
             return _ok(
                 rid,
-                {
-                    "session_id": sid,
-                    "resumed": target,
-                    "message_count": len(display_history) if omit_messages else len(messages),
-                    "messages": messages,
-                    "messages_omitted": omit_messages,
-                    "info": _lazy_resume_info(cwd, profile=profile),
-                    "inflight": None,
-                    "running": child_running,
-                    "session_key": target,
-                    "started_at": record["created_at"],
-                    "status": "streaming" if child_running else "idle",
-                },
+                _attach_todo_state(
+                    {
+                        "session_id": sid,
+                        "resumed": target,
+                        "message_count": len(display_history) if omit_messages else len(messages),
+                        "messages": messages,
+                        "messages_omitted": omit_messages,
+                        "info": _lazy_resume_info(cwd, profile=profile),
+                        "inflight": None,
+                        "running": child_running,
+                        "session_key": target,
+                        "started_at": record["created_at"],
+                        "status": "streaming" if child_running else "idle",
+                    },
+                    record,
+                ),
             )
 
         # Desktop can ask for a bounded acknowledgement and hydrate the display
@@ -765,24 +775,27 @@ def _(rid, params: dict) -> dict:
             _schedule_session_cap_enforcement()
             return _ok(
                 rid,
-                {
-                    "session_id": sid,
-                    "resumed": target,
-                    "message_count": record["resume_message_count"],
-                    "messages": [],
-                    "hydrating": True,
-                    "info": _lazy_resume_info(
-                        cwd,
-                        model=model_override.get("model") or "",
-                        provider=overrides.get("provider_override") or "",
-                        profile=profile,
-                    ),
-                    "inflight": None,
-                    "running": False,
-                    "session_key": target,
-                    "started_at": record["created_at"],
-                    "status": "resuming",
-                },
+                _attach_todo_state(
+                    {
+                        "session_id": sid,
+                        "resumed": target,
+                        "message_count": record["resume_message_count"],
+                        "messages": [],
+                        "hydrating": True,
+                        "info": _lazy_resume_info(
+                            cwd,
+                            model=model_override.get("model") or "",
+                            provider=overrides.get("provider_override") or "",
+                            profile=profile,
+                        ),
+                        "inflight": None,
+                        "running": False,
+                        "session_key": target,
+                        "started_at": record["created_at"],
+                        "status": "resuming",
+                    },
+                    record,
+                ),
             )
 
         # Cold resume default: register the live session and read its stored
@@ -846,6 +859,7 @@ def _(rid, params: dict) -> dict:
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
+                todo_state=_todo_state_from_history(history),
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _reuse_live_response(*live)
@@ -875,7 +889,7 @@ def _(rid, params: dict) -> dict:
             }
             if auto_continue is not None:
                 payload["auto_continue"] = auto_continue
-            return _ok(rid, payload)
+            return _ok(rid, _attach_todo_state(payload, record))
 
         # Build the agent OUTSIDE the lock — _make_agent can block for seconds
         # (MCP discovery, prompt/skill build, AIAgent construction). Holding
@@ -1077,7 +1091,7 @@ def _(rid, params: dict) -> dict:
     }
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
-    return _ok(rid, payload)
+    return _ok(rid, _attach_todo_state(payload, session))
 
 
 @method("session.cwd.set")
@@ -1658,10 +1672,16 @@ def _(rid, params: dict) -> dict:
 
 @method("handoff.fail")
 def _(rid, params: dict) -> dict:
-    """Mark an in-flight handoff as failed so the user can retry.
+    """Mark a not-yet-claimed handoff as failed so the user can retry.
 
-    Desktop calls this when its bounded poll times out. Only pending/running
-    rows are changed so a late success from the gateway watcher is not clobbered.
+    Desktop calls this when its bounded poll times out. Only PENDING rows are
+    changed (compare-and-swap in ``fail_handoff``): once the gateway watcher
+    has claimed the row (``running``) it owns the terminal state — failing it
+    from the waiter races the in-flight dispatch, which later overwrites
+    ``failed`` → ``completed`` after the user was already told it failed
+    (split-brain; the delivery actually happened). For a ``running`` row the
+    caller gets ``{"failed": False, "state": "running"}`` and should surface
+    "still transferring" instead.
     """
     session, err = _sess_nowait(params, rid)
     if err:
@@ -1671,13 +1691,20 @@ def _(rid, params: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         key = session["session_key"]
-        record = db.get_handoff_state(key) or {}
-        state = record.get("state") or ""
-        if state in {"pending", "running"}:
-            db.fail_handoff(key, reason)
+        try:
+            failed = db.fail_handoff(key, reason, only_states=("pending",))
+        except TypeError:
+            # Older SessionDB without only_states: preserve prior behavior
+            # minus the running-row stomp (fail only when still pending).
+            record = db.get_handoff_state(key) or {}
+            failed = (record.get("state") or "") == "pending"
+            if failed:
+                db.fail_handoff(key, reason)
+        if failed:
             return _ok(rid, {"failed": True, "state": "failed"})
+        record = db.get_handoff_state(key) or {}
 
-    return _ok(rid, {"failed": False, "state": state})
+    return _ok(rid, {"failed": False, "state": record.get("state") or ""})
 
 
 @method("session.usage")

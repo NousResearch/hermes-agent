@@ -6,6 +6,7 @@ from agent.side_question import (
     SIDE_QUESTION_TASK,
     answer_side_question,
     render_history_for_side_question,
+    trim_snapshot_for_fork,
 )
 
 
@@ -90,3 +91,109 @@ class TestAnswerSideQuestion:
         assert "Side question: which file had the error?" in captured["user_input"]
         # The instructions steer the model to answer only the side question.
         assert "side" in captured["instructions"].lower()
+
+
+class TestTrimSnapshotForFork:
+    def test_trims_unresolved_tool_loop_tail(self):
+        history = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "done first task"},
+            {"role": "user", "content": "u2 (in-flight)"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "content": "result"},
+        ]
+        trimmed = trim_snapshot_for_fork(history)
+        assert trimmed[-1] == {"role": "assistant", "content": "done first task"}
+        assert len(trimmed) == 2
+
+    def test_keeps_completed_history(self):
+        history = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+        assert trim_snapshot_for_fork(history) == history
+
+    def test_empty_when_no_completed_assistant(self):
+        history = [{"role": "user", "content": "first message, turn running"}]
+        assert trim_snapshot_for_fork(history) == []
+
+
+class TestForkPath:
+    def test_prefers_fork_when_parent_agent_given(self):
+        seen = {}
+
+        def fake_fork(parent, question, history):
+            seen["parent"] = parent
+            seen["question"] = question
+            return "fork answer"
+
+        parent = object()
+        with patch("agent.side_question._answer_via_fork", side_effect=fake_fork), \
+             patch("agent.side_question._answer_via_oneshot") as oneshot:
+            out = answer_side_question("q?", [], parent_agent=parent)
+        assert out == "fork answer"
+        assert seen["parent"] is parent
+        oneshot.assert_not_called()
+
+    def test_falls_back_to_oneshot_when_fork_fails(self):
+        with patch(
+            "agent.side_question._answer_via_fork",
+            side_effect=RuntimeError("boom"),
+        ), patch(
+            "agent.side_question._answer_via_oneshot", return_value="digest answer"
+        ) as oneshot:
+            out = answer_side_question("q?", [], parent_agent=object())
+        assert out == "digest answer"
+        oneshot.assert_called_once()
+
+    def test_no_parent_agent_uses_oneshot(self):
+        with patch("agent.side_question._answer_via_fork") as fork, patch(
+            "agent.side_question._answer_via_oneshot", return_value="digest"
+        ):
+            out = answer_side_question("q?", [])
+        assert out == "digest"
+        fork.assert_not_called()
+
+    def test_fork_denies_tools_and_replays_snapshot(self):
+        """_answer_via_fork wires the empty whitelist, replays the trimmed
+        snapshot, runs the fork, attributes usage, and tears down."""
+        from agent.side_question import _answer_via_fork
+
+        calls = {}
+
+        class FakeFork:
+            def run_conversation(self, user_message, conversation_history):
+                calls["user_message"] = user_message
+                calls["history"] = conversation_history
+                return {"final_response": "it was foo.py"}
+
+            def shutdown_memory_provider(self):
+                calls["shutdown"] = True
+
+            def close(self):
+                calls["closed"] = True
+
+        def fake_build(parent, task_cfg, *, max_iterations, write_origin):
+            calls["write_origin"] = write_origin
+            return FakeFork(), {"model": "m"}, False
+
+        whitelists = []
+
+        history = [
+            {"role": "user", "content": "fix foo.py"},
+            {"role": "assistant", "content": "fixed"},
+        ]
+        with patch("agent.background_review.build_cache_parity_fork", fake_build), \
+             patch("hermes_cli.plugins.set_thread_tool_whitelist",
+                   side_effect=lambda allowed, **kw: whitelists.append(allowed)), \
+             patch("hermes_cli.plugins.clear_thread_tool_whitelist"), \
+             patch("agent.background_review._snapshot_review_usage", return_value={}), \
+             patch("agent.background_review._record_review_usage_to_parent"):
+            answer = _answer_via_fork(object(), "which file?", history)
+
+        assert answer == "it was foo.py"
+        assert whitelists == [set()]  # every tool denied at dispatch
+        assert calls["history"] == history  # full snapshot replayed verbatim
+        assert "which file?" in calls["user_message"]
+        assert calls["write_origin"] == "side_question"
+        assert calls.get("shutdown") and calls.get("closed")

@@ -127,12 +127,79 @@ def test_background_review_installs_thread_local_whitelist():
     assert "skill_manage" in whitelist
     assert "skill_view" in whitelist
     assert "skills_list" in whitelist
-    # dangerous tools must NOT be in the whitelist
+    # read-only file tools are allowed too (#61521): the model reaches for
+    # read_file to inspect a skill before patching; denying it caused a
+    # per-review denial storm that starved the self-improvement loop.
+    assert "read_file" in whitelist
+    assert "search_files" in whitelist
+    # write/dangerous tools must NOT be in the whitelist
+    assert "write_file" not in whitelist
+    assert "patch" not in whitelist
     assert "terminal" not in whitelist
     assert "send_message" not in whitelist
     assert "delegate_task" not in whitelist
     assert "web_search" not in whitelist
     assert "execute_code" not in whitelist
+    # The deny message must name the correct substitutes so a single denial
+    # redirects the model instead of a 142-denial storm (#61521).
+    deny = captured.get("deny_msg_fmt") or ""
+    assert "skill_manage" in deny
+    assert "skill_view" in deny
+
+
+def test_read_file_registers_background_review_read_mark(tmp_path):
+    """read_file inside a review fork must satisfy the read-before-write guard.
+
+    The whitelist now allows read_file; without this mark, the model would
+    read SKILL.md via read_file and still get "content has not been loaded
+    in this review turn" on the follow-up skill_manage patch (#61521).
+    """
+    from tools.file_tools import read_file_tool
+    from tools.skill_manager_tool import (
+        _background_review_has_read,
+        _reset_background_review_read_marks,
+    )
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    target = tmp_path / "SKILL.md"
+    target.write_text("---\nname: t\n---\nbody\n")
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        _reset_background_review_read_marks()
+        assert not _background_review_has_read(target)
+        out = read_file_tool(str(target), task_id="bg-review-test")
+        assert "body" in out
+        assert _background_review_has_read(target), (
+            "full read_file inside a review fork must register with the "
+            "read-before-write guard"
+        )
+
+        # A partial read must NOT satisfy the guard.
+        _reset_background_review_read_marks()
+        read_file_tool(str(target), offset=2, task_id="bg-review-test2")
+        assert not _background_review_has_read(target)
+    finally:
+        reset_current_write_origin(token)
+
+
+def test_read_file_outside_review_does_not_mark(tmp_path):
+    """Foreground reads must not populate the review-fork read set."""
+    from tools.file_tools import read_file_tool
+    from tools.skill_manager_tool import (
+        _background_review_has_read,
+        _reset_background_review_read_marks,
+    )
+
+    target = tmp_path / "SKILL.md"
+    target.write_text("content\n")
+    _reset_background_review_read_marks()
+    read_file_tool(str(target), task_id="fg-test")
+    assert not _background_review_has_read(target)
 
 
 

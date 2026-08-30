@@ -297,8 +297,23 @@ class TestChatCompletionsBuildKwargs:
             model="qwen3", messages=msgs,
             provider_profile=profile,
             reasoning_config={"effort": "none"},
+            base_url="http://127.0.0.1:11434/v1",
         )
         assert kw["extra_body"]["think"] is False
+
+    def test_custom_omits_think_on_mistral(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="mistral-small-latest",
+            messages=msgs,
+            provider_profile=profile,
+            reasoning_config={"enabled": False, "effort": "none"},
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert kw.get("extra_body", {}).get("think") is None
+        assert kw.get("reasoning_effort") == "none"
 
 
 

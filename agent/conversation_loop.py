@@ -4307,6 +4307,16 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+                    # Rolling history for status-bar averages (last 10).
+                    try:
+                        hist = getattr(agent, "_api_latency_history", None)
+                        if hist is not None:
+                            hist.append(float(api_duration))
+                        ohist = getattr(agent, "_api_output_history", None)
+                        if ohist is not None:
+                            ohist.append(int(canonical_usage.output_tokens or 0))
+                    except Exception:
+                        pass
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""

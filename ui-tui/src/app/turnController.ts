@@ -66,10 +66,14 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
         return null
       }
 
+      const id = String(row.id ?? '').trim()
+      const parent = String(row.parent ?? '').trim()
+
       return {
         content: String(row.content ?? '').trim(),
-        id: String(row.id ?? '').trim(),
-        status
+        id,
+        status,
+        ...(parent && parent !== id ? { parent } : {})
       }
     })
     .filter((item): item is TodoItem => Boolean(item?.id && item.content))

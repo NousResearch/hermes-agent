@@ -595,7 +595,7 @@ DEFAULT_CONFIG = {
         # never contends with the user's running browser. Turning this back off
         # deletes the snapshot store (~/.hermes/browser-profile/) so copied
         # credentials don't outlive consent. Only Chromium-family default
-        # browsers are supported (Chrome, Edge, Brave, Chromium); a non-Chromium
+        # browsers are supported (Chrome, Edge, Brave, Brave Origin, Chromium); a non-Chromium
         # default (e.g. Firefox) fails closed with a clear message. Default
         # false. Also gates the browser_exec ``local`` argument, which forces a
         # real-profile local session even under a cloud browser backend. Toggle
@@ -611,6 +611,14 @@ DEFAULT_CONFIG = {
         # retry. Still locked afterward → stays blocked, no loop, no auto-kill.
         # OFF by default. No effect on macOS/Linux (copy-while-running works).
         "real_profile_autoclose": False,
+        # Pin WHICH source browser profile directory gets snapshotted for
+        # real-profile browsing (e.g. "Profile 2"). Unset/empty: follows the
+        # browser's last-used profile (Local State → profile.last_used). On a
+        # machine with several profiles (work + personal), last-used roulette
+        # can silently hand the agent the wrong identity; a pin locks it. A pin
+        # naming a directory that doesn't exist FAILS CLOSED with a fixable
+        # message rather than falling back to last-used.
+        "real_profile_pin": "",
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
@@ -1601,6 +1609,20 @@ DEFAULT_CONFIG = {
         "runtime_footer": {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
+        },
+        # CLI/TUI interactive status bar field customization (mirrors the
+        # runtime_footer.fields pattern above). When the list is non-empty,
+        # only the listed fields appear; the built-in order is preserved
+        # (the config controls visibility, not ordering). Empty = show the
+        # default set. Available: model, context_detail, context_pct,
+        # cache_hit, latency, tps, compressions, bg_tasks, bg_processes,
+        # bg_subagents, goal, duration, prompt_elapsed, idle_since, focus,
+        # yolo, stash, battery, title, total_tokens.
+        # total_tokens (session Σ) is opt-in only — it never shows unless
+        # listed here. Narrow terminals still drop wide-mode-only fields
+        # (context_detail, prompt_elapsed, idle_since) regardless of config.
+        "status_bar": {
+            "fields": [],  # empty = built-in defaults (all fields)
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
         # Petdex animated mascot (https://github.com/crafter-station/petdex).
@@ -3728,10 +3750,7 @@ DEFAULT_CONFIG = {
         #   False = always enable the overlay
         "no_overlay": None,
         # cua-driver permission mode for each Hermes computer-use runtime.
-        #   standard (default) — cua-driver's own approval boundary. Protected
-        #     operations (e.g. attaching to an existing signed-in browser
-        #     profile) fail closed unless grant_existing_profile is enabled
-        #     below.
+        #   standard (default) — cua-driver's own approval boundary.
         #   bounded — repeatable automation under a user-reviewed session
         #     capability manifest (set capability_manifest below). No runtime
         #     prompts; anything outside the manifest fails closed inside
@@ -3752,14 +3771,6 @@ DEFAULT_CONFIG = {
         # cua-driver identity (com.trycua.driver / an official signing team).
         # Enable only when developing the driver locally from source.
         "allow_unsigned_driver": False,
-        # Pre-authorize existing-profile browser attachment in standard mode
-        # (cua-driver's trusted-launcher `--grant existing-profile`). When
-        # true, the agent can attach to your already-running, signed-in
-        # Chrome/Edge window — exposing that profile's live pages, cookies,
-        # and storage to the browser protocol — without a per-use prompt.
-        # Leave false to keep existing-profile attachment failing closed;
-        # isolated driver-owned profiles work either way.
-        "grant_existing_profile": False,
     },
 
     # =========================================================================

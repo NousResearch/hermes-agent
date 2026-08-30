@@ -844,11 +844,14 @@ class CLICommandsMixin:
           2. Reject if the agent is currently running (the in-flight turn
              would race with the gateway's switch_session).
           3. Write ``handoff_state='pending'`` on this session row.
-          4. Block-poll ``state.db`` for terminal state (timeout 60s).
+          4. Block-poll ``state.db``: 60s for the gateway to CLAIM the row
+             (pending), then up to 15 min for the claimed dispatch to reach a
+             terminal state (running → completed/failed) with heartbeats.
           5. On ``completed`` → print resume hint and signal CLI exit by
              returning False (the caller honors that like ``/quit``).
-          6. On ``failed`` / timeout → print error and return True so the
-             user keeps their CLI session.
+          6. On ``failed`` / pending-timeout → print error and return True so
+             the user keeps their CLI session. A running-timeout leaves the
+             row untouched (the gateway owns it) and returns True.
 
         Returns:
             False to signal CLI exit, True to keep going.
@@ -967,11 +970,34 @@ class CLICommandsMixin:
         _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
         _cprint("  Waiting for the gateway to pick it up...")
 
-        # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
+        # Two-phase poll, tick every 0.5s.
+        #
+        # PENDING (nobody claimed the row): 60s deadline. A timeout here
+        # genuinely means no gateway watcher is looking at this state.db —
+        # "Is `hermes gateway` running?" is the correct diagnosis, and the
+        # CAS fail (only_states=("pending",)) can't stomp a claim that lands
+        # in the same instant.
+        #
+        # RUNNING (gateway claimed it): the gateway owns the row and is
+        # replaying the full transcript through a synthetic agent turn —
+        # routinely slower than 60s on long sessions with reasoning models.
+        # Timing out here and failing the row is the bug this replaces: the
+        # CLI printed "Is `hermes gateway` running?" while the gateway was
+        # mid-delivery, then the watcher overwrote failed → completed
+        # (split-brain; the session HAD been switched under the CLI). So in
+        # this phase we wait with a much longer bound and a periodic
+        # heartbeat, and on timeout we do NOT touch the row — the gateway
+        # reaches its own terminal state (or the next gateway startup
+        # reclaims a stranded 'running' row).
         import time as _time
-        deadline = _time.time() + 60.0
+        _PENDING_TIMEOUT = 60.0
+        _RUNNING_TIMEOUT = 900.0  # full synthetic agent turn + delivery
+        _HEARTBEAT_EVERY = 30.0
+        pending_deadline = _time.time() + _PENDING_TIMEOUT
+        running_deadline = None
+        next_heartbeat = None
         last_state = "pending"
-        while _time.time() < deadline:
+        while True:
             try:
                 state_row = self._session_db.get_handoff_state(self.session_id)
             except Exception:
@@ -980,6 +1006,8 @@ class CLICommandsMixin:
             if current != last_state:
                 if current == "running":
                     _cprint("  Gateway picked it up; transferring...")
+                    running_deadline = _time.time() + _RUNNING_TIMEOUT
+                    next_heartbeat = _time.time() + _HEARTBEAT_EVERY
                 last_state = current
             if current == "completed":
                 _cprint("")
@@ -1002,11 +1030,41 @@ class CLICommandsMixin:
                 _cprint(f"  Handoff failed: {err}")
                 _cprint("  Your CLI session is intact. Try /handoff again, or /resume on the platform manually.")
                 return True
+            now = _time.time()
+            if current == "pending":
+                if now >= pending_deadline:
+                    break
+            else:  # running
+                if next_heartbeat is not None and now >= next_heartbeat:
+                    _cprint("  Still transferring (the agent is replaying your session on the destination)...")
+                    next_heartbeat = now + _HEARTBEAT_EVERY
+                if running_deadline is not None and now >= running_deadline:
+                    # Do NOT fail the row: the gateway owns it and will record
+                    # its own terminal state (or startup reclaim handles a
+                    # dead gateway). Stomping it here is the split-brain bug.
+                    _cprint("  The gateway is taking unusually long to finish the transfer.")
+                    _cprint(f"  Check {platform_name} — the session may still arrive there.")
+                    _cprint("  This CLI is no longer waiting. Avoid continuing this session here;")
+                    _cprint("  if nothing arrives, retry /handoff once the state settles.")
+                    return True
             _time.sleep(0.5)
 
-        # Timed out. Clear the pending flag so the user can retry.
+        # Pending timed out: nothing ever claimed the row. Clear the pending
+        # flag (CAS — a claim racing this exact moment wins and we just lose
+        # the retry convenience, never the handoff) so the user can retry.
         try:
-            self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
+            self._session_db.fail_handoff(
+                self.session_id,
+                "timed out waiting for gateway",
+                only_states=("pending",),
+            )
+        except TypeError:
+            # Older SessionDB without only_states (downgrade/mixed installs):
+            # fall back to the legacy unconditional fail.
+            try:
+                self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
+            except Exception:
+                pass
         except Exception:
             pass
         _cprint("  Timed out waiting for the gateway. Is `hermes gateway` running?")
@@ -2386,6 +2444,8 @@ class CLICommandsMixin:
         # Snapshot NOW, on the UI thread — the foreground turn keeps appending
         # to conversation_history while the worker runs.
         history_snapshot = list(self.conversation_history or [])
+        # Live agent → cache-parity fork (full context, warm cache reads).
+        parent_agent = self.agent
         turn_route = self._resolve_turn_agent_config(question)
         main_runtime = {
             "model": turn_route["model"],
@@ -2405,6 +2465,7 @@ class CLICommandsMixin:
                 answer = answer_side_question(
                     question,
                     history_snapshot,
+                    parent_agent=parent_agent,
                     main_runtime=main_runtime,
                 )
                 if self._app:

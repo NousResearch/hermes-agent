@@ -9801,6 +9801,12 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     same _run_prompt_submit machinery as every other synthesized turn — so
     the client that just resumed streams it live.
     """
+    # Hosted room turns are recovered by their durable task/lease state
+    # machine. Generic session auto-continue would bypass its execution
+    # generation and can duplicate work after a process restart.
+    if session.get("source") == "bot_room":
+        return None
+
     home = _session_home(session)
     marker = read_turn_marker(home, session_key)
     if marker is None:
@@ -10280,7 +10286,12 @@ def _inflight_snapshot(session: dict) -> dict | None:
 
 
 def _emit_terminal_turn_error(
-    sid: str, session: dict, error: Any, error_surface: Optional[dict] = None
+    sid: str,
+    session: dict,
+    error: Any,
+    error_surface: Optional[dict] = None,
+    *,
+    retire_marker: bool = True,
 ) -> None:
     """Close a failed turn with a terminal ``message.complete`` frame.
 
@@ -10333,7 +10344,8 @@ def _emit_terminal_turn_error(
         rendered = ""
     if rendered:
         payload["rendered"] = rendered
-    _retire_turn_marker(session)
+    if retire_marker:
+        _retire_turn_marker(session)
     _emit("message.complete", sid, payload)
 
 
@@ -12579,6 +12591,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    terminal_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> bool:
     with session["history_lock"]:
         if session.get("_closing"):
@@ -12628,6 +12641,8 @@ def _run_prompt_submit(
     _emit("message.start", sid)
 
     def run():
+        terminal_receipt_attempted = False
+        terminal_receipt_committed = terminal_callback is None
         # The conversation runs on a fresh thread, so ContextVars from the RPC
         # dispatcher do not follow automatically. Rebind the exact transport
         # stored on this session generation before any tool can commission a
@@ -13168,7 +13183,26 @@ def _run_prompt_submit(
                 payload["recoverable"] = True
                 if _error_surface:
                     payload["error_surface"] = _error_surface
-            _retire_turn_marker(session, marker_key)
+            if terminal_callback is not None:
+                terminal_receipt_attempted = True
+                terminal_callback(
+                    {
+                        "status": (
+                            "cancelled"
+                            if status == "interrupted"
+                            else "failed" if status == "error" else "settled"
+                        ),
+                        "text": raw if isinstance(raw, str) else str(raw),
+                        **(
+                            {"error": str(result.get("error") or raw)}
+                            if status == "error" and isinstance(result, dict)
+                            else {}
+                        ),
+                    }
+                )
+                terminal_receipt_committed = True
+            if terminal_receipt_committed:
+                _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -13348,11 +13382,25 @@ def _run_prompt_submit(
             # Keep the partial turn available to the next prompt; the durable
             # inflight record still carries the recoverable error state.
             _restore_agent_history_after_turn_error(session, agent)
+            if terminal_callback is not None and not terminal_receipt_attempted:
+                terminal_receipt_attempted = True
+                try:
+                    terminal_callback(
+                        {"status": "failed", "text": "", "error": str(e)}
+                    )
+                    terminal_receipt_committed = True
+                except Exception:
+                    logger.exception("hosted room terminal receipt commit failed")
             try:
                 # Close the turn with the same terminal error frame shape as
                 # the returned-error path (uniform client handling), retaining
                 # the failed turn for resume replay.
-                _emit_terminal_turn_error(sid, session, e)
+                _emit_terminal_turn_error(
+                    sid,
+                    session,
+                    e,
+                    retire_marker=terminal_receipt_committed,
+                )
                 turn_error_retained = True
             except Exception as emit_exc:
                 print(
@@ -13447,7 +13495,10 @@ def _run_prompt_submit(
             )
             # Backstop for turns that never reached a terminal frame (the
             # frame paths retire the marker as they emit).
-            _retire_turn_marker(session, marker_key)
+            if terminal_receipt_committed:
+                _retire_turn_marker(session, marker_key)
+                with session["history_lock"]:
+                    session.pop("_hosted_room_task", None)
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, agent)
 

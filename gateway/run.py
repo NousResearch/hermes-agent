@@ -13082,6 +13082,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Legacy session recovery on startup failed: %s", exc)
         return exact, fallback
 
+    @staticmethod
+    def _start_hosted_room_worker_sync():
+        """Start the local Group Chat worker without importing the dashboard."""
+
+        import tui_gateway.server  # noqa: F401
+        from tui_gateway import methods_groups
+
+        service = methods_groups.get_hosted_room_service()
+        if service is None:
+            service = methods_groups.start_hosted_room_service()
+        if service is None:
+            raise RuntimeError("Group Chat worker has no bound session backend")
+        status = service.runtime.status()
+        if not status.get("running") or status.get("stopping"):
+            raise RuntimeError("Group Chat worker did not start")
+        return service
+
+    async def _ensure_hosted_room_worker(self):
+        return await asyncio.to_thread(self._start_hosted_room_worker_sync)
+
+    async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:
+        """Keep the room worker alive for the messaging gateway lifetime."""
+
+        while self._running:
+            await self._ensure_hosted_room_worker()
+            await asyncio.sleep(interval)
+
+    async def _stop_hosted_room_worker(self, timeout: float = 5.0) -> bool:
+        """Pause room execution durably without interrupting accepted turns."""
+
+        from tui_gateway import methods_groups
+
+        return await asyncio.to_thread(
+            methods_groups.stop_hosted_room_service,
+            timeout=timeout,
+        )
+
     def _start_loop_heartbeat_task(self) -> None:
         """Start the loop-liveness heartbeat task (#66892), idempotent.
 
@@ -13887,6 +13924,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running = True
         self._install_plugin_message_injector()
         self._update_runtime_status("running")
+
+        try:
+            await self._ensure_hosted_room_worker()
+        except Exception:
+            logger.error(
+                "Group Chat worker failed to start; mutating Group Chat commands "
+                "will fail closed until supervision recovers it",
+                exc_info=True,
+            )
+        self._spawn_supervised(
+            self._hosted_room_worker_watcher,
+            "hosted_room_worker",
+        )
 
         self._start_loop_heartbeat_task()
 
@@ -15743,6 +15793,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running = False
             self._clear_plugin_message_injector()
             self._draining = True
+
+            stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
+            if callable(stop_room_worker):
+                try:
+                    stopped = await stop_room_worker(timeout=5.0)
+                    if not stopped:
+                        logger.warning(
+                            "Group Chat worker is still settling durable work; "
+                            "the next gateway start will recover it"
+                        )
+                except Exception:
+                    logger.warning(
+                        "Group Chat worker could not stop cleanly; the next gateway "
+                        "start will recover durable work",
+                        exc_info=True,
+                    )
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):

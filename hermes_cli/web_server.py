@@ -431,6 +431,31 @@ async def _lifespan(app: "FastAPI"):
 
     record_boot_fingerprint()
 
+    # Hosted Bot rooms belong to the backend process, not to any connected
+    # Desktop socket. Recovery may need a contended state.db migration, so keep
+    # it off the lifespan's pre-yield path: Group Chat startup must degrade on
+    # its own instead of preventing every dashboard/Desktop feature from booting.
+    from tui_gateway import methods_groups as _hosted_groups
+    import tui_gateway.server  # noqa: F401
+
+    hosted_room_start_cancel = threading.Event()
+
+    def _start_hosted_rooms() -> None:
+        try:
+            _hosted_groups.start_hosted_room_service()
+        except Exception:
+            _log.exception("Hosted Group Chat recovery failed during backend startup")
+        finally:
+            if hosted_room_start_cancel.is_set():
+                _hosted_groups.stop_hosted_room_service(timeout=1.0)
+
+    hosted_room_start_thread = threading.Thread(
+        target=_start_hosted_rooms,
+        daemon=True,
+        name="hosted-room-startup",
+    )
+    hosted_room_start_thread.start()
+
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
     # dashboard` is unaffected — it relies on its own gateway.
@@ -473,6 +498,9 @@ async def _lifespan(app: "FastAPI"):
     try:
         yield
     finally:
+        hosted_room_start_cancel.set()
+        _hosted_groups.stop_hosted_room_service(timeout=5.0)
+        hosted_room_start_thread.join(timeout=1.0)
         if cron_stop is not None:
             cron_stop.set()
         pty_reaper_task.cancel()

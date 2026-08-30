@@ -8,8 +8,10 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import pytest
 
+from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
 import hermes_state
+from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 from hermes_state import SessionDB
 
 USER = {"kind": "user", "id": "desktop-user", "display_name": "User"}
@@ -396,7 +398,7 @@ def test_authority_scoped_events_require_gateway_and_epoch(tmp_path):
     _create(db)
 
     with pytest.raises(rooms.HostedRoomError, match="authority_gateway_id"):
-        _append(
+        rooms.append_event(
             db,
             room_id="room-1",
             event_id="turn-1",
@@ -925,6 +927,147 @@ def test_byte_pressure_pruning_keeps_retired_room_id_reserved(
     _disband(db, room_id="room-full", now=20)
 
     _assert_retired_identity_stays_reserved(db, "room-full", fresh_id="room-new")
+
+
+def test_tombstone_pruning_owns_only_room_log_driver_and_policy_tables(tmp_path):
+    db = tmp_path / "state.db"
+    _create(db)
+    identity = driver.TaskIdentity(
+        room_id="room-1",
+        task_id="task-1",
+        thread_id="thread-1",
+        turn_id="turn-1",
+    )
+    driver.admit_task(
+        db,
+        identity,
+        payload={
+            "target_profile": "ops",
+            "prompt": "Inspect.",
+            "source_event_seq": 1,
+        },
+        clock=lambda: 20,
+    )
+    driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id="gateway-a",
+        authority_epoch=1,
+        process_generation="process-a",
+        ttl_seconds=30,
+        clock=lambda: 20,
+    )
+    HostedRoomPolicyCheckpoint(db)
+    _disband(db, room_id="room-1", now=50)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """INSERT INTO hosted_room_policy_cursors(
+                   room_id, through_seq, stopped_through_seq, updated_at
+               ) VALUES ('room-1', 1, 0, 50)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_threads
+               VALUES ('room-1', 'thread-1', 'user-1', 1, 0)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_events
+               VALUES ('room-1', 'thread-1', 'user-1', 1, '{}')"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_watermarks
+               VALUES ('room-1', 'thread-1', 'ops', 1)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_publications
+               VALUES ('room-1', 'task-1', 'turn.settled', 0, 1)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_transcript
+               VALUES (
+                   'room-1', 'thread-1', 1, 'message.user', NULL
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE hosted_room_messaging_refs (
+                room_id TEXT NOT NULL,
+                marker TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_policy_transcript_state
+               VALUES ('room-1', 1)"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_messaging_refs
+               VALUES ('room-1', 'outside-pr-b')"""
+        )
+
+    assert (
+        rooms.prune_disbanded_rooms(
+            db,
+            now=50 + rooms.DISBANDED_ROOM_RETENTION_SECONDS + 1,
+        )
+        == 1
+    )
+    with sqlite3.connect(db) as conn:
+        for table in (
+            "hosted_rooms",
+            "hosted_room_events",
+            "hosted_room_driver_tasks",
+            "hosted_room_driver_leases",
+            "hosted_room_policy_cursors",
+            "hosted_room_policy_threads",
+            "hosted_room_policy_events",
+            "hosted_room_policy_watermarks",
+            "hosted_room_policy_publications",
+            "hosted_room_policy_transcript",
+            "hosted_room_policy_transcript_state",
+        ):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT marker FROM hosted_room_messaging_refs").fetchone()[0]
+            == "outside-pr-b"
+        )
+
+
+def test_policy_sync_cannot_recreate_projection_after_room_pruning(
+    tmp_path,
+    monkeypatch,
+):
+    db = tmp_path / "state.db"
+    _create(db)
+    _append(
+        db,
+        room_id="room-1",
+        event_id="user-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "hello", "thread_id": "thread-1"},
+        now=11,
+    )
+    checkpoint = HostedRoomPolicyCheckpoint(db)
+    original_read = rooms.read_events
+
+    def read_then_prune(*args, **kwargs):
+        page = original_read(*args, **kwargs)
+        _disband(db, room_id="room-1", now=20)
+        rooms.prune_disbanded_rooms(
+            db,
+            now=20 + rooms.DISBANDED_ROOM_RETENTION_SECONDS + 1,
+        )
+        return page
+
+    monkeypatch.setattr(rooms, "read_events", read_then_prune)
+    with pytest.raises(rooms.RoomNotFoundError, match="not found"):
+        checkpoint.sync(room_id="room-1", latest_seq=1)
+    with sqlite3.connect(db) as conn:
+        for table in (
+            "hosted_room_policy_cursors",
+            "hosted_room_policy_events",
+            "hosted_room_policy_transcript",
+            "hosted_room_policy_transcript_state",
+        ):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
 
 def test_pre_actor_draft_database_migrates_with_explicit_legacy_identity(tmp_path):

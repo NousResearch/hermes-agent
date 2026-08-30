@@ -3361,6 +3361,18 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    expected_hosted_task_id = str(
+        params.get("expected_hosted_task_id") or ""
+    ).strip()
+    if expected_hosted_task_id:
+        with session["history_lock"]:
+            active_task = session.get("_hosted_room_task")
+            if (
+                not session.get("running")
+                or not isinstance(active_task, dict)
+                or active_task.get("task_id") != expected_hosted_task_id
+            ):
+                return _ok(rid, {"status": "not_interrupted", "interrupted": False})
     if _session_uses_compute_host(session):
         sid = str(params.get("session_id") or "")
         try:

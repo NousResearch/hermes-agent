@@ -50,6 +50,7 @@ from agent.file_safety import (
     get_write_denied_error,
     is_write_denied as _shared_is_write_denied,
 )
+from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 from tools import interrupt as tool_interrupt
 
 logger = logging.getLogger(__name__)
@@ -3654,15 +3655,31 @@ class ShellFileOperations(FileOperations):
         merged.warning = " ".join(warning_parts)
         return merged
 
+    def _search_prune_glob_args(self) -> str:
+        """Return rg globs that prune known heavyweight recursive subtrees.
+
+        The two forms cover both a root whose basename is a protected name and
+        protected descendants. Globs are relative to each rg search root, so a
+        single ``**/name/**`` pattern does not cover an explicitly selected
+        ``name/`` root. The directory names come from the shared scan policy;
+        this method deliberately does not maintain a second search-only list.
+        """
+        globs = []
+        for dirname in sorted(SEARCH_PRUNE_DIR_NAMES):
+            for prefix in ("", "**/"):
+                pattern = f"!{prefix}{dirname}/**"
+                globs.extend(("--glob", self._escape_shell_arg(pattern)))
+        return " ".join(globs)
+
     def _zero_match_probe(self, pattern: str, path: str,
                           file_glob: Optional[str]) -> Optional[str]:
         """Return a hint for a 0-match content search, or None.
 
         13.9% of production content searches return zero matches and give
-        the model nothing to steer by. Run ONE cheap case-insensitive count
-        probe; if it hits, say so. If the pattern contains regex
-        metacharacters, also probe it as a fixed string. Bounded: two rg
-        invocations max, count-only output.
+        the model nothing to steer by. Run cheap count-only probes for near
+        misses (wrong casing, hidden-only matches, unescaped regex
+        metacharacters). The hidden/ignored probe is bounded with the shared
+        dependency, cache, VCS, vendor, and build-tree pruning policy.
         """
         rg_executable = self._resolve_command('rg')
         if not rg_executable:
@@ -3702,9 +3719,12 @@ class ShellFileOperations(FileOperations):
         # Hidden/ignored probe: rg skips dotdirs and .gitignore'd files by
         # default. When the pattern exists only there, say so instead of
         # returning a bare zero (bench case: match in .hidden/ silently
-        # missing from results).
+        # missing from results). Keep --no-ignore so project-local ignored
+        # files remain diagnosable, but prune heavyweight trees before rg can
+        # recurse into them.
         hidden = self._exec(
-            f"{rg} --hidden --no-ignore --count-matches{glob_expr} "
+            f"{rg} --hidden --no-ignore --count-matches{glob_expr}"
+            f" {self._search_prune_glob_args()} "
             f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,

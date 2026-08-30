@@ -65,5 +65,17 @@ export function suppressTranscriptForView(state: ClientSessionState, suppress: b
     return state
   }
 
-  return { ...state, messages: [] }
+  const pendingClarifyMessage = state.needsInput
+    ? state.messages.find(message => message.id === state.streamId && message.role === 'assistant' && message.pending)
+    : undefined
+
+  const pendingClarifyPart = pendingClarifyMessage?.parts.findLast(
+    part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined
+  )
+
+  return {
+    ...state,
+    messages:
+      pendingClarifyMessage && pendingClarifyPart ? [{ ...pendingClarifyMessage, parts: [pendingClarifyPart] }] : []
+  }
 }

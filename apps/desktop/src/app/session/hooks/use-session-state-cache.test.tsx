@@ -19,6 +19,7 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setMessages,
   setTurnStartedAt
 } from '@/store/session'
 import {
@@ -97,6 +98,83 @@ function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessP
     setAwaitingResponse: () => undefined,
     setBusy: () => undefined,
     setMessages: () => undefined
+  })
+
+  onReady(cache)
+
+  return null
+}
+
+describe('useSessionStateCache — held transcript projection', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setMessages([])
+  })
+
+  it('keeps only an actionable pending clarify card visible while the transcript is held', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    render(
+      <ProjectionHarness
+        activeSessionId="runtime-A"
+        onReady={value => (cache = value)}
+        selectedStoredSessionId="stored-A"
+      />
+    )
+
+    act(() => {
+      cache.holdSessionTranscriptView('runtime-A')
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({
+          ...state,
+          busy: true,
+          needsInput: true,
+          streamId: 'clarify',
+          messages: [
+            { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'unproven history' }] },
+            {
+              id: 'clarify',
+              role: 'assistant',
+              pending: true,
+              parts: [
+                { type: 'text', text: 'unproven commentary' },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'req-1',
+                  toolName: 'clarify',
+                  args: { choices: ['safe'], question: 'Which path?' },
+                  argsText: '{"question":"Which path?","choices":["safe"]}'
+                }
+              ]
+            }
+          ]
+        }),
+        'stored-A'
+      )
+    })
+
+    expect($messages.get()).toEqual([
+      expect.objectContaining({
+        id: 'clarify',
+        parts: [expect.objectContaining({ toolCallId: 'req-1', toolName: 'clarify', type: 'tool-call' })]
+      })
+    ])
+  })
+})
+
+function ProjectionHarness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
+  const busyRef: MutableRefObject<boolean> = { current: false }
+
+  const cache = useSessionStateCache({
+    activeSessionId,
+    busyRef,
+    selectedStoredSessionId,
+    setAwaitingResponse: () => undefined,
+    setBusy: () => undefined,
+    setMessages
   })
 
   onReady(cache)

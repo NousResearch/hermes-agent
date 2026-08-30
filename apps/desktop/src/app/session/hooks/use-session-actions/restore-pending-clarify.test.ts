@@ -65,6 +65,31 @@ describe('restorePendingClarifyFromSnapshot', () => {
     expect(setClarifyRequestMock).not.toHaveBeenCalled()
   })
 
+  it('preserves the current request when activation was superseded', () => {
+    $clarifyRequests.set({
+      'sess-current': {
+        choices: ['new'],
+        multiSelect: false,
+        question: 'New question?',
+        requestId: 'new-rid',
+        sessionId: 'sess-current'
+      }
+    })
+
+    const state = restorePendingClarifyFromSnapshot(
+      { open_requests: [{ id: 'old-rid', method: 'clarify', params: { question: 'Old question?' } }] },
+      'sess-current',
+      resumeStartedAt,
+      null,
+      true
+    )
+
+    expect(state).toEqual({ authoritativeAbsent: false, cleared: null, request: null })
+    expect(setClarifyRequestMock).not.toHaveBeenCalled()
+    expect(clearClarifyRequestMock).not.toHaveBeenCalled()
+    expect($clarifyRequests.get()['sess-current']?.requestId).toBe('new-rid')
+  })
+
   it('clears a stale local request when the snapshot has none, and leaves a newer in-flight one', () => {
     $clarifyRequests.set({
       'sess-6': {

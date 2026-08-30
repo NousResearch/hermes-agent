@@ -2136,6 +2136,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if over_cap and (survivors := [sid for sid in self._finished if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
         for sid in expired:
+            # Belt-and-suspenders handle release: sessions normally arrive in
+            # _finished via _move_to_finished(), which already released their
+            # Popen/PTY handles — but any session inserted into _finished
+            # directly (defensive paths, historical checkpoints) would
+            # otherwise carry its OS handles to the grave unreleased. The
+            # release is idempotent, so double-closing is safe.
+            self._release_finished_handles(self._finished[sid])
             del self._finished[sid]
         # Belt-and-suspenders against module-lifetime growth: forget consumed /
         # poll-observed marks for any session no longer tracked at all.

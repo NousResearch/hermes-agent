@@ -795,6 +795,55 @@ class TestFinishedHandleRelease:
         assert result["status"] == "exited"
         assert "hello-finish" in result["output_preview"]
 
+    def test_prune_releases_handles_of_dropped_sessions(self, registry):
+        """TTL-prune must release handles of sessions that landed in
+        _finished without passing through _move_to_finished (direct inserts).
+        The release is idempotent, so double-close on the normal path is safe.
+        """
+        import time as _time
+
+        pty_closed = {"closed": False}
+
+        class _FakePty:
+            def close(self):
+                pty_closed["closed"] = True
+
+        session = _make_session(sid="proc_prune_release", exited=True)
+        session._pty = _FakePty()
+        # Force TTL expiry.
+        session.started_at = _time.time() - (FINISHED_TTL_SECONDS + 60)
+        registry._finished[session.id] = session
+
+        with registry._lock:
+            registry._prune_if_needed()
+
+        assert session.id not in registry._finished
+        assert pty_closed["closed"], "pruned session must release its PTY handle"
+
+    def test_release_does_not_touch_running_sessions(self, registry):
+        """A still-running session's handles must remain open: _move_to_finished
+        is only ever invoked with exited sessions, and prune only walks
+        _finished — a live session in _running keeps its pipe."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+        )
+        try:
+            session = _make_session(sid="proc_still_running", exited=False)
+            session.process = proc
+            registry._running[session.id] = session
+
+            with registry._lock:
+                registry._prune_if_needed()
+
+            assert session.id in registry._running
+            assert proc.stdout is not None and not proc.stdout.closed
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
 
 # =========================================================================
 # Spawn env sanitization

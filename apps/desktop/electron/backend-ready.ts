@@ -59,9 +59,15 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
  * on every terminal path — resolve, reject, or timeout — so repeated
  * backend spawns don't leak listener slots on the child.
  */
-function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs(), describeOutputTail = () => '') {
+function waitForDashboardPort(
+  child,
+  timeoutMs = resolvePortAnnounceTimeoutMs(),
+  describeOutputTail = () => '',
+  readyFile: fs.PathOrFileDescriptor | null = null
+) {
   return new Promise((resolve, reject) => {
     let done = false
+    let readyFileInterval = null
 
     function cleanup() {
       if (done) {
@@ -70,6 +76,11 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs(),
 
       done = true
       clearTimeout(timer)
+
+      if (readyFileInterval) {
+        clearInterval(readyFileInterval)
+      }
+
       child.stdout.off('data', onStdoutData)
       child.stderr?.off('data', onStderrData)
       child.off('exit', onExit)
@@ -111,6 +122,19 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs(),
       reject(err)
     }
 
+    function checkReadyFile() {
+      if (!readyFile) {
+        return
+      }
+
+      const port = readDashboardReadyFile(readyFile)
+
+      if (port) {
+        cleanup()
+        resolve(port)
+      }
+    }
+
     const timer = setTimeout(() => {
       cleanup()
       reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
@@ -121,20 +145,14 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs(),
     child.on('exit', onExit)
     child.on('error', onError)
 
-    // Listener is live — now recover a sentinel that was already flushed and
-    // consumed before this promise existed. The snapshot is taken AFTER the
-    // listener attaches, so no chunk can fall between snapshot and listener.
-    // Merged-buffer regex here (the tail interleaves both streams). Currently dormant: both
-    // main.ts callers attach the tail and build this wait in one synchronous block, so the
-    // snapshot is empty; any await reintroduced between them makes this the live path again.
-    if (!done) {
-      const alreadyBuffered = bufferedOutput()
-      const m = alreadyBuffered ? alreadyBuffered.match(READY_IN_MERGED_OUTPUT_RE) : null
+    if (readyFile) {
+      readyFileInterval = setInterval(checkReadyFile, 50)
 
-      if (m) {
-        cleanup()
-        resolve(parseInt(m[1], 10))
+      if (typeof readyFileInterval.unref === 'function') {
+        readyFileInterval.unref()
       }
+
+      checkReadyFile()
     }
   })
 }
@@ -228,11 +246,7 @@ function waitForDashboardPortAnnouncement(
   const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs()
   const describeOutputTail = options.describeOutputTail ?? (() => '')
 
-  if (options.readyFile) {
-    return waitForDashboardReadyFile(options.readyFile, child, timeoutMs, describeOutputTail)
-  }
-
-  return waitForDashboardPort(child, timeoutMs, describeOutputTail)
+  return waitForDashboardPort(child, timeoutMs, describeOutputTail, options.readyFile ?? null)
 }
 
 export {

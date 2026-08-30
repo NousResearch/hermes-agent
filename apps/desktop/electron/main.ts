@@ -12557,7 +12557,10 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   assertPoolEntryStillOwned(poolKey, entry)
   const hermesCwd = resolveHermesCwd()
   const webDist = resolveWebDist()
-  const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
+  // stdout is normally sufficient, but Windows can lose a child pipe during
+  // a packaged Desktop launch. The backend's atomic ready-file channel avoids
+  // turning a healthy local server into a 90-second startup timeout.
+  const readyFile = IS_WINDOWS || backend.readyFile ? makeDashboardReadyFile() : null
 
   // Guard BEFORE the "Starting" line: a profile that only exists on a remote
   // backend (remote-primary desktop asked for a forced-local child) rejects
@@ -13010,7 +13013,9 @@ async function runHermesStart() {
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     const hermesCwd = resolveHermesCwd()
     const webDist = resolveWebDist()
-    const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
+    // Keep the primary local backend on the same reliable Windows readiness
+    // channel as secondary profile backends.
+    const readyFile = IS_WINDOWS || backend.readyFile ? makeDashboardReadyFile() : null
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)

@@ -349,38 +349,37 @@ class GatewayNotificationsMixin:
         stays unledgered."""
         from gateway.run import (
             GoalContinuationPublicationError,
-            _durable_delivery_text_for_response,
             _strip_response_attachments_for_direct_send,
         )
-        text_content = _strip_response_attachments_for_direct_send(response, adapter)
         if delivery_obligation_id:
+            from gateway.claimed_result_publication import (
+                snapshot_claimed_response_parts,
+            )
             from gateway.delivery_ledger import prepare_claimed_result_delivery
-            from gateway.platforms.base import BasePlatformAdapter
 
             routed_session_key = str(
                 session_key
                 or getattr(source, "session_key", "")
                 or self._session_key_for_source(source)
             )
-            force_document_attachments = "[[as_document]]" in response
-            media_files = []
-            images = []
-            local_files = []
             if deliver_media:
-                visible_text = _durable_delivery_text_for_response(response, adapter)
-                media_files, cleaned = adapter.extract_media(response)
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(
-                    media_files,
-                    session_key=routed_session_key,
-                )
-                images, cleaned = adapter.extract_images(cleaned)
-                local_files, _ = adapter.extract_local_files(cleaned)
-                local_files = BasePlatformAdapter.filter_local_delivery_paths(
-                    local_files,
-                    session_key=routed_session_key,
+                snapshot = snapshot_claimed_response_parts(response, adapter)
+                visible_text = snapshot.visible_text
+                media_files = snapshot.media_files
+                images = snapshot.images
+                local_files = snapshot.local_files
+                force_document_attachments = (
+                    snapshot.force_document_attachments
                 )
             else:
-                visible_text = text_content
+                visible_text = _strip_response_attachments_for_direct_send(
+                    response,
+                    adapter,
+                )
+                media_files = []
+                images = []
+                local_files = []
+                force_document_attachments = False
 
             should_send = await asyncio.to_thread(
                 prepare_claimed_result_delivery,
@@ -409,10 +408,15 @@ class GatewayNotificationsMixin:
                     metadata=metadata,
                     reply_to=event_message_id,
                     text_already_delivered=text_already_delivered,
+                    attachment_session_key=routed_session_key,
                 )
                 return
         try:
             if not text_already_delivered:
+                text_content = _strip_response_attachments_for_direct_send(
+                    response,
+                    adapter,
+                )
                 if text_content:
                     # Reconcile-by-edit first: a stream-sealed message already carries most of the answer;
                     # a plain send here would duplicate it.

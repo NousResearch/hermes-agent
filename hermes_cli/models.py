@@ -6615,6 +6615,11 @@ def validate_requested_model(
     # close match is auto-corrected. OpenRouter validates the preset slug when
     # the inference request is made.
     preset_suffix = ""
+
+    def _with_preset_suffix(model_id: str) -> str:
+        """Re-attach a preserved ``@preset/<slug>`` suffix after auto-correction."""
+        return f"{model_id}{preset_suffix}"
+
     if normalized == "openrouter":
         marker = "@preset/"
         if marker in requested:
@@ -7127,7 +7132,7 @@ def validate_requested_model(
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
-                corrected = f"{auto[0]}{preset_suffix}"
+                corrected = _with_preset_suffix(auto[0])
                 return {
                     "accepted": True,
                     "persist": True,
@@ -7302,7 +7307,7 @@ def validate_requested_model(
         )
         if auto:
             corrected = catalog_lower[auto[0]]
-            corrected_with_suffix = f"{corrected}{preset_suffix}"
+            corrected_with_suffix = _with_preset_suffix(corrected)
             return {
                 "accepted": True,
                 "persist": True,

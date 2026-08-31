@@ -484,7 +484,7 @@ test('resolveUpdateTarget accepts canonical mac fallback bundle', () => {
     realpathSync: (p: string) => p
   })
   assert.equal(result.ok, true)
-  assert.equal(result.canonical, CANONICAL_ARM)
+  assert.equal(result.canonical, CANONICAL_INTEL)
 })
 
 test('resolveUpdateTarget rejects worktree path', () => {

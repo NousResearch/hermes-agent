@@ -362,7 +362,7 @@ mac_swap() {
   # independently callable — defense-in-depth.
   if ! mac_target_gate; then
     DONE_NOTE="Update complete, but this copy of Hermes cannot self-update — it is running from outside the managed install location. Reinstall Hermes to enable automatic updates."
-    log "refusing noncanonical relaunch target: $RELAUNCH_TARGET (expected $physical_root/apps/desktop/release/mac-arm64/Hermes.app)"
+    log "refusing noncanonical relaunch target: $RELAUNCH_TARGET"
     return
   fi
 

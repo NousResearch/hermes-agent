@@ -251,8 +251,11 @@ export function resolveUpdateTarget(
   const canonicalTarget = path.join(normalizedRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app')
   const fallbackTarget = path.join(normalizedRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
 
-  if (normalizedBundle === canonicalTarget || normalizedBundle === fallbackTarget) {
+  if (normalizedBundle === canonicalTarget) {
     return { canonical: canonicalTarget, ok: true }
+  }
+  if (normalizedBundle === fallbackTarget) {
+    return { canonical: fallbackTarget, ok: true }
   }
 
   return { canonical: canonicalTarget, ok: false, error: 'noncanonical-install' }

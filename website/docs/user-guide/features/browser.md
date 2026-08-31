@@ -14,7 +14,7 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 - **Browser Use mode** via the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use), the default browser driver for local Chrome and Browser Use cloud browsers
 - **Firecrawl cloud mode** via [Firecrawl](https://firecrawl.dev) for cloud browsers with built-in scraping
 - **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
-- **Lightpanda local engine** via [Lightpanda](https://lightpanda.io) — a headless browser built from scratch in Zig for machines; instant start up, 16x lower memory and 9x faster than Chrome, with automatic Chrome fallback for actions it doesn't support yet
+- **Lightpanda local engine** via [Lightpanda](https://lightpanda.io) — a headless browser built from scratch in Zig for machines; instant start up, 16x lower memory and 9x faster than Chrome. Works in Browser Use mode (Hermes spawns it, no Chromium or Node needed) and with the built-in tools (automatic Chrome fallback for actions it doesn't support yet)
 - **Local Chromium-family CDP** — connect browser tools to your own Chrome, Brave, Chromium, or Edge instance using `/browser connect`
 - **Local browser mode** via the `agent-browser` CLI and a local Chromium installation
 
@@ -438,11 +438,12 @@ When Camofox runs in headed mode (with a visible browser window), it exposes a V
 
 [Lightpanda](https://lightpanda.io) is an open-source headless browser written from scratch. It starts instantly, runs 9x faster and uses 16x less memory than Chrome, which matters for agents that live on small VMs for long stretches.
 
-Lightpanda is a **local engine**, selected under the local `agent-browser` path (not a cloud provider). Install the binary and put it on your `PATH` (see the [Lightpanda installation guide](https://lightpanda.io/docs)), then set:
+Lightpanda is a **local engine** (a browser source, like "Local Browser"), not a cloud provider. Install the binary and put it on your `PATH` (see the [Lightpanda installation guide](https://lightpanda.io/docs/run-locally/installation/one-liner)), then pick **Lightpanda** in `hermes tools` → Browser Automation, or set:
 
 ```yaml
 # Add to ~/.hermes/config.yaml
 browser:
+  cloud_provider: local
   engine: lightpanda
 ```
 
@@ -452,9 +453,12 @@ Or via environment variable:
 AGENT_BROWSER_ENGINE=lightpanda
 ```
 
-Hermes drives Lightpanda through `agent-browser` over CDP, the same way it drives local Chrome.
+The engine works with both browser drivers:
 
-**Automatic Chrome fallback.** Lightpanda doesn't yet cover everything Chrome does, so the integration is non-disruptive: Lightpanda handles the actions it supports, and Hermes transparently retries on Chrome for anything it doesn't. The supported set covers the core agent workflow — navigate, snapshot, click, type, scroll, back, press, and eval. Screenshots also fall back to Chrome because Lightpanda has no graphical renderer; `browser_vision` is pre-routed straight to Chrome for the same reason.
+- **Browser Use mode (the default).** Hermes launches `lightpanda serve --host 127.0.0.1 --port <free>` itself — one process per `browser_exec` session name (or per task) — and points the Browser Use CLI at it. No Chromium, Playwright or Node.js is needed. The process is reaped after `browser.inactivity_timeout`, on exit, and by the orphan sweep if Hermes crashes. Lightpanda has no graphical renderer, so `capture_screenshot()` is unavailable and the tool description tells the model to work text-first; it also holds one page per session, so the model is told to call `new_tab()` once and `goto_url()` afterwards (tracked upstream in [lightpanda-io/browser#1962](https://github.com/lightpanda-io/browser/issues/1962)).
+- **Built-in browser tools** (`/browser use off`). Hermes drives Lightpanda through `agent-browser --engine lightpanda` over CDP, the same way it drives local Chrome, with **automatic Chrome fallback**: Lightpanda handles the actions it supports (navigate, snapshot, click, type, scroll, back, press, eval) and Hermes transparently retries on Chrome for anything it doesn't. Screenshots and `browser_vision` are routed straight to Chrome.
+
+**When the engine is ignored.** `browser.engine` is the lowest-precedence browser setting: a cloud provider (including the Nous subscription browser — and on never-configured setups, any `BROWSERBASE_API_KEY` / `BROWSER_USE_API_KEY` in `~/.hermes/.env` auto-selects one), Camofox, a `browser.cdp_url` / `/browser connect` override, or `browser.use_real_profile` all take precedence. Picking Lightpanda in `hermes tools` writes `cloud_provider: local` for you; `/browser status` and `hermes doctor` report when the engine is configured but shadowed, and by what.
 
 ### Local Chromium-family browser via CDP (`/browser connect`)
 
@@ -556,9 +560,10 @@ BROWSERBASE_SESSION_TIMEOUT=1800
 # Inactivity timeout before auto-cleanup in seconds (default: 120)
 BROWSER_INACTIVITY_TIMEOUT=120
 
-# Local browser engine. Applies to the built-in browser tools
-# (agent-browser path). Equivalent to browser.engine in config.yaml.
-#   auto       — agent-browser's default (currently Chrome)
+# Local browser engine. Equivalent to browser.engine in config.yaml. In
+# Browser Use mode (default) "lightpanda" makes Hermes spawn `lightpanda serve`;
+# with the built-in tools it is passed to agent-browser as --engine.
+#   auto       — Chrome (default)
 #   lightpanda — Lightpanda
 #   chrome     — force Chrome explicitly
 AGENT_BROWSER_ENGINE=auto

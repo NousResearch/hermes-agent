@@ -314,6 +314,135 @@ def _hygiene_compression_timeout_message(
     )
 
 
+async def run_codex_hygiene_compaction(
+    gateway,
+    session_key: str,
+    session_id: str,
+    *,
+    auto_mode: str,
+    history: list,
+    approx_tokens: int,
+    timeout_seconds: float,
+    failure_cooldown_seconds: float = 300.0,
+) -> str:
+    """Session hygiene for ``codex_app_server`` sessions (#73503).
+
+    On this runtime the model's real working context is the app-server's
+    server-side thread, not Hermes' transcript: ``CodexAppServerSession`` is
+    constructed with no history and each turn submits only the new user
+    message (agent/codex_runtime.py), so the persisted transcript is a mirror
+    that is never replayed into a thread. Two consequences drive this path:
+
+    * Rewriting the local mirror (the detached hygiene agent's normal
+      compression) shrinks nothing the model actually carries — it was a
+      permanent no-op ("compressed 150 -> 150 msgs").
+    * Evicting the cached live agent afterwards destroys the only real
+      context: the next turn spawns an EMPTY thread and the model starts
+      blank while Hermes still mirrors a full history (abrupt amnesia — the
+      user-facing damage documented on #73503).
+
+    So hygiene must compact the LIVE cached agent's thread via the
+    app-server's own ``thread/compact/start`` (through
+    ``_compress_context_via_codex_app_server``) and KEEP that agent cached.
+    Never build a detached compressor and never evict here.
+
+    Mode contract (``compression.codex_app_server_auto``): only ``hermes``
+    lets Hermes' threshold initiate app-server compaction; ``native`` leaves
+    the schedule to codex itself and ``off`` disables Hermes-initiated
+    automatic compaction entirely — both return without touching the thread
+    or the transcript, and neither may fall back to the local compressor.
+
+    Returns an outcome tag for logging/tests: ``compacted``,
+    ``skipped:<reason>`` or ``failed:<reason>``.
+    """
+    mode = str(auto_mode or "native").lower()
+    if mode not in {"native", "hermes", "off"}:
+        mode = "native"
+    if mode != "hermes":
+        # native: the app-server compacts on its own schedule; off: the
+        # operator disabled Hermes-initiated automatic compaction. A local
+        # transcript fallback is wrong in EVERY mode here (it cannot shrink
+        # the thread), so both modes are a clean skip — crucially without
+        # the detached-compressor path's cache eviction.
+        return f"skipped:mode={mode}"
+
+    agent = None
+    lock = getattr(gateway, "_agent_cache_lock", None)
+    cache = getattr(gateway, "_agent_cache", None)
+    if cache is not None:
+        try:
+            if lock:
+                with lock:
+                    entry = cache.get(session_key)
+            else:
+                entry = cache.get(session_key)
+        except Exception:
+            entry = None
+        agent = entry[0] if isinstance(entry, tuple) and entry else entry
+    if agent is None or agent is _AGENT_PENDING_SENTINEL:
+        # No live agent → no live thread → nothing real to compact. The
+        # mirror-only rewrite the detached path would perform is exactly the
+        # no-op this function exists to remove, so skip honestly instead.
+        return "skipped:no-cached-agent"
+    if getattr(agent, "_codex_session", None) is None:
+        return "skipped:no-live-thread"
+
+    loop = asyncio.get_running_loop()
+    compressor = getattr(agent, "context_compressor", None)
+    count_before = getattr(compressor, "compression_count", 0)
+    try:
+        await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: agent._compress_context(
+                    history,
+                    "",
+                    approx_tokens=approx_tokens,
+                ),
+            ),
+            timeout=max(float(timeout_seconds), 1.0),
+        )
+    except asyncio.TimeoutError:
+        # The executor thread keeps running (compact_thread has its own RPC
+        # timeouts); brake per-turn retries so a wedged app-server does not
+        # re-trigger a compaction attempt on every message.
+        if failure_cooldown_seconds >= 0:
+            _record_hygiene_cooldown(
+                gateway,
+                session_id,
+                failure_cooldown_seconds,
+                "codex app-server thread compaction timed out",
+            )
+        logger.warning(
+            "Session hygiene: codex app-server thread compaction for "
+            "session %s timed out after %.1fs; continuing without compaction",
+            session_id,
+            timeout_seconds,
+        )
+        return "failed:timeout"
+    except Exception as exc:
+        logger.warning(
+            "Session hygiene: codex app-server thread compaction for "
+            "session %s failed: %s",
+            session_id,
+            exc,
+        )
+        return f"failed:{exc}"
+
+    count_after = getattr(compressor, "compression_count", 0)
+    if count_after > count_before:
+        # A native compaction boundary was recorded on the live agent
+        # (thread compacted server-side; transcript intentionally NOT
+        # rewritten — state.db records the boundary, the mirror stays
+        # intact and the agent stays cached).
+        _reset_hygiene_failure_streak(gateway, session_key)
+        return "compacted"
+    # compress_context returned without recording a boundary: an internal
+    # skip (its own failure cooldown) or a compaction error — the codex
+    # route already persisted its own failure cooldown in that case.
+    return "failed:no-boundary"
+
+
 def _record_hygiene_cooldown(
     gateway,
     session_id: str,
@@ -20512,7 +20641,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
                         )
-                        if _hyg_runtime.get("api_key"):
+                        _hyg_api_mode = str(
+                            _hyg_runtime.get("api_mode") or ""
+                        ).lower()
+                        if _hyg_api_mode == "codex_app_server":
+                            # codex app-server runtime: the model's real
+                            # context is the app-server's server-side thread,
+                            # not the transcript mirror. The detached-agent
+                            # block below could only rewrite the mirror (a
+                            # guaranteed no-op for the thread) and its
+                            # finally-clause eviction would destroy the live
+                            # thread — the next turn then starts blank
+                            # (#73503). Route to the live cached agent's
+                            # thread/compact/start instead and KEEP it cached.
+                            _hyg_codex_auto = "native"
+                            _hyg_comp_cfg = (
+                                _hyg_data.get("compression")
+                                if isinstance(_hyg_data, dict)
+                                else None
+                            )
+                            if isinstance(_hyg_comp_cfg, dict):
+                                _hyg_codex_auto = str(
+                                    _hyg_comp_cfg.get(
+                                        "codex_app_server_auto", "native"
+                                    )
+                                    or "native"
+                                )
+                            _hyg_codex_outcome = await run_codex_hygiene_compaction(
+                                self,
+                                session_key,
+                                session_entry.session_id,
+                                auto_mode=_hyg_codex_auto,
+                                history=history,
+                                approx_tokens=_approx_tokens,
+                                timeout_seconds=_hyg_total_ceiling_seconds,
+                                failure_cooldown_seconds=_hyg_failure_cooldown_seconds,
+                            )
+                            logger.info(
+                                "Session hygiene (codex app-server): %s "
+                                "(session=%s, mode=%s, ~%s tokens)",
+                                _hyg_codex_outcome,
+                                session_entry.session_id,
+                                _hyg_codex_auto,
+                                f"{_approx_tokens:,}",
+                            )
+                        elif _hyg_runtime.get("api_key"):
                             # Pass the FULL transcript (tool results included).
                             # Filtering to user/assistant-only starved the
                             # compressor: tool results are usually the bulk of

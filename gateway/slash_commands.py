@@ -4449,6 +4449,67 @@ class GatewaySlashCommandsMixin:
         with _profile_runtime_scope(profile_home):
             return await self._handle_compress_command_inner(event)
 
+    async def _compress_codex_app_server_session(
+        self, session_key: str, session_id: str
+    ) -> str:
+        """Manual /compress for codex_app_server sessions (#73503).
+
+        Compacts the LIVE cached agent's app-server thread via
+        ``thread/compact/start`` (through ``_compress_context``'s codex route
+        with ``force=True``, which bypasses the automatic-mode gate in every
+        ``compression.codex_app_server_auto`` mode — a manual /compress is an
+        explicit user decision) and keeps that agent cached, so the compacted
+        thread is what the next turn continues from. Never builds a temporary
+        compression agent and never rewrites the transcript mirror: neither
+        can shrink the server-side thread that is the model's real context.
+        """
+        agent = None
+        lock = getattr(self, "_agent_cache_lock", None)
+        cache = getattr(self, "_agent_cache", None)
+        if cache is not None:
+            if lock:
+                with lock:
+                    entry = cache.get(session_key)
+            else:
+                entry = cache.get(session_key)
+            agent = entry[0] if isinstance(entry, tuple) and entry else entry
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        if (
+            agent is None
+            or agent is _AGENT_PENDING_SENTINEL
+            or getattr(agent, "_codex_session", None) is None
+        ):
+            return (
+                "🗜️ Nothing to compact: this session runs on the Codex "
+                "app-server runtime, whose context lives in a Codex-owned "
+                "thread that only exists while the agent is active. Send a "
+                "message first, then /compress — or /reset to start fresh."
+            )
+
+        compressor = getattr(agent, "context_compressor", None)
+        count_before = getattr(compressor, "compression_count", 0)
+        try:
+            await self._run_in_executor_with_context(
+                lambda: agent._compress_context(
+                    [], "", force=True,
+                )
+            )
+        except Exception as exc:
+            return t("gateway.compress.failed", error=exc)
+        count_after = getattr(compressor, "compression_count", 0)
+        if count_after > count_before:
+            return (
+                "🗜️ Codex app-server thread compacted (thread/compact). "
+                "The transcript mirror is unchanged by design — the "
+                "app-server now carries the compacted context."
+            )
+        return (
+            "⚠️ Codex app-server compaction did not complete — the thread "
+            "is unchanged. Check the app-server logs, retry /compress, or "
+            "/reset for a clean session."
+        )
+
     async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
 
@@ -4538,6 +4599,23 @@ class GatewaySlashCommandsMixin:
                 source=source,
                 session_key=session_key,
             )
+            if str(runtime_kwargs.get("api_mode") or "").lower() == "codex_app_server":
+                # codex app-server runtime (#73503): the model's working
+                # context is the app-server's server-side thread, owned by the
+                # LIVE cached agent (agent/codex_runtime.py — one
+                # CodexAppServerSession per AIAgent, spawned lazily on first
+                # turn). A temporary compression agent has no thread, so the
+                # codex route in _compress_context_via_codex_app_server bailed
+                # at its "no active codex thread" guard, the transcript came
+                # back unchanged, and the finally-clause eviction below then
+                # destroyed the only real context. Compact the live agent's
+                # thread via thread/compact/start instead — and KEEP the agent
+                # cached so the compacted thread survives to the next turn.
+                # No local transcript fallback in any mode: rewriting the
+                # mirror cannot shrink the thread.
+                return await self._compress_codex_app_server_session(
+                    session_key, session_entry.session_id
+                )
             if not runtime_kwargs.get("api_key"):
                 return t("gateway.compress.no_provider")
 

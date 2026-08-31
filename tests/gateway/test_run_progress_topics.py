@@ -18,6 +18,21 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
+@pytest.fixture(autouse=True)
+def _isolate_goal_continuation_claims(tmp_path, monkeypatch):
+    """Keep durable-claim regressions away from the live Hermes profile."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import hermes_constants
+
+    token = hermes_constants.set_hermes_home_override(None)
+    try:
+        yield home
+    finally:
+        hermes_constants.reset_hermes_home_override(token)
+
+
 class ProgressCaptureAdapter(BasePlatformAdapter):
     def __init__(self, platform=Platform.TELEGRAM):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
@@ -2378,7 +2393,9 @@ async def test_retry_owned_media_arrival_never_merges_with_slot_head():
     runner = _make_runner(adapter)
     key = "retry-media-key"
     adapter._pending_messages[key] = slot_head
-    retry = runner._claim_goal_continuation_retry(key, adapter, continuation)
+    retry = runner._claim_goal_continuation_retry(
+        key, adapter, continuation, session_id="retry-media-session"
+    )
     assert retry is not None
     runner._is_user_authorized = lambda _source: True
     runner._draining = False

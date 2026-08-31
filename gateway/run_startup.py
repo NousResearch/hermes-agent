@@ -1322,6 +1322,12 @@ class GatewayStartupMixin:
         await self._await_startup_boot_sends(
             planned_restart_notification_pending=_planned_restart_notification_pending(),
         )
+        recovered_claims = self._recover_goal_continuation_claims()
+        if recovered_claims:
+            logger.info(
+                "Scheduled crash-safe recovery for %d goal continuation claim(s)",
+                recovered_claims,
+            )
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
         self._schedule_resume_pending_sessions()

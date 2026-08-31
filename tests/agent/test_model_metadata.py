@@ -1413,6 +1413,29 @@ class TestParseContextLimitFromError:
         fell through to None."""
         assert parse_context_limit_from_error(msg) == expected
 
+    @pytest.mark.parametrize("msg,expected", [
+        # Google Gemini/Gemma overflow phrasing (#57275): the limit follows
+        # "supports up to"; the larger input count before it must NOT win.
+        ("Unable to submit request because the input token count is 32825 "
+         "but model only supports up to 32768. Reduce the input token count "
+         "and try again.", 32768),
+        ("input token count is 140000 but model only supports up to 131072", 131072),
+        ("model supports up to 65536 tokens", 65536),
+    ])
+    def test_google_supports_up_to_variants(self, msg, expected):
+        """Google's overflow error was previously unparseable — recovery kept
+        the wrong window and burned its attempts (#57275, residual claim 5)."""
+        assert parse_context_limit_from_error(msg) == expected
+
+    def test_google_supports_up_to_recalibrates_window(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        msg = ("Unable to submit request because the input token count is "
+               "32825 but model only supports up to 32768.")
+        assert get_context_length_from_provider_error(msg, 131072) == 32768
+        # Parsed limit not below current window → no recalibration.
+        assert get_context_length_from_provider_error(msg, 32768) is None
+
     def test_get_context_length_from_vllm_max_model_len_error(self):
         from agent.model_metadata import get_context_length_from_provider_error
 

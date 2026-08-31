@@ -1679,6 +1679,7 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
       - "context_length_exceeded: 131072"
       - "Maximum context size 32768 exceeded"
       - "model's max context length is 65536"
+      - "input token count is 32825 but model only supports up to 32768"
     """
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
@@ -1690,6 +1691,12 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
         r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
         r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
+        # Google Gemini/Gemma: "Unable to submit request because the input
+        # token count is 32825 but model only supports up to 32768." The
+        # limit is the number AFTER "supports up to" — the input count that
+        # precedes it must not be captured, so this pattern anchors on the
+        # "supports up to" phrase itself.
+        r'supports?\s+(?:only\s+)?up\s+to\s+(\d{4,})',
     ]
     for pattern in patterns:
         match = re.search(pattern, error_lower)

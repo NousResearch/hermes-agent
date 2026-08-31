@@ -2307,8 +2307,20 @@ class APIServerAdapter(BasePlatformAdapter):
         at a conversation boundary — ``session_reset`` (/new),
         ``session_switch``, ``idle``, ``daily``, ``suspended`` — are fenced
         out, so a new conversation still gets a new id and a cold affinity
-        scope.  The generation that must rotate is therefore already durable
-        in ``sessions.end_reason``; nothing here needs a counter.
+        scope.  The generation that must rotate is durable independently of
+        this lookup, in the ``conversation_generations`` counter advanced
+        inside each boundary's own transaction
+        (``SessionDB._bump_conversation_generation``); all this has to resolve
+        is the live transcript.
+
+        Two first requests arriving concurrently on one declared key can each
+        miss this lookup, mint their own row and both bind — the mismatch
+        guard in :meth:`_bind_declared_conversation` does not fire, because
+        each row is still unkeyed at bind time.  That converges instead of
+        crossing: both rows carry the same key under the same source, so this
+        lookup returns the later one for every subsequent reply and the
+        earlier row is an abandoned transcript, never another conversation's
+        identity.
 
         Returns ``None`` when nothing was declared, when no live row is
         recorded for the declared key, or on any DB error — every one of

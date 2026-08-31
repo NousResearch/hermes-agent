@@ -110,7 +110,7 @@ class TestDeclaredConversationResolution:
 
 
 class TestConversationBoundariesRotate:
-    """The generation that must rotate is already durable in end_reason.
+    """The boundary the recovery fence honours is durable in end_reason.
 
     #79017/#86733's contract: an affinity scope stays warm across
     continuation and compression rotation, and goes cold on a new

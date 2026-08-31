@@ -97,11 +97,19 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
     return None
 
 
-def _agent_source(agent: Any, session_id: str, session_db: Any) -> str:
+def _agent_source(
+    agent: Any, session_id: str, session_db: Any, row_source: Optional[str] = None
+) -> str:
     """The ``sessions.source`` this agent's conversation is recorded under.
 
     Read from the agent's own row when it exists, because that is the value
     the peer queries below match on.
+
+    ``row_source`` is that value when the caller already has it — the single
+    identity read in :func:`declared_conversation_scope` — where ``""`` means
+    "the row was read and carries no source". ``None`` means "not read yet"
+    and keeps the original lookup, which is the path a ``SessionDB`` without
+    :meth:`~hermes_state.SessionDB.declared_scope_identity` still takes.
 
     Before the row lands — this module resolves the first scope ahead of
     ``_ensure_db_session`` — it uses the SAME resolver persistence will use,
@@ -113,16 +121,15 @@ def _agent_source(agent: Any, session_id: str, session_db: Any) -> str:
     a ``/new`` would then read the platform domain, miss the boundary recorded
     under the override, and hash the same scope.
     """
-    if session_id and session_db is not None:
+    if row_source is None and session_id and session_db is not None:
         try:
             row = session_db.get_session(session_id)
         except Exception:
             logger.debug("declared-scope source lookup failed", exc_info=True)
             row = None
-        if row:
-            source = str(row.get("source") or "").strip()
-            if source:
-                return source
+        row_source = str(row.get("source") or "").strip() if row else ""
+    if row_source:
+        return row_source
     platform = getattr(agent, "platform", None)
     try:
         # Imported lazily: run_agent imports this module, and this is the
@@ -211,16 +218,32 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
     sid = str(getattr(agent, "session_id", None) or "")
     db = getattr(agent, "_session_db", None)
     generation = ""
+    row_source: Optional[str] = None
     if sid and db is not None:
         try:
-            if db.is_explicit_fork_child(sid):
+            # One read for both halves of the row's identity: the fork verdict
+            # and the source the peer queries match on live on the same
+            # ``sessions`` row, and asking for them separately read it twice
+            # per resolution (@teknium1 on #98811).  A SessionDB without the
+            # combined view keeps the original call, so nothing that predates
+            # it — including the doubles that certify the fail-closed contract
+            # below — changes behaviour.
+            identity = getattr(db, "declared_scope_identity", None)
+            if callable(identity):
+                is_fork, row_source = identity(sid)
+            else:
+                is_fork = db.is_explicit_fork_child(sid)
+            if is_fork:
                 return None
         except Exception:
             # Degrade to the physical-id scope rather than risk merging a
-            # fork onto its parent's key on a transient DB failure.
+            # fork onto its parent's key on a transient DB failure.  The
+            # source read is inside this same guard for the same reason: it
+            # was always the second half of a read that had already failed
+            # closed here.
             logger.debug("declared-scope fork check failed", exc_info=True)
             return None
-    source = _agent_source(agent, sid, db)
+    source = _agent_source(agent, sid, db, row_source)
     if db is not None:
         try:
             generation = _conversation_generation(key, source, db)

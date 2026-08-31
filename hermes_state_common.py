@@ -534,6 +534,14 @@ CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
 -- This counter lives outside prunable session history and only ever
 -- increments, once per boundary actually written, so a generation can never
 -- be reused for a peer even if every session row behind it is deleted.
+--
+-- These rows are deliberately NEVER garbage-collected, including when every
+-- session row for the peer is gone. Collecting one resets that peer to "no
+-- generation", so its next boundary writes generation = 1 again and re-issues
+-- a gwk_ scope a retired conversation already used — exactly the ABA this
+-- table exists to close. Do not add it to delete_session()'s cascade or to any
+-- prune sweep. One (TEXT, TEXT, INTEGER) row per routing peer is the intended,
+-- bounded cost.
 CREATE TABLE IF NOT EXISTS conversation_generations (
     source TEXT NOT NULL,
     session_key TEXT NOT NULL,

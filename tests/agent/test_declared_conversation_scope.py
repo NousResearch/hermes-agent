@@ -224,6 +224,74 @@ class TestDeclaredConversationScope:
         ).startswith("gwk_")
 
 
+class TestOneIdentityReadPerResolution:
+    """The fork verdict and the row's source come from one ``sessions`` read.
+
+    Resolution is memoized per transcript segment, so this was never on the
+    per-API-call hot path (#79017) — but reading the same row twice per
+    resolution was one read too many (@teknium1 on #98811), and a ``SessionDB``
+    that predates the combined view has to keep the path it had.
+    """
+
+    def test_the_identity_row_is_read_once(self, db):
+        db.create_session(RUN_1, source="api_server")
+        reads = []
+        real_get_session = db.get_session
+
+        def counted(session_id):
+            reads.append(session_id)
+            return real_get_session(session_id)
+
+        db.get_session = counted
+        try:
+            scope = declared_conversation_scope(_agent(RUN_1, db, CHAT_KEY))
+        finally:
+            del db.get_session
+
+        assert scope.startswith("gwk_")
+        assert reads == [RUN_1]
+
+    def test_a_db_without_the_combined_view_keeps_the_two_call_path(self):
+        calls = []
+
+        class LegacyDB:
+            def is_explicit_fork_child(self, sid):
+                calls.append(("fork", sid))
+                return False
+
+            def get_session(self, sid):
+                calls.append(("row", sid))
+                return {"source": "telegram"}
+
+            def latest_conversation_boundary(self, key, source):
+                return None
+
+        scope = declared_conversation_scope(_agent("sess-legacy", LegacyDB(), CHAT_KEY))
+
+        assert scope is not None and scope.startswith("gwk_")
+        assert calls == [("fork", "sess-legacy"), ("row", "sess-legacy")]
+
+    def test_the_combined_read_still_fails_closed(self):
+        """A fork must never merge onto its parent's key on a DB failure."""
+
+        class BoomDB:
+            def declared_scope_identity(self, sid):
+                raise RuntimeError("db exploded")
+
+            def get_compression_lineage(self, sid):
+                return [sid]
+
+        agent = _agent("maybe-fork", BoomDB(), CHAT_KEY)
+
+        assert declared_conversation_scope(agent) is None
+        assert resolve_prompt_cache_scope(agent) == "maybe-fork"
+
+    def test_the_combined_read_still_refuses_a_fork(self, db):
+        db.create_session("tool-child", source="tool")
+
+        assert declared_conversation_scope(_agent("tool-child", db, CHAT_KEY)) is None
+
+
 class TestPromptCacheKeyStability:
     """The reported symptom, at the wire layer: one conversation, one key."""
 

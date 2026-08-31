@@ -21,6 +21,7 @@ from agent.llm_egress_firewall import (
     DestinationClass,
     EgressBlocked,
     EgressDecision,
+    GeneratedContextSegment,
     LLMEgressFirewall,
     LiteralSegment,
     OutboundText,
@@ -31,6 +32,7 @@ from agent.llm_egress_firewall import (
     TypedOutboundRequest,
     ValidatedToolSyntaxSegment,
     classify_destination,
+    redact_remote_unsafe_text,
     source_grant_digest,
     static_literal_sha256,
 )
@@ -760,6 +762,55 @@ def test_tool_and_skill_identifier_shapes_are_not_base64_false_positives(tmp_pat
     round-trip as valid unpadded Base64 by coincidence."""
     decision = firewall(tmp_path).preflight(_sanitized_request(text), _route())
     assert "base64_payload" not in decision.reason_codes
+
+
+def test_generated_kanban_context_allows_normal_worker_vocabulary(tmp_path):
+    """Generated worker context must not trip the payload detector on prose."""
+    request = TypedOutboundRequest(
+        payload={
+            "messages": [
+                {
+                    "role": LiteralSegment("user"),
+                    "content": GeneratedContextSegment(
+                        "profile ci-hygiene-fixer follows non-gate-weakening rules; "
+                        "reproduction_command is recorded for HTTP HYGIENE checks."
+                    ),
+                }
+            ]
+        },
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="req-1",
+        policy_digest="policy-1",
+    )
+
+    decision = firewall(tmp_path).preflight(request, _route())
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+    assert redact_remote_unsafe_text(request.payload["messages"][0]["content"].text) == request.payload["messages"][0]["content"].text
+
+
+def test_generated_kanban_context_still_rejects_real_base64(tmp_path):
+    encoded = base64.b64encode(b"private source that must not leave the host").decode(
+        "ascii"
+    )
+    request = TypedOutboundRequest(
+        payload={
+            "messages": [
+                {"role": LiteralSegment("user"), "content": GeneratedContextSegment(encoded)}
+            ]
+        },
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="req-1",
+        policy_digest="policy-1",
+    )
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(request, _route())
+
+    assert "base64_payload" in exc_info.value.decision.reason_codes
 
 
 def test_bounded_kanban_show_structural_atoms_with_exact_receipt_ids_are_not_base64(

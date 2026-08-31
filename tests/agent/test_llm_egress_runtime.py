@@ -661,6 +661,27 @@ def test_protected_nous_generated_context_allows_numeric_output_cap(tmp_path):
     assert "<redacted-base64>" in authorized["messages"][0]["content"]
 
 
+def test_protected_remote_generated_context_preserves_worker_identifiers(tmp_path):
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+    generated = (
+        "profile ci-hygiene-fixer follows non-gate-weakening rules; "
+        "reproduction_command is recorded for HTTP HYGIENE checks."
+    )
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "poolside/laguna-xs-2.1:free",
+            "messages": [{"role": "system", "content": generated}],
+        },
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][0]["content"] == generated
+
+
 def test_protected_nous_keeps_generated_cloud_secrets_blocked(tmp_path):
     """Redaction never converts secrets into remote-safe text."""
 

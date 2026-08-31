@@ -356,6 +356,8 @@ _PROTOCOL_GRAMMAR_ATOMS = frozenset(
         "HERMES_STREAM_STALE_GIVEUP",
         "HERMES_TURN_LEASE_TIMEOUT",
         "HEAD",
+        "HTTP",
+        "HYGIENE",
         "LAST",
         "MESSAGE",
         "MIME",
@@ -776,6 +778,18 @@ def _source_text_for_base64_scan(text: str) -> str:
     )
 
 
+def _generated_context_text_for_base64_scan(text: str) -> str:
+    """Mask bounded application atoms in already-redacted generated context.
+
+    Generated context is produced by Hermes and has already passed the
+    secret/path/base64 redaction step.  Its ordinary function names, rule
+    names, and schema identifiers still need the source-style lexical mask at
+    the final scan; arbitrary encoded values remain untouched and fail closed.
+    """
+
+    return _source_text_for_base64_scan(text)
+
+
 def _contains_secret(value: Any, *, seen: set[int] | None = None) -> bool:
     """Apply forced redaction semantics independently to every request string."""
 
@@ -904,6 +918,8 @@ def redact_remote_unsafe_text(text: str) -> str:
             if before in {":", ",", "["} and after in {",", "]", "}"}:
                 return match.group(0)
         if candidate in _PROTOCOL_GRAMMAR_ATOMS or _HERMES_TASK_ID.fullmatch(candidate):
+            return match.group(0)
+        if _BOUNDED_SOURCE_CODE_ATOM.fullmatch(candidate):
             return match.group(0)
         if re.fullmatch(r"(?:call|fc)_[A-Za-z0-9_-]{8,128}", candidate):
             return match.group(0)
@@ -1560,7 +1576,9 @@ class LLMEgressFirewall:
                 # depth, but do not charge generated context to the smaller
                 # untrusted-text budget.
                 scan_values.append(segment.text)
-                base64_scan_values.append(segment.text)
+                base64_scan_values.append(
+                    _generated_context_text_for_base64_scan(segment.text)
+                )
                 return segment.text
             if isinstance(segment, CodexReasoningReplaySegment):
                 if not _CODEX_ENCRYPTED_REASONING_REPLAY.fullmatch(segment.text):

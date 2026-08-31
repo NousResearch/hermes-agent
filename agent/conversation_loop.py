@@ -33,6 +33,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    compression_blocked_transiently,
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
 )
@@ -1513,38 +1514,57 @@ def _compression_deferred_result(
     agent,
     messages: List[Dict],
     api_call_count: int,
+    reason: str = "lock",
 ) -> Dict[str, Any]:
-    """Build the soft turn result for a lock-contended compression defer.
+    """Build the soft turn result for a transiently-deferred compression.
 
-    Another path (a sibling turn, a background review fork, a manual
-    ``/compress``) holds this session's compression lock, so every
-    compression pass this turn no-oped and the request still does not fit.
-    This is a TEMPORARY condition — the lock winner is actively shrinking
-    the same session — so the turn must end as a soft defer
+    Two transient shapes funnel here, and BOTH must end as a soft defer
     (``compression_deferred``), never as ``compression_exhausted``: the
-    gateway auto-resets (wipes) the session on exhaustion (#9893/#35809),
-    which would destroy a session that the concurrent compressor is about
-    to make healthy again.
+    gateway auto-resets (wipes) the session on exhaustion (#9893/#35809).
+
+    * ``reason="lock"`` — another path (a sibling turn, a background review
+      fork, a manual ``/compress``) holds this session's compression lock,
+      so every compression pass this turn no-oped and the request still does
+      not fit. The lock winner is actively shrinking the same session.
+    * ``reason="transient_block"`` — the compressor is in a timed transient
+      guard (summary-failure cooldown / structural backoff, e.g. one just
+      recorded by the host ceiling timeout, #97488). The no-op says nothing
+      about compressibility; treating it as exhaustion falsely auto-reset
+      sessions whose compression was merely cooling down.
 
     ``failed`` stays False so the gateway persists the user turn (transient
     branch) and retry-next-message semantics apply.
     """
-    holder = getattr(agent, "_compression_skipped_due_to_lock", None)
-    logger.info(
-        "turn deferred: compression lock held by another path "
-        "(session=%s holder=%s) — not counting as compression exhaustion",
-        agent.session_id or "none",
-        holder if isinstance(holder, str) else "unconfirmed",
-    )
+    if reason == "transient_block":
+        block = getattr(agent, "_compression_blocked_transient", None)
+        logger.info(
+            "turn deferred: compression transiently blocked (%s) "
+            "(session=%s) — not counting as compression exhaustion",
+            block if isinstance(block, str) else "unknown guard",
+            agent.session_id or "none",
+        )
+        _final = (
+            "Context compression is temporarily paused after a recent "
+            "failed attempt. Please retry in a moment — compression will "
+            "resume automatically (or run /compress to force a retry now)."
+        )
+    else:
+        holder = getattr(agent, "_compression_skipped_due_to_lock", None)
+        logger.info(
+            "turn deferred: compression lock held by another path "
+            "(session=%s holder=%s) — not counting as compression exhaustion",
+            agent.session_id or "none",
+            holder if isinstance(holder, str) else "unconfirmed",
+        )
+        _final = (
+            "Context compression is already running for this session. "
+            "Please retry in a moment — your next message will be processed "
+            "once the concurrent compression finishes."
+        )
     try:
         agent._flush_status_buffer()
     except Exception:
         pass
-    _final = (
-        "Context compression is already running for this session. "
-        "Please retry in a moment — your next message will be processed "
-        "once the concurrent compression finishes."
-    )
     return {
         "final_response": _final,
         "messages": messages,
@@ -2816,16 +2836,21 @@ def run_conversation(
                 approx_tokens=request_pressure_tokens,
                 task_id=effective_task_id,
             )
-            if messages is _pre_api_input and compression_skipped_due_to_lock(agent):
-                # #69870 lock-skip: another path holds this session's
-                # compression lock, so this pass no-oped. That is a temporary
-                # DEFER, not evidence about compressibility — refund the
-                # attempt (it must not burn the shared overflow-recovery
-                # budget toward compression_exhausted → gateway auto-reset,
-                # #9893/#35809) and leave the insufficient-progress blocker
-                # unarmed. Proceed with the current request: if it truly does
-                # not fit, the provider's 413/overflow handler returns the
-                # soft compression_deferred result with that stronger signal.
+            if messages is _pre_api_input and (
+                compression_skipped_due_to_lock(agent)
+                or compression_blocked_transiently(agent)
+            ):
+                # #69870 lock-skip / #97488 transient-block: this pass
+                # no-oped for a TEMPORARY reason (another path holds the
+                # compression lock, or a timed cooldown/backoff guard is
+                # active). That is a temporary DEFER, not evidence about
+                # compressibility — refund the attempt (it must not burn the
+                # shared overflow-recovery budget toward
+                # compression_exhausted → gateway auto-reset, #9893/#35809)
+                # and leave the insufficient-progress blocker unarmed.
+                # Proceed with the current request: if it truly does not
+                # fit, the provider's 413/overflow handler returns the soft
+                # compression_deferred result with that stronger signal.
                 compression_attempts -= 1
                 _last_preflight_pressure = None
                 if pending_moa_prepared_request is _moa_prepared_request:
@@ -5803,6 +5828,18 @@ def run_conversation(
                         return _compression_deferred_result(
                             agent, messages, api_call_count
                         )
+                    if messages is _overflow_input and compression_blocked_transiently(agent):
+                        # #97488 transient-block: compression no-oped because a
+                        # timed guard (host-timeout cooldown / structural
+                        # backoff) is active — a temporary defer, not evidence
+                        # of incompressibility. Never classify it as
+                        # compression_exhausted (gateway auto-reset).
+                        compression_attempts -= 1
+                        agent._persist_session(messages, conversation_history)
+                        return _compression_deferred_result(
+                            agent, messages, api_call_count,
+                            reason="transient_block",
+                        )
                     conversation_history = conversation_history_after_compression(
                         agent, messages, conversation_history
                     )
@@ -5960,6 +5997,15 @@ def run_conversation(
                                 agent._persist_session(messages, conversation_history)
                                 return _compression_deferred_result(
                                     agent, messages, api_call_count
+                                )
+                            if messages is _overflow_input and compression_blocked_transiently(agent):
+                                # #97488: timed transient guard — defer, never
+                                # exhaustion (gateway auto-reset).
+                                compression_attempts -= 1
+                                agent._persist_session(messages, conversation_history)
+                                return _compression_deferred_result(
+                                    agent, messages, api_call_count,
+                                    reason="transient_block",
                                 )
                             conversation_history = conversation_history_after_compression(
                                 agent, messages, conversation_history
@@ -6120,6 +6166,17 @@ def run_conversation(
                         agent._persist_session(messages, conversation_history)
                         return _compression_deferred_result(
                             agent, messages, api_call_count
+                        )
+                    if messages is _overflow_input and compression_blocked_transiently(agent):
+                        # #97488 transient-block: a timed guard (host-timeout
+                        # cooldown / structural backoff) no-oped this pass —
+                        # defer softly, never compression_exhausted (which
+                        # would auto-reset the session).
+                        compression_attempts -= 1
+                        agent._persist_session(messages, conversation_history)
+                        return _compression_deferred_result(
+                            agent, messages, api_call_count,
+                            reason="transient_block",
                         )
                     conversation_history = conversation_history_after_compression(
                         agent, messages, conversation_history

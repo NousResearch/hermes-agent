@@ -4290,29 +4290,46 @@ def run_conversation(
                             )
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
-                            # An EMPTY partial-stream stub (stream dropped
-                            # mid tool-call before any text was delivered)
-                            # must not be appended as an interim assistant
-                            # message: it would serialize as
-                            # {"role": "assistant", "content": ""}, and
+                            # An interim assistant message with NO visible
+                            # content must not be appended — whichever way it
+                            # got that way.  An empty partial-stream stub
+                            # (stream dropped before any text was delivered)
+                            # and a response whose whole output budget went to
+                            # reasoning delivered in a separate field (GLM-5.3
+                            # on ollama-cloud with reasoning_effort=high:
+                            # finish_reason="length", content="",
+                            # completion_tokens == max_tokens) both serialize
+                            # as {"role": "assistant", "content": ""}, and
                             # strict providers (Moonshot/Kimi via OpenRouter)
                             # reject empty assistant content with HTTP 400
                             # ("message ... with role 'assistant' must not be
                             # empty") on the very next replay — permanently
-                            # poisoning the session history.  There is no
-                            # partial text to continue from anyway, so only
-                            # the continuation user-message is appended.
+                            # poisoning the session history until the pre-call
+                            # sanitizer "heals" the hole (observed 3+ healings
+                            # per turn).  There is no partial text to continue
+                            # from anyway, so only the continuation
+                            # user-message is appended.
+                            _interim_content = getattr(assistant_message, "content", None)
                             _is_empty_partial_stub = (
                                 getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
-                                and not getattr(assistant_message, "content", None)
+                                and not _interim_content
                             )
-                            if not _is_empty_partial_stub:
+                            if not _interim_content and not _is_empty_partial_stub:
+                                # Thinking-only truncation: the model spent the
+                                # entire output cap on reasoning and produced no
+                                # visible text.  A continuation with thinking
+                                # ON would re-think the whole context from
+                                # scratch (continuations never replay prior
+                                # reasoning) and re-burn the same budget, so
+                                # the next call drops thinking for one request
+                                # — the answer must be written, not re-derived.
+                                agent._ephemeral_reasoning_off = True
+                            if _interim_content:
                                 interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                                 # Marked so the ceiling exit can drop the fragment trail.
                                 interim_msg["_length_continuation_fragment"] = True
                                 append_message(messages, interim_msg)
-                                if assistant_message.content:
-                                    truncated_response_parts.append(assistant_message.content)
+                                truncated_response_parts.append(_interim_content)
 
                             if length_continue_retries < 4:
                                 _is_partial_stream_stub = (
@@ -4356,12 +4373,42 @@ def run_conversation(
                                 break
 
                             partial_response = agent._strip_think_blocks(_join_truncated_parts(truncated_response_parts)).strip()
+                            # The pending one-shot reasoning-off override must
+                            # not leak into the next turn when the 4th
+                            # truncation goes straight to the ceiling exit
+                            # without scheduling a continuation call to
+                            # consume it.
+                            agent._ephemeral_reasoning_off = False
                             if partial_response:
                                 agent._vprint(
                                     f"{agent.log_prefix}⚠️  Response still truncated "
-                                    f"after 4 continuation attempts — keeping the "
+                                    f"after {length_continue_retries} continuation attempts — keeping the "
                                     f"partial response received so far.",
                                     force=True,
+                                )
+                                _ceiling_final = partial_response
+                            else:
+                                # Every fragment was empty — e.g. a thinking
+                                # model that spent each attempt's whole cap on
+                                # reasoning (GLM-5.3 on ollama-cloud).  Return
+                                # an actionable message instead of an invisible
+                                # None result, which only surfaces as a bare
+                                # error card.
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚠️  Response still truncated "
+                                    f"after {length_continue_retries} continuation attempts — no visible "
+                                    f"text was produced.",
+                                    force=True,
+                                )
+                                _ceiling_final = (
+                                    "⚠️ **No visible answer was produced.** The "
+                                    "model hit its output-token limit on every "
+                                    "continuation attempt — its reasoning "
+                                    "consumed the entire budget each time.\n\n"
+                                    "To fix this:\n"
+                                    "→ Lower reasoning effort: `/thinkon low` "
+                                    "or `/thinkoff`\n"
+                                    "→ Or raise max_tokens for this model"
                                 )
                             # Unanswered continue nudges made every later turn re-truncate.
                             _turn_start = (
@@ -4390,7 +4437,7 @@ def run_conversation(
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
-                                "final_response": partial_response or None,
+                                "final_response": _ceiling_final,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,

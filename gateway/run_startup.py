@@ -58,10 +58,98 @@ class GatewayStartupMixin:
             if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
                 self._release_running_agent_state(session_key)
 
-    def _queue_startup_restore_event(self, event: MessageEvent) -> None:
+    def _queue_startup_restore_event(self, event: MessageEvent) -> bool:
+        """Admit one startup-gated event without overtaking a durable claim."""
+        try:
+            session_key = self._session_key_for_source(event.source)
+        except Exception:
+            logger.warning("Rejecting startup-gated message with no stable session route")
+            return False
+
+        from gateway.goal_continuation_claims import append_claim_event, load_claims
+
+        retry = getattr(self, "_goal_continuation_retries", {}).get(session_key)
+        adapter = self._adapter_for_source(event.source)
+        if retry is not None and retry.claim_id and not retry.dropped:
+            if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+                logger.warning(
+                    "Dropping startup-gated follow-up for session %s — pending queue at cap (%d).",
+                    session_key, self._BUSY_QUEUE_MAX_PENDING,
+                )
+                return False
+            try:
+                append_claim_event(
+                    session_key,
+                    retry.claim_id,
+                    event,
+                    home=getattr(self, "_goal_continuation_claim_home", None),
+                )
+            except Exception:
+                logger.warning(
+                    "goal continuation: durable startup successor publication failed for session %s",
+                    session_key,
+                )
+                raise RuntimeError("durable startup successor publication failed") from None
+            self._enqueue_fifo(session_key, event, adapter)
+            retry.wake.set()
+            return True
+
+        try:
+            durable_claim = next(
+                (
+                    claim
+                    for claim in load_claims(
+                        home=getattr(self, "_goal_continuation_claim_home", None)
+                    )
+                    if claim.session_key == session_key
+                ),
+                None,
+            )
+        except Exception:
+            logger.warning(
+                "goal continuation: durable startup claim lookup failed for session %s",
+                session_key,
+            )
+            raise RuntimeError("durable startup successor publication failed") from None
+
+        if durable_claim is not None:
+            if len(durable_claim.events) >= self._BUSY_QUEUE_MAX_PENDING:
+                logger.warning(
+                    "Dropping startup-gated follow-up for session %s — pending queue at cap (%d).",
+                    session_key, self._BUSY_QUEUE_MAX_PENDING,
+                )
+                return False
+            try:
+                append_claim_event(
+                    session_key,
+                    durable_claim.claim_id,
+                    event,
+                    home=getattr(self, "_goal_continuation_claim_home", None),
+                )
+            except Exception:
+                logger.warning(
+                    "goal continuation: durable startup successor publication failed for session %s",
+                    session_key,
+                )
+                raise RuntimeError("durable startup successor publication failed") from None
+            return True
+
         queue = getattr(self, "_startup_restore_queue", None)
         if queue is None:
             queue = self._startup_restore_queue = []
+        queued_for_session = 0
+        for queued_event in queue:
+            try:
+                if self._session_key_for_source(queued_event.source) == session_key:
+                    queued_for_session += 1
+            except Exception:
+                continue
+        if queued_for_session >= self._BUSY_QUEUE_MAX_PENDING:
+            logger.warning(
+                "Dropping startup-gated message for session %s — pending queue at cap (%d).",
+                session_key, self._BUSY_QUEUE_MAX_PENDING,
+            )
+            return False
         queue.append(event)
         with suppress(Exception):
             source = event.source
@@ -70,6 +158,7 @@ class GatewayStartupMixin:
                 source.platform.value if source and source.platform else "unknown",
                 source.chat_id if source else "unknown",
             )
+        return True
 
     async def _drain_startup_restore_queue(self) -> int:
         """Replay inbound messages queued while startup auto-resume ran."""

@@ -1154,6 +1154,154 @@ async def test_startup_restore_gate_queues_internal_successor_until_recovery(
 
 
 @pytest.mark.asyncio
+async def test_startup_gate_second_crash_recovers_exact_successor_fifo(isolated_home):
+    """Arrivals behind an unrecovered head survive another startup crash."""
+    from gateway.goal_continuation_claims import publish_claim
+
+    source = _source()
+    key = "agent:main:discord:channel:startup-second-crash"
+    session_id = "sid-startup-second-crash"
+    head = _continuation(source, message_id="startup-second-crash-head")
+    publish_claim(key, session_id, [head], home=isolated_home)
+    first_runner, _first_adapter = _partial_runner(source, key, session_id)
+
+    successors = [
+        _event("startup user successor", source=source, message_id="startup-user"),
+        _event("startup internal successor", source=source, message_id="startup-internal"),
+        _event("startup plugin successor", source=source, message_id="startup-plugin"),
+    ]
+    successors[1].internal = True
+    successors[2].internal = True
+    successors[2].metadata["hermes_plugin_id"] = "isolated-plugin"
+    for event in successors:
+        assert await first_runner._handle_message(event) is None
+
+    # Discard the first runner without draining: this is the second startup crash.
+    restarted, restarted_adapter = _partial_runner(source, key, session_id)
+    assert restarted._recover_goal_continuation_claims(schedule=False) == 1
+    recovered = restarted._goal_continuation_retries[key].event
+    assert recovered.message_id == "startup-second-crash-head"
+    assert recovered.goal_continuation is True
+    assert restarted_adapter._pending_messages[key].message_id == "startup-user"
+    assert [
+        event.message_id
+        for event in restarted._session_state(key).conversation.queued_events
+    ] == ["startup-internal", "startup-plugin"]
+
+
+def test_startup_gate_after_recovery_preserves_slot_and_overflow_fifo(isolated_home):
+    """A late gated arrival joins both durable and already-staged FIFO state."""
+    from gateway.goal_continuation_claims import load_claims, publish_claim
+
+    source = _source()
+    key = "agent:main:discord:channel:startup-staged"
+    session_id = "sid-startup-staged"
+    head = _continuation(source, message_id="startup-staged-head")
+    slot = _event("startup staged slot", source=source, message_id="startup-staged-slot")
+    overflow = _event(
+        "startup staged overflow", source=source, message_id="startup-staged-overflow"
+    )
+    publish_claim(key, session_id, [head, slot, overflow], home=isolated_home)
+    runner, adapter = _partial_runner(source, key, session_id)
+    assert runner._recover_goal_continuation_claims(schedule=False) == 1
+
+    late = _event("startup late arrival", source=source, message_id="startup-late")
+    assert runner._queue_startup_restore_event(late) is True
+
+    assert adapter._pending_messages[key].message_id == "startup-staged-slot"
+    assert [
+        event.message_id for event in runner._session_state(key).conversation.queued_events
+    ] == ["startup-staged-overflow", "startup-late"]
+    assert runner._startup_restore_queue == []
+    assert [event.message_id for event in load_claims(home=isolated_home)[0].events] == [
+        "startup-staged-head",
+        "startup-staged-slot",
+        "startup-staged-overflow",
+        "startup-late",
+    ]
+
+
+def test_startup_gate_claim_cap_rejects_without_volatile_admission(
+    isolated_home, monkeypatch
+):
+    """The normal per-session cap includes an unrecovered durable head."""
+    from gateway.goal_continuation_claims import load_claims, publish_claim
+
+    source = _source()
+    key = "agent:main:discord:channel:startup-claim-cap"
+    session_id = "sid-startup-claim-cap"
+    existing = [
+        _continuation(source, message_id="startup-cap-head"),
+        _event("startup cap one", source=source, message_id="startup-cap-one"),
+        _event("startup cap two", source=source, message_id="startup-cap-two"),
+    ]
+    publish_claim(key, session_id, existing, home=isolated_home)
+    runner, _adapter = _partial_runner(source, key, session_id)
+    monkeypatch.setattr(runner, "_BUSY_QUEUE_MAX_PENDING", len(existing))
+
+    rejected = _event(
+        "startup cap rejected", source=source, message_id="startup-cap-rejected"
+    )
+    assert runner._queue_startup_restore_event(rejected) is False
+    assert runner._startup_restore_queue == []
+    assert [event.message_id for event in load_claims(home=isolated_home)[0].events] == [
+        "startup-cap-head",
+        "startup-cap-one",
+        "startup-cap-two",
+    ]
+
+
+def test_startup_gate_without_claim_uses_per_session_cap(isolated_home, monkeypatch):
+    """Ordinary gated arrivals cannot grow the process-local queue without bound."""
+    source = _source(chat_id="startup-no-claim")
+    key = "agent:main:discord:channel:startup-no-claim"
+    runner, _adapter = _partial_runner(source, key, "sid-startup-no-claim")
+    monkeypatch.setattr(runner, "_BUSY_QUEUE_MAX_PENDING", 2)
+    events = [
+        _event(f"startup ordinary {index}", source=source, message_id=f"startup-{index}")
+        for index in range(3)
+    ]
+
+    assert runner._queue_startup_restore_event(events[0]) is True
+    assert runner._queue_startup_restore_event(events[1]) is True
+    assert runner._queue_startup_restore_event(events[2]) is False
+    assert runner._startup_restore_queue == events[:2]
+
+
+def test_startup_gate_durable_failure_rejects_before_volatile_admission(
+    isolated_home, monkeypatch
+):
+    """A successor is not accepted when its claim sidecar cannot publish."""
+    from gateway import goal_continuation_claims as claims
+
+    source = _source()
+    key = "agent:main:discord:channel:startup-publish-failure"
+    session_id = "sid-startup-publish-failure"
+    claims.publish_claim(
+        key,
+        session_id,
+        [_continuation(source, message_id="startup-publish-head")],
+        home=isolated_home,
+    )
+    runner, _adapter = _partial_runner(source, key, session_id)
+
+    def fail_append(*_args, **_kwargs):
+        raise claims.GoalContinuationClaimError("private startup publication detail")
+
+    monkeypatch.setattr(claims, "append_claim_event", fail_append)
+    with pytest.raises(RuntimeError, match="durable startup successor publication failed"):
+        runner._queue_startup_restore_event(
+            _event(
+                "startup rejected after failure",
+                source=source,
+                message_id="startup-rejected-after-failure",
+            )
+        )
+
+    assert runner._startup_restore_queue == []
+
+
+@pytest.mark.asyncio
 async def test_recovered_inactive_claim_retires_before_releasing_successor(
     isolated_home,
 ):

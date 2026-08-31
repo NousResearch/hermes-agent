@@ -67,6 +67,24 @@ async def test_dispatch_text_dm(monkeypatch: pytest.MonkeyPatch) -> None:
     assert src.user_id == "+15551234567"
 
 
+@pytest.mark.asyncio
+async def test_dispatch_read_receipt_does_not_wake_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    receipt = _dm_event("", msg_id="spc-read-1")
+    receipt["content"] = {
+        "type": "read",
+        "targetMessageId": "bot-msg-1",
+        "targetDirection": "outbound",
+    }
+
+    await adapter._dispatch_inbound(receipt)
+
+    assert captured == []
+
+
 # A real 1x1 transparent PNG (passes base.py's _looks_like_image magic check).
 _PNG_1X1_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhf"

@@ -153,6 +153,14 @@ def test_pyproject_pins_match_lazy_deps_pins():
     )
 
 
+def test_mem0_extra_matches_lazy_dependency_range():
+    """Mem0's explicit extra and first-use installer share one policy."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    mem0_extra = _load_optional_dependencies()["mem0"]
+    assert mem0_extra == list(LAZY_DEPS["memory.mem0"])
+
+
 
 
 

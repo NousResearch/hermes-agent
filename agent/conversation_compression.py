@@ -748,6 +748,20 @@ class CompressionCommitFence:
         deadline = self._deadline
         return deadline is not None and time.monotonic() >= deadline
 
+    @property
+    def deadline_monotonic(self) -> float | None:
+        """The armed deadline as an absolute ``time.monotonic()`` instant.
+
+        :meth:`set_total_ceiling_seconds` documents this deadline as "shared by
+        the host and worker", but until #99692 only the host could read it —
+        ``deadline_exceeded`` answers "is it past?" for a caller that is already
+        polling, which is useless to a worker blocked inside a provider stream.
+        Publishing the instant itself lets the worker's stream consumer stop at
+        exactly the moment the host stops waiting (see
+        ``auxiliary_client.aux_stream_deadline``).
+        """
+        return self._deadline
+
     def seconds_since_progress(self) -> float:
         """Seconds since the worker last reported forward progress."""
         return max(0.0, time.monotonic() - self._last_progress)
@@ -3992,10 +4006,27 @@ def compress_context(
         from agent.auxiliary_client import (
             aux_interrupt_protection,
             aux_progress_hook,
+            aux_stream_deadline,
         )
         _progress_hook = (
             commit_fence.touch_progress if commit_fence is not None
             else (lambda: None)
+        )
+        # #99692: the progress hook above is the worker -> host leg; this is the
+        # return leg. _compression_cancel_requested (below) releases the compression
+        # OWNER when the host gives up, but the isolated provider daemon that
+        # actually holds the socket keeps streaming to its own budget —
+        # ``_aux_stream_total_ceiling`` = max(600, 4 * aux_timeout), which is >=
+        # the host's total ceiling for every configured timeout and starts
+        # counting later (after admission, serialization, prompt build and TTFT).
+        # With ``auxiliary.compression.timeout: 600`` that is 2400s of an
+        # orphaned 500K-token summary the commit fence is already guaranteed to
+        # refuse: paid tokens, a pinned HTTP connection, and — since every new
+        # turn re-triggers compression on a session that never shrank — a fresh
+        # orphan stacked on top of the last one. Sharing the host's absolute
+        # deadline makes the stream stop when the host it serves stops waiting.
+        _host_stream_deadline = (
+            commit_fence.deadline_monotonic if commit_fence is not None else None
         )
         # F4 state-ordering (#76354): a LATE successful summary must not undo
         # the timeout cooldown the host recorded. Install a cancellation
@@ -4042,7 +4073,9 @@ def compress_context(
                 )
                 compressed = messages
             else:
-                with aux_progress_hook(_progress_hook), aux_interrupt_protection(
+                with aux_progress_hook(_progress_hook), aux_stream_deadline(
+                    _host_stream_deadline
+                ), aux_interrupt_protection(
                     cancel_check=_compression_cancel_requested
                 ):
                     compressed = compress_fn(messages, **compress_kwargs)

@@ -1526,6 +1526,57 @@ def test_dispatch_max_in_progress_blocks_review_when_at_limit(
     assert review_task is not None
     assert review_task.status == "review"
 
+
+def test_dispatch_blocks_second_worker_from_shared_directory(
+    kanban_home, all_assignees_spawnable, tmp_path,
+):
+    """Two workers must never execute concurrently in one physical checkout."""
+    spawns = []
+    shared = tmp_path / "shared-checkout"
+    shared.mkdir()
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append((task.id, workspace))
+        return 42
+
+    with kb.connect() as conn:
+        owner = kb.create_task(
+            conn,
+            title="workspace owner",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(shared),
+        )
+        claimed_owner = kb.claim_task(conn, owner)
+        assert claimed_owner is not None
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (os.getpid(), owner),
+        )
+        contender = kb.create_task(
+            conn,
+            title="workspace contender",
+            assignee="bob",
+            workspace_kind="dir",
+            workspace_path=str(shared),
+        )
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_in_progress=2,
+            reconcile_orphans=False,
+        )
+        contender_task = kb.get_task(conn, contender)
+
+    assert spawns == []
+    assert result.workspace_collisions == [
+        (contender, owner, str(shared.resolve()))
+    ]
+    assert contender_task is not None
+    assert contender_task.status == "blocked"
+    assert contender in result.auto_blocked
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

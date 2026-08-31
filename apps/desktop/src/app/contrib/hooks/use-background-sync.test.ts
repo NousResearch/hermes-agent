@@ -14,23 +14,33 @@ import {
   setSessionOwnerHint,
   setSessions
 } from '@/store/session'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   $attentionSessionIds,
+  $openStoredSessionIds,
+  $sessionStates,
   $sessionTiles,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
+  closeSessionTile,
+  discardSessionTile,
+  openSessionTile,
+  patchSessionTile,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
 import {
   $todoProgressBySession,
   $todosBySession,
+  _todoHydrationAuthorityStatsForTests,
   applyTodoContinuationSnapshot,
   clearAllSessionTodos,
   clearAllTodoContinuations,
   setSessionTodos
 } from '@/store/todos'
+import { deferred } from '@/test/deferred'
+import { LEGACY_TODOS_277757, legacyEvidenceMessage277757 } from '@/test/evidence-row-277757'
 
 import {
   type ActiveTranscriptRefreshDeps,
@@ -49,7 +59,8 @@ import {
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal()),
-  getLatestSessionMessages: vi.fn()
+  getLatestSessionMessages: vi.fn(),
+  getSessionMessages: vi.fn()
 }))
 
 vi.mock('@/store/projects', async importOriginal => ({
@@ -57,11 +68,38 @@ vi.mock('@/store/projects', async importOriginal => ({
   refreshProjectTree: vi.fn(async () => undefined)
 }))
 
-const { getLatestSessionMessages } = await import('@/hermes')
+const { getLatestSessionMessages, getSessionMessages } = await import('@/hermes')
 const { refreshProjectTree } = await import('@/store/projects')
 
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
+const carrierTodos = [
+  { content: 'parent', id: 'plan', status: 'completed' as const },
+  { content: 'child', id: 'child', parent: 'plan', status: 'in_progress' as const },
+  { content: 'next', id: 'next', status: 'pending' as const }
+]
+
+function carrierTranscript(sessionId = ACTIVE_STORED_ID) {
+  return {
+    messages: [
+      {
+        content: 'synthetic carrier text',
+        display_kind: 'hidden',
+        display_metadata: { todo_snapshot: { todos: carrierTodos } },
+        role: 'user',
+        timestamp: 3
+      }
+    ],
+    session_id: sessionId
+  }
+}
+
+function legacyEvidenceTranscript(sessionId = ACTIVE_STORED_ID) {
+  return {
+    messages: [{ ...legacyEvidenceMessage277757, session_id: sessionId, timestamp: 3 }],
+    session_id: sessionId
+  }
+}
 
 function transcript(
   answer: string,
@@ -74,6 +112,42 @@ function transcript(
     ],
     session_id: sessionId
   }
+}
+
+type TileStateUpdater = Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState']
+
+function bindRealTile(storedSessionId: string, runtimeId: string, ownerRoute?: SessionProfileRoute): void {
+  openSessionTile(storedSessionId)
+  patchSessionTile(storedSessionId, { ownerRoute, runtimeId })
+}
+
+function makePublishingTileUpdater(): ReturnType<typeof vi.fn<TileStateUpdater>> {
+  return vi.fn<TileStateUpdater>((sessionId, updater, storedSessionId) => {
+    const previous = $sessionStates.get()[sessionId] ?? createClientSessionState(storedSessionId ?? sessionId)
+    const next = updater(previous)
+
+    publishSessionState(sessionId, next)
+
+    return next
+  })
+}
+
+function reconcileRealTiles({
+  requestSequenceRef = { current: 0 },
+  signatureRef = { current: new Map<string, string>() },
+  updateSessionState = makePublishingTileUpdater()
+}: {
+  requestSequenceRef?: { current: number }
+  signatureRef?: { current: Map<string, string> }
+  updateSessionState?: TileStateUpdater
+} = {}) {
+  const request = reconcileTileTranscriptsForTest({
+    requestSequenceRef,
+    signatureRef,
+    updateSessionState
+  })
+
+  return { request, requestSequenceRef, signatureRef, updateSessionState }
 }
 
 function makeRefresh(resolveSession: ActiveTranscriptRefreshDeps['resolveSession'] = () => ({ profile: 'default' })) {
@@ -107,7 +181,16 @@ function makeRefresh(resolveSession: ActiveTranscriptRefreshDeps['resolveSession
       updateSessionState
     })
 
-  return { activeSessionIdRef, busyRef, refresh, selectedStoredSessionIdRef, state, states, updateSessionState }
+  return {
+    activeSessionIdRef,
+    busyRef,
+    refresh,
+    selectedStoredSessionIdRef,
+    signatureRef,
+    state,
+    states,
+    updateSessionState
+  }
 }
 
 function useSyncHarness({
@@ -174,6 +257,11 @@ beforeEach(() => {
   // visiblePoll only ticks while the window is actively viewed; jsdom's
   // document.hasFocus() is not reliably true, so pin it for these tests.
   vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+  vi.mocked(getSessionMessages).mockResolvedValue({
+    messages: [],
+    pagination: { exhausted: true, has_more: false, limit: 32, next_before_id: null, returned: 0 },
+    session_id: ACTIVE_STORED_ID
+  } as never)
 })
 
 afterEach(() => {
@@ -190,6 +278,10 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.restoreAllMocks()
   clearAllSessionStates()
+  for (const tile of [...$sessionTiles.get()]) {
+    discardSessionTile(tile.storedSessionId)
+  }
+
   $sessionTiles.set([])
   _resetSessionOwnerHintsForTests()
   clearAllSessionTodos()
@@ -237,6 +329,278 @@ describe('resolveActiveTranscriptSession', () => {
     $sessionTiles.set([{ storedSessionId: 'shared', runtimeId: 'active-runtime' }])
 
     expect(resolveActiveTranscriptSession('shared', 'active-runtime')).toEqual({ profile: 'default' })
+  })
+})
+
+describe('tile transcript owner routing', () => {
+  const storedSessionId = 'stored-owner-route-tile'
+  const runtimeSessionId = 'runtime-owner-route-tile'
+
+  it('reads a secondary local profile through the tile owner route', async () => {
+    const ownerRoute = {
+      connectionId: 'local',
+      mode: 'local' as const,
+      profile: 'secondary-local'
+    }
+
+    bindRealTile(storedSessionId, runtimeSessionId, ownerRoute)
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(transcript('local answer', storedSessionId) as never)
+    const { request, updateSessionState } = reconcileRealTiles()
+
+    await request
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(
+      storedSessionId,
+      {
+        connectionId: ownerRoute.connectionId,
+        profile: ownerRoute.profile
+      },
+      { passive: true }
+    )
+    expect(updateSessionState).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads a remote target profile through the exact tile owner route', async () => {
+    const ownerRoute = {
+      connectionId: 'ssh-owner',
+      mode: 'remote' as const,
+      profile: 'desktop-bot-route',
+      targetProfile: 'remote-worker'
+    }
+
+    bindRealTile(storedSessionId, runtimeSessionId, ownerRoute)
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(transcript('remote answer', storedSessionId) as never)
+    const { request, updateSessionState } = reconcileRealTiles()
+
+    await request
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(
+      storedSessionId,
+      {
+        connectionId: ownerRoute.connectionId,
+        profile: ownerRoute.targetProfile
+      },
+      { passive: true }
+    )
+    expect(updateSessionState).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a rebound owner signature after the old owner read retires', async () => {
+    const staleRead = deferred<ReturnType<typeof transcript>>()
+
+    const ownerA = {
+      connectionId: 'ssh-owner-a',
+      mode: 'remote' as const,
+      profile: 'desktop-owner-a',
+      targetProfile: 'worker-a'
+    }
+
+    const ownerB = {
+      connectionId: 'ssh-owner-b',
+      mode: 'remote' as const,
+      profile: 'desktop-owner-b',
+      targetProfile: 'worker-b'
+    }
+
+    const requestSequenceRef = { current: 0 }
+    const signatureRef = { current: new Map<string, string>() }
+    const updateSessionState = makePublishingTileUpdater()
+    const identical = transcript('same bytes on both owners', storedSessionId)
+
+    bindRealTile(storedSessionId, runtimeSessionId, ownerA)
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(staleRead.promise as never)
+    const staleRequest = reconcileRealTiles({ requestSequenceRef, signatureRef, updateSessionState }).request
+
+    patchSessionTile(storedSessionId, { ownerRoute: ownerB })
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(identical as never)
+    await reconcileRealTiles({ requestSequenceRef, signatureRef, updateSessionState }).request
+    expect(updateSessionState).toHaveBeenCalledTimes(1)
+
+    staleRead.resolve(identical)
+    await staleRequest
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(identical as never)
+    await reconcileRealTiles({ requestSequenceRef, signatureRef, updateSessionState }).request
+
+    expect(updateSessionState).toHaveBeenCalledTimes(1)
+    expect(signatureRef.current.size).toBe(1)
+    expect(vi.mocked(getLatestSessionMessages).mock.calls).toEqual([
+      [storedSessionId, { connectionId: ownerA.connectionId, profile: ownerA.targetProfile }, { passive: true }],
+      [storedSessionId, { connectionId: ownerB.connectionId, profile: ownerB.targetProfile }, { passive: true }],
+      [storedSessionId, { connectionId: ownerB.connectionId, profile: ownerB.targetProfile }, { passive: true }]
+    ])
+  })
+})
+
+describe('tile reconciliation lifecycle authority', () => {
+  const storedSessionId = 'stored-lifecycle-tile'
+  const runtimeSessionId = 'runtime-lifecycle-tile'
+
+  it('rejects a pending read after the tile closes without recreating Todo or session state', async () => {
+    const read = deferred<ReturnType<typeof carrierTranscript>>()
+
+    bindRealTile(storedSessionId, runtimeSessionId)
+    publishSessionState(runtimeSessionId, createClientSessionState(storedSessionId))
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(read.promise as never)
+    const { request, signatureRef, updateSessionState } = reconcileRealTiles()
+
+    closeSessionTile(storedSessionId)
+    expect($sessionStates.get()[runtimeSessionId]).toBeUndefined()
+
+    read.resolve(carrierTranscript(storedSessionId))
+    await request
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+    expect($todosBySession.get()[runtimeSessionId]).toBeUndefined()
+    expect($sessionStates.get()[runtimeSessionId]).toBeUndefined()
+    expect($openStoredSessionIds.get().has(storedSessionId)).toBe(false)
+    expect(signatureRef.current.has(`tile:${storedSessionId}`)).toBe(false)
+  })
+
+  it('treats close then reopen of the same identifiers as a new incarnation and permits its later retry', async () => {
+    const staleRead = deferred<ReturnType<typeof transcript>>()
+
+    bindRealTile(storedSessionId, runtimeSessionId)
+    publishSessionState(runtimeSessionId, createClientSessionState(storedSessionId))
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(staleRead.promise as never)
+    const requestSequenceRef = { current: 0 }
+    const signatureRef = { current: new Map<string, string>() }
+    const updateSessionState = makePublishingTileUpdater()
+    const staleRequest = reconcileRealTiles({ requestSequenceRef, signatureRef, updateSessionState }).request
+
+    closeSessionTile(storedSessionId)
+    bindRealTile(storedSessionId, runtimeSessionId)
+    staleRead.resolve(transcript('pre-close response', storedSessionId))
+    await staleRequest
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+    expect($sessionStates.get()[runtimeSessionId]).toBeUndefined()
+    expect(signatureRef.current.has(`tile:${storedSessionId}`)).toBe(false)
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(
+      transcript('new incarnation response', storedSessionId) as never
+    )
+    await reconcileRealTiles({ requestSequenceRef, signatureRef, updateSessionState }).request
+
+    expect(updateSessionState).toHaveBeenCalledTimes(1)
+    expect($sessionStates.get()[runtimeSessionId]?.messages.at(-1)?.parts[0]).toMatchObject({
+      text: 'new incarnation response'
+    })
+  })
+
+  it('rejects an old-runtime read after the stored tile rebinds', async () => {
+    const read = deferred<ReturnType<typeof carrierTranscript>>()
+    const reboundRuntimeId = 'runtime-lifecycle-rebound'
+
+    bindRealTile(storedSessionId, runtimeSessionId)
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(read.promise as never)
+    const { request, signatureRef, updateSessionState } = reconcileRealTiles()
+
+    patchSessionTile(storedSessionId, { runtimeId: reboundRuntimeId })
+    read.resolve(carrierTranscript(storedSessionId))
+    await request
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+    expect($todosBySession.get()[runtimeSessionId]).toBeUndefined()
+    expect($todosBySession.get()[reboundRuntimeId]).toBeUndefined()
+    expect($sessionStates.get()[runtimeSessionId]).toBeUndefined()
+    expect(signatureRef.current.has(`tile:${storedSessionId}`)).toBe(false)
+    expect(_todoHydrationAuthorityStatsForTests()).toMatchObject({
+      activeSessionCount: 0,
+      activeTokenCount: 0,
+      latestSessionCount: 0
+    })
+  })
+
+  it.each(['unmount', 'profile', 'connection'] as const)(
+    'retires an in-flight tile read when its background-sync owner changes by %s',
+    async retirement => {
+      const read = deferred<ReturnType<typeof carrierTranscript>>()
+
+      bindRealTile(storedSessionId, runtimeSessionId)
+      $changeEventsAvailable.set(true)
+      vi.mocked(getLatestSessionMessages).mockReturnValueOnce(read.promise as never)
+      const updateSessionState = makePublishingTileUpdater()
+
+      const stable = {
+        activeIsMessaging: false,
+        activeSessionId: null,
+        activeStoredSessionId: null,
+        freshDraftReady: false,
+        gatewayState: 'open',
+        refreshActiveTranscript: vi.fn(async () => undefined),
+        refreshCronJobs: vi.fn(async () => undefined),
+        refreshCurrentModel: vi.fn(async () => undefined),
+        refreshHermesConfig: vi.fn(async () => undefined),
+        refreshMessagingSessions: vi.fn(async () => undefined),
+        refreshSessions: vi.fn(async () => undefined),
+        requestGateway: vi.fn(async () => ({ sessions: [] })) as never,
+        updateSessionState
+      }
+
+      const hook = renderHook(
+        ({ activeConnectionId, activeGatewayProfile }) =>
+          useBackgroundSync({ activeConnectionId, activeGatewayProfile, ...stable }),
+        { initialProps: { activeConnectionId: 'connection-a' as string | null, activeGatewayProfile: 'profile-a' } }
+      )
+
+      act(() => notifySessionsChanged())
+      expect(getLatestSessionMessages).toHaveBeenCalledWith(storedSessionId, undefined, { passive: true })
+
+      if (retirement === 'unmount') {
+        hook.unmount()
+      } else {
+        hook.rerender({
+          activeConnectionId: retirement === 'connection' ? 'connection-b' : 'connection-a',
+          activeGatewayProfile: retirement === 'profile' ? 'profile-b' : 'profile-a'
+        })
+      }
+
+      await act(async () => {
+        read.resolve(carrierTranscript(storedSessionId))
+        await read.promise
+        await Promise.resolve()
+      })
+
+      expect(updateSessionState).not.toHaveBeenCalled()
+      expect($todosBySession.get()[runtimeSessionId]).toBeUndefined()
+      expect($sessionStates.get()[runtimeSessionId]).toBeUndefined()
+    }
+  )
+
+  it('hydrates an unchanged still-open tile once', async () => {
+    bindRealTile(storedSessionId, runtimeSessionId)
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(carrierTranscript(storedSessionId) as never)
+    const { request, updateSessionState } = reconcileRealTiles()
+
+    await request
+
+    expect(updateSessionState).toHaveBeenCalledTimes(1)
+    expect($todosBySession.get()[runtimeSessionId]).toEqual(carrierTodos)
+    expect($sessionStates.get()[runtimeSessionId]).toBeDefined()
+  })
+
+  it('rejects a late read when the tile becomes busy', async () => {
+    const read = deferred<ReturnType<typeof carrierTranscript>>()
+
+    bindRealTile(storedSessionId, runtimeSessionId)
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(read.promise as never)
+    const { request, signatureRef, updateSessionState } = reconcileRealTiles()
+
+    publishSessionState(runtimeSessionId, {
+      ...createClientSessionState(storedSessionId),
+      busy: true,
+      turnLive: true
+    })
+    read.resolve(carrierTranscript(storedSessionId))
+    await request
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+    expect($todosBySession.get()[runtimeSessionId]).toBeUndefined()
+    expect($sessionStates.get()[runtimeSessionId]).toMatchObject({ busy: true, turnLive: true })
+    expect(signatureRef.current.has(`tile:${storedSessionId}`)).toBe(false)
   })
 })
 
@@ -470,6 +834,191 @@ describe('active transcript refresh', () => {
     expect(updateSessionState).toHaveBeenCalledWith('runtime-a', expect.any(Function), 'stored-a')
     expect(updateSessionState).toHaveBeenCalledWith('runtime-b', expect.any(Function), 'stored-b')
     expect(updateSessionState).toHaveBeenCalledWith('runtime-local', expect.any(Function), 'stored-local')
+  })
+
+  it('restores carrier-only todo state during a background tile reconciliation', async () => {
+    const runtimeId = 'runtime-carrier-tile'
+    const storedId = 'stored-carrier-tile'
+    const updateSessionState = vi.fn((_sessionId, updater) =>
+      updater(createClientSessionState(storedId))
+    ) as Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState']
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(carrierTranscript(storedId) as never)
+
+    await reconcileTileTranscriptsForTest({
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      updateSessionState
+    })
+
+    expect($todosBySession.get()[runtimeId]).toEqual(carrierTodos)
+  })
+
+  it('restores row 277757 beyond a full 120-message owner-scoped tile tail', async () => {
+    const runtimeId = 'runtime-paged-tile'
+    const storedId = 'stored-paged-tile'
+    const ownerRoute = {
+      connectionId: 'remote-paged-tile',
+      mode: 'remote' as const,
+      profile: 'tile-route',
+      targetProfile: 'tile-target'
+    }
+    const scope = { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile }
+    const updateSessionState = vi.fn((_sessionId, updater) =>
+      updater(createClientSessionState(storedId))
+    ) as Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState']
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: Array.from({ length: 120 }, (_, index) => ({
+        content: `ordinary tile tail message ${index}`,
+        role: 'assistant' as const,
+        timestamp: index + 1
+      })),
+      session_id: storedId
+    } as never)
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ ...legacyEvidenceMessage277757, session_id: storedId }],
+      pagination: { exhausted: true, has_more: false, limit: 32, next_before_id: null, returned: 1 },
+      session_id: storedId
+    } as never)
+
+    await reconcileTileTranscriptsForTest({
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      tiles: [{ ownerRoute, runtimeId, storedSessionId: storedId }],
+      updateSessionState
+    })
+
+    expect(getSessionMessages).toHaveBeenCalledWith(storedId, scope, {
+      projection: 'todo-state'
+    })
+    expect($todosBySession.get()[runtimeId]).toEqual(LEGACY_TODOS_277757)
+  })
+
+  it('clears tile Todo state after the bounded candidate domain is genuinely exhausted', async () => {
+    const runtimeId = 'runtime-absent-tile'
+    const storedId = 'stored-absent-tile'
+    const updateSessionState = vi.fn((_sessionId, updater) =>
+      updater(createClientSessionState(storedId))
+    ) as Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState']
+
+    setSessionTodos(runtimeId, [{ content: 'stale tile Todo', id: 'stale', status: 'in_progress' }])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: Array.from({ length: 120 }, (_, index) => ({
+        content: `ordinary absent tile tail ${index}`,
+        role: 'assistant' as const,
+        timestamp: index + 1
+      })),
+      session_id: storedId
+    } as never)
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [],
+      pagination: { exhausted: true, has_more: false, limit: 32, next_before_id: null, returned: 0 },
+      session_id: storedId
+    } as never)
+
+    await reconcileTileTranscriptsForTest({
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      updateSessionState
+    })
+
+    expect(getSessionMessages).toHaveBeenCalledWith(storedId, undefined, {
+      projection: 'todo-state'
+    })
+    expect($todosBySession.get()[runtimeId]).toBeUndefined()
+  })
+
+  it('restores carrier-only todo state during an active background reconciliation', async () => {
+    const fixture = makeRefresh()
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(carrierTranscript() as never)
+
+    await fixture.refresh()
+
+    expect($todosBySession.get()[ACTIVE_RUNTIME_ID]).toEqual(carrierTodos)
+  })
+
+  it('restores row 277757 beyond a full 120-message active background tail', async () => {
+    const fixture = makeRefresh()
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: Array.from({ length: 120 }, (_, index) => ({
+        content: `ordinary tail message ${index}`,
+        role: 'assistant' as const,
+        timestamp: index + 1
+      })),
+      session_id: ACTIVE_STORED_ID
+    } as never)
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [legacyEvidenceMessage277757],
+      pagination: { exhausted: true, has_more: false, limit: 32, next_before_id: null, returned: 1 },
+      session_id: ACTIVE_STORED_ID
+    } as never)
+
+    await fixture.refresh()
+
+    expect(getSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, 'default', {
+      projection: 'todo-state'
+    })
+    expect($todosBySession.get()[ACTIVE_RUNTIME_ID]).toEqual(LEGACY_TODOS_277757)
+  })
+
+  it('clears active Todo state after the bounded candidate domain is genuinely exhausted', async () => {
+    const fixture = makeRefresh()
+
+    setSessionTodos(ACTIVE_RUNTIME_ID, [{ content: 'stale active Todo', id: 'stale', status: 'in_progress' }])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: Array.from({ length: 120 }, (_, index) => ({
+        content: `ordinary absent active tail ${index}`,
+        role: 'assistant' as const,
+        timestamp: index + 1
+      })),
+      session_id: ACTIVE_STORED_ID
+    } as never)
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [],
+      pagination: { exhausted: true, has_more: false, limit: 32, next_before_id: null, returned: 0 },
+      session_id: ACTIVE_STORED_ID
+    } as never)
+
+    await fixture.refresh()
+
+    expect(getSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, 'default', {
+      projection: 'todo-state'
+    })
+    expect($todosBySession.get()[ACTIVE_RUNTIME_ID]).toBeUndefined()
+  })
+
+  it('replays legacy evidence row 277757 during a background tile reconciliation', async () => {
+    const runtimeId = 'runtime-legacy-carrier-tile'
+    const storedId = 'stored-legacy-carrier-tile'
+    const updateSessionState = vi.fn((_sessionId, updater) =>
+      updater(createClientSessionState(storedId))
+    ) as Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState']
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(legacyEvidenceTranscript(storedId) as never)
+
+    await reconcileTileTranscriptsForTest({
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map() },
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      updateSessionState
+    })
+
+    expect($todosBySession.get()[runtimeId]).toEqual(LEGACY_TODOS_277757)
+  })
+
+  it('replays legacy evidence row 277757 during active background reconciliation', async () => {
+    const fixture = makeRefresh()
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(legacyEvidenceTranscript() as never)
+
+    await fixture.refresh()
+
+    expect($todosBySession.get()[ACTIVE_RUNTIME_ID]).toEqual(LEGACY_TODOS_277757)
   })
 
   it('skips the tile fetch entirely when nothing changed (signature-gated)', async () => {
@@ -792,6 +1341,105 @@ describe('reconcileActiveTranscript', () => {
     expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
       text: 'owner B answer'
     })
+  })
+
+  it.each([
+    [
+      'remote',
+      {
+        connectionId: 'remote-active-a',
+        mode: 'remote' as const,
+        profile: 'desktop-a',
+        targetProfile: 'backend-a'
+      },
+      {
+        connectionId: 'remote-active-b',
+        mode: 'remote' as const,
+        profile: 'desktop-b',
+        targetProfile: 'backend-b'
+      }
+    ],
+    [
+      'local profile',
+      { connectionId: 'local', mode: 'local' as const, profile: 'profile-a' },
+      { connectionId: 'local', mode: 'local' as const, profile: 'profile-b' }
+    ]
+  ] as const)(
+    'rejects an active %s owner response after same-ID/runtime rebind and permits the current-owner retry',
+    async (_label, ownerA, ownerB) => {
+      const staleRead = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+      const identicalResponse = {
+        ...carrierTranscript(),
+        messages: [
+          ...carrierTranscript().messages,
+          { content: 'current owner visible transcript', role: 'assistant' as const, timestamp: 4 }
+        ]
+      } as Awaited<ReturnType<typeof getLatestSessionMessages>>
+      let currentOwner: ActiveTranscriptRefreshDeps['resolveSession'] extends (...args: never[]) => infer R
+        ? R
+        : never = {
+        ownerRoute: ownerA,
+        profile: ownerA.profile
+      }
+      const fixture = makeRefresh(() => currentOwner)
+
+      vi.mocked(getLatestSessionMessages)
+        .mockReturnValueOnce(staleRead.promise as never)
+        .mockResolvedValueOnce(identicalResponse as never)
+
+      const staleRequest = fixture.refresh()
+
+      expect(getLatestSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, {
+        connectionId: ownerA.connectionId,
+        profile: 'targetProfile' in ownerA ? ownerA.targetProfile : ownerA.profile
+      })
+
+      currentOwner = { ownerRoute: ownerB, profile: ownerB.profile }
+      staleRead.resolve(identicalResponse)
+      await staleRequest
+
+      expect(fixture.updateSessionState).not.toHaveBeenCalled()
+      expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages).toEqual([])
+      expect($todosBySession.get()[ACTIVE_RUNTIME_ID]).toBeUndefined()
+      expect(fixture.signatureRef.current.size).toBe(0)
+
+      await fixture.refresh()
+
+      expect(getLatestSessionMessages).toHaveBeenNthCalledWith(2, ACTIVE_STORED_ID, {
+        connectionId: ownerB.connectionId,
+        profile: 'targetProfile' in ownerB ? ownerB.targetProfile : ownerB.profile
+      })
+      expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+      expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
+        text: 'current owner visible transcript'
+      })
+      expect($todosBySession.get()[ACTIVE_RUNTIME_ID]).toEqual(carrierTodos)
+      expect(fixture.signatureRef.current.size).toBe(1)
+    }
+  )
+
+  it('retries identical transcript hydration after an older publication is rejected and the newer read fails', async () => {
+    const olderFixture = makeRefresh()
+    const newerFixture = makeRefresh()
+    const olderRead = deferred<ReturnType<typeof carrierTranscript>>()
+
+    vi.mocked(getLatestSessionMessages)
+      .mockReturnValueOnce(olderRead.promise as never)
+      .mockRejectedValueOnce(new Error('newer read failed'))
+      .mockResolvedValueOnce(carrierTranscript() as never)
+
+    const olderRequest = olderFixture.refresh()
+    await newerFixture.refresh()
+
+    olderRead.resolve(carrierTranscript())
+    await olderRequest
+
+    expect($todosBySession.get()[ACTIVE_RUNTIME_ID]).toBeUndefined()
+
+    await olderFixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(3)
+    expect($todosBySession.get()[ACTIVE_RUNTIME_ID]).toEqual(carrierTodos)
   })
 
   it('publishes changed authoritative messages once without duplicates', async () => {

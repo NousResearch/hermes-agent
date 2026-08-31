@@ -2064,10 +2064,33 @@ def _pruned_skill_reload_notice(compressed: list) -> str:
     )
 
 
+def _mark_todo_snapshot_carrier_for_display(
+    message: dict,
+    todos: Optional[List[Dict[str, str]]] = None,
+    *,
+    composite: bool = True,
+) -> None:
+    """Type a todo carrier and retain its structured task state for clients."""
+    metadata = message.get("display_metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    else:
+        metadata = dict(metadata)
+    if todos is not None:
+        metadata["todo_snapshot"] = {"todos": copy.deepcopy(todos)}
+    elif "todo_snapshot" not in metadata:
+        # Compatibility for synthetic fixtures that predate structured state.
+        metadata["todo_snapshot"] = True
+    message["display_metadata"] = metadata
+    if composite and message.get("display_kind") == "hidden":
+        message.pop("display_kind", None)
+
+
 def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
     """Fold the human anchor into an existing user-role scaffolding turn.
     Used only when any insertion would create consecutive user turns. Anchor text leads, scaffolding follows,
     and synthetic flags are cleared."""
+    todo_snapshot_carrier = bool(target.get("_todo_snapshot_synthetic"))
     anchor_content = anchor.get("content")
     target_content = target.get("content")
     if isinstance(anchor_content, list) or isinstance(target_content, list):
@@ -2081,6 +2104,8 @@ def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
         _replace_message_content(target, merged)
     for flag in _SYNTHETIC_USER_FLAGS:
         target.pop(flag, None)
+    if todo_snapshot_carrier:
+        _mark_todo_snapshot_carrier_for_display(target)
 
 
 CompressedUserTurnOutcome = Literal["inserted", "merged", "already_present", "placeholder_appended"]
@@ -2755,6 +2780,7 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                 _todo_message.pop("_todo_snapshot_synthetic", None)
             break
     if todo_snapshot:
+        todo_items = agent._todo_store.read()
         # If this boundary pruned skill bodies, the policy behind the todos is gone:
         # add a reload notice after TODO_INJECTION_HEADER so both strip together.
         # Retention parity (#84718): the snapshot below re-injects the imperative verbatim. If this same
@@ -2781,6 +2807,7 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
             if _is_real_user_message(_probe):
                 _snapshot_text = f"\n\n{todo_snapshot}" if isinstance(_stripped, str) and _stripped else todo_snapshot
                 _replace_message_content(_tail, _append_text_to_content(_stripped, _snapshot_text))
+                _mark_todo_snapshot_carrier_for_display(_tail, todo_items)
                 merged = True
             elif (
                 _stripped != _tail.get("content") and not _message_text({"role": "user", "content": _stripped}).strip()
@@ -2789,9 +2816,18 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                 # refresh it in place instead of stacking a duplicate.
                 _replace_message_content(_tail, todo_snapshot)
                 _tail["_todo_snapshot_synthetic"] = True
+                _tail["display_kind"] = "hidden"
+                _mark_todo_snapshot_carrier_for_display(_tail, todo_items, composite=False)
                 merged = True
         if not merged:
-            compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
+            carrier = {
+                "role": "user",
+                "content": todo_snapshot,
+                "_todo_snapshot_synthetic": True,
+                "display_kind": "hidden",
+            }
+            _mark_todo_snapshot_carrier_for_display(carrier, todo_items, composite=False)
+            compressed.append(carrier)
 
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:

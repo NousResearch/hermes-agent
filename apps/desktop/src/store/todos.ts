@@ -18,6 +18,135 @@ import { $sessionStates } from './session-states'
  */
 export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 export const $todoRevisionsBySession = atom<Record<string, number>>({})
+/** Sessions whose current list came from a durable compaction carrier. */
+export const $preservedTodosBySession = atom<Record<string, true>>({})
+
+let todoHydrationGeneration = 0
+const latestTodoHydrationBySession = new Map<string, number>()
+const activeTodoHydrationTokens = new Set<TodoHydrationToken>()
+const activeTodoHydrationsBySession = new Map<string, Set<TodoHydrationToken>>()
+const retiredTodoHydrationTokens = new WeakSet<TodoHydrationToken>()
+
+/** @internal Read-only lifecycle accounting for bounded-retention tests. */
+export function _todoHydrationAuthorityStatsForTests(): {
+  activeSessionCount: number
+  activeTokenCount: number
+  generation: number
+  latestSessionCount: number
+} {
+  return {
+    activeSessionCount: activeTodoHydrationsBySession.size,
+    activeTokenCount: activeTodoHydrationTokens.size,
+    generation: todoHydrationGeneration,
+    latestSessionCount: latestTodoHydrationBySession.size
+  }
+}
+
+export interface TodoHydrationToken {
+  /** Monotonic renderer-owned order allocated when this hydration operation starts. */
+  generation: number
+  /** Cold resume binds only after session.resume returns the new runtime identity. */
+  runtimeSessionId?: string
+}
+
+function registerTodoHydrationForSession(token: TodoHydrationToken, runtimeSessionId: string): void {
+  const activeForSession = activeTodoHydrationsBySession.get(runtimeSessionId) ?? new Set<TodoHydrationToken>()
+  activeForSession.add(token)
+  activeTodoHydrationsBySession.set(runtimeSessionId, activeForSession)
+
+  if ((latestTodoHydrationBySession.get(runtimeSessionId) ?? 0) < token.generation) {
+    latestTodoHydrationBySession.set(runtimeSessionId, token.generation)
+  }
+}
+
+/** Begin one admitted hydration operation before its first async boundary. */
+export function captureTodoWriteFence(runtimeSessionId?: string): TodoHydrationToken {
+  todoHydrationGeneration += 1
+  const token: TodoHydrationToken = {
+    generation: todoHydrationGeneration,
+    ...(runtimeSessionId ? { runtimeSessionId } : {})
+  }
+  activeTodoHydrationTokens.add(token)
+
+  if (runtimeSessionId) {
+    registerTodoHydrationForSession(token, runtimeSessionId)
+  }
+
+  return token
+}
+
+/** Release an admitted operation that can no longer publish. Idempotent. */
+export function releaseTodoHydrationToken(token: TodoHydrationToken): void {
+  if (!activeTodoHydrationTokens.delete(token)) {
+    return
+  }
+
+  const runtimeSessionId = token.runtimeSessionId
+
+  if (!runtimeSessionId) {
+    return
+  }
+
+  const activeForSession = activeTodoHydrationsBySession.get(runtimeSessionId)
+
+  if (!activeForSession) {
+    return
+  }
+
+  activeForSession.delete(token)
+
+  if (activeForSession.size === 0) {
+    activeTodoHydrationsBySession.delete(runtimeSessionId)
+    latestTodoHydrationBySession.delete(runtimeSessionId)
+  }
+}
+
+function retireSessionTodoHydrations(runtimeSessionId: string): void {
+  const activeForSession = activeTodoHydrationsBySession.get(runtimeSessionId)
+
+  if (activeForSession) {
+    for (const token of activeForSession) {
+      retiredTodoHydrationTokens.add(token)
+      activeTodoHydrationTokens.delete(token)
+    }
+  }
+
+  activeTodoHydrationsBySession.delete(runtimeSessionId)
+  latestTodoHydrationBySession.delete(runtimeSessionId)
+}
+
+function retireAllTodoHydrations(): void {
+  for (const token of activeTodoHydrationTokens) {
+    retiredTodoHydrationTokens.add(token)
+  }
+
+  activeTodoHydrationTokens.clear()
+  activeTodoHydrationsBySession.clear()
+  latestTodoHydrationBySession.clear()
+  todoHydrationGeneration = 0
+}
+
+export function bindTodoHydrationToken(token: TodoHydrationToken, runtimeSessionId: string): boolean {
+  if (
+    !runtimeSessionId ||
+    retiredTodoHydrationTokens.has(token) ||
+    !activeTodoHydrationTokens.has(token) ||
+    (token.runtimeSessionId && token.runtimeSessionId !== runtimeSessionId)
+  ) {
+    return false
+  }
+
+  if (!token.runtimeSessionId) {
+    token.runtimeSessionId = runtimeSessionId
+    registerTodoHydrationForSession(token, runtimeSessionId)
+  }
+
+  return latestTodoHydrationBySession.get(runtimeSessionId) === token.generation
+}
+
+function sessionTodosUnchangedSince(sid: string, token: TodoHydrationToken | undefined): boolean {
+  return !token || bindTodoHydrationToken(token, sid)
+}
 
 export const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
@@ -87,7 +216,7 @@ export function clearAllTodoContinuations(): void {
   $todoContinuationsBySession.set({})
 }
 
-export type TodoPresentationKind = 'continuing' | 'finished' | 'hidden' | 'paused' | 'working'
+export type TodoPresentationKind = 'continuing' | 'finished' | 'hidden' | 'paused' | 'restored' | 'working'
 
 export interface TodoPresentationState {
   kind: TodoPresentationKind
@@ -97,6 +226,8 @@ export interface TodoPresentationState {
 
 export interface TodoPresentationInputs {
   continuation?: TodoContinuationSnapshot
+  /** Durable carrier state is visible as a static plan without claiming live work. */
+  preserved?: boolean
   /** Backend-confirmed turn liveness, never optimistic submit state. */
   turnLive: boolean
 }
@@ -104,7 +235,7 @@ export interface TodoPresentationInputs {
 /** Resolve presentation without promoting todo row status into liveness truth. */
 export function resolveTodoPresentation(
   todos: readonly TodoItem[] | null,
-  { continuation, turnLive }: TodoPresentationInputs
+  { continuation, preserved, turnLive }: TodoPresentationInputs
 ): TodoPresentationState {
   const remaining = todos?.filter(t => t.status === 'pending' || t.status === 'in_progress').length ?? 0
 
@@ -126,6 +257,10 @@ export function resolveTodoPresentation(
 
   if (continuation?.state === 'paused') {
     return { kind: 'paused', remaining, ...(continuation.stopReason ? { stopReason: continuation.stopReason } : {}) }
+  }
+
+  if (preserved) {
+    return { kind: 'restored', remaining }
   }
 
   return { kind: 'hidden', remaining }
@@ -189,6 +324,40 @@ export function todosForHydration(
 const FINISHED_LINGER_MS = 4_000
 const clearTimers = keyedTimeouts()
 
+interface SessionTodoWriteOptions {
+  forgetRevision?: boolean
+  ifUnchangedSince?: TodoHydrationToken
+  preserved?: boolean
+  revision?: null | number
+}
+
+function removeSessionTodoState(sid: string, forgetRevision: boolean): void {
+  clearTimers.cancel(sid)
+
+  const preserved = $preservedTodosBySession.get()
+
+  if (sid in preserved) {
+    const { [sid]: _drop, ...rest } = preserved
+    $preservedTodosBySession.set(rest)
+  }
+
+  const map = $todosBySession.get()
+
+  if (sid in map) {
+    const { [sid]: _drop, ...rest } = map
+    $todosBySession.set(rest)
+  }
+
+  if (forgetRevision) {
+    const revisions = $todoRevisionsBySession.get()
+
+    if (sid in revisions) {
+      const { [sid]: _drop, ...rest } = revisions
+      $todoRevisionsBySession.set(rest)
+    }
+  }
+}
+
 function acceptRevision(sid: string, revision?: null | number): boolean {
   const revisions = $todoRevisionsBySession.get()
   const current = revisions[sid]
@@ -210,39 +379,67 @@ function acceptRevision(sid: string, revision?: null | number): boolean {
   return true
 }
 
-export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null | number) {
-  if (!sid) {
-    return
+export function setSessionTodos(
+  sid: string,
+  todos: TodoItem[],
+  optionsOrRevision: SessionTodoWriteOptions | null | number = {}
+): boolean {
+  const options =
+    typeof optionsOrRevision === 'number' || optionsOrRevision === null
+      ? { revision: optionsOrRevision }
+      : optionsOrRevision
+  const hydrationToken = options.ifUnchangedSince
+
+  if (!sid || !sessionTodosUnchangedSince(sid, hydrationToken)) {
+    if (hydrationToken) {
+      releaseTodoHydrationToken(hydrationToken)
+    }
+
+    return false
   }
 
-  if (!acceptRevision(sid, revision)) {
-    return
+  if (!acceptRevision(sid, options.revision)) {
+    if (hydrationToken) {
+      releaseTodoHydrationToken(hydrationToken)
+    }
+
+    return false
   }
 
-  clearTimers.cancel(sid)
-  $todosBySession.set({ ...$todosBySession.get(), [sid]: todos })
-
-  if (!todoListActive(todos)) {
-    clearTimers.schedule(sid, FINISHED_LINGER_MS, () => dropSessionTodos(sid, false))
-  }
-}
-
-function dropSessionTodos(sid: string, forgetRevision: boolean) {
-  clearTimers.cancel(sid)
-
-  const map = $todosBySession.get()
-
-  if (sid in map) {
-    const { [sid]: _drop, ...rest } = map
-    $todosBySession.set(rest)
+  if (!hydrationToken) {
+    retireSessionTodoHydrations(sid)
   }
 
-  if (forgetRevision) {
-    const revisions = $todoRevisionsBySession.get()
+  try {
+    clearTimers.cancel(sid)
+    const preserved = $preservedTodosBySession.get()
 
-    if (sid in revisions) {
-      const { [sid]: _drop, ...rest } = revisions
-      $todoRevisionsBySession.set(rest)
+    if (options.preserved) {
+      $preservedTodosBySession.set({ ...preserved, [sid]: true })
+    } else if (sid in preserved) {
+      const { [sid]: _drop, ...rest } = preserved
+      $preservedTodosBySession.set(rest)
+    }
+
+    $todosBySession.set({ ...$todosBySession.get(), [sid]: todos })
+
+    if (!todoListActive(todos)) {
+      clearTimers.schedule(sid, FINISHED_LINGER_MS, () => {
+        // This delayed callback belongs to the exact rendered list above. It is
+        // presentation cleanup, not newer live backend intent, so it must neither
+        // clear a replacement list nor retire an in-flight hydration operation.
+        if ($todosBySession.get()[sid] === todos) {
+          removeSessionTodoState(sid, false)
+        }
+      })
+    }
+
+    return true
+  } finally {
+    if (hydrationToken) {
+      // A current hydration publishes at most once. Once it settles, no older
+      // admitted operation may become authoritative again.
+      retireSessionTodoHydrations(sid)
     }
   }
 }
@@ -252,12 +449,32 @@ export function clearAllSessionTodos(): void {
     clearTimers.cancel(sid)
   }
 
+  retireAllTodoHydrations()
+  $preservedTodosBySession.set({})
   $todosBySession.set({})
   $todoRevisionsBySession.set({})
 }
 
-export function clearSessionTodos(sid: string) {
-  dropSessionTodos(sid, true)
+export function clearSessionTodos(
+  sid: string,
+  options: Pick<SessionTodoWriteOptions, 'forgetRevision' | 'ifUnchangedSince'> = {}
+): boolean {
+  const hydrationToken = options.ifUnchangedSince
+
+  if (!sid || !sessionTodosUnchangedSince(sid, hydrationToken)) {
+    if (hydrationToken) {
+      releaseTodoHydrationToken(hydrationToken)
+    }
+
+    return false
+  }
+
+  try {
+    removeSessionTodoState(sid, options.forgetRevision !== false)
+    return true
+  } finally {
+    retireSessionTodoHydrations(sid)
+  }
 }
 
 // Drop a still-active todo list (any pending/in_progress item) at turn end when
@@ -268,12 +485,19 @@ export function clearSessionTodos(sid: string) {
 export function clearActiveSessionTodos(sid: string) {
   const todos = $todosBySession.get()[sid]
   const continuation = $todoContinuationsBySession.get()[sid]
+  const preserved = $preservedTodosBySession.get()[sid]
 
-  if (!todos || !todoListActive(todos) || continuation?.state === 'active' || continuation?.state === 'paused') {
+  if (
+    preserved ||
+    !todos ||
+    !todoListActive(todos) ||
+    continuation?.state === 'active' ||
+    continuation?.state === 'paused'
+  ) {
     return
   }
 
-  dropSessionTodos(sid, false)
+  clearSessionTodos(sid, { forgetRevision: false })
 }
 
 /** Apply a session.resume/activate or todo.updated full snapshot. Idle
@@ -300,6 +524,6 @@ export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, 
   if (visible !== null) {
     setSessionTodos(sid, visible, revision)
   } else if (acceptRevision(sid, revision)) {
-    dropSessionTodos(sid, false)
+    removeSessionTodoState(sid, false)
   }
 }

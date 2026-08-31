@@ -1441,12 +1441,10 @@ class TestTodoSnapshotMergedNotDuplicated:
             {"role": "assistant", "content": "acknowledged"},
             {"role": "user", "content": "tail"},
         ]
-        agent._todo_store._todos = [
+        expected_todos = [
             {"id": "t1", "content": "task A", "status": "pending"}
         ]
-        agent._todo_store.format_for_injection = (
-            lambda: "## Current Tasks\n- [ ] task A"
-        )
+        agent._todo_store.write(expected_todos)
 
         compressed, _ = agent._compress_context(
             _msgs(), "sys", approx_tokens=120_000
@@ -1457,6 +1455,10 @@ class TestTodoSnapshotMergedNotDuplicated:
         assert tail["role"] == "user"
         assert "tail" in tail["content"]
         assert "task A" in tail["content"]
+        assert tail.get("display_kind") is None
+        assert tail["display_metadata"]["todo_snapshot"] == {
+            "todos": expected_todos
+        }
         assert not any(
             previous.get("role") == current.get("role") == "user"
             for previous, current in zip(compressed, compressed[1:])
@@ -1484,12 +1486,10 @@ class TestTodoSnapshotMergedNotDuplicated:
             {"role": "assistant", "content": "ok"},
             {"role": "user", "content": list(original_parts)},
         ]
-        agent._todo_store._todos = [
+        expected_todos = [
             {"id": "t1", "content": "inspect image", "status": "in_progress"}
         ]
-        agent._todo_store.format_for_injection = (
-            lambda: "## Current Tasks\n- [ ] inspect image"
-        )
+        agent._todo_store.write(expected_todos)
 
         # Input transcript must be large enough that the fake compressor's
         # output is a genuine shrink — the no-growth commit guard refuses
@@ -1514,6 +1514,10 @@ class TestTodoSnapshotMergedNotDuplicated:
             isinstance(part, dict) and "inspect image" in (part.get("text") or "")
             for part in tail["content"]
         )
+        assert tail.get("display_kind") is None
+        assert tail["display_metadata"]["todo_snapshot"] == {
+            "todos": expected_todos
+        }
         assert not any(
             previous.get("role") == current.get("role") == "user"
             for previous, current in zip(compressed, compressed[1:])
@@ -1527,6 +1531,10 @@ class TestTodoSnapshotMergedNotDuplicated:
             isinstance(part, dict) and "inspect image" in (part.get("text") or "")
             for part in persisted_tail["content"]
         )
+        assert persisted_tail.get("display_kind") is None
+        assert persisted_tail["display_metadata"]["todo_snapshot"] == {
+            "todos": expected_todos
+        }
         assert not any(
             previous.get("role") == current.get("role") == "user"
             for previous, current in zip(db_msgs, db_msgs[1:])
@@ -1588,6 +1596,149 @@ class TestTodoSnapshotScaffoldingTails:
             previous.get("role") == current.get("role") == "user"
             for previous, current in zip(compressed, compressed[1:])
         )
+
+    def test_standalone_snapshot_is_hidden_when_persisted(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "PARENT_TODO_HIDDEN"
+        db.create_session(session_id, source="cli")
+        agent = _build_agent_with_db(db, session_id, platform="cli")
+        agent.compression_in_place = True
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "acknowledged"},
+        ]
+        expected_todos = [
+            {"id": "plan", "content": "parent plan", "status": "completed"},
+            {
+                "id": "child",
+                "content": "active child",
+                "status": "in_progress",
+                "parent": "plan",
+            },
+            {"id": "next", "content": "next root", "status": "pending"},
+            {"id": "skip", "content": "cancelled root", "status": "cancelled"},
+        ]
+        agent._todo_store.write(expected_todos)
+        input_msgs = [
+            {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"m{i} " + "x" * 400,
+            }
+            for i in range(20)
+        ]
+
+        compressed, _ = agent._compress_context(
+            input_msgs, "sys", approx_tokens=120_000
+        )
+
+        snapshot = compressed[-1]
+        assert snapshot["_todo_snapshot_synthetic"] is True
+        assert snapshot["display_kind"] == "hidden"
+        assert snapshot["display_metadata"]["todo_snapshot"] == {
+            "todos": expected_todos
+        }
+        persisted = db.get_messages(agent.session_id)[-1]
+        assert persisted["display_kind"] == "hidden"
+        assert persisted["display_metadata"]["todo_snapshot"] == {
+            "todos": expected_todos
+        }
+        decoded = db.get_messages_as_conversation(agent.session_id)[-1]
+        assert decoded["display_metadata"]["todo_snapshot"] == {
+            "todos": expected_todos
+        }
+
+    def test_carrier_only_cold_resume_recompression_keeps_exact_todo_state(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "TODO_CARRIER_ONLY_RECOMPRESSION"
+        db.create_session(session_id, source="cli")
+        expected_todos = [
+            {"id": "plan", "content": "parent plan", "status": "completed"},
+            {
+                "id": "child",
+                "content": "active child",
+                "status": "in_progress",
+                "parent": "plan",
+            },
+            {
+                "id": "a. b",
+                "content": "preserve delimiter. exactly",
+                "status": "pending",
+            },
+            {"id": "skip", "content": "cancelled root", "status": "cancelled"},
+        ]
+
+        producer = _build_agent_with_db(db, session_id, platform="cli")
+        producer.compression_in_place = True
+        producer.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] first summary"},
+            {"role": "assistant", "content": "acknowledged"},
+        ]
+        producer._todo_store.write(expected_todos)
+        producer._compress_context(
+            [
+                {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"initial-{i} " + "x" * 400,
+                }
+                for i in range(20)
+            ],
+            "sys",
+            approx_tokens=120_000,
+        )
+
+        first_history = db.get_messages_as_conversation(session_id)
+        assert not any(message.get("role") == "tool" for message in first_history)
+        first_carriers = [
+            message
+            for message in first_history
+            if isinstance(message.get("display_metadata"), dict)
+            and "todo_snapshot" in message["display_metadata"]
+        ]
+        assert len(first_carriers) == 1
+        expected_metadata = copy.deepcopy(first_carriers[0]["display_metadata"])
+        assert expected_metadata == {"todo_snapshot": {"todos": expected_todos}}
+
+        db.append_messages_batch(
+            session_id,
+            [
+                {
+                    "role": "assistant" if i % 2 == 0 else "user",
+                    "content": f"between-{i} " + "y" * 400,
+                }
+                for i in range(20)
+            ],
+        )
+        cold_history = db.get_messages_as_conversation(session_id)
+        assert not any(message.get("role") == "tool" for message in cold_history)
+
+        cold = _build_agent_with_db(db, session_id, platform="cli")
+        assert not cold._todo_store.has_items()
+        cold._hydrate_todo_store(cold_history)
+        assert cold._todo_store.read() == expected_todos
+
+        cold.compression_in_place = True
+        cold.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] second summary"},
+            {"role": "assistant", "content": "acknowledged again"},
+        ]
+        cold._compress_context(cold_history, "sys", approx_tokens=120_000)
+
+        refreshed_history = db.get_messages_as_conversation(session_id)
+        refreshed_carriers = [
+            message
+            for message in refreshed_history
+            if isinstance(message.get("display_metadata"), dict)
+            and "todo_snapshot" in message["display_metadata"]
+        ]
+        assert len(refreshed_carriers) == 1
+        assert refreshed_carriers[0]["display_metadata"] == expected_metadata
+
+        next_cold = _build_agent_with_db(db, session_id, platform="cli")
+        assert not next_cold._todo_store.has_items()
+        next_cold._hydrate_todo_store(refreshed_history)
+        assert next_cold._todo_store.read() == expected_todos
 
     def test_empty_todo_store_injects_nothing(self, tmp_path: Path):
         from tools.todo_tool import TODO_INJECTION_HEADER

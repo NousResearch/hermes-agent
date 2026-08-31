@@ -2,6 +2,7 @@ import { skillInvocationText } from '@hermes/shared'
 
 import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import { isTodoSnapshotMetadata, todosFromLegacySnapshotContent } from '@/lib/todos'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
 import { assistantTextPart, chatMessageText, dedupeRepeatedTextInParts, reasoningPart, textPart } from './parts'
@@ -18,6 +19,31 @@ import type { ChatMessage, ChatMessagePart } from './types'
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+const TODO_SNAPSHOT_HEADER = '[Your active task list was preserved across context compression]'
+
+function todoSnapshotCandidates(content: string): number[] {
+  const candidates: number[] = []
+
+  if (content.startsWith(`${TODO_SNAPSHOT_HEADER}\n`)) {
+    candidates.push(0)
+  }
+
+  const compositeOffset = content.lastIndexOf(`\n\n${TODO_SNAPSHOT_HEADER}\n`)
+
+  if (compositeOffset >= 0) {
+    candidates.push(compositeOffset + 2)
+  }
+
+  return candidates
+}
+
+function todoSnapshotOffset(content: string): number {
+  for (const offset of todoSnapshotCandidates(content)) {
+    return offset
+  }
+
+  return -1
+}
 
 /**
  * Reply text from a Responses-API `codex_message_items` sidecar (#68321), for rows
@@ -121,8 +147,28 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [missing.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
-function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {
-  return displayKind === 'hidden' ? null : content
+function transcriptContent(message: SessionMessage, content: string): string | null {
+  if (message.display_kind === 'hidden') {
+    return null
+  }
+
+  const typedTodoSnapshot = isTodoSnapshotMetadata(message.display_metadata)
+  const snapshotOffset = message.role === 'user' ? todoSnapshotOffset(content) : -1
+
+  if (typedTodoSnapshot && snapshotOffset >= 0) {
+    return snapshotOffset === 0 ? null : content.slice(0, snapshotOffset).trimEnd()
+  }
+
+  if (
+    message.role === 'user' &&
+    message.display_kind == null &&
+    message.display_metadata == null &&
+    todosFromLegacySnapshotContent(content) !== null
+  ) {
+    return null
+  }
+
+  return content
 }
 
 // A remote backend older than this app serves display_metadata as raw JSON text,
@@ -310,7 +356,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         : message.content || message.text || message.context || message.name
 
     const rawDisplayContent = transcriptContent(
-      message.display_kind,
+      message,
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
 

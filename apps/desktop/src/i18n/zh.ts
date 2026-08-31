@@ -3195,6 +3195,7 @@ export const zh = defineLocale({
     goalDone: '目标已完成',
     goalPaused: '目标已暂停',
     goalWaiting: '目标等待中',
+    restoredUnfinished: '已恢复的未完成工作',
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
     running: '运行中',

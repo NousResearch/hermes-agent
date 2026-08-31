@@ -3054,6 +3054,7 @@ export const en: Translations = {
     goalDone: 'Goal done',
     goalPaused: 'Goal paused',
     goalWaiting: 'Goal waiting',
+    restoredUnfinished: 'Restored unfinished work',
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tasks ${done}/${total}`,
     running: 'Running',

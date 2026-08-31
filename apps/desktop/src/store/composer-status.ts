@@ -14,6 +14,7 @@ import { ambientRequestFor } from './session-gone-latch'
 import { $sessionStates, requestForOwnedSession } from './session-states'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import {
+  $preservedTodosBySession,
   $todoContinuationsBySession,
   $todosBySession,
   resolveTodoPresentation,
@@ -235,9 +236,10 @@ export const $statusItemsBySession = computed(
     $backgroundStatusBySession,
     $todosBySession,
     $sessionStates,
-    $todoContinuationsBySession
+    $todoContinuationsBySession,
+    $preservedTodosBySession
   ],
-  (goals, subs, background, todos, sessionStates, continuations) => {
+  (goals, subs, background, todos, sessionStates, continuations, preservedTodos) => {
     const out: Record<string, ComposerStatusItem[]> = {}
 
     const push = (sid: string, items: ComposerStatusItem[]) => {
@@ -251,6 +253,7 @@ export const $statusItemsBySession = computed(
 
       const presentation = resolveTodoPresentation(list, {
         continuation: continuations[sid],
+        preserved: preservedTodos[sid],
         turnLive: Boolean(session?.busy && session.turnLive)
       })
 

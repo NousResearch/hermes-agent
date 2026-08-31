@@ -17,6 +17,22 @@ export interface TodoPatch {
 }
 
 const STATUSES: readonly TodoStatus[] = ['pending', 'in_progress', 'completed', 'cancelled']
+const TODO_SNAPSHOT_HEADER = '[Your active task list was preserved across context compression]'
+const TODO_SNAPSHOT_FORMAT_V2 = '[Todo carrier format: 2]'
+const PRUNED_SKILL_NOTICE_HEADER = '[Skills pruned during compression — reload before acting on these tasks]'
+const PRUNED_SKILL_NOTICE_PREFIX =
+  'The task list above crossed the compression boundary verbatim, but the skill instructions that governed it were pruned. Before executing any preserved task that depends on these skills, reload them first: '
+const PRUNED_SKILL_NOTICE_SUFFIX =
+  '. After reloading, re-check that each pending task is still justified — findings recorded before the boundary may have invalidated it.'
+const TODO_ITEM_RE = /^( *)- \[([x> ~])\] (.+?)\. (.+) \((pending|in_progress|completed|cancelled)\)$/
+const TODO_ITEM_V2_RE = /^( *)- \[([x> ~])\] (\{.+\})$/
+const TODO_STATUS_BY_MARKER: Record<string, TodoStatus> = {
+  ' ': 'pending',
+  '>': 'in_progress',
+  '~': 'cancelled',
+  x: 'completed'
+}
+const SKILL_RELOAD_CALLS_RE = /^skill_view\(name='[^'\r\n]+'\)(?:; skill_view\(name='[^'\r\n]+'\))*$/
 
 /** The task tool is `todo_list` on the wire since the core-tool rename; `todo`
  *  survives as the legacy alias in stored transcripts and older backends. */
@@ -25,18 +41,33 @@ export const isTodoToolName = (name: unknown): boolean => name === 'todo_list' |
 const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v && typeof v === 'object' && !Array.isArray(v))
 const isStatus = (v: unknown): v is TodoStatus => (STATUSES as readonly string[]).includes(v as string)
 
-function parseArray(value: unknown[]): TodoItem[] {
-  return value.flatMap(item => {
+function parseArray(value: unknown[]): null | TodoItem[] {
+  const parsed: TodoItem[] = []
+
+  for (const item of value) {
     if (!isRecord(item) || !isStatus(item.status)) {
-      return []
+      return null
     }
 
-    const id = String(item.id ?? '').trim()
-    const content = String(item.content ?? '').trim()
-    const parent = String(item.parent ?? '').trim()
+    if (typeof item.id !== 'string' || typeof item.content !== 'string') {
+      return null
+    }
+    if (item.parent != null && typeof item.parent !== 'string') {
+      return null
+    }
 
-    return id && content ? [{ content, id, status: item.status, ...(parent && parent !== id ? { parent } : {}) }] : []
-  })
+    const id = item.id.trim()
+    const content = item.content.trim()
+    const parent = typeof item.parent === 'string' ? item.parent.trim() : ''
+
+    if (!id || !content) {
+      return null
+    }
+
+    parsed.push({ content, id, status: item.status, ...(parent && parent !== id ? { parent } : {}) })
+  }
+
+  return parsed
 }
 
 function parsePatchArray(value: unknown[]): TodoPatch[] {
@@ -82,6 +113,180 @@ function parse(value: unknown, depth: number): null | TodoItem[] {
 }
 
 export const parseTodos = (value: unknown): null | TodoItem[] => parse(value, 0)
+
+function parseMetadata(value: unknown): null | Record<string, unknown> {
+  let parsed = value
+
+  if (typeof parsed === 'string' && parsed.trim()) {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return null
+    }
+  }
+
+  return isRecord(parsed) ? parsed : null
+}
+
+/** Whether display metadata explicitly identifies a todo compaction carrier. */
+export function isTodoSnapshotMetadata(value: unknown): boolean {
+  const snapshot = parseMetadata(value)?.todo_snapshot
+
+  return snapshot === true || isRecord(snapshot)
+}
+
+/** Structured todo state carried by a compaction message's display metadata. */
+export function todosFromSnapshotMetadata(value: unknown): null | TodoItem[] {
+  const snapshot = parseMetadata(value)?.todo_snapshot
+
+  return isRecord(snapshot) ? parseTodos(snapshot.todos) : null
+}
+
+function isProducerPrunedSkillNotice(lines: string[]): boolean {
+  if (lines.length !== 3 || lines[0] !== '' || lines[1] !== PRUNED_SKILL_NOTICE_HEADER) {
+    return false
+  }
+
+  const notice = lines[2]
+
+  if (!notice.startsWith(PRUNED_SKILL_NOTICE_PREFIX) || !notice.endsWith(PRUNED_SKILL_NOTICE_SUFFIX)) {
+    return false
+  }
+
+  const calls = notice.slice(PRUNED_SKILL_NOTICE_PREFIX.length, -PRUNED_SKILL_NOTICE_SUFFIX.length)
+
+  return SKILL_RELOAD_CALLS_RE.test(calls)
+}
+
+/** Recover task state from an exact pre-metadata standalone compaction carrier.
+ * Ambiguous composite or malformed prose fails closed and remains ordinary text. */
+export function todosFromLegacySnapshotContent(value: unknown): null | TodoItem[] {
+  if (typeof value !== 'string' || (value.includes('\r') && !value.includes('\r\n'))) {
+    return null
+  }
+
+  const lines = value.replaceAll('\r\n', '\n').split('\n')
+
+  if (lines[0] !== TODO_SNAPSHOT_HEADER) {
+    return null
+  }
+
+  const todos: TodoItem[] = []
+  const ancestors: TodoItem[] = []
+  const ids = new Set<string>()
+  const versioned = lines[1] === TODO_SNAPSHOT_FORMAT_V2
+  let lineIndex = versioned ? 2 : 1
+
+  for (; lineIndex < lines.length; lineIndex += 1) {
+    let indent: string
+    let marker: string
+    let id: string
+    let content: string
+    let status: TodoStatus
+
+    if (versioned) {
+      const match = TODO_ITEM_V2_RE.exec(lines[lineIndex])
+
+      if (!match) {
+        break
+      }
+
+      let payload: unknown
+
+      try {
+        payload = JSON.parse(match[3])
+      } catch {
+        return null
+      }
+
+      if (
+        !isRecord(payload) ||
+        Object.keys(payload).length !== 3 ||
+        typeof payload.id !== 'string' ||
+        typeof payload.content !== 'string' ||
+        !isStatus(payload.status)
+      ) {
+        return null
+      }
+
+      ;[, indent, marker] = match
+      id = payload.id
+      content = payload.content
+      status = payload.status
+    } else {
+      const match = TODO_ITEM_RE.exec(lines[lineIndex])
+
+      if (!match) {
+        break
+      }
+
+      const statusValue = match[5]
+
+      ;[, indent, marker, id, content] = match
+      status = statusValue as TodoStatus
+
+      // V1 has one unescaped `. ` separator. A second occurrence is
+      // indistinguishable between an id suffix and a content prefix.
+      if (content.includes('. ')) {
+        return null
+      }
+    }
+
+    if (
+      indent.length % 2 !== 0 ||
+      id !== id.trim() ||
+      content !== content.trim() ||
+      !id ||
+      !content ||
+      ids.has(id) ||
+      TODO_STATUS_BY_MARKER[marker] !== status
+    ) {
+      return null
+    }
+
+    const depth = indent.length / 2
+
+    if (depth > ancestors.length || (depth > 0 && !ancestors[depth - 1])) {
+      return null
+    }
+
+    const parent = depth > 0 ? ancestors[depth - 1].id : undefined
+    const todo = { content, id, ...(parent ? { parent } : {}), status }
+
+    todos.push(todo)
+    ids.add(id)
+    ancestors.length = depth
+    ancestors[depth] = todo
+  }
+
+  if (!todos.length) {
+    return null
+  }
+
+  const remainder = lines.slice(lineIndex)
+
+  if (remainder.length && !isProducerPrunedSkillNotice(remainder)) {
+    return null
+  }
+
+  // format_for_injection omits completed/cancelled leaves. Such an item can
+  // appear only as an ancestor of an active task, so reject hand-written lookalikes.
+  const hasRetainedChild = new Set<string>()
+
+  for (let index = todos.length - 1; index >= 0; index -= 1) {
+    const todo = todos[index]
+    const active = todo.status === 'pending' || todo.status === 'in_progress'
+
+    if (!active && !hasRetainedChild.has(todo.id)) {
+      return null
+    }
+    if (todo.parent) {
+      hasRetainedChild.add(todo.parent)
+    }
+  }
+
+  return todos
+}
 
 /** DFS order of a (possibly nested) todo list: [item, depth] pairs, parents
  *  before children. Dangling/cyclic parents degrade to depth 0. */
@@ -258,15 +463,104 @@ export function todosFromMessageContent(content: unknown): null | TodoItem[] {
   return latest
 }
 
-/** Current todo state for a whole transcript — the last list wins. */
-export function latestSessionTodos(messages: readonly { parts?: unknown }[]): null | TodoItem[] {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const todos = todosFromMessageContent(messages[i]?.parts)
+export interface SessionTodoState {
+  source: 'carrier' | 'tool'
+  todos: TodoItem[]
+}
 
-    if (todos !== null) {
-      return todos
+type TodoHistoryMessage = {
+  args?: unknown
+  content?: unknown
+  display_metadata?: unknown
+  display_kind?: unknown
+  name?: unknown
+  parts?: unknown
+  result?: unknown
+  role?: unknown
+  text?: unknown
+  todo?: unknown
+  todos?: unknown
+  tool_call_id?: unknown
+  tool_calls?: unknown
+  tool_name?: unknown
+}
+
+function todoCall(call: unknown): null | { id: string; name: string; todos: null | TodoItem[] } {
+  if (!isRecord(call)) {
+    return null
+  }
+
+  const fn = isRecord(call.function) ? call.function : call
+  const name = String(fn.name ?? call.name ?? '').trim()
+  const id = String(call.id ?? call.tool_call_id ?? '').trim()
+  const todos = name === 'todo' ? (parseTodos(fn.arguments) ?? parseTodos(call.args)) : null
+
+  return { id, name, todos }
+}
+
+/** Current todo state plus provenance for raw REST/gateway rows or projected chat messages. */
+export function latestSessionTodoState(messages: readonly TodoHistoryMessage[]): null | SessionTodoState {
+  const pendingTodoCalls = new Map<string, unknown>()
+  let latest: null | SessionTodoState = null
+
+  for (const message of messages) {
+    const partTodos = todosFromMessageContent(message.parts)
+
+    if (partTodos !== null) {
+      latest = { source: 'tool', todos: partTodos }
+    }
+
+    if (message.role === 'assistant' || message.role === 'user' || message.role === 'system') {
+      pendingTodoCalls.clear()
+      if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+        for (const rawCall of message.tool_calls) {
+          const call = todoCall(rawCall)
+          if (call?.id && call.name === 'todo') {
+            pendingTodoCalls.set(call.id, rawCall)
+          }
+        }
+      }
+    }
+
+    if (message.role === 'tool') {
+      const callId = String(message.tool_call_id ?? '').trim()
+      const matchingCall = pendingTodoCalls.get(callId)
+      pendingTodoCalls.delete(callId)
+
+      if (matchingCall !== undefined) {
+        const todos =
+          parseTodos(message.todos) ??
+          parseTodos(message.result) ??
+          parseTodos(message.content) ??
+          parseTodos(message.text)
+
+        if (todos !== null) {
+          latest = { source: 'tool', todos }
+        }
+      }
+    }
+
+    const carrierTodos = todosFromSnapshotMetadata(message.display_metadata)
+
+    if (carrierTodos !== null) {
+      latest = { source: 'carrier', todos: carrierTodos }
+      continue
+    }
+
+    const legacyCarrierTodos =
+      message.role === 'user' && message.display_kind == null && message.display_metadata == null
+        ? todosFromLegacySnapshotContent(message.content ?? message.text)
+        : null
+
+    if (legacyCarrierTodos !== null) {
+      latest = { source: 'carrier', todos: legacyCarrierTodos }
     }
   }
 
-  return null
+  return latest
+}
+
+/** Current todo state for a whole transcript — the last list wins. */
+export function latestSessionTodos(messages: readonly TodoHistoryMessage[]): null | TodoItem[] {
+  return latestSessionTodoState(messages)?.todos ?? null
 }

@@ -55,6 +55,10 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
     )
   }
 
+  if (item.todoStatus === 'in_progress' && item.todoPresentation === 'restored') {
+    return <Codicon className="text-muted-foreground/60" name="circle-large-outline" size="0.8rem" />
+  }
+
   if (item.todoStatus === 'pending') {
     return <StatusPendingIcon />
   }

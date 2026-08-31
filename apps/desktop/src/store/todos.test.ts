@@ -1,16 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TodoItem } from '@/lib/todos'
+import { deferred } from '@/test/deferred'
 
 import {
   $todoContinuationsBySession,
   $todoRevisionsBySession,
   $todosBySession,
   applyTodoContinuationSnapshot,
+  captureTodoWriteFence,
   clearActiveSessionTodos,
+  clearAllSessionTodos,
   clearAllTodoContinuations,
   clearSessionTodos,
   clearTodoContinuation,
+  releaseTodoHydrationToken,
   resolveTodoPresentation,
   restoreSessionTodosFromSnapshot,
   setSessionTodos,
@@ -19,6 +23,338 @@ import {
 } from './todos'
 
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
+
+const beginDeferredHydration = (sid: string, read: Promise<null | TodoItem[]>) => {
+  const token = (captureTodoWriteFence as (runtimeSessionId: string) => ReturnType<typeof captureTodoWriteFence>)(sid)
+
+  return read.then(todos =>
+    todos
+      ? setSessionTodos(sid, todos, { ifUnchangedSince: token, preserved: true })
+      : clearSessionTodos(sid, { ifUnchangedSince: token })
+  )
+}
+
+interface TodoHydrationAuthorityStats {
+  activeSessionCount: number
+  activeTokenCount: number
+  generation: number
+  latestSessionCount: number
+}
+
+async function todoHydrationAuthorityStats(): Promise<TodoHydrationAuthorityStats> {
+  const todoStore = await import('./todos')
+  const inspect = Reflect.get(todoStore, '_todoHydrationAuthorityStatsForTests')
+
+  expect(inspect).toBeTypeOf('function')
+
+  return (inspect as () => TodoHydrationAuthorityStats)()
+}
+
+describe('overlapping Todo hydration ordering', () => {
+  afterEach(() => {
+    clearAllSessionTodos()
+  })
+
+  it('lets a later-started read replace an older read that resolves first', async () => {
+    const olderRead = deferred<TodoItem[]>()
+    const newerRead = deferred<TodoItem[]>()
+    const olderHydration = beginDeferredHydration('runtime-overlap', olderRead.promise)
+    const newerHydration = beginDeferredHydration('runtime-overlap', newerRead.promise)
+
+    olderRead.resolve([todo('older', 'pending')])
+    expect(await olderHydration).toBe(false)
+
+    newerRead.resolve([todo('newer', 'pending')])
+    expect(await newerHydration).toBe(true)
+    expect($todosBySession.get()['runtime-overlap']).toEqual([todo('newer', 'pending')])
+  })
+
+  it('keeps a later-started read when it resolves before the older read', async () => {
+    const olderRead = deferred<TodoItem[]>()
+    const newerRead = deferred<TodoItem[]>()
+    const olderHydration = beginDeferredHydration('runtime-reversed', olderRead.promise)
+    const newerHydration = beginDeferredHydration('runtime-reversed', newerRead.promise)
+
+    newerRead.resolve([todo('newer', 'pending')])
+    expect(await newerHydration).toBe(true)
+
+    olderRead.resolve([todo('older', 'pending')])
+    expect(await olderHydration).toBe(false)
+    expect($todosBySession.get()['runtime-reversed']).toEqual([todo('newer', 'pending')])
+  })
+
+  it('keeps a later-started authoritative clear after an older list resolves first', async () => {
+    const olderRead = deferred<TodoItem[]>()
+    const newerRead = deferred<null>()
+    const olderHydration = beginDeferredHydration('runtime-clear', olderRead.promise)
+    const newerHydration = beginDeferredHydration('runtime-clear', newerRead.promise)
+
+    olderRead.resolve([todo('older', 'pending')])
+    expect(await olderHydration).toBe(false)
+
+    newerRead.resolve(null)
+    expect(await newerHydration).toBe(true)
+    expect($todosBySession.get()['runtime-clear']).toBeUndefined()
+  })
+
+  it.each(['clear', 'set'] as const)('invalidates both hydration reads after an intervening live %s', async write => {
+    const olderRead = deferred<TodoItem[]>()
+    const newerRead = deferred<TodoItem[]>()
+    const olderHydration = beginDeferredHydration('runtime-live', olderRead.promise)
+    const newerHydration = beginDeferredHydration('runtime-live', newerRead.promise)
+
+    if (write === 'set') {
+      setSessionTodos('runtime-live', [todo('live', 'in_progress')])
+    } else {
+      clearSessionTodos('runtime-live')
+    }
+
+    newerRead.resolve([todo('newer persisted', 'pending')])
+    olderRead.resolve([todo('older persisted', 'pending')])
+
+    expect(await newerHydration).toBe(false)
+    expect(await olderHydration).toBe(false)
+    expect($todosBySession.get()['runtime-live']).toEqual(write === 'set' ? [todo('live', 'in_progress')] : undefined)
+  })
+
+  it("does not invalidate a runtime's hydration after another runtime receives a live write", async () => {
+    const targetRead = deferred<TodoItem[]>()
+    const targetHydration = beginDeferredHydration('runtime-target', targetRead.promise)
+
+    setSessionTodos('runtime-other', [todo('other live', 'in_progress')])
+    targetRead.resolve([todo('target persisted', 'pending')])
+
+    expect(await targetHydration).toBe(true)
+    expect($todosBySession.get()['runtime-target']).toEqual([todo('target persisted', 'pending')])
+  })
+
+  it('invalidates every older hydration token after a global clear', async () => {
+    const firstRead = deferred<TodoItem[]>()
+    const secondRead = deferred<TodoItem[]>()
+    const firstHydration = beginDeferredHydration('runtime-global-a', firstRead.promise)
+    const secondHydration = beginDeferredHydration('runtime-global-b', secondRead.promise)
+
+    clearAllSessionTodos()
+    firstRead.resolve([todo('first persisted', 'pending')])
+    secondRead.resolve([todo('second persisted', 'pending')])
+
+    expect(await firstHydration).toBe(false)
+    expect(await secondHydration).toBe(false)
+    expect($todosBySession.get()['runtime-global-a']).toBeUndefined()
+    expect($todosBySession.get()['runtime-global-b']).toBeUndefined()
+  })
+
+  it('binds a provisional cold-resume token to only its returned runtime identity', () => {
+    const token = captureTodoWriteFence()
+
+    expect(
+      setSessionTodos('runtime-cold-returned', [todo('returned', 'pending')], {
+        ifUnchangedSince: token,
+        preserved: true
+      })
+    ).toBe(true)
+    expect(
+      setSessionTodos('runtime-unrelated', [todo('unrelated', 'pending')], {
+        ifUnchangedSince: token,
+        preserved: true
+      })
+    ).toBe(false)
+    expect($todosBySession.get()['runtime-unrelated']).toBeUndefined()
+  })
+
+  it('shares one generation across bounded retries so a newer operation remains authoritative', async () => {
+    const failedAttempt = deferred<TodoItem[]>()
+    const retryAttempt = deferred<TodoItem[]>()
+    const newerRead = deferred<TodoItem[]>()
+
+    const token = (captureTodoWriteFence as (runtimeSessionId: string) => ReturnType<typeof captureTodoWriteFence>)(
+      'runtime-retry'
+    )
+
+    const retriedHydration = (async () => {
+      for (const read of [failedAttempt.promise, retryAttempt.promise]) {
+        try {
+          return setSessionTodos('runtime-retry', await read, { ifUnchangedSince: token, preserved: true })
+        } catch {
+          // One logical hydration operation retains its start order across a bounded retry.
+        }
+      }
+
+      return false
+    })()
+
+    const newerHydration = beginDeferredHydration('runtime-retry', newerRead.promise)
+
+    newerRead.resolve([todo('newer', 'pending')])
+    expect(await newerHydration).toBe(true)
+    failedAttempt.reject(new Error('transient read failure'))
+    retryAttempt.resolve([todo('older retry', 'pending')])
+
+    expect(await retriedHydration).toBe(false)
+    expect($todosBySession.get()['runtime-retry']).toEqual([todo('newer', 'pending')])
+  })
+
+  it.each(['older-first', 'newer-first'] as const)(
+    'orders two provisional cold hydrations that bind to the same runtime (%s completion)',
+    async completionOrder => {
+      const todoStore = await import('./todos')
+
+      const bindTodoHydrationToken = (
+        todoStore as typeof todoStore & {
+          bindTodoHydrationToken?: (
+            token: ReturnType<typeof captureTodoWriteFence>,
+            runtimeSessionId: string
+          ) => boolean
+        }
+      ).bindTodoHydrationToken
+
+      if (!bindTodoHydrationToken) {
+        expect(bindTodoHydrationToken).toBeTypeOf('function')
+
+        return
+      }
+
+      const olderRead = deferred<TodoItem[]>()
+      const newerRead = deferred<TodoItem[]>()
+      const olderToken = captureTodoWriteFence()
+      const newerToken = captureTodoWriteFence()
+
+      expect(bindTodoHydrationToken(olderToken, 'runtime-cold-shared')).toBe(true)
+      expect(bindTodoHydrationToken(newerToken, 'runtime-cold-shared')).toBe(true)
+
+      const olderHydration = olderRead.promise.then(todos =>
+        setSessionTodos('runtime-cold-shared', todos, { ifUnchangedSince: olderToken, preserved: true })
+      )
+
+      const newerHydration = newerRead.promise.then(todos =>
+        setSessionTodos('runtime-cold-shared', todos, { ifUnchangedSince: newerToken, preserved: true })
+      )
+
+      if (completionOrder === 'older-first') {
+        olderRead.resolve([todo('older cold', 'pending')])
+        expect(await olderHydration).toBe(false)
+        newerRead.resolve([todo('newer cold', 'pending')])
+        expect(await newerHydration).toBe(true)
+      } else {
+        newerRead.resolve([todo('newer cold', 'pending')])
+        expect(await newerHydration).toBe(true)
+        olderRead.resolve([todo('older cold', 'pending')])
+        expect(await olderHydration).toBe(false)
+      }
+
+      expect($todosBySession.get()['runtime-cold-shared']).toEqual([todo('newer cold', 'pending')])
+    }
+  )
+
+  it('retains a newer-started high-water mark until an older overlapping hydration refuses', async () => {
+    const olderToken = captureTodoWriteFence('runtime-drain')
+    const newerToken = captureTodoWriteFence('runtime-drain')
+
+    expect(await todoHydrationAuthorityStats()).toMatchObject({
+      activeSessionCount: 1,
+      activeTokenCount: 2,
+      latestSessionCount: 1
+    })
+
+    releaseTodoHydrationToken(newerToken)
+    expect(await todoHydrationAuthorityStats()).toMatchObject({
+      activeSessionCount: 1,
+      activeTokenCount: 1,
+      latestSessionCount: 1
+    })
+
+    expect(
+      setSessionTodos('runtime-drain', [todo('older drain', 'pending')], {
+        ifUnchangedSince: olderToken,
+        preserved: true
+      })
+    ).toBe(false)
+    expect($todosBySession.get()['runtime-drain']).toBeUndefined()
+    expect(await todoHydrationAuthorityStats()).toMatchObject({
+      activeSessionCount: 0,
+      activeTokenCount: 0,
+      latestSessionCount: 0
+    })
+  })
+
+  it('retires exact-session hydration authority and rejects its pending token without poisoning a fresh lifecycle', async () => {
+    const staleToken = captureTodoWriteFence('runtime-cleanup')
+
+    expect(await todoHydrationAuthorityStats()).toMatchObject({
+      activeSessionCount: 1,
+      activeTokenCount: 1,
+      latestSessionCount: 1
+    })
+
+    clearSessionTodos('runtime-cleanup')
+    expect(await todoHydrationAuthorityStats()).toMatchObject({
+      activeSessionCount: 0,
+      activeTokenCount: 0,
+      latestSessionCount: 0
+    })
+    expect(
+      setSessionTodos('runtime-cleanup', [todo('stale lifecycle', 'pending')], {
+        ifUnchangedSince: staleToken,
+        preserved: true
+      })
+    ).toBe(false)
+
+    const freshToken = captureTodoWriteFence('runtime-cleanup')
+
+    expect(
+      setSessionTodos('runtime-cleanup', [todo('fresh lifecycle', 'pending')], {
+        ifUnchangedSince: freshToken,
+        preserved: true
+      })
+    ).toBe(true)
+    expect($todosBySession.get()['runtime-cleanup']).toEqual([todo('fresh lifecycle', 'pending')])
+    expect(await todoHydrationAuthorityStats()).toMatchObject({
+      activeSessionCount: 0,
+      activeTokenCount: 0,
+      latestSessionCount: 0
+    })
+  })
+
+  it('globally retires bound and provisional authority without retaining runtime identities', async () => {
+    const boundTokens = Array.from({ length: 64 }, (_, index) => captureTodoWriteFence(`runtime-global-${index}`))
+    const provisionalToken = captureTodoWriteFence()
+
+    expect(await todoHydrationAuthorityStats()).toMatchObject({
+      activeSessionCount: 64,
+      activeTokenCount: 65,
+      latestSessionCount: 64
+    })
+
+    clearAllSessionTodos()
+    expect(await todoHydrationAuthorityStats()).toEqual({
+      activeSessionCount: 0,
+      activeTokenCount: 0,
+      generation: 0,
+      latestSessionCount: 0
+    })
+
+    for (const [index, token] of boundTokens.entries()) {
+      expect(
+        setSessionTodos(`runtime-global-${index}`, [todo(`stale global ${index}`, 'pending')], {
+          ifUnchangedSince: token,
+          preserved: true
+        })
+      ).toBe(false)
+    }
+    expect(
+      setSessionTodos('runtime-global-provisional', [todo('stale provisional', 'pending')], {
+        ifUnchangedSince: provisionalToken,
+        preserved: true
+      })
+    ).toBe(false)
+    expect(await todoHydrationAuthorityStats()).toEqual({
+      activeSessionCount: 0,
+      activeTokenCount: 0,
+      generation: 0,
+      latestSessionCount: 0
+    })
+  })
+})
 
 describe('setSessionTodos finished-list auto-clear', () => {
   beforeEach(() => {
@@ -58,6 +394,33 @@ describe('setSessionTodos finished-list auto-clear', () => {
     vi.advanceTimersByTime(60_000)
 
     expect($todosBySession.get().s1).toHaveLength(2)
+  })
+
+  it('accepts a newer hydration after the older finished-list linger fires while its read is pending', async () => {
+    setSessionTodos('s1', [todo('finished', 'completed')])
+    const read = deferred<TodoItem[]>()
+    const hydration = beginDeferredHydration('s1', read.promise)
+
+    vi.advanceTimersByTime(5_000)
+    expect($todosBySession.get().s1).toBeUndefined()
+
+    read.resolve([todo('hydrated', 'pending')])
+
+    expect(await hydration).toBe(true)
+    expect($todosBySession.get().s1).toEqual([todo('hydrated', 'pending')])
+  })
+
+  it('does not let an older finished-list linger remove a newer hydration that publishes first', async () => {
+    setSessionTodos('s1', [todo('finished', 'completed')])
+    const read = deferred<TodoItem[]>()
+    const hydration = beginDeferredHydration('s1', read.promise)
+
+    read.resolve([todo('hydrated', 'pending')])
+    expect(await hydration).toBe(true)
+
+    vi.advanceTimersByTime(60_000)
+
+    expect($todosBySession.get().s1).toEqual([todo('hydrated', 'pending')])
   })
 })
 

@@ -2153,6 +2153,7 @@ export const ar = defineLocale({
     goalDone: 'اكتمل الهدف',
     goalPaused: 'الهدف متوقف مؤقتًا',
     goalWaiting: 'الهدف قيد الانتظار',
+    restoredUnfinished: 'عمل غير مكتمل تمت استعادته',
     subagents: count => `${count} ${count === 1 ? 'وكيل فرعي' : 'وكيل فرعي'}`,
     todos: (done, total) => `المهام ${done}/${total}`,
     running: 'قيد التشغيل',

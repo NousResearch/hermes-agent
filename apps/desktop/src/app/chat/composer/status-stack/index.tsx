@@ -83,7 +83,9 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
         ? `${s.goalActive} — ${progress}`
         : presentation === 'paused'
           ? `${s.goalPaused} — ${progress}`
-          : progress
+          : presentation === 'restored'
+            ? `${s.restoredUnfinished} — ${progress}`
+            : progress
   }
 
   return group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)

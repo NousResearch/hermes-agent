@@ -46,6 +46,8 @@ from acp.schema import (
     SetSessionModeResponse,
     ResourceContentBlock,
     SessionCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionForkCapabilities,
     SessionInfoUpdate,
     SessionListCapabilities,
@@ -653,6 +655,8 @@ class HermesACPAgent(acp.Agent):
     )
 
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
+    _REASONING_EFFORT_CONFIG_ID = "reasoning_effort"
+    _REASONING_EFFORT_DEFAULT = "medium"
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
     _MODE_DEFAULT = "default"
     _MODE_ACCEPT_EDITS = "accept_edits"
@@ -716,6 +720,27 @@ class HermesACPAgent(acp.Agent):
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
+
+    @classmethod
+    def _session_config_options(cls, state: SessionState) -> list[SessionConfigOptionSelect]:
+        """Expose Hermes' existing reasoning control through native ACP config."""
+        from hermes_constants import VALID_REASONING_EFFORTS
+
+        current = state.reasoning_effort or cls._REASONING_EFFORT_DEFAULT
+        return [
+            SessionConfigOptionSelect(
+                id=cls._REASONING_EFFORT_CONFIG_ID,
+                name="Reasoning",
+                description="Reasoning effort for this session.",
+                category="thought_level",
+                type="select",
+                current_value=current,
+                options=[
+                    SessionConfigSelectOption(name=level.title(), value=level)
+                    for level in ("none", *VALID_REASONING_EFFORTS)
+                ],
+            )
+        ]
 
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
@@ -1602,6 +1627,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_usage_update(state)
         return NewSessionResponse(
             session_id=state.session_id,
+            config_options=self._session_config_options(state),
             models=self._build_model_state(state),
             modes=self._session_modes(state),
             field_meta=self._provenance_meta(
@@ -1650,6 +1676,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_available_commands_update(session_id)
         self._schedule_usage_update(state)
         return LoadSessionResponse(
+            config_options=self._session_config_options(state),
             models=self._build_model_state(state),
             modes=self._session_modes(state),
             field_meta=self._provenance_meta(
@@ -1686,6 +1713,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
         return ResumeSessionResponse(
+            config_options=self._session_config_options(state),
             models=self._build_model_state(state),
             modes=self._session_modes(state),
             field_meta=self._provenance_meta(
@@ -1730,6 +1758,7 @@ class HermesACPAgent(acp.Agent):
             self._schedule_available_commands_update(new_id)
         return ForkSessionResponse(
             session_id=new_id,
+            config_options=self._session_config_options(state) if state is not None else None,
             models=self._build_model_state(state) if state is not None else None,
             modes=self._session_modes(state) if state is not None else None,
         )
@@ -2582,6 +2611,7 @@ class HermesACPAgent(acp.Agent):
             provider_changed = bool(current_provider and requested_provider != current_provider)
             current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
             current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
+            reasoning_effort = state.reasoning_effort
             state.agent = self.session_manager._make_agent(
                 session_id=session_id,
                 cwd=state.cwd,
@@ -2590,6 +2620,10 @@ class HermesACPAgent(acp.Agent):
                 base_url=current_base_url,
                 api_mode=current_api_mode,
             )
+            if reasoning_effort:
+                from hermes_constants import parse_reasoning_effort
+
+                state.agent.reasoning_config = parse_reasoning_effort(reasoning_effort)
             self.session_manager.save_session(session_id)
             logger.info(
                 "Session %s: model switched to %s via provider %s",
@@ -2626,7 +2660,16 @@ class HermesACPAgent(acp.Agent):
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
 
-        if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
+        if str(config_id) == self._REASONING_EFFORT_CONFIG_ID:
+            from hermes_constants import parse_reasoning_effort
+
+            reasoning = parse_reasoning_effort(value)
+            if reasoning is None:
+                logger.warning("Session %s: invalid reasoning effort %r", session_id, value)
+                return None
+            state.agent.reasoning_config = reasoning
+            state.reasoning_effort = str(value).strip().lower()
+        elif str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
             setattr(state, "mode", mode)
         else:
@@ -2637,4 +2680,6 @@ class HermesACPAgent(acp.Agent):
             setattr(state, "config_options", options)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=[])
+        return SetSessionConfigOptionResponse(
+            config_options=self._session_config_options(state)
+        )

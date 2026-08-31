@@ -174,6 +174,7 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    reasoning_effort: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
@@ -442,6 +443,8 @@ class SessionManager:
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        if state.reasoning_effort:
+            session_meta["reasoning_effort"] = state.reasoning_effort
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -532,6 +535,7 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        restored_reasoning_effort = ""
         mc = row.get("model_config")
         if mc:
             try:
@@ -541,6 +545,7 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    restored_reasoning_effort = str(meta.get("reasoning_effort") or "")
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -578,8 +583,13 @@ class SessionManager:
             cwd=cwd,
             model=model or getattr(agent, "model", "") or "",
             history=history,
+            reasoning_effort=restored_reasoning_effort,
             cancel_event=threading.Event(),
         )
+        if restored_reasoning_effort:
+            from hermes_constants import parse_reasoning_effort
+
+            agent.reasoning_config = parse_reasoning_effort(restored_reasoning_effort)
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)

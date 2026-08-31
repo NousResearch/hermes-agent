@@ -161,6 +161,7 @@ def assemble_api_request(
         api_msg.pop("reasoning", None)
         api_msg.pop("reasoning_content", None)
         api_msg.pop("reasoning_details", None)
+        api_msg.pop("anthropic_content_blocks", None)
 
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.

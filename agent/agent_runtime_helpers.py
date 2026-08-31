@@ -3066,6 +3066,20 @@ def copy_reasoning_content_for_api(
         not has_provenance or provenance != current_fingerprint
     )
     needs_thinking_pad = agent._needs_thinking_reasoning_pad()
+
+    # Anthropic's signed thinking sidecar is provider-specific replay state, not
+    # a generic message field. Assistant role, matching route provenance, and
+    # the native Anthropic Messages adapter are all required to consume it.
+    # Every other path fails closed, including direct summary calls that bypass
+    # ChatCompletionsTransport's schema sanitizer.
+    if (
+        unknown_or_foreign_provenance
+        or source_msg.get("role") != "assistant"
+        or str(getattr(agent, "api_mode", "") or "").strip().lower()
+        != "anthropic_messages"
+    ):
+        api_msg.pop("anthropic_content_blocks", None)
+
     if unknown_or_foreign_provenance:
         api_msg.pop("_reasoning_route", None)
         api_msg.pop("reasoning", None)

@@ -1971,9 +1971,13 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # MoA: agent.model is the virtual preset; use the real aggregator so Gemini keeps thought_signature.
         agg_slot = getattr(getattr(agent, "client", None), "last_aggregator_slot", None)
         sanitize_model = (agg_slot or {}).get("model") or sanitize_model
+    from agent.conversation_loop import _clone_message_for_send
+
     api_messages = []
     for msg in messages:
-        api_msg = msg.copy()
+        # Structural clone: later sanitizers must not write through into
+        # canonical history via nested containers.
+        api_msg = _clone_message_for_send(msg)
         agent._copy_reasoning_content_for_api(msg, api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
             if key == "reasoning" and agent._reasoning_replay_field_for_api() == "reasoning":
@@ -2004,7 +2008,13 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
     for idx, pfm in enumerate(agent.prefill_messages or ()):
-        api_messages.insert((1 if effective_system else 0) + idx, pfm.copy())
+        # Prefills are inserted after the history loop above, so they
+        # must pass through the same replay/provenance gate explicitly.
+        # Sanitize a structural copy: prefill_messages is reusable
+        # session state, and later tool-call repair mutates nested data.
+        prefill_api = _clone_message_for_send(pfm)
+        agent._copy_reasoning_content_for_api(pfm, prefill_api)
+        api_messages.insert((1 if effective_system else 0) + idx, prefill_api)
 
     # Compression/resume can orphan a tool result whose parent tool_call was summarized away.
     api_messages = agent._sanitize_api_messages(api_messages)

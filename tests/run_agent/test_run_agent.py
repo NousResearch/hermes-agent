@@ -2824,7 +2824,7 @@ class TestHandleMaxIterations:
             {"role": "user", "content": "do stuff", "name": "sylvain"},
             {
                 "role": "assistant",
-                "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
+                "tool_calls": [{"id": "call_1", "function": {"name": "", "arguments": "{}"}}],
                 "codex_reasoning_items": [{"id": "rs_1"}],
             },
             {
@@ -2856,6 +2856,9 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[2]["name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
+        assert messages[1]["tool_calls"][0]["function"]["name"] == ""
+        sent_tool_call = next(m for m in sent_msgs if m.get("tool_calls"))
+        assert sent_tool_call["tool_calls"][0]["function"]["name"] == "invalid_tool_call"
 
     def test_summary_preserves_configured_reasoning_replay_field(self, agent):
         from agent.agent_runtime_helpers import reasoning_route_fingerprint
@@ -2872,6 +2875,13 @@ class TestHandleMaxIterations:
                 "role": "assistant",
                 "content": "Visible result.",
                 "reasoning": "SYNTHETIC_REASONING_MARKER",
+                "anthropic_content_blocks": [
+                    {
+                        "type": "thinking",
+                        "thinking": "ANTHROPIC_PRIVATE_TRACE",
+                        "signature": "ANTHROPIC_SIGNATURE",
+                    }
+                ],
                 "_reasoning_route": reasoning_route_fingerprint(
                     agent.provider, agent.model, agent.base_url
                 ),
@@ -2888,6 +2898,63 @@ class TestHandleMaxIterations:
             msg for msg in sent_msgs if msg.get("role") == "assistant"
         )
         assert replayed_assistant["reasoning"] == "SYNTHETIC_REASONING_MARKER"
+        assert "anthropic_content_blocks" not in replayed_assistant
+
+    def test_summary_sanitizes_prefill_sidecar_without_mutating_source(self, agent):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent.provider = "custom"
+        agent.model = "Qwen/Qwen3.8-27B"
+        agent.base_url = "http://127.0.0.1:18080/v1"
+        agent.api_mode = "chat_completions"
+        agent._reasoning_replay_field = "reasoning"
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Summary"
+        )
+        agent._cached_system_prompt = "You are helpful."
+        hidden_blocks = [
+            {
+                "type": "thinking",
+                "thinking": "ANTHROPIC_PRIVATE_PREFILL_TRACE",
+                "signature": "ANTHROPIC_PREFILL_SIGNATURE",
+            }
+        ]
+        agent.prefill_messages = [
+            {
+                "role": "assistant",
+                "content": "Prefill visible result.",
+                "tool_calls": [
+                    {
+                        "id": "call_prefill",
+                        "type": "function",
+                        "function": {"name": "", "arguments": "{}"},
+                    }
+                ],
+                "anthropic_content_blocks": hidden_blocks,
+                "_reasoning_route": reasoning_route_fingerprint(
+                    agent.provider, agent.model, agent.base_url
+                ),
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_prefill",
+                "content": "prefill tool result",
+            },
+        ]
+
+        assert agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}], 60
+        ) == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get(
+            "messages", []
+        )
+        sent_prefill = next(
+            msg for msg in sent_msgs if msg.get("content") == "Prefill visible result."
+        )
+        assert "anthropic_content_blocks" not in sent_prefill
+        assert sent_prefill["tool_calls"][0]["function"]["name"] == "invalid_tool_call"
+        assert agent.prefill_messages[0]["anthropic_content_blocks"] == hidden_blocks
+        assert agent.prefill_messages[0]["tool_calls"][0]["function"]["name"] == ""
 
     def test_summary_drops_foreign_provider_reasoning(self, agent):
         from agent.agent_runtime_helpers import reasoning_route_fingerprint
@@ -7024,6 +7091,13 @@ class TestReasoningReplayForStrictProviders:
                     "reasoning": "UNKNOWN_ORIGIN_PRIVATE_TRACE",
                     "reasoning_content": "UNKNOWN_ORIGIN_ALIAS",
                     "reasoning_details": [{"text": "UNKNOWN_ORIGIN_DETAILS"}],
+                    "anthropic_content_blocks": [
+                        {
+                            "type": "thinking",
+                            "thinking": "UNKNOWN_ANTHROPIC_PRIVATE_TRACE",
+                            "signature": "signed",
+                        }
+                    ],
                 },
                 {
                     "role": "user",
@@ -7032,6 +7106,13 @@ class TestReasoningReplayForStrictProviders:
                     "reasoning": "USER_PRIVATE_TRACE",
                     "reasoning_content": "USER_PRIVATE_ALIAS",
                     "reasoning_details": [{"text": "USER_PRIVATE_DETAILS"}],
+                    "anthropic_content_blocks": [
+                        {
+                            "type": "thinking",
+                            "thinking": "USER_ANTHROPIC_PRIVATE_TRACE",
+                            "signature": "signed",
+                        }
+                    ],
                 },
             ]
         )
@@ -7051,6 +7132,7 @@ class TestReasoningReplayForStrictProviders:
         assert "reasoning" not in selected_assistant
         assert "reasoning_content" not in selected_assistant
         assert "reasoning_details" not in selected_assistant
+        assert "anthropic_content_blocks" not in selected_assistant
         assert "_reasoning_route" not in selected_assistant
         assert all("_reasoning_route" not in message for message in captured["messages"])
         selected_user = next(
@@ -7059,6 +7141,7 @@ class TestReasoningReplayForStrictProviders:
         assert "reasoning" not in selected_user
         assert "reasoning_content" not in selected_user
         assert "reasoning_details" not in selected_user
+        assert "anthropic_content_blocks" not in selected_user
 
     def test_context_selection_preserves_matching_reasoning_and_strips_marker(self, agent):
         from agent.agent_runtime_helpers import reasoning_route_fingerprint

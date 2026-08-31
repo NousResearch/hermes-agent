@@ -566,10 +566,11 @@ def reapply_reasoning_echo(
     be a cross-provider privacy leak. Primary restoration rebuilds a fresh wire
     message list from canonical history on the next request instead. The
     ``provider_boundary`` means the already-built messages came from a different
-    provider. In that case both structured carriers are discarded before the
-    destination policy is applied, so one provider's hidden trace cannot be
-    forwarded to another opt-in replay route. The operation is idempotent and
-    returns the number of assistant turns changed.
+    provider. In that case structured carriers and provider-specific hidden
+    blocks are discarded before the destination policy is applied, so one
+    provider's hidden trace cannot be forwarded to another opt-in replay route.
+    The operation is idempotent and returns the number of assistant turns
+    changed.
     """
     changed = 0
     for api_msg in api_messages:
@@ -580,6 +581,7 @@ def reapply_reasoning_echo(
             api_msg.pop("reasoning_content", None)
             api_msg.pop("reasoning", None)
             api_msg.pop("reasoning_details", None)
+            api_msg.pop("anthropic_content_blocks", None)
         source_msg = api_msg
         if provider_boundary and needs_thinking_pad:
             apply_reasoning_content_policy(

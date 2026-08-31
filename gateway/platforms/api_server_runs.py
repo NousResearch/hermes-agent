@@ -609,6 +609,10 @@ async def _handle_runs(
     # ``X-Hermes-Session-Key``.  Falling straight through to ``run_id``
     # made the run id the conversation identity, so a declared channel
     # re-keyed every affinity surface once per run (#96811).
+    # Same precedence gate as /v1/responses: an explicit body session_id
+    # or a chained session owns its own routing key and must not be
+    # rebound to this request's header key.
+    _declared_selected = not session_id and bool(gateway_session_key)
     session_id = (
         session_id
         or self._declared_conversation_session(gateway_session_key)
@@ -840,11 +844,14 @@ async def _handle_runs(
                         _clear_turn_process_ownership(agent)
                         # /v1/runs owns its agent lifecycle, so it records
                         # the declared conversation itself rather than
-                        # through _run_agent's bind_declared_conversation.
-                        self._bind_declared_conversation(
-                            getattr(agent, "session_id", None) or session_id,
-                            gateway_session_key,
-                        )
+                        # through _run_agent's bind_declared_conversation
+                        # -- carrying the same precedence gate, which an
+                        # explicit body session_id turns off.
+                        if _declared_selected:
+                            self._bind_declared_conversation(
+                                getattr(agent, "session_id", None) or session_id,
+                                gateway_session_key,
+                            )
                         try:
                             unregister_gateway_notify(approval_session_key)
                         finally:

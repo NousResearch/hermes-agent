@@ -97,7 +97,30 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
     return None
 
 
-def _conversation_generation(session_key: str, session_db: Any) -> str:
+def _agent_source(agent: Any, session_id: str, session_db: Any) -> str:
+    """The ``sessions.source`` this agent's conversation is recorded under.
+
+    Read from the agent's own row when it exists, because that is the value
+    the peer queries below match on. Before the row lands (the first turn
+    resolves a scope ahead of ``_ensure_db_session``) it falls back to the
+    platform, which is what the row will be created with — the two can differ
+    only when ``HERMES_SESSION_SOURCE`` overrides the platform, and the cost of
+    that is one cold bucket on the first turn, never a crossed identity.
+    """
+    if session_id and session_db is not None:
+        try:
+            row = session_db.get_session(session_id)
+        except Exception:
+            logger.debug("declared-scope source lookup failed", exc_info=True)
+            row = None
+        if row:
+            source = str(row.get("source") or "").strip()
+            if source:
+                return source
+    return str(getattr(agent, "platform", "") or "").strip()
+
+
+def _conversation_generation(session_key: str, source: str, session_db: Any) -> str:
     """Return the generation marker for *session_key*'s current conversation.
 
     The declared key is a per-CHAT identifier and deliberately outlives any
@@ -134,7 +157,7 @@ def _conversation_generation(session_key: str, session_db: Any) -> str:
     reader = getattr(session_db, "latest_conversation_boundary", None)
     if not callable(reader):
         return ""
-    boundary = reader(session_key)
+    boundary = reader(session_key, source)
     if boundary is None:
         return ""
     # (crossings, ended_at). Fixed-point on the timestamp so the carrier is
@@ -181,15 +204,19 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
             # fork onto its parent's key on a transient DB failure.
             logger.debug("declared-scope fork check failed", exc_info=True)
             return None
+    source = _agent_source(agent, sid, db)
     if db is not None:
         try:
-            generation = _conversation_generation(key, db)
+            generation = _conversation_generation(key, source, db)
         except Exception:
             # Same fail-closed rule as the fork check: an unqualified key
             # spans /new, so degrade to the physical-id scope instead.
             logger.debug("declared-scope generation read failed", exc_info=True)
             return None
-    carrier = f"{key}|{generation}" if generation else key
+    # The carrier is the SAME identity tuple the peer queries use: two hosts
+    # may legally declare the same key string under different sources, and the
+    # scope leaves this process as a routing key, so it must not collapse them.
+    carrier = f"{source}|{key}|{generation}"
     digest = hashlib.sha256(carrier.encode("utf-8", errors="replace")).hexdigest()[:24]
     return f"{_DECLARED_SCOPE_PREFIX}{digest}"
 

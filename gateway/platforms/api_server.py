@@ -2356,6 +2356,21 @@ class APIServerAdapter(BasePlatformAdapter):
         if db is None:
             return
         try:
+            # Defence in depth behind the callers' precedence gate: never
+            # rewrite a row that already belongs to a different conversation.
+            # record_gateway_session_peer does SET session_key = ?, so a
+            # mistaken bind would strand the original conversation and hand its
+            # session to this request's key.
+            existing = db.get_session(sid) or {}
+            current = str(existing.get("session_key") or "").strip()
+            if current and current != key:
+                logger.debug(
+                    "[%s] refusing to rebind session %s from a different "
+                    "declared conversation",
+                    self.name,
+                    sid,
+                )
+                return
             db.record_gateway_session_peer(
                 sid,
                 source=self._SESSION_SOURCE,
@@ -6423,6 +6438,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # the conversation it declared via ``X-Hermes-Session-Key`` before
         # minting a throwaway id — otherwise every reply is a new conversation
         # to every affinity surface (#96811).
+        # The response chain still outranks the declared key. Recording is
+        # gated on that same precedence: binding a session the chain selected
+        # would rewrite ITS routing key to this request's header
+        # (record_gateway_session_peer does SET session_key = ?), stranding the
+        # original conversation and letting the header key recover it instead.
+        _declared_selected = not stored_session_id and bool(gateway_session_key)
         session_id = (
             stored_session_id
             or self._declared_conversation_session(gateway_session_key)
@@ -6498,7 +6519,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
-                bind_declared_conversation=True,
+                bind_declared_conversation=_declared_selected,
                 **agent_overrides,
                 route=route,
             ))
@@ -6534,7 +6555,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
-                bind_declared_conversation=True,
+                bind_declared_conversation=_declared_selected,
                 **agent_overrides,
                 route=route,
             )
@@ -7599,10 +7620,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         # (/v1/responses, /v1/runs) record one, so no other
                         # caller's rows change shape.
                         if bind_declared_conversation:
-                            self._bind_declared_conversation(
-                                getattr(agent, "session_id", None) or session_id,
-                                gateway_session_key,
-                            )
+                            if _declared_selected:
+                                self._bind_declared_conversation(
+                                    getattr(agent, "session_id", None) or session_id,
+                                    gateway_session_key,
+                                )
                     clear_session_vars(tokens)
 
         self._activate_admitted_request()

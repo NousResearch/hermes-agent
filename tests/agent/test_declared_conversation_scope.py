@@ -130,8 +130,12 @@ class TestDeclaredConversationScope:
         db.create_session("rotated-1", source="webui", parent_session_id="root-sess")
 
         scope = resolve_prompt_cache_scope(_agent("rotated-1", db, CHAT_KEY))
-        assert scope == declared_conversation_scope(_agent("x", None, CHAT_KEY))
+        # Same declared conversation reached through a different physical id
+        # on the same peer — the property the lineage walk cannot provide.
+        db.create_session("rotated-2", source="webui")
+        assert scope == resolve_prompt_cache_scope(_agent("rotated-2", db, CHAT_KEY))
         assert scope != "root-sess"
+        assert scope.startswith("gwk_")
 
     def test_branch_child_ignores_the_shared_chat_key(self, db):
         """/branch keys off session_id, not the chat key — #79161 isolation."""
@@ -534,3 +538,54 @@ class TestConversationGenerationRotates:
         third = self._keyed(db, "sess-clock-3")
         scope_third = resolve_prompt_cache_scope(third)
         assert len({scope_first, scope_second, scope_third}) == 3
+
+
+class TestPeerIdentityIsSourceQualified:
+    """The generation and the carrier use the same identity tuple as recovery.
+
+    ``X-Hermes-Session-Key`` accepts any authenticated caller-supplied string,
+    so an API conversation may legally carry the same key as a Telegram row in
+    one database. Keying on the string alone let a ``/new`` on that unrelated
+    row rotate this conversation's affinity identity, while
+    ``find_latest_gateway_session_for_peer`` correctly refused to cross the
+    same line — the physical identity stayed put while the affinity identity
+    moved under it (@andrexibiza on #98811).
+    """
+
+    KEY = "shared-key-string"
+
+    def _row(self, db, sid, source):
+        db.create_session(session_id=sid, source=source, session_key=self.KEY)
+        return SimpleNamespace(
+            session_id=sid, _session_db=db, _gateway_session_key=self.KEY,
+            platform=source,
+        )
+
+    def test_a_foreign_sources_reset_does_not_rotate_this_conversation(self, db):
+        mine = self._row(db, "api-1", "api_server")
+        before = resolve_prompt_cache_scope(mine)
+
+        # Same key string, different platform, reset only over there.
+        self._row(db, "tg-1", "telegram")
+        db.end_session("tg-1", "session_reset")
+
+        assert resolve_prompt_cache_scope(self._row(db, "api-2", "api_server")) == before
+
+    def test_our_own_reset_still_rotates(self, db):
+        mine = self._row(db, "api-1", "api_server")
+        before = resolve_prompt_cache_scope(mine)
+        db.end_session("api-1", "session_reset")
+        assert resolve_prompt_cache_scope(self._row(db, "api-2", "api_server")) != before
+
+    def test_equal_keys_under_different_sources_never_share_a_scope(self, db):
+        mine = resolve_prompt_cache_scope(self._row(db, "api-1", "api_server"))
+        theirs = resolve_prompt_cache_scope(self._row(db, "tg-1", "telegram"))
+        assert mine != theirs
+        assert mine.startswith("gwk_") and theirs.startswith("gwk_")
+
+    def test_the_boundary_read_is_peer_scoped(self, db):
+        db.create_session(session_id="tg-1", source="telegram", session_key=self.KEY)
+        db.end_session("tg-1", "session_reset")
+        assert db.latest_conversation_boundary(self.KEY, "telegram") is not None
+        assert db.latest_conversation_boundary(self.KEY, "api_server") is None
+        assert db.latest_conversation_boundary(self.KEY, "") is None

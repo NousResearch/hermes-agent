@@ -14135,16 +14135,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return bool(session and self._is_explicit_fork_child_row(session))
 
     def latest_conversation_boundary(
-        self, session_key: str
+        self, session_key: str, source: str
     ) -> Optional[Tuple[int, float]]:
-        """How many conversation boundaries this key has crossed, and when.
+        """How many conversation boundaries this peer has crossed, and when.
 
-        A boundary is a row this key ended at an intentional conversation
+        A boundary is a row this peer ended at an intentional conversation
         break — the ``_RESET_END_REASONS`` set (``/new``, ``/switch``, idle,
         daily, suspended, resume_pending_expired).  That is the same fence
         :meth:`find_latest_gateway_session_for_peer` refuses to reach behind,
         so the two agree on where one conversation stops and the next begins
         and cannot drift.
+
+        The peer is ``(session_key, source)``, the SAME identity tuple recovery
+        uses — never the key alone.  ``X-Hermes-Session-Key`` accepts any
+        authenticated caller-supplied string, so an API conversation may
+        legally carry the same key as a Telegram row in one database; keying
+        on the string alone would let a ``/new`` on that unrelated row rotate
+        this conversation's affinity identity while recovery correctly refuses
+        to cross the same line.
 
         Returns ``(count, latest_ended_at)``, or ``None`` when the key has
         never been reset.  BOTH halves are reported because each one alone has
@@ -14163,7 +14171,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``agent/prompt_cache_scope.py`` uses it to keep a host-declared
         conversation key from outliving the conversation it names.
         """
-        if not session_key:
+        if not session_key or not source:
             return None
         with self._read_ctx() as conn:
             row = conn.execute(
@@ -14171,10 +14179,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 SELECT COUNT(*) AS crossings, MAX(ended_at) AS boundary
                 FROM sessions
                 WHERE session_key = ?
+                  AND source = ?
                   AND ended_at IS NOT NULL
                   AND end_reason IN ({_RESET_END_REASONS_SQL})
                 """,
-                (session_key,),
+                (session_key, source),
             ).fetchone()
         boundary = row["boundary"] if row is not None else None
         if boundary is None:

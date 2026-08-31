@@ -3,14 +3,29 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Protocol
 from urllib.parse import quote
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows falls back to process-local serialization.
+    fcntl = None
+
+try:
+    from hermes_constants import get_default_hermes_root
+except ImportError:  # Standalone plugin installs remain dependency-light.
+
+    def get_default_hermes_root() -> Path:
+        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 
 from .policy import PullRequest, Reviewer
 
@@ -39,6 +54,101 @@ MAX_DISCOVERED_PULL_REQUESTS = 300
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _MERGE_FLAGS = {"squash": "--squash", "rebase": "--rebase", "merge": "--merge"}
+_PROCESS_REQUEST_LOCK = threading.Lock()
+
+
+class GitHubRequestGate(AbstractContextManager["GitHubRequestGate"]):
+    """Serialize GitHub requests and share secondary-limit cooldowns on disk.
+
+    GitHub's secondary limits are burst-sensitive and apply across every Hermes
+    profile using the same account.  A process-local executor cap cannot protect
+    against the cron scanner, audit workers, repair workers, and operator CLI
+    running at once, so the lock and deadline deliberately live at the common
+    Hermes root rather than inside one profile.
+    """
+
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        sleeper: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.time,
+        min_interval_seconds: float = 0.25,
+    ) -> None:
+        root = get_default_hermes_root() / "github-pr-feedback"
+        self._path = Path(path or root / "github-request-gate.json")
+        self._sleeper = sleeper
+        self._clock = clock
+        self._min_interval = max(0.0, float(min_interval_seconds))
+        self._handle: Any = None
+        self._state: dict[str, float] = {}
+        self._process_lock_held = False
+
+    def __enter__(self) -> "GitHubRequestGate":
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        _PROCESS_REQUEST_LOCK.acquire()
+        self._process_lock_held = True
+        self._handle = self._path.open("a+", encoding="utf-8")
+        if fcntl is not None:
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX)
+        self._state = self._read_state()
+        now = self._clock()
+        ready_at = max(
+            self._state.get("next_request_at", 0.0),
+            self._state.get("cooldown_until", 0.0),
+        )
+        if ready_at > now:
+            self._sleeper(ready_at - now)
+        return self
+
+    def defer(self, seconds: float) -> None:
+        """Hold every cooperating client after one secondary-limit response."""
+
+        deadline = self._clock() + max(0.0, float(seconds))
+        self._state["cooldown_until"] = max(
+            deadline, self._state.get("cooldown_until", 0.0)
+        )
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        try:
+            now = self._clock()
+            self._state["next_request_at"] = max(
+                self._state.get("next_request_at", 0.0), now + self._min_interval
+            )
+            self._write_state(self._state)
+            if fcntl is not None and self._handle is not None:
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            if self._handle is not None:
+                self._handle.close()
+                self._handle = None
+            if self._process_lock_held:
+                self._process_lock_held = False
+                _PROCESS_REQUEST_LOCK.release()
+
+    def _read_state(self) -> dict[str, float]:
+        assert self._handle is not None
+        self._handle.seek(0)
+        try:
+            raw = json.load(self._handle)
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            key: float(value)
+            for key, value in raw.items()
+            if key in {"next_request_at", "cooldown_until"}
+            and isinstance(value, (int, float))
+        }
+
+    def _write_state(self, state: dict[str, float]) -> None:
+        assert self._handle is not None
+        self._handle.seek(0)
+        self._handle.truncate()
+        json.dump(state, self._handle, sort_keys=True)
+        self._handle.flush()
+        os.fsync(self._handle.fileno())
 
 
 class CommandRunner(Protocol):
@@ -52,22 +162,33 @@ class SubprocessCommandRunner:
         self,
         *,
         sleeper: Callable[[float], None] = time.sleep,
-        rate_limit_backoff: float = 1.0,
+        rate_limit_backoff: float = 60.0,
+        request_gate: GitHubRequestGate | None = None,
     ) -> None:
         self._sleeper = sleeper
-        self._rate_limit_backoff = max(0.0, min(float(rate_limit_backoff), 2.0))
+        self._rate_limit_backoff = max(1.0, min(float(rate_limit_backoff), 900.0))
+        self._request_gate = request_gate or GitHubRequestGate()
 
     def run(self, argv: list[str]) -> str:
         for attempt in range(2):
             try:
-                completed = subprocess.run(
-                    argv,
-                    check=False,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
+                with self._request_gate as gate:
+                    completed = subprocess.run(
+                        argv,
+                        check=False,
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if completed.returncode != 0 and _is_rate_limit_failure(
+                        completed.stderr
+                    ):
+                        gate.defer(
+                            _rate_limit_delay(
+                                completed.stderr, default=self._rate_limit_backoff
+                            )
+                        )
             except subprocess.TimeoutExpired as error:
                 # A concurrent burst of `gh` invocations (this client is called
                 # from a 6-worker thread pool) can contend on the OS credential
@@ -82,7 +203,6 @@ class SubprocessCommandRunner:
             if completed.returncode == 0:
                 return completed.stdout
             if attempt == 0 and _is_rate_limit_failure(completed.stderr):
-                self._sleeper(self._rate_limit_backoff)
                 continue
             raise GitHubClientError("GitHub command failed")
         raise GitHubClientError("GitHub command failed")
@@ -93,6 +213,20 @@ def _is_rate_limit_failure(stderr: str) -> bool:
     return "rate limit" in normalized and (
         "403" in normalized or "429" in normalized or "secondary" in normalized
     )
+
+
+def _rate_limit_delay(stderr: str, *, default: float) -> float:
+    """Extract a bounded server-requested delay when gh includes one."""
+
+    normalized = str(stderr or "").casefold()
+    matches = (
+        re.search(r"retry[- ]after\D{0,12}(\d+(?:\.\d+)?)", normalized),
+        re.search(r"try again in\D{0,12}(\d+(?:\.\d+)?)\s*(?:s|sec|second)", normalized),
+    )
+    for match in matches:
+        if match is not None:
+            return max(1.0, min(float(match.group(1)), 900.0))
+    return max(1.0, min(float(default), 900.0))
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +316,7 @@ class GitHubClient:
 
     def __init__(self, runner: CommandRunner | None = None) -> None:
         self._runner = runner or SubprocessCommandRunner()
+        self._actions_enabled_cache: dict[str, bool] = {}
 
     def list_open_pull_requests(
         self, repository: str, owner_login: str
@@ -262,12 +397,18 @@ class GitHubClient:
         return _pull_request(row)
 
     def actions_enabled(self, repository: str) -> bool:
+        repository = _validated_repository(repository)
+        cached = self._actions_enabled_cache.get(repository)
+        if cached is not None:
+            return cached
         payload = self._json(["gh", "api", f"repos/{repository}/actions/permissions"])
         if not isinstance(payload, dict) or not isinstance(
             payload.get("enabled"), bool
         ):
             raise GitHubClientError("GitHub Actions permissions had an invalid shape")
-        return payload["enabled"]
+        enabled = payload["enabled"]
+        self._actions_enabled_cache[repository] = enabled
+        return enabled
 
     def repository_is_private(self, repository: str) -> bool:
         payload = self._read_object(f"repos/{_validated_repository(repository)}")
@@ -675,10 +816,9 @@ class GitHubClient:
             f"repos/{repository}/pulls/{number}/comments?per_page=100",
             f"repos/{repository}/pulls/{number}/reviews?per_page=100",
         )
-        with ThreadPoolExecutor(max_workers=len(endpoints)) as executor:
-            issue_comments, review_comments, reviews = executor.map(
-                self._read_pages, endpoints
-            )
+        issue_comments, review_comments, reviews = (
+            self._read_pages(endpoint) for endpoint in endpoints
+        )
         feedback = [
             *(
                 _feedback("issue_comment", row, timestamp_key="created_at")

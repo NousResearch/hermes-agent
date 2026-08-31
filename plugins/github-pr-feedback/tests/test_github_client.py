@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-import threading
+from contextlib import AbstractContextManager
 
 import pytest
 
@@ -12,6 +12,7 @@ from github_pr_feedback.github_client import (
     CheckState,
     GitHubClient,
     GitHubClientError,
+    GitHubRequestGate,
     PullRequestMergeState,
     RepositoryMergePolicy,
     ReviewState,
@@ -30,17 +31,20 @@ class RecordingRunner:
         return json.dumps(self.responses[key])
 
 
-class FeedbackBarrierRunner(RecordingRunner):
-    """Prove the three independent feedback reads overlap in production code."""
+class RecordingGate(AbstractContextManager):
+    def __init__(self) -> None:
+        self.entries = 0
+        self.deferrals: list[float] = []
 
-    def __init__(self, responses: dict[tuple[str, ...], object]) -> None:
-        super().__init__(responses)
-        self.barrier = threading.Barrier(3)
+    def __enter__(self):
+        self.entries += 1
+        return self
 
-    def run(self, argv: list[str]) -> str:
-        if "--paginate" in argv:
-            self.barrier.wait(timeout=1)
-        return super().run(argv)
+    def defer(self, seconds: float) -> None:
+        self.deferrals.append(seconds)
+
+    def __exit__(self, *_args) -> None:
+        return None
 
 
 def test_subprocess_runner_retries_one_bounded_rate_limit_failure(
@@ -62,11 +66,33 @@ def test_subprocess_runner_retries_one_bounded_rate_limit_failure(
         return next(results)
 
     monkeypatch.setattr("github_pr_feedback.github_client.subprocess.run", fake_run)
-    runner = SubprocessCommandRunner(sleeper=sleeps.append, rate_limit_backoff=0.25)
+    gate = RecordingGate()
+    runner = SubprocessCommandRunner(
+        sleeper=sleeps.append, rate_limit_backoff=0.25, request_gate=gate
+    )
 
     assert runner.run(["gh", "api", "rate_limit"]) == "{}"
     assert calls == [["gh", "api", "rate_limit"], ["gh", "api", "rate_limit"]]
-    assert sleeps == [0.25]
+    assert sleeps == []
+    assert gate.entries == 2
+    assert gate.deferrals == [1.0]
+
+
+def test_request_gate_shares_secondary_limit_cooldown_across_instances(tmp_path) -> None:
+    now = [100.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    path = tmp_path / "github-request-gate.json"
+    with GitHubRequestGate(path, sleeper=sleep, clock=lambda: now[0]) as gate:
+        gate.defer(30)
+    with GitHubRequestGate(path, sleeper=sleep, clock=lambda: now[0]):
+        pass
+
+    assert sleeps == [30.0]
 
 
 def test_subprocess_runner_does_not_retry_an_ordinary_failure(
@@ -81,7 +107,9 @@ def test_subprocess_runner_does_not_retry_an_ordinary_failure(
     monkeypatch.setattr("github_pr_feedback.github_client.subprocess.run", fake_run)
 
     with pytest.raises(GitHubClientError, match="GitHub command failed"):
-        SubprocessCommandRunner(sleeper=lambda _delay: None).run(["gh", "api", "missing"])
+        SubprocessCommandRunner(
+            sleeper=lambda _delay: None, request_gate=RecordingGate()
+        ).run(["gh", "api", "missing"])
 
     assert calls == [["gh", "api", "missing"]]
 
@@ -163,8 +191,8 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
     }
 
 
-def test_github_client_reads_independent_feedback_endpoints_concurrently() -> None:
-    runner = FeedbackBarrierRunner(feedback_responses("ordinary"))
+def test_github_client_reads_independent_feedback_endpoints_without_nested_fanout() -> None:
+    runner = RecordingRunner(feedback_responses("ordinary"))
 
     feedback = GitHubClient(runner).list_feedback("acme/widgets", 17)
 
@@ -503,9 +531,12 @@ def test_github_client_reads_repository_actions_enabled_with_fixed_argv() -> Non
     argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
     runner = RecordingRunner({argv: {"enabled": False, "sha_pinning_required": False}})
 
-    enabled = GitHubClient(runner).actions_enabled("acme/widgets")
+    client = GitHubClient(runner)
+    enabled = client.actions_enabled("acme/widgets")
+    cached = client.actions_enabled("acme/widgets")
 
     assert enabled is False
+    assert cached is False
     assert runner.calls == [argv]
 
 

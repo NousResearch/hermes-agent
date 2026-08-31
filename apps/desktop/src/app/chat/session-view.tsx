@@ -62,9 +62,30 @@ export interface SessionView {
   $reasoningEffort: ReadableAtom<string>
 }
 
-/** The active session's own slice, or `undefined` while it's a draft. */
-const $primaryState = computed([$activeSessionId, $sessionStates], (runtimeId, states) =>
-  runtimeId ? states[runtimeId] : undefined
+/** The active session's own slice, or `undefined` while it's a draft.
+ *
+ *  The runtime id keying this only rebinds once `resumeSession()` lands — and
+ *  is nulled outright on the cold path — while the STORED id (selection/route)
+ *  flips synchronously on navigate. So mid-switch the pane can hold session A's
+ *  stored id next to session B's runtime slice. A slice that does not own the
+ *  current selection describes a different conversation and must not answer for
+ *  this one: it is how the outgoing session's cwd/model kept painting under the
+ *  incoming session (and, for `busy`, how the composer's queue drained into a
+ *  turn that was still running). An unpersisted conversation has no stored id
+ *  yet, so its slice is the only account of itself and still counts. */
+const $primaryState = computed(
+  [$activeSessionId, $sessionStates, $selectedStoredSessionId, $sessions],
+  (runtimeId, states, selected, sessions) => {
+    const state = runtimeId ? states[runtimeId] : undefined
+
+    if (!state || !selected) {
+      return state
+    }
+
+    const sliceStoredId = state.storedSessionId
+
+    return !sliceStoredId || idsShareLineage(sliceStoredId, selected, sessions) ? state : undefined
+  }
 )
 
 /**
@@ -86,41 +107,26 @@ const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $m
 /**
  * Turn-busy for the workspace pane.
  *
- * Two ids name one conversation and they move on different clocks: the STORED
- * id (selection/route/composer queue key) flips synchronously on navigate,
- * while the RUNTIME id keying `$primaryState` only rebinds after
- * `resumeSession()` lands — and is nulled outright on the cold path. So for
- * the whole switch window this pane holds session A's stored id alongside B's
- * (or no) runtime slice.
- *
- * Answering "idle" across that window is what fired the composer's
- * level-triggered queue auto-drain into a session still running its turn. Two
- * rules keep it honest:
- *
- * 1. A slice is authoritative only when it BELONGS to the selected session —
- *    otherwise it is the outgoing session's state and says nothing about this
- *    one (the warm-cache switch, where the runtime id is never nulled).
- * 2. With no usable slice, an unknown defers to the authoritative working set
- *    rather than guessing the permissive answer. The set already publishes
- *    every lineage alias, so a compression tip matches its root.
- *    This is the same oracle `use-background-queue-drain` consults offscreen.
+ * `$primaryState` already drops a slice that does not own the selection, so
+ * mid-switch this is left with no slice at all — and answering "idle" there is
+ * what fired the composer's level-triggered queue auto-drain into a session
+ * still running its turn. An unknown defers to the authoritative working set
+ * rather than guessing the permissive answer; that set already publishes every
+ * lineage alias, so a compression tip matches its root. It is the same oracle
+ * `use-background-queue-drain` consults offscreen.
  *
  * The global `$busy` atom stays reserved for a true new chat (no stored id) so
  * the first-send optimistic lock still paints. Inheriting it for a selected
  * session is how focusing B while A ran marked B busy.
  */
 const $primaryBusy = computed(
-  [$primaryState, $busy, $selectedStoredSessionId, $workingSessionIds, $sessions],
-  (state, draftBusy, selected, working, sessions) => {
+  [$primaryState, $busy, $selectedStoredSessionId, $workingSessionIds],
+  (state, draftBusy, selected, working) => {
     if (!selected) {
       return state ? state.busy : draftBusy
     }
 
-    // An unpersisted conversation has no stored id yet; its slice is the only
-    // account of itself, so keep trusting it.
-    const sliceStoredId = state?.storedSessionId
-
-    if (state && (!sliceStoredId || idsShareLineage(sliceStoredId, selected, sessions))) {
+    if (state) {
       return state.busy
     }
 

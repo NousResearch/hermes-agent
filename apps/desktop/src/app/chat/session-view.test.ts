@@ -2,7 +2,15 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $busy, $messages, $selectedStoredSessionId, $sessions } from '@/store/session'
+import {
+  $activeSessionId,
+  $busy,
+  $currentCwd,
+  $currentModel,
+  $messages,
+  $selectedStoredSessionId,
+  $sessions
+} from '@/store/session'
 import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -37,6 +45,8 @@ describe('primary session view reads its own session slice', () => {
     $sessions.set([])
     $messages.set([])
     $busy.set(false)
+    $currentCwd.set('')
+    $currentModel.set('')
   })
 
   afterEach(cleanup)
@@ -144,6 +154,37 @@ describe('primary session view reads its own session slice', () => {
     $selectedStoredSessionId.set('stored-runtime-a')
 
     expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(false)
+  })
+
+
+  // Same runtime-vs-stored skew as the busy cases, but for the metadata
+  // fields. The outgoing session's cwd is what `droppedFileInlineRefs`
+  // relativizes against, so a file dropped mid-switch resolved into the
+  // PREVIOUS chat's workspace.
+  it('does not paint the outgoing session cwd/model during a cold switch', () => {
+    publishSessionState(
+      'runtime-a',
+      { ...stateWith('runtime-a', 'session A turn', true), cwd: '/repo/a', model: 'model-a' }
+    )
+    $currentCwd.set('/leftover/from/previous')
+    $currentModel.set('leftover-model')
+    $activeSessionId.set('runtime-a')
+    $selectedStoredSessionId.set('stored-runtime-b')
+
+    expect(PRIMARY_SESSION_VIEW.$cwd.get()).not.toBe('/repo/a')
+    expect(PRIMARY_SESSION_VIEW.$model.get()).not.toBe('model-a')
+  })
+
+  it('paints the slice cwd/model once it owns the selection', () => {
+    publishSessionState(
+      'runtime-a',
+      { ...stateWith('runtime-a', 'session A turn', true), cwd: '/repo/a', model: 'model-a' }
+    )
+    $activeSessionId.set('runtime-a')
+    $selectedStoredSessionId.set('stored-runtime-a')
+
+    expect(PRIMARY_SESSION_VIEW.$cwd.get()).toBe('/repo/a')
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('model-a')
   })
 
   it('returns to the draft atoms when the active session state is dropped', () => {

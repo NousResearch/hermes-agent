@@ -43,6 +43,7 @@ from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_metadata import append_message
 from agent.turn_context import (
+    PreflightCompressionTimedOut,
     _compression_warrants_another_preflight_pass,
     _review_fork_first_request_pending,
     build_turn_context,
@@ -1989,29 +1990,68 @@ def run_conversation(
     # ``build_turn_context``.  It mutates ``agent`` exactly as the inline code
     # did and returns the locals the loop below reads back.  See
     # ``agent/turn_context.py``.
-    _ctx = build_turn_context(
-        agent,
-        user_message,
-        system_message,
-        conversation_history,
-        task_id,
-        stream_callback,
-        persist_user_message,
-        persist_user_timestamp,
-        persist_user_display_kind=persist_user_display_kind,
-        persist_user_display_metadata=persist_user_display_metadata,
-        persist_user_platform_id=persist_user_platform_id,
-        restore_or_build_system_prompt=_restore_or_build_system_prompt,
-        install_safe_stdio=_install_safe_stdio,
-        sanitize_surrogates=_sanitize_surrogates,
-        summarize_user_message_for_log=_summarize_user_message_for_log,
-        set_session_context=set_session_context,
-        set_current_write_origin=set_current_write_origin,
-        ra=_ra,
-        # MoA turns append per-call aggregated context to the API copy of the
-        # user message, so no byte-stable api_content sidecar can be stamped.
-        moa_active=bool(moa_config),
-    )
+    try:
+        _ctx = build_turn_context(
+            agent,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            persist_user_platform_id=persist_user_platform_id,
+            restore_or_build_system_prompt=_restore_or_build_system_prompt,
+            install_safe_stdio=_install_safe_stdio,
+            sanitize_surrogates=_sanitize_surrogates,
+            summarize_user_message_for_log=_summarize_user_message_for_log,
+            set_session_context=set_session_context,
+            set_current_write_origin=set_current_write_origin,
+            ra=_ra,
+            # MoA turns append per-call aggregated context to the API copy of the
+            # user message, so no byte-stable api_content sidecar can be stamped.
+            moa_active=bool(moa_config),
+        )
+    except PreflightCompressionTimedOut as _preflight_timeout_exc:
+        # Turn-start fail-closed boundary (#98424): preflight compression hit
+        # the host's progress-aware timeout while the request was still
+        # oversized, so no provider call was sent. Convert the typed exception
+        # into the same typed recovery result the in-loop consumers return
+        # (salvaged #98741 / PR #99710) instead of letting it escape to the
+        # surfaces' generic exception handlers — the gateway deliberately
+        # hides raw exception text from users, which would bury the
+        # actionable "run /compress and retry" guidance and skip the
+        # compression_exhausted clean-session recovery contract.
+        logger.warning(
+            "Turn-start preflight compression timed out — ending turn with "
+            "typed recovery result: %s",
+            _preflight_timeout_exc,
+        )
+        # build_turn_context registered this turn's in-flight tripwire slot
+        # (note_turn_start) but the early return skips the persist funnel
+        # that normally clears it — clear it here so the next turn does not
+        # log a spurious "concurrent turns on one session" warning. The
+        # inbound user row is intentionally NOT persisted on this path: the
+        # gateway skips transcript persistence for compression_exhausted
+        # results to prevent the session-growth loop (#7100), and the
+        # auto-reset moves future input to a clean session.
+        from agent.agent_runtime_helpers import note_turn_persisted
+
+        note_turn_persisted(agent)
+        _final_response = str(_preflight_timeout_exc)
+        return {
+            "final_response": _final_response,
+            "messages": list(conversation_history or []),
+            "completed": False,
+            "api_calls": 0,
+            "error": _final_response,
+            "partial": True,
+            "failed": True,
+            "compression_exhausted": True,
+            "turn_exit_reason": "context_compression_timeout",
+        }
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages

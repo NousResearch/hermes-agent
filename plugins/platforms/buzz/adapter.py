@@ -1440,11 +1440,25 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def _send_channel_subscription(self, websocket, subscription_id: str, channel_id: str) -> None:
         state = self._channel_state.get(channel_id) or {}
-        since = max(int(state.get("last_ts") or time.time()) - 1, 0)
+        last_ts = int(state.get("last_ts") or 0)
+        if last_ts:
+            # Resume from the channel's high-water mark (same-second overlap
+            # is de-duped by event id).
+            request_filter = {"kinds": sorted(_DISPATCH_KINDS), "#h": [channel_id], "since": max(last_ts - 1, 0)}
+        else:
+            # A conversation adopted mid-run with no high-water mark is fresh:
+            # its history IS the conversation, so subscribe from the beginning
+            # instead of `since ≈ now` — otherwise the message that *created*
+            # the conversation (created_at fractionally before this
+            # subscription) is silently dropped (#78429). `limit` bounds the
+            # replay to the same window the poll transport fetches; the seed
+            # path gives real channels a non-zero last_ts, so they never take
+            # this branch.
+            request_filter = {"kinds": sorted(_DISPATCH_KINDS), "#h": [channel_id], "limit": _FETCH_LIMIT}
         request = [
             "REQ",
             subscription_id,
-            {"kinds": sorted(_DISPATCH_KINDS), "#h": [channel_id], "since": since},
+            request_filter,
         ]
         await websocket.send(json.dumps(request, separators=(",", ":")))
 
@@ -1472,19 +1486,49 @@ class BuzzAdapter(BasePlatformAdapter):
             subscriptions[_WS_MEMBERSHIP_SUB_ID] = None
         return subscriptions
 
-    async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
-        """A membership event p-tagged to us: rediscover conversations and
-        subscribe to any new ones (fresh DMs dispatch from their beginning)."""
-        self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
-        before = set(self._channel_state)
-        await self._discover_dms(seed=False)
-        for channel_id in self._channel_state:
+    async def _subscribe_new_conversations(
+        self, websocket, subscriptions: Dict[str, Optional[str]], before: set
+    ) -> None:
+        """Subscribe to every conversation adopted since *before* was taken."""
+        for channel_id in list(self._channel_state):
             if channel_id in before:
                 continue
             subscription_id = f"hermes-buzz-dm-{len(subscriptions)}"
             subscriptions[subscription_id] = channel_id
             await self._send_channel_subscription(websocket, subscription_id, channel_id)
             logger.info("Buzz: subscribed to new conversation %s", channel_id)
+
+    async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
+        """A membership event p-tagged to us: rediscover conversations and
+        subscribe to any new ones (fresh DMs dispatch from their beginning)."""
+        self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
+        before = set(self._channel_state)
+        await self._discover_dms(seed=False)
+        await self._subscribe_new_conversations(websocket, subscriptions, before)
+
+    async def _ws_discovery_loop(self, websocket, subscriptions: Dict[str, Optional[str]]) -> None:
+        """Periodic conversation discovery for the WebSocket transport.
+
+        The kind-44100 membership subscription is the fast path, but relays do
+        not guarantee a membership event for every conversation that
+        materializes mid-session (#93557) — some emit none at all for new
+        DM-shaped conversations. The poll transport papers over this by
+        re-running discovery every ``_DM_DISCOVERY_EVERY`` sweeps; this loop
+        gives the WS transport the same guarantee on the same cadence.
+        Failures are logged and retried next tick; the read loop is the sole
+        owner of connection health.
+        """
+        interval = max(self.poll_interval * _DM_DISCOVERY_EVERY, _MIN_POLL_INTERVAL)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                before = set(self._channel_state)
+                await self._discover_dms(seed=False)
+                await self._subscribe_new_conversations(websocket, subscriptions, before)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Buzz: WebSocket discovery sweep failed", exc_info=True)
 
     async def _websocket_loop(self) -> None:
         """Persistent authenticated subscription with bounded reconnect
@@ -1512,72 +1556,85 @@ class BuzzAdapter(BasePlatformAdapter):
                         if self._ws_ready is not None:
                             self._ws_ready.set()
                         backoff = 1.0
-                        frame_iter = websocket.__aiter__()
-                        while True:
-                            try:
-                                raw = await asyncio.wait_for(
-                                    frame_iter.__anext__(),
-                                    timeout=_WS_READ_IDLE_TIMEOUT,
-                                )
-                            except StopAsyncIteration:
-                                break
-                            except asyncio.TimeoutError:
-                                raise ConnectionError(
-                                    f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; "
-                                    "assuming the connection went silent"
-                                ) from None
-                            try:
-                                message = json.loads(raw)
-                            except (ValueError, TypeError):
-                                logger.warning("Buzz: ignoring malformed WebSocket frame")
-                                continue
-                            if not isinstance(message, list) or not message:
-                                continue
-                            if message[0] == "EVENT" and len(message) >= 3:
-                                subscription_id = str(message[1])
-                                event = message[2]
-                                if not isinstance(event, dict):
-                                    continue
-                                if subscription_id == _WS_MEMBERSHIP_SUB_ID:
-                                    await self._handle_membership_event(websocket, subscriptions, event)
-                                    continue
-                                channel_id = subscriptions.get(subscription_id)
-                                state = self._channel_state.get(channel_id or "")
-                                if channel_id and state is not None:
-                                    before = self._cursor_mark(state)
-                                    await self._handle_event(channel_id, state, event)
-                                    self._trim_seen(state)
-                                    if self._cursor_mark(state) != before:
-                                        self._save_cursors()
-                            elif message[0] == "CLOSED":
-                                detail = message[-1] if len(message) > 2 else "subscription closed"
-                                sub_id = str(message[1]) if len(message) > 1 else ""
-                                closed_channel = subscriptions.get(sub_id)
-                                detail_l = str(detail).lower()
-                                # A membership rejection ("restricted: not a
-                                # channel member", bare "not a channel member",
-                                # or "auth-required") means the relay will
-                                # never serve this subscription — drop it
-                                # permanently rather than reconnecting and
-                                # repeating the same rejection in a tight loop.
-                                is_membership_rejection = (
-                                    "restricted" in detail_l
-                                    or "not a channel member" in detail_l
-                                    or "auth-required" in detail_l
-                                )
-                                if is_membership_rejection and closed_channel:
-                                    logger.warning(
-                                        "Buzz: relay permanently rejected channel %s (%s) — "
-                                        "removing from watch list",
-                                        closed_channel, detail,
+                        # Companion sweep: relays don't guarantee a membership
+                        # event per new conversation (#93557), so discovery
+                        # also runs on the poll transport's cadence.
+                        discovery_task = asyncio.create_task(
+                            self._ws_discovery_loop(websocket, subscriptions)
+                        )
+                        try:
+                            frame_iter = websocket.__aiter__()
+                            while True:
+                                try:
+                                    raw = await asyncio.wait_for(
+                                        frame_iter.__anext__(),
+                                        timeout=_WS_READ_IDLE_TIMEOUT,
                                     )
-                                    self._restricted_channels.add(closed_channel)
-                                    del subscriptions[sub_id]
-                                    self._channel_state.pop(closed_channel, None)
-                                else:
-                                    raise ConnectionError(str(detail))
-                            elif message[0] == "NOTICE":
-                                logger.warning("Buzz: relay notice: %s", message[-1])
+                                except StopAsyncIteration:
+                                    break
+                                except asyncio.TimeoutError:
+                                    raise ConnectionError(
+                                        f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; "
+                                        "assuming the connection went silent"
+                                    ) from None
+                                try:
+                                    message = json.loads(raw)
+                                except (ValueError, TypeError):
+                                    logger.warning("Buzz: ignoring malformed WebSocket frame")
+                                    continue
+                                if not isinstance(message, list) or not message:
+                                    continue
+                                if message[0] == "EVENT" and len(message) >= 3:
+                                    subscription_id = str(message[1])
+                                    event = message[2]
+                                    if not isinstance(event, dict):
+                                        continue
+                                    if subscription_id == _WS_MEMBERSHIP_SUB_ID:
+                                        await self._handle_membership_event(websocket, subscriptions, event)
+                                        continue
+                                    channel_id = subscriptions.get(subscription_id)
+                                    state = self._channel_state.get(channel_id or "")
+                                    if channel_id and state is not None:
+                                        before = self._cursor_mark(state)
+                                        await self._handle_event(channel_id, state, event)
+                                        self._trim_seen(state)
+                                        if self._cursor_mark(state) != before:
+                                            self._save_cursors()
+                                elif message[0] == "CLOSED":
+                                    detail = message[-1] if len(message) > 2 else "subscription closed"
+                                    sub_id = str(message[1]) if len(message) > 1 else ""
+                                    closed_channel = subscriptions.get(sub_id)
+                                    detail_l = str(detail).lower()
+                                    # A membership rejection ("restricted: not a
+                                    # channel member", bare "not a channel member",
+                                    # or "auth-required") means the relay will
+                                    # never serve this subscription — drop it
+                                    # permanently rather than reconnecting and
+                                    # repeating the same rejection in a tight loop.
+                                    is_membership_rejection = (
+                                        "restricted" in detail_l
+                                        or "not a channel member" in detail_l
+                                        or "auth-required" in detail_l
+                                    )
+                                    if is_membership_rejection and closed_channel:
+                                        logger.warning(
+                                            "Buzz: relay permanently rejected channel %s (%s) — "
+                                            "removing from watch list",
+                                            closed_channel, detail,
+                                        )
+                                        self._restricted_channels.add(closed_channel)
+                                        del subscriptions[sub_id]
+                                        self._channel_state.pop(closed_channel, None)
+                                    else:
+                                        raise ConnectionError(str(detail))
+                                elif message[0] == "NOTICE":
+                                    logger.warning("Buzz: relay notice: %s", message[-1])
+                        finally:
+                            discovery_task.cancel()
+                            try:
+                                await discovery_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -1786,15 +1843,32 @@ class BuzzAdapter(BasePlatformAdapter):
             self._channel_names.setdefault(ch_id, str(ch.get("name") or ch_id))
             if ch_id in self._restricted_channels:
                 continue
-            if not self._may_reclassify_as_dm(ch_id):
+            if self._may_reclassify_as_dm(ch_id):
+                # DM-shaped channels-list entries promote to DM (#87899/#77987,
+                # landed via #99431) — including ones already being watched.
+                if ch_id in self._channel_state:
+                    self._channel_state[ch_id]["chat_type"] = "dm"
+                elif seed:
+                    await self._seed_channel(ch_id, chat_type="dm")
+                elif not self._restore_channel_state(ch_id, "dm"):
+                    self._channel_state[ch_id] = self._new_channel_state("dm")
                 continue
             if ch_id in self._channel_state:
-                self._channel_state[ch_id]["chat_type"] = "dm"
                 continue
-            if seed:
-                await self._seed_channel(ch_id, chat_type="dm")
-            elif not self._restore_channel_state(ch_id, "dm"):
-                self._channel_state[ch_id] = self._new_channel_state("dm")
+            # Live adoption of real community channels joined mid-run
+            # (#75107): in watch-all mode (no explicit channels list) a
+            # channel the agent is added to after connect() must start
+            # dispatching without a gateway restart. Unlike a fresh DM its
+            # history predates us, so it is always seeded from its newest
+            # events — only messages sent after adoption dispatch. Explicit
+            # watch lists stay authoritative: the user chose that set.
+            if not seed and not self.channels:
+                await self._seed_channel(ch_id, chat_type="group")
+                logger.info(
+                    "Buzz: adopted newly joined channel %s (%s)",
+                    ch_id,
+                    self._channel_names.get(ch_id, ch_id),
+                )
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)

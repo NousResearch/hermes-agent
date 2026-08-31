@@ -25,6 +25,7 @@ def source_provenance_activation(agent: Any, function_name: str):
             SourceProvenanceRegistry,
             activate_source_provenance,
             following_api_request_id,
+            source_provenance_registry_for_agent,
         )
 
         session_id = str(getattr(agent, "session_id", "") or "")
@@ -39,10 +40,7 @@ def source_provenance_activation(agent: Any, function_name: str):
         )
         if not all((session_id, turn_id, request_id, policy_digest)):
             return nullcontext()
-        registry = getattr(agent, "_source_provenance_registry", None)
-        if registry is None:
-            registry = SourceProvenanceRegistry()
-            agent._source_provenance_registry = registry
+        registry = source_provenance_registry_for_agent(agent)
         if not isinstance(registry, SourceProvenanceRegistry):
             return nullcontext()
         return activate_source_provenance(

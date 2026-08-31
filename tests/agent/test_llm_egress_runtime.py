@@ -2945,6 +2945,95 @@ def test_real_read_file_codex_responses_result_keeps_exact_source_provenance(
     assert receipt.decision.source_segment_count == 1
 
 
+def test_parallel_read_file_codex_results_keep_distinct_source_provenance(
+    tmp_path, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    import agent.source_provenance as provenance
+    from agent.source_provenance_tools import (
+        attach_trusted_source_provenance_metadata,
+        build_source_provenance_sidecar,
+        source_provenance_activation,
+    )
+    from agent.tool_dispatch_helpers import make_tool_result_message
+    from tools.file_tools import read_file_tool
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    first_source = tmp_path / "pyproject.toml"
+    second_source = tmp_path / "pytest.ini"
+    first_source.write_text("[project]\nname = 'sample'\n", encoding="utf-8")
+    second_source.write_text("[pytest]\naddopts = -q\n", encoding="utf-8")
+    agent = _agent(tmp_path / "egress")
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent._current_api_request_id = "turn-1:api:1"
+
+    constructor_barrier = Barrier(2)
+
+    class RacingRegistry(provenance.SourceProvenanceRegistry):
+        def __init__(self):
+            super().__init__()
+            constructor_barrier.wait(timeout=5)
+
+    monkeypatch.setattr(provenance, "SourceProvenanceRegistry", RacingRegistry)
+
+    def read(source):
+        with source_provenance_activation(agent, "read_file"):
+            return read_file_tool(
+                str(source), task_id="egress-parallel-codex-read"
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(read, (first_source, second_source)))
+
+    messages = [{
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": f"call_read_{index}",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }
+            for index in range(2)
+        ],
+    }]
+    for index, result in enumerate(results):
+        metadata = attach_trusted_source_provenance_metadata(
+            agent, "read_file", content=result
+        )
+        messages.append(
+            make_tool_result_message(
+                "read_file",
+                result,
+                f"call_read_{index}",
+                source_provenance=metadata,
+            )
+        )
+    sidecar = build_source_provenance_sidecar(messages)
+    input_items = _chat_messages_to_responses_input(messages)
+    agent._current_api_request_id = "turn-1:api:2"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert [
+        item["output"]
+        for item in authorized["input"]
+        if item.get("type") == "function_call_output"
+    ] == results
+    assert receipt.decision.source_grant_count == 2
+    assert receipt.decision.source_segment_count == 2
+
+
 @pytest.mark.parametrize("mutation", ["missing", "stale", "forged", "ambiguous"])
 def test_read_file_codex_responses_result_fails_closed_without_exact_metadata(
     tmp_path, monkeypatch, mutation

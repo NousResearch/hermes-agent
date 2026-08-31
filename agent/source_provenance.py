@@ -15,7 +15,7 @@ from hmac import compare_digest
 import os
 from pathlib import Path
 import stat
-from threading import RLock
+from threading import Lock, RLock
 from typing import Iterator
 import uuid
 
@@ -277,6 +277,7 @@ class SourceProvenanceRegistry:
             original = self._validated_presentations.get(digest)
         if original is None:
             return None
+
         if (
             original.session_id != session_id
             or original.turn_id != turn_id
@@ -305,6 +306,30 @@ class SourceProvenanceRegistry:
             return None
 
 
+_registry_install_lock = Lock()
+
+
+def source_provenance_registry_for_agent(agent) -> SourceProvenanceRegistry:
+    """Return one atomically installed provenance registry per agent.
+
+    Concurrent first-use file reads may both construct a candidate, but the
+    double-check under this lock ensures every caller receives the same
+    installed registry.  Construction stays outside the lock so alternate
+    registry implementations cannot serialize or deadlock unrelated agents.
+    """
+
+    registry = getattr(agent, "_source_provenance_registry", None)
+    if isinstance(registry, SourceProvenanceRegistry):
+        return registry
+    candidate = SourceProvenanceRegistry()
+    with _registry_install_lock:
+        registry = getattr(agent, "_source_provenance_registry", None)
+        if not isinstance(registry, SourceProvenanceRegistry):
+            registry = candidate
+            agent._source_provenance_registry = registry
+    return registry
+
+
 def provenance_kwargs_for_agent(
     agent,
     *,
@@ -314,10 +339,7 @@ def provenance_kwargs_for_agent(
     """Return authenticated context-reference kwargs for a live agent turn."""
 
     session_id = str(getattr(agent, "session_id", "") or "")
-    registry = getattr(agent, "_source_provenance_registry", None)
-    if not isinstance(registry, SourceProvenanceRegistry):
-        registry = SourceProvenanceRegistry()
-        agent._source_provenance_registry = registry
+    registry = source_provenance_registry_for_agent(agent)
 
     if establish_turn:
         previous_turn_id = str(getattr(agent, "_current_turn_id", "") or "")

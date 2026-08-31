@@ -4,6 +4,7 @@ import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { hotkeys } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
+import { nextToolTrailPosition } from '../../../domain/toolTrail.js'
 import type {
   ConfigFullResponse,
   ConfigGetValueResponse,
@@ -453,6 +454,32 @@ export const coreCommands: SlashCommand[] = [
       patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
       transcript.sys(t('slashCmd.core.details.current', next, ''))
       saveDisplayPref(ctx, 'details_mode', next)
+    }
+  },
+
+  {
+    help: 'render tool trails above or below the answer',
+    name: 'trail',
+    run: (arg, ctx) => {
+      const raw = arg.trim().toLowerCase()
+
+      // Bare `/trail` flips, like bare `/density` — the point of the command
+      // is a one-keystroke flip while reading back a long turn.
+      const next =
+        !raw || CYCLE_WORDS.has(raw)
+          ? nextToolTrailPosition(ctx.ui.toolTrailPosition)
+          : raw === 'above' || raw === 'below'
+            ? raw
+            : null
+
+      if (!next) {
+        return ctx.transcript.sys('usage: /trail [above|below|toggle]')
+      }
+
+      patchUiState({ toolTrailPosition: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'tool_trail_position', value: next }).catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`tool trail: ${next} the response`))
     }
   },
 

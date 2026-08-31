@@ -88,7 +88,7 @@ class _TrackingConnection:
         self.thread_ids: list[int] = []
         self._rows: list[dict] = []
 
-    def execute(self, sql, params):
+    def execute(self, sql, params=()):
         self.execute_calls += 1
         self.thread_ids.append(threading.get_ident())
         if self.on_execute is not None:
@@ -107,6 +107,48 @@ class _TrackingConnection:
     def close(self):
         self.close_calls += 1
         self.thread_ids.append(threading.get_ident())
+
+
+class _CursorBaselineConnection:
+    def __init__(self):
+        self.close_calls = 0
+        self._mode = ""
+        self._cursor = 0
+
+    def execute(self, sql, params=()):
+        self._mode = "max" if "MAX(id)" in sql else "events"
+        if params:
+            self._cursor = int(params[0])
+        return self
+
+    def fetchone(self):
+        assert self._mode == "max"
+        return {"m": 50}
+
+    def fetchall(self):
+        assert self._mode == "events"
+        rows = [
+            {
+                "id": 49,
+                "task_id": "historical",
+                "run_id": None,
+                "kind": "status",
+                "payload": None,
+                "created_at": 100,
+            },
+            {
+                "id": 51,
+                "task_id": "future",
+                "run_id": None,
+                "kind": "status",
+                "payload": None,
+                "created_at": 101,
+            },
+        ]
+        return [row for row in rows if row["id"] > self._cursor]
+
+    def close(self):
+        self.close_calls += 1
 
 
 @pytest.mark.asyncio
@@ -162,6 +204,7 @@ async def test_stream_events_reuses_connection_and_closes_after_disconnect(
 
     monkeypatch.setattr(mod.asyncio, "wait_for", _poll_twice_then_disconnect)
     ws = _PollingWebSocket()
+    ws.query_params = {"since": "0"}
 
     await mod.stream_events(ws)
 
@@ -181,6 +224,43 @@ async def test_stream_events_reuses_connection_and_closes_after_disconnect(
         }],
         "cursor": 7,
     }]
+
+
+@pytest.mark.asyncio
+async def test_stream_events_without_since_baselines_at_current_max(monkeypatch):
+    """A fresh Desktop socket must not replay the entire event ledger."""
+    mod = _load_plugin_module()
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
+    conn = _CursorBaselineConnection()
+    monkeypatch.setattr(mod.kanban_db, "connect", lambda *, board=None: conn)
+
+    wait_calls = 0
+
+    async def _baseline_then_fetch_then_disconnect(awaitable, timeout):
+        nonlocal wait_calls
+        wait_calls += 1
+        awaitable.close()
+        if wait_calls <= 2:
+            raise asyncio.TimeoutError
+        return {"type": "websocket.disconnect"}
+
+    monkeypatch.setattr(mod.asyncio, "wait_for", _baseline_then_fetch_then_disconnect)
+    ws = _PollingWebSocket()
+
+    await mod.stream_events(ws)
+
+    assert ws.sent == [{
+        "events": [{
+            "id": 51,
+            "task_id": "future",
+            "run_id": None,
+            "kind": "status",
+            "payload": None,
+            "created_at": 101,
+        }],
+        "cursor": 51,
+    }]
+    assert conn.close_calls == 1
 
 
 @pytest.mark.asyncio

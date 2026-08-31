@@ -739,3 +739,137 @@ class TestRuntimeFtsRebuild:
             assert recovered.search_messages("canonical survives")
         finally:
             recovered.close()
+
+
+def _corrupt_canonical_btree(db_path):
+    """Physically damage every ``messages`` table B-tree leaf page.
+
+    Real byte-flip corruption (no mocks): checkpoint the WAL so all pages are
+    in the main file, locate the leaves via ``dbstat``, and clobber each leaf's
+    page-header cell-count bytes. Any subsequent write or read touching the
+    ``messages`` tree raises a genuine bare ``SQLITE_CORRUPT`` from SQLite.
+    """
+    raw = sqlite3.connect(str(db_path))
+    try:
+        raw.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        page_size = raw.execute("PRAGMA page_size").fetchone()[0]
+        try:
+            leaves = [
+                row[0]
+                for row in raw.execute(
+                    "SELECT pageno FROM dbstat "
+                    "WHERE name='messages' AND pagetype='leaf'"
+                ).fetchall()
+            ]
+        except sqlite3.Error:
+            pytest.skip("dbstat virtual table unavailable in this build")
+    finally:
+        raw.close()
+    assert leaves, "expected at least one messages leaf page"
+    with open(db_path, "r+b") as f:
+        for leaf in leaves:
+            f.seek((leaf - 1) * page_size + 3)
+            f.write(b"\xff\xff\xff\xff")
+
+
+class TestPhysicalCorruptionAcceptance:
+    """Real-fixture acceptance tests for the fail-closed classifier (#97940).
+
+    The field incident behind issue #97940: canonical B-trees were physically
+    damaged, SQLite raised the generic ``database disk image is malformed``,
+    and the over-broad classifier routed it into the FTS-only self-heal —
+    logging "canonical message rows are preserved" while transcript writes
+    silently failed for ~10 hours. These tests damage a real database with
+    byte flips (canonical tree) and shadow-table stomps (FTS-only) and assert
+    the two corruption classes are handled differently end to end.
+    """
+
+    def test_canonical_btree_corruption_fails_closed(
+        self, tmp_path, caplog
+    ):
+        """Bare SQLITE_CORRUPT from real canonical damage must propagate.
+
+        No FTS rebuild attempt, no trigger detach, no stale marker, and —
+        critically — no log line claiming canonical rows are preserved.
+        """
+        db_path = tmp_path / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            if not seed._fts_enabled:
+                pytest.skip("FTS5 unavailable in this build")
+            seed.create_session("s1", source="test")
+            for i in range(300):
+                seed.append_message("s1", "user", f"canon row {i} " + "y" * 300)
+        finally:
+            seed.close()
+
+        _corrupt_canonical_btree(db_path)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            caplog.clear()
+            with caplog.at_level("WARNING", logger="hermes_state"):
+                with pytest.raises(sqlite3.DatabaseError) as caught:
+                    db.append_message("s1", "user", "post-corruption write")
+            # The genuine structural error propagated, not an FTS retry result.
+            assert getattr(caught.value, "sqlite_errorcode", None) in (
+                sqlite3.SQLITE_CORRUPT,
+                None,  # very old sqlite3 modules without errorcode attrs
+            )
+            assert "malformed" in str(caught.value).lower()
+            # The classifier refused the FTS route entirely.
+            assert not SessionDB._is_fts_write_corruption_error(caught.value)
+            assert getattr(db, "_fts_runtime_rebuild_attempted", False) is False
+            assert db._fts_stale is False
+            # The misdiagnosis message from the field incident must be gone.
+            assert "canonical message rows are preserved" not in caplog.text
+            assert "attempting one-shot in-place FTS rebuild" not in caplog.text
+        finally:
+            db.close()
+
+        # Fail-closed also means non-destructive: triggers untouched, no
+        # stale-FTS marker persisted for a structural (non-FTS) failure.
+        assert _base_fts_triggers(db_path) == set(_FTS_TRIGGERS)
+        assert _meta_value(db_path, FTS_STALE_KEY) is None
+
+    def test_fts_only_corruption_still_self_heals(self, db, tmp_path):
+        """Contrast case: a real FTS shadow-table stomp raises
+        SQLITE_CORRUPT_VTAB, is classified as FTS-scoped, and the write path
+        self-heals with canonical rows intact — proving the narrowed
+        classifier did not break the legitimate FTS repair route."""
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "before stomp")
+        for i in range(50):
+            db.append_message("s1", "user", f"seed row {i} " + "z" * 200)
+        _corrupt_fts(tmp_path / "state.db")
+
+        # Prove the fixture produces the FTS-scoped extended code for the
+        # classifier (provenance check via a raw connection so no self-heal
+        # runs). A MATCH read walks the stomped structure record on every
+        # SQLite version; the insert trigger only trips on some versions.
+        raw = sqlite3.connect(str(tmp_path / "state.db"))
+        try:
+            raw.execute(
+                "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'seed'"
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            assert getattr(exc, "sqlite_errorcode", None) == getattr(
+                sqlite3, "SQLITE_CORRUPT_VTAB", 267
+            )
+            assert SessionDB._is_fts_write_corruption_error(exc)
+        else:  # pragma: no cover - fixture must corrupt the index
+            pytest.fail("FTS stomp fixture did not corrupt the index")
+        finally:
+            raw.close()
+
+        # And the app-level write path still succeeds after real FTS-only
+        # damage (self-heals on builds whose sync triggers surface the
+        # corruption; passes through untouched on builds that defer it).
+        msg_id = db.append_message("s1", "user", "healed after stomp")
+        assert msg_id is not None
+        contents = _message_contents(tmp_path / "state.db")
+        assert contents[0] == "before stomp"
+        assert contents[-1] == "healed after stomp"
+        assert len(contents) == 52

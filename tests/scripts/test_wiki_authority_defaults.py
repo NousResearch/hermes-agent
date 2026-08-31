@@ -31,6 +31,7 @@ def clean_wiki_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.delenv("WIKI_DIR", raising=False)
+    monkeypatch.delenv("WIKI_PATH", raising=False)
     monkeypatch.delenv("KENSEI_WIKI_ROOT", raising=False)
     return tmp_path / "docs" / "wiki"
 
@@ -83,6 +84,18 @@ def test_daily_review_kensei_wiki_root_override_wins(clean_wiki_env, monkeypatch
     assert module.MASHUPS_FILE == override / "_meta" / "paper-mashups.md"
 
 
+def test_research_preprocess_defaults_to_canonical_wiki(clean_wiki_env):
+    module = _load("research_paper_preprocess.py")
+    assert module.WIKI_PATH == clean_wiki_env
+
+
+def test_research_preprocess_wiki_path_override_wins(clean_wiki_env, monkeypatch):
+    override = clean_wiki_env.parent.parent / "override-wiki"
+    monkeypatch.setenv("WIKI_PATH", str(override))
+    module = _load("research_paper_preprocess.py")
+    assert module.WIKI_PATH == override
+
+
 def test_defaults_are_home_relative_not_hardcoded(clean_wiki_env, tmp_path, monkeypatch):
     """Defaults must derive from HOME so a second disposable HOME resolves
     independently — guards against a hard-coded /home/kensei path."""
@@ -99,3 +112,17 @@ def test_defaults_are_home_relative_not_hardcoded(clean_wiki_env, tmp_path, monk
     assert module.WIKI_DIR == alt_home / "docs" / "wiki"
     module = _load("kensei_review_daily.py")
     assert module.MASHUPS_FILE == alt_home / "docs" / "wiki" / "_meta" / "paper-mashups.md"
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "skills/research/llm-wiki/SKILL.md",
+        "skills/research/research-paper-synthesis/SKILL.md",
+    ],
+)
+def test_bundled_wiki_skills_name_only_the_canonical_default(relative_path):
+    content = (REPO / relative_path).read_text(encoding="utf-8")
+    assert "~/docs/wiki" in content or "$HOME/docs/wiki" in content
+    assert "~/wiki" not in content
+    assert "$HOME/wiki" not in content

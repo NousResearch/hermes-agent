@@ -51,6 +51,7 @@ Every current wiki consumer and writer found in the candidate worktree `scripts/
 | `scripts/archive/gitradar-upstream-monitor.py` | primary: `<repo>/runbooks/github-radar/repos`; legacy fallback read: `~/wiki/repos` | reader (archived/backward-compat path only) | none (archived; legacy read only) |
 | `scripts/research_paper_preprocess.py` (cron `research-paper-synthesis-daily`) | was `~/wiki`, now `~/docs/wiki` (WIKI_PATH override kept) | reader (memory-gate wiki evidence lookup) | **changed** (controller scope correction) |
 | `skills/research/llm-wiki/SKILL.md` (bundled active contract) | was `~/wiki`, now `$HOME/docs/wiki` (WIKI_PATH override kept) | authority contract steering agents/crons | **changed** (controller scope correction) |
+| `skills/research/research-paper-synthesis/SKILL.md` | was `~/wiki`, now `~/docs/wiki` | active synthesis contract steering paper and mashup writes | **changed** (controller completion correction) |
 | `idea_box/flow.py` wiki fallback | was `~/wiki`, now `~/docs/wiki` (WIKI_PATH override kept) | writer (idea provenance fallback) | **changed** (controller scope correction) |
 | `scripts/ceecee_approval_handler.py`, `scripts/proposal_approval_handler.py` | n/a — no wiki references | not wiki consumers | none |
 
@@ -180,7 +181,6 @@ When the archive/symlink phase eventually runs, the safe minimum is: for each of
 ## Test evidence
 
 - RED (witnessed, before any source change): `scripts/run_tests.sh tests/scripts/test_wiki_authority_defaults.py -q` → **4 failed** (all four scripts resolved the shallow default).
-- GREEN (after this change): same command → **9 passed, 0 failed** (4 canonical-default tests + 4 explicit-override precedence tests + 1 HOME-relative default guard).
-- Override contracts preserved: `WIKI_DIR` (three scripts) and `KENSEI_WIKI_ROOT` (kensei_review_daily.py) still take precedence over the default; no new environment variable introduced.
+- GREEN (final authority contract): `scripts/run_tests.sh tests/scripts/test_wiki_authority_defaults.py tests/idea_box/test_flow.py -q` → **46 passed, 0 failed**. The authority file itself contains 13 tests: 5 canonical-default behaviours, 5 explicit-override behaviours, 1 alternate-HOME guard and 2 bundled-skill contract cases.
+- Override contracts preserved: `WIKI_DIR` (three scripts), `WIKI_PATH` (research preprocessor and Idea Box), and `KENSEI_WIKI_ROOT` (kensei_review_daily.py) still take precedence over the default; no new environment variable introduced.
 - Tests use disposable `HOME`/`HERMES_HOME` (`monkeypatch.setenv`) only; no live tree or live `HERMES_HOME` is touched by the test suite.
-

@@ -312,9 +312,8 @@ def test_governance_crossref_wrapper_targets_active_path():
     assert "SCRIPT_DIR" in src, "wrapper must use SCRIPT_DIR for repo-relative path"
 
 
-def test_governance_crossref_noop_when_no_review(tmp_path):
-    """Crossref script must exit 0 silently when no review file is found
-    (cron output contract)."""
+def test_governance_crossref_silent_when_ledger_has_no_findings(tmp_path):
+    """The ledger-driven projector is silent when no finding events exist."""
     fake_home = tmp_path / "hermes"
     logboard = fake_home / "governance" / "logboard"
     logboard.mkdir(parents=True)
@@ -327,11 +326,8 @@ def test_governance_crossref_noop_when_no_review(tmp_path):
         env=env,
         timeout=10,
     )
-    # No review file → the script should error with usage (arg required) or
-    # the file-open fails. The wrapper handles the no-review case; the script
-    # itself requires a review path argument. We assert it does not crash the
-    # import and exits non-zero only on the missing-file, not on import error.
-    assert result.returncode != 0 or "Usage" in result.stderr or "Usage" in result.stdout
+    assert result.returncode == 0
+    assert "[SILENT]" in result.stdout
 
 
 def test_governance_crossref_silent_on_aligned(tmp_path):

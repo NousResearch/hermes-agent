@@ -13,25 +13,17 @@ if [ "${DRY_RUN:-0}" = "1" ]; then echo "[DRY_RUN] $(basename "$0")"; exit 0; fi
 # restored from scripts/archive/governance-crossref.py.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Active repository-relative target: scripts/governance-crossref.py.
 CROSSREF="${SCRIPT_DIR}/governance-crossref.py"
-LOGBOARD="${HERMES_HOME:-/home/kensei/.hermes}/governance/logboard"
 
-# Find the latest Denji profile review JSON
-REVIEW=$(ls -t "$LOGBOARD"/denji-profile-review-*.json 2>/dev/null | head -1 || true)
-
-if [ -z "$REVIEW" ]; then
-    # Silent - no review to cross-reference
+# The projector is ledger-driven.  Do not use the legacy Denji profile-review
+# JSON or self-evaluation files as an authority for current findings.
+LEDGER_DB="${HERMES_HOME:-/home/kensei/.hermes}/governance/profile-activity-ledger.sqlite"
+if [ ! -f "$LEDGER_DB" ]; then
     exit 0
 fi
 
-# Check if review was already cross-referenced today
-REVIEW_DATE=$(stat -c %Y "$REVIEW" 2>/dev/null || true)
-LAST_CROSSREF=$(stat -c %Y "$LOGBOARD"/cross-ref-*.md 2>/dev/null | sort -rn | head -1 || true)
-
-if [ -n "$LAST_CROSSREF" ] && [ "$REVIEW_DATE" -le "$LAST_CROSSREF" ]; then
-    # Already cross-referenced - silent
-    exit 0
+OUTPUT=$(python3 "$CROSSREF" 2>&1)
+if [ "$OUTPUT" != "[SILENT]" ]; then
+    printf '%s\n' "$OUTPUT"
 fi
-
-# Run cross-reference
-python3 "$CROSSREF" "$REVIEW"

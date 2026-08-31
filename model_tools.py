@@ -31,6 +31,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
+from utils import explicit_no_tools
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +60,11 @@ def _explicit_no_tools() -> bool:
     Deliberately distinct from "no toolsets configured": an ``enabled_toolsets``
     list that merely *resolved* to empty (platform_toolsets, assignee profile)
     is still a configuration, and the kanban re-entry continues to serve it.
+
+    Thin alias for the canonical predicate in ``utils``; the transport layer
+    reads the same flag to sanitize ``request_overrides``.
     """
-    return os.environ.get("HERMES_NO_TOOLS") == "1"
+    return explicit_no_tools()
 
 
 # =============================================================================

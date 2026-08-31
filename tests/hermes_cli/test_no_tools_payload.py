@@ -148,20 +148,49 @@ def test_cli_without_no_tools_still_resolves_a_real_toolset_list(monkeypatch):
 
 
 _TRANSPORTS = {
-    # api_mode: (transport module, class name, base_url, provider)
-    "chat_completions": (
-        "agent.transports.chat_completions",
-        "ChatCompletionsTransport",
-        "https://openrouter.ai/api/v1",
-        "openrouter",
-    ),
-    "codex_responses": (
-        "agent.transports.codex",
-        "ResponsesApiTransport",
-        "https://chatgpt.com/backend-api/codex",
-        "openai-codex",
-    ),
+    # api_mode: transport module, class name, base_url, provider, model
+    "chat_completions": {
+        "module": "agent.transports.chat_completions",
+        "cls": "ChatCompletionsTransport",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "model": None,
+    },
+    "codex_responses": {
+        "module": "agent.transports.codex",
+        "cls": "ResponsesApiTransport",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "provider": "openai-codex",
+        "model": None,
+    },
+    "anthropic_messages": {
+        "module": "agent.transports.anthropic",
+        "cls": "AnthropicTransport",
+        "base_url": "https://api.anthropic.com",
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+    },
+    "bedrock_converse": {
+        "module": "agent.transports.bedrock",
+        "cls": "BedrockTransport",
+        "base_url": None,
+        "provider": "bedrock",
+        "model": "anthropic.claude-sonnet-4-20250514-v1:0",
+    },
 }
+
+# Every wire spelling of "here is a tool surface", across all four transports:
+# OpenAI chat/responses (`tools`), Bedrock Converse (`toolConfig`), plus the
+# steering keys and the deprecated OpenAI function-calling pair.
+_TOOL_WIRE_KEYS = (
+    "tools",
+    "toolConfig",
+    "tool_choice",
+    "toolChoice",
+    "parallel_tool_calls",
+    "functions",
+    "function_call",
+)
 
 
 def _spy_on_transport(monkeypatch, api_mode: str) -> list[dict[str, Any]]:
@@ -172,8 +201,8 @@ def _spy_on_transport(monkeypatch, api_mode: str) -> list[dict[str, Any]]:
     """
     import importlib
 
-    mod_name, cls_name, _base_url, _provider = _TRANSPORTS[api_mode]
-    cls = getattr(importlib.import_module(mod_name), cls_name)
+    spec = _TRANSPORTS[api_mode]
+    cls = getattr(importlib.import_module(spec["module"]), spec["cls"])
     original = cls.build_kwargs
     calls: list[dict[str, Any]] = []
 
@@ -186,7 +215,7 @@ def _spy_on_transport(monkeypatch, api_mode: str) -> list[dict[str, Any]]:
     return calls
 
 
-def _build_agent(api_mode: str, toolsets):
+def _build_agent(api_mode: str, toolsets, request_overrides=None):
     """A real ``AIAgent`` using the real ``get_tool_definitions``.
 
     Only the OpenAI client class is patched out, so nothing can reach the
@@ -194,25 +223,33 @@ def _build_agent(api_mode: str, toolsets):
     """
     from run_agent import AIAgent
 
-    _mod, _cls, base_url, provider = _TRANSPORTS[api_mode]
+    spec = _TRANSPORTS[api_mode]
+    kwargs: dict[str, Any] = dict(
+        api_key="test-key-1234567890",
+        provider=spec["provider"],
+        api_mode=api_mode,
+        enabled_toolsets=toolsets,
+        max_iterations=1,
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    if spec["base_url"]:
+        kwargs["base_url"] = spec["base_url"]
+    if spec["model"]:
+        kwargs["model"] = spec["model"]
+    if request_overrides is not None:
+        kwargs["request_overrides"] = request_overrides
     with patch("run_agent.OpenAI"):
-        return AIAgent(
-            api_key="test-key-1234567890",
-            base_url=base_url,
-            provider=provider,
-            api_mode=api_mode,
-            enabled_toolsets=toolsets,
-            max_iterations=1,
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
+        return AIAgent(**kwargs)
 
 
-def _wire_payload(monkeypatch, api_mode: str, toolsets) -> dict[str, Any]:
+def _wire_payload(
+    monkeypatch, api_mode: str, toolsets, request_overrides=None
+) -> dict[str, Any]:
     """Return the kwargs the provider SDK would be called with."""
     calls = _spy_on_transport(monkeypatch, api_mode)
-    agent = _build_agent(api_mode, toolsets)
+    agent = _build_agent(api_mode, toolsets, request_overrides=request_overrides)
     assert agent.api_mode == api_mode, (
         f"agent resolved api_mode={agent.api_mode!r}; the {api_mode!r} transport "
         "would not be exercised and the assertion below would be vacuous"
@@ -236,8 +273,13 @@ def _assert_offers_no_tools(payload: dict[str, Any], api_mode: str) -> None:
         f"{api_mode}: outgoing request must offer no tools, got "
         f"tools={payload.get('tools')!r}"
     )
-    assert "tool_choice" not in payload
-    assert "parallel_tool_calls" not in payload
+    for key in _TOOL_WIRE_KEYS:
+        if key == "tools":
+            continue
+        assert key not in payload, (
+            f"{api_mode}: {key!r} must not appear on a no-tools request, got "
+            f"{payload[key]!r}"
+        )
 
 
 @pytest.mark.parametrize("api_mode", sorted(_TRANSPORTS))
@@ -296,6 +338,301 @@ def test_kanban_reentry_is_otherwise_live(monkeypatch):
     model_tools._clear_tool_defs_cache()
 
     assert model_tools.get_tool_definitions(enabled_toolsets=[], quiet_mode=True) == []
+
+
+# ---------------------------------------------------------------------------
+# request_overrides: the config-file bypass
+# ---------------------------------------------------------------------------
+#
+# ``request_overrides`` is a raw user-config dict merged into the outgoing
+# kwargs *after* the tools decision, at three sites:
+#   chat_completions.py  legacy path   — api_kwargs.update(overrides)
+#   chat_completions.py  profile path  — per-key assignment
+#   codex.py                           — kwargs.update(request_overrides)
+# Under the boundary all tool-offering keys must be stripped before the merge.
+
+
+_HOSTILE_OVERRIDES = {
+    "tools": [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "Run a shell command.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ],
+    "tool_choice": "required",
+    "parallel_tool_calls": True,
+    "functions": [{"name": "terminal", "parameters": {}}],
+    "function_call": "auto",
+    # A benign key alongside them: sanitization must be surgical, not a
+    # blanket drop of the whole override dict.
+    "service_tier": "priority",
+}
+
+
+def test_request_overrides_cannot_reintroduce_tools_codex(monkeypatch):
+    """codex.py: ``kwargs.update(request_overrides)`` merge site."""
+    toolsets = _run_cli_main_capturing_hermescli(
+        monkeypatch, ["chat", "-Q", "--max-turns", "1", "--no-tools", "-q", "hello"]
+    )["toolsets"]
+
+    payload = _wire_payload(
+        monkeypatch,
+        "codex_responses",
+        toolsets,
+        request_overrides=dict(_HOSTILE_OVERRIDES),
+    )
+    _assert_offers_no_tools(payload, "codex_responses")
+    assert payload["service_tier"] == "priority", (
+        "sanitization must drop only the tool keys, not the whole override dict"
+    )
+
+
+def test_request_overrides_cannot_reintroduce_tools_chat_profile_path(monkeypatch):
+    """chat_completions.py ``_build_kwargs_from_profile`` merge site.
+
+    Reached for any *registered* provider — the common case (openrouter here).
+    """
+    toolsets = _run_cli_main_capturing_hermescli(
+        monkeypatch, ["chat", "-Q", "--max-turns", "1", "--no-tools", "-q", "hello"]
+    )["toolsets"]
+
+    import providers
+
+    assert providers.get_provider_profile("openrouter") is not None, (
+        "this test must exercise the profile path; openrouter has no profile"
+    )
+
+    payload = _wire_payload(
+        monkeypatch,
+        "chat_completions",
+        toolsets,
+        request_overrides=dict(_HOSTILE_OVERRIDES),
+    )
+    _assert_offers_no_tools(payload, "chat_completions")
+    assert payload["service_tier"] == "priority"
+
+
+def test_request_overrides_cannot_reintroduce_tools_chat_legacy_path(monkeypatch):
+    """chat_completions.py legacy ``api_kwargs.update(overrides)`` merge site.
+
+    Reached only when ``get_provider_profile()`` returns None — an entirely
+    unregistered provider.  Simulated by patching the lookup, which is what a
+    user-defined ``providers:`` entry in config.yaml produces.
+    """
+    toolsets = _run_cli_main_capturing_hermescli(
+        monkeypatch, ["chat", "-Q", "--max-turns", "1", "--no-tools", "-q", "hello"]
+    )["toolsets"]
+
+    import providers
+
+    monkeypatch.setattr(providers, "get_provider_profile", lambda *_a, **_k: None)
+
+    payload = _wire_payload(
+        monkeypatch,
+        "chat_completions",
+        toolsets,
+        request_overrides=dict(_HOSTILE_OVERRIDES),
+    )
+    _assert_offers_no_tools(payload, "chat_completions")
+    assert payload["service_tier"] == "priority"
+
+
+@pytest.mark.parametrize("api_mode", ["anthropic_messages", "bedrock_converse"])
+def test_request_overrides_never_reach_anthropic_or_bedrock(monkeypatch, api_mode):
+    """These two transports are not handed ``request_overrides`` at all.
+
+    ``build_api_kwargs`` forwards overrides only on the chat-completions and
+    codex paths.  Pinning that here means a future refactor that starts
+    forwarding them has to come back and add sanitization.
+    """
+    toolsets = _run_cli_main_capturing_hermescli(
+        monkeypatch, ["chat", "-Q", "--max-turns", "1", "--no-tools", "-q", "hello"]
+    )["toolsets"]
+
+    payload = _wire_payload(
+        monkeypatch, api_mode, toolsets, request_overrides=dict(_HOSTILE_OVERRIDES)
+    )
+    _assert_offers_no_tools(payload, api_mode)
+    assert "service_tier" not in payload
+
+
+def test_sanitizer_is_a_noop_without_the_boundary():
+    """Normal runs are untouched: overrides pass through byte-for-byte."""
+    from agent.transports.base import ProviderTransport
+
+    overrides = dict(_HOSTILE_OVERRIDES)
+    assert ProviderTransport.sanitize_request_overrides(overrides) is overrides
+
+
+def test_sanitizer_logs_every_dropped_key(monkeypatch, caplog):
+    """A stripped key must be visible to the operator, named, at WARNING."""
+    import logging
+
+    from agent.transports.base import ProviderTransport
+
+    monkeypatch.setenv("HERMES_NO_TOOLS", "1")
+    with caplog.at_level(logging.WARNING, logger="agent.transports.base"):
+        cleaned = ProviderTransport.sanitize_request_overrides(
+            dict(_HOSTILE_OVERRIDES), context="unit test"
+        )
+
+    assert cleaned == {"service_tier": "priority"}
+    logged = caplog.text
+    for key in ("tools", "tool_choice", "parallel_tool_calls", "functions", "function_call"):
+        assert repr(key) in logged, f"dropped key {key!r} was not logged"
+    assert "unit test" in logged
+
+
+# ---------------------------------------------------------------------------
+# Route parity: -z/--oneshot and --tui must not accept-and-ignore the flag
+# ---------------------------------------------------------------------------
+
+
+def test_oneshot_honors_no_tools(monkeypatch):
+    """``hermes -z --no-tools`` builds the agent with ``toolsets=[]``.
+
+    Before this fix ``run_oneshot`` never saw ``no_tools`` and fell back to the
+    configured platform toolsets — the flag was accepted and ignored.
+    """
+    import hermes_cli.main as main_mod
+
+    captured: dict[str, Any] = {}
+
+    def _fake_run_oneshot(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured.update(kwargs)
+        return 0
+
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setattr(oneshot_mod, "run_oneshot", _fake_run_oneshot)
+    monkeypatch.setattr(main_mod, "_cleanup_oneshot_runtime", lambda: None)
+    monkeypatch.setattr(main_mod, "_exit_after_oneshot", lambda rc: (_ for _ in ()).throw(SystemExit(rc)))
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._run_and_exit_oneshot("hello", no_tools=True)
+
+    assert exc.value.code == 0
+    assert captured["no_tools"] is True
+
+
+def test_run_oneshot_publishes_boundary_and_forwards_no_tools(monkeypatch):
+    """``run_oneshot`` publishes the boundary and hands it to the agent builder."""
+    import hermes_cli.oneshot as oneshot_mod
+
+    captured: dict[str, Any] = {}
+
+    def _fake_run_agent(prompt, **kwargs):
+        captured.update(kwargs)
+        assert os.environ.get("HERMES_NO_TOOLS") == "1", (
+            "the boundary must already be published before the agent is built"
+        )
+        return "ok", {}
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _fake_run_agent)
+
+    oneshot_mod.run_oneshot("hello", no_tools=True)
+
+    assert captured["no_tools"] is True
+    assert captured["use_config_toolsets"] is False
+    assert os.environ.get("HERMES_NO_TOOLS") == "1"
+
+
+def test_oneshot_agent_builder_resolves_empty_toolsets(monkeypatch):
+    """The real ``_run_agent`` toolset resolution under ``no_tools=True``.
+
+    This is the hop the original bug lived in: ``use_config_toolsets=False``
+    alone leaves ``toolsets_list`` at ``None``, which means *every* toolset.
+    """
+    import hermes_cli.oneshot as oneshot_mod
+    import hermes_cli.runtime_provider as runtime_provider_mod
+    import run_agent as run_agent_mod
+
+    captured: dict[str, Any] = {}
+
+    def _fake_agent(**kwargs):
+        captured.update(kwargs)
+        raise _StopAtAgentConstruction
+
+    # The hermetic conftest strips every credential env var, so provider
+    # resolution would raise before the toolset decision is reached.
+    monkeypatch.setattr(
+        runtime_provider_mod,
+        "resolve_runtime_provider",
+        lambda **_kw: {
+            "api_key": "test-key-1234567890",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "openrouter",
+            "requested_provider": "openrouter",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(run_agent_mod, "AIAgent", _fake_agent)
+
+    with pytest.raises(_StopAtAgentConstruction):
+        oneshot_mod._run_agent("hello", no_tools=True, use_config_toolsets=False)
+
+    assert captured["enabled_toolsets"] == []
+
+
+def test_run_oneshot_rejects_no_tools_with_toolsets(monkeypatch, capsys):
+    """Fail closed on the contradictory combination, same as ``chat``."""
+    import hermes_cli.oneshot as oneshot_mod
+
+    def _never(prompt, **kwargs):
+        raise AssertionError("no agent may be built on a rejected flag combo")
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _never)
+
+    rc = oneshot_mod.run_oneshot("hello", no_tools=True, toolsets="web")
+
+    assert rc == 2
+    assert "--no-tools cannot be combined with --toolsets" in capsys.readouterr().err
+    assert "HERMES_NO_TOOLS" not in os.environ
+
+
+def test_tui_with_no_tools_fails_closed(monkeypatch, capsys):
+    """``--tui --no-tools`` exits 2 instead of silently running with tools.
+
+    The TUI's Node gateway resolves its own toolsets and has no channel for an
+    explicit empty surface, so the combination is refused at the point the
+    interface is chosen — never accepted and ignored.
+    """
+    import hermes_cli.main as main_mod
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=main_mod.cmd_chat)
+    args = parser.parse_args(["chat", "--tui", "--no-tools", "-q", "hello"])
+
+    launched: list[object] = []
+    monkeypatch.setattr(main_mod, "_launch_tui", lambda *a, **k: launched.append(k))
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._resolve_use_tui(args)
+
+    assert exc.value.code == 2
+    assert launched == [], "the TUI must not be launched under --no-tools"
+    assert "--no-tools is not supported by the TUI" in capsys.readouterr().err
+
+
+def test_tui_without_no_tools_still_resolves(monkeypatch):
+    """The guard is scoped to the flag; ordinary ``--tui`` is unaffected."""
+    import hermes_cli.main as main_mod
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=main_mod.cmd_chat)
+
+    assert main_mod._resolve_use_tui(parser.parse_args(["chat", "--tui"])) is True
+    assert (
+        main_mod._resolve_use_tui(parser.parse_args(["chat", "--cli", "--no-tools"]))
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------

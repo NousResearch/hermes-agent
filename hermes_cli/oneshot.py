@@ -30,6 +30,7 @@ from typing import Optional
 
 from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
+from utils import NO_TOOLS_ENV_VAR
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -172,6 +173,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    no_tools: bool = False,
     usage_file: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
@@ -183,6 +185,9 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        no_tools: Run with an explicit empty tool surface. Mutually exclusive
+            with ``toolsets``; publishes the ``HERMES_NO_TOOLS`` boundary so no
+            downstream site can re-add a toolset.
         usage_file: Optional path; when set, a JSON usage report (estimated
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
@@ -210,11 +215,25 @@ def run_oneshot(
         )
         return 2
 
+    # --no-tools is a capability boundary, and it must mean the same thing on
+    # -z/--oneshot as it does on `hermes chat`. Validated before the toolset
+    # resolution below so the contradictory combination fails closed instead of
+    # silently picking one of the two.
+    if no_tools and _normalize_toolsets(toolsets) is not None:
+        sys.stderr.write(
+            "hermes -z: --no-tools cannot be combined with --toolsets.\n"
+        )
+        return 2
+
     explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
     if toolsets_error:
         sys.stderr.write(toolsets_error)
         return 2
-    use_config_toolsets = _normalize_toolsets(toolsets) is None
+    use_config_toolsets = _normalize_toolsets(toolsets) is None and not no_tools
+    if no_tools:
+        # Mirrors cli.main: publish the boundary process-wide so
+        # model_tools/the transports refuse to re-add a tool surface.
+        os.environ[NO_TOOLS_ENV_VAR] = "1"
 
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
@@ -248,6 +267,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    no_tools=no_tools,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -316,9 +336,15 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    no_tools: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
-    run a single conversation.  Returns ``(final_response, run_result)``."""
+    run a single conversation.  Returns ``(final_response, run_result)``.
+
+    ``no_tools`` forces ``enabled_toolsets=[]``. It must be threaded in
+    explicitly: falling back on ``use_config_toolsets=False`` alone would leave
+    ``toolsets_list`` at ``None``, which means "every toolset", not "none".
+    """
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
@@ -391,7 +417,7 @@ def _run_agent(
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
     # sets; explicit values preserve user order.
-    toolsets_list = _normalize_toolsets(toolsets)
+    toolsets_list = [] if no_tools else _normalize_toolsets(toolsets)
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 

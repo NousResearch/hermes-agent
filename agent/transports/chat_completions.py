@@ -506,8 +506,13 @@ class ChatCompletionsTransport(ProviderTransport):
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
-        # Request overrides last (service_tier etc.)
-        overrides = params.get("request_overrides")
+        # Request overrides last (service_tier etc.). Sanitized first: under
+        # --no-tools this merge is the one remaining way a config file could
+        # put a tool surface back on the wire.
+        overrides = self.sanitize_request_overrides(
+            params.get("request_overrides"),
+            context="request_overrides (chat_completions legacy path)",
+        )
         if overrides:
             api_kwargs.update(overrides)
 
@@ -620,8 +625,12 @@ class ChatCompletionsTransport(ProviderTransport):
         if additions:
             extra_body.update(additions)
 
-        # Request overrides (user config)
-        overrides = params.get("request_overrides")
+        # Request overrides (user config), sanitized against the no-tools
+        # boundary before anything is merged. See the legacy path above.
+        overrides = self.sanitize_request_overrides(
+            params.get("request_overrides"),
+            context="request_overrides (chat_completions profile path)",
+        )
         if overrides:
             for k, v in overrides.items():
                 if k == "extra_body" and isinstance(v, dict):

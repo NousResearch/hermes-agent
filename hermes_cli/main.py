@@ -170,6 +170,7 @@ def _run_and_exit_oneshot(
     model: object = None,
     provider: object = None,
     toolsets: object = None,
+    no_tools: bool = False,
     usage_file: object = None,
 ) -> None:
     try:
@@ -180,6 +181,7 @@ def _run_and_exit_oneshot(
             model=model,
             provider=provider,
             toolsets=toolsets,
+            no_tools=no_tools,
             usage_file=usage_file,
         )
     except KeyboardInterrupt:
@@ -2457,6 +2459,32 @@ def _resolve_use_tui(args) -> bool:
     "exited cleanly without calling kanban_complete — protocol violation"
     on every attempt (found dogfooding the desktop kanban board). A user
     who *explicitly* passes ``--tui`` still gets the informative bail-out.
+
+    ``--no-tools`` is refused here rather than silently ignored. The TUI runs
+    the agent inside the Node app's own gateway, which resolves its toolsets
+    from ``HERMES_TUI_TOOLSETS`` / config and has no channel for an explicit
+    empty tool surface. Proceeding would hand the operator a fully tooled
+    session under a flag that promised the opposite, so the combination fails
+    closed with an actionable message instead.
+    """
+    use_tui = _tui_preference(args)
+    if use_tui and getattr(args, "no_tools", False):
+        print(
+            "Error: --no-tools is not supported by the TUI.\n"
+            "  The TUI's gateway resolves its own toolsets, so an explicit "
+            "empty tool surface cannot be guaranteed there.\n"
+            "  Run the classic REPL instead:  hermes chat --cli --no-tools ...",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return use_tui
+
+
+def _tui_preference(args) -> bool:
+    """The raw TUI/classic decision, before capability-boundary checks.
+
+    Split out of :func:`_resolve_use_tui` so the ``--no-tools`` refusal has a
+    single choke point that every caller passes through.
     """
     if getattr(args, "cli", False):
         return False
@@ -15424,6 +15452,7 @@ def _try_termux_fast_cli_launch() -> bool:
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            no_tools=getattr(args, "no_tools", False),
             usage_file=getattr(args, "usage_file", None),
         )
 
@@ -18070,6 +18099,7 @@ def main():
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
+            no_tools=getattr(args, "no_tools", False),
             usage_file=getattr(args, "usage_file", None),
         )
 

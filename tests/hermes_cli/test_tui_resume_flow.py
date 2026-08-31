@@ -402,6 +402,7 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         "model": "gpt-test",
         "provider": "openai",
         "toolsets": None,
+        "no_tools": False,
         "usage_file": "usage.json",
     }
 
@@ -656,6 +657,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "model": None,
         "provider": None,
         "toolsets": "web,terminal",
+        "no_tools": False,
         "usage_file": "usage.json",
     }
 

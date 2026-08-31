@@ -35,6 +35,36 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+# ── Explicit no-tools capability boundary ───────────────────────────────────
+#
+# ``hermes --no-tools`` / ``hermes chat --no-tools`` / ``hermes -z --no-tools``
+# publishes ``HERMES_NO_TOOLS=1`` for the whole process (see ``cli.main`` and
+# ``hermes_cli.oneshot.run_oneshot``).  It means "this run offers the model no
+# callable tool at all" — a capability boundary the operator asked for by
+# name, not a preference that later config may soften.
+#
+# Two independent enforcement points read it:
+#   * ``model_tools._compute_tool_definitions`` — refuses to re-add a toolset
+#     to an explicitly empty ``enabled_toolsets`` (the kanban re-entry).
+#   * ``ProviderTransport.sanitize_request_overrides`` — refuses to let a
+#     user-config ``request_overrides`` dict put tool keys on the wire.
+
+NO_TOOLS_ENV_VAR = "HERMES_NO_TOOLS"
+
+# Every wire key that offers a tool surface or steers tool use, in both the
+# current (``tools`` / ``tool_choice`` / ``parallel_tool_calls``) and the
+# deprecated OpenAI (``functions`` / ``function_call``) spellings.  Under the
+# boundary none of these may reach an outgoing model request from any source.
+TOOL_REQUEST_KEYS = frozenset(
+    {"tools", "tool_choice", "parallel_tool_calls", "functions", "function_call"}
+)
+
+
+def explicit_no_tools() -> bool:
+    """True when this process runs under the explicit no-tools boundary."""
+    return env_var_enabled(NO_TOOLS_ENV_VAR)
+
+
 def _preserve_file_mode(path: Path) -> "int | None":
     """Capture the permission bits of *path* if it exists, else ``None``."""
     try:

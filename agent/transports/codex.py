@@ -368,7 +368,14 @@ class ResponsesApiTransport(ProviderTransport):
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 
-        request_overrides = params.get("request_overrides")
+        # Sanitized before the merge: under --no-tools this is the one
+        # remaining way a config file could put a tool surface back on the
+        # wire (it would also re-add tool_choice/parallel_tool_calls, which
+        # the explicit `tools: []` above deliberately omits).
+        request_overrides = self.sanitize_request_overrides(
+            params.get("request_overrides"),
+            context="request_overrides (codex responses)",
+        )
         if request_overrides:
             kwargs.update(request_overrides)
 

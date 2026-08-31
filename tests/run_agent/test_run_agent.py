@@ -1407,6 +1407,44 @@ class TestBuildApiKwargs:
         assert [receipt["source_grant_count"] for receipt in receipts] == [1, 1]
         assert [receipt["source_segment_count"] for receipt in receipts] == [1, 1]
 
+    def test_codex_build_captures_source_provenance_before_conversion(self, agent):
+        from hashlib import sha256
+
+        agent.provider = "openai-codex"
+        agent.api_mode = "codex_responses"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "chatgpt.com"
+        agent.model = "gpt-5.5"
+        content = '{"content":"1|safe = True\\n"}'
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_read_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_read_1",
+                "content": content,
+                "_source_provenance": {
+                    "request_id": "turn-1:api:2",
+                    "source_grant_digests": ("a" * 64,),
+                    "content_sha256": sha256(content.encode()).hexdigest(),
+                    "presentation_kind": "read_file_json_v1",
+                },
+            },
+        ]
+
+        kwargs = agent._build_api_kwargs(messages, tools_for_api=[])
+
+        assert kwargs["_hermes_source_provenance"][0]["tool_call_id"] == "call_read_1"
+        assert kwargs["input"][1]["type"] == "function_call_output"
+        assert "_source_provenance" not in kwargs["input"][1]
+
     def test_forged_build_sidecar_fails_closed(self, agent, tmp_path, monkeypatch):
         from agent.chat_completion_helpers import _dispatch_provider_request
         from agent.llm_egress_firewall import EgressBlocked

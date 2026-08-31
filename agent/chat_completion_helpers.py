@@ -680,7 +680,9 @@ _EGRESS_PROTECTED_PROVIDERS = frozenset(
 )
 
 
-def _attach_source_provenance_sidecar(agent, kwargs: dict, messages: list) -> dict:
+def _attach_source_provenance_sidecar(
+    agent, kwargs: dict, messages: list | None = None, *, sidecar: list | None = None
+) -> dict:
     """Carry internal read proofs around strict wire-message conversion."""
 
     provider = str(getattr(agent, "provider", "") or "").strip().lower()
@@ -688,7 +690,8 @@ def _attach_source_provenance_sidecar(agent, kwargs: dict, messages: list) -> di
         return kwargs
     from agent.source_provenance_tools import build_source_provenance_sidecar
 
-    sidecar = build_source_provenance_sidecar(messages)
+    if sidecar is None:
+        sidecar = build_source_provenance_sidecar(messages)
     if not sidecar:
         return kwargs
     return {**kwargs, "_hermes_source_provenance": sidecar}
@@ -1388,7 +1391,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         provider_name=agent.provider,
     )
     return _attach_source_provenance_sidecar(
-        agent, _chat_kwargs, _source_sidecar_messages
+        agent, _chat_kwargs, _source_sidecar_messages, sidecar=_source_sidecar
     )
 
 

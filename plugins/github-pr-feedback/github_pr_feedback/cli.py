@@ -990,7 +990,25 @@ def _run_merge_scan(
                 not_before=datetime.min.replace(tzinfo=UTC),
             )
             if receipt is None:
-                blocked[str(pull_request.number)] = ["ci_receipt_missing"]
+                # Keep the merge gate manifest-bound, but do not misreport an
+                # existing exact-head failed receipt as missing merely because
+                # its audit used a different manifest revision.
+                reader = getattr(ledger, "latest_ci_receipt_for_head", None)
+                exact_head_receipt = (
+                    reader(
+                        merge_policy.repository,
+                        pull_request.number,
+                        pull_request.head_sha,
+                    )
+                    if callable(reader)
+                    else None
+                )
+                if exact_head_receipt is None:
+                    blocked[str(pull_request.number)] = ["ci_receipt_missing"]
+                elif exact_head_receipt.status == "passed":
+                    blocked[str(pull_request.number)] = ["ci_manifest_mismatch"]
+                else:
+                    blocked[str(pull_request.number)] = ["ci_receipt_not_passing"]
                 continue
             if receipt.status != "passed":
                 blocked[str(pull_request.number)] = ["ci_receipt_not_passing"]

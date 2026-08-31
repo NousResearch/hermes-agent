@@ -956,6 +956,75 @@ def test_merge_scan_reports_failed_exact_head_receipt_as_not_passing(
     assert result["maintainer_tasks_created"] == 0
 
 
+def test_merge_scan_does_not_hide_failed_receipt_behind_manifest_mismatch(
+    tmp_path: Path,
+) -> None:
+    from github_pr_feedback.cli import _load_policy_from_context, _run_merge_scan
+
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    manifest = repository / "tests" / "manifests" / "test_lanes.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("version = 2\n", encoding="utf-8")
+    settings = enabled_settings(repository)
+    settings["merge_maintainer"] = {
+        "enabled": True,
+        "assignee": "pr-merge-maintainer",
+        "repository": "acme/widgets",
+        "author_login": "owner",
+        "base_branch": "stable",
+        "merge_methods": ["squash"],
+        "receipt_max_age_seconds": 3600,
+        "report_only": False,
+        "post_merge": {"enabled": False},
+    }
+    policy = _load_policy_from_context(RecordingContext(settings))
+
+    class ListingOnlyGitHub:
+        def list_open_pull_requests(self, repository: str, owner_login: str):
+            return (
+                PullRequest(
+                    17,
+                    "OPEN",
+                    "acme/widgets",
+                    "acme/widgets",
+                    "owner",
+                    "codex/fix",
+                    "a" * 40,
+                ),
+            )
+
+        def __getattr__(self, name: str):
+            raise AssertionError(f"unexpected expensive GitHub read: {name}")
+
+    class FailedReceipt:
+        status = "failed"
+
+    class MismatchedLedger:
+        def latest_ci_receipt(self, *args, **kwargs):
+            return None
+
+        def latest_ci_receipt_for_head(self, *args, **kwargs):
+            return FailedReceipt()
+
+    class NoTasks:
+        def create_or_get_task(self, task):
+            raise AssertionError(
+                "failed CI receipt must not create an observability task"
+            )
+
+    result = _run_merge_scan(
+        policy,
+        MismatchedLedger(),
+        github=ListingOnlyGitHub(),
+        kanban=NoTasks(),
+    )
+
+    assert result["status"] == "ok"
+    assert result["blocked"] == {"17": ["ci_receipt_not_passing"]}
+    assert result["maintainer_tasks_created"] == 0
+
+
 def test_merge_scan_reconciles_verification_required_pr_that_is_no_longer_open(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

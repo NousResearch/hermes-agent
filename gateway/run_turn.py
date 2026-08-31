@@ -3536,7 +3536,12 @@ class GatewayTurnMixin:
             )
             if claim_blocked:
                 return None, None, True
-            if pending_event is None:
+            if pending_event is not None:
+                # The durable head already owns this turn. Keep the ordinary
+                # pending-slot/overflow topology armed for its successors so a
+                # new arrival cannot jump ahead while the head is admitted.
+                self._promote_queued_event(session_key, adapter, pending_event)
+            else:
                 pending_event = _dequeue_pending_event(adapter, session_key)
                 # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
                 # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).

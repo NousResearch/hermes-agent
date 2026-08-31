@@ -15,7 +15,7 @@ CHANNEL_ID = "1506021736536215813"
 # so local disposable runs never touch /home/kensei/.hermes or the
 # production wiki repos checkout.
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
-WIKI_REPOS = Path(os.environ.get("WIKI_DIR", os.path.expanduser("~/wiki"))) / "repos"
+WIKI_REPOS = Path(os.environ.get("WIKI_DIR", os.path.expanduser("~/docs/wiki"))) / "repos"
 STATE = _HERMES_HOME / "state" / "approval-handler-state.json"
 
 # P13 isolation: when --dry-run is passed, every write path (Discord API

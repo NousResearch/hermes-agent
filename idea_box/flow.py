@@ -329,7 +329,7 @@ class IdeaBoxFlow:
 
         # Fallback: write to the wiki directory directly
         try:
-            wiki_path = Path(os.environ.get("WIKI_PATH", str(Path.home() / "wiki")))
+            wiki_path = Path(os.environ.get("WIKI_PATH", str(Path.home() / "docs" / "wiki")))
             wiki_path.mkdir(parents=True, exist_ok=True)
 
             # Write to raw/ideas/ as provenance

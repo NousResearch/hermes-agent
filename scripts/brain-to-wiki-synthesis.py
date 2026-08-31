@@ -1,8 +1,8 @@
-"""Promote structured ~/brain knowledge UP into ~/wiki (LLM-WIKI, the SSOT).
+"""Promote structured ~/brain knowledge UP into ~/docs/wiki (LLM-WIKI, the SSOT).
 
 Reads brain pages in categories (people, projects, conventions, apps) and
 writes/updates wiki pages in concepts/ and comparisons/ following
-~/wiki/SCHEMA.md conventions. One-off + weekly cron safe.
+~/docs/wiki/SCHEMA.md conventions. One-off + weekly cron safe.
 
 Rules:
 - Does NOT touch paper-derived concepts (those come from research-synthesis).
@@ -30,7 +30,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 BRAIN_DIR = Path(os.environ.get("GBRAIN_REPO", "~/brain")).expanduser()
-WIKI_DIR = Path(os.environ.get("WIKI_DIR", "~/wiki")).expanduser()
+WIKI_DIR = Path(os.environ.get("WIKI_DIR", "~/docs/wiki")).expanduser()
 
 # P13 isolation: when --dry-run is passed, every write path (wiki page
 # write_text, index.md update, log.md append) is suppressed. Read paths

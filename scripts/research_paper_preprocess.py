@@ -65,7 +65,7 @@ _EXTERNAL_DIRECTIVE_PATTERNS = (
 MEMORY_GATE_ENABLED = os.environ.get("PAPER_MEMORY_GATE_ENABLED", "0") == "1"
 MEMORY_GATE_MODE = os.environ.get("PAPER_MEMORY_GATE_MODE", "observe").lower()
 MEMORY_GATE_TIMEOUT_MS = int(os.environ.get("PAPER_MEMORY_GATE_TIMEOUT_MS", "2500"))
-WIKI_PATH = Path(os.environ.get("WIKI_PATH", str(Path.home() / "wiki")))
+WIKI_PATH = Path(os.environ.get("WIKI_PATH", str(Path.home() / "docs" / "wiki")))
 TELEMETRY_PATH = Path(os.environ.get(
     "PAPER_MEMORY_GATE_TELEMETRY_PATH",
     str(Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))

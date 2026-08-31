@@ -18,7 +18,7 @@ from datetime import datetime, timezone, timedelta
 # production wiki repos checkout.
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")))
 KANBAN_DB = _HERMES_HOME / "kanban.db"
-WIKI_REPOS = Path(os.environ.get("WIKI_DIR", os.path.expanduser("~/wiki"))) / "repos"
+WIKI_REPOS = Path(os.environ.get("WIKI_DIR", os.path.expanduser("~/docs/wiki"))) / "repos"
 
 # P13 isolation: when --dry-run is passed, the wiki page rewrite is
 # suppressed. Read paths (kanban DB query, find_wiki_reference) run

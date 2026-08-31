@@ -20,6 +20,7 @@ import { closeGroupChatMainTab } from './group-panes'
 import { displayName } from './labels'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { botCanonicalSessionId } from './row-helpers'
+import { reconcileBotProfileSessions } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
@@ -274,6 +275,10 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   if (generation !== getBotOpenGeneration()) {
     return false
   }
+
+  // The source is now reachable. Reconcile this one selected profile in the
+  // background; do not delay navigation on best-effort legacy cleanup.
+  void reconcileBotProfileSessions(bot)
 
   try {
     const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration())

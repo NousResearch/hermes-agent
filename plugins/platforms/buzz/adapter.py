@@ -1580,7 +1580,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if code != 0:
             return SendResult(
                 success=False,
-                error=_cli_error_message(err, code),
+                error=_cli_error_message(err, code, redact_path=local),
                 retryable=code == 2,
             )
         event_id, receipt_error = _parse_send_receipt(out)

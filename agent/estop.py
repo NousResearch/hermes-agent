@@ -10,9 +10,9 @@
   agent run (``gateway/run.py:_handle_message``).
 
 In-flight work is NEVER killed — this is pause-new-work, not panic/exit.
-The check is a single ``os.stat`` so callers may run it every tick; no
-caching beyond the OS is performed, so engaging/disengaging takes effect on
-the very next check.
+The check is one or two ``os.stat`` calls (process home + fleet root when
+they differ) so callers may run it every tick; no caching beyond the OS is
+performed, so engaging/disengaging takes effect on the very next check.
 
 The sentinel body is optional JSON ``{"reason": ..., "engaged_at": ...}``.
 A corrupt or empty file still counts as engaged (fail safe): the pause must
@@ -79,14 +79,12 @@ def _candidate_sentinel_paths() -> list:
         root = _canonical_root() / SENTINEL_NAME
     except Exception:
         return paths
-    if not isinstance(primary, Path):
-        # Test doubles (e.g. fail-safe stat fixture) are not Path objects.
-        paths.append(root)
-        return paths
     try:
         if root.resolve() != primary.resolve():
             paths.append(root)
     except Exception:
+        # Non-Path test doubles (fail-safe stat fixture) fail .resolve();
+        # the generic comparison below still dedupes plain equal paths.
         if root != primary:
             paths.append(root)
     return paths

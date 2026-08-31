@@ -311,6 +311,14 @@ def _reconcile_repairs(conn, result: WatchdogTickResult) -> None:
         repair_id = str(payload.get("repair_task_id") or "").strip()
         if not repair_id:
             continue
+        newer_explicit_block = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND id > ? "
+            "AND kind IN ('blocked', 'block_loop_detected') LIMIT 1",
+            (task_id, int(event["id"])),
+        ).fetchone()
+        if newer_explicit_block is not None:
+            result.needs_operator.append(task_id)
+            continue
         repair = kb.get_task(conn, repair_id)
         if repair is None:
             result.needs_operator.append(task_id)

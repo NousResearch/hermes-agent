@@ -398,6 +398,57 @@ def test_watchdog_waits_for_repair_then_restarts_original(
         assert kb.get_task(conn, original.id).status == "ready"
 
 
+def test_watchdog_does_not_restart_a_newer_non_watchdog_block(
+    kanban_home: Path, tmp_path: Path
+) -> None:
+    """A historical repair must not override a later operator safety block."""
+    config = WatchdogConfig(
+        enabled=True,
+        grace_seconds=0,
+        repeat_threshold=3,
+        repair_profiles={"tool_failure_loop": "tooling-repair"},
+    )
+    unhealthy_log = "\n".join(["┊ 💻 $ rg missing 0.1s [exit 2]"] * 3)
+
+    with kb.connect() as conn:
+        original = _running_task(conn, tmp_path)
+        run_watchdog_tick(
+            conn,
+            config=config,
+            now=original.started_at + 1,
+            read_log_fn=lambda *_args, **_kwargs: unhealthy_log,
+            terminate_fn=_verified_termination,
+        )
+        repair_id = conn.execute(
+            "SELECT id FROM tasks WHERE created_by = 'worker-health-watchdog'"
+        ).fetchone()["id"]
+        repair = kb.claim_task(conn, repair_id)
+        assert repair is not None
+        assert kb.complete_task(
+            conn,
+            repair_id,
+            summary="historical tool repair completed",
+            expected_run_id=repair.current_run_id,
+        )
+
+        assert kb.unblock_task(conn, original.id)
+        retried = kb.claim_task(conn, original.id)
+        assert retried is not None
+        assert kb.block_task(
+            conn,
+            original.id,
+            reason="new workspace collision safety block",
+            kind="capability",
+            expected_run_id=retried.current_run_id,
+        )
+
+        result = run_watchdog_tick(conn, config=config, now=original.started_at + 2)
+
+        assert result.restarted == []
+        assert result.needs_operator == [original.id]
+        assert kb.get_task(conn, original.id).status == "blocked"
+
+
 def test_watchdog_keeps_original_blocked_when_repair_fails(
     kanban_home: Path, tmp_path: Path
 ) -> None:

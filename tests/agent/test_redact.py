@@ -677,6 +677,19 @@ class TestConfigKeyRedosResistance:
         assert "Sup3rS3cret!" not in result
         assert ".password=" in result
 
+    def test_long_opaque_assignment_run_completes_fast(self):
+        """Lowercase env scanning stays linear on compaction payload blobs."""
+        import time
+
+        # A serialized tool payload can contain a long opaque alphanumeric
+        # value followed by '=' without containing a secret-key suffix.  The
+        # old unanchored lowercase-env pattern retried its greedy prefix from
+        # every byte, making this quadratic while holding the GIL.
+        text = "a" * 20_000 + "=value"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text, force=True) == text
+        assert time.perf_counter() - t0 < 2.0
+
     def test_yaml_assign_redos_resistance(self):
         """_YAML_ASSIGN_RE must not backtrack excessively on long inputs."""
         import time

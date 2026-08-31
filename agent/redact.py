@@ -158,8 +158,12 @@ _ENV_ASSIGN_RE = re.compile(
 # Lowercase env names: only underscore-boundary forms (``openai_key=…``,
 # ``FAL_KEY=…``, ``db_pw=…``) — NOT bare ``password=``/``token=``/``secret=``,
 # which appear in prose, URLs, and form bodies (issue #77484).
+# Anchor each attempt to the start of an identifier run.  Without the
+# lookbehind, ``re.sub`` retries the greedy ``[a-z0-9_]+`` prefix at every byte
+# of a long non-matching opaque payload, making strict compaction redaction
+# quadratic while holding the GIL (#99255).
 _ENV_ASSIGN_LOWER_RE = re.compile(
-    rf"([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
+    rf"(?<![a-z0-9_])([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
     re.IGNORECASE,
 )
 

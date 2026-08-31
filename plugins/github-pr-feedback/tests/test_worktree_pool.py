@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from github_pr_feedback.controller import (
+    LocalGitRepository,
     PooledLocalGitRepository,
     WorktreePoolExhausted,
 )
@@ -234,6 +235,22 @@ def test_pool_never_removes_the_linked_venv_between_reuses(tmp_path: Path) -> No
     assert not (prepared_b.path / "__pycache__").exists()
     assert not (prepared_b.path / "stray_untracked.txt").exists()
     ledger.close()
+
+
+def test_link_governed_venv_accepts_profile_managed_environment(tmp_path: Path) -> None:
+    profile_root = tmp_path / ".hermes"
+    repo = initialized_repository(profile_root)
+    managed_venv = profile_root / "venvs" / "hermes-3136"
+    (managed_venv / "bin").mkdir(parents=True)
+    (managed_venv / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+    (repo / ".venv").symlink_to(managed_venv, target_is_directory=True)
+    workspace = tmp_path / "receipt-worktree"
+    workspace.mkdir()
+
+    LocalGitRepository._link_governed_venv(repo, workspace)
+
+    assert (workspace / ".venv").is_symlink()
+    assert (workspace / ".venv").resolve(strict=True) == managed_venv.resolve(strict=True)
 
 
 class FakeKanban:

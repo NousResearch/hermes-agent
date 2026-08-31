@@ -21,6 +21,26 @@ def test_is_zeroed_state_db_and_quarantine(tmp_path):
     assert q.read_bytes() == bytes(1024)
 
 
+@pytest.mark.skipif(not hasattr(__import__("os"), "mkfifo"), reason="POSIX only")
+def test_is_zeroed_never_probes_special_files(tmp_path):
+    """A FIFO at the state.db path must be rejected without any blocking read.
+
+    Opening a FIFO for reading blocks until a writer appears; the zeroed
+    probe must classify on file type alone (#98017 review, P2).
+    """
+    import os
+
+    import hermes_state as hs
+    from hermes_cli.backup import is_zeroed_sqlite_file
+
+    fifo = tmp_path / "state.db"
+    os.mkfifo(fifo)
+    # Would hang forever before the regular-file guard if either probe
+    # attempted open()+read on the FIFO.
+    assert is_zeroed_sqlite_file(fifo) is False
+    assert hs.is_zeroed_state_db(fifo) is False
+
+
 def test_sessiondb_opens_fresh_after_zeroed_quarantine(tmp_path, monkeypatch):
     import hermes_state as hs
 

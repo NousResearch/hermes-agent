@@ -441,11 +441,18 @@ def is_zeroed_sqlite_file(
 ) -> bool:
     """True when *path* looks like the #68474 zeroed-state.db signature.
 
-    Signature: size > 0, first *probe_bytes* are all NUL (no ``SQLite format 3``
-    header). Used at SessionDB open and for snapshot diagnostics so a silent
+    Signature: no ``SQLite format 3`` header and no data — either empty
+    (size 0, the total-loss case, #97568) or first *probe_bytes* all NUL.
+    Used at SessionDB open and for snapshot diagnostics so a silent
     all-zero file becomes a guided recovery instead of a generic failure.
+
+    Only regular files qualify: a special file at the path (FIFO, device,
+    socket) is never "zeroed" — and probing one could block indefinitely
+    (opening a FIFO for read waits for a writer), so refuse before any I/O.
     """
     try:
+        if not path.is_file():
+            return False
         size = path.stat().st_size
     except OSError:
         return False

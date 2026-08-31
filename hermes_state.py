@@ -3928,7 +3928,7 @@ def _connect_tracked_db(path, tracking_path=None, **kwargs):
 def is_zeroed_state_db(
     path: Path, *, probe_bytes: int = 100, force: bool = False
 ) -> bool:
-    """Detect the #68474 zeroed state.db signature (size>0, NUL header).
+    """Detect the #68474/#97568 zeroed state.db signature (0-byte or NUL header).
 
     Byte-level probe, so it is only safe BEFORE any connection to *path*
     exists in this process: ``close()`` cancels every POSIX advisory lock the
@@ -3949,6 +3949,10 @@ def is_zeroed_state_db(
     except Exception:
         pass
     try:
+        if not path.is_file():
+            # Special files (FIFO, device, socket) are never "zeroed", and
+            # probing a FIFO would block until a writer appears.
+            return False
         size = path.stat().st_size
     except OSError:
         return False

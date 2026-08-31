@@ -80,3 +80,59 @@ class TestReadOnlyFTSDecodeError:
             assert read_only2._conn is not None
         finally:
             read_only2.close()
+
+
+def _corrupt_schema_with_raw_bytes(db_path: Path) -> None:
+    """Rewrite an FTS vtable's sqlite_master row with invalid UTF-8 bytes.
+
+    This is the fixture that actually reproduces #98924 on main: pysqlite
+    raises a bare UnicodeDecodeError at execute() time when SQLite's own
+    error/schema text carries raw non-UTF-8 file bytes. (Invalid UTF-8 in
+    messages.content alone does NOT make the LIMIT 0 probe raise.)
+    """
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute("PRAGMA writable_schema=ON")
+        badname = b"tbl_\x81\x82"
+        conn.execute(
+            "UPDATE sqlite_master SET name=CAST(? AS TEXT), "
+            "tbl_name=CAST(? AS TEXT), sql=CAST(? AS TEXT) "
+            "WHERE name='messages_fts_trigram'",
+            (badname, badname, b"CREATE GARBAGE \x81\x82"),
+        )
+        ver = conn.execute("PRAGMA schema_version").fetchone()[0]
+        conn.execute(f"PRAGMA schema_version = {ver + 1}")
+        conn.execute("PRAGMA writable_schema=OFF")
+    finally:
+        conn.close()
+
+
+class TestSchemaBytesDecodeError:
+    def test_read_only_open_survives_raw_bytes_in_schema(self, tmp_path):
+        """Genuine on-main repro of #98924: schema-area corruption whose raw
+        bytes reach pysqlite's error-message decode. Before the fix the probe
+        re-raised the resulting UnicodeDecodeError and killed read-only init.
+        """
+        db_path = tmp_path / "state.db"
+        writable = SessionDB(db_path=db_path)
+        writable.create_session("schema-bytes", source="cli")
+        writable.append_message("schema-bytes", role="user", content="hello")
+        writable.close()
+
+        _corrupt_schema_with_raw_bytes(db_path)
+
+        # Precondition: the raw probe really raises UnicodeDecodeError on
+        # this fixture (guards the test against silently stopping to
+        # exercise the bug on future SQLite versions).
+        raw = sqlite3.connect(str(db_path))
+        try:
+            with pytest.raises(UnicodeDecodeError):
+                raw.execute("SELECT * FROM messages_fts LIMIT 0")
+        finally:
+            raw.close()
+
+        read_only = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert read_only._conn is not None
+        finally:
+            read_only.close()

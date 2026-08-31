@@ -1531,7 +1531,18 @@ def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     if not charge_stale_thinking:
         return tokens
+    # The wire ships at most ONE of the generic thinking keys: every request
+    # build pops ``reasoning`` after (optionally) promoting it into
+    # ``reasoning_content`` (``apply_reasoning_content_policy``), and a
+    # non-empty stored ``reasoning_content`` always displaces it. Charging
+    # both keys double-counted the same thinking text on echo-back providers
+    # that persist it under both (#84371 comment: +53% vs real
+    # prompt_tokens). Mirror the wire: reasoning_content wins when present.
+    _rc = msg.get("reasoning_content")
+    _skip_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:
+        if key == "reasoning" and _skip_reasoning_dup:
+            continue
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     # reasoning_details: charge only the thinking TEXT, never the signed /
     # base64 envelope (#73298 second site; mirrors the preflight estimator's
@@ -3984,11 +3995,16 @@ class ContextCompressor(ContextEngine):
             # Same newest-turn-only thinking charge as the tail-cut walk
             # (#73624) — this boundary decides which tool results stay
             # prunable, and overcharging stale thinking shrinks that window.
+            # Echo-back routes charge every turn (#84371 estimator parity).
             _newest_asst_idx = _last_assistant_index(result)
+            _charge_all_thinking = self._stale_thinking_on_wire()
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 msg_tokens = _estimate_msg_budget_tokens(
-                    msg, charge_stale_thinking=(i == _newest_asst_idx)
+                    msg,
+                    charge_stale_thinking=(
+                        _charge_all_thinking or i == _newest_asst_idx
+                    ),
                 )
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
@@ -6553,6 +6569,30 @@ This compaction should PRIORITISE preserving all information related to the focu
             idx += 1
         return idx
 
+    def _stale_thinking_on_wire(self) -> bool:
+        """Whether the active route replays stale thinking text (#84371).
+
+        The tail-budget walks and the preflight trigger must charge the SAME
+        stale-thinking policy or a reasoning-heavy session can look
+        over-threshold to one and fully tail-protected to the other — the
+        infinite ineffective compaction loop.  Echo-back chat-completions
+        families (DeepSeek/Kimi/MiMo thinking mode) replay stored
+        ``reasoning_content`` on EVERY assistant turn, so the walk must
+        charge it everywhere; codex_responses and strict providers never
+        ship the text keys, so newest-turn-only stands (#73624).
+        """
+        try:
+            from agent.message_sanitization import stale_thinking_reaches_wire
+
+            return stale_thinking_reaches_wire(
+                getattr(self, "api_mode", "") or "",
+                getattr(self, "provider", "") or "",
+                getattr(self, "model", "") or "",
+                getattr(self, "base_url", "") or "",
+            )
+        except Exception:
+            return False
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
@@ -6598,12 +6638,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         # fields any transport still replays (#73624) — every older turn's
         # reasoning/reasoning_content is stripped or padded at send time,
         # so charging it here spends tail budget on bytes that never ship.
+        # Exception: echo-back providers (DeepSeek/Kimi/MiMo thinking mode
+        # on chat_completions) replay stale thinking on EVERY turn — charge
+        # it everywhere so this walk agrees with the preflight trigger
+        # (#84371 estimator parity).
         _newest_asst_idx = _last_assistant_index(messages)
+        _charge_all_thinking = self._stale_thinking_on_wire()
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
             msg_tokens = _estimate_msg_budget_tokens(
-                msg, charge_stale_thinking=(i == _newest_asst_idx)
+                msg,
+                charge_stale_thinking=(
+                    _charge_all_thinking or i == _newest_asst_idx
+                ),
             )
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
@@ -6631,7 +6679,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
                 raw_tok = _estimate_msg_budget_tokens(
-                    raw_msg, charge_stale_thinking=(j == _newest_asst_idx)
+                    raw_msg,
+                    charge_stale_thinking=(
+                        _charge_all_thinking or j == _newest_asst_idx
+                    ),
                 )
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j

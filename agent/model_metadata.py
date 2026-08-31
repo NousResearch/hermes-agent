@@ -3544,13 +3544,28 @@ def estimate_tokens_rough(text: str) -> int:
     return dense + ((sparse + 3) // 4)
 
 
-def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
+def estimate_messages_tokens_rough(
+    messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True,
+) -> int:
     """Rough token estimate for a message list (pre-flight only).
 
     Image parts (base64 PNG/JPEG) are counted as a flat ~1500 tokens per
     image — the Anthropic pricing model — instead of counting raw base64
     character length. Without this, a single ~1MB screenshot would be
     estimated at ~250K tokens and trigger premature context compression.
+
+    ``charge_stale_thinking`` mirrors the tail-budget walk's policy
+    (``context_compressor._estimate_msg_budget_tokens``, #73624): generic
+    thinking text (``reasoning`` / ``reasoning_content``) rides the wire for
+    at most the NEWEST assistant turn on routes that do not echo stale
+    reasoning back (Codex Responses ships encrypted ``codex_reasoning_items``
+    instead of the text keys; strict chat-completions providers strip or
+    one-space-pad the field). Passing ``False`` excludes those keys on every
+    assistant turn but the newest, so the compaction TRIGGER sees the same
+    size class as the tail-protection walk — the disagreement made
+    reasoning-heavy codex_responses sessions fire preflight forever while the
+    walk found nothing to compact (#84371 dead loop). Default ``True``
+    preserves the conservative full charge for callers without route context.
 
     Per-message results are memoized (see ``_estimate_message_tokens_cached``)
     keyed on a deep *identity fingerprint* of the message, so re-walking a
@@ -3559,10 +3574,48 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     leaf objects and structure, hence an identical estimate.
     """
     _IMAGE_TOKEN_COST = 1500
+    if not charge_stale_thinking:
+        messages = _strip_stale_thinking_for_estimate(messages)
     total = 0
     for msg in messages:
         total += _estimate_message_tokens_cached(msg, _IMAGE_TOKEN_COST)
     return total
+
+
+# Generic thinking-text keys replayed for at most the newest assistant turn
+# on non-echo routes — must stay in lockstep with
+# ``context_compressor._NEWEST_TURN_ONLY_BUDGET_KEYS``.
+_STALE_THINKING_ESTIMATE_KEYS = ("reasoning", "reasoning_content")
+
+
+def _strip_stale_thinking_for_estimate(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Copy of ``messages`` with stale thinking keys removed (newest kept).
+
+    Shallow stripped copies share the original value objects, so the
+    per-message memo still hits for the stripped shape on subsequent walks.
+    """
+    newest = -1
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            newest = i
+            break
+    out: List[Dict[str, Any]] = []
+    for i, m in enumerate(messages):
+        if (
+            i != newest
+            and isinstance(m, dict)
+            and m.get("role") == "assistant"
+            and any(m.get(k) for k in _STALE_THINKING_ESTIMATE_KEYS)
+        ):
+            m = {
+                k: v for k, v in m.items()
+                if k not in _STALE_THINKING_ESTIMATE_KEYS
+            }
+        out.append(m)
+    return out
 
 
 # --- Per-message token-estimate memo -------------------------------------
@@ -3692,9 +3745,23 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
         and bool(sidecar)
         and msg.get("role") in ("user", "assistant")
     )
+    # The internal ``reasoning`` key never ships: every request build pops it
+    # after (optionally) promoting it into ``reasoning_content`` (see
+    # ``apply_reasoning_content_policy`` / conversation_loop's api_messages
+    # build). When a message carries BOTH keys — the normal shape on
+    # reasoning-echo providers, which pin ``reasoning_content`` at creation
+    # time while ``reasoning`` holds the same text for trajectory storage —
+    # counting both charged the same thinking twice and inflated the rough
+    # estimate by up to +53% against provider-reported prompt_tokens
+    # (#84371 comment data, llama.cpp/Qwen). Keep ``reasoning`` only as the
+    # promotion proxy when no ``reasoning_content`` exists to displace it.
+    _rc = msg.get("reasoning_content")
+    drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
         if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS:
+            continue
+        if k == "reasoning" and drop_reasoning_dup:
             continue
         if k == "api_content":
             # Always popped before the request is built; only counted when it
@@ -3750,6 +3817,7 @@ def estimate_request_tokens_rough(
     *,
     system_prompt: str = "",
     tools: Optional[List[Dict[str, Any]]] = None,
+    charge_stale_thinking: bool = True,
 ) -> int:
     """Rough token estimate for a full chat-completions request.
 
@@ -3758,12 +3826,19 @@ def estimate_request_tokens_rough(
     tools enabled, schemas alone can add 20-30K tokens — a significant
     blind spot when only counting messages. Image content is counted
     at a flat per-image cost (see estimate_messages_tokens_rough).
+
+    ``charge_stale_thinking`` is forwarded to
+    ``estimate_messages_tokens_rough`` — pass ``False`` when the active
+    route provably strips stale assistant thinking at send time (see
+    ``message_sanitization.stale_thinking_reaches_wire``, #84371).
     """
     total = 0
     if system_prompt:
         total += estimate_tokens_rough(system_prompt)
     if messages:
-        total += estimate_messages_tokens_rough(messages)
+        total += estimate_messages_tokens_rough(
+            messages, charge_stale_thinking=charge_stale_thinking
+        )
     if tools:
         total += _estimate_tools_tokens_rough(tools)
     return total

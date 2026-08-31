@@ -4075,6 +4075,26 @@ def compress_context(
                 "Compression made no progress (session=%s) — skipping boundary rewrite.",
                 agent.session_id or "none",
             )
+            # Dead-loop breaker (#84371): a fired compaction that returns the
+            # transcript UNCHANGED will fail identically next turn unless the
+            # transcript changes — yet this path recorded telemetry only, so
+            # auto-compress re-fired every turn, each attempt burning a full
+            # aux summarization (6+/10min in the wild). Arm the transient
+            # structural backoff so the next attempts are deferred; any
+            # successful boundary lifts it, and manual /compress overrides it.
+            try:
+                _no_progress_recorder = getattr(
+                    agent.context_compressor, "_record_structural_no_op", None
+                )
+                if callable(_no_progress_recorder):
+                    _no_progress_recorder(
+                        "compaction returned the transcript unchanged "
+                        "(no_progress)"
+                    )
+            except Exception:
+                logger.debug(
+                    "no-progress backoff arm failed", exc_info=True
+                )
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)

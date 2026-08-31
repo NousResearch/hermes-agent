@@ -2672,7 +2672,17 @@ def run_conversation(
         # messages walk inside estimate_request_tokens_rough. Tools added
         # separately (compression needs them: 50+ tools = 20-30K tokens).
         # total_chars is a rough (~) proxy — verbose log + hook metric only.
-        approx_tokens = estimate_messages_tokens_rough(api_messages)
+        # Charge stale thinking only when the active route actually replays
+        # it (#84371): on codex_responses the text keys never ship (the
+        # encrypted item sidecars — charged unconditionally — carry the
+        # chain), so counting them here re-created the trigger/tail-walk
+        # disagreement that dead-looped compaction.
+        from agent.turn_context import _agent_stale_thinking_on_wire
+
+        approx_tokens = estimate_messages_tokens_rough(
+            api_messages,
+            charge_stale_thinking=_agent_stale_thinking_on_wire(agent),
+        )
         # Route-aware pressure: when the upcoming request is eligible for
         # native Responses compaction the transport will checkpoint-prune
         # the payload before sending — the generic durable-history figure

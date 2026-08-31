@@ -99,7 +99,27 @@ def _preflight_request_tokens(
         messages,
         system_prompt=system_prompt or "",
         tools=tools,
+        charge_stale_thinking=_agent_stale_thinking_on_wire(agent),
     )
+
+
+def _agent_stale_thinking_on_wire(agent: Any) -> bool:
+    """Whether the agent's active route replays stale thinking text (#84371).
+
+    Route facts unavailable (test doubles, partially-built agents) default to
+    ``True`` — the conservative full charge.
+    """
+    try:
+        from agent.message_sanitization import stale_thinking_reaches_wire
+
+        return stale_thinking_reaches_wire(
+            getattr(agent, "api_mode", "") or "",
+            getattr(agent, "provider", "") or "",
+            getattr(agent, "model", "") or "",
+            getattr(agent, "base_url", "") or "",
+        )
+    except Exception:
+        return True
 
 
 def compose_user_api_content(

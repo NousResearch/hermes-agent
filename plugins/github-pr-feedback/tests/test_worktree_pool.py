@@ -10,6 +10,7 @@ from github_pr_feedback.controller import (
     LocalGitRepository,
     PooledLocalGitRepository,
     WorktreePoolExhausted,
+    _prepare_receipt_worktree_with_overflow,
 )
 from github_pr_feedback.ledger import FeedbackLedger
 from github_pr_feedback.policy import FeedbackReceipt
@@ -426,3 +427,21 @@ def test_pool_prepare_failure_releases_the_slot_immediately(tmp_path: Path) -> N
     prepared = pool.prepare_receipt_worktree(repo, receipt(sha_a, pr_number=2))
     assert prepared.expected_sha == sha_a
     ledger.close()
+
+
+def test_receipt_preparation_uses_exact_head_overflow_when_pool_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    repo = initialized_repository(tmp_path)
+    sha = commit(repo, "a.txt", "a")
+
+    class ExhaustedPool:
+        def prepare_receipt_worktree(self, _path: Path, _receipt: FeedbackReceipt):
+            raise WorktreePoolExhausted("pool full")
+
+    prepared = _prepare_receipt_worktree_with_overflow(
+        ExhaustedPool(), repo, receipt(sha), tmp_path / "overflow-worktrees"
+    )
+
+    assert prepared.expected_sha == sha
+    assert prepared.path.is_relative_to(tmp_path / "overflow-worktrees")

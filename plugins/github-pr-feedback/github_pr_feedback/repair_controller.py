@@ -289,8 +289,11 @@ class RepairController:
                 if base_refresh_required:
                     base_refresh_slots_used += 1
                 try:
-                    prepared = self._local_git.prepare_receipt_worktree(
-                        target.local_path, receipt
+                    prepared = _prepare_receipt_worktree_with_overflow(
+                        self._local_git,
+                        target.local_path,
+                        receipt,
+                        self._ledger.path.parent / "overflow-worktrees",
                     )
                     task = _repair_task(
                         self._policy,

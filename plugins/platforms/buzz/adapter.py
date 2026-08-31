@@ -2779,13 +2779,30 @@ class BuzzAdapter(BasePlatformAdapter):
         if not self._message_handler:
             return
 
-        text, media_urls, media_types, message_type = await self._localize_inbound_media(
+        media_urls = list(media_urls or [])
+        media_types = list(media_types or [])
+
+        # Localize authenticated same-relay URL references embedded in the
+        # text, in addition to any native imeta attachments already verified
+        # and cached by the caller. Both paths are gated on the gateway's
+        # explicit-True authorization decision.
+        text, localized_urls, localized_types, localized_type = await self._localize_inbound_media(
             text,
             message_id,
             user_id=user_id,
             chat_type=chat_type,
             chat_id=chat_id,
         )
+        for path, mime in zip(localized_urls, localized_types):
+            if path not in media_urls:
+                media_urls.append(path)
+                media_types.append(mime)
+        if message_type == MessageType.TEXT:
+            message_type = localized_type
+        elif localized_urls and localized_type not in (message_type, MessageType.TEXT):
+            # Mixed media sources must use document semantics so an audio
+            # member is not mistaken for a voice note and sent through STT.
+            message_type = MessageType.DOCUMENT
 
         source = self.build_source(
             chat_id=chat_id,
@@ -2810,8 +2827,6 @@ class BuzzAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             reply_to_author_id=reply_to_author_id,
             reply_to_is_own_message=reply_to_is_own_message,
-            media_urls=media_urls,
-            media_types=media_types,
         )
 
         await self.handle_message(event)

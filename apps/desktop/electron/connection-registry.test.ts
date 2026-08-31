@@ -1595,12 +1595,13 @@ test('drift heal respects a deliberate primary pick on a registered route', () =
   assert.equal(drifted.registry.primary, LOCAL_CONNECTION_ID)
 })
 
-test('drift heal ignores local, ssh, and unparseable v1 routes', () => {
+test('drift heal ignores local and unparseable v1 routes', () => {
   const registry = emptyRegistry()
 
   for (const v1 of [
     { mode: 'local', remote: {} },
-    { mode: 'ssh', remote: { host: 'box' } },
+    { mode: 'ssh', remote: {} },
+    { mode: 'ssh', remote: { host: '   ' } },
     { mode: 'remote', remote: { url: 'not a url' } },
     { mode: 'remote', remote: {} },
     null
@@ -1610,6 +1611,92 @@ test('drift heal ignores local, ssh, and unparseable v1 routes', () => {
     assert.equal(drifted.changed, false, `expected no heal for ${JSON.stringify(v1)}`)
     assert.equal(drifted.registry, registry)
   }
+})
+
+test('drift heal registers a v1 SSH route the registry never learned about and makes it primary', () => {
+  // mgallmur-glitch's shape: registry migrated while local-only, then Settings
+  // pointed v1 at an SSH host (host, no url). The registry cannot name it, so
+  // primary stays 'local' and the files re-drift after every update relaunch.
+  const drifted = reconcileRegistryDrift(emptyRegistry(), {
+    mode: 'ssh',
+    remote: { host: 'devbox.example.com', user: 'omar', port: 2222 }
+  })
+
+  assert.equal(drifted.changed, true)
+
+  const ssh = drifted.registry.connections.find(connection => connection.kind === 'ssh')
+
+  assert.ok(ssh)
+  assert.equal(ssh.host, 'devbox.example.com')
+  assert.equal(ssh.user, 'omar')
+  assert.equal(ssh.port, 2222)
+  assert.equal(drifted.registry.primary, ssh.id)
+  assert.equal(drifted.registry.lastUsed, ssh.id)
+  // The whole point: the live v1 SSH descriptor can now be named.
+  assert.equal(
+    resolvedConnectionId(drifted.registry, {
+      mode: 'remote',
+      remoteKind: 'ssh',
+      ssh: { host: 'devbox.example.com', user: 'omar', port: 2222 }
+    }),
+    ssh.id
+  )
+})
+
+test('drift heal leaves a registry that already knows the v1 SSH route untouched', () => {
+  const first = reconcileRegistryDrift(emptyRegistry(), {
+    mode: 'ssh',
+    remote: { host: 'devbox.example.com', user: 'omar' }
+  })
+
+  assert.equal(first.changed, true)
+
+  const drifted = reconcileRegistryDrift(first.registry, {
+    mode: 'ssh',
+    remote: { host: 'DEVBOX.example.com', user: 'Omar' }
+  })
+
+  assert.equal(drifted.changed, false)
+  assert.equal(drifted.registry, first.registry)
+})
+
+test('drift heal respects a deliberate primary pick on a registered SSH route', () => {
+  let registry = reconcileRegistryDrift(emptyRegistry(), {
+    mode: 'ssh',
+    remote: { host: 'devbox.example.com' }
+  }).registry
+
+  registry = setPrimaryConnection(registry, LOCAL_CONNECTION_ID)
+
+  const drifted = reconcileRegistryDrift(registry, {
+    mode: 'ssh',
+    remote: { host: 'devbox.example.com' }
+  })
+
+  assert.equal(drifted.changed, false)
+  assert.equal(drifted.registry.primary, LOCAL_CONNECTION_ID)
+})
+
+test('drift heal adds the missing SSH source without disturbing other registered sources', () => {
+  let registry = emptyRegistry()
+
+  registry = upsertConnection(registry, {
+    id: 'homelab',
+    kind: 'remote',
+    label: 'Homelab',
+    url: 'https://homelab.example.com',
+    authMode: 'token',
+    token: { keep: true }
+  })
+
+  const drifted = reconcileRegistryDrift(registry, {
+    mode: 'ssh',
+    remote: { host: 'devbox.example.com' }
+  })
+
+  assert.equal(drifted.changed, true)
+  assert.ok(drifted.registry.connections.some(connection => connection.id === 'homelab'))
+  assert.ok(drifted.registry.connections.some(connection => connection.kind === 'ssh'))
 })
 
 test('drift heal adds the missing remote without disturbing other registered sources', () => {

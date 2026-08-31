@@ -217,7 +217,8 @@ class GatewayBusySessionMixin:
                 home=getattr(self, "_goal_continuation_claim_home", None),
             )
         except Exception:
-            self._restore_dequeued_event_front(session_key, adapter, event)
+            if not getattr(event, "_hermes_delivery_obligation_id", None):
+                self._restore_dequeued_event_front(session_key, adapter, event)
             logger.warning(
                 "goal continuation: durable claim publication failed for session %s",
                 session_key,
@@ -368,6 +369,10 @@ class GatewayBusySessionMixin:
 
         if event_claim_identity(event) is None:
             return
+        if getattr(event, "_hermes_delivery_obligation_id", None):
+            return
+        if getattr(event, "_hermes_execution_completed", False):
+            return
         retry = getattr(self, "_goal_continuation_retries", {}).get(session_key)
         if retry is not None and retry.dropped:
             return
@@ -387,7 +392,8 @@ class GatewayBusySessionMixin:
         adapter = self._adapter_for_source(event.source)
         if self._is_goal_continuation_event(event):
             if not self._drop_goal_continuation_retry(session_key):
-                self._restore_dequeued_event_front(session_key, adapter, event)
+                if not getattr(event, "_hermes_execution_completed", False):
+                    self._restore_dequeued_event_front(session_key, adapter, event)
                 raise RuntimeError(
                     "durable continuation policy retirement is unavailable"
                 )
@@ -400,6 +406,198 @@ class GatewayBusySessionMixin:
             raise RuntimeError(
                 "durable continuation policy retirement is unavailable"
             )
+
+    async def _commit_goal_continuation_result(
+        self,
+        *,
+        session_key: str,
+        source: "SessionSource",
+        event: "MessageEvent",
+        result: Dict[str, Any],
+        active_turn_token: Optional[str] = None,
+    ) -> str:
+        """Stage one completed result, then acknowledge its execution claim."""
+        from gateway import delivery_ledger
+        from gateway.run import (
+            GoalContinuationPublicationError,
+            _durable_delivery_text_for_response,
+        )
+        from gateway.goal_continuation_claims import (
+            event_claim_identity,
+            stage_completed_result,
+        )
+
+        identity = event_claim_identity(event)
+        content = result.get("final_response")
+        if identity is None or not isinstance(content, str):
+            raise GoalContinuationPublicationError("durable result staging failed")
+        adapter = self._adapter_for_source(source)
+        profile = getattr(adapter, "_owner_profile", None) or source.profile
+        claim_home = getattr(self, "_goal_continuation_claim_home", None)
+        try:
+            delivery_text = _durable_delivery_text_for_response(content, adapter)
+            source_payload = source.to_dict()
+            source_payload["is_bot"] = bool(source.is_bot)
+            source_payload["role_authorized"] = False
+            source_json = json.dumps(
+                source_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            await asyncio.to_thread(
+                stage_completed_result,
+                session_key,
+                identity[0],
+                identity[1],
+                content,
+                delivery_text=delivery_text,
+                active_turn_token=active_turn_token,
+                home=claim_home,
+            )
+            setattr(event, "_hermes_execution_completed", True)
+            obligation_id = await asyncio.to_thread(
+                delivery_ledger.record_claimed_result,
+                session_key=session_key,
+                claim_id=identity[0],
+                claim_event_id=identity[1],
+                platform=source.platform.value,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+                content=delivery_text,
+                adapter_profile=profile,
+                active_turn_token=active_turn_token,
+                raw_content=content,
+                source_json=source_json,
+                message_ref=getattr(event, "message_id", None),
+                home=claim_home,
+            )
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+                raise
+            raise GoalContinuationPublicationError(
+                "durable result staging failed"
+            ) from exc
+
+        setattr(event, "_hermes_delivery_obligation_id", obligation_id)
+        result["_delivery_obligation_id"] = obligation_id
+        if not self._complete_goal_continuation_claim_event(
+            session_key, adapter, event
+        ):
+            raise GoalContinuationPublicationError(
+                "durable claim acknowledgement failed"
+            )
+        return obligation_id
+
+    def _reconcile_completed_goal_continuation_claims(self) -> int:
+        """Retire staged claim heads before startup can re-execute them."""
+        from gateway import delivery_ledger
+        from gateway.goal_continuation_claims import (
+            GoalContinuationClaimError,
+            MAX_EVENTS,
+            clear_event_claim_identity,
+            complete_claim_event,
+            event_claim_identity,
+            load_claims,
+        )
+
+        reconciled = 0
+        for _recovery_pass in range(MAX_EVENTS + 1):
+            claims = load_claims(
+                home=getattr(self, "_goal_continuation_claim_home", None)
+            )
+            progressed = False
+            for claim in claims:
+                head = claim.events[0]
+                identity = event_claim_identity(head)
+                if identity is None:
+                    raise GoalContinuationClaimError(
+                        "durable continuation result identity is unavailable"
+                    )
+                claim_home = getattr(self, "_goal_continuation_claim_home", None)
+                obligation = delivery_ledger.get_claimed_result(
+                    *identity, home=claim_home
+                )
+                completed_content = claim.completed_results.get(identity[1])
+                delivery_text = claim.completed_delivery_texts.get(identity[1])
+                if completed_content is None:
+                    if obligation is not None:
+                        raise GoalContinuationClaimError(
+                            "durable result exists without completed claim state"
+                        )
+                    continue
+                if delivery_text is None:
+                    raise GoalContinuationClaimError(
+                        "durable continuation delivery text is unavailable"
+                    )
+                active_turn_token = claim.completed_turn_tokens.get(identity[1])
+                source_payload = head.source.to_dict()
+                source_payload["is_bot"] = bool(head.source.is_bot)
+                source_payload["role_authorized"] = False
+                source_json = json.dumps(
+                    source_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if obligation is None:
+                    obligation_id = delivery_ledger.record_claimed_result(
+                        session_key=claim.session_key,
+                        claim_id=identity[0],
+                        claim_event_id=identity[1],
+                        platform=head.source.platform.value,
+                        chat_id=head.source.chat_id,
+                        thread_id=head.source.thread_id,
+                        content=delivery_text,
+                        adapter_profile=claim.profile,
+                        active_turn_token=active_turn_token,
+                        raw_content=completed_content,
+                        source_json=source_json,
+                        message_ref=getattr(head, "message_id", None),
+                        home=claim_home,
+                    )
+                    obligation = delivery_ledger.get_claimed_result(
+                        *identity, home=claim_home
+                    )
+                    if obligation is None or obligation["obligation_id"] != obligation_id:
+                        raise GoalContinuationClaimError(
+                            "durable continuation result transfer is unavailable"
+                        )
+                expected_profile = claim.profile or "default"
+                if (
+                    obligation["session_key"] != claim.session_key
+                    or obligation["platform"] != head.source.platform.value
+                    or obligation["chat_id"] != str(head.source.chat_id)
+                    or obligation["thread_id"]
+                    != (str(head.source.thread_id) if head.source.thread_id else None)
+                    or obligation["content"] != delivery_text
+                    or obligation["profile"] != expected_profile
+                    or obligation["active_turn_token"] != active_turn_token
+                    or obligation["raw_content"] != completed_content
+                    or obligation["source_json"] != source_json
+                    or obligation["message_ref"]
+                    != (str(head.message_id) if head.message_id else None)
+                ):
+                    raise GoalContinuationClaimError(
+                        "durable continuation result cannot bind to its claim"
+                    )
+                if not complete_claim_event(
+                    claim.session_key,
+                    identity[0],
+                    identity[1],
+                    home=claim_home,
+                ):
+                    raise GoalContinuationClaimError(
+                        "durable continuation result acknowledgement failed"
+                    )
+                clear_event_claim_identity(head)
+                reconciled += 1
+                progressed = True
+            if not progressed:
+                return reconciled
+        raise GoalContinuationClaimError(
+            "durable continuation completed-result recovery exceeded its bound"
+        )
 
     def _recover_goal_continuation_claims(self, *, schedule: bool = True) -> int:
         """Restore strict durable claim FIFOs before startup admits new input."""
@@ -528,15 +726,70 @@ class GatewayBusySessionMixin:
             try:
                 from gateway.goal_continuation_claims import (
                     clear_event_claim_identity,
+                    complete_claim_event,
                     event_claim_identity,
+                    load_claims,
                     retire_claim,
                 )
 
-                retire_claim(
-                    session_key,
-                    retry.claim_id,
-                    home=getattr(self, "_goal_continuation_claim_home", None),
+                identity = event_claim_identity(retry.event)
+                owned_obligation_id = getattr(
+                    retry.event, "_hermes_delivery_obligation_id", None
                 )
+                if owned_obligation_id:
+                    from gateway.delivery_ledger import get_claimed_result
+
+                    if identity is None or identity[0] != retry.claim_id:
+                        raise RuntimeError(
+                            "durable completed continuation identity is unavailable"
+                        )
+                    claim = next(
+                        (
+                            item
+                            for item in load_claims(
+                                home=getattr(self, "_goal_continuation_claim_home", None)
+                            )
+                            if item.session_key == session_key
+                            and item.claim_id == retry.claim_id
+                        ),
+                        None,
+                    )
+                    completed_content = claim.completed_results.get(identity[1]) if claim else None
+                    delivery_text = claim.completed_delivery_texts.get(identity[1]) if claim else None
+                    obligation = get_claimed_result(
+                        *identity,
+                        home=getattr(self, "_goal_continuation_claim_home", None),
+                    )
+                    if (
+                        claim is None
+                        or completed_content is None
+                        or delivery_text is None
+                        or obligation is None
+                        or obligation["obligation_id"] != owned_obligation_id
+                        or obligation["content"] != delivery_text
+                        or obligation["raw_content"] != completed_content
+                    ):
+                        raise RuntimeError(
+                            "durable completed continuation ownership is inconsistent"
+                        )
+                    next_event = complete_claim_event(
+                        session_key,
+                        retry.claim_id,
+                        identity[1],
+                        home=getattr(self, "_goal_continuation_claim_home", None),
+                    )
+                    if next_event is not None:
+                        retire_claim(
+                            session_key,
+                            retry.claim_id,
+                            home=getattr(self, "_goal_continuation_claim_home", None),
+                        )
+                else:
+                    retire_claim(
+                        session_key,
+                        retry.claim_id,
+                        home=getattr(self, "_goal_continuation_claim_home", None),
+                    )
                 adapter = self._adapter_for_source(retry.event.source)
                 pending_slot = getattr(adapter, "_pending_messages", None)
                 events = [retry.event]
@@ -584,7 +837,8 @@ class GatewayBusySessionMixin:
                 retry = getattr(self, "_goal_continuation_retries", {}).get(session_key)
                 if retry is not None and retry.event is event:
                     if retry.claim_id and not self._drop_goal_continuation_retry(session_key):
-                        self._restore_dequeued_event_front(session_key, adapter, event)
+                        if not getattr(event, "_hermes_execution_completed", False):
+                            self._restore_dequeued_event_front(session_key, adapter, event)
                         return False
                     self._finish_goal_continuation_retry(session_key, retry)
                 self._stage_next_queued_event(

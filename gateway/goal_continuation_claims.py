@@ -31,6 +31,7 @@ MAX_CLAIMS = 512
 MAX_EVENTS = 256
 MAX_CONSUMED_EVENT_IDS = MAX_EVENTS * 4
 MAX_TEXT_BYTES = 256 * 1024
+MAX_COMPLETED_RESULT_BYTES = 256 * 1024
 
 _CLAIM_ID_ATTR = "_hermes_goal_claim_id"
 _EVENT_ID_ATTR = "_hermes_goal_claim_event_id"
@@ -112,6 +113,9 @@ class RecoveredGoalContinuationClaim:
     synthetic_head_pending: bool
     session_rebind_allowed: bool
     consumed_event_ids: tuple[str, ...]
+    completed_results: dict[str, str]
+    completed_delivery_texts: dict[str, str]
+    completed_turn_tokens: dict[str, str]
     events: tuple[MessageEvent, ...]
     path: Path
 
@@ -217,6 +221,9 @@ def publish_claim(
         "synthetic_head_pending": True,
         "session_rebind_allowed": False,
         "consumed_event_ids": [],
+        "completed_results": {},
+        "completed_delivery_texts": {},
+        "completed_turn_tokens": {},
         "events": encoded_events,
     }
     _write_payload(path, payload, must_not_exist=True)
@@ -232,6 +239,9 @@ def publish_claim(
         synthetic_head_pending=True,
         session_rebind_allowed=False,
         consumed_event_ids=(),
+        completed_results={},
+        completed_delivery_texts={},
+        completed_turn_tokens={},
         events=tuple(ordered),
         path=path,
     )
@@ -288,6 +298,76 @@ def append_claim_event(
 
 
 @_serialized
+def stage_completed_result(
+    session_key: str,
+    claim_id: str,
+    event_id: str,
+    content: str,
+    *,
+    delivery_text: str | None = None,
+    active_turn_token: str | None = None,
+    home: Path | str | None = None,
+) -> None:
+    """Checkpoint completed output inside its input claim before ledger transfer."""
+    if not isinstance(content, str) or len(
+        content.encode("utf-8", "replace")
+    ) > MAX_COMPLETED_RESULT_BYTES:
+        raise GoalContinuationClaimError(
+            "invalid durable continuation completed result"
+        )
+    if active_turn_token is not None and (
+        not isinstance(active_turn_token, str)
+        or not active_turn_token
+        or len(active_turn_token) > 256
+    ):
+        raise GoalContinuationClaimError(
+            "invalid durable continuation active-turn token"
+        )
+    if delivery_text is None:
+        delivery_text = content
+    if not isinstance(delivery_text, str) or len(
+        delivery_text.encode("utf-8", "replace")
+    ) > MAX_COMPLETED_RESULT_BYTES:
+        raise GoalContinuationClaimError(
+            "invalid durable continuation delivery text"
+        )
+    path = claim_path(session_key, home)
+    payload = _read_payload(path)
+    claim = _decode_payload(path, payload)
+    if claim.claim_id != claim_id:
+        raise GoalContinuationClaimError(
+            "durable continuation claim identity mismatch"
+        )
+    head_id = getattr(claim.events[0], _EVENT_ID_ATTR, None)
+    if head_id != event_id:
+        raise GoalContinuationClaimError(
+            "durable continuation result is out of order"
+        )
+    completed = dict(claim.completed_results)
+    completed_delivery_texts = dict(claim.completed_delivery_texts)
+    completed_turn_tokens = dict(claim.completed_turn_tokens)
+    existing = completed.get(event_id)
+    if existing is not None:
+        if (
+            existing != content
+            or completed_delivery_texts.get(event_id) != delivery_text
+            or completed_turn_tokens.get(event_id) != active_turn_token
+        ):
+            raise GoalContinuationClaimError(
+                "conflicting durable continuation completed result"
+            )
+        return
+    completed[event_id] = content
+    payload["completed_results"] = completed
+    completed_delivery_texts[event_id] = delivery_text
+    payload["completed_delivery_texts"] = completed_delivery_texts
+    if active_turn_token is not None:
+        completed_turn_tokens[event_id] = active_turn_token
+    payload["completed_turn_tokens"] = completed_turn_tokens
+    _write_payload(path, payload)
+
+
+@_serialized
 def complete_claim_event(
     session_key: str,
     claim_id: str,
@@ -315,6 +395,15 @@ def complete_claim_event(
             )
         consumed_event_ids.append(event_id)
     payload["consumed_event_ids"] = consumed_event_ids
+    completed_results = dict(payload.get("completed_results", {}))
+    completed_results.pop(event_id, None)
+    payload["completed_results"] = completed_results
+    completed_delivery_texts = dict(payload.get("completed_delivery_texts", {}))
+    completed_delivery_texts.pop(event_id, None)
+    payload["completed_delivery_texts"] = completed_delivery_texts
+    completed_turn_tokens = dict(payload.get("completed_turn_tokens", {}))
+    completed_turn_tokens.pop(event_id, None)
+    payload["completed_turn_tokens"] = completed_turn_tokens
     remaining = payload["events"][1:]
     if payload["synthetic_head_pending"]:
         payload["synthetic_head_pending"] = False
@@ -355,6 +444,10 @@ def retire_claim(
     claim, sidecars = _combine_claim_with_successors(base_claim, payload, home=home)
     if claim.claim_id != claim_id:
         raise GoalContinuationClaimError("durable continuation claim identity mismatch")
+    if claim.completed_results:
+        raise GoalContinuationClaimError(
+            "completed continuation result still owns publication"
+        )
     encoded_by_id = {
         getattr(event, _EVENT_ID_ATTR): encoded
         for event, encoded in zip(base_claim.events, payload["events"])
@@ -498,7 +591,7 @@ def _encode_event(event: MessageEvent, *, claim_id: str, event_id: str) -> dict[
 
 
 def _decode_payload(path: Path, payload: Any) -> RecoveredGoalContinuationClaim:
-    if not isinstance(payload, dict) or set(payload) != {
+    required_keys = {
         "version",
         "claim_id",
         "session_key",
@@ -508,7 +601,17 @@ def _decode_payload(path: Path, payload: Any) -> RecoveredGoalContinuationClaim:
         "session_rebind_allowed",
         "consumed_event_ids",
         "events",
-    }:
+    }
+    allowed_keys = required_keys | {
+        "completed_results",
+        "completed_delivery_texts",
+        "completed_turn_tokens",
+    }
+    if (
+        not isinstance(payload, dict)
+        or not required_keys.issubset(payload)
+        or not set(payload).issubset(allowed_keys)
+    ):
         raise GoalContinuationClaimError("invalid durable continuation claim schema")
     if payload["version"] != CLAIM_VERSION:
         raise GoalContinuationClaimError("unsupported durable continuation claim version")
@@ -557,6 +660,56 @@ def _decode_payload(path: Path, payload: Any) -> RecoveredGoalContinuationClaim:
         raise GoalContinuationClaimError(
             "canonical durable continuation event is already consumed"
         )
+    completed_results = payload.get("completed_results", {})
+    if (
+        not isinstance(completed_results, dict)
+        or len(completed_results) > 1
+        or any(
+            not isinstance(event_id, str)
+            or event_id not in event_ids
+            or not isinstance(content, str)
+            or len(content.encode("utf-8", "replace"))
+            > MAX_COMPLETED_RESULT_BYTES
+            for event_id, content in completed_results.items()
+        )
+        or (
+            completed_results
+            and set(completed_results) != {event_ids[0]}
+        )
+    ):
+        raise GoalContinuationClaimError(
+            "invalid durable continuation completed-result state"
+        )
+    completed_turn_tokens = payload.get("completed_turn_tokens", {})
+    completed_delivery_texts = payload.get("completed_delivery_texts", {})
+    if (
+        not isinstance(completed_delivery_texts, dict)
+        or set(completed_delivery_texts) != set(completed_results)
+        or any(
+            not isinstance(text, str)
+            or len(text.encode("utf-8", "replace"))
+            > MAX_COMPLETED_RESULT_BYTES
+            for text in completed_delivery_texts.values()
+        )
+    ):
+        raise GoalContinuationClaimError(
+            "invalid durable continuation delivery-text state"
+        )
+    if (
+        not isinstance(completed_turn_tokens, dict)
+        or set(completed_turn_tokens) - set(completed_results)
+        or any(
+            not isinstance(event_id, str)
+            or event_id not in event_ids
+            or not isinstance(token, str)
+            or not token
+            or len(token) > 256
+            for event_id, token in completed_turn_tokens.items()
+        )
+    ):
+        raise GoalContinuationClaimError(
+            "invalid durable continuation completed-turn state"
+        )
     if synthetic_head_pending and not _is_typed_continuation(events[0]):
         raise GoalContinuationClaimError("invalid durable continuation semantic head")
     if session_rebind_allowed and any(event.goal_continuation for event in events):
@@ -573,6 +726,9 @@ def _decode_payload(path: Path, payload: Any) -> RecoveredGoalContinuationClaim:
         synthetic_head_pending=synthetic_head_pending,
         session_rebind_allowed=session_rebind_allowed,
         consumed_event_ids=tuple(consumed_event_ids),
+        completed_results=dict(completed_results),
+        completed_delivery_texts=dict(completed_delivery_texts),
+        completed_turn_tokens=dict(completed_turn_tokens),
         events=events,
         path=path,
     )
@@ -681,6 +837,9 @@ def _combine_claim_with_successors(
             synthetic_head_pending=claim.synthetic_head_pending,
             session_rebind_allowed=claim.session_rebind_allowed,
             consumed_event_ids=claim.consumed_event_ids,
+            completed_results=dict(claim.completed_results),
+            completed_delivery_texts=dict(claim.completed_delivery_texts),
+            completed_turn_tokens=dict(claim.completed_turn_tokens),
             events=tuple(events),
             path=claim.path,
         ),

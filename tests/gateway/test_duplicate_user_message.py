@@ -288,6 +288,25 @@ async def test_not_new_messages_skip_db_when_agent_has_session_db(
 
 
 @pytest.mark.asyncio
+async def test_claimed_result_publication_failure_does_not_publish_error_reply(
+    monkeypatch, tmp_path
+):
+    """A durably owned result waits for replay instead of emitting a second reply."""
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(
+        side_effect=gateway_run.GoalContinuationPublicationError(
+            "durable result publication is pending recovery"
+        )
+    )
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response is None
+
+
+@pytest.mark.asyncio
 async def test_transcript_read_failure_stops_turn_before_agent_or_append(
     monkeypatch, tmp_path
 ):

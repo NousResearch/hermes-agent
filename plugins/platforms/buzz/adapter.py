@@ -1553,11 +1553,19 @@ class BuzzAdapter(BasePlatformAdapter):
                                 detail = message[-1] if len(message) > 2 else "subscription closed"
                                 sub_id = str(message[1]) if len(message) > 1 else ""
                                 closed_channel = subscriptions.get(sub_id)
-                                # "restricted: …" means the relay will never
-                                # serve this subscription — drop it permanently
-                                # rather than reconnecting and repeating the
-                                # same rejection in a tight loop.
-                                if "restricted" in str(detail).lower() and closed_channel:
+                                detail_l = str(detail).lower()
+                                # A membership rejection ("restricted: not a
+                                # channel member", bare "not a channel member",
+                                # or "auth-required") means the relay will
+                                # never serve this subscription — drop it
+                                # permanently rather than reconnecting and
+                                # repeating the same rejection in a tight loop.
+                                is_membership_rejection = (
+                                    "restricted" in detail_l
+                                    or "not a channel member" in detail_l
+                                    or "auth-required" in detail_l
+                                )
+                                if is_membership_rejection and closed_channel:
                                     logger.warning(
                                         "Buzz: relay permanently rejected channel %s (%s) — "
                                         "removing from watch list",
@@ -1759,7 +1767,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if code == 0:
             for dm in _parse_json_list(out):
                 dm_id = str(dm.get("dm_id") or "")
-                if not dm_id or dm_id in self._channel_state:
+                if not dm_id or dm_id in self._channel_state or dm_id in self._restricted_channels:
                     continue
                 if seed:
                     await self._seed_channel(dm_id, chat_type="dm")
@@ -1776,6 +1784,8 @@ class BuzzAdapter(BasePlatformAdapter):
                 continue
             self._channel_meta[ch_id] = ch
             self._channel_names.setdefault(ch_id, str(ch.get("name") or ch_id))
+            if ch_id in self._restricted_channels:
+                continue
             if not self._may_reclassify_as_dm(ch_id):
                 continue
             if ch_id in self._channel_state:

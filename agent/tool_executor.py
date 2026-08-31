@@ -1203,6 +1203,21 @@ class _ConcurrentBatch:
             logger.info("tool %s failed (%.2fs): %s", ref.name, duration, result[:200])
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", ref.name, duration, len(result))
+
+        # Post-execution checkpoint decision — delegates to CheckpointStrategy so
+        # the *when* logic lives in one declarative place, not scattered in the loop.
+        # We only act when the existing checkpoint infrastructure is enabled and
+        # the strategy says this tool result warrants a snapshot.
+        if not blocked and agent._checkpoint_mgr.enabled:
+            try:
+                from agent.checkpoint_strategy import should_checkpoint, get_checkpoint_label, CheckpointStrategy
+                if should_checkpoint(ref.name, result, CheckpointStrategy.SMART):
+                    cwd = ref.args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                    label = get_checkpoint_label(ref.name)
+                    agent._checkpoint_mgr.ensure_checkpoint(cwd, label)
+            except Exception as _cp_err:
+                logger.debug("checkpoint strategy hook raised for %s: %s", ref.name, _cp_err)
+
         return _ToolOutcome(ref, result, duration, is_error, blocked)
 
     def run_worker(self, index: int, start_order: int) -> None:

@@ -1,19 +1,31 @@
-"""Checkpoint strategy middleware.
+"""Checkpoint strategy: decide *when* to trigger agent state persistence.
 
-Decides when to save agent state for replay/recovery.
+This is a pure decision layer.  It returns ``True``/``False`` and never
+calls the checkpointer directly, so different loop implementations can
+plug in their own persistence backend (e.g. the existing
+``tools.checkpoint_manager.CheckpointManager``).
 
-Strategies:
-- checkpoint_never: no checkpoints
-- checkpoint_all: after every tool call
-- checkpoint_risky: after destructive operations (write, delete, API calls)
-- checkpoint_smart: after uncertain operations (API calls, LLM reasoning changes)
+Four strategies:
+
+| Strategy | Triggers checkpoint                                 |
+|----------|-----------------------------------------------------|
+| NEVER    | Never                                               |
+| ALL      | After every tool call                               |
+| RISKY    | After destructive/mutating operations only          |
+| SMART    | After destructive ops OR error results (see below)  |
+
+SMART rationale: checkpoint after any state-changing op (write, patch,
+terminal, move/delete) and after any tool that returns an error dict —
+the agent may be in an inconsistent state and worth snapshotting before
+a retry loop starts.  Successful read-only API calls do *not* trigger a
+checkpoint; the result is ephemeral data and nothing has changed.
 """
 
 from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -21,27 +33,27 @@ logger = logging.getLogger(__name__)
 class CheckpointStrategy(Enum):
     """When to checkpoint agent state."""
 
-    NEVER = "never"  # No checkpoints
-    ALL = "all"  # After every tool call
-    RISKY = "risky"  # Only after destructive operations
-    SMART = "smart"  # After API calls, file mutations, uncertain outcomes
+    NEVER = "never"   # No checkpoints
+    ALL = "all"       # After every tool call
+    RISKY = "risky"   # Only after destructive/mutating operations
+    SMART = "smart"   # After destructive ops or error results
 
 
-# Tool categories for checkpoint decisions
+# ---------------------------------------------------------------------------
+# Tool category sets
+# ---------------------------------------------------------------------------
+
 _DESTRUCTIVE_TOOLS = {
     "write_file",
     "patch",
-    "terminal",  # Can modify files
+    "terminal",   # can modify files
     "delete_file",
     "move_file",
 }
 
-_API_TOOLS = {
-    "web_search",
-    "web_extract",
-    "mail",
-    "mcp_*",  # MCP tools
-}
+# MCP tools use the naming convention  mcp_<server_id>_<tool_name>
+# Match by prefix rather than a literal "mcp_*" entry.
+_MCP_PREFIX = "mcp_"
 
 _UNCERTAIN_TOOLS = {
     "execute_code",
@@ -49,21 +61,25 @@ _UNCERTAIN_TOOLS = {
 }
 
 
+def _is_mcp_tool(tool_name: str) -> bool:
+    """Return True if *tool_name* looks like a MCP tool (mcp_<id>_<name>)."""
+    return tool_name.startswith(_MCP_PREFIX)
+
+
 def should_checkpoint(
     tool_name: str,
     result: Any,
     strategy: CheckpointStrategy = CheckpointStrategy.SMART,
 ) -> bool:
-    """
-    Decide if agent should checkpoint after this tool call.
+    """Decide whether to checkpoint after a tool call.
 
     Args:
-        tool_name: Name of the tool that just executed
-        result: The result from the tool
-        strategy: Which checkpoint strategy to use
+        tool_name: Name of the tool that just executed.
+        result:    The result returned by the tool.
+        strategy:  Which checkpoint strategy to apply.
 
     Returns:
-        True if should save checkpoint, False otherwise
+        True if the caller should persist agent state, False otherwise.
     """
     if strategy == CheckpointStrategy.NEVER:
         return False
@@ -72,44 +88,50 @@ def should_checkpoint(
         return True
 
     if strategy == CheckpointStrategy.RISKY:
-        # Checkpoint after destructive operations
-        destructive_prefixes = tuple(f"{t}:" for t in _DESTRUCTIVE_TOOLS)
-        if tool_name in _DESTRUCTIVE_TOOLS or tool_name.startswith(destructive_prefixes):
-            logger.debug(f"Checkpointing after destructive tool: {tool_name}")
+        if tool_name in _DESTRUCTIVE_TOOLS:
+            logger.debug("Checkpointing after destructive tool: %s", tool_name)
             return True
         return False
 
     if strategy == CheckpointStrategy.SMART:
-        # 1. Checkpoint after destructive / mutating operations (always)
-        destructive_prefixes = tuple(f"{t}:" for t in _DESTRUCTIVE_TOOLS)
-        if tool_name in _DESTRUCTIVE_TOOLS or tool_name.startswith(destructive_prefixes):
+        # 1. Checkpoint after any destructive / mutating operation.
+        if tool_name in _DESTRUCTIVE_TOOLS:
             logger.debug("Checkpointing after destructive tool: %s", tool_name)
             return True
 
-        # 2. Checkpoint after any tool that returns an error dict — state may be
-        #    inconsistent and worth preserving before a retry loop starts.
+        # 2. Checkpoint when a tool returns an error dict — agent state may be
+        #    inconsistent and worth preserving before a retry loop begins.
         if isinstance(result, dict) and "error" in result:
             logger.debug("Checkpointing after error result from %s", tool_name)
             return True
 
-        # 3. Successful API calls do NOT trigger a checkpoint — the result is
-        #    ephemeral read-only data; nothing has changed that would need replay.
+        # 3. Everything else (successful reads, API calls, MCP queries) is
+        #    ephemeral data; no state has changed, no checkpoint needed.
         return False
 
     return False
 
 
 def get_checkpoint_label(tool_name: str) -> str:
-    """Generate a descriptive label for a checkpoint."""
+    """Return a human-readable label for a checkpoint taken after *tool_name*."""
     if tool_name in _DESTRUCTIVE_TOOLS:
-        return f"after_{tool_name}_mutation"
-    if any(tool_name.startswith(f"{api}:") for api in _API_TOOLS):
-        return f"after_{tool_name.split(':')[0]}_call"
-    return f"after_{tool_name}"
+        return "after_%s_mutation" % tool_name
+    if _is_mcp_tool(tool_name):
+        # e.g. "mcp_github_list_prs" → "after_mcp_github_call"
+        parts = tool_name.split("_", 2)
+        server_id = parts[1] if len(parts) >= 2 else tool_name
+        return "after_mcp_%s_call" % server_id
+    return "after_%s" % tool_name
 
 
 class CheckpointManager:
-    """Manage checkpoints throughout a conversation."""
+    """Track which checkpoints have been taken in a conversation.
+
+    This is a *record-keeping* companion to the decision layer; the actual
+    filesystem snapshot is delegated to ``tools.checkpoint_manager.CheckpointManager``
+    (which is owned by the agent and called from tool_executor).  This class
+    just keeps a lightweight history so callers can audit what happened.
+    """
 
     def __init__(self, strategy: CheckpointStrategy = CheckpointStrategy.SMART):
         self.strategy = strategy
@@ -117,11 +139,11 @@ class CheckpointManager:
         self.checkpoint_history: List[Dict[str, Any]] = []
 
     def should_checkpoint(self, tool_name: str, result: Any) -> bool:
-        """Check if should checkpoint after this tool."""
+        """Return True if agent state should be persisted after this tool."""
         return should_checkpoint(tool_name, result, self.strategy)
 
     def record_checkpoint(self, tool_name: str, checkpoint_id: str) -> None:
-        """Record that a checkpoint was taken."""
+        """Record that a checkpoint was taken (called by the loop after persisting)."""
         self.checkpoints_taken += 1
         label = get_checkpoint_label(tool_name)
         self.checkpoint_history.append(
@@ -132,10 +154,10 @@ class CheckpointManager:
                 "sequence": self.checkpoints_taken,
             }
         )
-        logger.debug(f"Recorded checkpoint #{self.checkpoints_taken}: {label}")
+        logger.debug("Recorded checkpoint #%d: %s", self.checkpoints_taken, label)
 
     def get_summary(self) -> Dict[str, Any]:
-        """Get checkpoint summary."""
+        """Return a summary of all checkpoints taken so far."""
         return {
             "strategy": self.strategy.value,
             "checkpoints_taken": self.checkpoints_taken,

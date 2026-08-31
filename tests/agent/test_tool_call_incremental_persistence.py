@@ -32,6 +32,7 @@ import pytest
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.agent_runtime_helpers import sanitize_api_messages
+from agent.replay_cleanup import sanitize_replay_history
 from agent.tool_executor import execute_tool_calls_segmented
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -175,6 +176,112 @@ def test_run_conversation_flushes_assistant_tool_call_before_execution():
     assert last[-1]["role"] == "assistant"
     assert last[-1]["tool_calls"][0]["id"] == "c1"
     assert result["final_response"] == "done"
+
+
+def test_provider_success_before_assistant_flush_has_no_durable_completion_receipt(
+    tmp_path,
+):
+    """The provider/DB crash window remains explicitly non-atomic."""
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "provider-success-pre-flush"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    provider_effects = []
+
+    def _provider_completed(*_args, **_kwargs):
+        provider_effects.append("accepted")
+        return _mock_response(content="provider completed", finish_reason="stop")
+
+    agent.client.chat.completions.create.side_effect = _provider_completed
+    original_flush = agent._flush_messages_to_session_db
+
+    def _crash_before_assistant_flush(messages, conversation_history=None):
+        if messages and messages[-1].get("role") == "assistant":
+            raise SystemExit("crash after provider success before durable response")
+        return original_flush(messages, conversation_history)
+
+    agent._flush_messages_to_session_db = _crash_before_assistant_flush
+    try:
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch(
+                "agent.auxiliary_client.get_text_auxiliary_client",
+                return_value=(None, None),
+            ),
+            pytest.raises(SystemExit, match="after provider success"),
+        ):
+            agent.run_conversation("complete one provider request")
+    finally:
+        db.close()
+
+    assert provider_effects == ["accepted"]
+    durable = _durable_messages(db_path, session_id)
+    assert all(message["role"] != "assistant" for message in durable)
+    assert all(message.get("content") != "provider completed" for message in durable)
+
+
+def test_tool_success_before_result_flush_recovers_as_unknown_not_completed(
+    tmp_path,
+):
+    """Persisted tool intent cannot prove an external effect completed."""
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "tool-success-pre-flush"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    tool_call = _mock_tool_call(name="write_file", call_id="effect-call")
+    messages = [
+        {"role": "user", "content": "perform one side effect"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "effect-call",
+                    "type": "function",
+                    "function": {"name": "write_file", "arguments": "{}"},
+                }
+            ],
+        },
+    ]
+    agent._flush_messages_to_session_db(messages)
+    effects = []
+
+    def _effect_completed(*_args, **_kwargs):
+        effects.append("committed")
+        return "external mutation completed"
+
+    def _crash_before_result_flush(*_args, **_kwargs):
+        raise SystemExit("crash after tool success before durable result")
+
+    agent._flush_messages_to_session_db = _crash_before_result_flush
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    try:
+        with (
+            patch("model_tools.handle_function_call", side_effect=_effect_completed),
+            patch(
+                "agent.tool_executor.maybe_persist_tool_result",
+                side_effect=lambda **kwargs: kwargs["content"],
+            ),
+            pytest.raises(SystemExit, match="after tool success"),
+        ):
+            agent._execute_tool_calls_sequential(
+                assistant_message,
+                messages,
+                "task-effect-window",
+            )
+    finally:
+        db.close()
+
+    assert effects == ["committed"]
+    durable = _durable_messages(db_path, session_id)
+    assert [message["role"] for message in durable] == ["user", "assistant"]
+    resumed = sanitize_replay_history(durable)
+    assert resumed[-1]["role"] == "tool"
+    assert resumed[-1]["tool_call_id"] == "effect-call"
+    assert resumed[-1]["effect_disposition"] == "unknown"
+    assert "external mutation completed" not in resumed[-1]["content"]
 
 
 def test_interim_assistant_is_durable_before_ui_projection_on_abnormal_exit(tmp_path):
@@ -904,4 +1011,3 @@ def test_flush_concurrent_nonblank_winner_adopts_canonical_content(tmp_path):
     assert messages[-1]["content"] == "Canonical winner answer from sibling"
     assert messages[-1]["_db_persisted"] is True
     assert messages[-1]["_row_id"] == row_id
-

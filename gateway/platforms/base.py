@@ -2790,6 +2790,42 @@ class BasePlatformAdapter(ABC):
             success=delivered,
             error=None if delivered else "all images failed to send")
 
+    async def _send_claimed_image_part(
+        self,
+        chat_id: str,
+        image_url: str,
+        alt_text: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send one claim-owned image without the batch path's swallowing.
+
+        A single logical part gets one real adapter result so its durable state
+        can be acknowledged independently. Ordinary responses retain the
+        platform batching path.
+        """
+        from urllib.parse import unquote as _unquote
+
+        if image_url.startswith("file://"):
+            return await self.send_image_file(
+                chat_id=chat_id,
+                image_path=_unquote(image_url[7:]),
+                caption=alt_text or None,
+                metadata=metadata,
+            )
+        if self._is_animation_url(image_url):
+            return await self.send_animation(
+                chat_id=chat_id,
+                animation_url=image_url,
+                caption=alt_text or None,
+                metadata=metadata,
+            )
+        return await self.send_image(
+            chat_id=chat_id,
+            image_url=image_url,
+            caption=alt_text or None,
+            metadata=metadata,
+        )
+
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -4197,6 +4233,205 @@ class BasePlatformAdapter(ABC):
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
 
+    async def _deliver_claimed_response_parts(
+        self,
+        *,
+        obligation_id: str,
+        chat_id: str,
+        text_content: str,
+        images: List[Tuple[str, str]],
+        media_files: List[Tuple[str, bool]],
+        local_files: List[str],
+        force_document_attachments: bool,
+        metadata: Optional[Dict[str, Any]],
+        reply_to: Optional[str],
+        recovery_marker: str = "",
+        text_already_delivered: bool = False,
+    ) -> None:
+        """Publish one complete claim-owned response through durable parts."""
+        from gateway.claimed_result_publication import (
+            ClaimedResultPartDeliveryError,
+            deliver_claimed_result_part,
+            plan_claimed_result_parts,
+            register_claimed_result_parts,
+        )
+
+        video_exts = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+        image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+        descriptors: List[Dict[str, Any]] = []
+
+        if text_content:
+            descriptors.append(
+                {
+                    "kind": "text",
+                    "identity": text_content,
+                    "payload": text_content,
+                    "already_delivered": text_already_delivered,
+                }
+            )
+        for image_url, alt_text in images:
+            descriptors.append(
+                {
+                    "kind": "image",
+                    "identity": f"{image_url}\0{alt_text}",
+                    "payload": image_url,
+                    "alt_text": alt_text,
+                }
+            )
+
+        for media_path, is_voice in media_files:
+            ext = Path(media_path).suffix.lower()
+            if (
+                ext in image_exts
+                and not is_voice
+                and not force_document_attachments
+            ):
+                descriptors.append(
+                    {
+                        "kind": "image",
+                        "identity": media_path,
+                        "payload": Path(media_path).resolve().as_uri(),
+                        "alt_text": "",
+                    }
+                )
+            elif should_send_media_as_audio(
+                self.platform, ext, is_voice=is_voice
+            ):
+                descriptors.append(
+                    {
+                        "kind": "voice",
+                        "identity": f"{media_path}\0{int(is_voice)}",
+                        "payload": media_path,
+                        "is_voice": is_voice,
+                    }
+                )
+            elif ext in video_exts:
+                descriptors.append(
+                    {"kind": "video", "identity": media_path, "payload": media_path}
+                )
+            else:
+                descriptors.append(
+                    {
+                        "kind": "document",
+                        "identity": media_path,
+                        "payload": media_path,
+                    }
+                )
+
+        for file_path in local_files:
+            ext = Path(file_path).suffix.lower()
+            if ext in image_exts and not force_document_attachments:
+                descriptors.append(
+                    {
+                        "kind": "image",
+                        "identity": file_path,
+                        "payload": Path(file_path).resolve().as_uri(),
+                        "alt_text": "",
+                    }
+                )
+            elif ext in video_exts:
+                descriptors.append(
+                    {"kind": "video", "identity": file_path, "payload": file_path}
+                )
+            else:
+                descriptors.append(
+                    {
+                        "kind": "document",
+                        "identity": file_path,
+                        "payload": file_path,
+                    }
+                )
+
+        parts = plan_claimed_result_parts(
+            obligation_id,
+            [(item["kind"], item["identity"]) for item in descriptors],
+        )
+        await register_claimed_result_parts(obligation_id, parts)
+        if not parts:
+            from gateway.delivery_ledger import mark_claimed_result_failed
+
+            await asyncio.to_thread(
+                mark_claimed_result_failed,
+                obligation_id,
+                "no_deliverable_response_part",
+            )
+            raise ClaimedResultPartDeliveryError(
+                "claimed continuation produced no deliverable response part"
+            )
+
+        human_delay = self._get_human_delay()
+        for descriptor, part in zip(descriptors, parts):
+            if descriptor["kind"] != "text" and human_delay > 0:
+                await asyncio.sleep(human_delay)
+
+            if descriptor.get("already_delivered"):
+                from gateway.delivery_ledger import (
+                    mark_claimed_result_part_delivered,
+                    prepare_claimed_result_part,
+                )
+
+                should_ack = await asyncio.to_thread(
+                    prepare_claimed_result_part,
+                    obligation_id,
+                    part.part_id,
+                )
+                if should_ack:
+                    acknowledged = await asyncio.to_thread(
+                        mark_claimed_result_part_delivered,
+                        obligation_id,
+                        part.part_id,
+                    )
+                    if not acknowledged:
+                        raise ClaimedResultPartDeliveryError(
+                            "claimed continuation publication ownership changed"
+                        )
+                continue
+
+            part_metadata = dict(metadata or {})
+            part_metadata["_hermes_delivery_part_id"] = part.part_id
+
+            async def _send_part(item=descriptor):
+                kind = item["kind"]
+                payload = item["payload"]
+                if kind == "text":
+                    return await self._send_with_retry(
+                        chat_id=chat_id,
+                        content=f"{recovery_marker}{payload}",
+                        reply_to=reply_to,
+                        metadata=part_metadata,
+                    )
+                if kind == "image":
+                    return await self._send_claimed_image_part(
+                        chat_id=chat_id,
+                        image_url=payload,
+                        alt_text=item.get("alt_text", ""),
+                        metadata=part_metadata,
+                    )
+                if kind == "voice":
+                    return await self.send_voice(
+                        chat_id=chat_id,
+                        audio_path=payload,
+                        metadata=part_metadata,
+                        is_voice=item.get("is_voice", False),
+                    )
+                if kind == "video":
+                    return await self.send_video(
+                        chat_id=chat_id,
+                        video_path=payload,
+                        metadata=part_metadata,
+                    )
+                return await self.send_document(
+                    chat_id=chat_id,
+                    file_path=payload,
+                    metadata=part_metadata,
+                )
+
+            await deliver_claimed_result_part(
+                obligation_id,
+                part,
+                _send_part,
+            )
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
@@ -4239,10 +4474,15 @@ class BasePlatformAdapter(ABC):
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
                 _tts_paths, _tts_requested_path = [], None
-                if self._wants_auto_tts(
-                        event, session_key, interrupt_event, text_content, media_files):
+                if (not _delivery_owned_obligation_id and self._wants_auto_tts(
+                        event, session_key, interrupt_event, text_content, media_files)):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
 
+                # A claimed continuation already owns a durable publication row.
+                # Freeze the complete text-plus-attachment manifest before any
+                # external send. Each acknowledged part then advances only its
+                # own durable state; the whole row becomes delivered only after
+                # every intended part is complete.
                 _owned_delivery_adapter = None
                 if _delivery_owned_obligation_id:
                     from gateway.delivery_ledger import prepare_claimed_result_delivery
@@ -4260,6 +4500,31 @@ class BasePlatformAdapter(ABC):
                     )
                     if not should_send:
                         return
+                    await _owned_delivery_adapter._deliver_claimed_response_parts(
+                        obligation_id=_delivery_owned_obligation_id,
+                        chat_id=event.source.chat_id,
+                        text_content=text_content,
+                        images=extracted.images,
+                        media_files=extracted.media_files,
+                        local_files=extracted.local_files,
+                        force_document_attachments=extracted.force_document_attachments,
+                        metadata=_final_thread_metadata,
+                        reply_to=_reply_anchor_for_event(event),
+                        recovery_marker=str(
+                            getattr(event, "_hermes_recovery_marker", "") or ""
+                        ),
+                    )
+                    delivery_attempted = True
+                    delivery_succeeded = True
+                    # The owned helper performed every send. Empty the ordinary
+                    # best-effort pipeline to prevent a second publication.
+                    text_content = ""
+                    extracted.images = []
+                    extracted.media_files = []
+                    extracted.local_files = []
+                    extracted.pre_extract = ""
+                    _delivery_owned_obligation_id = None
+
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):

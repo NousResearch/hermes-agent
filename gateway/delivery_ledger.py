@@ -36,6 +36,12 @@ STALE_AFTER_SECONDS = 24 * 60 * 60
 _RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_ROWS = 500
 MAX_CONTENT_BYTES = 1_000_000
+MAX_PARTS_PER_OBLIGATION = 128
+_MAX_PART_KIND_BYTES = 64
+_MAX_REMOTE_RECEIPT_BYTES = 512
+_CLAIMED_RESULT_PART_KINDS = frozenset(
+    {"text", "image", "voice", "video", "document", "tts"}
+)
 
 
 class DeliveryObligationConflict(RuntimeError):
@@ -185,27 +191,54 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             active_turn_token TEXT,
             raw_content TEXT,
             source_json TEXT,
-            message_ref TEXT
+            message_ref TEXT,
+            parts_manifest TEXT,
+            parts_total INTEGER
         )"""
     )
     if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
         add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
-    for column in (
-        "claim_id",
-        "claim_event_id",
-        "active_turn_token",
-        "raw_content",
-        "source_json",
-        "message_ref",
+    for column, column_type in (
+        ("claim_id", "TEXT"),
+        ("claim_event_id", "TEXT"),
+        ("active_turn_token", "TEXT"),
+        ("raw_content", "TEXT"),
+        ("source_json", "TEXT"),
+        ("message_ref", "TEXT"),
+        ("parts_manifest", "TEXT"),
+        ("parts_total", "INTEGER"),
     ):
         add_column_if_missing(
-            conn, "delivery_obligations", column, f"{column} TEXT"
+            conn, "delivery_obligations", column, f"{column} {column_type}"
         )
     conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS
                delivery_obligations_claim_event_uq
            ON delivery_obligations(claim_id, claim_event_id)
            WHERE claim_id IS NOT NULL AND claim_event_id IS NOT NULL"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS delivery_obligation_parts (
+            obligation_id TEXT NOT NULL,
+            part_id TEXT NOT NULL,
+            part_ordinal INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            state TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            updated_at REAL NOT NULL,
+            last_error TEXT,
+            remote_receipt TEXT,
+            PRIMARY KEY (obligation_id, part_id),
+            UNIQUE (obligation_id, part_ordinal)
+        )"""
+    )
+    conn.execute(
+        """CREATE TRIGGER IF NOT EXISTS delivery_obligation_parts_cleanup
+           AFTER DELETE ON delivery_obligations
+           BEGIN
+             DELETE FROM delivery_obligation_parts
+              WHERE obligation_id=OLD.obligation_id;
+           END"""
     )
 
 
@@ -273,6 +306,323 @@ def compute_claimed_result_id(
     """Stable, payload-free identity for one completed claimed execution."""
     payload = f"goal-continuation-result|{session_key}|{claim_id}|{claim_event_id}"
     return hashlib.sha256(payload.encode("utf-8", "strict")).hexdigest()[:24]
+
+
+def compute_claimed_result_part_id(
+    obligation_id: str,
+    part_ordinal: int,
+    kind: str,
+    payload_identity: str,
+) -> str:
+    """Return a stable payload-free identity for one response part."""
+    if not obligation_id or not isinstance(part_ordinal, int) or part_ordinal < 0:
+        raise ValueError("claimed-result part identity is invalid")
+    if kind not in _CLAIMED_RESULT_PART_KINDS:
+        raise ValueError("claimed-result part kind is invalid")
+    if not isinstance(payload_identity, str):
+        raise TypeError("claimed-result part payload identity must be text")
+    payload_digest = hashlib.sha256(
+        payload_identity.encode("utf-8", "replace")
+    ).hexdigest()
+    identity = f"{obligation_id}|{part_ordinal}|{kind}|{payload_digest}"
+    return hashlib.sha256(identity.encode("ascii", "strict")).hexdigest()[:24]
+
+
+def _validated_claimed_result_parts(
+    parts: List[tuple[str, str]],
+) -> tuple[List[tuple[str, str]], str]:
+    if not isinstance(parts, (list, tuple)):
+        raise TypeError("claimed-result parts must be a sequence")
+    if len(parts) > MAX_PARTS_PER_OBLIGATION:
+        raise DeliveryObligationCapacityError(
+            "claimed result has too many publication parts"
+        )
+    normalized: List[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in parts:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise DeliveryObligationConflict("claimed-result part manifest is invalid")
+        part_id, kind = item
+        if (
+            not isinstance(part_id, str)
+            or len(part_id) != 24
+            or any(ch not in "0123456789abcdef" for ch in part_id)
+        ):
+            raise DeliveryObligationConflict("claimed-result part identity is invalid")
+        if (
+            not isinstance(kind, str)
+            or len(kind.encode("utf-8", "strict")) > _MAX_PART_KIND_BYTES
+            or kind not in _CLAIMED_RESULT_PART_KINDS
+        ):
+            raise DeliveryObligationConflict("claimed-result part kind is invalid")
+        if part_id in seen:
+            raise DeliveryObligationConflict("claimed-result part identity is duplicated")
+        seen.add(part_id)
+        normalized.append((part_id, kind))
+    manifest_bytes = json.dumps(
+        normalized, ensure_ascii=True, separators=(",", ":")
+    ).encode("ascii", "strict")
+    return normalized, hashlib.sha256(manifest_bytes).hexdigest()
+
+
+def register_claimed_result_parts(
+    obligation_id: str,
+    parts: List[tuple[str, str]],
+    *,
+    home: Optional[Path] = None,
+) -> None:
+    """Atomically freeze the complete response-part manifest before sending."""
+    normalized, manifest = _validated_claimed_result_parts(parts)
+    pid, started = _owner_stamp()
+    if started is None:
+        raise DeliveryObligationConflict(
+            "claimed-result publication owner is unavailable"
+        )
+    now = time.time()
+    with _DB_LOCK, _transaction(home) as conn:
+        row = conn.execute(
+            """SELECT state, claim_id, claim_event_id, owner_pid,
+                      owner_started_at, parts_manifest, parts_total
+               FROM delivery_obligations WHERE obligation_id=?""",
+            (obligation_id,),
+        ).fetchone()
+        if row is None or not row[1] or not row[2]:
+            raise DeliveryObligationConflict(
+                "claimed-result delivery ownership is unavailable"
+            )
+        if (row[3], row[4]) != (pid, started):
+            raise DeliveryObligationConflict(
+                "claimed-result delivery is owned by another process"
+            )
+        if row[0] not in {"pending", "failed", "attempting", "delivered"}:
+            raise DeliveryObligationConflict("claimed-result delivery state is invalid")
+        if row[5] is not None:
+            existing = conn.execute(
+                """SELECT part_id, kind FROM delivery_obligation_parts
+                   WHERE obligation_id=? ORDER BY part_ordinal""",
+                (obligation_id,),
+            ).fetchall()
+            if (
+                row[5] != manifest
+                or row[6] != len(normalized)
+                or [tuple(item) for item in existing] != normalized
+            ):
+                raise DeliveryObligationConflict(
+                    "claimed-result part manifest conflicts with durable ownership"
+                )
+            return
+        if row[0] == "delivered":
+            raise DeliveryObligationConflict(
+                "delivered claimed result has no part manifest"
+            )
+        for ordinal, (part_id, kind) in enumerate(normalized):
+            conn.execute(
+                """INSERT INTO delivery_obligation_parts
+                   (obligation_id, part_id, part_ordinal, kind, state,
+                    attempts, updated_at)
+                   VALUES (?, ?, ?, ?, 'pending', 0, ?)""",
+                (obligation_id, part_id, ordinal, kind, now),
+            )
+        conn.execute(
+            """UPDATE delivery_obligations
+               SET parts_manifest=?, parts_total=?, updated_at=?
+               WHERE obligation_id=?""",
+            (manifest, len(normalized), now, obligation_id),
+        )
+
+
+def get_claimed_result_parts(
+    obligation_id: str,
+    *,
+    home: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Return bounded payload-free part state in stable publication order."""
+    with _DB_LOCK, _transaction(home) as conn:
+        rows = conn.execute(
+            """SELECT part_id, part_ordinal, kind, state, attempts,
+                      remote_receipt
+               FROM delivery_obligation_parts
+               WHERE obligation_id=? ORDER BY part_ordinal
+               LIMIT ?""",
+            (obligation_id, MAX_PARTS_PER_OBLIGATION + 1),
+        ).fetchall()
+    if len(rows) > MAX_PARTS_PER_OBLIGATION:
+        raise DeliveryObligationCapacityError(
+            "claimed-result part state exceeds its bound"
+        )
+    return [
+        {
+            "part_id": row[0],
+            "ordinal": row[1],
+            "kind": row[2],
+            "state": row[3],
+            "attempts": row[4],
+            "remote_receipt": row[5],
+        }
+        for row in rows
+    ]
+
+
+def prepare_claimed_result_part(
+    obligation_id: str,
+    part_id: str,
+    *,
+    home: Optional[Path] = None,
+) -> bool:
+    """Fence and checkpoint one incomplete response part before its send."""
+    pid, started = _owner_stamp()
+    if started is None:
+        raise DeliveryObligationConflict(
+            "claimed-result publication owner is unavailable"
+        )
+    now = time.time()
+    with _DB_LOCK, _transaction(home) as conn:
+        owner = conn.execute(
+            """SELECT state, claim_id, claim_event_id, owner_pid,
+                      owner_started_at, parts_manifest
+               FROM delivery_obligations WHERE obligation_id=?""",
+            (obligation_id,),
+        ).fetchone()
+        if owner is None or not owner[1] or not owner[2] or owner[5] is None:
+            raise DeliveryObligationConflict(
+                "claimed-result part ownership is unavailable"
+            )
+        if (owner[3], owner[4]) != (pid, started):
+            raise DeliveryObligationConflict(
+                "claimed-result delivery is owned by another process"
+            )
+        if owner[0] == "delivered":
+            return False
+        if owner[0] not in {"pending", "failed", "attempting"}:
+            raise DeliveryObligationConflict("claimed-result delivery state is invalid")
+        part = conn.execute(
+            """SELECT state, attempts FROM delivery_obligation_parts
+               WHERE obligation_id=? AND part_id=?""",
+            (obligation_id, part_id),
+        ).fetchone()
+        if part is None:
+            raise DeliveryObligationConflict(
+                "claimed-result part ownership is unavailable"
+            )
+        if part[0] == "delivered":
+            return False
+        if part[0] not in {"pending", "failed", "attempting"}:
+            raise DeliveryObligationConflict("claimed-result part state is invalid")
+        if part[1] >= MAX_ATTEMPTS + 1:
+            raise DeliveryObligationCapacityError(
+                "claimed-result part attempts exhausted"
+            )
+        conn.execute(
+            """UPDATE delivery_obligation_parts
+               SET state='attempting', attempts=attempts+1,
+                   updated_at=?, last_error=NULL
+               WHERE obligation_id=? AND part_id=?""",
+            (now, obligation_id, part_id),
+        )
+        conn.execute(
+            """UPDATE delivery_obligations
+               SET state='attempting', updated_at=?, last_error=NULL
+               WHERE obligation_id=?""",
+            (now, obligation_id),
+        )
+    return True
+
+
+def mark_claimed_result_part_delivered(
+    obligation_id: str,
+    part_id: str,
+    *,
+    remote_receipt: Optional[str] = None,
+    home: Optional[Path] = None,
+) -> bool:
+    """Acknowledge one part and finish the obligation only when all are done."""
+    pid, started = _owner_stamp()
+    if started is None:
+        return False
+    receipt = str(remote_receipt) if remote_receipt else None
+    if receipt is not None and len(receipt.encode("utf-8", "replace")) > _MAX_REMOTE_RECEIPT_BYTES:
+        raise DeliveryObligationCapacityError(
+            "claimed-result remote receipt exceeds durable limit"
+        )
+    now = time.time()
+    with _DB_LOCK, _transaction(home) as conn:
+        owner = conn.execute(
+            """SELECT owner_pid, owner_started_at, parts_manifest, parts_total
+               FROM delivery_obligations
+               WHERE obligation_id=? AND claim_id IS NOT NULL
+                 AND claim_event_id IS NOT NULL""",
+            (obligation_id,),
+        ).fetchone()
+        if owner is None or owner[2] is None or (owner[0], owner[1]) != (pid, started):
+            return False
+        cursor = conn.execute(
+            """UPDATE delivery_obligation_parts
+               SET state='delivered', updated_at=?, last_error=NULL,
+                   remote_receipt=COALESCE(remote_receipt, ?)
+               WHERE obligation_id=? AND part_id=?
+                 AND state IN ('pending', 'attempting', 'failed', 'delivered')""",
+            (now, receipt, obligation_id, part_id),
+        )
+        if not cursor.rowcount:
+            return False
+        remaining = conn.execute(
+            """SELECT COUNT(*) FROM delivery_obligation_parts
+               WHERE obligation_id=? AND state != 'delivered'""",
+            (obligation_id,),
+        ).fetchone()[0]
+        actual_total = conn.execute(
+            """SELECT COUNT(*) FROM delivery_obligation_parts
+               WHERE obligation_id=?""",
+            (obligation_id,),
+        ).fetchone()[0]
+        terminal = remaining == 0 and actual_total == owner[3]
+        conn.execute(
+            """UPDATE delivery_obligations
+               SET state=?, updated_at=?, last_error=NULL
+               WHERE obligation_id=?""",
+            ("delivered" if terminal else "attempting", now, obligation_id),
+        )
+    return True
+
+
+def mark_claimed_result_part_failed(
+    obligation_id: str,
+    part_id: str,
+    error: str = "platform_part_delivery_failed",
+    *,
+    home: Optional[Path] = None,
+) -> bool:
+    """Fail one part and the whole response without exposing its payload."""
+    pid, started = _owner_stamp()
+    if started is None:
+        return False
+    stored_error = str(error or "platform_part_delivery_failed")[:500]
+    now = time.time()
+    with _DB_LOCK, _transaction(home) as conn:
+        owner = conn.execute(
+            """SELECT owner_pid, owner_started_at, parts_manifest
+               FROM delivery_obligations
+               WHERE obligation_id=? AND claim_id IS NOT NULL
+                 AND claim_event_id IS NOT NULL""",
+            (obligation_id,),
+        ).fetchone()
+        if owner is None or owner[2] is None or (owner[0], owner[1]) != (pid, started):
+            return False
+        cursor = conn.execute(
+            """UPDATE delivery_obligation_parts
+               SET state='failed', updated_at=?, last_error=?
+               WHERE obligation_id=? AND part_id=? AND state != 'delivered'""",
+            (now, stored_error, obligation_id, part_id),
+        )
+        if not cursor.rowcount:
+            return False
+        conn.execute(
+            """UPDATE delivery_obligations
+               SET state='failed', updated_at=?, last_error=?
+               WHERE obligation_id=?""",
+            (now, stored_error, obligation_id),
+        )
+    return True
 
 
 def _ensure_insert_capacity(conn: sqlite3.Connection) -> None:
@@ -648,12 +998,32 @@ def _update_claimed_result_state(
     if started is None:
         return False
     with _DB_LOCK, _transaction() as conn:
+        completion_guard = ""
+        if state == "delivered":
+            completion_guard = """
+                 AND (
+                   parts_manifest IS NULL
+                   OR (
+                     parts_total = (
+                       SELECT COUNT(*) FROM delivery_obligation_parts
+                        WHERE delivery_obligation_parts.obligation_id =
+                              delivery_obligations.obligation_id
+                     )
+                     AND parts_total = (
+                       SELECT COUNT(*) FROM delivery_obligation_parts
+                        WHERE delivery_obligation_parts.obligation_id =
+                              delivery_obligations.obligation_id
+                          AND delivery_obligation_parts.state = 'delivered'
+                     )
+                   )
+                 )"""
         cursor = conn.execute(
-            """UPDATE delivery_obligations
+            f"""UPDATE delivery_obligations
                SET state=?, updated_at=?, last_error=?
                WHERE obligation_id=? AND claim_id IS NOT NULL
                  AND claim_event_id IS NOT NULL
-                 AND owner_pid IS ? AND owner_started_at IS ?""",
+                 AND owner_pid IS ? AND owner_started_at IS ?
+                 {completion_guard}""",
             (
                 state,
                 time.time(),

@@ -5476,6 +5476,89 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+def _maybe_create_deploy_followup(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+) -> Optional[str]:
+    """When a reviewed platform card is approved, auto-create a deploy follow-up.
+
+    An approval (``metadata["review_outcome"] == "approved"``) of a task that was
+    implemented in a git worktree under *this* hermes-agent repo means the
+    approved branch is still sitting on ``wt/`` while the live gateway runs old
+    code — exactly the approved-but-undeployed gap behind the duplicate-send
+    incident (2026-08-30/31, 9 more live duplicates while approved-unmerged).
+
+    Close the gap: create exactly one follow-up card that merges the branch to
+    ``main`` and restarts the gateway. The card is idempotency-keyed on the
+    approved task id, so re-completion of the same card cannot spawn a second
+    deploy card.
+
+    Returns the new card id, or ``None`` when no follow-up is warranted.
+    """
+    if not isinstance(metadata, dict) or metadata.get("review_outcome") != "approved":
+        return None
+    task = get_task(conn, task_id)
+    if task is None or task.workspace_kind != "worktree":
+        return None
+    ws = (task.workspace_path or "").strip()
+    if not ws:
+        return None
+    # Platform cards live in a worktree under THIS hermes-agent repo.
+    try:
+        ws_resolved = Path(ws).expanduser().resolve()
+    except OSError:
+        return None
+    worktrees_root = (Path(__file__).resolve().parents[1] / ".worktrees").resolve()
+    if worktrees_root not in ws_resolved.parents:
+        return None
+
+    branch = (task.branch_name or "").strip() or f"wt/{task_id}"
+    repo = worktrees_root.parent
+
+    title = f"Deploy: merge {branch} + restart gateway"
+    idempotency_key = f"deploy-followup:{task_id}"
+    body = (
+        f"Deploy the approved platform branch `{branch}` to the live gateway.\n\n"
+        f"The parent card `{task_id}` passed independent review, but approved is not "
+        f"deployed: the branch sits on `{branch}` while the live gateway is still "
+        f"running old code. Deploy it now.\n\n"
+        f"Repo: `{repo}`\n\n"
+        "Steps:\n"
+        f"1. `cd {repo}`\n"
+        "2. Ensure the branch is present: `git switch main`, then `git fetch origin` "
+        f"and `git branch --list {branch}`. If the post-completion cleanup pruned the "
+        "local worktree branch, recreate it from the parent card's commit rather than "
+        "abandoning the deploy.\n"
+        f"3. Merge: `git merge --no-edit {branch}` (fast-forward preferred: "
+        f"`git merge --ff-only {branch}`). On conflict, resolve and commit — never "
+        "force-merge or force-push.\n"
+        "4. Run the repo's focused tests for the changed area — e.g. "
+        "`venv/bin/python -m pytest tests/hermes_cli/test_kanban_review_lifecycle_complete.py -q` "
+        "plus any test the parent card named in its handoff.\n"
+        "5. Restart the live (root) gateway via the existing axel cron copy: "
+        "`bash ~/.hermes/profiles/axel/scripts/restart-root-gateway.sh`, then verify the "
+        "gateway shows a fresh start_time (launchctl labels: `ai.hermes.gateway` = root).\n"
+        "6. Confirm `git log main` includes the merge AND `ps`/`launchctl` shows the "
+        "gateway start_time changed since before this card ran.\n\n"
+        "Comment or reopen this card if the merge, focused tests, or restart fails."
+    )
+    child_id = create_task(
+        conn,
+        title=title,
+        body=body,
+        assignee="default",
+        created_by=task.assignee,
+        parents=[task_id],
+        idempotency_key=idempotency_key,
+    )
+    _log.debug(
+        "Created deploy follow-up %s for approved platform card %s (branch %s)",
+        child_id, task_id, branch,
+    )
+    return child_id
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5704,6 +5787,18 @@ def complete_task(
     _clear_failure_counter(conn, task_id)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
+    # An approved platform card (worktree under this hermes-agent repo) is
+    # approved-but-undeployed until the branch actually lands on main and the
+    # gateway restarts. Auto-create ONE deploy follow-up so that gap closes.
+    # Idempotency-keyed on the approved task id, so a repeat completion of the
+    # same card cannot spawn a second deploy card.
+    try:
+        _maybe_create_deploy_followup(conn, task_id, metadata)
+    except Exception:
+        # Creation must never block the completion itself.
+        _log.exception(
+            "deploy follow-up creation failed for completed task %s", task_id
+        )
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)

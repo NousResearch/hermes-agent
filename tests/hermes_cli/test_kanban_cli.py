@@ -227,6 +227,25 @@ def test_dead_worker_is_releasable_despite_hostname_alias_drift(monkeypatch):
     assert result["termination_attempted"] is False
 
 
+def test_run_slash_set_reasoning_pins_task_override(kanban_home):
+    """The operator CLI can disable thinking for a task's next dispatch."""
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="local model task")
+
+    output = kc.run_slash(f"set-reasoning {task_id} none")
+
+    assert output == (
+        f"Set reasoning effort on {task_id}: none (applies on next dispatch)"
+    )
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    assert task is not None
+    assert task.reasoning_effort == "none"
+    assert events[-1].kind == "reasoning_effort_set"
+    assert events[-1].payload == {"reasoning_effort": "none"}
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

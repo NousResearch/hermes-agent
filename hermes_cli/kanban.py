@@ -604,6 +604,31 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_set_reasoning(args: argparse.Namespace) -> int:
+    raw_effort = args.effort.strip().lower()
+    effort = (
+        None
+        if raw_effort in {"inherit", "default", "-", "null"}
+        else raw_effort
+    )
+    try:
+        with kb.connect_closing() as conn:
+            ok = kb.set_reasoning_effort(conn, args.task_id, effort)
+    except (ValueError, RuntimeError) as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    if not ok:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    if effort is None:
+        print(f"Cleared reasoning effort on {args.task_id} "
+              "(worker uses its profile default)")
+    else:
+        print(f"Set reasoning effort on {args.task_id}: {effort} "
+              "(applies on next dispatch)")
+    return 0
+
+
 def _cmd_reclaim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None))

@@ -7860,6 +7860,45 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
+    def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
+        """Advance this peer's conversation generation past a boundary.
+
+        Called inside the transaction that writes the boundary, so the
+        generation and the ``end_reason`` that caused it commit together.
+
+        Only ``_RESET_END_REASONS`` count: ``compression`` continues one
+        conversation, and an accidental close is not a replacement.  Rows with
+        no ``session_key`` have no routing peer to advance.
+
+        The counter deliberately does NOT read the session rows.  An aggregate
+        over them (COUNT/MAX of boundaries) can return a pair it already
+        emitted once ``delete_session()`` or bulk pruning removes an ended row,
+        which would hand a new conversation a retired affinity identity.  This
+        value only ever increments, so a generation is never reused for a peer
+        even if every row behind it is gone.
+        """
+        if end_reason not in _RESET_END_REASONS:
+            return
+        row = conn.execute(
+            "SELECT source, session_key FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return
+        source = str(row["source"] or "").strip()
+        session_key = str(row["session_key"] or "").strip()
+        if not source or not session_key:
+            return
+        conn.execute(
+            """
+            INSERT INTO conversation_generations (source, session_key, generation)
+            VALUES (?, ?, 1)
+            ON CONFLICT(source, session_key) DO UPDATE
+                SET generation = conversation_generations.generation + 1
+            """,
+            (source, session_key),
+        )
+
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 
@@ -7871,11 +7910,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         intentionally need to re-end a closed session with a new reason.
         """
         def _do(conn):
-            conn.execute(
+            changed = conn.execute(
                 "UPDATE sessions SET ended_at = ?, end_reason = ? "
                 "WHERE id = ? AND ended_at IS NULL",
                 (time.time(), end_reason, session_id),
-            )
+            ).rowcount
+            # Only a boundary this call actually wrote advances the generation:
+            # the first end_reason wins, so a no-op must not rotate the peer.
+            if changed:
+                self._bump_conversation_generation(conn, session_id, end_reason)
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
@@ -7946,6 +7989,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"OR end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))",
                 (now, reason, session_id),
             )
+            # /new and the policy auto-resets promote rather than end_session,
+            # so the generation has to advance here too — in the same
+            # transaction as the boundary, and only when one was written.
+            if cursor.rowcount:
+                self._bump_conversation_generation(conn, session_id, reason)
             return cursor.rowcount
 
         try:
@@ -14136,8 +14184,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     def latest_conversation_boundary(
         self, session_key: str, source: str
-    ) -> Optional[Tuple[int, float]]:
-        """How many conversation boundaries this peer has crossed, and when.
+    ) -> Optional[int]:
+        """How many conversation boundaries this routing peer has crossed.
 
         A boundary is a row this peer ended at an intentional conversation
         break — the ``_RESET_END_REASONS`` set (``/new``, ``/switch``, idle,
@@ -14154,41 +14202,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         this conversation's affinity identity while recovery correctly refuses
         to cross the same line.
 
-        Returns ``(count, latest_ended_at)``, or ``None`` when the key has
-        never been reset.  BOTH halves are reported because each one alone has
-        a narrow way to repeat a previous generation:
+        Returns the count, or ``None`` when this peer has never been reset.
 
-        - ``ended_at`` is wall-clock, so a backwards NTP correction between two
-          resets writes a SMALLER boundary and ``MAX`` keeps returning the older
-          one — the next conversation would reuse the previous generation;
-        - ``count`` survives that, but retention pruning of an old ended row
-          decrements it.
+        The value comes from ``conversation_generations``, which
+        :meth:`_bump_conversation_generation` advances inside the transaction
+        that writes each boundary — NOT from an aggregate over the session
+        rows.  An aggregate cannot prove non-reuse: ``delete_session()``
+        orphans children and deletes the row, and bulk prune selects ended
+        rows, so ``COUNT``/``MAX`` over boundaries can return a pair it already
+        emitted and hand a new conversation a retired affinity identity.  It is
+        also wall-clock-free, so a backwards NTP correction cannot reorder it.
 
-        The two fail under different conditions, so the pair only repeats a
-        generation if both happen at once.  A spurious change is merely one cold
-        prompt-cache bucket; a repeated one would put two conversations on the
-        same routing key, so the pair is biased toward changing.  Read-only;
-        ``agent/prompt_cache_scope.py`` uses it to keep a host-declared
-        conversation key from outliving the conversation it names.
+        Databases upgraded mid-conversation start at no generation and take
+        their first one from the next boundary written; a conversation that
+        reset before the upgrade shares its predecessor's scope once, which
+        costs a warm prompt-cache bucket and never crosses an identity.
         """
         if not session_key or not source:
             return None
         with self._read_ctx() as conn:
             row = conn.execute(
-                f"""
-                SELECT COUNT(*) AS crossings, MAX(ended_at) AS boundary
-                FROM sessions
-                WHERE session_key = ?
-                  AND source = ?
-                  AND ended_at IS NOT NULL
-                  AND end_reason IN ({_RESET_END_REASONS_SQL})
-                """,
-                (session_key, source),
+                "SELECT generation FROM conversation_generations "
+                "WHERE source = ? AND session_key = ?",
+                (source, session_key),
             ).fetchone()
-        boundary = row["boundary"] if row is not None else None
-        if boundary is None:
+        if row is None or row["generation"] is None:
             return None
-        return int(row["crossings"] or 0), float(boundary)
+        generation = int(row["generation"])
+        return generation if generation > 0 else None
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")

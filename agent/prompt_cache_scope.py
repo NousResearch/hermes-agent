@@ -101,11 +101,17 @@ def _agent_source(agent: Any, session_id: str, session_db: Any) -> str:
     """The ``sessions.source`` this agent's conversation is recorded under.
 
     Read from the agent's own row when it exists, because that is the value
-    the peer queries below match on. Before the row lands (the first turn
-    resolves a scope ahead of ``_ensure_db_session``) it falls back to the
-    platform, which is what the row will be created with — the two can differ
-    only when ``HERMES_SESSION_SOURCE`` overrides the platform, and the cost of
-    that is one cold bucket on the first turn, never a crossed identity.
+    the peer queries below match on.
+
+    Before the row lands — this module resolves the first scope ahead of
+    ``_ensure_db_session`` — it uses the SAME resolver persistence will use,
+    ``run_agent._session_source_for_agent``, not ``agent.platform``. The two
+    diverge whenever ``HERMES_SESSION_SOURCE`` overrides the platform, and the
+    divergence is not a cosmetic one: the declared scope is non-``None``
+    immediately, so ``resolve_prompt_cache_scope`` memoizes it for this session
+    id and never re-resolves once the authoritative row appears. Both sides of
+    a ``/new`` would then read the platform domain, miss the boundary recorded
+    under the override, and hash the same scope.
     """
     if session_id and session_db is not None:
         try:
@@ -117,7 +123,18 @@ def _agent_source(agent: Any, session_id: str, session_db: Any) -> str:
             source = str(row.get("source") or "").strip()
             if source:
                 return source
-    return str(getattr(agent, "platform", "") or "").strip()
+    platform = getattr(agent, "platform", None)
+    try:
+        # Imported lazily: run_agent imports this module, and this is the
+        # single owner of the source a session row is created with.
+        from run_agent import _session_source_for_agent
+
+        source = str(_session_source_for_agent(platform) or "").strip()
+        if source:
+            return source
+    except Exception:
+        logger.debug("declared-scope source authority unavailable", exc_info=True)
+    return str(platform or "").strip()
 
 
 def _conversation_generation(session_key: str, source: str, session_db: Any) -> str:
@@ -141,11 +158,13 @@ def _conversation_generation(session_key: str, source: str, session_db: Any) -> 
     - rotating on every conversation replacement, ``/new`` and the policy
       auto-resets alike.
 
-    The marker pairs the boundary COUNT with the latest ``ended_at`` because
-    each alone can repeat a previous generation under a different rare
-    condition — a backwards clock correction defeats the timestamp, retention
-    pruning defeats the count — and the two do not fail together (see
-    ``SessionDB.latest_conversation_boundary``).
+    The marker is a durable counter kept outside prunable session history
+    (``conversation_generations``, advanced in the same transaction that writes
+    each boundary). Deriving it from the session rows instead — an aggregate
+    over ``_RESET_END_REASONS`` boundaries — cannot prove non-reuse: deleting or
+    pruning an ended row makes the aggregate return a pair it already emitted,
+    handing a new conversation a retired affinity identity. It is also
+    wall-clock-free, so a backwards NTP correction cannot reorder it.
 
     No counter is introduced anywhere: the marker is read from state the
     reset paths already write, and it is read on the memoized resolution path,
@@ -157,13 +176,10 @@ def _conversation_generation(session_key: str, source: str, session_db: Any) -> 
     reader = getattr(session_db, "latest_conversation_boundary", None)
     if not callable(reader):
         return ""
-    boundary = reader(session_key, source)
-    if boundary is None:
+    generation = reader(session_key, source)
+    if generation is None:
         return ""
-    # (crossings, ended_at). Fixed-point on the timestamp so the carrier is
-    # byte-identical across repr differences between platforms.
-    crossings, ended_at = boundary
-    return f"{int(crossings)}:{float(ended_at):.6f}"
+    return str(int(generation))
 
 
 def declared_conversation_scope(agent: Any) -> Optional[str]:

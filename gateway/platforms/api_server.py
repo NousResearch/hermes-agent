@@ -7620,11 +7620,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         # (/v1/responses, /v1/runs) record one, so no other
                         # caller's rows change shape.
                         if bind_declared_conversation:
-                            if _declared_selected:
-                                self._bind_declared_conversation(
-                                    getattr(agent, "session_id", None) or session_id,
-                                    gateway_session_key,
-                                )
+                            self._bind_declared_conversation(
+                                getattr(agent, "session_id", None) or session_id,
+                                gateway_session_key,
+                            )
                     clear_session_vars(tokens)
 
         self._activate_admitted_request()

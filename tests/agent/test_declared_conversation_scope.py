@@ -589,3 +589,153 @@ class TestPeerIdentityIsSourceQualified:
         assert db.latest_conversation_boundary(self.KEY, "telegram") is not None
         assert db.latest_conversation_boundary(self.KEY, "api_server") is None
         assert db.latest_conversation_boundary(self.KEY, "") is None
+
+
+class TestGenerationSurvivesPruning:
+    """A generation derived from prunable rows cannot prove non-reuse.
+
+    `delete_session()` orphans surviving children and deletes the selected
+    row, and bulk prune selects ended rows, so an aggregate over
+    `_RESET_END_REASONS` boundaries can return a pair it already emitted:
+    `(1, T1) -> (2, T2) -> delete boundary B -> (1, T1)`, handing a new
+    conversation a retired affinity identity (@andrexibiza on #98811).
+
+    The counter therefore lives in `conversation_generations`, outside session
+    history, and only ever increments.
+    """
+
+    KEY = "agent:main:telegram:dm:777"
+    SOURCE = "telegram"
+
+    def _keyed(self, db, sid):
+        db.create_session(session_id=sid, source=self.SOURCE, session_key=self.KEY)
+        return SimpleNamespace(
+            session_id=sid, _session_db=db, _gateway_session_key=self.KEY,
+            platform=self.SOURCE,
+        )
+
+    def _gen(self, db):
+        return db.latest_conversation_boundary(self.KEY, self.SOURCE)
+
+    def test_deleting_the_newest_boundary_does_not_roll_back(self, db):
+        a = self._keyed(db, "s-a")
+        scope_a = resolve_prompt_cache_scope(a)
+        db.end_session("s-a", "session_reset")
+
+        b = self._keyed(db, "s-b")
+        scope_b = resolve_prompt_cache_scope(b)
+        db.end_session("s-b", "session_reset")
+        assert self._gen(db) == 2
+
+        db.delete_session("s-b")          # prune the newest boundary
+        assert self._gen(db) == 2         # counter is outside that rowset
+
+        c = self._keyed(db, "s-c")
+        scope_c = resolve_prompt_cache_scope(c)
+        assert len({scope_a, scope_b, scope_c}) == 3
+
+    def test_deleting_every_boundary_does_not_roll_back(self, db):
+        a = self._keyed(db, "s-a")
+        scope_a = resolve_prompt_cache_scope(a)
+        db.end_session("s-a", "session_reset")
+        db.delete_session("s-a")
+
+        b = self._keyed(db, "s-b")
+        assert resolve_prompt_cache_scope(b) != scope_a
+
+    def test_a_backwards_clock_then_a_prune_still_cannot_repeat(self, db):
+        """The reviewer's exact shape: (1,T1) -> (2,T1) -> delete -> (1,T1)."""
+        a = self._keyed(db, "s-a")
+        scope_a = resolve_prompt_cache_scope(a)
+        db.end_session("s-a", "session_reset")
+
+        b = self._keyed(db, "s-b")
+        scope_b = resolve_prompt_cache_scope(b)
+        db.end_session("s-b", "session_reset")
+        # Clock went backwards: this boundary lands before the first one.
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET ended_at = ("
+                "  SELECT MIN(ended_at) FROM sessions WHERE ended_at IS NOT NULL"
+                ") - 60 WHERE id = ?",
+                ("s-b",),
+            )
+            db._conn.commit()
+        db.delete_session("s-b")
+
+        c = self._keyed(db, "s-c")
+        assert len({scope_a, scope_b, resolve_prompt_cache_scope(c)}) == 3
+
+    def test_only_real_boundaries_advance_it(self, db):
+        self._keyed(db, "s-a")
+        db.end_session("s-a", "compression")
+        assert self._gen(db) is None
+        db.create_session(session_id="s-b", source=self.SOURCE, session_key=self.KEY)
+        db.end_session("s-b", "agent_close")
+        assert self._gen(db) is None
+
+    def test_a_repeated_end_does_not_double_count(self, db):
+        """end_session no-ops on an ended row; the first reason wins."""
+        self._keyed(db, "s-a")
+        db.end_session("s-a", "session_reset")
+        db.end_session("s-a", "session_reset")
+        db.end_session("s-a", "idle")
+        assert self._gen(db) == 1
+
+    def test_promote_advances_it_too(self, db):
+        """/new and the policy resets promote rather than end_session."""
+        self._keyed(db, "s-a")
+        db.end_session("s-a", "agent_close")
+        assert self._gen(db) is None
+        assert db.promote_to_session_reset("s-a", "session_reset") is True
+        assert self._gen(db) == 1
+
+    def test_an_unkeyed_row_advances_nothing(self, db):
+        db.create_session(session_id="s-bare", source=self.SOURCE)
+        db.end_session("s-bare", "session_reset")
+        assert self._gen(db) is None
+
+    def test_the_counter_is_peer_scoped(self, db):
+        self._keyed(db, "s-a")
+        db.end_session("s-a", "session_reset")
+        assert self._gen(db) == 1
+        assert db.latest_conversation_boundary(self.KEY, "api_server") is None
+
+
+class TestSourceOverrideDomain:
+    """The scope is memoized immediately, so the source must be right first.
+
+    ``_agent_source`` used ``agent.platform`` before the row landed while
+    persistence uses ``_session_source_for_agent``, which honors
+    ``HERMES_SESSION_SOURCE``. Under an override both sides of a ``/new``
+    queried the platform domain, missed the boundary stored under the
+    override, and hashed the same scope (@andrexibiza on #98811).
+    """
+
+    KEY = "agent:main:telegram:dm:888"
+
+    def test_the_pre_row_source_matches_persistence(self, db, monkeypatch):
+        from agent.prompt_cache_scope import _agent_source
+
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "override-src")
+        agent = SimpleNamespace(
+            session_id="s-none", _session_db=db, _gateway_session_key=self.KEY,
+            platform="telegram",
+        )
+        assert _agent_source(agent, "", db) == "override-src"
+
+    def test_new_rotates_under_a_source_override(self, db, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "override-src")
+
+        def keyed(sid):
+            db.create_session(
+                session_id=sid, source="override-src", session_key=self.KEY
+            )
+            return SimpleNamespace(
+                session_id=sid, _session_db=db,
+                _gateway_session_key=self.KEY, platform="telegram",
+            )
+
+        before = resolve_prompt_cache_scope(keyed("s-a"))
+        db.end_session("s-a", "session_reset")
+        assert resolve_prompt_cache_scope(keyed("s-b")) != before

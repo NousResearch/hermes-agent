@@ -1302,6 +1302,19 @@ _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 # Override via ``config.yaml`` ``agent.gateway_startup_restore_drain_timeout``.
 _STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT = 30.0
 
+# Default bound for the boot-time turn-machinery warm-up (#99373).  On a
+# fresh boot with no resume_pending sessions ``_finish_startup_restore``
+# used to open the inbound gate almost immediately, while the agent-side
+# turn machinery (the run_agent/model_tools import graph, the tool-registry
+# check_fn probes, the prompt builder) was still completely cold.  A message
+# arriving in that window was served with a skeleton system prompt: no
+# context tier, no tool schemas (~1.7K tokens instead of ~14.6K).  The
+# warm-up runs BEFORE the gate opens so the first inbound turn starts with
+# initialized machinery; the bound keeps a wedged init from making the
+# gateway permanently unavailable.  Override via ``config.yaml``
+# ``agent.gateway_startup_warmup_timeout`` (non-positive disables warm-up).
+_STARTUP_WARMUP_TIMEOUT_SECS_DEFAULT = 20.0
+
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     """Best-effort conversion of stored gateway timestamps to epoch seconds.
@@ -1386,6 +1399,60 @@ def _startup_restore_drain_timeout_secs() -> float:
         return float(raw)
     except (TypeError, ValueError):
         return float(_STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT)
+
+
+def _startup_warmup_timeout_secs() -> float:
+    """Max seconds the boot warm-up may hold the inbound gate shut (#99373).
+
+    ``GatewayRunner._warm_turn_prerequisites`` initializes the agent-side
+    turn machinery BEFORE ``_finish_startup_restore`` opens the inbound
+    gate, so a message arriving seconds after boot can no longer be served
+    with a skeleton system prompt (no context tier, no tool schemas).  The
+    warm-up is bounded so a wedged import or probe can never make the
+    gateway permanently unavailable — on timeout the gate opens anyway and
+    the warm-up finishes in the background.
+
+    Reads ``HERMES_STARTUP_WARMUP_TIMEOUT`` (bridged from ``config.yaml``
+    ``agent.gateway_startup_warmup_timeout`` at gateway startup, same
+    pattern as the other ``agent.*`` knobs).  Non-positive disables the
+    warm-up entirely (restores the historical lazy-init behaviour).
+    """
+    raw = os.environ.get("HERMES_STARTUP_WARMUP_TIMEOUT")
+    if raw is None or raw == "":
+        return float(_STARTUP_WARMUP_TIMEOUT_SECS_DEFAULT)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_STARTUP_WARMUP_TIMEOUT_SECS_DEFAULT)
+
+
+def _warm_turn_machinery_sync() -> int:
+    """Synchronously initialize the turn prerequisites a first turn needs.
+
+    Runs on an executor thread from ``_warm_turn_prerequisites``.  Covers
+    exactly the lazy init observed inside skeleton turns (#99373):
+
+    * the ``run_agent`` heavy import graph (the gateway imports it lazily
+      inside per-request handlers, so nothing else pulls it in at boot);
+    * ``model_tools.get_tool_definitions`` — materializes tool schemas and
+      primes the tool-registry ``check_fn`` TTL cache so availability
+      probes don't run (and fail cold) inside the user's first turn;
+    * the context-file tier (AGENTS.md / SOUL.md discovery + read).
+
+    Returns the number of tool schemas materialized (logged for
+    diagnosability).
+    """
+    import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
+    import model_tools
+
+    tool_defs = model_tools.get_tool_definitions(quiet_mode=True)
+    try:
+        from agent.prompt_builder import build_context_files_prompt
+
+        build_context_files_prompt()
+    except Exception:
+        logger.debug("context-file warm-up failed (non-fatal)", exc_info=True)
+    return len(tool_defs)
 
 
 def _as_thread_info(info: Any) -> Optional[Tuple[str, str]]:
@@ -2759,6 +2826,10 @@ if _config_path.exists():
             if "gateway_startup_restore_drain_timeout" in _agent_cfg:
                 os.environ["HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT"] = str(
                     _agent_cfg["gateway_startup_restore_drain_timeout"]
+                )
+            if "gateway_startup_warmup_timeout" in _agent_cfg:
+                os.environ["HERMES_STARTUP_WARMUP_TIMEOUT"] = str(
+                    _agent_cfg["gateway_startup_warmup_timeout"]
                 )
         # config-authoritative knobs for the session-search index; same
         # bridge semantics as the agent settings above.
@@ -7228,6 +7299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
     _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False
+    _startup_warmup_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------
     # Legacy per-session dict adapters.  All per-session state lives in
@@ -12400,6 +12472,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             drained += 1
         return drained
 
+    def _start_startup_warmup(self) -> None:
+        """Kick off the boot turn-machinery warm-up in the background (#99373).
+
+        Called from ``start()`` right after the startup-restore gate closes,
+        so the warm-up overlaps the (slow, network-bound) platform connects
+        instead of adding boot latency.  ``_finish_startup_restore`` awaits
+        it (bounded) before opening the inbound gate.
+        """
+        timeout = _startup_warmup_timeout_secs()
+        if timeout <= 0:
+            self._startup_warmup_task = None
+            return
+        self._startup_warmup_task = asyncio.ensure_future(
+            self._warm_turn_prerequisites()
+        )
+
+    async def _warm_turn_prerequisites(self) -> None:
+        """Initialize turn machinery off-loop before the gate opens (#99373).
+
+        Runs ``_warm_turn_machinery_sync`` (run_agent import graph, tool
+        schemas + check_fn probe cache, context-file tier) on an executor
+        thread so the event loop — platform heartbeats, connects — stays
+        responsive.  Never raises: a failed warm-up degrades to the
+        historical lazy init, it must not block startup.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            t0 = time.monotonic()
+            tool_count = await loop.run_in_executor(None, _warm_turn_machinery_sync)
+            logger.info(
+                "Turn machinery warmed in %.1fs (%d tool schema(s) materialized)",
+                time.monotonic() - t0,
+                tool_count,
+            )
+        except Exception:
+            logger.warning(
+                "Turn-machinery warm-up failed; first inbound turn will "
+                "initialize lazily",
+                exc_info=True,
+            )
+
+    async def _await_startup_warmup(self) -> None:
+        """Bounded wait for the boot warm-up before the inbound gate opens.
+
+        On timeout the gate opens anyway (availability outranks prompt
+        completeness for a WEDGED init — same principle as the bounded
+        restore-drain wait above) and the warm-up continues in the
+        background; a late failure is still logged.
+        """
+        task = getattr(self, "_startup_warmup_task", None)
+        if task is None or task.done():
+            return
+        timeout = _startup_warmup_timeout_secs()
+        if timeout <= 0:
+            return
+        done, pending = await asyncio.wait({task}, timeout=timeout)
+        if pending:
+            logger.warning(
+                "Turn-machinery warm-up still running after %.0fs; opening "
+                "inbound gate anyway — the first turn may see lazily "
+                "initialized machinery (#99373). Warm-up continues in the "
+                "background.",
+                timeout,
+            )
+            task.add_done_callback(
+                lambda t: GatewayRunner._log_late_background_failure(
+                    t,
+                    "boot turn-machinery warm-up failed after gate release",
+                    level=logging.DEBUG,
+                )
+            )
+
     async def _finish_startup_restore(self) -> None:
         """Wait (BOUNDED) for startup auto-resume, then release + drain inbound.
 
@@ -12453,6 +12597,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         exc_info=(type(exc), exc, exc.__traceback__),
                     )
         self._startup_restore_tasks = []
+        # Warm the turn machinery BEFORE the queue drains: replayed (and
+        # fresh) inbound turns must not build skeleton prompts (#99373).
+        await self._await_startup_warmup()
         drained = await self._drain_startup_restore_queue()
         self._startup_restore_in_progress = False
         if drained:
@@ -13573,6 +13720,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._startup_restore_in_progress = True
         self._startup_restore_queue = []
         self._startup_restore_tasks = []
+        # Fresh-boot readiness (#99373): with no resume_pending sessions the
+        # gate above opens almost immediately, while the agent-side turn
+        # machinery (run_agent import graph, tool schemas, check_fn probes,
+        # context tier) is still cold — a message in that window was served
+        # with a skeleton system prompt.  Start warming NOW so the work
+        # overlaps the network-bound platform connects below;
+        # _finish_startup_restore awaits it (bounded) before opening the gate.
+        self._start_startup_warmup()
 
         connected_count = 0
         enabled_platform_count = 0

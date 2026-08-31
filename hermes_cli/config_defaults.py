@@ -327,6 +327,17 @@ DEFAULT_CONFIG = {
         # synchronously before the gate runs.  Set to 0 to disable the bound
         # (historical "wait forever" behaviour).
         "gateway_startup_restore_drain_timeout": 30,
+        # Max seconds the boot turn-machinery warm-up (#99373) may hold the
+        # gateway's inbound gate shut.  On a fresh boot the gateway warms the
+        # agent-side turn prerequisites (run_agent import graph, tool schemas
+        # + availability probes, context-file tier) BEFORE accepting inbound
+        # messages, so a message seconds after boot is no longer served with
+        # a skeleton system prompt (missing context files / tool schemas).
+        # On timeout the gate opens anyway and warm-up finishes in the
+        # background — a wedged init can't make the gateway permanently
+        # unavailable.  Set to 0 to disable the warm-up (historical
+        # lazy-init behaviour).
+        "gateway_startup_warmup_timeout": 20,
         # Stale-stream ceiling for local providers (Ollama, oMLX, llama-cpp) in
         # seconds. When the base stale timeout is at its default (180s) and a
         # local endpoint is detected, this finite ceiling replaces the former

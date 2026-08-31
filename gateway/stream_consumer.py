@@ -2714,10 +2714,16 @@ class GatewayStreamConsumer:
             # duplicate (live finding, 2026-08-16 canary).
             _md = self._metadata_for_send(final=False) or {}
             _md["_interim_send"] = True
+            # Only pass reply_to for platforms that use reply-anchoring for
+            # threading. Discord/Telegram use native thread_id in metadata;
+            # passing reply_to on every commentary creates reply spam.
+            _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
+            _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
+            _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                reply_to=self._initial_reply_to_id,
+                reply_to=self._initial_reply_to_id if _needs_reply_anchor else None,
                 metadata=_md,
             )
             # Note: do NOT set _already_sent = True here.

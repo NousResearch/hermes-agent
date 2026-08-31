@@ -482,11 +482,14 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
             view, messages, session_id = rebind_view, rebind_view["window"], owning
             session_meta = _get_session_meta(db, owning) or session_meta
     if not messages:
-        # Do not surface a guessed or stale anchor as a retryable tool failure.
-        # Models otherwise retry the same scroll shape with another fabricated
-        # id, burning the turn before the loop guardrail can intervene. A
-        # bounded read is useful immediately and exposes real ids for a later
-        # scroll when one is genuinely needed.
+        # Do not surface an unusable anchor as a retryable tool failure.
+        # This can mean the id is guessed/stale or that the named session has
+        # no messages to anchor. Models otherwise retry the same scroll shape
+        # with another fabricated id, burning the turn before the loop guardrail
+        # can intervene. A bounded read is useful immediately and exposes real
+        # ids for a later scroll when one is genuinely needed. Deliberately use
+        # the read shape's own head/tail defaults instead of the scroll window:
+        # this fallback is discovery recovery, not another centered slice.
         try:
             fallback = json.loads(_read_session(db, session_id))
         except Exception:
@@ -497,10 +500,11 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
                 "reason": "invalid_around_message_id",
                 "requested_around_message_id": around_message_id,
                 "message": (
-                    "The requested message id is not in this session. A bounded "
-                    "session read was returned instead. Do not retry scroll with a "
-                    "guessed id; use only an id returned in messages, or use query "
-                    "discovery to find a new anchor."
+                    "The requested message id cannot anchor a window in this "
+                    "session. It may be absent or stale, or the session may have "
+                    "no messages here. A bounded session read was returned instead. "
+                    "Do not retry scroll with a guessed id; use only an id returned "
+                    "in messages, or use query discovery to find a new anchor."
                 ),
             }
             # Put the recovery contract before the transcript.  The bounded read

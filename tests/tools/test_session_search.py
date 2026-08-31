@@ -393,13 +393,23 @@ class TestScrollShape:
             "reason": "invalid_around_message_id",
             "requested_around_message_id": 0,
             "message": (
-                "The requested message id is not in this session. A bounded "
-                "session read was returned instead. Do not retry scroll with a "
-                "guessed id; use only an id returned in messages, or use query "
-                "discovery to find a new anchor."
+                "The requested message id cannot anchor a window in this "
+                "session. It may be absent or stale, or the session may have "
+                "no messages here. A bounded session read was returned instead. "
+                "Do not retry scroll with a guessed id; use only an id returned "
+                "in messages, or use query discovery to find a new anchor."
             ),
         }
         assert result["messages"]
+
+    def test_scroll_with_missing_session_preserves_not_found_error(self, db):
+        result = json.loads(session_search(
+            session_id="missing", around_message_id=0, db=db
+        ))
+
+        assert result["success"] is False
+        assert result["error"] == "session_id not found: missing"
+        assert "scroll_recovery" not in result
 
 
     def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db):

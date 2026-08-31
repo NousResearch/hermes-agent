@@ -157,6 +157,41 @@ def _same_hermes_home(left: Path | str, right: Path | str) -> bool:
     )
 
 
+def recorded_gateway_home_conflicts(
+    record: Optional[dict[str, Any]],
+    *,
+    expected_home: Optional[Path | str] = None,
+) -> bool:
+    """True when a persisted gateway record names a DIFFERENT HERMES_HOME.
+
+    Cross-profile kill refusal (#89315): a poisoned/contaminated PID record
+    inside one profile's home can truthfully name ANOTHER profile's live
+    gateway (its ``hermes_home`` stamp records the real owner). Any
+    destructive caller about to signal the recorded PID must consult this
+    first and refuse when the record positively proves the target belongs to
+    a different profile — otherwise ``gateway stop``/``restart``/``profile
+    delete`` from profile B SIGTERMs profile A's gateway and the supervisors
+    enter the mutual restart loop from the issue report.
+
+    ``expected_home`` overrides the comparison base (e.g. ``profile delete``
+    stopping a TARGET profile's gateway rather than the current process's).
+    Legacy records without a ``hermes_home`` stamp return False — they prove
+    nothing either way, and destructive callers already pair this with the
+    exact PID + start-time identity guards. A comparison failure returns True
+    (destructive action + unprovable ownership ⇒ fail closed).
+    """
+    if not isinstance(record, dict):
+        return False
+    recorded_home = record.get("hermes_home")
+    if not isinstance(recorded_home, str) or not recorded_home.strip():
+        return False
+    try:
+        base = expected_home if expected_home is not None else _get_process_hermes_home()
+        return not _same_hermes_home(recorded_home, base)
+    except Exception:
+        return True
+
+
 # Mirrors hermes_cli.profiles._PROFILE_ID_RE — duplicated here because gateway
 # identity code must stay import-light (hermes_constants + stdlib only).
 _PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")

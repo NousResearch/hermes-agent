@@ -2020,6 +2020,19 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         raw = pid_file.read_text(encoding="utf-8").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
+        # Cross-profile kill refusal (#89315): the record's hermes_home stamp
+        # names the gateway's TRUE owner. A contaminated/poisoned gateway.pid
+        # inside this profile dir can point at another profile's live gateway
+        # — killing it starts the mutual SIGTERM restart loop from the issue.
+        from gateway.status import recorded_gateway_home_conflicts
+
+        if recorded_gateway_home_conflicts(data, expected_home=profile_dir):
+            print(
+                f"✗ Refusing to stop PID {pid}: its recorded HERMES_HOME "
+                f"belongs to a different profile than {profile_dir} "
+                "(stale/poisoned PID record, #89315)."
+            )
+            return
         # Route through terminate_pid so Windows uses the appropriate
         # primitive (taskkill / TerminateProcess) — raw os.kill with
         # _signal.SIGKILL raises AttributeError at import time on Windows,

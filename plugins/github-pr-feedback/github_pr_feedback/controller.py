@@ -505,6 +505,10 @@ class WorktreePoolExhausted(RuntimeError):
 # CI audits run up to 8 hours), with margin. A slot must never look reclaimable
 # while its dispatched agent task could still legitimately be running.
 DEFAULT_WORKTREE_POOL_LEASE = timedelta(hours=10)
+# Keep blocked/retryable cards' exact-head slots reserved while still leaving
+# enough capacity for new receipts. Slots are created lazily, so this raises
+# the concurrency ceiling without eagerly allocating additional worktrees.
+DEFAULT_WORKTREE_POOL_SLOTS = 16
 # Only genuinely terminal cards release their checkout. Blocked and triage
 # cards have no worker *right now*, but both are retryable in Kanban. Reusing
 # their slot lets a later retry operate on whichever unrelated PR most recently
@@ -536,7 +540,7 @@ class PooledLocalGitRepository:
         worktree_root: Path | None = None,
         runner: GitCommandRunner | None = None,
         *,
-        slot_count: int = 8,
+        slot_count: int = DEFAULT_WORKTREE_POOL_SLOTS,
         owner_pid: Callable[[], int] | None = None,
         clock: Callable[[], datetime] | None = None,
         lease_timeout: timedelta = DEFAULT_WORKTREE_POOL_LEASE,

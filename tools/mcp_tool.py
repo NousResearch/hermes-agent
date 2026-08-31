@@ -6182,7 +6182,22 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                             f"exited; failing the call fast instead of "
                             f"waiting {float(tool_timeout):.0f}s"
                         )
-                    _call_coro = server.session.call_tool(tool_name, arguments=args)
+                    from tools.mcp_profile_scope import scope_tool_arguments
+
+                    scoped_args, scope_error = scope_tool_arguments(
+                        server._config, tool_name, args
+                    )
+                    if scope_error is not None:
+                        return tool_error(
+                            f"MCP scope denied for '{server_name}.{tool_name}': "
+                            f"{scope_error}"
+                        )
+                    session = server.session
+                    if session is None:
+                        raise RuntimeError(f"MCP server '{server_name}' session disappeared")
+                    _call_coro = session.call_tool(
+                        tool_name, arguments=scoped_args
+                    )
                     _watch_children = getattr(server, "_watch_stdio_children", None)
                     _watch_ok = (
                         _watch_children is not None

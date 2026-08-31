@@ -13,6 +13,7 @@ import { test } from 'vitest'
 
 import {
   canAdmitLocalBackend,
+  isUnlimitedPoolCapacity,
   POOL_CAPACITY_EXCEEDED,
   PoolCapacityError,
   type PoolEvictionEntry,
@@ -168,6 +169,16 @@ test('hard admission counts fresh local reservations but not descriptors', () =>
 
   assert.equal(canAdmitLocalBackend(entries, 3), true)
   assert.equal(canAdmitLocalBackend(entries, 2), false)
+})
+
+test('zero capacity is the explicit unlimited mode', () => {
+  const entries: [string, PoolEvictionEntry][] = [
+    ['a', { process: { pid: 1 }, countsTowardPoolCap: true, lastActiveAt: NOW }]
+  ]
+
+  assert.equal(isUnlimitedPoolCapacity(0), true)
+  assert.equal(canAdmitLocalBackend(entries, 0, 100), true)
+  assert.equal(isUnlimitedPoolCapacity(10), false)
 })
 
 test('weighted specialist reservations admit exactly four workers and reject a fifth without eviction', () => {

@@ -29,6 +29,11 @@ export interface PoolEvictionEntry {
 
 export const POOL_CAPACITY_EXCEEDED = 'POOL_CAPACITY_EXCEEDED'
 
+/** Zero is the explicit operator-selected unlimited mode. */
+export function isUnlimitedPoolCapacity(max: number): boolean {
+  return max === 0
+}
+
 export class PoolCapacityError extends Error {
   readonly code = POOL_CAPACITY_EXCEEDED
 
@@ -64,6 +69,10 @@ export function canAdmitLocalBackend(
 ): boolean {
   if (!Number.isInteger(requestedCapacity) || requestedCapacity < 1) {
     return false
+  }
+
+  if (isUnlimitedPoolCapacity(max)) {
+    return true
   }
 
   const maximum = Math.max(1, max)

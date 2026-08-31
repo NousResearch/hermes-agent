@@ -123,3 +123,62 @@ def test_npub_to_hex_roundtrip():
     assert _npub_to_hex(SELF_PUBKEY) is None  # hex input is not an npub
     assert _npub_to_hex("npub1garbage!!") is None  # invalid bech32
     assert _npub_to_hex("") is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# #82871: single-profile gateway must consult the Buzz adapter's own
+# config.extra.allowed_users when no env allowlist is configured.  The
+# reported symptom was a default-deny of EVERY Buzz user ("Unauthorized
+# user: <hex> on buzz") even though the sender's npub was correctly
+# listed in gateway.platforms.buzz.extra.allowed_users.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _make_runner_with_adapter(extra: dict):
+    """Single-profile (multiplex OFF) runner with a live Buzz adapter."""
+    from types import SimpleNamespace
+
+    from gateway.authz_mixin import _npub_to_hex
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.run import GatewayRunner
+
+    def _normalize(entry):
+        entry = (entry or "").strip()
+        if entry.lower().startswith("npub1"):
+            return _npub_to_hex(entry)
+        return entry.lower() if entry else None
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.pairing_store = None
+    runner.adapters = {
+        _BUZZ_PLATFORM: SimpleNamespace(
+            config=PlatformConfig(enabled=True, extra=extra),
+            normalize_user_id=_normalize,
+        )
+    }
+    return runner
+
+
+def test_config_only_npub_allowlist_authorizes_single_profile(buzz_registered):
+    """#82871 repro: npub listed ONLY in config.extra.allowed_users (no env
+    var at all) must authorize the sender's hex pubkey."""
+    runner = _make_runner_with_adapter({"allowed_users": [SELF_NPUB]})
+    assert runner._is_user_authorized(_make_source(SELF_PUBKEY)) is True
+
+
+def test_config_only_hex_allowlist_authorizes_single_profile(buzz_registered):
+    runner = _make_runner_with_adapter({"allowed_users": [SELF_PUBKEY]})
+    assert runner._is_user_authorized(_make_source(SELF_PUBKEY)) is True
+
+
+def test_config_only_allowlist_still_denies_unlisted_sender(buzz_registered):
+    """Consulting the adapter allowlist must not fail open."""
+    runner = _make_runner_with_adapter({"allowed_users": [SELF_NPUB]})
+    assert runner._is_user_authorized(_make_source(OTHER_PUBKEY)) is False
+
+
+def test_config_only_empty_allowlist_keeps_default_deny(buzz_registered):
+    """No allowlist anywhere: the default-deny is preserved (SECURITY.md §2.6)."""
+    runner = _make_runner_with_adapter({})
+    assert runner._is_user_authorized(_make_source(SELF_PUBKEY)) is False

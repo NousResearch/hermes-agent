@@ -211,3 +211,122 @@ class TestProducerHook:
         claimed = dl.sweep_recoverable()
         assert len(claimed) == 1
         assert claimed[0]["needs_marker"] is True
+
+    @pytest.mark.asyncio
+    async def test_claimed_result_reuses_pre_staged_obligation(self):
+        """Final delivery must consume claim-owned output, not enqueue a copy."""
+        from gateway.platforms.base import DeliveryOwnedReply
+
+        obligation_id = dl.record_claimed_result(
+            session_key="agent:main:slack:channel:C1",
+            claim_id="claim-owned",
+            claim_event_id="event-owned",
+            platform="slack",
+            chat_id="C1",
+            thread_id=None,
+            content="final answer",
+            adapter_profile=None,
+        )
+        adapter = _Adapter()
+
+        await _run(
+            adapter,
+            _event(),
+            response=DeliveryOwnedReply("final answer", obligation_id),
+        )
+
+        assert adapter.sent == ["final answer"]
+        rows = _rows()
+        assert rows == [(obligation_id, "delivered", "final answer", "default")]
+
+    @pytest.mark.asyncio
+    async def test_recovered_precomputed_result_bypasses_agent_handler(self):
+        """Restart publication reuses the final-response pipeline without execution."""
+        obligation_id = dl.record_claimed_result(
+            session_key="agent:main:slack:channel:C1",
+            claim_id="claim-recovered",
+            claim_event_id="event-recovered",
+            platform="slack",
+            chat_id="C1",
+            thread_id=None,
+            content="recovered answer",
+            adapter_profile=None,
+        )
+        adapter = _Adapter()
+        adapter._message_handler = AsyncMock(
+            side_effect=AssertionError("agent handler must not execute")
+        )
+        event = _event(text="")
+        event._hermes_precomputed_response = "recovered answer"
+        event._hermes_precomputed_obligation_id = obligation_id
+        session_key = "agent:main:slack:channel:C1"
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        await adapter._process_message_background(event, session_key)
+
+        adapter._message_handler.assert_not_awaited()
+        assert adapter.sent == ["recovered answer"]
+        assert _rows() == [
+            (obligation_id, "delivered", "recovered answer", "default")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_restart_redelivery_replays_raw_result_without_agent_execution(self):
+        import json
+
+        from gateway.run import GatewayRunner
+
+        source = _event(text="").source
+        source_payload = source.to_dict()
+        source_payload["is_bot"] = bool(source.is_bot)
+        source_payload["role_authorized"] = False
+        source_json = json.dumps(
+            source_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        obligation_id = dl.record_claimed_result(
+            session_key="agent:main:slack:channel:C1",
+            claim_id="claim-restart-pipeline",
+            claim_event_id="event-restart-pipeline",
+            platform="slack",
+            chat_id="C1",
+            thread_id=None,
+            content="recovered answer",
+            raw_content="recovered answer\nMEDIA:C:/private/recovered.png",
+            source_json=source_json,
+            message_ref="original-result",
+            adapter_profile=None,
+        )
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET owner_pid=999999999, "
+                "owner_started_at=1 WHERE obligation_id=?",
+                (obligation_id,),
+            )
+        claimed = dl.sweep_recoverable(deliverable_platforms={"slack"})
+        assert len(claimed) == 1
+
+        adapter = _Adapter()
+        adapter._message_handler = AsyncMock(
+            side_effect=AssertionError("agent handler must not execute")
+        )
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {Platform.SLACK: adapter}
+        runner._profile_adapters = {}
+        runner._authorization_adapter = lambda _platform, _profile=None: adapter
+
+        delivered = await runner._redeliver_claimed_obligations(claimed)
+
+        assert delivered == 1
+        adapter._message_handler.assert_not_awaited()
+        assert adapter.sent == ["recovered answer"]
+        assert _rows() == [
+            (
+                obligation_id,
+                "delivered",
+                "recovered answer",
+                "default",
+            )
+        ]

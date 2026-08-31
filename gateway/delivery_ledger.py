@@ -13,12 +13,14 @@ best-effort: ledger failures must never block a send; callers wrap every call in
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing
@@ -33,6 +35,15 @@ MAX_ATTEMPTS = 3
 STALE_AFTER_SECONDS = 24 * 60 * 60
 _RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_ROWS = 500
+MAX_CONTENT_BYTES = 1_000_000
+
+
+class DeliveryObligationConflict(RuntimeError):
+    """The same durable result identity was presented with different bytes."""
+
+
+class DeliveryObligationCapacityError(RuntimeError):
+    """The bounded ledger cannot safely admit another owed result."""
 
 # Visible prefixes for redeliveries that might duplicate an already-received message (crash mid-send /
 # post-rejection retry) — honest at-least-once. Runtime recovery uses a distinct marker: no restart
@@ -142,12 +153,13 @@ def _db_path():
     return get_hermes_home() / "state.db"
 
 
-def _connect() -> sqlite3.Connection:
+def _connect(home: Optional[Path] = None) -> sqlite3.Connection:
     from hermes_cli.sqlite_util import open_db
 
     # Shared state.db: SessionDB owns the durable PRAGMA set; this opener keeps the plain-tuple rows
     # and the 10 s busy timeout it always had.
-    return open_db(_db_path(), db_label="state.db (delivery_ledger)", busy_timeout_ms=10_000,
+    path = Path(home) / "state.db" if home is not None else _db_path()
+    return open_db(path, db_label="state.db (delivery_ledger)", busy_timeout_ms=10_000,
                    row_factory=None, initialize=_initialize_schema)
 
 
@@ -167,17 +179,40 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             owner_pid INTEGER,
             owner_started_at INTEGER,
             last_error TEXT,
-            adapter_profile TEXT
+            adapter_profile TEXT,
+            claim_id TEXT,
+            claim_event_id TEXT,
+            active_turn_token TEXT,
+            raw_content TEXT,
+            source_json TEXT,
+            message_ref TEXT
         )"""
     )
     if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
         add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
+    for column in (
+        "claim_id",
+        "claim_event_id",
+        "active_turn_token",
+        "raw_content",
+        "source_json",
+        "message_ref",
+    ):
+        add_column_if_missing(
+            conn, "delivery_obligations", column, f"{column} TEXT"
+        )
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS
+               delivery_obligations_claim_event_uq
+           ON delivery_obligations(claim_id, claim_event_id)
+           WHERE claim_id IS NOT NULL AND claim_event_id IS NOT NULL"""
+    )
 
 
-def _transaction():
+def _transaction(home: Optional[Path] = None):
     from hermes_cli.sqlite_util import transaction
 
-    return transaction(_connect())
+    return transaction(_connect(home))
 
 
 def _start_time(pid: int) -> Optional[int]:
@@ -232,20 +267,324 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
     return hashlib.sha256(f"{session_key}|{message_ref}|{content}".encode("utf-8", "replace")).hexdigest()[:24]
 
 
+def compute_claimed_result_id(
+    session_key: str, claim_id: str, claim_event_id: str
+) -> str:
+    """Stable, payload-free identity for one completed claimed execution."""
+    payload = f"goal-continuation-result|{session_key}|{claim_id}|{claim_event_id}"
+    return hashlib.sha256(payload.encode("utf-8", "strict")).hexdigest()[:24]
+
+
+def _ensure_insert_capacity(conn: sqlite3.Connection) -> None:
+    """Make one terminal-row slot without ever deleting owed output."""
+    cutoff = time.time() - _RETENTION_SECONDS
+    conn.execute(
+        """DELETE FROM delivery_obligations
+           WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""",
+        (cutoff,),
+    )
+    total = conn.execute("SELECT COUNT(*) FROM delivery_obligations").fetchone()[0]
+    needed = max(0, total - _MAX_ROWS + 1)
+    if needed:
+        conn.execute(
+            """DELETE FROM delivery_obligations WHERE obligation_id IN (
+                 SELECT obligation_id FROM delivery_obligations
+                 WHERE state IN ('delivered', 'abandoned')
+                 ORDER BY updated_at ASC LIMIT ?)""",
+            (needed,),
+        )
+        total = conn.execute("SELECT COUNT(*) FROM delivery_obligations").fetchone()[0]
+    if total >= _MAX_ROWS:
+        raise DeliveryObligationCapacityError("delivery obligation capacity exhausted")
+
+
+def record_claimed_result(
+    *,
+    session_key: str,
+    claim_id: str,
+    claim_event_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    content: str,
+    adapter_profile: Optional[str] = None,
+    active_turn_token: Optional[str] = None,
+    raw_content: Optional[str] = None,
+    source_json: Optional[str] = None,
+    message_ref: Optional[str] = None,
+    home: Optional[Path] = None,
+) -> str:
+    """Durably own a completed continuation result before claim retirement."""
+    if not claim_id or not claim_event_id:
+        raise ValueError("claim result identity is required")
+    if not isinstance(content, str):
+        raise TypeError("claim result content must be text")
+    if len(content.encode("utf-8", "replace")) > MAX_CONTENT_BYTES:
+        raise DeliveryObligationCapacityError("claim result exceeds durable limit")
+    stored_raw_content = content if raw_content is None else raw_content
+    if not isinstance(stored_raw_content, str) or len(
+        stored_raw_content.encode("utf-8", "replace")
+    ) > MAX_CONTENT_BYTES:
+        raise DeliveryObligationCapacityError("claim replay payload exceeds durable limit")
+    stored_source_json = source_json if source_json else None
+    if stored_source_json is not None:
+        try:
+            source_payload = json.loads(stored_source_json)
+        except (TypeError, ValueError) as exc:
+            raise DeliveryObligationConflict("claim replay source is invalid") from exc
+        if not isinstance(source_payload, dict) or len(
+            stored_source_json.encode("utf-8", "replace")
+        ) > 64 * 1024:
+            raise DeliveryObligationConflict("claim replay source is invalid")
+    stored_message_ref = str(message_ref) if message_ref else None
+    if stored_message_ref is not None and len(stored_message_ref) > 512:
+        raise DeliveryObligationConflict("claim replay message identity is invalid")
+
+    obligation_id = compute_claimed_result_id(session_key, claim_id, claim_event_id)
+    now = time.time()
+    stored_profile = str(adapter_profile).strip() if adapter_profile else "default"
+    stored_thread = str(thread_id) if thread_id else None
+    stored_turn_token = str(active_turn_token).strip() if active_turn_token else None
+    expected = (
+        obligation_id,
+        session_key,
+        platform,
+        str(chat_id),
+        stored_thread,
+        content,
+        claim_id,
+        claim_event_id,
+        stored_profile,
+        stored_turn_token,
+        stored_raw_content,
+        stored_source_json,
+        stored_message_ref,
+    )
+    pid, started = _owner_stamp()
+    with _DB_LOCK, _transaction(home) as conn:
+        existing = conn.execute(
+            """SELECT obligation_id, session_key, platform, chat_id, thread_id,
+                      content, claim_id, claim_event_id, adapter_profile,
+                      active_turn_token, raw_content, source_json, message_ref
+               FROM delivery_obligations
+               WHERE claim_id=? AND claim_event_id=?""",
+            (claim_id, claim_event_id),
+        ).fetchone()
+        if existing is not None:
+            if tuple(existing) != expected:
+                raise DeliveryObligationConflict(
+                    "completed result identity conflicts with durable ownership"
+                )
+            return obligation_id
+        _ensure_insert_capacity(conn)
+        try:
+            conn.execute(
+                """INSERT INTO delivery_obligations
+                   (obligation_id, session_key, platform, chat_id, thread_id,
+                    content, state, attempts, created_at, updated_at,
+                    owner_pid, owner_started_at, adapter_profile,
+                    claim_id, claim_event_id, active_turn_token, raw_content,
+                    source_json, message_ref)
+                   VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    obligation_id,
+                    session_key,
+                    platform,
+                    str(chat_id),
+                    stored_thread,
+                    content,
+                    now,
+                    now,
+                    pid,
+                    started,
+                    stored_profile,
+                    claim_id,
+                    claim_event_id,
+                    stored_turn_token,
+                    stored_raw_content,
+                    stored_source_json,
+                    stored_message_ref,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raced = conn.execute(
+                """SELECT obligation_id, session_key, platform, chat_id,
+                          thread_id, content, claim_id, claim_event_id,
+                          adapter_profile, active_turn_token, raw_content,
+                          source_json, message_ref
+                   FROM delivery_obligations
+                   WHERE claim_id=? AND claim_event_id=?""",
+                (claim_id, claim_event_id),
+            ).fetchone()
+            if raced is None or tuple(raced) != expected:
+                raise DeliveryObligationConflict(
+                    "completed result identity conflicts with durable ownership"
+                )
+    return obligation_id
+
+
+def get_claimed_result(
+    claim_id: str,
+    claim_event_id: str,
+    *,
+    home: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return durable publication ownership for one claim event, if present."""
+    with _DB_LOCK, _transaction(home) as conn:
+        row = conn.execute(
+            """SELECT obligation_id, session_key, platform, chat_id, thread_id,
+                      content, state, attempts, adapter_profile, active_turn_token,
+                      raw_content, source_json, message_ref
+               FROM delivery_obligations
+               WHERE claim_id=? AND claim_event_id=?""",
+            (claim_id, claim_event_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "obligation_id": row[0],
+        "session_key": row[1],
+        "platform": row[2],
+        "chat_id": row[3],
+        "thread_id": row[4],
+        "content": row[5],
+        "state": row[6],
+        "attempts": row[7],
+        "profile": row[8],
+        "active_turn_token": row[9],
+        "raw_content": row[10],
+        "source_json": row[11],
+        "message_ref": row[12],
+    }
+
+
+def completed_active_turn_tokens(
+    *, home: Optional[Path] = None
+) -> Dict[str, set[str]]:
+    """Return bounded turn tokens whose claimed results own publication."""
+    with _DB_LOCK, _transaction(home) as conn:
+        rows = conn.execute(
+            """SELECT session_key, active_turn_token
+               FROM delivery_obligations
+               WHERE claim_id IS NOT NULL AND claim_event_id IS NOT NULL
+                 AND active_turn_token IS NOT NULL
+                 AND state != 'abandoned'
+               LIMIT ?""",
+            (_MAX_ROWS,),
+        ).fetchall()
+    tokens: Dict[str, set[str]] = {}
+    for session_key, token in rows:
+        if token:
+            tokens.setdefault(str(session_key), set()).add(str(token))
+    return tokens
+
+
+def prepare_claimed_result_delivery(
+    obligation_id: str,
+    *,
+    session_key: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    content: str,
+    adapter_profile: Optional[str],
+    home: Optional[Path] = None,
+) -> bool:
+    """Bind staged output to final visible text before its first send."""
+    if not obligation_id or not session_key or not platform or not chat_id:
+        raise ValueError("claimed result delivery identity is required")
+    if not isinstance(content, str):
+        raise TypeError("claimed result delivery content must be text")
+    if len(content.encode("utf-8", "replace")) > MAX_CONTENT_BYTES:
+        raise DeliveryObligationCapacityError("claim result exceeds durable limit")
+
+    now = time.time()
+    stored_profile = str(adapter_profile).strip() if adapter_profile else "default"
+    stored_thread = str(thread_id) if thread_id else None
+    with _DB_LOCK, _transaction(home) as conn:
+        row = conn.execute(
+            """SELECT session_key, platform, chat_id, thread_id,
+                      adapter_profile, state, claim_id, claim_event_id,
+                      owner_pid, owner_started_at
+               FROM delivery_obligations WHERE obligation_id=?""",
+            (obligation_id,),
+        ).fetchone()
+        if row is None or not row[6] or not row[7]:
+            raise DeliveryObligationConflict(
+                "claimed-result delivery ownership is unavailable"
+            )
+        actual = {
+            "session_key": row[0],
+            "platform": row[1],
+            "chat_id": row[2],
+            "thread_id": row[3],
+            "adapter_profile": row[4],
+        }
+        expected = {
+            "session_key": session_key,
+            "platform": platform,
+            "chat_id": str(chat_id),
+            "thread_id": stored_thread,
+            "adapter_profile": stored_profile,
+        }
+        if actual != expected:
+            raise DeliveryObligationConflict(
+                "claimed-result delivery route conflicts with durable ownership"
+            )
+        if row[5] == "delivered":
+            return False
+        owner_pid, owner_started_at = _owner_stamp()
+        if (row[8], row[9]) != (owner_pid, owner_started_at):
+            raise DeliveryObligationConflict(
+                "claimed-result delivery is owned by another process"
+            )
+        if row[5] not in {"pending", "failed", "attempting"}:
+            raise DeliveryObligationConflict("claimed-result delivery state is invalid")
+        conn.execute(
+            """UPDATE delivery_obligations
+               SET content=?, state='attempting', updated_at=?, last_error=NULL
+               WHERE obligation_id=?""",
+            (content, now, obligation_id),
+        )
+    return True
+
+
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
                       thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
     """Record a final response as owed to the platform (state='pending')."""
     now, (pid, started) = time.time(), _owner_stamp()
+    stored_profile = str(adapter_profile).strip() if adapter_profile else "default"
+    stored_thread = str(thread_id) if thread_id else None
+    expected = (
+        session_key,
+        platform,
+        str(chat_id),
+        stored_thread,
+        content,
+        stored_profile,
+    )
     with _DB_LOCK, _transaction() as conn:
+        existing = conn.execute(
+            """SELECT session_key, platform, chat_id, thread_id, content,
+                      adapter_profile, claim_id, claim_event_id
+               FROM delivery_obligations WHERE obligation_id=?""",
+            (obligation_id,),
+        ).fetchone()
+        if existing is not None:
+            if tuple(existing[:6]) == expected and not existing[6] and not existing[7]:
+                return
+            raise DeliveryObligationConflict(
+                "delivery obligation identity conflicts with existing ownership"
+            )
+        _ensure_insert_capacity(conn)
         conn.execute(
-            """INSERT OR REPLACE INTO delivery_obligations
+            """INSERT INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
                 content, state, attempts, created_at, updated_at,
                 owner_pid, owner_started_at, adapter_profile)
                VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
-            (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
-             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
-    _prune()
+            (obligation_id, session_key, platform, str(chat_id), stored_thread,
+             content, now, now, pid, started, stored_profile))
 
 
 def mark_attempting(obligation_id: str) -> None:
@@ -254,6 +593,18 @@ def mark_attempting(obligation_id: str) -> None:
 
 def mark_delivered(obligation_id: str) -> None:
     _update_state(obligation_id, "delivered")
+
+
+def mark_claimed_result_delivered(obligation_id: str) -> bool:
+    """Mark one claimed result delivered only for its current process owner."""
+    return _update_claimed_result_state(obligation_id, "delivered")
+
+
+def mark_claimed_result_failed(
+    obligation_id: str, error: str = "platform_delivery_failed"
+) -> bool:
+    """Return one claimed result to failed only for its current owner."""
+    return _update_claimed_result_state(obligation_id, "failed", error=error)
 
 
 def mark_failed(obligation_id: str, error: str = "") -> None:
@@ -290,9 +641,36 @@ def _update_state(obligation_id: str, state: str, error: str = "") -> None:
             (state, time.time(), error[:500] if error else None, obligation_id))
 
 
+def _update_claimed_result_state(
+    obligation_id: str, state: str, error: str = ""
+) -> bool:
+    pid, started = _owner_stamp()
+    if started is None:
+        return False
+    with _DB_LOCK, _transaction() as conn:
+        cursor = conn.execute(
+            """UPDATE delivery_obligations
+               SET state=?, updated_at=?, last_error=?
+               WHERE obligation_id=? AND claim_id IS NOT NULL
+                 AND claim_event_id IS NOT NULL
+                 AND owner_pid IS ? AND owner_started_at IS ?""",
+            (
+                state,
+                time.time(),
+                error[:500] if error else None,
+                obligation_id,
+                pid,
+                started,
+            ),
+        )
+    return bool(cursor.rowcount)
+
+
 def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
                  needs_marker: bool, runtime: bool = False, flood: bool = False,
-                 last_error: Optional[str] = None) -> Dict[str, Any]:
+                 last_error: Optional[str] = None, claim_id: Optional[str] = None,
+                 claim_event_id: Optional[str] = None, raw_content: Optional[str] = None,
+                 source_json: Optional[str] = None, message_ref: Optional[str] = None) -> Dict[str, Any]:
     """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
     the rate limit refused, possibly after accepting part of it) gets FLOOD_MARKER at boot or at runtime, a
     ``runtime`` reconnect replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's
@@ -302,6 +680,9 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
     return {"obligation_id": oid, "session_key": session_key, "platform": platform, "chat_id": chat_id,
             "thread_id": thread_id, "content": content, "needs_marker": needs_marker,
             **({"marker": marker} if needs_marker and marker else {}), "profile": profile,
+            "claim_id": claim_id, "claim_event_id": claim_event_id,
+            "raw_content": raw_content, "source_json": source_json,
+            "message_ref": message_ref,
             **({"runtime_recovery": True} if runtime else {}),
             **({"last_error": last_error} if last_error else {}), "attempts": attempts + 1}
 
@@ -331,12 +712,17 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
-                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at
+                      owner_pid, owner_started_at, adapter_profile, claim_id,
+                      claim_event_id, raw_content, source_json, message_ref,
+                      last_error, updated_at
                FROM delivery_obligations
-               WHERE state IN ('pending', 'attempting', 'failed')"""
+               WHERE state IN ('pending', 'attempting', 'failed')
+               LIMIT ?""",
+            (_MAX_ROWS + 1,),
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
-             owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
+             owner_pid, owner_started_at, adapter_profile, claim_id, claim_event_id,
+             raw_content, source_json, message_ref, last_error, updated_at) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
@@ -361,6 +747,9 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                     claimed.append({
                         "obligation_id": oid, "session_key": session_key, "platform": platform,
                         "chat_id": chat_id, "thread_id": thread_id, "content": content,
+                        "claim_id": claim_id, "claim_event_id": claim_event_id,
+                        "raw_content": raw_content, "source_json": source_json,
+                        "message_ref": message_ref,
                         "profile": adapter_profile or "default", "attempts": attempts,
                         "adopted": True, "not_before": flood_not_before(updated_at, last_error)})
                 continue
@@ -380,7 +769,10 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
                                             adapter_profile or "default", needs_marker=state != "pending",
-                                            flood=flood_row))
+                                            flood=flood_row, claim_id=claim_id,
+                                            claim_event_id=claim_event_id,
+                                            raw_content=raw_content, source_json=source_json,
+                                            message_ref=message_ref))
     return claimed
 
 
@@ -405,11 +797,14 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, attempts, created_at, owner_pid,
-                      owner_started_at, last_error, adapter_profile, updated_at
+                      owner_started_at, last_error, adapter_profile, updated_at,
+                      claim_id, claim_event_id, raw_content, source_json, message_ref
                FROM delivery_obligations
-               WHERE state='failed' AND platform=?""", (platform,)).fetchall()
+               WHERE state='failed' AND platform=?
+               LIMIT ?""", (platform, _MAX_ROWS + 1)).fetchall()
         for (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
-             owner_pid, owner_started_at, last_error, adapter_profile, updated_at) in rows:
+             owner_pid, owner_started_at, last_error, adapter_profile, updated_at,
+             claim_id, claim_event_id, raw_content, source_json, message_ref) in rows:
             # Exact process-start matching prevents PID reuse from stealing work.
             if (adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started
                     or not _runtime_retryable(last_error)):
@@ -437,7 +832,10 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                 # claim released unsent keeps its flood retry eligibility.
                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
                                             attempts, adapter_profile, needs_marker=True, runtime=True,
-                                            flood=is_flood_error(last_error), last_error=last_error))
+                                            flood=is_flood_error(last_error), last_error=last_error,
+                                            claim_id=claim_id, claim_event_id=claim_event_id,
+                                            raw_content=raw_content, source_json=source_json,
+                                            message_ref=message_ref))
     return claimed
 
 
@@ -478,11 +876,8 @@ def _prune(now: Optional[float] = None) -> None:
                 conn.execute(
                     """DELETE FROM delivery_obligations WHERE obligation_id IN (
                          SELECT obligation_id FROM delivery_obligations
-                         ORDER BY CASE state
-                                    WHEN 'delivered' THEN 0
-                                    WHEN 'abandoned' THEN 1
-                                    ELSE 2
-                                  END, updated_at ASC
+                         WHERE state IN ('delivered', 'abandoned')
+                         ORDER BY updated_at ASC
                          LIMIT ?)""", (total - _MAX_ROWS,))
     except Exception:
         logger.debug("delivery ledger prune failed", exc_info=True)

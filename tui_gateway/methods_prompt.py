@@ -937,7 +937,17 @@ def _(rid, params: dict) -> dict:
     # Disk-full must fail the RPC (not stream silently): desktop maps the error
     # string to a "disk full" toast so the user knows why the send vanished.
     try:
-        _ensure_session_db_row(session)
+        if _ensure_session_db_row(session) is False:
+            # Store unavailable: failing the RPC is the only user-visible
+            # signal — same principle as the disk-full path above (#98924).
+            # _db_error carries the SessionDB open failure for the toast.
+            return _err(
+                rid,
+                5072,
+                "session storage unavailable: "
+                f"{_db_error or 'state.db could not be opened'} — the message "
+                "was not saved; repair state.db and try again",
+            )
         # A branch becomes real here: copy its parent's transcript into the row so it
         # resumes with full context (the agent won't persist the seed itself).
         _persist_branch_seed(session)

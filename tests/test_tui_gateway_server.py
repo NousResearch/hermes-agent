@@ -14276,6 +14276,61 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     assert server._db_error == "locking protocol"
 
 
+def test_ensure_session_db_row_false_when_store_unavailable(monkeypatch):
+    """Store unavailable → False, so prompt.submit can fail the send loudly
+    instead of streaming into a store that will never save it (#98924)."""
+    fake_mod = types.ModuleType("hermes_state")
+
+    class _BrokenSessionDB:
+        def __init__(self):
+            raise RuntimeError("utf-8 boom")
+
+    fake_mod.SessionDB = _BrokenSessionDB
+    monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+
+    assert server._ensure_session_db_row({"session_key": "k1"}) is False
+
+
+def test_ensure_session_db_row_true_when_row_persisted(monkeypatch):
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, **_kwargs):
+            created.append(key)
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    assert server._ensure_session_db_row({"session_key": "k1", "cwd": "/tmp"}) is True
+    assert created == ["k1"]
+
+
+def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
+    """A send with no persistable store must fail the RPC with a real error
+    (desktop maps it to a toast) instead of streaming the message into a
+    store that will never save it (#98924)."""
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {}})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_db_error", "utf-8 decode failure")
+
+    server._sessions["lost-sid"] = _session()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "lost",
+                "method": "prompt.submit",
+                "params": {"session_id": "lost-sid", "text": "will vanish"},
+            }
+        )
+    finally:
+        server._sessions.pop("lost-sid", None)
+
+    assert resp["error"]["code"] == 5072
+    assert "session storage unavailable" in resp["error"]["message"]
+
+
 @pytest.mark.real_agent_prewarm
 def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     class _FakeWorker:

@@ -12420,15 +12420,21 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
 
     try:
         return _open_probed()
-    except sqlite3.DatabaseError as exc:
+    except (sqlite3.DatabaseError, UnicodeDecodeError) as exc:
         message = str(exc).lower()
         stale_schema = "no such table" in message or "no such column" in message
-        if not stale_schema and not is_malformed_schema_error(exc):
+        if not stale_schema and not (
+            # UnicodeDecodeError = pysqlite could not decode SQLite's own
+            # error message because corrupt file bytes were embedded in it
+            # (#98924). The one-writable-open heal is the only repair path,
+            # so route it through the same dispatch as malformed schema.
+            is_malformed_schema_error(exc) or isinstance(exc, UnicodeDecodeError)
+        ):
             raise
         SessionDB(db_path=db_path, read_only=False).close()
         try:
             return _open_probed()
-        except sqlite3.DatabaseError as still_stale:
+        except (sqlite3.DatabaseError, UnicodeDecodeError) as still_stale:
             message = str(still_stale).lower()
             if "no such table" not in message and "no such column" not in message:
                 raise

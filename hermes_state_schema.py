@@ -517,7 +517,7 @@ class SessionSchemaMixin:
         """Body of :meth:`_recover_stale_fts`; caller holds rebuild authority."""
         try:
             trigram_status = self._fts_table_probe(cursor, "messages_fts_trigram")
-        except sqlite3.DatabaseError:
+        except (sqlite3.DatabaseError, UnicodeDecodeError):
             # A corrupt vtable may fail even a LIMIT 0 probe. It still needs
             # to be included in the drop-and-recreate recovery below.
             trigram_status = True

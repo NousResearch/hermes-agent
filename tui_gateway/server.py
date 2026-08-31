@@ -3788,13 +3788,17 @@ def _register_session_cwd(session: dict | None) -> None:
         pass
 
 
-def _ensure_session_db_row(session: dict) -> None:
+def _ensure_session_db_row(session: dict) -> bool:
     """Idempotently persist the session's DB row on first real activity.
 
     Called from prompt.submit so a row only exists once the user actually sends
     a message — abandoned drafts never leave an empty "Untitled" session behind.
     Uses INSERT OR IGNORE under the hood, so re-calls (and the AIAgent's own
     lazy create) are no-ops.
+    Returns False only when the store is unavailable (no openable state.db);
+    prompt.submit turns that into an RPC error so a send fails loudly with a
+    toast instead of streaming into a store that will never save it (#98924).
+    Every other outcome — no key, best-effort attempt, success — is True.
 
     A cwd the user *chose* is always persisted. When they made no explicit
     choice the launch directory stands in, and whether that is meaningful
@@ -3824,13 +3828,13 @@ def _ensure_session_db_row(session: dict) -> None:
             db = SessionDB(db_path=Path(profile_home) / "state.db")
         except Exception:
             logger.debug("failed to open profile db for session row", exc_info=True)
-            return
+            return False
         close_db = True
     else:
         db = _get_db()
         close_db = False
     if db is None:
-        return
+        return False
     # The session's own model/effort/fast pick — the composer override shipped on
     # session.create, or a restored /model switch — must own the row's model +
     # model_config. The agent isn't built yet at first prompt.submit, so derive
@@ -3949,6 +3953,7 @@ def _ensure_session_db_row(session: dict) -> None:
                 db.close()
             except Exception:
                 pass
+    return True
 
 
 def _persist_branch_seed(session: dict) -> None:

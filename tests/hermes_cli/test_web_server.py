@@ -628,6 +628,36 @@ class TestWebServerEndpoints:
 
         assert opens == [True]
 
+    def test_decode_error_triggers_writable_heal(self, tmp_path, monkeypatch):
+        """UnicodeDecodeError — pysqlite failing to decode SQLite's own error
+        message over corrupt file bytes (#98924) — must route through the
+        same one-writable-open heal as malformed schema."""
+        import hermes_state
+        from hermes_cli import web_server
+
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"not-empty")
+        opens = []
+
+        class _OkDB:
+            _conn = None
+
+            def close(self):
+                pass
+
+        def scripted_open(*_args, **kwargs):
+            opens.append(kwargs.get("read_only", False))
+            if opens == [True]:
+                raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
+            return _OkDB()
+
+        monkeypatch.setattr(hermes_state, "SessionDB", scripted_open)
+
+        db = web_server._open_session_db_at_path(db_path, read_only=True)
+
+        assert isinstance(db, _OkDB)
+        assert opens == [True, False, True]
+
     def test_get_sessions_zero_byte_store_returns_empty_list(self):
         from hermes_constants import get_hermes_home
 

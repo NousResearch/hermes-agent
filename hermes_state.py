@@ -5940,32 +5940,33 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return
         token = uuid.uuid4().hex
         try:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
-                (_STATE_DB_GENERATION_KEY, token),
-            )
-            row = self._conn.execute(
-                "SELECT value FROM state_meta WHERE key = ?",
-                (_STATE_DB_GENERATION_KEY,),
-            ).fetchone()
-            if row and row[0]:
-                token = str(row[0])
-            self._db_file_generation_token = token
-            current = 0
-            pragma_row = self._conn.execute("PRAGMA application_id").fetchone()
-            if pragma_row:
-                current = int(pragma_row[0] or 0)
-            if current == 0:
-                app_id = int(token[:8], 16) & 0x7FFFFFFF
-                if app_id == 0:
-                    app_id = 1
-                self._conn.execute(f"PRAGMA application_id={app_id}")
-                current = app_id
-            self._db_file_application_id = current
-            try:
-                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            except sqlite3.Error:
-                pass
+            with self._lock:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
+                    (_STATE_DB_GENERATION_KEY, token),
+                )
+                row = self._conn.execute(
+                    "SELECT value FROM state_meta WHERE key = ?",
+                    (_STATE_DB_GENERATION_KEY,),
+                ).fetchone()
+                if row and row[0]:
+                    token = str(row[0])
+                self._db_file_generation_token = token
+                current = 0
+                pragma_row = self._conn.execute("PRAGMA application_id").fetchone()
+                if pragma_row:
+                    current = int(pragma_row[0] or 0)
+                if current == 0:
+                    app_id = int(token[:8], 16) & 0x7FFFFFFF
+                    if app_id == 0:
+                        app_id = 1
+                    self._conn.execute(f"PRAGMA application_id={app_id}")
+                    current = app_id
+                self._db_file_application_id = current
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except sqlite3.Error:
+                    pass
         except sqlite3.Error as exc:
             logger.debug("state.db generation stamp skipped: %s", exc)
 
@@ -5977,7 +5978,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._db_file_application_id = disk_id
         elif self._conn is not None and not self._db_file_application_id:
             try:
-                pragma_row = self._conn.execute("PRAGMA application_id").fetchone()
+                with self._lock:
+                    pragma_row = self._conn.execute("PRAGMA application_id").fetchone()
                 if pragma_row and pragma_row[0]:
                     self._db_file_application_id = int(pragma_row[0])
             except sqlite3.Error:

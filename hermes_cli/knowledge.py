@@ -30,11 +30,13 @@ MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_SOURCE_COUNT = 32
 MAX_RECORD_COUNT = 128
 MAX_SOURCE_TEXT = 64 * 1024
+MAX_SOURCE_BYTES = MAX_SOURCE_TEXT * 4
 MAX_STATEMENT_CHARS = 360
 MAX_DOMAIN_CHARS = 80
 MAX_ID_CHARS = 96
 MAX_URI_CHARS = 512
 MAX_MEMORY_RECORDS = 8
+MAX_AUDIT_BYTES = 5 * 1024 * 1024
 AUDIT_DIRNAME = "knowledge"
 AUDIT_FILENAME = "knowledge-sync.jsonl"
 
@@ -58,6 +60,10 @@ _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
 
 class KnowledgeError(ValueError):
     """A user-actionable manifest or verification error."""
+
+
+class UnsafeKnowledgeError(KnowledgeError):
+    """Manifest metadata crossed a rendered-output trust boundary."""
 
 
 def _now() -> str:
@@ -129,6 +135,18 @@ def _validate_metadata(value: Any, *, field: str, allow_empty: bool = True) -> s
     return value
 
 
+def _validate_rendered_metadata(value: Any, *, field: str, allow_empty: bool = True) -> str:
+    normalized = _validate_metadata(value, field=field, allow_empty=allow_empty)
+    if "\r" in normalized or "\n" in normalized or ENTRY_DELIMITER in normalized:
+        raise UnsafeKnowledgeError(f"{field} must be a single-line value")
+    findings = scan_for_threats(normalized, scope="strict")
+    if findings:
+        raise UnsafeKnowledgeError(
+            f"{field} contains blocked threat pattern(s): {', '.join(findings)}"
+        )
+    return normalized
+
+
 def _validate_timestamp(value: Any, *, field: str) -> str:
     normalized = _validate_metadata(value, field=field, allow_empty=False)
     try:
@@ -163,17 +181,34 @@ def _safe_path(path_value: str) -> Path:
     return candidate
 
 
+def _read_bounded_bytes(
+    path: Path,
+    *,
+    limit: int,
+    read_error: str,
+    size_error: str,
+) -> bytes:
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(limit + 1)
+    except OSError as exc:
+        raise KnowledgeError(f"{read_error}: {exc}") from exc
+    if len(raw) > limit:
+        raise KnowledgeError(size_error)
+    return raw
+
+
 def _read_manifest(path_value: str) -> tuple[dict[str, Any], str]:
     path = Path(path_value).expanduser().resolve()
     reason = _reject_secret_path(str(path))
     if reason:
         raise KnowledgeError(f"manifest rejected: {reason}")
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise KnowledgeError(f"cannot read manifest: {exc}") from exc
-    if len(raw) > MAX_MANIFEST_BYTES:
-        raise KnowledgeError(f"manifest exceeds {MAX_MANIFEST_BYTES} bytes")
+    raw = _read_bounded_bytes(
+        path,
+        limit=MAX_MANIFEST_BYTES,
+        read_error="cannot read manifest",
+        size_error=f"manifest exceeds {MAX_MANIFEST_BYTES} bytes",
+    )
     try:
         decoded = raw.decode("utf-8")
         if _SECRET_VALUE_RE.search(decoded):
@@ -199,7 +234,7 @@ def _source_root(source: dict[str, Any]) -> dict[str, Any]:
         raise KnowledgeError(f"source {source_id}: {reason}")
     revision = source.get("revision", "")
     sha = source.get("sha", "")
-    revision = _validate_metadata(revision, field=f"source {source_id} revision")
+    revision = _validate_rendered_metadata(revision, field=f"source {source_id} revision")
     sha = _validate_metadata(sha, field=f"source {source_id} sha")
     if sha and not _HEX_SHA_RE.fullmatch(sha):
         raise KnowledgeError(f"source {source_id}: sha must be hexadecimal")
@@ -213,11 +248,20 @@ def _source_root(source: dict[str, Any]) -> dict[str, Any]:
         reason = _scan_text(content, field=f"source {source_id} content")
         if reason:
             raise KnowledgeError(reason)
-    if kind == "local" and source.get("path"):
-        path = _safe_path(source["path"])
+    path_value = source.get("path")
+    if path_value is not None and not isinstance(path_value, str):
+        raise KnowledgeError(f"source {source_id}: path must be text")
+    if kind == "local" and path_value:
+        path = _safe_path(path_value)
+        raw_content = _read_bounded_bytes(
+            path,
+            limit=MAX_SOURCE_BYTES,
+            read_error=f"source {source_id}: cannot read safe local file",
+            size_error=f"source {source_id}: local source exceeds {MAX_SOURCE_BYTES} bytes",
+        )
         try:
-            content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
+            content = raw_content.decode("utf-8")
+        except UnicodeError as exc:
             raise KnowledgeError(f"source {source_id}: cannot read safe local file: {exc}") from exc
         if len(content) > MAX_SOURCE_TEXT:
             raise KnowledgeError(f"source {source_id}: local source exceeds {MAX_SOURCE_TEXT} characters")
@@ -260,7 +304,7 @@ def _record_from(
     if not isinstance(fact_key, str) or len(fact_key) > MAX_ID_CHARS:
         raise KnowledgeError(f"record {record_id}: fact_key is invalid")
     source = sources[source_id]
-    revision = _validate_metadata(
+    revision = _validate_rendered_metadata(
         raw.get("revision") or source["revision"],
         field=f"record {record_id} revision",
     )
@@ -316,6 +360,8 @@ def _prepare(manifest: dict[str, Any], manifest_sha: str) -> dict[str, Any]:
     for index, raw in enumerate(raw_records, start=1):
         try:
             record = _record_from(raw, sources, index, verified_at)
+        except UnsafeKnowledgeError:
+            raise
         except KnowledgeError as exc:
             rejected.append({"index": index, "reason": str(exc)})
             continue
@@ -385,36 +431,107 @@ def _load_memory_entries() -> tuple[str, list[str]]:
     return raw, MemoryStore._parse_entries(raw)
 
 
-def _write_managed_memory(block: str, run_id: str) -> dict[str, Any]:
-    path = _memory_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    backup_path = get_hermes_home() / AUDIT_DIRNAME / "backups" / run_id / "MEMORY.md"
-    backup_path.parent.mkdir(parents=True, exist_ok=True)
+def _restore_memory_contents(path: Path, *, before_exists: bool, before_raw: str) -> None:
+    if before_exists:
+        atomic_write_text(path, before_raw)
+    else:
+        path.unlink(missing_ok=True)
 
-    with MemoryStore._file_lock(path):
-        raw, read_ok = MemoryStore._read_raw_checked(path)
-        if not read_ok:
-            raise KnowledgeError("MEMORY.md became unreadable; write refused")
-        before_sha = _sha256_text(raw)
-        if not backup_path.exists():
-            atomic_write_text(backup_path, raw)
+
+def _rollback_failed_write(
+    path: Path,
+    *,
+    before_exists: bool,
+    before_raw: str,
+    expected_after: str,
+) -> None:
+    current, read_ok = MemoryStore._read_raw_checked(path)
+    if not read_ok:
+        raise KnowledgeError("MEMORY.md became unreadable; rollback refused")
+    if current == before_raw:
+        return
+    if current != expected_after:
+        raise KnowledgeError("MEMORY.md changed after attempted apply; rollback refused")
+    _restore_memory_contents(
+        path,
+        before_exists=before_exists,
+        before_raw=before_raw,
+    )
+
+
+def _write_managed_memory(
+    block: str,
+    run_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
         store = load_on_disk_store()
-        current_chars = len(raw)
-        effective_limit = max(store.memory_char_limit, current_chars + len(block) + len(ENTRY_DELIMITER))
-        store.memory_char_limit = effective_limit
-        drift = store._detect_external_drift("memory", raw)
-        if drift:
-            raise KnowledgeError(f"MEMORY.md changed shape; recovery copy created at {drift}")
-        entries = MemoryStore._parse_entries(raw)
-        entries = [entry for entry in entries if not entry.startswith(MANAGED_HEADER)]
-        entries.append(block)
-        total = len(ENTRY_DELIMITER.join(entries)) if entries else 0
-        if total > effective_limit:
-            raise KnowledgeError(f"managed memory would exceed effective limit {effective_limit}")
-        store._set_entries("memory", entries)
-        store.save_to_disk("memory")
-        raw_after = path.read_text(encoding="utf-8")
-    return {
+        if not store.target_enabled("memory"):
+            raise KnowledgeError("built-in memory is disabled; write refused")
+        path = _memory_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        backup_path = (
+            get_hermes_home() / AUDIT_DIRNAME / "backups" / run_id / "MEMORY.md"
+        )
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with MemoryStore._file_lock(path):
+            before_exists = path.exists()
+            raw, read_ok = MemoryStore._read_raw_checked(path)
+            if not read_ok:
+                raise KnowledgeError("MEMORY.md became unreadable; write refused")
+            before_sha = _sha256_text(raw)
+            if not backup_path.exists():
+                atomic_write_text(backup_path, raw)
+            effective_limit = store.memory_char_limit
+            drift = store._detect_external_drift("memory", raw)
+            if drift:
+                raise KnowledgeError(
+                    f"MEMORY.md changed shape; recovery copy created at {drift}"
+                )
+            entries = MemoryStore._parse_entries(raw)
+            entries = [
+                entry for entry in entries if not entry.startswith(MANAGED_HEADER)
+            ]
+            entries.append(block)
+            expected_after = ENTRY_DELIMITER.join(entries) if entries else ""
+            if len(expected_after) > effective_limit:
+                raise KnowledgeError(
+                    f"managed memory would exceed configured limit {effective_limit}"
+                )
+            store._set_entries("memory", entries)
+            try:
+                store.save_to_disk("memory")
+                raw_after = path.read_text(encoding="utf-8")
+                if raw_after != expected_after:
+                    raise KnowledgeError(
+                        "MEMORY.md changed during apply; rollback refused"
+                    )
+            except (OSError, RuntimeError, UnicodeError) as write_exc:
+                try:
+                    _rollback_failed_write(
+                        path,
+                        before_exists=before_exists,
+                        before_raw=raw,
+                        expected_after=expected_after,
+                    )
+                except (
+                    KnowledgeError,
+                    OSError,
+                    RuntimeError,
+                    UnicodeError,
+                ) as rollback_exc:
+                    raise KnowledgeError(
+                        "cannot write managed memory: "
+                        f"{write_exc}; memory rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+                raise KnowledgeError(
+                    f"cannot write managed memory: {write_exc}"
+                ) from write_exc
+    except KnowledgeError:
+        raise
+    except (OSError, RuntimeError, UnicodeError) as exc:
+        raise KnowledgeError(f"cannot write managed memory: {exc}") from exc
+    memory = {
         "status": "applied",
         "path": str(path),
         "before_sha256": before_sha,
@@ -422,16 +539,48 @@ def _write_managed_memory(block: str, run_id: str) -> dict[str, Any]:
         "backup_path": str(backup_path),
         "effective_limit": effective_limit,
     }
+    rollback = {
+        "before_exists": before_exists,
+        "before_raw": raw,
+        "after_sha256": memory["after_sha256"],
+    }
+    return memory, rollback
+
+
+def _restore_memory(snapshot: dict[str, Any]) -> None:
+    path = _memory_path()
+    try:
+        with MemoryStore._file_lock(path):
+            current, read_ok = MemoryStore._read_raw_checked(path)
+            if not read_ok:
+                raise KnowledgeError("MEMORY.md became unreadable; rollback refused")
+            if _sha256_text(current) != snapshot["after_sha256"]:
+                raise KnowledgeError("MEMORY.md changed after apply; rollback refused")
+            _restore_memory_contents(
+                path,
+                before_exists=snapshot["before_exists"],
+                before_raw=snapshot["before_raw"],
+            )
+    except KnowledgeError:
+        raise
+    except (OSError, RuntimeError, UnicodeError) as exc:
+        raise KnowledgeError(f"cannot restore MEMORY.md: {exc}") from exc
 
 
 def _append_audit(event: dict[str, Any]) -> None:
     path = _audit_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with MemoryStore._file_lock(path):
-        previous = path.read_text(encoding="utf-8") if path.exists() else ""
-        if len(previous.encode("utf-8")) > 5 * 1024 * 1024:
-            raise KnowledgeError("knowledge audit exceeds 5 MiB; rotate it before another apply")
-        atomic_write_text(path, previous + json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+    line = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with MemoryStore._file_lock(path):
+            previous = path.read_text(encoding="utf-8") if path.exists() else ""
+            if len(previous.encode("utf-8")) + len(line.encode("utf-8")) > MAX_AUDIT_BYTES:
+                raise KnowledgeError("knowledge audit exceeds 5 MiB; rotate it before another apply")
+            atomic_write_text(path, previous + line)
+    except KnowledgeError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise KnowledgeError(f"cannot append knowledge audit: {exc}") from exc
 
 
 def _verified_memory_path(memory: Any) -> Path:
@@ -487,8 +636,11 @@ def _sync(args: Any) -> int:
         prepared = _prepare(manifest, manifest_sha)
         is_apply = bool(args.apply)
         memory = {"status": "dry-run" if not is_apply else "pending"}
+        rollback = None
         if is_apply:
-            memory = _write_managed_memory(_render_memory(prepared), prepared["run_id"])
+            memory, rollback = _write_managed_memory(
+                _render_memory(prepared), prepared["run_id"]
+            )
         result = _summary(prepared, memory)
         event = {
             "schema_version": SCHEMA_VERSION,
@@ -504,7 +656,20 @@ def _sync(args: Any) -> int:
             "memory": memory,
         }
         if is_apply:
-            _append_audit(event)
+            try:
+                _append_audit(event)
+            except KnowledgeError as audit_exc:
+                if rollback is None:
+                    raise KnowledgeError(
+                        f"{audit_exc}; memory rollback snapshot is missing"
+                    ) from audit_exc
+                try:
+                    _restore_memory(rollback)
+                except KnowledgeError as rollback_exc:
+                    raise KnowledgeError(
+                        f"{audit_exc}; memory rollback failed: {rollback_exc}"
+                    ) from rollback_exc
+                raise
         _print_sync(result, prepared, json_mode=args.json)
         return 0
     except KnowledgeError as exc:

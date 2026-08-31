@@ -1640,3 +1640,212 @@ def evaluation_ui_projection(result: Mapping[str, Any], *, source_refs: Sequence
         "promotion_state": result.get("promotion_state"), "quarantined": bool(result.get("quarantined")),
         "source_refs": sorted(set(source_refs)), "baseline_summary": summary,
     }
+
+
+# --- OperatorRunProjectionV1 (DR-20 / Task 4.2) -----------------------------
+# Deterministic multi-axis operator projection over canonical events,
+# receipts, authority state, and recovery state.  It is a rebuildable read
+# model only: it never promotes a summary, telemetry, or UI state into
+# authority or verification, and plan/actual execution never merge.
+
+OPERATOR_RUN_PROJECTION_KIND = "operator_run_v1"
+
+_OPERATOR_RUN_LIFECYCLE_STATES = frozenset({"pending", "planned", "running", "paused", "completed", "failed", "cancelled"})
+_OPERATOR_RUN_EFFECT_STATES = frozenset({"queued", "in_flight", "applied", "failed", "rolled_back"})
+_OPERATOR_RUN_EFFECT_RISKS = frozenset({"none", "low", "medium", "high", "critical"})
+_OPERATOR_RUN_PERMIT_STATES = frozenset({"none", "pending", "granted", "denied", "revoked", "expired"})
+_OPERATOR_RUN_RECOVERY_STATES = frozenset({"not_started", "checkpointed", "resumed_safe", "resumed_unsafe", "unrecoverable"})
+_OPERATOR_RUN_EVIDENCE_KINDS = frozenset({"event", "receipt", "witness", "test", "artifact"})
+_RISK_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+_FORBIDDEN_SUMMARY_KEYS = frozenset({"summary", "summary_text", "telemetry", "transcript_summary", "narrative"})
+_UNSETTLED_EFFECT_STATES = frozenset({"queued", "in_flight"})
+_REVOKED_PERMIT_STATES = frozenset({"denied", "revoked", "expired"})
+
+
+def _operator_run_check_refs(refs: Any, field: str) -> list[str]:
+    if not isinstance(refs, (list, tuple)) or not all(isinstance(ref, str) for ref in refs):
+        raise ContractError("INVALID_REFERENCE", field)
+    normalized = sorted(set(refs))
+    for ref in normalized:
+        _check_ref(ref, field)
+    return normalized
+
+
+def _operator_run_reject_summary_keys(values: Mapping[str, Any], field: str) -> None:
+    overlap = _FORBIDDEN_SUMMARY_KEYS & set(values)
+    if overlap:
+        raise ContractError("SUMMARY_NOT_AUTHORITY", f"{field}:{sorted(overlap)[0]}")
+
+
+def operator_run_projection(
+    state: Mapping[str, Any],
+    *,
+    source_event_exists: Callable[[str], bool],
+    source_versions: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Project operator-facing run state from canonical predicates only.
+
+    Inputs are typed canonical records; free-text summaries and telemetry are
+    rejected outright (SUMMARY_NOT_AUTHORITY).  Every material attention item
+    links exact evidence refs.  Deterministic: identical input yields an
+    identical digest.
+    """
+    if not isinstance(state, Mapping):
+        raise ContractError("INVALID_OPERATOR_RUN_STATE")
+    _operator_run_reject_summary_keys(state, "state")
+    run_ref = state.get("run_ref")
+    _check_ref(run_ref, "run_ref")
+    lifecycle = state.get("lifecycle")
+    if lifecycle not in _OPERATOR_RUN_LIFECYCLE_STATES:
+        raise ContractError("INVALID_LIFECYCLE_STATE", str(lifecycle))
+
+    plan_event_refs = _operator_run_check_refs(state.get("plan_event_refs", ()), "plan_event_refs")
+    actual_event_refs = _operator_run_check_refs(state.get("actual_event_refs", ()), "actual_event_refs")
+    overlap = set(plan_event_refs) & set(actual_event_refs)
+    if overlap:
+        raise ContractError("PLAN_ACTUAL_EVENT_SHARED", sorted(overlap)[0])
+    for ref in plan_event_refs + actual_event_refs:
+        if not source_event_exists(ref):
+            raise ContractError("MISSING_SOURCE_EVENT", ref)
+
+    evidence_records = state.get("evidence", [])
+    if not isinstance(evidence_records, (list, tuple)):
+        raise ContractError("INVALID_EVIDENCE_RECORDS")
+    evidence_refs: list[str] = []
+    for record in evidence_records:
+        if not isinstance(record, Mapping):
+            raise ContractError("INVALID_EVIDENCE_RECORD")
+        _operator_run_reject_summary_keys(record, "evidence")
+        kind = record.get("kind")
+        if kind not in _OPERATOR_RUN_EVIDENCE_KINDS:
+            raise ContractError("INVALID_EVIDENCE_KIND", str(kind))
+        refs = _operator_run_check_refs(record.get("refs", ()), "evidence.refs")
+        if not refs:
+            raise ContractError("MISSING_EVIDENCE_REFS")
+        for ref in refs:
+            if not source_event_exists(ref):
+                raise ContractError("MISSING_SOURCE_EVENT", ref)
+        evidence_refs.extend(refs)
+    evidence_refs = sorted(set(evidence_refs))
+
+    effect_records = state.get("effects", [])
+    if not isinstance(effect_records, (list, tuple)):
+        raise ContractError("INVALID_EFFECT_RECORDS")
+    effects: list[dict[str, Any]] = []
+    for record in effect_records:
+        if not isinstance(record, Mapping):
+            raise ContractError("INVALID_EFFECT_RECORD")
+        effect_ref = record.get("effect_ref")
+        _check_ref(effect_ref, "effect_ref")
+        effect_state = record.get("state")
+        if effect_state not in _OPERATOR_RUN_EFFECT_STATES:
+            raise ContractError("INVALID_EFFECT_STATE", str(effect_state))
+        risk = record.get("risk")
+        if risk not in _OPERATOR_RUN_EFFECT_RISKS:
+            raise ContractError("INVALID_EFFECT_RISK", str(risk))
+        refs = _operator_run_check_refs(record.get("evidence_refs", ()), "effect.evidence_refs")
+        for ref in refs:
+            if not source_event_exists(ref):
+                raise ContractError("MISSING_SOURCE_EVENT", ref)
+        effects.append({"effect_ref": effect_ref, "state": effect_state, "risk": risk, "evidence_refs": refs})
+    effects.sort(key=lambda item: item["effect_ref"])
+
+    permit_records = state.get("permits", [])
+    if not isinstance(permit_records, (list, tuple)):
+        raise ContractError("INVALID_PERMIT_RECORDS")
+    permits: list[dict[str, Any]] = []
+    for record in permit_records:
+        if not isinstance(record, Mapping):
+            raise ContractError("INVALID_PERMIT_RECORD")
+        permit_ref = record.get("permit_ref")
+        _check_ref(permit_ref, "permit_ref")
+        permit_state = record.get("state")
+        if permit_state not in _OPERATOR_RUN_PERMIT_STATES:
+            raise ContractError("INVALID_PERMIT_STATE", str(permit_state))
+        refs = _operator_run_check_refs(record.get("evidence_refs", ()), "permit.evidence_refs")
+        for ref in refs:
+            if not source_event_exists(ref):
+                raise ContractError("MISSING_SOURCE_EVENT", ref)
+        permits.append({"permit_ref": permit_ref, "state": permit_state, "evidence_refs": refs})
+    permits.sort(key=lambda item: item["permit_ref"])
+
+    recovery = state.get("recovery", {})
+    if not isinstance(recovery, Mapping):
+        raise ContractError("INVALID_RECOVERY_STATE")
+    _operator_run_reject_summary_keys(recovery, "recovery")
+    recovery_state = recovery.get("state")
+    if recovery_state not in _OPERATOR_RUN_RECOVERY_STATES:
+        raise ContractError("INVALID_RECOVERY_STATE", str(recovery_state))
+    checkpoint_ref = recovery.get("checkpoint_ref")
+    if checkpoint_ref is not None:
+        _check_ref(checkpoint_ref, "checkpoint_ref")
+    recovery_refs = _operator_run_check_refs(recovery.get("evidence_refs", ()), "recovery.evidence_refs")
+    for ref in recovery_refs:
+        if not source_event_exists(ref):
+            raise ContractError("MISSING_SOURCE_EVENT", ref)
+
+    versions = {str(key): str(value) for key, value in sorted((source_versions or {}).items())}
+    for key in versions:
+        _check_ref(key, "source_versions")
+
+    unsettled = [item for item in effects if item["state"] in _UNSETTLED_EFFECT_STATES]
+    effect_risk = "none"
+    for item in unsettled:
+        if _RISK_RANK[item["risk"]] > _RISK_RANK[effect_risk]:
+            effect_risk = item["risk"]
+    revoked = [item for item in permits if item["state"] in _REVOKED_PERMIT_STATES]
+    authority_violated = bool(revoked) and bool(unsettled)
+    evidence_missing = state.get("declared_evidence_refs") is not None and bool(
+        set(_operator_run_check_refs(state["declared_evidence_refs"], "declared_evidence_refs")) - set(evidence_refs)
+    )
+    evidence_health = "missing" if evidence_missing else ("degraded" if not evidence_refs and lifecycle != "pending" else "healthy")
+
+    attention: list[dict[str, Any]] = []
+    if authority_violated:
+        attention.append({"axis": "authority", "code": "REVOKED_PERMIT_WITH_UNSETTLED_EFFECT",
+                          "detail_refs": sorted({ref for item in revoked for ref in item["evidence_refs"]} | {item["effect_ref"] for item in unsettled})})
+    if any(item["state"] == "in_flight" for item in effects) and lifecycle in {"paused", "completed", "cancelled", "failed"}:
+        attention.append({"axis": "effect_risk", "code": "IN_FLIGHT_EFFECT_OUTSIDE_RUNNING",
+                          "detail_refs": sorted(item["effect_ref"] for item in effects if item["state"] == "in_flight")})
+    if recovery_state == "resumed_unsafe":
+        attention.append({"axis": "recovery", "code": "UNSAFE_RESUME",
+                          "detail_refs": sorted(set(recovery_refs) | ({checkpoint_ref} if checkpoint_ref else set()))})
+    if evidence_health != "healthy":
+        attention.append({"axis": "evidence_health", "code": "EVIDENCE_" + evidence_health.upper(),
+                          "detail_refs": sorted(set(_operator_run_check_refs(state.get("declared_evidence_refs", ()), "declared_evidence_refs")) - set(evidence_refs)) if evidence_missing else sorted(set(actual_event_refs) or set(plan_event_refs))})
+    distinct_versions = sorted(set(versions.values()))
+    if len(distinct_versions) > 1:
+        attention.append({"axis": "lifecycle", "code": "MIXED_SOURCE_VERSIONS", "detail_refs": sorted(versions)})
+    attention.sort(key=lambda item: (item["axis"], item["code"]))
+
+    projection = {
+        "projection_kind": OPERATOR_RUN_PROJECTION_KIND,
+        "authoritative": False,
+        "run_ref": run_ref,
+        "lifecycle": lifecycle,
+        "axes": {
+            "lifecycle": lifecycle,
+            "effect_risk": effect_risk,
+            "evidence_health": evidence_health,
+            "authority": "violated" if authority_violated else "ok",
+            "recovery": recovery_state,
+        },
+        "attention": attention,
+        "plan_event_refs": plan_event_refs,
+        "actual_event_refs": actual_event_refs,
+        "effects": effects,
+        "permits": permits,
+        "recovery": {"state": recovery_state, "checkpoint_ref": checkpoint_ref, "evidence_refs": recovery_refs},
+        "evidence_refs": evidence_refs,
+        "source_versions": versions,
+        "status_to_predicate": {
+            "running": "lifecycle == 'running' AND every declared evidence ref exists",
+            "evidence_ok": "evidence_health == 'healthy' AND evidence_refs non-empty",
+            "authorized": "authority == 'ok' AND no permit in {denied, revoked, expired} while effects unsettled",
+            "recoverable": "recovery in {'checkpointed', 'resumed_safe'}",
+            "needs_attention": "len(attention) > 0",
+        },
+        "operator_run_digest": "",
+    }
+    projection["operator_run_digest"] = digest(projection)
+    return projection

@@ -65,6 +65,7 @@ export type DesktopActionId =
   | 'pet'
   | 'profile'
   | 'skin'
+  | 'stop'
   | 'title'
   | 'wake'
   | 'yolo'
@@ -173,6 +174,11 @@ const rpc = (
 const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
   { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
+  {
+    name: '/stop',
+    description: 'Stop the active turn and background processes',
+    surface: action('stop')
+  },
   {
     name: '/branch',
     description: 'Branch the latest message into a new chat',

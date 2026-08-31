@@ -349,6 +349,69 @@ describe('usePromptActions /title', () => {
   })
 })
 
+describe('usePromptActions /stop', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('interrupts the target desktop turn before keeping the background-process cleanup', async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.interrupt') {
+        return { status: 'interrupted' } as never
+      }
+
+      if (method === 'process.stop') {
+        return { killed: 0 } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/stop', { sessionId: 'rt-target-session' })
+
+    expect(calls).toEqual([
+      { method: 'session.interrupt', params: { session_id: 'rt-target-session' } },
+      { method: 'process.stop', params: {} }
+    ])
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+  })
+
+  it('still stops background processes when the turn interrupt fails', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.interrupt') {
+        throw new Error('interrupt failed')
+      }
+
+      if (method === 'process.stop') {
+        return { killed: 2 } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/stop')
+
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+    expect(requestGateway).toHaveBeenCalledWith('process.stop', {})
+  })
+})
+
 // Helper: extract rendered text parts from captured updateSessionState seeds.
 function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
   return seeds.flatMap(state => {

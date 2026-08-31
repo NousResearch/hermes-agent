@@ -447,15 +447,31 @@ function SlideBlockView({ block }: { block: SlideBlock }) {
   }
 
   const Tag = block.role === 'title' ? 'h1' : block.role === 'subtitle' ? 'h2' : 'div'
+  const clipPath =
+    block.geometry === 'diamond'
+      ? 'polygon(50% 0, 100% 50%, 50% 100%, 0 50%)'
+      : block.geometry === 'chevron'
+        ? 'polygon(0 0, 78% 0, 100% 50%, 78% 100%, 0 100%, 22% 50%)'
+        : undefined
 
   return (
     <Tag
+      data-office-shape={block.fill || block.geometry ? '' : undefined}
       data-testid={block.box ? 'office-slide-box' : undefined}
       style={{
+        alignItems: 'center',
+        backgroundColor: block.fill,
+        borderRadius: block.geometry === 'ellipse' ? '50%' : block.geometry === 'roundRect' ? '12%' : undefined,
+        clipPath,
+        display: 'flex',
+        flexDirection: 'column',
         fontSize: block.role === 'title' ? '28pt' : '16pt',
         fontWeight: block.role === 'title' ? 700 : undefined,
+        justifyContent: 'center',
         lineHeight: 1.25,
         margin: 0,
+        overflow: 'hidden',
+        textAlign: 'center',
         ...positioned
       }}
     >

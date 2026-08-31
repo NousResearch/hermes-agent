@@ -75,8 +75,10 @@ export type SlideBox = {
 export type SlideBlock =
   | {
       box?: SlideBox
+      fill?: string
+      geometry?: 'chevron' | 'diamond' | 'ellipse' | 'rect' | 'roundRect'
       paragraphs: SlideParagraph[]
-      role: 'body' | 'subtitle' | 'title'
+      role?: 'body' | 'subtitle' | 'title'
       type: 'text'
     }
   | {
@@ -973,48 +975,69 @@ function mediaDataUrl(bytes: Uint8Array, path: string): string | undefined {
 function slideText(shape: Element, theme: Map<string, string>): Extract<SlideBlock, { type: 'text' }> | null {
   const role = slideRole(shape)
 
-  if (!role) {
+  if (role === null) {
     return null
   }
 
+  const spPr = Array.from(shape.children).find(child => child.localName === 'spPr')
+  const fill = drawingColor(spPr, theme)
+  const geometry = shapeGeometry(spPr)
   const body = localElements(shape, 'txBody')[0]
+  const paragraphs = body
+    ? Array.from(body.children)
+        .filter(child => child.localName === 'p')
+        .map(paragraph => {
+          const runs = Array.from(paragraph.children)
+            .filter(child => child.localName === 'r')
+            .map(run => drawingRun(run, theme))
+            .filter((run): run is OfficeTextRun => Boolean(run?.text))
 
-  if (!body) {
+          if (!runs.length) {
+            return null
+          }
+
+          const next: SlideParagraph = { runs }
+
+          if (role === 'body' && !localElements(paragraph, 'buNone').length) {
+            next.bullet = true
+          }
+
+          return next
+        })
+        .filter((paragraph): paragraph is SlideParagraph => Boolean(paragraph))
+    : []
+
+  if (!paragraphs.length && !fill) {
     return null
   }
 
-  const paragraphs = Array.from(body.children)
-    .filter(child => child.localName === 'p')
-    .map(paragraph => {
-      const runs = Array.from(paragraph.children)
-        .filter(child => child.localName === 'r')
-        .map(run => drawingRun(run, theme))
-        .filter((run): run is OfficeTextRun => Boolean(run?.text))
-
-      if (!runs.length) {
-        return null
-      }
-
-      const next: SlideParagraph = { runs }
-
-      if (role === 'body' && !localElements(paragraph, 'buNone').length) {
-        next.bullet = true
-      }
-
-      return next
-    })
-    .filter((paragraph): paragraph is SlideParagraph => Boolean(paragraph))
-
-  if (!paragraphs.length) {
-    return null
+  return {
+    paragraphs,
+    type: 'text',
+    ...(fill ? { fill } : {}),
+    ...(geometry ? { geometry } : {}),
+    ...(role ? { role } : {})
   }
-
-  return { paragraphs, role, type: 'text' }
 }
 
-function slideRole(shape: Element): 'body' | 'subtitle' | 'title' | null {
+function shapeGeometry(spPr: Element | undefined): Extract<SlideBlock, { type: 'text' }>['geometry'] | undefined {
+  const preset = spPr ? localElements(spPr, 'prstGeom')[0]?.getAttribute('prst') : undefined
+
+  if (preset === 'chevron' || preset === 'diamond' || preset === 'ellipse' || preset === 'rect' || preset === 'roundRect') {
+    return preset
+  }
+
+  return undefined
+}
+
+function slideRole(shape: Element): 'body' | 'subtitle' | 'title' | undefined | null {
   const placeholder = localElements(shape, 'ph')[0]
-  const type = placeholder?.getAttribute('type') || ''
+
+  if (!placeholder) {
+    return undefined
+  }
+
+  const type = placeholder.getAttribute('type') || ''
 
   if (type === 'dt' || type === 'ftr' || type === 'sldNum') {
     return null

@@ -497,6 +497,64 @@ describe('parseOfficePreview docx', () => {
     ])
   })
 
+  it('keeps auto-shape fills and does not bullet freeform text', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        'ppt/presentation.xml': `<?xml version="1.0"?>
+<p:presentation xmlns:p="${NS_P}"><p:sldSz cx="12191695" cy="6858000"/></p:presentation>`,
+        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
+<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
+  <p:sp>
+    <p:spPr>
+      <a:xfrm><a:off x="0" y="0"/><a:ext cx="12191695" cy="164592"/></a:xfrm>
+      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+      <a:solidFill><a:srgbClr val="C1FF72"/></a:solidFill>
+    </p:spPr>
+    <p:txBody><a:p/></p:txBody>
+  </p:sp>
+  <p:sp>
+    <p:spPr>
+      <a:xfrm><a:off x="640080" y="1463040"/><a:ext cx="7863840" cy="2194560"/></a:xfrm>
+      <a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>
+      <a:solidFill><a:srgbClr val="123056"/></a:solidFill>
+    </p:spPr>
+    <p:txBody><a:p><a:r><a:rPr><a:solidFill><a:srgbClr val="FBF8F0"/></a:solidFill></a:rPr><a:t>Title</a:t></a:r></a:p></p:txBody>
+  </p:sp>
+  <p:sp>
+    <p:spPr>
+      <a:xfrm><a:off x="8595360" y="2103120"/><a:ext cx="1371600" cy="1371600"/></a:xfrm>
+      <a:prstGeom prst="diamond"><a:avLst/></a:prstGeom>
+      <a:solidFill><a:srgbClr val="FF5C7A"/></a:solidFill>
+    </p:spPr>
+    <p:txBody><a:p><a:r><a:t>!</a:t></a:r></a:p></p:txBody>
+  </p:sp>
+</p:spTree></p:cSld></p:sld>`
+      }),
+      '.pptx'
+    )
+
+    expect(preview?.kind).toBe('slides')
+
+    if (preview?.kind !== 'slides') {
+      return
+    }
+
+    expect(preview.slides[0]?.blocks[0]).toMatchObject({
+      fill: '#C1FF72',
+      geometry: 'rect',
+      paragraphs: [],
+      type: 'text'
+    })
+    expect(preview.slides[0]?.blocks[1]).toMatchObject({
+      fill: '#123056',
+      geometry: 'roundRect',
+      paragraphs: [{ runs: [{ color: '#FBF8F0', text: 'Title' }] }],
+      type: 'text'
+    })
+    expect(preview.slides[0]?.blocks[1]).not.toMatchObject({ paragraphs: [{ bullet: true }] })
+    expect(preview.slides[0]?.blocks[2]).toMatchObject({ fill: '#FF5C7A', geometry: 'diamond', type: 'text' })
+  })
+
   it('escapes HTML injected into document text', async () => {
     const preview = await parseOfficePreview(
       zipFiles({

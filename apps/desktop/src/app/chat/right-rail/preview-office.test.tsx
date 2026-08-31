@@ -355,6 +355,33 @@ describe('OfficePreviewView', () => {
     expect(screen.getByText('East')).toBeTruthy()
   })
 
+  it('paints auto-shape fills instead of body bullets', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'slides',
+          slides: [
+            {
+              blocks: [
+                {
+                  fill: '#C1FF72',
+                  geometry: 'roundRect',
+                  paragraphs: [{ runs: [{ color: '#0B1F3A', text: 'Lime field' }] }],
+                  type: 'text'
+                }
+              ]
+            }
+          ]
+        }}
+        {...labels}
+      />
+    )
+
+    const shape = screen.getByText('Lime field')
+    expect(shape.style.color).toBe('rgb(11, 31, 58)')
+    expect(shape.closest('[data-office-shape]')?.getAttribute('style')).toMatch(/rgb\(193, 255, 114\)/)
+  })
+
   it('shows a truncation banner when the parser capped the document', () => {
     render(
       <OfficePreviewView

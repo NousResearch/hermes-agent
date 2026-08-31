@@ -69,3 +69,38 @@ def test_auto_titler_still_cannot_touch_the_canonical_row(db):
     assert not db.set_auto_title(sid, "Chat about groceries", source=SessionDB.TITLE_SOURCE_LLM)
     row = db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)
     assert row and row["id"] == sid
+
+
+def test_auto_titler_cannot_rename_derived_canonical_bot_chat(db):
+    db.create_session("derived", source="desktop")
+    assert db._set_session_title(
+        "derived",
+        SessionDB.CANONICAL_BOT_CHAT_TITLE,
+        source=SessionDB.TITLE_SOURCE_DERIVED,
+    )
+    assert db.set_session_hidden("derived", True)
+
+    assert not db.set_auto_title(
+        "derived",
+        "Renamed by titler",
+        source=SessionDB.TITLE_SOURCE_LLM,
+    )
+    row = db.get_session("derived")
+    assert row["title"] == SessionDB.CANONICAL_BOT_CHAT_TITLE
+    assert row["title_source"] == SessionDB.TITLE_SOURCE_DERIVED
+
+
+def test_auto_titler_can_rename_visible_derived_bot_chat(db):
+    db.create_session("visible", source="desktop")
+    assert db._set_session_title(
+        "visible",
+        SessionDB.CANONICAL_BOT_CHAT_TITLE,
+        source=SessionDB.TITLE_SOURCE_DERIVED,
+    )
+
+    assert db.set_auto_title(
+        "visible",
+        "Renamed by titler",
+        source=SessionDB.TITLE_SOURCE_LLM,
+    )
+    assert db.get_session("visible")["title"] == "Renamed by titler"

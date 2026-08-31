@@ -10866,8 +10866,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # Bot Mode's forever-chat registry: the session titled exactly this, on a
     # bot's profile, IS the bot's canonical chat — resolved by exact-title
     # lookup on every open (no session-id pointer exists). The title is the
-    # identity, which is why _set_session_title refuses user renames of a
-    # hidden row holding it (#92473).
+    # identity, which is why _set_session_title refuses renames of a hidden
+    # row holding it (#92473).
     CANONICAL_BOT_CHAT_TITLE = "Bot Chat"
 
     @classmethod
@@ -10979,12 +10979,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Write a title, enforcing provenance precedence.
 
         ``source`` is one of ``TITLE_SOURCE_{DERIVED,LLM,USER}``. A ``user``
-        write always lands — an explicit rename is authoritative. An automatic
-        write (``derived``/``llm``) lands only when the row is untitled or the
-        stored title has strictly lower authority, so the instant ``derived``
-        title upgrades to ``llm`` exactly once and neither can ever overwrite a
-        name the user typed. Re-running the titler on an already-``llm`` row is
-        a no-op, which is what stops a session renaming itself.
+        write is authoritative except for a canonical Bot Chat identity. An
+        automatic write (``derived``/``llm``) lands only when the row is
+        untitled or the stored title has strictly lower authority, so the
+        instant ``derived`` title upgrades to ``llm`` exactly once and neither
+        can ever overwrite a name the user typed. Re-running the titler on an
+        already-``llm`` row is a no-op, which is what stops a session renaming
+        itself.
 
         The read and the write are one compare-and-swap inside a single
         transaction, so a manual ``/title`` racing an in-flight generation
@@ -11011,16 +11012,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # born hidden; an ordinary visible session a user happens to call
             # "Bot Chat" stays freely renameable.
             if (
-                is_user
-                and (current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE
+                (current["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE
                 and bool(current["hidden"])
                 and title != self.CANONICAL_BOT_CHAT_TITLE
             ):
-                raise ValueError(
-                    "This is the bot's canonical Bot Chat — its name is its "
-                    "identity, and renaming it would orphan the conversation. "
-                    "To start fresh, create a new bot instead."
-                )
+                if is_user:
+                    raise ValueError(
+                        "This is the bot's canonical Bot Chat — its name is its "
+                        "identity, and renaming it would orphan the conversation. "
+                        "To start fresh, create a new bot instead."
+                    )
+                return 0
             if not is_user and current["title"] is not None:
                 if self._title_rank(current["title_source"]) >= new_rank:
                     return 0

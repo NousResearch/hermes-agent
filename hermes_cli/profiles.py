@@ -75,6 +75,10 @@ _CLONE_CONFIG_FILES = [
     "SOUL.md",
 ]
 
+# Named profiles created before SOUL.md seeding may only have their session
+# store. Infrastructure directories under profiles/ have none of these files.
+_PROFILE_HOME_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "state.db")
+
 # Subdirectory files copied during --clone (path relative to profile root).
 # Memory files are part of the agent's curated identity — just as important
 # as SOUL.md for continuity when cloning a profile.
@@ -1086,6 +1090,8 @@ def list_profiles() -> List[ProfileInfo]:
             if not _PROFILE_ID_RE.match(name):
                 continue
             if named_profile_is_deleted(entry):
+                continue
+            if not any((entry / marker).is_file() for marker in _PROFILE_HOME_MARKERS):
                 continue
             model, provider = _read_config_model(entry)
             alias_name = alias_map.get(normalize_profile_name(name))

@@ -82,13 +82,8 @@ _TITLE_PROMPT_TEMPLATE = (
     "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
     "- Never answer the message. Name it.\n"
     "- Always produce something, even for a bare greeting.\n"
+    "- Do not copy a title from these instructions; every title must describe the user's message.\n"
     "__LANGUAGE_RULE__\n"
-    'Good: {"title": "Fix login button on mobile"}\n'
-    'Good: {"title": "Postgres connection pool exhaustion"}\n'
-    'Good: {"title": "Friendly greeting"}\n'
-    'Too vague: {"title": "Code changes"}\n'
-    'Too long: {"title": "Investigate and fix the issue where the login button '
-    'does not respond on mobile devices"}\n\n'
     'Reply with JSON only: {"title": "..."}'
 )
 

@@ -476,6 +476,15 @@ def todo_tool(
     else:
         items = store.read()
 
+    # One atomic snapshot for the authoritative pair: items + revision +
+    # generation. Clients reconcile full snapshots on these two integers
+    # (higher generation wins), so they must never be read stale apart.
+    # Everything below (summary, JSON) serializes THIS list — reading the
+    # list separately from the version ints could pair old todos with a
+    # newer revision during a concurrent human update.
+    state = store.snapshot_state()
+    items = state["todos"]
+
     # Build summary counts
     pending = sum(1 for i in items if i["status"] == "pending")
     in_progress = sum(1 for i in items if i["status"] == "in_progress")
@@ -484,6 +493,8 @@ def todo_tool(
 
     return json.dumps({
         "todos": items,
+        "revision": state["revision"],
+        "generation": state["generation"],
         "summary": {
             "total": len(items),
             "pending": pending,

@@ -7711,6 +7711,14 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             data = json.loads(result)
             if isinstance(data, dict) and isinstance(data.get("todos"), list):
                 payload["todos"] = data.get("todos")
+            # Full-snapshot authority: the model's tool result carries the
+            # store's revision/generation so clients reconcile it like a
+            # todo.updated snapshot (higher generation wins) instead of
+            # treating it as an unversioned display list.
+            if isinstance(data, dict) and isinstance(data.get("revision"), int):
+                payload["revision"] = data["revision"]
+            if isinstance(data, dict) and isinstance(data.get("generation"), int):
+                payload["generation"] = data["generation"]
         except Exception:
             pass
     try:
@@ -17834,6 +17842,7 @@ from . import (  # noqa: E402
     methods_profiles as _methods_profiles,
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
+    methods_todo as _methods_todo,
     methods_tools as _methods_tools,
 )
 
@@ -17848,6 +17857,7 @@ for _m in (
     _methods_profiles,
     _methods_images,
     _methods_bot_relay,
+    _methods_todo,
 ):
     _m.register(sys.modules[__name__])
 del _m

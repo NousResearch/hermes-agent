@@ -209,6 +209,24 @@ def test_local_worker_pid_survives_hostname_alias_drift(monkeypatch):
     )
 
 
+def test_dead_worker_is_releasable_despite_hostname_alias_drift(monkeypatch):
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(
+        kb,
+        "_claim_is_host_local",
+        lambda *_args, **_kwargs: pytest.fail("dead PID must be checked first"),
+    )
+
+    result = kb._terminate_reclaimed_worker(
+        92905,
+        "Mikes-Mac-mini.local:85622",
+        task_id="t_exact",
+    )
+
+    assert result["terminated"] is True
+    assert result["termination_attempted"] is False
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

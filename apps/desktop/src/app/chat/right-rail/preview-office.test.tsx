@@ -182,9 +182,65 @@ describe('OfficePreviewView', () => {
     )
 
     expect(container.querySelector('h1')?.textContent).toBe('Title')
-    expect(container.querySelector('strong')?.textContent).toBe('Ada')
+    expect(screen.getByText('Ada').style.fontWeight).toBe('700')
     expect(screen.getByText('Ada')).toBeTruthy()
     expect(container.querySelector('[data-office-html]')).toBeNull()
+  })
+
+  it('renders the document on a white page with a Calibri-like body font', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          blocks: [{ runs: [{ text: 'Hello' }], type: 'paragraph' }],
+          kind: 'document'
+        }}
+        {...labels}
+      />
+    )
+
+    const page = screen.getByTestId('office-document-page')
+
+    expect(page.style.backgroundColor).toBe('rgb(255, 255, 255)')
+    expect(page.style.color).toBe('rgb(0, 0, 0)')
+    expect(page.style.fontFamily).toMatch(/Calibri/i)
+    expect(screen.getByTestId('office-document-scroll').className).toMatch(/overflow-auto/)
+  })
+
+  it('paints Word run formatting and bullet lists on the page', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          blocks: [
+            {
+              align: 'center',
+              runs: [
+                {
+                  color: '#0000FF',
+                  fontFamily: 'Georgia',
+                  fontSize: 14,
+                  italic: true,
+                  text: 'Hello',
+                  underline: true
+                }
+              ],
+              type: 'paragraph'
+            },
+            { list: 'bullet', runs: [{ text: 'Item' }], type: 'paragraph' }
+          ],
+          kind: 'document'
+        }}
+        {...labels}
+      />
+    )
+
+    const hello = screen.getByText('Hello')
+
+    expect(hello.style.color).toBe('rgb(0, 0, 255)')
+    expect(hello.style.fontFamily).toMatch(/Georgia/)
+    expect(hello.style.fontSize).toBe('14pt')
+    expect(hello.style.fontStyle).toBe('italic')
+    expect(hello.style.textDecoration).toMatch(/underline/)
+    expect(screen.getByText('Item').closest('li')).toBeTruthy()
   })
 
   it('keeps injected markup as text nodes', () => {

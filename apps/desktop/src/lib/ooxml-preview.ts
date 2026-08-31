@@ -25,12 +25,18 @@ export type SpreadsheetPreview = {
 
 export type OfficeTextRun = {
   bold?: boolean
+  color?: string
+  fontFamily?: string
+  fontSize?: number
   italic?: boolean
   text: string
+  underline?: boolean
 }
 
 export type OfficeParagraph = {
+  align?: 'center' | 'justify' | 'left' | 'right'
   heading?: 1 | 2 | 3
+  list?: 'bullet' | 'number'
   runs: OfficeTextRun[]
   type: 'paragraph'
 }
@@ -356,12 +362,43 @@ function paragraphBlock(paragraph: Element): OfficeParagraph {
   const heading: OfficeParagraph['heading'] =
     style === 'Heading1' || style === 'Title' ? 1 : style === 'Heading2' ? 2 : style === 'Heading3' ? 3 : undefined
 
+  const list: OfficeParagraph['list'] =
+    style === 'ListBullet' || style === 'ListParagraph' ? 'bullet' : style === 'ListNumber' ? 'number' : undefined
+
+  const align = paragraphAlign(paragraph)
+
   const runs = Array.from(paragraph.children)
     .filter(child => child.localName === 'r' || child.localName === 'hyperlink')
     .flatMap(child => (child.localName === 'hyperlink' ? collectRuns(child) : [textRun(child)]))
     .filter((run): run is OfficeTextRun => Boolean(run?.text))
 
-  return heading ? { heading, runs, type: 'paragraph' } : { runs, type: 'paragraph' }
+  return {
+    ...(align ? { align } : {}),
+    ...(heading ? { heading } : {}),
+    ...(list ? { list } : {}),
+    runs,
+    type: 'paragraph'
+  }
+}
+
+function paragraphAlign(paragraph: Element): OfficeParagraph['align'] | undefined {
+  const pPr = Array.from(paragraph.children).find(child => child.localName === 'pPr')
+  const jc = pPr ? localElements(pPr, 'jc')[0] : undefined
+  const value = (wordVal(jc) || '').toLowerCase()
+
+  if (value === 'center' || value === 'left' || value === 'right') {
+    return value
+  }
+
+  if (value === 'both') {
+    return 'justify'
+  }
+
+  return undefined
+}
+
+function wordVal(node: Element | undefined): string {
+  return node?.getAttribute('val') || node?.getAttribute('w:val') || ''
 }
 
 function paragraphStyle(paragraph: Element): string {
@@ -395,12 +432,48 @@ function textRun(run: Element): OfficeTextRun | null {
   const rPr = Array.from(run.children).find(child => child.localName === 'rPr')
   const next: OfficeTextRun = { text }
 
-  if (rPr && localElements(rPr, 'b').length) {
+  if (!rPr) {
+    return next
+  }
+
+  if (isOn(localElements(rPr, 'b')[0])) {
     next.bold = true
   }
 
-  if (rPr && localElements(rPr, 'i').length) {
+  if (isOn(localElements(rPr, 'i')[0])) {
     next.italic = true
+  }
+
+  const underline = localElements(rPr, 'u')[0]
+
+  if (underline) {
+    const value = (wordVal(underline) || 'single').toLowerCase()
+
+    if (value !== 'none' && value !== '0' && value !== 'false') {
+      next.underline = true
+    }
+  }
+
+  const color = wordVal(localElements(rPr, 'color')[0])
+
+  if (color && color.toLowerCase() !== 'auto') {
+    next.color = `#${color.replace(/^FF/i, '').slice(-6)}`
+  }
+
+  const size = Number(wordVal(localElements(rPr, 'sz')[0]))
+
+  if (size > 0) {
+    next.fontSize = size / 2
+  }
+
+  const fonts = localElements(rPr, 'rFonts')[0]
+  const family = fonts?.getAttribute('ascii') || fonts?.getAttribute('hAnsi') || fonts?.getAttribute('w:ascii') || fonts?.getAttribute('w:hAnsi')
+  const theme = fonts?.getAttribute('asciiTheme') || fonts?.getAttribute('hAnsiTheme') || fonts?.getAttribute('w:asciiTheme')
+
+  if (family) {
+    next.fontFamily = family
+  } else if (theme) {
+    next.fontFamily = /major/i.test(theme) ? 'Cambria' : 'Calibri'
   }
 
   return next

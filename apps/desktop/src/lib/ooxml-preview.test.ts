@@ -437,6 +437,60 @@ describe('parseOfficePreview docx', () => {
     ])
   })
 
+  it('keeps run font, color, size, underline, alignment, and bullets', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        'word/document.xml': `<?xml version="1.0"?>
+<w:document xmlns:w="${NS_W}">
+  <w:body>
+    <w:p>
+      <w:pPr><w:jc w:val="center"/></w:pPr>
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:ascii="Georgia" w:hAnsi="Georgia"/>
+          <w:i/>
+          <w:u w:val="single"/>
+          <w:sz w:val="28"/>
+          <w:color w:val="0000FF"/>
+        </w:rPr>
+        <w:t>Hello</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:pPr><w:pStyle w:val="ListBullet"/></w:pPr>
+      <w:r><w:t>Item</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`
+      }),
+      '.docx'
+    )
+
+    expect(preview?.kind).toBe('document')
+
+    if (preview?.kind !== 'document') {
+      return
+    }
+
+    expect(preview.blocks).toEqual([
+      {
+        align: 'center',
+        runs: [
+          {
+            color: '#0000FF',
+            fontFamily: 'Georgia',
+            fontSize: 14,
+            italic: true,
+            text: 'Hello',
+            underline: true
+          }
+        ],
+        type: 'paragraph'
+      },
+      { list: 'bullet', runs: [{ text: 'Item' }], type: 'paragraph' }
+    ])
+  })
+
   it('escapes HTML injected into document text', async () => {
     const preview = await parseOfficePreview(
       zipFiles({

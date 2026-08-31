@@ -64,7 +64,7 @@ const COLLAPSED_KEY = 'collapsedLanes'
  *  is both unnecessary and expensive: GET /board computes diagnostics from
  *  every active task's event/run history. */
 export function eventsNeedBoardRefresh(events: CompletionEvent[]): boolean {
-  return events.some(event => event.kind !== 'heartbeat')
+  return events.some(event => event.kind !== 'heartbeat' && event.kind !== 'respawn_guarded')
 }
 
 export function applyHeartbeatEvents(board: KanbanBoard, events: CompletionEvent[]): KanbanBoard {
@@ -123,7 +123,7 @@ function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => 
   }
 
   const changedTaskIds = events
-    .filter(event => event.kind !== 'heartbeat')
+    .filter(event => event.kind !== 'heartbeat' && event.kind !== 'respawn_guarded')
     .map(event => event.task_id)
     .filter(Boolean)
 

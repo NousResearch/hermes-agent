@@ -29,6 +29,20 @@ describe('Kanban event-driven cache updates', () => {
     ).toBe(false)
   })
 
+  it('does not reload the board for a repeated respawn guard observation', () => {
+    expect(
+      eventsNeedBoardRefresh([
+        {
+          id: 23,
+          task_id: 't_running',
+          kind: 'respawn_guarded',
+          created_at: 32,
+          payload: { reason: 'active_pr' }
+        }
+      ])
+    ).toBe(false)
+  })
+
   it('patches heartbeat liveness and cursor into the cached board', () => {
     const updated = applyHeartbeatEvents(board(), [
       { id: 22, task_id: 't_running', kind: 'heartbeat', created_at: 31, payload: null }

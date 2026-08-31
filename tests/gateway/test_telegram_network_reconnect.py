@@ -850,3 +850,112 @@ async def test_disconnect_advances_past_cancellation_swallowing_lifecycle(monkey
 
     release.set()
     await asyncio.wait({wedged}, timeout=0.2)
+
+
+# ---------------------------------------------------------------------------
+# Exception-graph walker + pool/connect classifier contracts (PR #98094
+# follow-up): the two classifiers previously had no direct tests at all.
+# ---------------------------------------------------------------------------
+class TestIterExceptionGraph:
+    def test_flat_single(self):
+        err = ValueError("boom")
+        assert list(tg_adapter._iter_exception_graph(err)) == [err]
+
+    def test_walks_cause_chain(self):
+        root = ValueError("root")
+        mid = RuntimeError("mid")
+        mid.__cause__ = root
+        top = Exception("top")
+        top.__cause__ = mid
+        seen = list(tg_adapter._iter_exception_graph(top))
+        assert top in seen and mid in seen and root in seen
+
+    def test_walks_context_chain(self):
+        root = ValueError("during handling")
+        top = RuntimeError("top")
+        top.__context__ = root
+        seen = list(tg_adapter._iter_exception_graph(top))
+        assert top in seen and root in seen
+
+    def test_cycle_guard(self):
+        a = ValueError("a")
+        b = RuntimeError("b")
+        a.__cause__ = b
+        b.__cause__ = a  # cycle
+        seen = list(tg_adapter._iter_exception_graph(a))
+        assert seen.count(a) == 1 and seen.count(b) == 1  # terminates, no dupes
+
+    def test_diamond_no_duplicates(self):
+        root = ValueError("root")
+        left = RuntimeError("left"); left.__cause__ = root
+        right = TypeError("right"); right.__cause__ = root
+        top = Exception("top"); top.__cause__ = left; top.__context__ = right
+        seen = list(tg_adapter._iter_exception_graph(top))
+        assert seen.count(root) == 1
+
+
+class TestPoolTimeoutClassifier:
+    def test_ptb_pool_timeout_message(self):
+        err = Exception(
+            "Pool timeout: All connections in the connection pool are occupied. "
+            "Request was *not* sent to Telegram."
+        )
+        assert TelegramAdapter._looks_like_pool_timeout(err) is True
+
+    def test_wrapped_httpx_pooltimeout_class(self):
+        try:
+            raise ConnectionError("inner")
+        except ConnectionError as inner:
+            err = Exception("Timed out")
+            err.__context__ = inner
+            assert TelegramAdapter._looks_like_pool_timeout(err) is False
+
+    def test_httpx_pooltimeout_class_name(self):
+        class FakePoolTimeout(Exception):
+            pass
+        err = Exception("Timed out")
+        err.__cause__ = FakePoolTimeout("x")
+        assert TelegramAdapter._looks_like_pool_timeout(err) is True
+
+    def test_generic_timeout_negative(self):
+        assert TelegramAdapter._looks_like_pool_timeout(Exception("Timed out")) is False
+        assert TelegramAdapter._looks_like_pool_timeout(Exception("Bad Gateway")) is False
+
+    def test_occupied_connection_pool_substring(self):
+        # Both substrings present -> match even without "pool timeout" phrasing.
+        assert TelegramAdapter._looks_like_pool_timeout(
+            Exception("All connections in the connection pool are occupied")
+        ) is True
+        # "occupied" alone (no "connection pool") must not match.
+        assert TelegramAdapter._looks_like_pool_timeout(
+            Exception("seat was occupied")
+        ) is False
+        # "connection pool" alone (no "occupied") must not match.
+        assert TelegramAdapter._looks_like_pool_timeout(
+            Exception("connection pool sizing")
+        ) is False
+
+
+class TestConnectTimeoutClassifier:
+    def test_class_name_match(self):
+        class FakeConnectTimeout(Exception):
+            pass
+        assert TelegramAdapter._looks_like_connect_timeout(FakeConnectTimeout("x")) is True
+
+    def test_message_match(self):
+        assert TelegramAdapter._looks_like_connect_timeout(
+            Exception("connect timeout")
+        ) is True
+        assert TelegramAdapter._looks_like_connect_timeout(
+            Exception("connect timed out")
+        ) is True
+
+    def test_wrapped_in_cause(self):
+        class FakeConnectTimeout(Exception):
+            pass
+        err = Exception("Timed out")
+        err.__cause__ = FakeConnectTimeout("x")
+        assert TelegramAdapter._looks_like_connect_timeout(err) is True
+
+    def test_generic_negative(self):
+        assert TelegramAdapter._looks_like_connect_timeout(Exception("Timed out")) is False

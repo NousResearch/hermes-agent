@@ -402,7 +402,7 @@ def test_run_one_job_persists_exact_response_frame(monkeypatch):
     monkeypatch.setattr(
         s,
         "run_job",
-        lambda job, *, defer_agent_teardown=None, extra_prompt=None: (
+        lambda job, *, defer_agent_teardown=None, extra_prompt=None, execution_id=None: (
             True,
             "human-readable markdown",
             "lead\n## Response\ntail",

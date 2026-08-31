@@ -2176,7 +2176,12 @@ def test_protected_kanban_search_file_listing_projects_safe_relative_paths(
     agent.provider = "nous"
     result = json.dumps({
         "total_count": 3,
-        "files": ["./pyproject.toml", "tests/test_runner.py", ".git/FETCH_HEAD"],
+        "files": [
+            "./pyproject.toml",
+            "tests/test_runner.py",
+            ".github/workflows/ci.yml",
+            ".git/FETCH_HEAD",
+        ],
     })
 
     authorized, receipt = authorize_agent_sdk_kwargs(
@@ -2208,7 +2213,11 @@ def test_protected_kanban_search_file_listing_projects_safe_relative_paths(
     assert json.loads(authorized["messages"][1]["content"]) == {
         "search_files_projection": "locations-v1",
         "total_count": 3,
-        "files": ["pyproject.toml", "tests/test_runner.py"],
+        "files": [
+            "pyproject.toml",
+            "tests/test_runner.py",
+            ".github/workflows/ci.yml",
+        ],
     }
 
 

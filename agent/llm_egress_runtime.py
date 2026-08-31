@@ -208,7 +208,11 @@ def _project_bound_search_files(value: str) -> GeneratedContextSegment:
             if (
                 path.is_absolute()
                 or "\\" in normalized
-                or any(part in {"", ".", ".."} or part.startswith(".") for part in path.parts)
+                or any(
+                    part in {"", ".", ".."}
+                    or (part.startswith(".") and part != ".github")
+                    for part in path.parts
+                )
             ):
                 continue
             safe_path = redact_remote_unsafe_text(

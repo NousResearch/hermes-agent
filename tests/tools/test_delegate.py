@@ -675,35 +675,6 @@ class TestDelegateObservability(unittest.TestCase):
             result = json.loads(delegate_task(goal="Test empty sentinel", parent_agent=parent))
             self.assertEqual(result["results"][0]["status"], "failed")
 
-    def test_failed_flag_marks_status_failed(self):
-        """Regression (Aug 2026 community report): a child whose conversation
-        loop aborts on a non-retryable HTTP error (404/400, billing wall)
-        returns failed=True with the ERROR SUMMARY in final_response. That
-        summary is not usable output — without checking `failed`, the entry
-        was classified 'completed' and no surface ever showed a failure."""
-        parent = _make_mock_parent(depth=0)
-
-        with patch("run_agent.AIAgent") as MockAgent:
-            mock_child = MagicMock()
-            mock_child.model = "totally/nonexistent-model"
-            mock_child.session_prompt_tokens = 0
-            mock_child.session_completion_tokens = 0
-            mock_child.run_conversation.return_value = {
-                "final_response": "HTTP 404: model not found",
-                "completed": False,
-                "failed": True,
-                "error": "HTTP 404: model not found",
-                "interrupted": False,
-                "api_calls": 1,
-                "messages": [],
-            }
-            MockAgent.return_value = mock_child
-
-            result = json.loads(delegate_task(goal="Test failed flag", parent_agent=parent))
-            entry = result["results"][0]
-            self.assertEqual(entry["status"], "failed")
-            self.assertIn("404", entry["error"])
-
 
 class TestDelegateFailedChildStatus(unittest.TestCase):
     """Honest status / exit_reason for failed subagents (issue #97655).

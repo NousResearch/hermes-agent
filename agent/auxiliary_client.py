@@ -1930,6 +1930,25 @@ class _CodexCompletionsAdapter:
                     )
                 except Exception:
                     logger.debug("Codex auxiliary: client abort during timeout failed", exc_info=True)
+                # Socket shutdown wakes a reader blocked on a REAL transport,
+                # but the owner may be blocked inside the SDK's event stream
+                # (or a test double with no sockets). Closing the attempt-
+                # owned stream is the same attempt-scoped wake the hard-cancel
+                # branch above performs from this Timer thread — it releases
+                # the owner without touching the shared client's FDs; the
+                # owner then does the real close in its ``finally``.
+                with attempt_stream_lock:
+                    stream = attempt_stream[0] if attempt_stream else None
+                close_stream = getattr(stream, "close", None)
+                if callable(close_stream):
+                    try:
+                        close_stream()
+                    except Exception:
+                        logger.debug(
+                            "Codex auxiliary: attempt stream close during "
+                            "stranger-thread timeout failed",
+                            exc_info=True,
+                        )
             # The cached auxiliary client wraps this same ``self._client``
             # (or *is* a ``CodexAuxiliaryClient`` whose ``_real_client`` is
             # this instance).  After we close the httpx transport above, the

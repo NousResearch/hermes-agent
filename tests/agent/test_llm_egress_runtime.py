@@ -2166,6 +2166,52 @@ def test_protected_kanban_search_result_projects_source_content_to_locations(
     }
 
 
+def test_protected_kanban_search_file_listing_projects_safe_relative_paths(
+    tmp_path, monkeypatch
+):
+    """File discovery must return paths that can be provenance-read next."""
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    result = json.dumps({
+        "total_count": 3,
+        "files": ["./pyproject.toml", "tests/test_runner.py", ".git/FETCH_HEAD"],
+    })
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_search_files_listing",
+                        "type": "function",
+                        "function": {
+                            "name": "search_files",
+                            "arguments": '{"pattern":"*.toml","output_mode":"files"}',
+                        },
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_search_files_listing",
+                    "content": result,
+                },
+            ],
+        },
+    )
+
+    assert receipt.allowed
+    assert json.loads(authorized["messages"][1]["content"]) == {
+        "search_files_projection": "locations-v1",
+        "total_count": 3,
+        "files": ["pyproject.toml", "tests/test_runner.py"],
+    }
+
+
 def test_protected_kanban_keeps_opaque_tool_protocol_identifiers(tmp_path, monkeypatch):
     """Opaque provider call IDs are protocol linkage, not remote text."""
 

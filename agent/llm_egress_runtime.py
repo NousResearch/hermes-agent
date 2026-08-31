@@ -9,7 +9,7 @@ import os
 import re
 import shlex
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
@@ -196,6 +196,28 @@ def _project_bound_search_files(value: str) -> GeneratedContextSegment:
         projection["total_count"] = max(0, min(total_count, 1_000_000))
     if payload.get("truncated") is True:
         projection["truncated"] = True
+
+    raw_files = payload.get("files")
+    if isinstance(raw_files, list):
+        files: list[str] = []
+        for raw_path in raw_files[:100]:
+            if not isinstance(raw_path, str) or not raw_path or len(raw_path) > 512:
+                continue
+            normalized = raw_path[2:] if raw_path.startswith("./") else raw_path
+            path = PurePosixPath(normalized)
+            if (
+                path.is_absolute()
+                or "\\" in normalized
+                or any(part in {"", ".", ".."} or part.startswith(".") for part in path.parts)
+            ):
+                continue
+            safe_path = redact_remote_unsafe_text(
+                redact_sensitive_text(path.as_posix(), force=True)
+            )
+            if safe_path == path.as_posix():
+                files.append(safe_path)
+        if files:
+            projection["files"] = files
 
     raw_matches = payload.get("matches")
     if isinstance(raw_matches, list):

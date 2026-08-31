@@ -1508,7 +1508,7 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_cli(args, input_text=caption or "")
+        code, out, err = await self._run_message_send(args, caption or "")
         if code != 0:
             return SendResult(
                 success=False,
@@ -1576,7 +1576,7 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_cli(args, input_text=caption or "")
+        code, out, err = await self._run_message_send(args, caption or "")
         if code != 0:
             return SendResult(
                 success=False,

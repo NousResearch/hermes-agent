@@ -367,7 +367,7 @@ class TestMultiplexProfileScope:
 
         async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=None):
             calls["relay"] = relay_url
-            return 0, '{"event_id": "e1"}', ""
+            return 0, '{"accepted": true, "event_id": "e1"}', ""
 
         monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
         monkeypatch.setattr(
@@ -546,7 +546,7 @@ class TestMultiplexProfileScope:
 
         async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=None):
             calls["args"] = args
-            return 0, '{"event_id": "e1"}', ""
+            return 0, '{"accepted": true, "event_id": "e1"}', ""
 
         monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
         monkeypatch.setattr(
@@ -2224,6 +2224,7 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert args[args.index("--reply-to") + 1] == "stable-root"
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("stdout", "error_fragment"),
         [
@@ -3031,15 +3032,16 @@ class TestInboundMediaAuthorizationGate:
             CHANNEL,
             str(media),
             caption="caption",
-            reply_to="root-event",
-            metadata={"thread_id": "ignored-thread"},
+            reply_to="latest-child",
+            metadata={"thread_id": "stable-root"},
         )
 
         assert result.success is True
         assert result.message_id == "evt-media"
         args, stdin_text = cli.calls[0]
         assert args[args.index("--file") + 1] == str(media)
-        assert args[args.index("--reply-to") + 1] == "root-event"
+        # Threading contract (#99429): stable thread root beats latest-child.
+        assert args[args.index("--reply-to") + 1] == "stable-root"
         assert stdin_text == "caption"
 
     @pytest.mark.asyncio
@@ -3466,7 +3468,7 @@ class TestStandaloneSend:
 
         captured = {}
 
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
+        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=30.0):
             captured["args"] = args
             return 0, json.dumps({"accepted": True, "event_id": "evt-media"}), ""
 

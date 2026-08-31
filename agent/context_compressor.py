@@ -2977,13 +2977,23 @@ class ContextCompressor(ContextEngine):
             self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
 
-    def record_timeout_failure(self, error: str) -> None:
+    def record_timeout_failure(self, error: str, failure_kind: str = "timeout") -> None:
         """Record a consecutive timeout/stall failure using the shared ladder.
 
         Used by the summary-LLM exception handler, the host-level
         ``compress_context`` timeout wrapper, and stall-interrupted
         pre-commit cancellation (#62452, #96775).
+
+        The persisted error is prefixed with the attempt identity —
+        ``backoff:<failure_kind>:strategy=<tail_mode>`` — so the durable row
+        (``sessions.compression_failure_cooldown_until`` +
+        ``compression_failure_error`` in state.db) records WHICH strategy
+        failed and WHY, and a gateway restart rebuilds the same backoff
+        decision from ``bind_session_state()`` (#96775/#97488).
         """
+        strategy = getattr(self, "tail_mode", None) or "unknown"
+        kind = failure_kind or "timeout"
+        stamped = f"backoff:{kind}:strategy={strategy}: {error}"
         _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
         self._consecutive_timeout_failures = (
             getattr(self, "_consecutive_timeout_failures", 0) + 1
@@ -2992,7 +3002,7 @@ class ContextCompressor(ContextEngine):
             min(self._consecutive_timeout_failures,
                 len(_TIMEOUT_COOLDOWN_LADDER)) - 1
         ]
-        self._record_compression_failure_cooldown(float(cooldown), error)
+        self._record_compression_failure_cooldown(float(cooldown), stamped)
 
     def _clear_compression_failure_cooldown(self) -> None:
         # #76354 review F4: fence check BEFORE cooldown-clear. A late worker

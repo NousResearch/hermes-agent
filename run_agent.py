@@ -8234,7 +8234,14 @@ class AIAgent:
                                     else "host compress_context timeout "
                                     "(no summary progress)"
                                 )
-                                record(reason)
+                                record(
+                                    reason,
+                                    failure_kind=(
+                                        "ceiling_exhausted"
+                                        if total_exhausted
+                                        else "stalled"
+                                    ),
+                                )
                             except Exception:
                                 logger.debug(
                                     "failed to record compress_context timeout "

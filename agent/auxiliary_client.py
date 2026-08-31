@@ -5897,12 +5897,18 @@ def _project_provider_profile(
 
 def _merge_aux_extra_body(
     extra_body: Optional[dict], projection: _ProfileProjection, reasoning_config: Optional[dict], provider_norm: str,
+    reasoning_from_extra_body: bool = False,
 ) -> Dict[str, Any]:
     """Caller extra_body + profile body/reasoning + generic reasoning fallback + Nous tags."""
     merged_extra = dict(extra_body or {})
     merged_extra.update(projection.body)
     merged_extra.update(projection.reasoning_extra)
-    if reasoning_config and isinstance(reasoning_config, dict) and not projection.handles_reasoning:
+    if (
+        reasoning_config
+        and isinstance(reasoning_config, dict)
+        and not projection.handles_reasoning
+        and not reasoning_from_extra_body
+    ):
         if reasoning_config.get("enabled") is False:
             merged_extra["reasoning"] = {"enabled": False}
         else:
@@ -5952,9 +5958,20 @@ def _build_call_kwargs(
     # Provider profiles are the source of truth for reasoning wire shapes (top-level, nested body,
     # or extra_body.reasoning); providers without a reasoning-aware profile keep the generic
     # ``extra_body.reasoning`` fallback.
+    # Task-level auxiliary reasoning is folded into extra_body.reasoning by
+    # _get_task_extra_body(). Promote that canonical config back into the
+    # provider-profile input so native projections (for example DeepSeek's
+    # extra_body.thinking toggle) see it too. Direct per-call reasoning_config
+    # remains higher priority.
+    reasoning_from_extra_body = False
+    if reasoning_config is None and isinstance(extra_body, dict):
+        task_reasoning = extra_body.get("reasoning")
+        if isinstance(task_reasoning, dict):
+            reasoning_config = dict(task_reasoning)
+            reasoning_from_extra_body = True
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
-    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):
+    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm, reasoning_from_extra_body):
         kwargs["extra_body"] = merged_extra
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects

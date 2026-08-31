@@ -42,8 +42,10 @@ const canonicalCreations = new Map<string, CanonicalCreation>()
 export const PROFILE_SESSION_LIST_LIMIT = 200
 
 /** The one canonical title. (profile, CANONICAL_CHAT_TITLE) IS the bot's
- *  forever-chat identity — see the header above. */
-const CANONICAL_CHAT_TITLE = 'Bot Chat'
+ *  forever-chat identity — see the header above. Exported for the roster
+ *  click path's tile-staleness probe (hermes-agent#90102), which must
+ *  recognize canonical-titled tabs without restating the literal. */
+export const CANONICAL_CHAT_TITLE = 'Bot Chat'
 
 /** A `session.list` row as the registry lookup reads it. CanonicalSession
  *  models the roster's `canonical_session` field, which carries no

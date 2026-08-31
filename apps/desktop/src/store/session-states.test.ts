@@ -395,6 +395,58 @@ describe('focusWorkspaceOwnerSessionTile', () => {
     expect(focusWorkspaceOwnerSessionTile('bot:a')).toBeNull()
     expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['other-bot-chat'])
   })
+
+  describe('staleness probe (#90102): the tile bucket reconciles with backend truth before it wins', () => {
+    it('discards a stale tile and reports null so the caller runs its authoritative open', () => {
+      openSessionTile('stale-bot-chat', 'center', 'workspace', undefined, botA)
+
+      expect(focusWorkspaceOwnerSessionTile('bot:a', tile => tile.storedSessionId === 'stale-bot-chat')).toBeNull()
+      // Discard, not close: resurrecting the tile would just front the stale
+      // session again on the next click.
+      expect($sessionTiles.get()).toEqual([])
+    })
+
+    it('fronts the surviving fresh tile after discarding the stale one', () => {
+      openSessionTile('stale-bot-chat', 'center', 'workspace', undefined, botA)
+      openSessionTile('live-thread', 'center', 'workspace', undefined, botA)
+      $layoutTree.set(
+        group(['workspace', tilePane('stale-bot-chat'), tilePane('live-thread')], { active: 'workspace', id: 'main' })
+      )
+      // The stale tile is even the remembered one — the exact stuck shape.
+      rememberActivePane(workspaceScopeKey('bots', 'bot:a'), tilePane('stale-bot-chat'))
+
+      expect(focusWorkspaceOwnerSessionTile('bot:a', tile => tile.storedSessionId === 'stale-bot-chat')).toBe(
+        'live-thread'
+      )
+      expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['live-thread'])
+    })
+
+    it("only judges the probed owner's tiles — other owners keep theirs", () => {
+      openSessionTile('other-bot-chat', 'center', 'workspace', undefined, botB)
+      openSessionTile('stale-bot-chat', 'center', 'workspace', undefined, botA)
+
+      expect(focusWorkspaceOwnerSessionTile('bot:a', () => true)).toBeNull()
+      expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['other-bot-chat'])
+    })
+
+    it('a throwing probe keeps the tile — reconciliation must not break the click', () => {
+      openSessionTile('bot-chat', 'center', 'workspace', undefined, botA)
+
+      expect(
+        focusWorkspaceOwnerSessionTile('bot:a', () => {
+          throw new Error('probe blew up')
+        })
+      ).toBe('bot-chat')
+      expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['bot-chat'])
+    })
+
+    it('no probe keeps the old behavior byte for byte', () => {
+      openSessionTile('bot-chat', 'center', 'workspace', undefined, botA)
+
+      expect(focusWorkspaceOwnerSessionTile('bot:a')).toBe('bot-chat')
+      expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['bot-chat'])
+    })
+  })
 })
 
 describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => {

@@ -1500,11 +1500,44 @@ export function focusOpenSession(
  *  with open tabs comes back to the one the user left, instead of re-opening
  *  its canonical Bot Chat beside them: nothing records a tab close except the
  *  tile bucket forgetting it, so any open path that ignores the open set
- *  resurrects closed chats on every bot switch. */
-export function focusWorkspaceOwnerSessionTile(workspaceOwnerKey: string): null | string {
-  const owned = $sessionTiles
+ *  resurrects closed chats on every bot switch.
+ *
+ *  `isStaleTile`: the caller's reconciliation probe against backend truth
+ *  (hermes-agent#90102). The tile bucket is a Local Storage cache, and a
+ *  persisted bot tile can outlive the session it names — a superseded
+ *  "Bot Chat" from the retired pointer design, a re-minted canonical row, a
+ *  finished session that stopped being the bot's chat. Fronting such a tile
+ *  made the row's click target a stale (often hidden) session forever while
+ *  the preview described the live one. A tile the probe rejects is DISCARDED
+ *  (resurrecting it would just front the stale session again — same
+ *  no-undo rationale as discardSessionTile) and never fronted, so the caller
+ *  falls through to its authoritative open. No probe = the old behavior. */
+export function focusWorkspaceOwnerSessionTile(
+  workspaceOwnerKey: string,
+  isStaleTile?: (tile: SessionTile) => boolean
+): null | string {
+  const allOwned = $sessionTiles
     .get()
     .filter(tile => tile.workspaceMode === 'bots' && tile.workspaceOwnerKey === workspaceOwnerKey)
+
+  let owned = allOwned
+
+  if (typeof isStaleTile === 'function') {
+    const stale = allOwned.filter(tile => {
+      try {
+        return isStaleTile(tile)
+      } catch {
+        // A throwing probe must not break the click path — keep the tile.
+        return false
+      }
+    })
+
+    for (const tile of stale) {
+      discardSessionTile(tile.storedSessionId)
+    }
+
+    owned = allOwned.filter(tile => !stale.includes(tile))
+  }
 
   if (owned.length === 0) {
     return null

@@ -1104,6 +1104,89 @@ def test_busy_target_replacement_failure_preserves_previous_claim_bytes(
     ]
 
 
+@pytest.mark.asyncio
+async def test_initial_claim_post_replace_fsync_failure_reconciles_owner_and_restart(
+    isolated_home, monkeypatch
+):
+    """A visible initial record remains one successful caller-owned publication."""
+    from gateway import goal_continuation_claims as claims
+
+    source = _source()
+    key = "agent:main:discord:channel:initial-fsync-ambiguity"
+    session_id = "sid-initial-fsync-ambiguity"
+    runner, adapter = _partial_runner(source, key, session_id)
+    head = _continuation(source, message_id="initial-fsync-head")
+
+    def fail_directory_fsync(_path):
+        raise OSError("injected post-replace directory fsync failure")
+
+    monkeypatch.setattr(claims, "_fsync_directory", fail_directory_fsync)
+    retry = runner._claim_goal_continuation_retry(
+        key, adapter, head, session_id=session_id
+    )
+
+    assert retry is not None
+    identity = claims.event_claim_identity(head)
+    assert identity is not None
+    assert retry.claim_id == identity[0]
+    assert runner._claim_goal_continuation_retry(
+        key, adapter, head, session_id=session_id
+    ) is retry
+    durable = claims.load_claims(home=isolated_home)
+    assert len(durable) == 1
+    assert [event.message_id for event in durable[0].events] == ["initial-fsync-head"]
+
+    restarted, _restarted_adapter = _partial_runner(source, key, session_id)
+    assert restarted._recover_goal_continuation_claims(schedule=False) == 1
+    assert restarted._goal_continuation_retries[key].event.message_id == (
+        "initial-fsync-head"
+    )
+
+
+def test_successor_post_replace_fsync_failure_reconciles_retry_and_restart(
+    isolated_home, monkeypatch
+):
+    """A visible sidecar is admitted once and keeps its event identity on retry."""
+    from gateway import goal_continuation_claims as claims
+
+    source = _source()
+    key = "agent:main:discord:channel:successor-fsync-ambiguity"
+    session_id = "sid-successor-fsync-ambiguity"
+    head = _continuation(source, message_id="successor-fsync-head")
+    claim = claims.publish_claim(key, session_id, [head], home=isolated_home)
+    successor = _event(
+        "successor after fsync ambiguity",
+        source=source,
+        message_id="successor-fsync-event",
+    )
+
+    def fail_directory_fsync(_path):
+        raise OSError("injected successor directory fsync failure")
+
+    monkeypatch.setattr(claims, "_fsync_directory", fail_directory_fsync)
+    event_id = claims.append_claim_event(
+        key, claim.claim_id, successor, home=isolated_home
+    )
+    assert claims.append_claim_event(
+        key, claim.claim_id, successor, home=isolated_home
+    ) == event_id
+    assert claims.event_claim_identity(successor) == (claim.claim_id, event_id)
+    assert len(list(claim.path.parent.glob("successor-*.json"))) == 1
+    assert [event.message_id for event in claims.load_claims(home=isolated_home)[0].events] == [
+        "successor-fsync-head",
+        "successor-fsync-event",
+    ]
+
+    restarted, restarted_adapter = _partial_runner(source, key, session_id)
+    assert restarted._recover_goal_continuation_claims(schedule=False) == 1
+    assert restarted._goal_continuation_retries[key].event.message_id == (
+        "successor-fsync-head"
+    )
+    assert restarted_adapter._pending_messages[key].message_id == (
+        "successor-fsync-event"
+    )
+
+
 def test_claim_count_cap_is_enforced_before_publication(isolated_home, monkeypatch):
     """The versioned spool cannot grow beyond its declared record cap."""
     from gateway import goal_continuation_claims as claims

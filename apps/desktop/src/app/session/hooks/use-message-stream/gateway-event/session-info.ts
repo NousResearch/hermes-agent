@@ -17,7 +17,6 @@ import {
   setCurrentCwdTransient,
   setCurrentFastMode,
   setCurrentPersonality,
-  setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
   setSessions,
@@ -238,10 +237,11 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         setCurrentPersonality(normalizePersonalityValue(payload.personality))
       }
 
-      if (typeof payload?.reasoning_effort === 'string') {
-        setCurrentReasoningEffort(payload.reasoning_effort)
-      }
-
+      // `reasoning_effort` is a per-session override, not a global default: it
+      // must reach the session's own slice (via sessionInfoStatePatch →
+      // updateSessionState below), never the persisted composer draft. Writing
+      // it to $currentReasoningEffort here would reseed every new chat with the
+      // last-resumed session's pin, clobbering agent.reasoning_effort.
       if (typeof payload?.service_tier === 'string') {
         setCurrentServiceTier(payload.service_tier)
       }

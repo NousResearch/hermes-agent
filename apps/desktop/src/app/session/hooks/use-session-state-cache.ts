@@ -15,7 +15,6 @@ import {
   setCurrentModel,
   setCurrentPersonality,
   setCurrentProvider,
-  setCurrentReasoningEffort,
   setCurrentServiceTier,
   setTurnStartedAt,
   setYoloActive
@@ -43,7 +42,10 @@ interface SessionStateCacheOptions {
 function syncRuntimeMetadataToView(state: ClientSessionState) {
   setCurrentModel(state.model ?? '')
   setCurrentProvider(state.provider ?? '')
-  setCurrentReasoningEffort(state.reasoningEffort ?? '')
+  // reasoningEffort is intentionally not mirrored: it's a per-session override,
+  // and copying it into $currentReasoningEffort would persist it as the draft
+  // that seeds new chats (overriding the profile default). The session pill
+  // reads it straight from the session slice instead.
   setCurrentServiceTier(state.serviceTier ?? '')
   setCurrentFastMode(state.fast ?? false)
   setYoloActive(state.yolo ?? false)

@@ -3415,6 +3415,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
         notify_registered = False
         home_token = None
         secret_token = None
+        build_terminal_token = None
         session_db = None
         owns_db = False
         profile_home = current.get("profile_home")
@@ -3441,6 +3442,21 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 except Exception:
                     pass
+                # Bind the profile's COMPLETE terminal policy for the agent
+                # build (fail-closed: malformed policy → refusal scope) so
+                # _make_agent's terminal probing / cwd hints resolve the
+                # routed profile, never the launch process (#98581 class).
+                try:
+                    from tools.terminal_scope import (
+                        install_profile_terminal_scope,
+                        reset_terminal_scope,
+                    )
+
+                    build_terminal_token = install_profile_terminal_scope(
+                        Path(profile_home)
+                    )
+                except Exception:
+                    build_terminal_token = None
                 # DEDICATED handle — ours until _transfer_db_to_agent hands
                 # it to the built agent in the finally below. Every path
                 # that leaves this build without that transfer (the except
@@ -3590,6 +3606,13 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     from agent.secret_scope import reset_secret_scope
 
                     reset_secret_scope(secret_token)
+                except Exception:
+                    pass
+            if build_terminal_token is not None:
+                try:
+                    from tools.terminal_scope import reset_terminal_scope
+
+                    reset_terminal_scope(build_terminal_token)
                 except Exception:
                     pass
             # _attach_worker already closed the worker if this session was
@@ -6457,9 +6480,20 @@ def _session_profile_runtime_scope(session: dict):
         return
     home_token = set_hermes_home_override(profile_home)
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+    # Same authoritative terminal policy the gateway binds per turn (#68559):
+    # a docker-configured dashboard profile must never resolve the launch
+    # process's pinned env. Failure → refusal scope (fail closed).
+    from tools.terminal_scope import (
+        install_profile_terminal_scope as _install_term_scope,
+    )
+
+    terminal_token = _install_term_scope(Path(profile_home))
     try:
         yield
     finally:
+        from tools.terminal_scope import reset_terminal_scope
+
+        reset_terminal_scope(terminal_token)
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 
@@ -13226,6 +13260,20 @@ def _run_prompt_submit(
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(_profile_home_str)))
+                # Fourth profile seam: bind the session profile's COMPLETE
+                # terminal policy for this turn (dashboard/TUI analogue of the
+                # gateway's per-turn scope). #98581's unified-desktop
+                # reproduction ran a docker-configured profile on the host
+                # because terminal_tool read the launch process's pinned env.
+                # Failure installs a refusal scope → terminal tools raise
+                # (fail closed) instead of inheriting ambient policy.
+                from tools.terminal_scope import (
+                    install_profile_terminal_scope as _install_term_scope,
+                )
+
+                _terminal_scope_token = _install_term_scope(Path(_profile_home_str))
+            else:
+                _terminal_scope_token = None
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty
@@ -14003,6 +14051,10 @@ def _run_prompt_submit(
                 reset_hermes_home_override(home_token)
             if secret_token is not None:
                 reset_secret_scope(secret_token)
+            if _terminal_scope_token is not None:
+                from tools.terminal_scope import reset_terminal_scope
+
+                reset_terminal_scope(_terminal_scope_token)
             _clear_session_context(session_tokens)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)

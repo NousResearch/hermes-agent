@@ -256,7 +256,11 @@ def _configured_terminal_cwd() -> str | None:
     relative to, which is exactly the ambiguity that misroutes worktree edits.
     Only an absolute, sentinel-free value is honored.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    # Scope-aware: under gateway multiplexing the routed profile's cwd lives in
+    # the per-turn terminal scope, not the process env (#68559).
+    from agent.runtime_cwd import scope_terminal_cwd
+
+    return _sentinel_free_abs_cwd(scope_terminal_cwd() or None)
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:

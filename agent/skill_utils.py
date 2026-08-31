@@ -755,7 +755,9 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """
     try:
         if start is None:
-            env_cwd = os.environ.get("TERMINAL_CWD")
+            from agent.runtime_cwd import scope_terminal_cwd
+
+            env_cwd = scope_terminal_cwd()
             start = Path(env_cwd) if env_cwd else Path.cwd()
         cur = Path(start).resolve()
     except OSError:

@@ -1032,7 +1032,11 @@ def _is_local_backend() -> bool:
         return False
     # When terminal runs in a container, browser on host can access
     # internal networks the terminal can't → treat as non-local.
-    terminal_backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
+    # Scope-aware: under gateway multiplexing the routed profile's backend
+    # lives in the per-turn terminal scope, not the process env (#68559).
+    from tools.terminal_scope import terminal_env
+
+    terminal_backend = terminal_env("TERMINAL_ENV", "local").strip().lower()
     return terminal_backend in ("local", "")
 
 

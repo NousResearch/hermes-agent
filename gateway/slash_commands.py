@@ -3440,7 +3440,9 @@ class GatewaySlashCommandsMixin:
             max_file_size_mb=cp_kwargs["checkpoint_max_file_size_mb"],
         )
 
-        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
+        from tools.terminal_scope import terminal_env as _tenv
+
+        cwd = _tenv("TERMINAL_CWD", str(Path.home()))
         arg = event.get_command_args().strip()
 
         # --all / --force: classic full restore, overwriting user edits too.
@@ -3534,7 +3536,9 @@ class GatewaySlashCommandsMixin:
             elif low == "session":
                 mode = "session"
 
-        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
+        from tools.terminal_scope import terminal_env as _tenv
+
+        cwd = _tenv("TERMINAL_CWD", str(Path.home()))
 
         if mode == "session":
             return await self._gateway_session_diff(cwd, stat_only)

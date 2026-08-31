@@ -7394,6 +7394,22 @@ def _run_one_job_body(
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
         )
+        # Same isolation for terminal settings (third profile seam; see
+        # gateway/run.py _profile_runtime_scope): installs the firing
+        # profile's COMPLETE terminal policy for this fire — run, delivery,
+        # and bookkeeping — resetting in this function's finally alongside
+        # the secret scope. Without it the ticker thread reads the
+        # process-global TERMINAL_* env vars a concurrent profile's turn may
+        # have pinned (#68559). Resolution failure installs a refusal scope:
+        # terminal execution inside the fire raises instead of falling back
+        # to the launch process's ambient policy.
+        from tools.terminal_scope import (
+            install_profile_terminal_scope,
+        )
+
+        _terminal_scope_token = install_profile_terminal_scope(
+            _get_hermes_home()
+        )
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -7827,6 +7843,10 @@ def _run_one_job_body(
         # _deliver_result unscoped — do not move it back in a tidy-up.
         if _scope_token is not None:
             reset_secret_scope(_scope_token)
+        if _terminal_scope_token is not None:
+            from tools.terminal_scope import reset_terminal_scope
+
+            reset_terminal_scope(_terminal_scope_token)
 
 
 def _notify_provider_jobs_changed() -> None:

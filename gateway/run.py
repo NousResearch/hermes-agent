@@ -2546,6 +2546,19 @@ async def _reclaim_stale(runner: object) -> None:
         )
 
 
+def _terminal_scope_cwd(default: str = "") -> str:
+    """Scope-aware TERMINAL_CWD read for footer/context surfaces.
+
+    Only an import failure falls back: an active refusal scope must raise,
+    not resolve the launch profile's cwd.
+    """
+    try:
+        from tools.terminal_scope import terminal_env as _ts_env
+    except ImportError:
+        return os.environ.get("TERMINAL_CWD", default)
+    return _ts_env("TERMINAL_CWD", default)
+
+
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
@@ -2576,11 +2589,19 @@ def _profile_runtime_scope(profile_home: "Path"):
     home_token = set_hermes_home_override(str(profile_home))
     hydrate_profile_secret_sources(Path(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-    try:
-        yield
-    finally:
-        reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+    # Per-turn terminal scope (third seam of the profile boundary): installs
+    # the routed profile's COMPLETE terminal policy — never ambient env — via
+    # tools.terminal_scope. Without it terminal_tool reads the process-global
+    # TERMINAL_* vars a previous profile's turn may have pinned
+    # (first-writer-wins backend leak; #68559).
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+
+    with install_and_reset_profile_terminal_scope(Path(profile_home)):
+        try:
+            yield
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
 
 
 def load_gateway_config_for_runner() -> "GatewayConfig":
@@ -20261,7 +20282,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from agent.context_references import preprocess_context_references_async
                 from agent.model_metadata import get_model_context_length_async
 
-                _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                try:
+                    from tools.terminal_scope import terminal_env as _ts_env
+                except ImportError:
+                    _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                else:
+                    _msg_cwd = _ts_env("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_config_ctx = None
                 _msg_cfg = None
                 _msg_model_cfg = {}
@@ -22855,7 +22881,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
-                    cwd=os.environ.get("TERMINAL_CWD", ""),
+                    cwd=_terminal_scope_cwd(""),
                     turn_seconds=_turn_seconds,
                 )
             except Exception as _footer_err:

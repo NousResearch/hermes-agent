@@ -231,6 +231,36 @@ echo "$OUT" | sed -n 2p | grep -qx "default owner" && ok "11f. id collision -> d
 # 11g. profile attribution recorded; broken store contributed nothing (no crash)
 echo "$OUT" | sed -n 3p | grep -qx "researcher" && ok "11g. profile field carries bot name (broken store inert)" || bad "11g. $OUT"
 
+# --- 12. bot ENROLLMENT audit: status flags persona-bearing profiles whose
+#     SOUL.md lacks the enrollment marker; profiles with no persona are never
+#     flagged (nothing proves they are bots); adding the marker clears it.
+cat > "$D/profiles/researcher/SOUL.md" <<'EOF'
+# Researcher
+You are the researcher bot. (No coordination blurb yet.)
+EOF
+OUT=$(co status 2>&1)
+echo "$OUT" | grep -q "UNENROLLED bot profiles (1)" && echo "$OUT" | grep -q "researcher" \
+  && ok "12a. status flags unenrolled persona profile (SOUL-less 'broken' not flagged)" || bad "12a. $OUT"
+JOUT=$(co status --json 2>/dev/null)
+echo "$JOUT" | grep -q '"unenrolled_bot_profiles".*researcher' && ok "12b. --json carries unenrolled_bot_profiles" || bad "12b. $JOUT"
+printf '\nEnrollment marker: session-coord (bot-wire v1) — installer idempotence + board audit.\n' >> "$D/profiles/researcher/SOUL.md"
+OUT=$(co status 2>&1)
+echo "$OUT" | grep -q "UNENROLLED" && bad "12c. marker should clear the flag: $OUT" || ok "12c. enrollment marker clears the flag"
+
+# --- 13. non-bot PROFILE audit: a SOUL-less profile whose own memory store
+#     exists without the standing rule is flagged UNWIRED; the rule clears
+#     it; a profile with no memory store yet is never flagged (no evidence).
+mkdir -p "$D/profiles/plainprofile/memories" "$D/profiles/freshprofile"
+echo "some unrelated memory entry" > "$D/profiles/plainprofile/memories/MEMORY.md"
+OUT=$(co status 2>&1)
+echo "$OUT" | grep -q "UNWIRED profiles (1)" && echo "$OUT" | grep -q "plainprofile" \
+  && ok "13a. status flags unwired non-bot profile (store-less 'freshprofile' not flagged)" || bad "13a. $OUT"
+JOUT=$(co status --json 2>/dev/null)
+echo "$JOUT" | grep -q '"unwired_profiles".*plainprofile' && ok "13b. --json carries unwired_profiles" || bad "13b. $JOUT"
+printf '\nSTANDING RULE — session-coord (wire v1): ALWAYS deconflict via the coordination board.\n' >> "$D/profiles/plainprofile/memories/MEMORY.md"
+OUT=$(co status 2>&1)
+echo "$OUT" | grep -q "UNWIRED" && bad "13c. wire marker should clear the flag: $OUT" || ok "13c. standing-rule marker clears the flag"
+
 echo
 echo "RESULT: $PASS passed, $FAIL failed"
 rm -rf "$D"

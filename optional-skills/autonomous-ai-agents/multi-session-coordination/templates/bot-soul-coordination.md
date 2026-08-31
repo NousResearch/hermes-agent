@@ -4,7 +4,10 @@ Paste the block below into every bot's SOUL.md (New Agent → Advanced → SOUL.
 or Edit Profile → Advanced). A bot is a full agent profile running CONCURRENTLY
 with interactive sessions and other bots — this teaches it the same co-worker
 protocol every session follows. Substitute `<botname>` and adapt the resource
-examples to your machine.
+examples to your machine. (`install.py` appends this block to every existing
+`profiles/*/SOUL.md` automatically — `--no-wire-bots` opts out; the marker
+line at the end is what makes re-runs idempotent and lets `status` audit
+enrollment.)
 
 Why SOUL.md and not env/config: bot-to-bot handoffs run as fresh
 `hermes -p <bot> chat` invocations that inherit no environment — the SOUL.md is
@@ -22,8 +25,15 @@ resources. You MUST consult it before mutating anything shared.
 **Shared resources include** (adapt to your setup): remote GPU boxes
 (`box:<host>`), the desktop UI (`ui:desktop`), singleton apps that allow only
 one client at a time, shared project directories (`file:~/...`), a shared
-skills/scripts tree, and any shared memory store. Your OWN profile's memory,
-sessions, and cron store are yours alone — no claim needed.
+skills/scripts tree, and the machine's MAIN agent memory store.
+
+**The ONLY claim-free exemption** is your own profile's INTERNAL stores — the
+memory, sessions, and cron store under your profile directory — because no
+other actor writes those. The exemption is exactly that list. Anything else,
+INCLUDING files and directories you yourself created (output dirs, reports,
+scripts you maintain), lives in shared space: another actor can legitimately
+touch it, so register and claim it like everything else. Your profile memory
+is NOT the shared memory store above — don't let "mine" blur that line.
 
 **Protocol** (register once per task, claim before mutating, release at the end):
 
@@ -52,3 +62,6 @@ Rules:
   run) — but **chat is never a lock**. Only a successful claim authorizes
   mutation, no matter what was agreed in conversation.
 - If the board itself errors, say so and do NOT mutate shared resources blind.
+
+Enrollment marker: session-coord (bot-wire v1) — installer idempotence + board
+audit; do not remove this line.

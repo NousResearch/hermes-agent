@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # EDIT HISTORY (newest first)
+# 2026-08-31 | claude-fable-5 | anthropic | desktop session | v2.4.0 bot enrollment audit: unenrolled_bot_profiles() scans <profiles>/*/SOUL.md for the BOT_WIRE_MARKER ("session-coord (bot-wire v1)", shipped inside the SOUL.md blurb install.py now appends); cmd_status lists persona-bearing profiles missing it as "— UNENROLLED bot profiles" + unenrolled_bot_profiles in --json, naming the fix. Read-only, fail-open; SOUL-less profiles never flagged (nothing proves they are bots). Companion unwired_profiles(): SOUL-less profiles whose OWN memories/MEMORY.md exists without the standing rule ("session-coord (wire v1)") -> UNWIRED warning + unwired_profiles in --json (store-less fresh profiles never flagged — no evidence; bots are the blurb audit's job). Closes the invisible-unenrolled-actor gap: enrollment is per-persona/per-profile-store and manual post-install, and a missed paste previously surfaced only as a collision. selftest_cron.sh 45->51.  # noqa: E501
 # 2026-08-26 | claude-opus-4-8 | anthropic | desktop session | MASTER SWITCH: whole coordination layer can be turned OFF without uninstalling — `enable`/`disable`/`switch [on|off|toggle]` verbs (persistent sentinel ~/.hermes/state/coordination_disabled; env HERMES_COORD_DISABLED overrides both directions). While OFF every verb is a fail-open no-op (register still prints a synthetic 12-hex id, claim/check succeed FREE, cron-guard stdout stays empty) so a disabled board == "not installed"; switch verbs themselves always run. coordination_enabled()/switch_source() helpers; main() gate short-circuits to disabled_noop(). Mirrors coord_guard.sh _coord_disabled(). 90/90 existing checks still green (enabled path byte-identical) + selftest_toggle.sh 28 new checks.  # noqa: E501
 # 2026-08-18 | claude-fable-5 | anthropic | desktop session | v2.2 Bot Mode integration: cron_store_jobs() now merges EVERY profile store (~/.hermes/profiles/*/cron/jobs.json — a Bot Mode bot IS a profile; its Routines live in its own store) with the default store (id collision: default wins); profile jobs get a "[bot:<profile>]" name tag surfaced through radar/advisories/guard/wait-for-cron; upcoming_cron_conflicts + status rows carry "profile"; resolve_cron_job error names both store locations; HERMES_COORD_PROFILES_DIR override for tests  # noqa: E501
 # 2026-08-16 | claude-fable-5 | anthropic | desktop session | v2.1 cron leg: cron-guard verb (deterministic wrapper for cron scripts: register ephemeral cron session + atomic claim; --policy skip|wait; stdout carries ONLY the coordination id so no_agent stdout-as-message semantics survive; holders get a cron_defer note on skip), cron manifest advisory (~/.hermes/state/cron_resources.json + jobs.json next_run_at -> "cron fires in ~Nm on this resource" warnings on claim/check/status; advisory only, never blocks), cron-aware verbs (HELD labels cron holders, preempt refuses vs crons — they cannot checkpoint/pause; wait or user-approved steal)  # noqa: E501
@@ -197,6 +198,55 @@ CRON_PROFILES_DIR = os.path.expanduser(
 )
 CRON_ADVISORY_S = 90 * 60       # claim/check warn horizon: fires within 90 min
 CRON_STATUS_S = 12 * 3600       # status shows manifested fires within 12 h
+
+# Bot ENROLLMENT audit marker: the SOUL.md coordination blurb (shipped in
+# templates/bot-soul-coordination.md, appended by install.py's bot-wiring
+# step) carries this line. A profile that HAS a persona (SOUL.md) but lacks
+# the marker never enrolled in the protocol — its runs are invisible to the
+# board. `status` surfaces those so an unenrolled bot can't stay unnoticed
+# until a collision. Keep byte-stable and in lock-step with install.py.
+BOT_WIRE_MARKER = "session-coord (bot-wire v1)"
+# Session-enrollment marker (the standing memory rule install.py writes to
+# the main store AND to each non-bot profile's own memories/MEMORY.md — a
+# profile is a full agent instance whose sessions never see the main store).
+WIRE_MARKER = "session-coord (wire v1)"
+
+
+def unenrolled_bot_profiles():
+    """Profile names with a SOUL.md that lacks BOT_WIRE_MARKER (persona-bearing
+    = bot-like; profiles without a persona are skipped — nothing proves they
+    are bots). Read-only, fail-open: unreadable files contribute nothing."""
+    out = []
+    for soul in sorted(glob.glob(os.path.join(CRON_PROFILES_DIR, "*", "SOUL.md"))):
+        try:
+            with open(soul, encoding="utf-8", errors="replace") as f:
+                if BOT_WIRE_MARKER not in f.read():
+                    out.append(os.path.basename(os.path.dirname(soul)))
+        except OSError:
+            continue
+    return out
+
+
+def unwired_profiles():
+    """Non-bot profile names whose OWN memory store exists but lacks the
+    standing rule (WIRE_MARKER) — their sessions never consult the board.
+    Only flags profiles with an actual memories/MEMORY.md: an existing store
+    proves agent sessions run there, while a fresh profile with no store yet
+    is no evidence (escalate on confirmation only). Bot profiles (SOUL.md
+    present) are the blurb audit's job, not this one's. Read-only, fail-open."""
+    out = []
+    for mem in sorted(glob.glob(os.path.join(CRON_PROFILES_DIR, "*",
+                                             "memories", "MEMORY.md"))):
+        prof_dir = os.path.dirname(os.path.dirname(mem))
+        if os.path.exists(os.path.join(prof_dir, "SOUL.md")):
+            continue
+        try:
+            with open(mem, encoding="utf-8", errors="replace") as f:
+                if WIRE_MARKER not in f.read():
+                    out.append(os.path.basename(prof_dir))
+        except OSError:
+            continue
+    return out
 
 
 def db():
@@ -1668,6 +1718,23 @@ def cmd_status(a):
                     lines.append(f"      ⚠ CONFLICTS with currently HELD: "
                                  f"{', '.join(cr['conflicts_with_held'])} — holder(s) "
                                  f"should finish first or see `wait-for-cron`.")
+    unenrolled = unenrolled_bot_profiles()
+    if unenrolled:
+        payload["unenrolled_bot_profiles"] = unenrolled
+        lines.append(f"— UNENROLLED bot profiles ({len(unenrolled)}) — SOUL.md lacks "
+                     "the coordination blurb; their runs never consult this board:")
+        for name in unenrolled:
+            lines.append(f"    {name}  (fix: re-run install.py, or paste "
+                         "templates/bot-soul-coordination.md into its SOUL.md)")
+    unwired = unwired_profiles()
+    if unwired:
+        payload["unwired_profiles"] = unwired
+        lines.append(f"— UNWIRED profiles ({len(unwired)}) — the profile's own memory "
+                     "store lacks the standing rule; its sessions never consult this "
+                     "board:")
+        for name in unwired:
+            lines.append(f"    {name}  (fix: re-run install.py, or add the entry from "
+                         "examples/memory-entry.example.md to its memories/MEMORY.md)")
     alert_pending(conn, a.id)
     emit(payload, a.json, lines)
     return 0

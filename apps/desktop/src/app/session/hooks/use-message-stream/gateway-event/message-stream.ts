@@ -127,6 +127,10 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         sawAssistantPayload: false,
         interrupted: false,
         interimBoundaryPending: false,
+        // A message.start begins a distinct backend turn. Never let a
+        // dropped completion from the prior turn make its streaming bubble
+        // the target for this turn's first delta.
+        streamId: null,
         // Backend accepted the turn — the no-payload settle gate below may
         // now treat a running=false heartbeat as a real turn end.
         turnLive: true,

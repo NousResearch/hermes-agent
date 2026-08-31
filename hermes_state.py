@@ -13955,10 +13955,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # Export and cleanup
     # =========================================================================
 
-    def is_explicit_fork_child(self, session_id: str) -> bool:
-        session = self.get_session(session_id)
-        return bool(session and self._is_explicit_fork_child_row(session))
-
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
         """True when ``session`` is a branch, delegate, or tool child of its parent.
 

@@ -183,29 +183,6 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     .filter(Boolean)
     .join(' · ')
 
-  const warm = () => {
-    // Multi-source row: pre-dial the agent's OWN source (feature-detected).
-    if (bot.sourceScoped && typeof host.warmAgent === 'function') {
-      try {
-        host.warmAgent(bot.connectionId, bot.name)
-      } catch {
-        /* warm is best-effort */
-      }
-
-      return
-    }
-
-    if (typeof host.warmProfile !== 'function') {
-      return
-    }
-
-    try {
-      host.warmProfile(bot.name)
-    } catch {
-      /* warm is best-effort */
-    }
-  }
-
   // Rows and Active Now share the exact-owner open path; only that path may
   // activate a source and resolve the canonical Bot Chat.
   const open = () => void openRosterBot(bot)

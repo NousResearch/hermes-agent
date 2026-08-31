@@ -47,13 +47,11 @@ function runStopCommand(
       if (settled) {
         return
       }
-
       settled = true
 
       if (timer) {
         clearTimeout(timer)
       }
-
       resolve(ok)
     }
 
@@ -62,12 +60,14 @@ function runStopCommand(
     } catch (error) {
       onError(`Failed to start ${command.label}: ${String(error)}`)
       resolve(false)
+
       return
     }
 
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
         onError(`${command.label} exceeded ${timeoutMs}ms; terminating the stop helper`)
+
         try {
           child.kill('SIGTERM')
         } catch {
@@ -105,6 +105,7 @@ export function stopDesktopBackgroundServices({
 
   if (!backend?.command || backend.kind === 'bootstrap-needed') {
     onError('No runnable local Hermes command was available for gateway stop --all --drain')
+
     return Promise.resolve(false)
   }
 

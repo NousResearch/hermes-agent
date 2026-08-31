@@ -3040,6 +3040,36 @@ def init_agent(
             "Ollama num_ctx: will request %d tokens (model max from /api/show)",
             agent._ollama_num_ctx,
         )
+    # ── Recalibrate the compressor to the served window (#57275 claim 3) ──
+    # The compressor was constructed ABOVE this block from the probed model
+    # window (GGUF metadata can advertise 256K+), but every request below
+    # runs at num_ctx. A config that sets only model.ollama_num_ctx (without
+    # model.context_length) previously left the compressor targeting the
+    # probed window while the server truncated/rejected at num_ctx — the
+    # compaction trigger could sit several times ABOVE the real served
+    # window and never fire. Clamp the compressor's window to the effective
+    # num_ctx so threshold math operates on the context the server actually
+    # serves. (Overlaps #60103's silent-clamp dead zone; this is the
+    # init-order half.)
+    _cc_window = getattr(agent.context_compressor, "context_length", 0) or 0
+    if (
+        agent._ollama_num_ctx
+        and agent._ollama_num_ctx > 0
+        and _cc_window
+        and agent._ollama_num_ctx < _cc_window
+    ):
+        _ra().logger.info(
+            "Compressor window clamped to Ollama num_ctx: %d -> %d",
+            _cc_window, agent._ollama_num_ctx,
+        )
+        agent.context_compressor.update_model(
+            model=agent.model,
+            context_length=agent._ollama_num_ctx,
+            base_url=agent.base_url,
+            api_key=getattr(agent, "api_key", ""),
+            provider=agent.provider,
+            api_mode=agent.api_mode,
+        )
 
     # Codex gpt-5.x autoraise notice: show at most once per profile/config
     # state. Without the persisted marker the notice re-fires on every agent

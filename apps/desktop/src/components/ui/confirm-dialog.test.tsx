@@ -34,18 +34,30 @@ describe('ConfirmDialog secondary action', () => {
     expect(onConfirm).not.toHaveBeenCalled()
   })
 
-  it('still opens focused on Confirm, so Enter confirms rather than picking the secondary', async () => {
+  it('opens focused on Confirm without overriding another focused action', async () => {
     const { onConfirm, onSecondary } = renderWithSecondary()
 
-    const dialog = await screen.findByRole('dialog')
+    const confirm = await screen.findByRole('button', { name: 'Confirm' })
 
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
-    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
-    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
-    fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
+    await waitFor(() => expect(document.activeElement).toBe(confirm))
+    fireEvent.click(confirm)
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1))
     expect(onSecondary).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['Cancel', ' '],
+    ['Remove from sidebar', 'Enter']
+  ])('does not turn %s keyboard activation into confirmation', async (label, key) => {
+    const { onConfirm } = renderWithSecondary()
+    const action = await screen.findByRole('button', { name: label })
+
+    action.focus()
+    fireEvent.keyDown(action, { key })
+
+    expect(onConfirm).not.toHaveBeenCalled()
   })
 })
 

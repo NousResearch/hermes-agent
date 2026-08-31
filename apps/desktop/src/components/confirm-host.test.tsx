@@ -40,15 +40,15 @@ describe('confirm()', () => {
     expect(no.read()).toBe(false)
   })
 
-  it('confirms on Enter from wherever focus landed', async () => {
+  it('focuses the primary confirmation action by default', async () => {
     render(<ConfirmHost />)
 
-    const { dialog, pending, read } = await ask()
+    const { pending, read } = await ask()
+    const confirmButton = screen.getByRole('button', { name: /confirm/i })
 
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
-    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
-    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
-    fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
+    await waitFor(() => expect(document.activeElement).toBe(confirmButton))
+    fireEvent.click(confirmButton)
 
     await pending
     expect(read()).toBe(true)

@@ -245,7 +245,7 @@ export function ComposerStatusStack({ queue, requestGateway, sessionId }: Compos
     item.sessionId ? void openSessionInNewWindow(item.sessionId, { watch: true }) : openAgents()
 
   const requestTodoAction = useCallback((item: ComposerStatusItem, origin: HTMLButtonElement) => {
-    if (!item.todoStatus || !item.todoItemId || !todoAuthority) {
+    if (!item.todoStatus || !item.todoItemId || !todoAuthority || todoSyncState !== 'ready') {
       return
     }
 
@@ -255,7 +255,7 @@ export function ComposerStatusStack({ queue, requestGateway, sessionId }: Compos
       item,
       status: humanTodoTarget(item.todoStatus)
     })
-  }, [todoAuthority])
+  }, [todoAuthority, todoSyncState])
 
   const closeTodoConfirm = useCallback(() => {
     setTodoConfirm(null)
@@ -318,7 +318,7 @@ export function ComposerStatusStack({ queue, requestGateway, sessionId }: Compos
           : t.statusStack.syncingTask
 
   const todoRetry =
-    !todoAuthority && requestGateway && (todoSyncState === 'failed' || todoSyncState === 'session') ? (
+    requestGateway && (todoSyncState === 'failed' || todoSyncState === 'session') ? (
       <Button
         className="text-muted-foreground/75 hover:text-foreground/90"
         onClick={() => void refreshTodoSnapshot()}
@@ -399,7 +399,7 @@ export function ComposerStatusStack({ queue, requestGateway, sessionId }: Compos
               onOpen={() => openSubagent(item)}
               onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
               onTodoAction={requestTodoAction}
-              todoMutationEnabled={Boolean(requestGateway && todoAuthority)}
+              todoMutationEnabled={Boolean(requestGateway && todoAuthority && todoSyncState === 'ready')}
               todoMutationPending={Boolean(item.todoItemId && pendingTodoItemId === item.todoItemId)}
               todoMutationUnavailableLabel={todoMutationUnavailableLabel}
             />
@@ -433,6 +433,7 @@ export function ComposerStatusStack({ queue, requestGateway, sessionId }: Compos
   // rows up here you press instead of read, so nothing may ever stack on top
   // of them. Rendered outside the card (below) so the pills float.
   const visible = sections.length > 0
+  const hasTodoRows = groups.some(group => group.type === 'todo' && group.items.length > 0)
 
   // No height to publish: the stack is an in-flow child of the composer dock,
   // so the dock's own measurement (--composer-measured-height) already covers
@@ -468,7 +469,7 @@ export function ComposerStatusStack({ queue, requestGateway, sessionId }: Compos
               // surface below it — the original look.
               'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
               'transition-opacity duration-200 ease-out',
-              scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+              scrolledUp && !hasTodoRows ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
             )}
           >
             {sections.map(section => (

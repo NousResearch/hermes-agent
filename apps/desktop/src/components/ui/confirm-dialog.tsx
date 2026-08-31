@@ -38,8 +38,8 @@ interface ConfirmSecondaryAction {
   onClick: () => void
 }
 
-// Shared confirmation dialog: opens focused on Confirm, Enter confirms (from
-// anywhere in the dialog), Esc/Cancel/backdrop dismiss. Owns the pending → done
+// Shared confirmation dialog: opens focused on Confirm, whose native Enter/Space
+// activation confirms; Esc/Cancel/backdrop dismiss. Owns the pending → done
 // → close beat and inline error, so callers pass only an async onConfirm that
 // does the work.
 export function ConfirmDialog({
@@ -129,19 +129,10 @@ export function ConfirmDialog({
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent
         className="max-w-md"
-        onKeyDown={event => {
-          // Enter/Space confirm regardless of which button holds focus
-          // (preventDefault stops a focused Cancel from swallowing it).
-          if ((event.key === 'Enter' || event.key === ' ') && !busy) {
-            event.preventDefault()
-            void run()
-          }
-        }}
         onOpenAutoFocus={event => {
-          // Focus must land inside the dialog or the handler above never sees
-          // the key: it stays on whatever opened the dialog (a menu item, a
-          // sidebar row) and Enter re-triggers that instead. Radix's default
-          // would take the X — confirm is the button Enter maps to.
+          // Keep focus inside the dialog and on the primary action. Native
+          // button keyboard activation then confirms without hijacking keys
+          // intended for Cancel or a secondary action.
           event.preventDefault()
           confirmRef.current?.focus()
         }}

@@ -8,6 +8,7 @@ import type { TodoSnapshot } from '@/lib/todos'
 const probe = vi.hoisted(() => ({
   authority: { generation: 2, revision: 2 } as { generation: number; revision: number } | null,
   confirmError: null as Error | null,
+  scrolledUp: false,
   snapshot: {
     generation: 2,
     revision: 2,
@@ -16,7 +17,7 @@ const probe = vi.hoisted(() => ({
   } as TodoSnapshot | null
 }))
 
-vi.mock('@nanostores/react', () => ({ useStore: () => false }))
+vi.mock('@nanostores/react', () => ({ useStore: (store: unknown) => (store === 'scroll' ? probe.scrolledUp : false) }))
 vi.mock('@/app/chat/composer/focus', () => ({ blurComposerInput: vi.fn() }))
 vi.mock('@/app/routes', () => ({ AGENTS_ROUTE: '/agents' }))
 vi.mock('@/components/billing-banner', () => ({ BillingBanner: () => null }))
@@ -179,6 +180,7 @@ beforeAll(() => {
 beforeEach(() => {
   probe.authority = { generation: 2, revision: 2 }
   probe.confirmError = null
+  probe.scrolledUp = false
   probe.snapshot = {
     generation: 2,
     revision: 2,
@@ -316,6 +318,59 @@ describe('ComposerStatusStack confirmed todo mutation', () => {
 
     expect(request.mock.calls.filter(([method]) => method === 'todo.snapshot')).toHaveLength(2)
     expect(container.querySelector<HTMLButtonElement>('[aria-label="todo-row-action"]')?.disabled).toBe(false)
+    await act(async () => root.unmount())
+  })
+
+  it('fails cached mutation authority closed when snapshot refresh fails', async () => {
+    const request = vi.fn(async (_method: string) => probe.snapshot)
+    request.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(probe.snapshot)
+    const container = globalThis.document.createElement('div')
+    globalThis.document.body.append(container)
+    const root = createRoot(container)
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ComposerStatusStack queue={null} requestGateway={request as never} sessionId="s1" />
+        </MemoryRouter>
+      )
+    })
+    await act(async () => {})
+
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Could not sync task status"]')?.disabled).toBe(true)
+    expect(container.textContent).toContain('Retry task sync')
+
+    const retry = Array.from(container.querySelectorAll('button')).find(button =>
+      button.textContent?.includes('Retry task sync')
+    )
+
+    await act(async () => retry!.click())
+    await act(async () => {})
+
+    expect(request.mock.calls.filter(([method]) => method === 'todo.snapshot')).toHaveLength(2)
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="todo-row-action"]')?.disabled).toBe(false)
+    await act(async () => root.unmount())
+  })
+
+  it('keeps task controls contrast-safe while the thread is scrolled up', async () => {
+    probe.scrolledUp = true
+    const request = vi.fn(async () => probe.snapshot)
+    const container = globalThis.document.createElement('div')
+    globalThis.document.body.append(container)
+    const root = createRoot(container)
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ComposerStatusStack queue={null} requestGateway={request as never} sessionId="s1" />
+        </MemoryRouter>
+      )
+    })
+    await act(async () => {})
+
+    const action = container.querySelector<HTMLButtonElement>('[aria-label="todo-row-action"]')
+    expect(action).not.toBeNull()
+    expect(action?.closest('.opacity-30')).toBeNull()
     await act(async () => root.unmount())
   })
 })

@@ -12,7 +12,6 @@ from __future__ import annotations
 import atexit
 import json
 import logging
-import os
 import threading
 import time
 from contextlib import suppress
@@ -79,11 +78,22 @@ def _load_config() -> dict:
     Layering avoids a silent failure when the JSON file exists but lacks fields
     like ``api_key`` that the user set in ``.env``."""
     from hermes_constants import get_hermes_home
-    config = {"mode": os.environ.get("MEM0_MODE", "platform"), "api_key": get_secret("MEM0_API_KEY", ""), "host": os.environ.get("MEM0_HOST", ""), "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"), "oss": {}}
-    if os.environ.get("MEM0_USER_ID"):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
-        config["user_id"] = os.environ["MEM0_USER_ID"]
+    # Identity (user/agent id), host and mode are .env values like the key: read them through the
+    # profile scope too, or a secondary profile's memories land in the default profile's account.
+    config = {"mode": get_secret("MEM0_MODE", "") or "platform", "host": get_secret("MEM0_HOST", "") or "",
+              "agent_id": get_secret("MEM0_AGENT_ID", "") or "hermes", "oss": {}}
+    if user_id := get_secret("MEM0_USER_ID", ""):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
+        config["user_id"] = user_id
     file_cfg = _read_mem0_json(get_hermes_home() / "mem0.json")
     config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
+    # MEM0_API_KEY authenticates the Platform and self-hosted HTTP backends; pure OSS mode builds its
+    # backend from the local ``oss`` config and has no platform credential to resolve. Decide after
+    # mem0.json overrode the env fallback so a scope-less multiplex caller can load an OSS config
+    # without weakening fail-closed reads for credentialed modes.
+    if config.get("mode", "platform") == "oss":
+        config.setdefault("api_key", "")
+    elif not config.get("api_key"):
+        config["api_key"] = get_secret("MEM0_API_KEY", "")
     return config
 
 

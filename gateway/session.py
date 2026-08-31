@@ -1408,8 +1408,9 @@ class SessionStore:
         resolves the scope so a multiplexed profile's writes reach its own
         store.
         """
-        if self._db_pinned is not _DB_UNPINNED:
-            return self._db_pinned
+        pinned = getattr(self, "_db_pinned", _DB_UNPINNED)
+        if pinned is not _DB_UNPINNED:
+            return pinned
         return self._open_session_db_for_active_scope()
 
     @_db.setter
@@ -1433,13 +1434,19 @@ class SessionStore:
         A pinned handle still wins, so the suites that install a fake or
         disable the DB keep working unchanged.
         """
-        if self._db_pinned is not _DB_UNPINNED:
-            return self._db_pinned
+        pinned = getattr(self, "_db_pinned", _DB_UNPINNED)
+        if pinned is not _DB_UNPINNED:
+            return pinned
         home = getattr(self, "_routing_home", None)
-        if home is None:
-            return self._db
         try:
+            if home is None:
+                return self._db
             return self._open_session_db_for_active_scope(db_path=home / "state.db")
+        except AttributeError:
+            # Bare test instances (object.__new__) lack _routing_home AND the
+            # handle cache behind the _db property; behave like main's old
+            # getattr(self, "_db", None) contract and report no DB.
+            return getattr(self, "_db_pinned", None) if getattr(self, "_db_pinned", _DB_UNPINNED) is not _DB_UNPINNED else None
         except Exception:
             return None
 
@@ -1511,8 +1518,9 @@ class SessionStore:
         store from it makes every caller agree on one file per session
         without threading scope through each call site.
         """
-        if self._db_pinned is not _DB_UNPINNED:
-            return self._db_pinned
+        pinned = getattr(self, "_db_pinned", _DB_UNPINNED)
+        if pinned is not _DB_UNPINNED:
+            return pinned
         profile = self._named_profile_for_key(session_key)
         if profile is None:
             # No named owner — the ambient store is authoritative, exactly as

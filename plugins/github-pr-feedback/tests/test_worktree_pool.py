@@ -216,7 +216,7 @@ def test_reconcile_releases_a_slot_whose_task_is_done(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("status", ["blocked", "triage"])
-def test_reconcile_releases_a_slot_whose_task_is_not_worker_active(
+def test_reconcile_keeps_a_slot_for_a_retryable_task(
     tmp_path: Path, status: str
 ) -> None:
     repo = initialized_repository(tmp_path)
@@ -233,10 +233,11 @@ def test_reconcile_releases_a_slot_whose_task_is_not_worker_active(
     released = pool.reconcile_leases(
         FakeKanban({("repairs", "task-1"): status})
     )
-    assert released == 1
+    assert released == 0
 
-    prepared_b = pool.prepare_receipt_worktree(repo, receipt(sha_b, pr_number=2))
-    assert prepared_b.path == prepared_a.path
+    with pytest.raises(WorktreePoolExhausted):
+        pool.prepare_receipt_worktree(repo, receipt(sha_b, pr_number=2))
+    assert prepared_a.path.is_dir()
     ledger.close()
 
 

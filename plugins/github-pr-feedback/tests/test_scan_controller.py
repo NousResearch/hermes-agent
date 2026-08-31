@@ -1567,6 +1567,9 @@ def test_scan_reconciles_existing_failed_exact_head_receipt_to_typed_fixer(
     assert len(kanban.tasks) == 1
     assert kanban.tasks[0].assignee == "ci-static-fixer"
     assert kanban.tasks[0].evidence["ci_receipt_id"] == "f" * 64
+    assert "background terminal process" in kanban.tasks[0].instructions
+    assert "process wait" in kanban.tasks[0].instructions
+    assert "in the foreground" not in kanban.tasks[0].instructions
     ledger.close()
 
 

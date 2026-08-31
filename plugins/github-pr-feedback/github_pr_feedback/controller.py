@@ -501,13 +501,12 @@ class WorktreePoolExhausted(RuntimeError):
 # CI audits run up to 8 hours), with margin. A slot must never look reclaimable
 # while its dispatched agent task could still legitimately be running.
 DEFAULT_WORKTREE_POOL_LEASE = timedelta(hours=10)
-# A blocked or triage card has no worker that can still use its checkout.  Keep
-# those leases reclaimable as well as the ordinary terminal states; otherwise
-# a failed card strands a pool slot for the full lease timeout and can make
-# the next scan report the pool exhausted even when no worker is running.
-_WORKTREE_POOL_TERMINAL_TASK_STATUSES = frozenset(
-    {"done", "archived", "blocked", "triage"}
-)
+# Only genuinely terminal cards release their checkout. Blocked and triage
+# cards have no worker *right now*, but both are retryable in Kanban. Reusing
+# their slot lets a later retry operate on whichever unrelated PR most recently
+# occupied that path, violating the exact-head invariant. Capacity pressure is
+# therefore reported honestly until the operator completes/archives the card.
+_WORKTREE_POOL_TERMINAL_TASK_STATUSES = frozenset({"done", "archived"})
 
 
 class PooledLocalGitRepository:

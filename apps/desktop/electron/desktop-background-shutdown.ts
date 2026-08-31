@@ -44,9 +44,16 @@ function runStopCommand(
     let timer: ReturnType<typeof setTimeout> | undefined
 
     const finish = (ok: boolean) => {
-      if (settled) return
+      if (settled) {
+        return
+      }
+
       settled = true
-      if (timer) clearTimeout(timer)
+
+      if (timer) {
+        clearTimeout(timer)
+      }
+
       resolve(ok)
     }
 
@@ -66,6 +73,7 @@ function runStopCommand(
         } catch {
           // The helper may have exited between the timeout and kill.
         }
+
         finish(false)
       }, timeoutMs)
     }
@@ -131,11 +139,16 @@ export function stopDesktopBackgroundServices({
   }
 
   const [gateway, ...afterDrain] = commands
+
   return runStopCommand(spawnFn, gateway, 0, onError).then(async gatewayStopped => {
-    if (!gatewayStopped) return false
+    if (!gatewayStopped) {
+      return false
+    }
+
     const results = await Promise.all(
       afterDrain.map(command => runStopCommand(spawnFn, command, timeoutMs, onError))
     )
+
     return results.every(Boolean)
   })
 }

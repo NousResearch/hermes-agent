@@ -15,7 +15,7 @@ Text-to-image generation, inpainting, and img2img.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/stable-diffusion` |
-| Path | `optional-skills/mlops/stable-diffusion` |
+| Path | `optional-skills/mlops\stable-diffusion` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -531,8 +531,8 @@ image = pipe(prompt, num_inference_steps=20).images[0]
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/stable-diffusion/references/advanced-usage.md)** - Custom pipelines, fine-tuning, deployment
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/stable-diffusion/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\stable-diffusion/references/advanced-usage.md)** - Custom pipelines, fine-tuning, deployment
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\stable-diffusion/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

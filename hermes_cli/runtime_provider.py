@@ -707,6 +707,30 @@ def _try_resolve_from_custom_pool(
         return None
 
 
+def _filter_capabilities(value: Any) -> Dict[str, bool]:
+    """Return the string-keyed boolean capabilities accepted at runtime."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: enabled
+        for key, enabled in value.items()
+        if isinstance(key, str) and isinstance(enabled, bool)
+    }
+
+
+def _lift_model_capabilities(
+    entry: Dict[str, Any], model: Optional[str], result: Dict[str, Any]
+) -> None:
+    """Copy explicit boolean per-model capabilities into the runtime."""
+    capabilities = _filter_capabilities(entry.get("capabilities"))
+    models = entry.get("models")
+    model_config = models.get(model) if isinstance(models, dict) and model else None
+    if isinstance(model_config, dict):
+        capabilities.update(_filter_capabilities(model_config))
+    if capabilities:
+        result["capabilities"] = capabilities
+
+
 def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
     """Propagate a per-provider output cap onto the resolved runtime dict.
 
@@ -804,7 +828,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
-                    result = {
+                    result: Dict[str, Any] = {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
@@ -832,6 +856,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     if api_mode:
                         result["api_mode"] = api_mode
                     _lift_max_output_tokens(entry, result)
+                    capabilities = _filter_capabilities(entry.get("capabilities"))
+                    if capabilities:
+                        result["capabilities"] = capabilities
                     return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -879,6 +906,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         if model_name:
             result["model"] = model_name
         _lift_max_output_tokens(entry, result)
+        capabilities = _filter_capabilities(entry.get("capabilities"))
+        if capabilities:
+            result["capabilities"] = capabilities
         return result
 
     return None
@@ -1239,6 +1269,7 @@ def _resolve_named_custom_runtime(
         model_name = target_model or custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        _lift_model_capabilities(custom_provider, model_name, pool_result)
         if isinstance(custom_provider.get("max_output_tokens"), int):
             pool_result["max_output_tokens"] = custom_provider["max_output_tokens"]
         request_overrides = _custom_provider_request_overrides(custom_provider)
@@ -1294,6 +1325,7 @@ def _resolve_named_custom_runtime(
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+        "requested_provider": requested_provider,
     }
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
@@ -1305,6 +1337,9 @@ def _resolve_named_custom_runtime(
         result["model"] = target_model
     elif custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    _lift_model_capabilities(
+        custom_provider, result.get("model"), result
+    )
     if isinstance(custom_provider.get("max_output_tokens"), int):
         result["max_output_tokens"] = custom_provider["max_output_tokens"]
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).

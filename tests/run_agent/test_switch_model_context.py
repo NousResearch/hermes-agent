@@ -133,6 +133,37 @@ def test_switch_model_without_config_context_length():
         assert call_kwargs.get("config_context_length") is None
 
 
+def test_switch_model_omitted_base_url_preserves_direct_openai_capability():
+    """A same-provider switch resolves capabilities from the retained URL."""
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent.provider = "openai"
+    agent.model = "gpt-5.6"
+    agent.base_url = "https://api.openai.com/v1"
+    agent.runtime_capabilities = {"native_compaction": True}
+    agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+        agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
+
+    assert agent.base_url == "https://api.openai.com/v1"
+    assert agent.runtime_capabilities == {"native_compaction": True}
+
+
+def test_cross_provider_switch_to_default_openai_preserves_native_capability():
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent.provider = "openrouter"
+    agent.model = "gpt-5.5"
+    agent.base_url = "https://openrouter.ai/api/v1"
+    agent.runtime_capabilities = {"native_compaction": False}
+    agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=128_000):
+        agent.switch_model("gpt-5.6", "openai", api_key="sk-new")
+
+    assert agent.base_url == "https://api.openai.com/v1"
+    assert agent.runtime_capabilities == {"native_compaction": True}
+
+
 def test_direct_start_model_override_does_not_inherit_profile_context_length():
     """A CLI ``--model`` startup override must not inherit another model's window."""
     cfg = {
@@ -284,3 +315,30 @@ def test_lmstudio_switch_uses_destination_context_and_verified_runtime(monkeypat
     assert call_kwargs.get("config_context_length") == 100_000
     assert agent._config_context_length == 120_000
     assert agent.context_compressor.context_length == 100_000
+
+
+def test_later_lmstudio_failure_restores_runtime_capabilities(monkeypatch):
+    agent = _make_agent_with_compressor(config_context_length=32_768)
+    agent.runtime_capabilities = {"native_compaction": True}
+    original_client = agent.client
+
+    monkeypatch.setattr(
+        AIAgent,
+        "_ensure_lmstudio_runtime_loaded",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("simulated LM Studio failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated LM Studio failure"):
+        agent.switch_model(
+            "new-model",
+            "openrouter",
+            api_key="sk-new",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    assert agent.model == "primary-model"
+    assert agent.provider == "openrouter"
+    assert agent.client is original_client
+    assert agent.runtime_capabilities == {"native_compaction": True}

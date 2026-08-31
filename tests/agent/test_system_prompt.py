@@ -567,6 +567,61 @@ class TestSessionStartLike:
         assert start.strftime("%Y-%m-%d") == "2026-01-01"
         assert start.tzinfo is not None
 
+    def test_prefers_lineage_root_over_rotated_segment_id(self):
+        """Compaction rotates session ids; each rotation embeds its own
+        mint time. The birth date must come from the lineage ROOT so a
+        Bot Mode forever-chat keeps knowing when it was first born
+        (#98426)."""
+        from agent.system_prompt import _session_start_like
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                assert sid == "20260615_090000_seg9"
+                return "20260101_120000_root"
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260615_090000_seg9",
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+
+    def test_lineage_walk_failure_falls_open_to_segment_id(self):
+        from agent.system_prompt import _session_start_like
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                raise RuntimeError("db locked")
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260615_090000_seg9",
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-06-15"
+
+    def test_nontimestamp_root_falls_through_to_segment_id(self):
+        """A root id without an embedded stamp (legacy/imported lineage)
+        must not break the ladder — rung 1 still applies."""
+        from agent.system_prompt import _session_start_like
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                return "imported-legacy-root"
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id="20260615_090000_seg9",
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+        start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-06-15"
+
     def test_falls_back_to_session_start(self):
         from agent.system_prompt import _session_start_like
 

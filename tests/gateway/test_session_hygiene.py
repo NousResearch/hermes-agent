@@ -149,6 +149,22 @@ class TestSessionHygieneThresholds:
         assert approx_tokens < huge_model_threshold
 
 
+def test_hygiene_total_ceiling_warning_reports_elapsed_and_progress():
+    from gateway.run import _hygiene_compression_timeout_message
+
+    warning = _hygiene_compression_timeout_message(
+        total_exhausted=True,
+        elapsed=600.4,
+        idle_timeout=30.0,
+        progress_observed=True,
+    )
+
+    assert "total ceiling after 600.4s" in warning
+    assert "summary output was observed" in warning
+    assert "30.0s" not in warning
+    assert "no output" not in warning
+
+
 class TestSessionHygieneWarnThreshold:
     """Test the post-compression warning threshold (95% of context)."""
 
@@ -490,6 +506,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
 
     worker_started = threading.Event()
     release_worker = threading.Event()
+    lease_released = threading.Event()
     cleanup_done = threading.Event()
     fake_db = MagicMock()
     # The DB-backed cooldown check calls this before compressing; a bare
@@ -515,8 +532,10 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         def _compress_context(
             self, messages, *_args, commit_fence=None, **_kwargs
         ):
+            if commit_fence is not None:
+                commit_fence.register_cancelled_lock_release(lease_released.set)
             worker_started.set()
-            assert release_worker.wait(timeout=2)
+            assert release_worker.wait(timeout=10)
             if commit_fence is not None and not commit_fence.begin_commit():
                 return (messages, None)
             try:
@@ -600,16 +619,9 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         message_id="1",
     )
 
-    started = time.monotonic()
     result = await runner._handle_message(event)
-    elapsed = time.monotonic() - started
 
     assert result == "ok"
-    # Loose wall-clock bound per flake policy: this asserts the handler did
-    # NOT block on the hygiene-compression timeout path (which would take
-    # multiple seconds), not a precise latency. 0.15s missed by ~1-8ms on
-    # busy CI shards twice on 2026-07-23.
-    assert elapsed < 2.0
     assert worker_started.is_set()
     assert runner._run_agent.await_count == 1
     # Cooldown must be persisted to the state DB (survives restart, #74136),
@@ -621,6 +633,10 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     timeout_warnings = [s for s in adapter.sent if "Context compression timed out" in s["content"]]
     assert len(timeout_warnings) == 1
     fake_db.archive_and_compact.assert_not_called()
+    assert lease_released.is_set()
+    # Event/state assertions prove the host returned before the detached
+    # worker's event-gated wait completed without a scheduler-sensitive clock
+    # bound: cleanup runs only when that worker actually exits.
     SlowCompressAgent.last_instance.close.assert_not_called()
 
     release_worker.set()

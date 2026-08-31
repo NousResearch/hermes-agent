@@ -288,6 +288,32 @@ def hygiene_compaction_recovered(
     )
 
 
+def _hygiene_compression_timeout_message(
+    *,
+    total_exhausted: bool,
+    elapsed: float,
+    idle_timeout: float,
+    progress_observed: bool,
+) -> str:
+    """Describe the host timeout that actually ended hygiene compression."""
+    if total_exhausted:
+        progress = (
+            " after summary output was observed" if progress_observed else ""
+        )
+        return (
+            "⚠️ Context compression reached its total ceiling after "
+            f"{elapsed:.1f}s{progress}. No messages were dropped — continuing "
+            "without compression. Run /compress to retry or /reset for a clean "
+            "session."
+        )
+    return (
+        f"⚠️ Context compression timed out after {idle_timeout:.1f}s with no "
+        "output from the summary model. No messages were dropped — continuing "
+        "without compression. Run /compress to retry, /reset for a clean "
+        "session, or check your auxiliary.compression model configuration."
+    )
+
+
 def _record_hygiene_cooldown(
     gateway,
     session_id: str,
@@ -2960,6 +2986,17 @@ def _resolve_runtime_agent_kwargs() -> dict:
         if isinstance(_runtime_mot, int) and _runtime_mot > 0:
             max_tokens = _runtime_mot
 
+    capabilities = runtime.get("capabilities")
+    capabilities = (
+        {
+            key: value
+            for key, value in capabilities.items()
+            if isinstance(key, str) and isinstance(value, bool)
+        }
+        if isinstance(capabilities, dict)
+        else {}
+    )
+
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -2969,7 +3006,14 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_tokens": max_tokens,
+        # Per-provider request_overrides (e.g. a custom_providers ``extra_body``
+        # carrying ``chat_template_kwargs``) resolved by resolve_runtime_provider().
+        # Must flow through to the per-turn route or the provider's configured
+        # request body never reaches the model on the gateway path.
+        "request_overrides": runtime.get("request_overrides"),
+        "capabilities": capabilities,
     }
 
 
@@ -3109,7 +3153,23 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
+        "capabilities": dict(runtime.get("capabilities") or {}),
+        "max_tokens": runtime.get("max_output_tokens"),
     }
+
+
+def _deep_merge_request_overrides(base: Optional[dict], override: Optional[dict]) -> dict:
+    """Merge request_overrides dicts, deep-merging nested dictionaries."""
+    from hermes_cli.config import _deep_merge
+
+    base_dict = dict(base or {})
+    override_dict = dict(override or {})
+    if not base_dict:
+        return override_dict
+    if not override_dict:
+        return base_dict
+    return _deep_merge(base_dict, override_dict)
 
 
 def _credential_pool_for_provider(provider: Optional[str]):
@@ -3167,7 +3227,9 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "request_overrides": dict(runtime.get("request_overrides") or {}),
                     "model": entry.get("model"),
+                    "request_overrides": runtime.get("request_overrides"),
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -5982,7 +6044,23 @@ class TurnRunner:
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config = reasoning_config
         agent.service_tier = self._runner._service_tier
-        agent.request_overrides = turn_route.get("request_overrides") or {}
+        # Merge, never overwrite: init-time request overrides (e.g. a custom
+        # provider's extra_body merged at agent construction) must survive
+        # every reused-agent turn.  Drop only the PREVIOUS turn's routing
+        # overrides (fast-mode service_tier/speed) before layering this
+        # turn's route overrides on top, so stale per-turn values never
+        # linger while construction-time values persist.
+        request_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+        previous_turn_overrides = dict(
+            getattr(agent, "_gateway_turn_request_overrides", {}) or {}
+        )
+        for key, value in previous_turn_overrides.items():
+            if request_overrides.get(key) == value:
+                request_overrides.pop(key, None)
+        turn_request_overrides = dict(turn_route.get("request_overrides") or {})
+        request_overrides.update(turn_request_overrides)
+        agent.request_overrides = request_overrides
+        agent._gateway_turn_request_overrides = turn_request_overrides
         # Must-deliver notes for THIS turn ride the current user message
         # (api_content sidecar), never the system prompt: staged by
         # _handle_message_with_agent (auto-reset note, first-contact
@@ -8305,11 +8383,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             override_model = override.get("model", model)
             override_runtime = {
                 "provider": override.get("provider"),
+                "requested_provider": override.get("requested_provider"),
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),
+                "request_overrides": override.get("request_overrides"),
+                "capabilities": dict(override.get("capabilities") or {}),
             }
             if override_runtime.get("api_key"):
                 if override_runtime.get("credential_pool") is None:
@@ -8445,6 +8526,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled and the model supports Priority Processing / Anthropic fast
         mode, attach `request_overrides` so the API call is marked
         accordingly.
+
+        Per-provider ``request_overrides`` resolved by
+        ``resolve_runtime_provider`` (e.g. a ``custom_providers`` ``extra_body``
+        carrying ``chat_template_kwargs``) are preserved here and merged *under*
+        the fast-mode overrides, so a provider's configured request body still
+        reaches the model on the gateway turn path.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -8458,7 +8545,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
+            "capabilities": dict(runtime_kwargs.get("capabilities") or {}),
         }
+        base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
         route = {
             "model": model,
             "runtime": runtime,
@@ -8473,16 +8562,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
+        # Provider-level request_overrides (e.g. a custom_providers extra_body)
+        # resolved upstream by resolve_runtime_provider().  These were being
+        # dropped by the runtime whitelist above, so a custom provider's
+        # configured extra_body (chat_template_kwargs, etc.) never reached the
+        # model on the gateway path -- only /fast service-tier overrides did.
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
+            route["request_overrides"] = base_request_overrides
             return route
 
         try:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides or {}
+        # Fast-mode overrides (service_tier / speed) are top-level keys and do
+        # not collide with extra_body; deep-merge them over the provider overrides.
+        route["request_overrides"] = _deep_merge_request_overrides(
+            base_request_overrides,
+            overrides or {},
+        )
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
@@ -18401,6 +18500,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 return "Could not start /learn — please try again."
 
+        if canonical == "plan":
+            # /plan: rewrite the turn to the plan-mode prompt and fall
+            # through to normal agent processing (same fall-through as /learn
+            # so role alternation is preserved). The live agent inspects the
+            # workspace with read-only tools and saves the markdown plan
+            # under .hermes/plans/ via write_file. No engine, works on any
+            # backend.
+            from agent.plan_prompt import build_plan_prompt
+
+            _plan_task = event.get_command_args().strip()
+            _ack = (
+                f"Planning: {_plan_task[:80]}{'…' if len(_plan_task) > 80 else ''}"
+                if _plan_task
+                else "Planning from this conversation's context…"
+            )
+            try:
+                adapter = self._adapter_for_source(source)
+                if adapter:
+                    _ack_meta = self._thread_metadata_for_source(source)
+                    await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+            except Exception:
+                logger.debug("plan ack send failed", exc_info=True)
+            try:
+                event.text = build_plan_prompt(_plan_task)
+                # fall through to agent processing
+            except Exception:
+                return "Could not start /plan — please try again."
+
         if canonical == "init":
             # /init: rewrite the turn to a guidance-laden prompt and fall
             # through to normal agent processing (same fall-through as /learn
@@ -20480,7 +20607,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
                                     loop = asyncio.get_running_loop()
-                                    _hyg_commit_fence = CompressionCommitFence()
+                                    _hyg_commit_fence = CompressionCommitFence(
+                                        total_ceiling_seconds=_hyg_total_ceiling_seconds
+                                    )
                                     _hyg_future = loop.run_in_executor(
                                         None,
                                         lambda: _hyg_agent._compress_context(
@@ -20508,10 +20637,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             # from the start of this wait slice —
                                             # otherwise silence can approach 2x
                                             # the configured timeout.
-                                            _slice = max(
-                                                _hyg_timeout_seconds
-                                                - _hyg_commit_fence.seconds_since_progress(),
-                                                0.005,
+                                            _hyg_waited = (
+                                                time.monotonic() - _hyg_wait_started
+                                            )
+                                            _slice = min(
+                                                max(
+                                                    _hyg_timeout_seconds
+                                                    - _hyg_commit_fence.seconds_since_progress(),
+                                                    0.005,
+                                                ),
+                                                max(
+                                                    _hyg_total_ceiling_seconds
+                                                    - _hyg_waited,
+                                                    0.005,
+                                                ),
                                             )
                                             # Bounded turn-hold (#TKT-0029): cap
                                             # this slice at the remaining
@@ -20685,6 +20824,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 )
                                             raise
                                     except asyncio.TimeoutError:
+                                        _hyg_waited = time.monotonic() - _hyg_wait_started
+                                        _hyg_total_exhausted = (
+                                            _hyg_waited >= _hyg_total_ceiling_seconds
+                                            or _hyg_commit_fence.deadline_exceeded
+                                        )
+                                        if _hyg_total_exhausted:
+                                            # The worker cooperatively checks this
+                                            # deadline between digest calls. Keep
+                                            # its lease until it exits so an
+                                            # unchanged session cannot overlap a
+                                            # retry. Inactivity timeouts retain the
+                                            # established release behavior for a
+                                            # provider call that may never return.
+                                            _hyg_commit_fence.retain_compression_lock_until_worker_done()
                                         _cancelled = None
                                         while _cancelled is None:
                                             # #76354 F1: a hung commit retains the
@@ -20712,12 +20865,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             # successful compaction as a timeout.
                                             _compressed, _ = await _hyg_future
                                         else:
-                                            # #76354 F4: release the timed-out
-                                            # worker's durable lease via the
-                                            # holder-qualified hook so the next
-                                            # compressor can acquire the lock
-                                            # immediately (no ABA against a new
-                                            # holder — release is holder-scoped).
+                                            # Release an inactivity-timed-out
+                                            # worker's holder-qualified lease
+                                            # promptly. Total-ceiling attempts
+                                            # retained it above, so this is a
+                                            # no-op until worker cleanup there.
                                             _hyg_commit_fence.release_cancelled_compression_lock()
                                             self._defer_agent_cleanup_until_future_done(
                                                 _hyg_future,
@@ -20732,12 +20884,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                     session_key,
                                                     _hyg_failure_cooldown_seconds,
                                                 )
+                                                _timeout_reason = (
+                                                    "session hygiene compression total "
+                                                    "ceiling exhausted"
+                                                    if _hyg_total_exhausted
+                                                    else "session hygiene compression "
+                                                    "timed out with no output from the "
+                                                    "summary model"
+                                                )
                                                 _record_hygiene_cooldown(
                                                     self, session_entry.session_id,
                                                     _hyg_cooldown,
-                                                    "session hygiene compression "
-                                                    "timed out with no output from "
-                                                    "the summary model",
+                                                    _timeout_reason,
                                                 )
                                             from agent.session_activity import (
                                                 ActivityProvenance,
@@ -20749,24 +20907,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 "hygiene compression timeout "
                                                 "activity stamp failed",
                                             )
-                                            logger.warning(
-                                                "Session hygiene compression for session %s "
-                                                "made no progress for %.1fs "
-                                                "(total wait %.1fs, ceiling %.1fs); "
-                                                "continuing without compression",
-                                                session_entry.session_id,
-                                                _hyg_commit_fence.seconds_since_progress(),
-                                                time.monotonic() - _hyg_wait_started,
-                                                _hyg_total_ceiling_seconds,
+                                            _hyg_elapsed = (
+                                                time.monotonic() - _hyg_wait_started
                                             )
+                                            if _hyg_total_exhausted:
+                                                logger.warning(
+                                                    "Session hygiene compression for session %s "
+                                                    "reached its total ceiling after %.1fs "
+                                                    "(progress observed=%s); continuing without "
+                                                    "compression",
+                                                    session_entry.session_id,
+                                                    _hyg_elapsed,
+                                                    _hyg_commit_fence.progress_observed,
+                                                )
+                                            else:
+                                                logger.warning(
+                                                    "Session hygiene compression for session %s "
+                                                    "made no progress for %.1fs (total wait "
+                                                    "%.1fs, ceiling %.1fs); continuing without "
+                                                    "compression",
+                                                    session_entry.session_id,
+                                                    _hyg_commit_fence.seconds_since_progress(),
+                                                    _hyg_elapsed,
+                                                    _hyg_total_ceiling_seconds,
+                                                )
                                             _timeout_msg = (
-                                                "⚠️ Context compression timed out "
-                                                f"after {_hyg_timeout_seconds:.1f}s "
-                                                "with no output from the summary model. "
-                                                "No messages were dropped — continuing without "
-                                                "compression. Run /compress to retry, /reset for "
-                                                "a clean session, or check your "
-                                                "auxiliary.compression model configuration."
+                                                _hygiene_compression_timeout_message(
+                                                    total_exhausted=_hyg_total_exhausted,
+                                                    elapsed=_hyg_elapsed,
+                                                    idle_timeout=_hyg_timeout_seconds,
+                                                    progress_observed=(
+                                                        _hyg_commit_fence.progress_observed
+                                                    ),
+                                                )
                                             )
                                             try:
                                                 _adapter = self._adapter_for_source(source)
@@ -27186,6 +27359,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "threshold_tokens"),
         ("compression", "codex_gpt55_autoraise"),
         ("compression", "codex_app_server_auto"),
+        ("compression", "codex_responses_native"),
+        ("compression", "codex_responses_compact_threshold"),
+        ("compression", "in_place"),
+        ("compression", "checkpoint_required"),
+        ("compression", "micro_compact"),
+        ("compression", "micro_compact_every_n_turns"),
+        ("compression", "micro_compact_defrag_threshold_tokens"),
         ("compression", "target_ratio"),
         ("compression", "tail_mode"),
         ("compression", "protect_last_n"),
@@ -27344,6 +27524,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime.get("provider", ""),
                 runtime.get("requested_provider", ""),
                 runtime.get("api_mode", ""),
+                sorted((runtime.get("capabilities") or {}).items()),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
@@ -27409,6 +27590,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
+                override["request_overrides"] = dict(
+                    runtime.get("request_overrides") or {}
+                )
+                override["requested_provider"] = runtime.get("requested_provider")
+                override["capabilities"] = dict(runtime.get("capabilities") or {})
+                override["max_tokens"] = runtime.get("max_tokens")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:
@@ -27439,10 +27626,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+        for key in (
+            "provider",
+            "requested_provider",
+            "api_key",
+            "base_url",
+            "api_mode",
+            "credential_pool",
+            "capabilities",
+            "max_tokens",
+        ):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        # request_overrides reflects the switched-to provider; apply whenever
+        # the override recorded it (even as None) so switching to a provider
+        # without configured overrides clears a stale value left by the
+        # default provider's runtime resolution.
+        if "request_overrides" in override:
+            override_request_overrides = override.get("request_overrides")
+            if isinstance(override_request_overrides, dict) and override_request_overrides:
+                runtime_kwargs["request_overrides"] = dict(override_request_overrides)
+            else:
+                runtime_kwargs["request_overrides"] = override_request_overrides
         if (
             runtime_kwargs.get("api_key")
             and runtime_kwargs.get("credential_pool") is None

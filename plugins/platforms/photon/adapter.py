@@ -1292,6 +1292,15 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         ctype = content.get("type")
+        if ctype in {"read", "read_receipt"}:
+            # Read receipts are presence signals, not a user turn. The sidecar
+            # only forwards receipts for messages we sent, so logging the
+            # target is enough for observability without waking the agent.
+            logger.debug(
+                "[photon] outbound message read: %s",
+                content.get("targetMessageId") or "unknown",
+            )
+            return
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
             # addressed to the bot (feishu precedent: synthetic text event).

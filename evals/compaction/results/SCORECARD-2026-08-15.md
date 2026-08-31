@@ -7,6 +7,11 @@ archived region. Lean build includes: 25K clamped tail, tail tool demotion,
 chunked digests (noise-filtered, pristine tool contents), mechanical anchor
 index, verbatim user messages, recovery footer, upgraded summarizer prompt.
 
+> **Historical note (2026-08-30):** the "chunked digests" arm described here
+> was later replaced — the detailed session log is now produced by the SAME
+> single summary request (lean compaction makes exactly one auxiliary LLM
+> call per attempt; no per-chunk digest calls). See #96603.
+
 ## Results (recall % @ retained tokens)
 
 policy            sweep          gui            prmerge        acp            AVG

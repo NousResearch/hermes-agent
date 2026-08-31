@@ -1438,6 +1438,16 @@ export const zh: Translations = {
         selectedMessage: backend => `终端命令现在通过 ${backend} 运行。将应用于新会话。`,
         failedSelect: backend => `选择 ${backend} 失败`,
         needsSetupHint: '现在即可选择此后端——但在完成设置前命令将会失败。'
+      },
+      browserRealProfile: {
+        label: '使用我的真实浏览器配置文件',
+        description:
+          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览。绝不会直接打开你的真实配置文件。将应用于新会话。',
+        enabledTitle: '真实配置文件浏览：已开启',
+        enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
+        disabledTitle: '真实配置文件浏览：已关闭',
+        disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
+        failedSave: '无法保存真实配置文件设置'
       }
     }
   },

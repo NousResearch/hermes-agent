@@ -1563,6 +1563,37 @@ def _run_review_in_thread(
             # deny message below names that substitute so one denial
             # redirects the model instead of a storm.
             review_whitelist |= {"read_file", "search_files"}
+            # Profile-configured opt-in tools (#44672, salvage #82146 by
+            # @BrinShadewater): ``auxiliary.background_review.extra_tools``
+            # admits named parent tools to the review whitelist — e.g. a
+            # human-gated proposal tool or a memory-provider write surface.
+            # Default-empty; a listed tool must already exist in the parent's
+            # inherited schema (the whitelist can only admit, never advertise),
+            # and everything unlisted stays denied. Read from task_cfg (the
+            # auxiliary.background_review block already loaded for this spawn)
+            # so no extra config I/O happens per review.
+            configured_extra_tools: set = set()
+            try:
+                _extra_raw = _background_review_task_config(task_cfg).get(
+                    "extra_tools", []
+                )
+                if isinstance(_extra_raw, list):
+                    configured_extra_tools = {
+                        name.strip()
+                        for name in _extra_raw
+                        if isinstance(name, str) and name.strip()
+                    }
+                    review_whitelist |= configured_extra_tools
+            except Exception:
+                logger.debug(
+                    "background_review extra_tools parse failed", exc_info=True
+                )
+            _extra_deny_note = (
+                " Configured extra tools also allowed: "
+                + ", ".join(sorted(configured_extra_tools)) + "."
+                if configured_extra_tools
+                else ""
+            )
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
@@ -1570,7 +1601,8 @@ def _run_review_in_thread(
                     "{tool_name}. Allowed here: skill_view/skills_list/"
                     "read_file/search_files to read, "
                     "skill_manage(action='patch'|...) to change skills, and "
-                    "memory for notes. Do not retry {tool_name}."
+                    "memory for notes." + _extra_deny_note
+                    + " Do not retry {tool_name}."
                 ),
             )
             try:
@@ -1598,6 +1630,14 @@ def _run_review_in_thread(
                             + "\n\nYou can only call memory and skill "
                             "management tools. Other tools will be denied "
                             "at runtime — do not attempt them."
+                            + (
+                                " Exception — these configured tools are "
+                                "also allowed: "
+                                + ", ".join(sorted(configured_extra_tools))
+                                + "."
+                                if configured_extra_tools
+                                else ""
+                            )
                         ),
                         conversation_history=_review_history,
                     )

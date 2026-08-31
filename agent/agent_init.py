@@ -613,6 +613,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
+    capabilities: Optional[Dict[str, bool]] = None,
 ):
     """
     Initialize the AI Agent.
@@ -712,6 +713,10 @@ def init_agent(
         if isinstance(requested_provider, str) and requested_provider.strip()
         else agent.provider
     )
+    agent.capabilities = {
+        key: value for key, value in (capabilities or {}).items()
+        if isinstance(key, str) and isinstance(value, bool)
+    }
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -2337,21 +2342,22 @@ def init_agent(
     codex_responses_native_compaction = _is_truthy(
         _compression_cfg.get("codex_responses_native", False)
     )
-    _native_threshold_raw = _compression_cfg.get(
-        "codex_responses_compact_threshold", 200_000
-    )
-    try:
-        if isinstance(_native_threshold_raw, bool):
-            raise ValueError
-        codex_responses_compact_threshold = int(_native_threshold_raw)
-        if codex_responses_compact_threshold <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        _ra().logger.warning(
-            "Invalid compression.codex_responses_compact_threshold=%r; using 200000.",
-            _native_threshold_raw,
-        )
-        codex_responses_compact_threshold = 200_000
+    _native_threshold_raw = _compression_cfg.get("codex_responses_compact_threshold")
+    codex_responses_compact_threshold = None
+    if _native_threshold_raw is not None:
+        try:
+            if isinstance(_native_threshold_raw, (bool, float)):
+                raise ValueError
+            codex_responses_compact_threshold = int(_native_threshold_raw)
+            if codex_responses_compact_threshold <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            _ra().logger.warning(
+                "Invalid compression.codex_responses_compact_threshold=%r; "
+                "using the automatic threshold derived from local compression.",
+                _native_threshold_raw,
+            )
+            codex_responses_compact_threshold = None
     # Opt-in idle compaction: compact a session up front when it resumes after
     # this many seconds of inactivity (0 = disabled). Time-based, so it
     # complements the size-based threshold above. Consumed by build_turn_context().
@@ -2829,6 +2835,13 @@ def init_agent(
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.codex_responses_native_compaction = codex_responses_native_compaction
     agent.codex_responses_compact_threshold = codex_responses_compact_threshold
+    from agent.native_compaction import resolve_native_compaction_capabilities
+    agent.runtime_capabilities = resolve_native_compaction_capabilities(
+        model=agent.model,
+        base_url=agent.base_url,
+        provider=agent.provider,
+        is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
+    )
     agent.max_compression_attempts = compression_max_attempts
     agent.compression_idle_compact_after_seconds = (
         compression_idle_compact_after_seconds
@@ -3105,6 +3118,7 @@ def init_agent(
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

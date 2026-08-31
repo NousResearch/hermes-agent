@@ -691,7 +691,7 @@ class TestSkillDirectoryHeader:
         assert f"[Skill directory: {skill_dir}]" in msg
         assert "Resolve any relative paths" in msg
 
-    def test_supporting_files_shown_with_absolute_paths(self, tmp_path):
+    def test_supporting_files_listed_relative_only(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "scripted-skill")
             (skill_dir / "scripts").mkdir()
@@ -700,11 +700,17 @@ class TestSkillDirectoryHeader:
             msg = build_skill_invocation_message("/scripted-skill")
 
         assert msg is not None
-        # The supporting-files block must emit both the relative form (so the
-        # agent can call skill_view on it) and the absolute form (so it can
-        # run the script directly via terminal).
-        assert "scripts/run.js" in msg
-        assert str(skill_dir / "scripts" / "run.js") in msg
+        # Each supporting file is listed ONCE, as a relative path. Repeating
+        # the absolute skill-dir prefix per line cost ~9K tokens on skills
+        # with hundreds of references; the absolute base is already stated
+        # once in the [Skill directory: ...] header and the footer example.
+        assert "- scripts/run.js" in msg
+        assert f"- scripts/run.js  ->  " not in msg
+        assert str(skill_dir / "scripts" / "run.js") not in msg.split(
+            "[This skill has supporting files"
+        )[1].split("\nLoad any of these")[0]
+        # Absolute resolution stays available via the header + footer example.
+        assert f"[Skill directory: {skill_dir}]" in msg
         assert f"node {skill_dir}/scripts/foo.js" in msg
 
 

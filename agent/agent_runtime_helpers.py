@@ -1486,6 +1486,7 @@ def try_recover_primary_transport(
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
 
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -1747,7 +1748,19 @@ def restore_primary_runtime(agent) -> bool:
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
+        if "runtime_capabilities" in rt:
+            raw_capabilities = rt["runtime_capabilities"]
+            if not isinstance(raw_capabilities, dict):
+                logger.warning("Ignoring malformed runtime capabilities snapshot")
+            else:
+                agent.runtime_capabilities = dict(raw_capabilities)
+        elif "capabilities" in rt:
+            # Read snapshots written by the initial capability propagation patch.
+            raw_capabilities = rt["capabilities"]
+            if isinstance(raw_capabilities, dict):
+                agent.runtime_capabilities = dict(raw_capabilities)
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout when the restored snapshot predates the
@@ -2848,7 +2861,60 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def _apply_switched_provider_request_overrides(agent, new_provider):
+    """Re-derive the switched-to provider's ``request_overrides`` onto a live agent.
+
+    A ``custom_providers`` entry can carry an ``extra_body`` (e.g.
+    ``chat_template_kwargs`` to toggle a local model's thinking). The gateway
+    rebuild path carries this via ``request_overrides``; an *in-place* swap
+    (CLI / TUI ``/model``) must re-derive it for the switched-to provider,
+    otherwise the previous provider's ``extra_body`` lingers.
+
+    The switched-to entry is matched by **provider key, base_url, and model** —
+    the same condition ``agent_init._merge_custom_provider_extra_body`` applies
+    at build time — via the shared ``_custom_provider_extra_body_for_agent``
+    matcher. Matching by name alone would let a *different* model selected at the
+    same named endpoint inherit an ``extra_body`` configured for another model.
+    A stale ``extra_body`` is always cleared when the switched-to provider/model
+    resolves none; non-provider overrides (``service_tier`` / ``speed`` from
+    ``/fast``) are preserved.
+    """
+    from agent.agent_init import _custom_provider_extra_body_for_agent
+
+    # Prefer the init-time cache (agent_init stores ``agent._custom_providers``
+    # right where it runs its own _merge_custom_provider_extra_body); fall back
+    # to a fresh load only if a caller built the agent without it.
+    custom_providers = getattr(agent, "_custom_providers", None)
+    if custom_providers is None:
+        try:
+            from hermes_cli.config import load_config, get_compatible_custom_providers
+            custom_providers = get_compatible_custom_providers(load_config())
+        except Exception:
+            custom_providers = []
+
+    new_extra_body = _custom_provider_extra_body_for_agent(
+        provider=new_provider,
+        model=getattr(agent, "model", "") or "",
+        base_url=getattr(agent, "base_url", "") or "",
+        custom_providers=custom_providers or [],
+    )
+
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    overrides.pop("extra_body", None)  # always drop the previous provider's extra_body
+    if new_extra_body:
+        overrides["extra_body"] = dict(new_extra_body)
+    agent.request_overrides = overrides
+
+
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    capabilities=None,
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -2863,6 +2929,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     turn-scoped).
     """
     from hermes_cli.providers import determine_api_mode
+    from agent.native_compaction import resolve_native_compaction_capabilities
+
+    old_model = agent.model
+    old_provider = agent.provider
 
     # ── Determine api_mode if not provided ──
     # Pass model so dual-wire providers (Nous Portal anthropic/* → Messages)
@@ -2870,6 +2940,32 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # openai_chat overlay default.
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
+
+    normalized_new_provider = (new_provider or "").strip().lower()
+    if not base_url and normalized_new_provider == "openai":
+        # An omitted URL means the provider's canonical direct endpoint.
+        base_url = "https://api.openai.com/v1"
+
+    # Same-provider switches may omit base_url intentionally (for example, a
+    # direct caller refreshing credentials). Resolve capabilities from the
+    # endpoint that the normalization below will retain, not from the empty
+    # raw argument.
+    effective_base_url = base_url
+    if not effective_base_url and (old_provider or "").strip().lower() == (
+        new_provider or ""
+    ).strip().lower():
+        effective_base_url = getattr(agent, "base_url", "")
+
+    destination_capabilities = (
+        dict(capabilities)
+        if isinstance(capabilities, dict)
+        else resolve_native_compaction_capabilities(
+            model=new_model,
+            base_url=effective_base_url,
+            provider=new_provider,
+            is_codex_backend=(new_provider or '').strip().lower() == 'openai-codex',
+        )
+    )
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
@@ -2885,9 +2981,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         and base_url
     ):
         base_url = re.sub(r"/v1/?$", "", base_url)
-
-    old_model = agent.model
-    old_provider = agent.provider
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -2917,6 +3010,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_is_anthropic_oauth",
             "_config_context_length",
             "_reasoning_echo_flag",
+            "runtime_capabilities",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -3133,19 +3227,32 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     except Exception:
         _destination_context_intent = None
     agent._config_context_length = _destination_context_intent
-    _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
-        _destination_context_intent
-    )
-    if agent._lmstudio_load_was_unverified(_runtime_context_length):
+    if hasattr(agent, "_ensure_lmstudio_runtime_loaded"):
+        try:
+            _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
+                _destination_context_intent
+            )
+        except Exception:
+            _restore_snapshot()
+            raise
+    else:
+        _runtime_context_length = None
+    if (
+        hasattr(agent, "_lmstudio_load_was_unverified")
+        and agent._lmstudio_load_was_unverified(_runtime_context_length)
+    ):
         logger.warning(
             "LM Studio model activation was rejected or completed without a "
             "verifiable active context length during model switch; continuing "
             "with configured context"
         )
-    _effective_context_length = agent._effective_lmstudio_context_length(
-        _destination_context_intent,
-        _runtime_context_length,
-    )
+    if hasattr(agent, "_effective_lmstudio_context_length"):
+        _effective_context_length = agent._effective_lmstudio_context_length(
+            _destination_context_intent,
+            _runtime_context_length,
+        )
+    else:
+        _effective_context_length = _destination_context_intent
 
     # ── Re-evaluate prompt caching ──
     # Refresh the custom-provider snapshot from the config just loaded above
@@ -3179,22 +3286,26 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # length normally resolves via config or static catalogs and
         # never hits a probe, but coerce to empty string defensively.
         _ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
-        new_context_length = get_model_context_length(
-            agent.model,
-            base_url=agent.base_url,
-            api_key=_ctx_api_key,
-            provider=agent.provider,
-            config_context_length=_effective_context_length,
-            custom_providers=_sm_custom_providers,
-        )
-        agent.context_compressor.update_model(
-            model=agent.model,
-            context_length=new_context_length,
-            base_url=agent.base_url,
-            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
-            provider=agent.provider,
-            api_mode=agent.api_mode,
-        )
+        try:
+            new_context_length = get_model_context_length(
+                agent.model,
+                base_url=agent.base_url,
+                api_key=_ctx_api_key,
+                provider=agent.provider,
+                config_context_length=_effective_context_length,
+                custom_providers=_sm_custom_providers,
+            )
+            agent.context_compressor.update_model(
+                model=agent.model,
+                context_length=new_context_length,
+                base_url=agent.base_url,
+                api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
+                provider=agent.provider,
+                api_mode=agent.api_mode,
+            )
+        except Exception:
+            _restore_snapshot()
+            raise
 
     # ── Re-resolve reasoning_config from per-model override ──
     # The new model may have a different reasoning_effort override. Re-read
@@ -3216,6 +3327,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
+
+    # Publish the destination capability map only after every runtime setup
+    # above has succeeded. Failed switches must leave the old map intact.
+    agent.runtime_capabilities = destination_capabilities
 
     # ── Reset the cross-turn stale-call circuit breaker (#58962) ──
     # The breaker's error text tells the user to "switch models ... then
@@ -3239,6 +3354,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        # Request-level overrides (extra_body etc.) must travel with the
+        # switched-to identity; without this, a post-switch transport
+        # recovery or fallback restore would resurrect the PRE-switch
+        # overrides via the stale init-time snapshot (#75091 seam).
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -3277,6 +3398,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         ]
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
+
+    # Apply the switched-to provider's request_overrides (custom_providers
+    # extra_body, e.g. chat_template_kwargs). See helper for rationale.
+    try:
+        _apply_switched_provider_request_overrides(agent, new_provider)
+    except Exception:
+        logger.debug("switch_model: request_overrides re-derivation failed", exc_info=True)
 
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",

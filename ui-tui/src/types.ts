@@ -207,6 +207,12 @@ export interface SessionInfo {
 
 export interface Usage {
   active_subagents?: number
+  /** Rolling mean API latency over the last 10 calls (seconds). */
+  avg_latency_s?: number
+  /** Rolling output tokens/sec over the last 10 calls. */
+  avg_tps?: number
+  /** Session prompt-cache hit ratio (cache_read / prompt tokens, %). */
+  cache_hit_pct?: number
   calls: number
   compressions?: number
   context_max?: number

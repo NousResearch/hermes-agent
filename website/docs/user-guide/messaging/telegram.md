@@ -83,7 +83,7 @@ Notes:
 
 Hermes registers its command menu automatically when the Telegram gateway starts. The menu is built from the central slash-command registry plus eligible plugin/skill commands, then capped so Telegram accepts the payload reliably. The default cap is 60 commands — enough to keep all built-in commands plus common skill commands visible.
 
-If you have local or plugin commands that should stay visible in Telegram's `/` picker, prioritize them in `~/.hermes/config.yaml`:
+If you have skill, plugin, or built-in commands that should stay visible in Telegram's `/` picker, prioritize them in `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -94,6 +94,7 @@ platforms:
         priority_mode: prepend  # prepend | append | replace
         priority:
           - my_plugin_command
+          - songsee          # skill commands work here too
 ```
 
 `priority_mode` controls how your list combines with Hermes' built-in priority list:
@@ -102,7 +103,25 @@ platforms:
 - `append`: keep Hermes defaults first, then your commands
 - `replace`: use only your list for priority ordering
 
+Priority is applied to the **combined** candidate list (core commands, plugin commands, and skill commands) before the cap is enforced — so a prioritized skill command is guaranteed a menu slot even when core commands alone would fill the menu. Previously skills were always trimmed first and alphabetically, so late-alphabet skills could never appear regardless of `priority`.
+
 Telegram allows up to 100 BotCommands, but large command payloads can fail. Hermes defaults to 60 for reliability and clamps configured values to `1..100`; use `/commands` for the full command list.
+
+### Inline command picker: search every command (no cap)
+
+The `/` menu is capped, but Telegram's **inline mode** is not. Once enabled, type `@yourbotname` followed by a search term in any chat to get a live, searchable picker over **every** Hermes command and installed skill — results are computed per keystroke and paginated, so nothing is ever trimmed:
+
+```
+@yourbotname plan            → tap the /plan result to send it
+@yourbotname plan migrate auth to OIDC   → sends /plan migrate auth to OIDC
+@yourbotname pdf             → finds skills matching "pdf" by name or description
+```
+
+The first word filters the catalog; everything after it is carried into the sent command as its argument. Tapping a result sends the command as a normal message from you, so it dispatches through the standard command path (command-prefixed messages reach the bot even with privacy mode on).
+
+**One-time setup:** inline mode is off by default for every Telegram bot. Enable it in [@BotFather](https://t.me/BotFather) with `/setinline` (pick your bot, set any placeholder text, e.g. `Search commands and skills...`). Until then, Telegram never delivers inline queries and the picker stays inert.
+
+Results are only served to users who pass your gateway allowlist — unauthorized users get an empty list, so your installed skill catalog is not exposed to strangers (inline queries can be sent from any chat, even ones the bot is not in).
 
 ## Step 3: Privacy Mode (Critical for Groups)
 

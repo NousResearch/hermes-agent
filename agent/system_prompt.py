@@ -209,8 +209,19 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
 
         rendered = tuple(render_system_prompt_sections(_plugin_session_info(agent)))
     except Exception as exc:
-        logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
-        rendered = ()
+        # Fail-open: a plugin whose render raises at a rebuild boundary
+        # keeps its last good bytes (stashed by invalidate_system_prompt)
+        # instead of silently vanishing from the prompt.
+        previous = getattr(agent, "_plugin_system_prompt_sections_previous", None)
+        if previous:
+            logger.warning(
+                "Plugin system prompt sections failed to re-render (%s); "
+                "keeping the previous frozen sections", exc,
+            )
+            rendered = previous
+        else:
+            logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
+            rendered = ()
     setattr(agent, attr, rendered)
     return rendered
 
@@ -284,6 +295,13 @@ def _session_start_like(agent: Any, now: Any) -> Any:
     a Thursday-morning resume), contradicting the fresh per-turn time hint.
     Prefer, in order:
 
+    0. the LINEAGE-ROOT session id's embedded timestamp — compaction can
+       rotate the session id, and each rotated id embeds its OWN mint time,
+       so after months of compactions rung 1 alone would quietly re-birth
+       the conversation at its latest rotation. Walking to the lineage root
+       (same walk as ``_conversation_root_id``) recovers the ORIGINAL
+       birth stamp — a Bot Mode forever-chat keeps knowing when it was
+       first born, across every compaction (maintainer-directed, #98426);
     1. the timestamp embedded in ``session_id`` (``YYYYMMDD_HHMMSS_...``) —
        immutable for the life of the session, so the line is byte-stable
        across every rebuild boundary (preserving prefix-cache KV);
@@ -315,18 +333,30 @@ def _session_start_like(agent: Any, now: Any) -> Any:
                 pass
         return dt
 
-    # 1. Session id embeds the true start as YYYYMMDD_HHMMSS.
+    # 0. Lineage root: compaction rotation mints NEW ids with NEW embedded
+    # stamps. Walk to the root id (cached on the agent — the lineage only
+    # grows at compaction, and this function runs at that exact boundary,
+    # so one walk per rebuild is fresh enough) and prefer ITS embedded
+    # timestamp: the conversation's true birth. Fail-open to rung 1.
     session_id = getattr(agent, "session_id", None)
-    if isinstance(session_id, str) and session_id:
-        m = re.match(r"^(\d{8})_(\d{6})", session_id)
-        if m:
-            try:
-                embedded = datetime.strptime(
-                    f"{m.group(1)}_{m.group(2)}", "%Y%m%d_%H%M%S"
-                )
-                return _to_display_tz(embedded)
-            except ValueError:
-                pass
+    root_id = None
+    try:
+        db = getattr(agent, "_session_db", None)
+        if db is not None and isinstance(session_id, str) and session_id:
+            root_id = db.get_conversation_root(session_id)
+    except Exception:
+        root_id = None
+    for candidate in (root_id, session_id):
+        if isinstance(candidate, str) and candidate:
+            m = re.match(r"^(\d{8})_(\d{6})", candidate)
+            if m:
+                try:
+                    embedded = datetime.strptime(
+                        f"{m.group(1)}_{m.group(2)}", "%Y%m%d_%H%M%S"
+                    )
+                    return _to_display_tz(embedded)
+                except ValueError:
+                    pass
 
     # 2. Session-creation stamp set by the runner.
     session_start = getattr(agent, "session_start", None)
@@ -1028,10 +1058,21 @@ def invalidate_system_prompt(agent: Any) -> None:
     """Invalidate the cached system prompt, forcing a rebuild on the next turn.
 
     Called after context compression events. Also reloads memory from disk
-    so the rebuilt prompt captures any writes from this session.
+    so the rebuilt prompt captures any writes from this session, and clears
+    the frozen plugin-section snapshot so plugins re-render at the same
+    boundary (maintainer-directed, #95681 arc): a plugin section is just
+    another prompt block carrying state — freezing it while memory, skills,
+    and guidance refresh would recreate the stale-block disease inside
+    plugin-land. The previous bytes are stashed so a plugin whose render
+    RAISES falls back to its last good section instead of vanishing
+    (fail-open guard, not a freeze).
     """
     agent._cached_system_prompt = None
     agent._cached_system_prompt_static = None
+    _snapshot_attr = "_plugin_system_prompt_sections_snapshot"
+    if hasattr(agent, _snapshot_attr):
+        agent._plugin_system_prompt_sections_previous = getattr(agent, _snapshot_attr)
+        delattr(agent, _snapshot_attr)
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 

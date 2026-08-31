@@ -683,16 +683,53 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     Searches the local skills dir (~/.hermes/skills/) first, then any
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
+
+    Accepts both the bare directory name (``axolotl``) and the categorized
+    relative path (``mlops/axolotl``) — the same two forms skill_view
+    resolves, and the form skill_view's ambiguity hint explicitly tells
+    the caller to use. The bare-name match compares the skill's own
+    directory name (``parent.name``), so bare lookups keep working for
+    category-nested skills.
     """
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+
+    # Resolve the local skills root once — the categorized form matches the
+    # skill dir's path RELATIVE to that root. Only computed lazily (bare-name
+    # lookups never need it) and never for external dirs (relative_to raises).
+    _resolved_root: Optional[Path] = None
+
+    def _local_root() -> Path:
+        nonlocal _resolved_root
+        if _resolved_root is None:
+            try:
+                _resolved_root = _skills_dir().resolve()
+            except OSError:
+                logger.debug(
+                    "skills dir resolve failed; categorized lookups fall back to the unresolved path",
+                    exc_info=True,
+                )
+                _resolved_root = _skills_dir()
+        return _resolved_root
+
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_md in skills_dir.rglob("SKILL.md"):
             if is_excluded_skill_path(skill_md):
                 continue
+            # Fast path first: the bare directory name. Avoids the resolve()
+            # machinery entirely on the common match.
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
+            # Categorized form (``category/skill-name``): compare the skill
+            # dir's POSIX relative path so the lookup works on Windows too.
+            if "/" in name or "\\" in name:
+                try:
+                    rel = skill_md.parent.resolve().relative_to(_local_root())
+                except ValueError:
+                    continue
+                if rel.as_posix() == name:
+                    return {"path": skill_md.parent}
     return None
 
 

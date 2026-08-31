@@ -4,6 +4,7 @@ import json
 import sqlite3
 import pytest
 import time
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (

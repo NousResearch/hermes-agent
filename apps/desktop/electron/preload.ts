@@ -270,6 +270,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
+  mcpOauth: {
+    // One-shot loopback listener for MCP OAuth against remote backends: bind
+    // on this machine, hand redirectUri to mcp.servers.oauth.start, then wait
+    // for the provider redirect and relay code/state via oauth.callback.
+    listen: () => ipcRenderer.invoke('hermes:mcp-oauth:listen'),
+    wait: (id, timeoutMs) => ipcRenderer.invoke('hermes:mcp-oauth:wait', id, timeoutMs),
+    cancel: id => ipcRenderer.invoke('hermes:mcp-oauth:cancel', id)
+  },
   openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),
   reachPreviewUrl: url => ipcRenderer.invoke('hermes:preview:reach', url),
   setActiveConnectionRoute: route => ipcRenderer.send('hermes:connection:active-route', route),

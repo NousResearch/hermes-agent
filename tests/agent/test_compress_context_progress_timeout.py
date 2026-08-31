@@ -8,12 +8,14 @@ for the owned wrapper used when callers do not pass a ``commit_fence``.
 
 from __future__ import annotations
 
+import concurrent.futures
 import threading
 import time
 from unittest.mock import MagicMock
 
 import pytest
 
+import agent.conversation_compression as cc
 from agent.conversation_compression import (
     CompressionCommitFence,
     resolve_context_compression_timeouts,
@@ -46,6 +48,46 @@ class TestResolveContextCompressionTimeouts:
 
 
 class TestRunCompressContextWithProgressTimeout:
+    def test_deadline_before_worker_start_uses_timeout_fallback(self, monkeypatch):
+        original = [{"role": "user", "content": "keep-me"}]
+        worker = MagicMock()
+        fallback = MagicMock(return_value="fallback-prompt")
+        timeouts = []
+
+        class _ExpiredBeforeStartExecutor:
+            def submit(self, fn, fence):
+                fence._deadline = time.monotonic() - 1.0
+                future = concurrent.futures.Future()
+                try:
+                    future.set_result(fn(fence))
+                except BaseException as exc:
+                    future.set_exception(exc)
+                return future
+
+        monkeypatch.setattr(
+            cc,
+            "_get_compress_timeout_executor",
+            _ExpiredBeforeStartExecutor,
+        )
+
+        result_msgs, result_prompt = run_compress_context_with_progress_timeout(
+            worker=worker,
+            messages=original,
+            system_prompt_fallback=fallback,
+            idle_timeout_seconds=1.0,
+            total_ceiling_seconds=1.0,
+            on_timeout=lambda idle, waited, since: timeouts.append(
+                (idle, waited, since)
+            ),
+            stall_fallback=False,
+        )
+
+        worker.assert_not_called()
+        fallback.assert_called_once_with()
+        assert result_msgs is original
+        assert result_prompt == "fallback-prompt"
+        assert len(timeouts) == 1
+
     def test_silent_worker_times_out_and_preserves_messages(self):
         original = [{"role": "user", "content": "keep-me"}]
         started = threading.Event()
@@ -70,7 +112,10 @@ class TestRunCompressContextWithProgressTimeout:
             messages=original,
             system_prompt_fallback="fallback-prompt",
             idle_timeout_seconds=0.05,
-            total_ceiling_seconds=0.2,
+            # Leave enough total budget for a busy Windows runner to start the
+            # daemon worker; this case exercises inactivity cancellation, not
+            # the separate total-ceiling path.
+            total_ceiling_seconds=2.0,
             on_timeout=lambda idle, waited, since: warnings.append(
                 (idle, waited, since)
             ),
@@ -437,6 +482,73 @@ class TestCompressContextForwarderOwnsTimeout:
             "context compression timed out",
             provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
         )
+
+    def test_owned_total_ceiling_reports_progress_accurately(self, monkeypatch):
+        from run_agent import AIAgent
+        from agent.context_compressor import ContextCompressor
+
+        agent = object.__new__(AIAgent)
+        agent.session_id = "s1"
+        agent._cached_system_prompt = "sys"
+        agent._emit_warning = MagicMock()
+        agent._touch_activity = MagicMock()
+        agent._build_system_prompt = MagicMock(return_value="sys")
+        agent._conversation_root_id = MagicMock(return_value=None)
+        agent.context_compressor = MagicMock()
+        agent.context_compressor._consecutive_timeout_failures = 0
+        agent.context_compressor.record_timeout_failure = (
+            ContextCompressor.record_timeout_failure.__get__(
+                agent.context_compressor, MagicMock
+            )
+        )
+        agent.context_compressor._record_compression_failure_cooldown = MagicMock()
+
+        release = threading.Event()
+
+        def streaming_compress(agent_obj, messages, system_message, **kwargs):
+            fence = kwargs["commit_fence"]
+            while not fence.deadline_exceeded:
+                fence.touch_progress()
+                time.sleep(0.005)
+            release.wait(timeout=2)
+            return messages, "sys"
+
+        monkeypatch.setattr(
+            "agent.conversation_compression.compress_context",
+            streaming_compress,
+        )
+        monkeypatch.setattr(
+            "agent.conversation_compression.resolve_context_compression_timeouts",
+            lambda compression_cfg=None: (0.05, 0.15),
+        )
+        monkeypatch.setattr(
+            "agent.conversation_compression.resolve_compression_fallback_route",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "agent.portal_tags.get_conversation_context",
+            lambda: object(),
+        )
+
+        original = [{"role": "user", "content": "stay"}]
+        try:
+            out_msgs, out_prompt = AIAgent._compress_context(
+                agent, original, "sys"
+            )
+        finally:
+            release.set()
+
+        assert out_msgs is original
+        assert out_prompt == "sys"
+        warning = agent._emit_warning.call_args.args[0]
+        assert "total ceiling" in warning
+        assert "summary output was observed" in warning
+        assert "no output" not in warning
+        cooldown_error = (
+            agent.context_compressor._record_compression_failure_cooldown
+            .call_args.args[1]
+        )
+        assert "total ceiling exhausted" in cooldown_error
 
     def test_fallback_prompt_resolved_lazily_on_timeout(self, monkeypatch):
         """Eager prompt rebuild must not run before compression starts."""

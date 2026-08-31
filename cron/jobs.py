@@ -774,6 +774,36 @@ def ensure_dirs():
 # Schedule Parsing
 # =============================================================================
 
+def normalize_repeat_value(repeat: Any) -> Optional[int]:
+    """Coerce a repeat value from any entry point into ``Optional[int]``.
+
+    The tool schema exposes ``repeat`` as an integer, but agents and users
+    legitimately pass the user-facing strings ``'forever'``/``'once'`` or
+    numeric strings (``'3'``). Uncoerced strings previously died with
+    ``'<=' not supported between instances of 'str' and 'int'`` at create
+    (#66824/#64520/#7142/#71987/#95706) and were stored raw by update paths,
+    breaking ``mark_job_run`` later. Semantics: ``'forever'``-family -> None
+    (infinite), ``'once'``-family -> 1, numeric -> int, 0/negative -> None,
+    anything else -> ValueError (never store garbage).
+    """
+    if repeat is None:
+        return None
+    if isinstance(repeat, str):
+        repeat_str = repeat.strip().lower()
+        if repeat_str in ("forever", "infinite", "inf", "none", ""):
+            return None
+        if repeat_str in ("once", "one", "1x"):
+            return 1
+        try:
+            repeat = int(repeat_str)
+        except ValueError:
+            raise ValueError(
+                f"Invalid repeat value {repeat!r}: use an integer, "
+                f"'forever', or 'once'."
+            )
+    return None if repeat <= 0 else int(repeat)
+
+
 def parse_duration(s: str) -> int:
     """
     Parse duration string into minutes.
@@ -794,9 +824,118 @@ def parse_duration(s: str) -> int:
     
     value = int(match.group(1)) if match.group(1) else 1
     unit = match.group(2)[0]  # First char: m, h, or d
-    
+
     multipliers = {'m': 1, 'h': 60, 'd': 1440}
     return value * multipliers[unit]
+
+
+# Natural-language day-spec phrases for the documented "every monday 9am" /
+# "every day at 9am" schedule forms. Cron weekday numbering is
+# 0=Sunday … 6=Saturday (croniter's default).
+_WEEKDAY_TO_CRON_DOW = {
+    "sunday": "0", "sun": "0",
+    "monday": "1", "mon": "1",
+    "tuesday": "2", "tue": "2", "tues": "2",
+    "wednesday": "3", "wed": "3", "weds": "3",
+    "thursday": "4", "thu": "4", "thur": "4", "thurs": "4",
+    "friday": "5", "fri": "5",
+    "saturday": "6", "sat": "6",
+}
+
+# Keyword day-specs that expand to a cron weekday field.
+_DAYSPEC_TO_CRON_DOW = {
+    "day": "*", "daily": "*", "everyday": "*",
+    "weekday": "1-5", "weekdays": "1-5",
+    "weekend": "0,6", "weekends": "0,6",
+}
+
+
+def _parse_clock_time(text: str) -> Optional[tuple]:
+    """Parse a wall-clock time into a ``(hour, minute)`` 24-hour tuple.
+
+    Accepts ``9am``, ``9:30am``, ``9 am``, ``14:00``, ``7`` (bare hour, 24h),
+    ``noon``/``midday``, and ``midnight``. Returns None when the text is not a
+    recognized clock time so the caller can reject the schedule cleanly.
+    """
+    t = text.strip().lower().replace(" ", "")
+    if not t:
+        return None
+    if t in ("noon", "midday"):
+        return (12, 0)
+    if t == "midnight":
+        return (0, 0)
+    match = re.match(r'^(\d{1,2})(?::(\d{2}))?(am|pm)?$', t)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    meridiem = match.group(3)
+    if meridiem:
+        if not 1 <= hour <= 12:
+            return None
+        if meridiem == "am":
+            hour = 0 if hour == 12 else hour
+        else:  # pm
+            hour = 12 if hour == 12 else hour + 12
+    if hour > 23 or minute > 59:
+        return None
+    return (hour, minute)
+
+
+def _natural_every_to_cron(rest: str) -> Optional[str]:
+    """Convert a documented ``every <when> [at] <time>`` phrase to a 5-field
+    cron expression, or None when *rest* is not such a phrase.
+
+    Examples::
+
+        "monday 9am"      -> "0 9 * * 1"
+        "day at 9am"      -> "0 9 * * *"
+        "weekday at 9am"  -> "0 9 * * 1-5"
+        "monday, wednesday at 9am" -> "0 9 * * 1,3"
+
+    Returning None lets ``parse_schedule`` fall back to the interval
+    (``every 30m``) path, so existing duration schedules are unaffected.
+    """
+    tokens = rest.lower().replace(",", " ").split()
+    if not tokens:
+        return None
+
+    # Consume one or more leading day tokens: a keyword spec ("weekdays"),
+    # a single weekday, or a comma/"and"-separated weekday list
+    # ("monday, wednesday at 9am").
+    day_token = tokens[0]
+    dow = _DAYSPEC_TO_CRON_DOW.get(day_token)
+    idx = 1
+    if dow is None:
+        days = []
+        while idx <= len(tokens):
+            tok = tokens[idx - 1]
+            if tok == "and":
+                idx += 1
+                continue
+            mapped = _WEEKDAY_TO_CRON_DOW.get(tok)
+            if mapped is None:
+                break
+            if mapped not in days:
+                days.append(mapped)
+            idx += 1
+        if not days:
+            return None
+        dow = ",".join(days)
+        idx -= 1
+
+    time_tokens = tokens[idx:]
+    # Optional "at" separator: "every day at 9am".
+    if time_tokens and time_tokens[0] == "at":
+        time_tokens = time_tokens[1:]
+    if not time_tokens:
+        return None
+
+    parsed = _parse_clock_time(" ".join(time_tokens))
+    if parsed is None:
+        return None
+    hour, minute = parsed
+    return f"{minute} {hour} * * {dow}"
 
 
 def parse_schedule(schedule: str) -> Dict[str, Any]:
@@ -810,32 +949,75 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         - For "cron": "expr" (cron expression)
     
     Examples:
-        "30m"              → once in 30 minutes
-        "2h"               → once in 2 hours
+        "30m"              → every 30 minutes (recurring)
+        "2h"               → every 2 hours (recurring)
         "every 30m"        → recurring every 30 minutes
         "every 2h"         → recurring every 2 hours
+        "every monday 9am" → recurring weekly (cron)
+        "every day at 9am" → recurring daily (cron)
         "0 9 * * *"        → cron expression
         "2026-02-03T14:00" → once at timestamp
     """
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
-    
-    # "every X" pattern → recurring interval
+
+    # "every X" pattern → recurring interval, OR a documented natural-language
+    # day/time phrase ("every monday 9am", "every day at 9am") → cron.
     if schedule_lower.startswith("every "):
-        duration_str = schedule[6:].strip()
-        minutes = parse_duration(duration_str)
+        rest = schedule[6:].strip()
+        cron_expr = _natural_every_to_cron(rest)
+        if cron_expr is not None:
+            if not _ensure_croniter():
+                raise ValueError(
+                    "Weekday/time schedules like 'every monday 9am' require the "
+                    "'croniter' package. Install with: pip install croniter"
+                )
+            try:
+                croniter(cron_expr)
+            except Exception as e:
+                raise ValueError(f"Invalid schedule '{original}': {e}")
+            return {
+                "kind": "cron",
+                "expr": cron_expr,
+                "display": original,
+            }
+        minutes = parse_duration(rest)
         return {
             "kind": "interval",
             "minutes": minutes,
             "display": f"every {minutes}m"
         }
-    
+
+    # No-"every" natural day/time phrases advertised by the Desktop dialog:
+    # "weekdays at 9am", "monday at 9:30", "daily at 7am" (#51975). Reuse the
+    # same helper — the phrase shape is identical without the "every " prefix.
+    cron_expr = _natural_every_to_cron(schedule_lower)
+    if cron_expr is not None:
+        if not _ensure_croniter():
+            raise ValueError(
+                "Weekday/time schedules like 'weekdays at 9am' require the "
+                "'croniter' package. Install with: pip install croniter"
+            )
+        try:
+            croniter(cron_expr)
+        except Exception as e:
+            raise ValueError(f"Invalid schedule '{original}': {e}")
+        return {
+            "kind": "cron",
+            "expr": cron_expr,
+            "display": original,
+        }
+
     # Check for cron expression (5 or 6 space-separated fields)
     # Cron fields: minute hour day month weekday [year]
+    # Allow letters so named months/weekdays (JAN-DEC, MON-SUN, incl. ranges
+    # and lists like MON-FRI or MON,WED,FRI) are routed to croniter, which
+    # supports them. The previous digit-only pattern silently rejected these
+    # valid expressions as "Invalid schedule".
     parts = schedule.split()
     if len(parts) >= 5 and all(
-        re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
+        re.match(r'^[A-Za-z\d\*\-,/]+$', p) for p in parts[:5]
     ):
         if not _ensure_croniter():
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
@@ -878,22 +1060,41 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
     
-    # Duration like "30m", "2h", "1d" → one-shot from now
-    try:
-        minutes = parse_duration(schedule)
+    # Duration like "30m", "2h", "1d" → RECURRING interval, matching the
+    # documented tool contract ("30m (every 30 minutes)"). Previously this
+    # returned kind="once", silently creating a one-shot job for a schedule
+    # the schema documents as recurring — an agent passing '30m' for "every
+    # 30 minutes" got a job that ran once and died (cron contract bug, fixed
+    # 2026-08-04). Explicit one-shot-by-duration is "in 30m"/"in 2h".
+    if schedule_lower.startswith("in "):
+        duration_str = schedule[3:].strip()
+        try:
+            minutes = parse_duration(duration_str)
+        except ValueError:
+            raise ValueError(
+                f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'."
+            )
         run_at = _hermes_now() + timedelta(minutes=minutes)
         return {
             "kind": "once",
             "run_at": run_at.isoformat(),
-            "display": f"once in {original}"
+            "display": f"once in {duration_str}",
+        }
+    try:
+        minutes = parse_duration(schedule)
+        return {
+            "kind": "interval",
+            "minutes": minutes,
+            "display": f"every {minutes}m",
         }
     except ValueError:
         pass
     
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
-        f"  - Duration: '30m', '2h', '1d' (one-shot)\n"
-        f"  - Interval: 'every 30m', 'every 2h' (recurring)\n"
+        f"  - Interval: '30m', 'every 30m', 'every 2h' (recurring)\n"
+        f"  - One-shot delay: 'in 30m', 'in 2h' (fires once)\n"
+        f"  - Weekly/daily: 'every monday 9am', 'weekdays at 9am' (recurring)\n"
         f"  - Cron: '0 9 * * *' (cron expression)\n"
         f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
     )
@@ -2076,9 +2277,11 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    # Normalize repeat: treat 0 or negative values as None (infinite).
+    # String forms ('forever'/'once'/numeric) coerce via
+    # normalize_repeat_value — the shared chokepoint with update paths
+    # (#66824/#64520/#7142/#71987/#95706).
+    repeat = normalize_repeat_value(repeat)
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
@@ -2333,6 +2536,25 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["reasoning_effort"] = _normalize_reasoning_effort(
                     updates["reasoning_effort"]
                 )
+
+            # Normalize repeat the same way create_job does. Callers pass
+            # either the stored dict shape ({"times": N, "completed": M}) or
+            # a bare value ("forever", "once", 3, "3"); bare values coerce
+            # through normalize_repeat_value and preserve the completed
+            # counter. A raw string stored here previously broke
+            # mark_job_run ('str' has no .get) and repeat accounting.
+            if "repeat" in updates:
+                _rp = updates["repeat"]
+                if isinstance(_rp, dict):
+                    _rp = dict(_rp)
+                    _rp["times"] = normalize_repeat_value(_rp.get("times"))
+                    _rp.setdefault("completed", (job.get("repeat") or {}).get("completed", 0))
+                    updates["repeat"] = _rp
+                else:
+                    updates["repeat"] = {
+                        "times": normalize_repeat_value(_rp),
+                        "completed": (job.get("repeat") or {}).get("completed", 0),
+                    }
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

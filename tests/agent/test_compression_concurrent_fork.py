@@ -820,6 +820,27 @@ def test_commit_fence_waits_for_an_active_commit() -> None:
     assert result["cancelled"] is False
 
 
+def test_total_deadline_cancellation_retains_lock_until_worker_cleanup() -> None:
+    """A total-ceiling timeout must exclude retries while its worker is alive."""
+    from agent.conversation_compression import CompressionCommitFence
+
+    released = threading.Event()
+    fence = CompressionCommitFence(total_ceiling_seconds=1.0)
+    fence.register_cancelled_lock_release(released.set)
+    fence.retain_compression_lock_until_worker_done()
+
+    now = time.monotonic()
+    with patch(
+        "agent.conversation_compression.time.monotonic",
+        return_value=now + 2.0,
+    ):
+        assert fence.is_cancelled
+        assert fence.try_cancel_before_commit() is True
+    fence.release_cancelled_compression_lock()
+
+    assert not released.is_set()
+
+
 def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
     """A stale agent must continue on the winner's compacted child transcript."""
     db = SessionDB(db_path=tmp_path / "state.db")

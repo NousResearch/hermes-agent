@@ -15,7 +15,7 @@ Drive and script tldraw offline canvases with an agent.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/tldraw-offline` |
-| Path | `optional-skills/creative/tldraw-offline` |
+| Path | `optional-skills/creative\tldraw-offline` |
 | Version | `1.0.0` |
 | Author | Teknium + Hermes Agent |
 | License | MIT |
@@ -80,11 +80,11 @@ is a live edit, not saved script:
 
 ```bash
 BASE=http://localhost:7236
-TOKEN=$(python3 -c "import json;print(json.load(open('$HOME/.config/tldraw/server.json'))['token'])")
+TOKEN=$(python -c "import json;print(json.load(open('$HOME/.config/tldraw/server.json'))['token'])")
 # find the focused document id
 DOC=$(curl -s "$BASE/api/search" -X POST -H 'content-type: application/json' \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"code":"return (await api.getFocusedDoc()).id"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['result'])")
+  -d '{"code":"return (await api.getFocusedDoc()).id"}' | python -c "import sys,json;print(json.load(sys.stdin)['result'])")
 # run code with the live `editor` + `helpers` in scope
 curl -s "$BASE/api/doc/$DOC/exec" -X POST -H 'content-type: application/json' \
   -H "Authorization: Bearer $TOKEN" \

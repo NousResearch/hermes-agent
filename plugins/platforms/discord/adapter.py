@@ -5915,6 +5915,11 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_steer(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/steer {prompt}".strip())
 
+        @tree.command(name="plan", description="Write a markdown implementation plan (no execution)")
+        @discord.app_commands.describe(task="What to plan. Leave empty to infer from the conversation.")
+        async def slash_plan(interaction: discord.Interaction, task: str = ""):
+            await self._run_simple_slash(interaction, f"/plan {task}".strip())
+
         @tree.command(name="compress", description="Compress conversation context")
         async def slash_compress(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/compress")

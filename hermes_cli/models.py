@@ -641,30 +641,41 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
+        # Qwen 千问系列 (DashScope / Qwen Cloud)
+        "qwen3.8-max",
         "qwen3.7-max",
         "qwen3.7-plus",
         "qwen3.6-plus",
+        "qwen3.6-flash",
         "kimi-k2.5",
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
-        # Third-party models available on coding-intl
+        # Third-party models available on coding-intl / DashScope
+        "glm-5.2",
         "glm-5",
         "glm-4.7",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash-0731",
         "MiniMax-M2.5",
     ],
     # Alibaba DashScope (China) — same platform as alibaba, domestic endpoint
     # (dashscope.aliyuncs.com); same catalog as the international tier.
     "alibaba-cn": [
+        "qwen3.8-max",
         "qwen3.7-max",
         "qwen3.7-plus",
         "qwen3.6-plus",
+        "qwen3.6-flash",
         "kimi-k2.5",
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
+        "glm-5.2",
         "glm-5",
         "glm-4.7",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash-0731",
         "MiniMax-M2.5",
     ],
     # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),

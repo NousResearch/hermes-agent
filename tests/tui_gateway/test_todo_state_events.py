@@ -78,3 +78,23 @@ def test_live_snapshot_prefers_the_highest_revision():
     payload = server._attach_todo_state({}, session)
 
     assert payload["todo_state"]["revision"] == 5
+
+
+def test_unused_store_is_not_attached():
+    class Store:
+        @staticmethod
+        def snapshot():
+            return {"todos": [], "revision": 0}
+
+    class Agent:
+        _todo_store = Store()
+
+    payload = server._attach_todo_state({}, {"agent": Agent()})
+
+    assert "todo_state" not in payload
+
+
+def test_empty_list_at_nonzero_revision_is_a_real_clear():
+    state = server._normalize_todo_state({"todos": [], "revision": 2})
+
+    assert state == {"todos": [], "revision": 2}

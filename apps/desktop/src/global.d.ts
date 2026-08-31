@@ -300,6 +300,18 @@ declare global {
       setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      /** One-shot loopback callback listener for MCP OAuth against remote
+       *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,
+       *  pass redirectUri as client_redirect_uri to mcp.servers.oauth.start,
+       *  await the provider redirect, relay code/state via oauth.callback. */
+      mcpOauth?: {
+        listen: () => Promise<{ id: string; redirectUri: string }>
+        wait: (
+          id: string,
+          timeoutMs?: number
+        ) => Promise<{ code: null | string; error: null | string; state: null | string }>
+        cancel: (id: string) => Promise<boolean>
+      }
       openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       /** A site's icon as a data URL, or '' when it has none we can read.

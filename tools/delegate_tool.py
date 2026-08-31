@@ -1569,6 +1569,30 @@ def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
 
+def _inherit_parent_capabilities(
+    parent_agent, override_provider, override_base_url
+) -> Optional[dict]:
+    """Return the parent's endpoint-trust capability map for a child, or None.
+
+    The trusted-proxy capability map (``agent.capabilities``, e.g.
+    ``openai_native_compaction`` from a custom_providers entry) is a trust
+    decision scoped to one provider+endpoint. A child inherits it ONLY when
+    it runs against the parent's exact route — any delegation override that
+    changes provider or base_url stays DEFAULT-DENY, matching the /model
+    switch posture (#94036/#97292).
+    """
+    if override_provider or override_base_url:
+        return None
+    parent_caps = getattr(parent_agent, "capabilities", None)
+    if not isinstance(parent_caps, dict):
+        return None
+    return {
+        key: value
+        for key, value in parent_caps.items()
+        if isinstance(key, str) and isinstance(value, bool)
+    }
+
+
 def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> Optional[str]:
     """Return the base URL the parent is actually calling, not a stale attribute.
 
@@ -1786,6 +1810,16 @@ def _build_child_agent(
     if not override_base_url:
         effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
     effective_api_key = override_api_key or parent_api_key
+    # Same-class follow-up to #94036/#97292: the trusted-proxy capability map
+    # (`agent.capabilities`, e.g. ``openai_native_compaction`` from a
+    # custom_providers entry) is an endpoint-scoped trust decision. Children
+    # inherit it ONLY when they run against the parent's exact provider and
+    # base_url — a provider- or endpoint-changing delegation override stays
+    # DEFAULT-DENY, matching the /model switch posture. Without this, a child
+    # on the same trusted proxy silently falls back to local summarization.
+    child_capabilities = _inherit_parent_capabilities(
+        parent_agent, override_provider, override_base_url
+    )
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
@@ -1967,6 +2001,7 @@ def _build_child_agent(
                 api_key=effective_api_key,
                 model=effective_model,
                 provider=effective_provider,
+                capabilities=child_capabilities,
                 api_mode=effective_api_mode,
                 acp_command=effective_acp_command,
                 acp_args=effective_acp_args,
@@ -1994,9 +2029,17 @@ def _build_child_agent(
                 provider_require_parameters=child_provider_require_parameters,
                 provider_data_collection=child_provider_data_collection,
                 request_overrides=(
-                    dict(override_request_overrides or {})
-                    if override_provider
-                    else dict(getattr(parent_agent, "request_overrides", {}) or {})
+                    # override_request_overrides is honored whenever set —
+                    # including the inherit branch (override_provider=None),
+                    # where _resolve_delegation_credentials already merged
+                    # delegation.request_overrides OVER the parent's values.
+                    dict(override_request_overrides)
+                    if override_request_overrides is not None
+                    else (
+                        {}
+                        if override_provider
+                        else dict(getattr(parent_agent, "request_overrides", {}) or {})
+                    )
                 ),
                 openrouter_min_coding_score=child_openrouter_min_coding_score,
                 tool_progress_callback=child_progress_cb,
@@ -4456,6 +4499,43 @@ def _resolve_child_credential_pool(
     return None
 
 
+def _merge_request_overrides(runtime_overrides, explicit_overrides):
+    """Merge explicit ``delegation.request_overrides`` over runtime-derived ones.
+
+    Precedence contract: the explicit config key WINS over runtime-derived
+    (provider-catalog or parent-inherited) overrides. Top-level keys from the
+    explicit dict replace same-named runtime keys; the ``extra_body`` sub-dict
+    is deep-merged ONE level — runtime ``extra_body`` keys survive unless the
+    explicit dict redefines that exact key. This keeps provider personality
+    (e.g. ``thinking: {type: disabled}``) intact while letting users layer
+    routing hints (e.g. ``extra_body.provider = {"sort": "throughput"}``) on
+    top.
+
+    Both inputs are deep-copied (``copy.deepcopy``) so transport-side mutation
+    of the child's request kwargs can never leak back into the loaded config
+    dict or the provider runtime cache.
+
+    Returns ``None`` when both sides are empty/non-dict.
+    """
+    import copy as _copy
+
+    runtime_overrides = runtime_overrides if isinstance(runtime_overrides, dict) else None
+    explicit_overrides = explicit_overrides if isinstance(explicit_overrides, dict) else None
+    if not runtime_overrides and not explicit_overrides:
+        return None
+    merged = _copy.deepcopy(runtime_overrides) if runtime_overrides else {}
+    explicit = _copy.deepcopy(explicit_overrides) if explicit_overrides else {}
+    runtime_extra = merged.get("extra_body")
+    explicit_extra = explicit.pop("extra_body", None)
+    merged.update(explicit)
+    if isinstance(runtime_extra, dict) and isinstance(explicit_extra, dict):
+        runtime_extra.update(explicit_extra)
+        merged["extra_body"] = runtime_extra
+    elif explicit_extra is not None:
+        merged["extra_body"] = explicit_extra
+    return merged or None
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -4483,6 +4563,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
+    # delegation.request_overrides: explicit per-child request settings from
+    # config. Honored on EVERY resolution branch (direct base_url, named
+    # provider, and parent-inherit) so the key never silently no-ops.
+    # Precedence: explicit merges OVER runtime/parent-derived overrides via
+    # _merge_request_overrides (top-level explicit keys win; extra_body is
+    # deep-merged one level). Non-dict values are ignored.
+    explicit_request_overrides = (
+        cfg.get("request_overrides")
+        if isinstance(cfg.get("request_overrides"), dict)
+        else None
+    )
+
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
     # wire protocol — they cannot be reached via OpenAI chat_completions against
     # a base_url. For these, always fall through to resolve_runtime_provider()
@@ -4494,6 +4586,24 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 
     if configured_base_url and not _is_native_sdk_provider:
+        # delegation.request_overrides: an explicit dict of per-child request
+        # settings merged into the child's API kwargs by the transport's
+        # profile path. Keys are top-level kwargs (e.g. service_tier); an
+        # "extra_body" sub-dict is merged into extra_body. This is how a
+        # direct-endpoint delegation (provider=custom) forwards OpenRouter
+        # routing hints such as extra_body.provider = {"sort": "throughput"}
+        # to its children — the child's CustomProfile does not emit provider
+        # preferences, and the parent-inheritance path is deliberately cleared
+        # when delegation.provider/base_url overrides the parent (see the
+        # provider-preference clearing in _build_child_agent).
+        #
+        # Precedence: explicit delegation.request_overrides MERGES OVER any
+        # runtime-derived overrides (see _merge_request_overrides) — top-level
+        # explicit keys win; extra_body is deep-merged one level so runtime
+        # extra_body keys survive unless the explicit key redefines them.
+        # (explicit_request_overrides is parsed once at the top of this
+        # function and applied to every branch.)
+
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
@@ -4559,6 +4669,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
                     exc,
                 )
 
+        # Explicit delegation.request_overrides merges OVER the runtime-derived
+        # overrides (explicit wins; extra_body deep-merged one level).
+        request_overrides = _merge_request_overrides(
+            request_overrides, explicit_request_overrides
+        )
+
         return {
             "model": configured_model,
             "provider": provider,
@@ -4570,14 +4686,22 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         }
 
     if not configured_provider:
-        # No provider override — child inherits everything from parent
+        # No provider override — child inherits everything from parent.
+        # delegation.request_overrides still applies: merge the explicit key
+        # OVER the parent's own request_overrides so the config key works even
+        # in pure-inherit setups (never a silent no-op). None when neither
+        # side has values → _build_child_agent falls back to the parent's
+        # request_overrides unchanged.
         return {
             "model": configured_model,
             "provider": None,
             "base_url": None,
             "api_key": None,
             "api_mode": None,
-            "request_overrides": None,
+            "request_overrides": _merge_request_overrides(
+                getattr(parent_agent, "request_overrides", None),
+                explicit_request_overrides,
+            ),
             "max_output_tokens": None,
         }
 
@@ -4621,7 +4745,13 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
-        "request_overrides": dict(runtime.get("request_overrides") or {}),
+        # Explicit delegation.request_overrides merges OVER the named
+        # provider's runtime overrides (explicit wins; extra_body deep-merged
+        # one level) — same precedence as the direct-base_url branch above.
+        "request_overrides": _merge_request_overrides(
+            runtime.get("request_overrides"), explicit_request_overrides
+        )
+        or {},
         "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),

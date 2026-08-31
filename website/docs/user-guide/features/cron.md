@@ -28,6 +28,8 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 - **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
 - **Global default** — only when neither of the above is set does a job follow `hermes model`. In this case Hermes **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you **once** — the job stays skipped (and silent) on subsequent ticks until you act or the config is restored (#44585). For recurring or otherwise repeatable jobs, pin the provider/model explicitly (`hermes cron edit <job_id> --provider <provider> --model <model>`) to proceed. A consumed finite one-shot cannot be updated; create a new future one-shot with an explicit provider and model instead. This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
 
+Whichever provider a job resolves to, its provider-specific request settings (e.g. `request_overrides` such as `extra_body`/`extra_headers` for custom providers) carry into the scheduled run just like an interactive session.
+
 `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
 
@@ -44,7 +46,7 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 ### In chat with `/cron`
 
 ```bash
-/cron add 30m "Remind me to check the build"
+/cron add "in 30m" "Remind me to check the build"
 /cron add "every 2h" "Check server status"
 /cron add "every 1h" "Summarize new feed items" --skill blogwatcher
 /cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill maps
@@ -777,24 +779,40 @@ The agent's final response is automatically delivered to the job's `deliver:` ta
 ### Relative delays (one-shot)
 
 ```text
-30m     → Run once in 30 minutes
-2h      → Run once in 2 hours
-1d      → Run once in 1 day
+in 30m  → Run once in 30 minutes
+in 2h   → Run once in 2 hours
+in 1d   → Run once in 1 day
 ```
 
 ### Intervals (recurring)
 
 ```text
+30m          → Every 30 minutes (bare durations are recurring)
 every 30m    → Every 30 minutes
 every 2h     → Every 2 hours
 every 1d     → Every day
+every hour   → Every hour (bare unit = 1)
 ```
+
+### Natural day/time schedules (recurring)
+
+```text
+every monday 9am         → Weekly, Mondays at 9:00 AM
+every day at 9am         → Daily at 9:00 AM
+weekdays at 9am          → Weekdays at 9:00 AM
+weekends at 10am         → Saturdays and Sundays at 10:00 AM
+daily at 7am             → Daily at 7:00 AM
+monday, wednesday at 9am → Mondays and Wednesdays at 9:00 AM
+```
+
+Times accept `9am`, `9:30pm`, `14:00`, bare 24-hour hours (`at 7`), `noon`, and `midnight`. These forms compile to cron expressions internally (they require the `croniter` package, installed by default).
 
 ### Cron expressions
 
 ```text
 0 9 * * *       → Daily at 9:00 AM
 0 9 * * 1-5     → Weekdays at 9:00 AM
+0 9 * * MON-FRI → Weekdays at 9:00 AM (named weekdays/months accepted)
 0 */6 * * *     → Every 6 hours
 30 8 1 * *      → First of every month at 8:30 AM
 0 0 * * 0       → Every Sunday at midnight
@@ -810,7 +828,7 @@ every 1d     → Every day
 
 | Schedule type | Default repeat | Behavior |
 |--------------|----------------|----------|
-| One-shot (`30m`, timestamp) | 1 | Runs once |
+| One-shot (`in 30m`, timestamp) | 1 | Runs once |
 | Interval (`every 2h`) | forever | Runs until removed |
 | Cron expression | forever | Runs until removed |
 

@@ -28,6 +28,20 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
   raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
 
+// `display.status_bar.fields` — the SAME key the classic CLI bar honors
+// (PR #98250). A non-empty list filters status-rule segments; missing/empty/
+// malformed = null (user hasn't customized → show the default set). Unknown
+// names pass through harmlessly — the renderer only tests membership.
+export const normalizeStatusBarFields = (raw: unknown): null | ReadonlySet<string> => {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return null
+  }
+
+  const cleaned = raw.map(v => String(v).trim().toLowerCase()).filter(Boolean)
+
+  return cleaned.length ? new Set(cleaned) : null
+}
+
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
 // TUI defaults to `queue` even though the framework default
@@ -289,6 +303,7 @@ export const applyDisplay = (
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
+    statusBarFields: normalizeStatusBarFields(d.status_bar?.fields),
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.

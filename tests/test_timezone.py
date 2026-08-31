@@ -176,11 +176,11 @@ class TestCronTimezone:
         _reset_hermes_time_cache()
         os.environ.pop("HERMES_TIMEZONE", None)
 
-    def test_parse_schedule_duration_uses_tz_aware_now(self):
-        """parse_schedule('30m') should produce a tz-aware run_at."""
+    def test_parse_schedule_one_shot_duration_uses_tz_aware_now(self):
+        """parse_schedule('in 30m') should produce a tz-aware run_at."""
         os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"
         from cron.jobs import parse_schedule
-        result = parse_schedule("30m")
+        result = parse_schedule("in 30m")
         run_at = datetime.fromisoformat(result["run_at"])
         # The stored timestamp should be tz-aware
         assert run_at.tzinfo is not None

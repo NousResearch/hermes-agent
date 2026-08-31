@@ -74,8 +74,10 @@ function acceptRevision(sid: string, revision?: null | number): boolean {
   const revisions = $todoRevisionsBySession.get()
   const current = revisions[sid]
 
+  // tool.start has no revision. Apply the merge locally and leave the
+  // watermark alone so a later todo.updated / tool.complete can still win.
   if (revision == null) {
-    return current == null
+    return true
   }
 
   if (current != null && revision < current) {
@@ -156,6 +158,14 @@ export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, 
   }
 
   const revision = parseTodoRevision(snapshot)
+
+  // An unused store serializes as {todos: [], revision: 0}. That is not a
+  // real snapshot. Applying it would stamp watermark 0 and leave an empty
+  // list in the map.
+  if (todos.length === 0 && (revision == null || revision === 0)) {
+    return
+  }
+
   const visible = running ? todos : todosForHydration(todos)
 
   if (visible !== null) {

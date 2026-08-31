@@ -29,7 +29,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit, urlunparse
 
 import httpx
 import yaml
@@ -160,6 +160,43 @@ _LOCAL_LINK_RE = re.compile(
 _SUSPICIOUS_LOCAL_REF_RE = re.compile(
     r"(?:references|templates|scripts|assets|examples)/(?:[^\s)`\"'<>]*/)?\.\.(?:/|$)"
 )
+_VALUELESS_QUERY_FLAG_RE = re.compile(
+    r"(?:[A-Za-z0-9_~-]|%[0-9A-Fa-f]{2})+\Z"
+)
+
+
+def _query_is_concrete(query: str) -> bool:
+    """Whether ``query`` is unambiguously URL syntax rather than glob prose.
+
+    A non-empty ``key=value`` part is concrete URL syntax regardless of key
+    spelling, preserving the established behavior.  Valueless flags are also
+    accepted when they are RFC 3986 unreserved-token shaped (including valid
+    percent escapes), rather than being restricted to a fixed allowlist.
+
+    Deliberately exclude ``.`` from valueless flags.  A suffix such as
+    ``?x.md`` or ``?.md`` is indistinguishable from a single-character glob
+    completing a filename in inline prose.  Brackets and additional question
+    marks are excluded for the same reason.  This syntactic ambiguity policy
+    preserves ordinary flags such as ``?view`` and ``?preview-mode`` while
+    rejecting glob-shaped references without guessing flag names.
+    """
+    parts = query.split("&")
+    return all(
+        ("=" in part and bool(part.split("=", 1)[0]))
+        or bool(_VALUELESS_QUERY_FLAG_RE.fullmatch(part))
+        for part in parts
+    )
+
+# Same-directory links (``](./FILE.ext)`` / ``](FILE.ext)``) — siblings of
+# SKILL.md that the document explicitly links. Skills legitimately ship
+# supporting docs next to SKILL.md instead of under a support directory
+# (e.g. mattpocock/skills' domain-modeling links ./CONTEXT-FORMAT.md);
+# dropping them made the install "succeed" while the bundle came out with
+# unresolved links (#96310). The trailing extension requirement keeps prose
+# words out; the code-side checks keep this strictly to the skill's own
+# directory (support-dir links stay on _LOCAL_LINK_RE).
+_SAMEDIR_LINK_RE = re.compile(r"\]\(([^)\s\"'<>]+)")
+_SAMEDIR_NAME_RE = re.compile(r"^(?:\./)?[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
@@ -169,13 +206,79 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         return None
     paths: set[str] = set()
     for match in _LOCAL_LINK_RE.finditer(normalized):
-        raw = unquote(urlsplit(match.group(1).rstrip(".,;:")).path)
+        candidate = match.group(1).rstrip(".,;:")
+        if candidate.endswith("?"):
+            continue
+        parsed = urlsplit(candidate)
+        raw = unquote(parsed.path)
+        if any(char in raw for char in "*?[]"):
+            continue
+        if parsed.query and not _query_is_concrete(parsed.query):
+            continue
         try:
             safe = _validate_bundle_rel_path(raw)
         except ValueError:
             return None
         if safe.split("/", 1)[0] in _ALLOWED_SUPPORT_DIRS:
+            # Prose placeholders — e.g. ``references/type-<name>.md`` (which
+            # the link regex truncates at ``<`` to the bare prefix
+            # ``references/type-``) — are agent instructions, not files.
+            # Glob shapes (*, ?, []) were already rejected on the raw
+            # candidate above; a truncated placeholder leaves a basename
+            # ending in a separator, which no real file uses. No extension
+            # requirement: extensionless support files
+            # (``references/LICENSE``) are legitimate.
+            base = safe.rsplit("/", 1)[-1]
+            if re.search(r"[*?<>]", safe) or not re.search(r"[A-Za-z0-9]$", base):
+                continue
             paths.add(safe)
+    for match in _SAMEDIR_LINK_RE.finditer(normalized):
+        raw = match.group(1).rstrip(".,;:")
+        # Canonicalize first: drop query/fragment components (``?raw=1``,
+        # ``#section``) and percent-decode — the same normalization the
+        # support-dir branch applies via urlsplit+unquote — then strip a
+        # leading ``./``. The set below deduplicates case-SENSITIVE repeats;
+        # case-VARIANT collisions are rejected rather than merged (below).
+        name = unquote(urlsplit(raw).path)
+        name = name[2:] if name.startswith("./") else name
+        # External URLs, anchors, mailto and site-absolute targets are not
+        # same-directory file links — leave them to their own resolution.
+        if not name or "://" in raw or raw.startswith(("mailto:", "#", "/")):
+            continue
+        # A ``..`` prefix is a traversal attempt — same fail-closed contract
+        # as the support-dir branch above, before any shape-based skipping.
+        if name.startswith(".."):
+            return None
+        # Only unambiguous file links: an extension, no internal slash, and
+        # never SKILL.md itself (that IS the bundle root). The casefold
+        # check keeps a ``skill.md`` link from shipping as a bundle entry
+        # that collides with SKILL.md on case-insensitive filesystems
+        # (macOS/Windows) — skipped, not merged, so the bundle root is
+        # never overwritten (#96310 review).
+        if (
+            "/" in name
+            or name.casefold() == "skill.md"
+            or "." not in name.lstrip(".")
+        ):
+            continue
+        if not _SAMEDIR_NAME_RE.match(name):
+            continue
+        try:
+            safe = _validate_bundle_rel_path(name)
+        except ValueError:
+            return None
+        paths.add(safe)
+    # Case-folded collision among the accepted same-dir names themselves
+    # (``A.md`` + ``a.md``) would also collide on install — drop the pair
+    # rather than guess which variant the author meant.
+    folded: dict[str, str] = {}
+    for p in sorted(paths):
+        key = p.casefold()
+        if key in folded:
+            paths.discard(folded[key])
+            paths.discard(p)
+        else:
+            folded[key] = p
     return paths
 
 
@@ -660,7 +763,19 @@ class GitHubSource(SkillSource):
         repo = f"{parts[0]}/{parts[1]}"
         skill_path = parts[2]
 
-        skill_md = self._fetch_file_content(repo, f"{skill_path.rstrip('/')}/SKILL.md")
+        # Resolve the tree FIRST so every byte fetch in this install —
+        # SKILL.md included — can be pinned to the same revision. Without the
+        # pin the /contents endpoint floats to the default-branch HEAD and
+        # the downloaded bytes can come from a NEWER revision than the tree
+        # the paths were validated against (TOCTOU between "the tree says
+        # this is a regular blob" and "what actually gets downloaded").
+        # Idempotent + cached, so callers that already primed the tree pay
+        # nothing extra.
+        tree = self._get_repo_tree(repo)
+        pinned_ref = self._tree_revisions.get(repo)
+        skill_md = self._fetch_file_content(
+            repo, f"{skill_path.rstrip('/')}/SKILL.md", ref=pinned_ref
+        )
         if skill_md is None:
             return None
         referenced = _referenced_support_paths(skill_md)
@@ -668,30 +783,71 @@ class GitHubSource(SkillSource):
             return None
 
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
-        tree = self._get_repo_tree(repo)
         if tree is not None:
+            # Download the FULL skill directory, not just SKILL.md-linked
+            # paths. Link-driven fetching silently dropped every support file
+            # a skill keeps under a non-canonical dir name (`reference/`,
+            # `agents/`, root-level LICENSE/params files) or that only a
+            # reference file links — the exact gap the optional-skills live
+            # fetch already works around (see _fetch_live_optional_bundle).
+            # Everything still flows through quarantine + scan before
+            # install, and the scanner sees MORE this way, not less.
             branch, entries = tree
             prefix = f"{skill_path.rstrip('/')}/"
-            entries_by_path = {item.get("path", ""): item for item in entries}
-            for rel_path in sorted(referenced):
-                item_path = f"{prefix}{rel_path}"
-                item = entries_by_path.get(item_path)
-                if item is None:
-                    logger.warning("Referenced skill support file is missing: %s", item_path)
-                    return None
+            symlinked: set = set()
+            for item in entries:
+                item_path = item.get("path", "")
+                if not item_path.startswith(prefix):
+                    continue
+                rel_path = item_path[len(prefix):]
                 if item.get("type") != "blob" or item.get("mode") == "120000":
-                    logger.warning("Rejected non-regular file in skill bundle: %s", item_path)
+                    symlinked.add(rel_path)
+                    continue
+                if rel_path == "SKILL.md":
+                    continue
+                base = rel_path.rsplit("/", 1)[-1]
+                if base.startswith(".") or base.endswith(".pyc") or "__pycache__" in rel_path.split("/"):
+                    continue
+                try:
+                    rel_path = _validate_bundle_rel_path(rel_path)
+                except ValueError:
+                    logger.warning("Rejected unsafe file path in skill bundle: %s", item_path)
                     return None
-                content = self._fetch_file_bytes(repo, item_path)
+                content = self._fetch_file_bytes(repo, item_path, ref=pinned_ref)
                 if content is None:
-                    return None
+                    logger.warning("Failed to fetch referenced skill support "
+                                   "file; continuing without it: %s", item_path)
+                    continue
                 files[rel_path] = content
+            # A SKILL.md-linked support path that isn't in the tree is a
+            # dangling link — a repo-only dev tool, prose over-match, or a
+            # file the author forgot to push. Warn and install without it
+            # rather than aborting the whole install (#66760/#90081): the
+            # skill body still works, and the gap is visible in the log.
+            # A referenced path that IS in the tree but as a symlink (or any
+            # non-regular entry) stays a hard rejection — that shape is an
+            # escape attempt, not a forgotten file.
+            for rel_path in sorted(referenced):
+                if rel_path in symlinked:
+                    logger.warning(
+                        "Rejected non-regular referenced file in skill "
+                        "bundle: %s%s", prefix, rel_path,
+                    )
+                    return None
+                if rel_path not in files:
+                    logger.warning(
+                        "Referenced skill support file is missing; "
+                        "continuing without it: %s%s",
+                        prefix, rel_path,
+                    )
             revision = self._tree_revisions.get(repo) or branch
         else:
             for rel_path in referenced:
                 content = self._fetch_file_bytes(repo, f"{skill_path.rstrip('/')}/{rel_path}")
                 if content is None:
-                    return None
+                    logger.warning("Failed to fetch referenced skill support "
+                                   "file; continuing without it: %s", rel_path)
+                    continue
                 files[rel_path] = content
             revision = ""
 
@@ -1067,9 +1223,11 @@ class GitHubSource(SkillSource):
 
         return None
 
-    def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
+    def _fetch_file_content(
+        self, repo: str, path: str, ref: Optional[str] = None
+    ) -> Optional[str]:
         """Fetch a single text file from GitHub."""
-        content = self._fetch_file_bytes(repo, path)
+        content = self._fetch_file_bytes(repo, path, ref=ref)
         if content is None:
             return None
         try:
@@ -1077,11 +1235,25 @@ class GitHubSource(SkillSource):
         except UnicodeDecodeError:
             return None
 
-    def _fetch_file_bytes(self, repo: str, path: str) -> Optional[bytes]:
-        """Fetch exact file bytes from GitHub without text decoding."""
-        url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    def _fetch_file_bytes(
+        self, repo: str, path: str, ref: Optional[str] = None
+    ) -> Optional[bytes]:
+        """Fetch exact file bytes from GitHub without text decoding.
+
+        ``ref`` pins the fetch to a specific commit/tree SHA. Without it the
+        contents endpoint floats to the default-branch HEAD, so the bytes can
+        come from a NEWER revision than the tree the paths were validated
+        against — a TOCTOU between "what the tree says is a regular blob"
+        and "what actually gets downloaded". Callers that resolved paths from
+        a tree pass that tree's SHA; ``None`` keeps the legacy unpinned
+        behavior for call sites with no revision in hand.
+        """
+        encoded_path = quote(path, safe="/")
+        url = f"https://api.github.com/repos/{repo}/contents/{encoded_path}"
+        params = {"ref": ref} if ref else None
         resp = self._github_get(
             url,
+            params=params,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
         )
         if resp is not None and resp.status_code == 200:
@@ -1519,12 +1691,20 @@ class UrlSource(SkillSource):
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": text}
         base_url = url.rsplit("/", 1)[0] + "/"
         for rel_path in sorted(referenced):
-            support_url = urljoin(base_url, rel_path)
+            support_url = urljoin(base_url, quote(rel_path, safe="/"))
             if urlparse(support_url).netloc != urlparse(url).netloc:
                 return None
             content = self._fetch_bytes(support_url)
             if content is None:
-                return None
+                # A referenced support file that 404s (or is otherwise
+                # unreachable) shouldn't sink the whole install — skip it
+                # and let the bundle install without it.
+                logger.warning(
+                    "URL skill %s: referenced support file %r could not be "
+                    "fetched from %s; skipping it",
+                    url, rel_path, support_url,
+                )
+                continue
             files[rel_path] = content
 
         # When auto-resolution fails, return a bundle with an empty name and
@@ -3423,6 +3603,16 @@ class OptionalSkillSource(SkillSource):
         else:
             skill_dir = resolved
 
+        # Upstream-maintained entries: the local dir is a catalog stub whose
+        # frontmatter points at the real skill in an external repo the
+        # upstream project maintains (e.g. impeccable's Hermes-native bundle
+        # under pbakaus/impeccable:.hermes/skills/impeccable). Install pulls
+        # the live content from there instead of vendoring a fork here.
+        upstream = self._upstream_pointer(skill_dir)
+        if upstream is not None:
+            rel_id = skill_dir.resolve().relative_to(self._optional_dir.resolve()).as_posix()
+            return self._fetch_from_upstream(upstream, rel_id)
+
         files: Dict[str, Union[str, bytes]] = {}
         for f in skill_dir.rglob("*"):
             if (
@@ -3549,6 +3739,11 @@ class OptionalSkillSource(SkillSource):
         if "SKILL.md" not in files:
             return None
 
+        # Live-fetched catalog stubs redirect the same way local ones do.
+        upstream = self._upstream_pointer_from_content(files["SKILL.md"])
+        if upstream is not None:
+            return self._fetch_from_upstream(upstream, rel)
+
         logger.info("Optional skill '%s' fetched from live repo (not in local checkout)", rel)
         return SkillBundle(
             name=rel.rsplit("/", 1)[-1],
@@ -3597,6 +3792,87 @@ class OptionalSkillSource(SkillSource):
 
         self._remote_dirs = dirs
         return dirs
+
+    def _upstream_pointer(self, skill_dir: Path) -> Optional[Dict[str, str]]:
+        """Return the upstream pointer for a catalog-stub skill dir, if any.
+
+        A stub declares ``metadata.hermes.upstream`` in its SKILL.md
+        frontmatter:
+
+            metadata:
+              hermes:
+                upstream:
+                  repo: pbakaus/impeccable
+                  path: .hermes/skills/impeccable
+
+        Returns ``{"repo": ..., "path": ...}`` or None for normal
+        (fully-vendored) optional skills.
+        """
+        skill_md = skill_dir / "SKILL.md"
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        return self._upstream_pointer_from_content(content)
+
+    def _upstream_pointer_from_content(self, content: Union[str, bytes]) -> Optional[Dict[str, str]]:
+        """Parse ``metadata.hermes.upstream`` out of SKILL.md content."""
+        if isinstance(content, bytes):
+            try:
+                content = content.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        fm = self._parse_frontmatter(content)
+        meta_block = fm.get("metadata")
+        if not isinstance(meta_block, dict):
+            return None
+        hermes_meta = meta_block.get("hermes")
+        if not isinstance(hermes_meta, dict):
+            return None
+        upstream = hermes_meta.get("upstream")
+        if not isinstance(upstream, dict):
+            return None
+        repo = str(upstream.get("repo", "")).strip().strip("/")
+        path = str(upstream.get("path", "")).strip().strip("/")
+        # repo must be exactly owner/name; path must be a clean relative path.
+        if not repo or repo.count("/") != 1 or not path:
+            return None
+        parts = [p for p in path.split("/") if p not in ("", ".")]
+        if not parts or any(p == ".." for p in parts):
+            return None
+        return {"repo": repo, "path": "/".join(parts)}
+
+    def _fetch_from_upstream(self, upstream: Dict[str, str], rel_id: str) -> Optional[SkillBundle]:
+        """Fetch an upstream-maintained optional skill from its external repo.
+
+        Delegates to GitHubSource.fetch() (full-directory download through the
+        git tree, symlink/unsafe-path rejection, quarantine + scan downstream)
+        but re-labels the bundle as an official catalog entry so trust,
+        identifier, and update tracking stay in the optional-skills namespace.
+        """
+        github = self._get_github()
+        bundle = github.fetch(f"{upstream['repo']}/{upstream['path']}")
+        if bundle is None:
+            logger.warning(
+                "Upstream fetch failed for optional skill %s (%s:%s)",
+                rel_id, upstream["repo"], upstream["path"],
+            )
+            return None
+        return SkillBundle(
+            name=bundle.name,
+            files=bundle.files,
+            source="official",
+            identifier=f"official/{rel_id}",
+            # Curated-catalog endorsement, but the content comes live from a
+            # third-party repo — "trusted", not "builtin", so a dangerous
+            # scan verdict still blocks install (INSTALL_POLICY).
+            trust_level="trusted",
+            metadata={
+                **bundle.metadata,
+                "upstream_repo": upstream["repo"],
+                "upstream_path": upstream["path"],
+            },
+        )
 
     def _find_skill_dir(self, name: str) -> Optional[Path]:
         """Find a skill directory by name anywhere in optional-skills/."""
@@ -4670,5 +4946,11 @@ def unified_search(query: str, sources: List[SkillSource],
         elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
             seen[r.identifier] = r
     deduped = list(seen.values())
+
+    # Stable-sort by trust rank before truncating: the limit cut must not
+    # drop a builtin/official catalog entry because a high-volume community
+    # source (skills.sh mirrors every repo) happened to finish first and
+    # flood the merged list. Insertion order is preserved within each rank.
+    deduped.sort(key=lambda r: -_TRUST_RANK.get(r.trust_level, 0))
 
     return deduped[:limit]

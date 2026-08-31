@@ -15,7 +15,7 @@ Iterative Python via live Jupyter kernel (hamelnb).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/data-science/jupyter-notebook` |
-| Path | `optional-skills/data-science/jupyter-notebook` |
+| Path | `optional-skills/data-science\jupyter-notebook` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -89,7 +89,7 @@ session via the Jupyter REST API:
 ```
 curl -s -X POST http://127.0.0.1:8888/api/sessions \
   -H "Content-Type: application/json" \
-  -d '{"path":"scratch.ipynb","type":"notebook","name":"scratch.ipynb","kernel":{"name":"python3"}}'
+  -d '{"path":"scratch.ipynb","type":"notebook","name":"scratch.ipynb","kernel":{"name":"python"}}'
 ```
 
 ## Core Workflow

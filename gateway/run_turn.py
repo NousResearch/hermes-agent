@@ -3662,12 +3662,24 @@ class GatewayTurnMixin:
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
-            if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
-                logger.info(
-                    "Discarding stale goal continuation for session %s — goal is no longer active",
-                    session_key or "?",
-                )
-                return result
+            if self._is_goal_continuation_event(pending_event):
+                from hermes_cli.goals import GoalPersistenceError
+
+                try:
+                    goal_still_active = self._goal_still_active_for_session(session_id)
+                except GoalPersistenceError as exc:
+                    notice = f"Goal status unavailable: {exc}"
+                    logger.warning("goal continuation: %s", notice)
+                    # The queued branch delivered the prior response above, so
+                    # send this status now rather than deferring it again.
+                    await self._send_goal_status_notice(next_source, notice)
+                    return result
+                if not goal_still_active:
+                    logger.info(
+                        "Discarding stale goal continuation for session %s — goal is no longer active",
+                        session_key or "?",
+                    )
+                    return result
             # Resolve the follow-up's session key BEFORE preparing the inbound text: native image
             # paths are buffered under the key given and consumed under next_session_key.
             try:

@@ -2,10 +2,12 @@
 
 import asyncio
 import importlib
+import logging
 import sys
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -956,6 +958,27 @@ class QueuedFailedEmptyAgent:
         }
 
 
+class QueuedGoalDispatchAgent:
+    """Record whether a queued synthetic goal turn reaches the agent."""
+
+    calls = 0
+    messages = []
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
+        type(self).calls += 1
+        type(self).messages.append(message)
+        return {
+            "final_response": (
+                "first response" if type(self).calls == 1 else "goal continuation processed"
+            ),
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class BackgroundReviewAgent:
     def __init__(self, **kwargs):
         self.background_review_callback = kwargs.get("background_review_callback")
@@ -1541,6 +1564,140 @@ async def test_run_agent_sends_normalized_failure_before_queued_followup(
     # Sanitized failure copy (raw "provider exploded" stays in the log), then the queued follow-up.
     assert any("couldn't finish this reply" in text and "/retry" in text for text in sent_texts)
     assert not any("provider exploded" in text for text in sent_texts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_notice"),
+    [
+        (
+            "missing",
+            "Goal status unavailable: session goal storage is unavailable",
+        ),
+        (
+            "read",
+            "Goal status unavailable: persisted goal read failed",
+        ),
+        (
+            "invalid",
+            "Goal status unavailable: persisted goal state is invalid",
+        ),
+    ],
+)
+async def test_run_agent_queued_goal_read_failure_reports_after_main_response(
+    monkeypatch, tmp_path, caplog, failure, expected_notice
+):
+    """A failed queued-goal recheck must not look like verified inactivity."""
+    from hermes_cli import goals
+
+    class GoalDB:
+        def get_meta(self, _key):
+            if failure == "read":
+                raise OSError("sensitive queued-read details")
+            return '{"goal": "", "status": "active"}'
+
+    monkeypatch.setattr(
+        goals,
+        "_get_session_db",
+        (lambda: None) if failure == "missing" else (lambda: GoalDB()),
+    )
+    judge = MagicMock(side_effect=AssertionError("goal judge must not run"))
+    enqueue = MagicMock(side_effect=AssertionError("goal enqueue must not run"))
+    monkeypatch.setattr(goals, "judge_goal", judge)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run.GatewayRunner, "_enqueue_fifo", enqueue)
+
+    QueuedGoalDispatchAgent.calls = 0
+    QueuedGoalDispatchAgent.messages = []
+    pending = goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task")
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        adapter, result = await _run_with_agent(
+            monkeypatch,
+            tmp_path,
+            QueuedGoalDispatchAgent,
+            session_id=f"queued-goal-{failure}",
+            pending_text=pending,
+        )
+
+    assert result["final_response"] == "first response"
+    assert QueuedGoalDispatchAgent.calls == 1
+    assert QueuedGoalDispatchAgent.messages == ["hello"]
+    judge.assert_not_called()
+    enqueue.assert_not_called()
+    assert [call["content"] for call in adapter.sent] == [
+        "first response",
+        expected_notice,
+    ]
+    assert expected_notice in caplog.text
+    assert "sensitive queued-read details" not in caplog.text
+    assert all("sensitive queued-read details" not in call["content"] for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persisted_state", ["absent", "paused"])
+async def test_run_agent_queued_goal_verified_inactivity_remains_silent(
+    monkeypatch, tmp_path, persisted_state
+):
+    """Authoritative absence or inactivity still discards a stale continuation."""
+    from hermes_cli import goals
+
+    raw = (
+        None
+        if persisted_state == "absent"
+        else goals.GoalState(goal="finish the task", status="paused").to_json()
+    )
+
+    class InactiveGoalDB:
+        def get_meta(self, _key):
+            return raw
+
+    monkeypatch.setattr(goals, "_get_session_db", lambda: InactiveGoalDB())
+    QueuedGoalDispatchAgent.calls = 0
+    QueuedGoalDispatchAgent.messages = []
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedGoalDispatchAgent,
+        session_id=f"queued-goal-{persisted_state}",
+        pending_text=goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task"),
+    )
+
+    assert result["final_response"] == "first response"
+    assert QueuedGoalDispatchAgent.calls == 1
+    assert QueuedGoalDispatchAgent.messages == ["hello"]
+    assert [call["content"] for call in adapter.sent] == ["first response"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_goal_active_state_runs_continuation(monkeypatch, tmp_path):
+    """An authoritative active row still permits the queued continuation."""
+    from hermes_cli import goals
+
+    active_raw = goals.GoalState(goal="finish the task").to_json()
+
+    class ActiveGoalDB:
+        def get_meta(self, _key):
+            return active_raw
+
+    monkeypatch.setattr(goals, "_get_session_db", lambda: ActiveGoalDB())
+    QueuedGoalDispatchAgent.calls = 0
+    QueuedGoalDispatchAgent.messages = []
+    pending = goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task")
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedGoalDispatchAgent,
+        session_id="queued-goal-active",
+        pending_text=pending,
+    )
+
+    assert result["final_response"] == "goal continuation processed"
+    assert QueuedGoalDispatchAgent.calls == 2
+    assert QueuedGoalDispatchAgent.messages == ["hello", pending]
+    assert [call["content"] for call in adapter.sent] == ["first response"]
 
 
 @pytest.mark.asyncio

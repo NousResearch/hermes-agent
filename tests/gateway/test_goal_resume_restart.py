@@ -290,8 +290,9 @@ class TestGatewayResumeRestartsWork:
     ):
         runner, adapter = _make_runner()
         _exhaust_budget(_GW_SID)
+        event = _resume_event()
 
-        response = await GatewayRunner._handle_goal_command(runner, _resume_event())
+        response = await GatewayRunner._handle_goal_command(runner, event)
 
         assert "resume" in response.lower() or "Goal" in response
         pending = adapter._pending_messages.get(_GW_KEY)
@@ -300,6 +301,10 @@ class TestGatewayResumeRestartsWork:
             "— otherwise the goal sits idle until the next real user message"
         )
         assert pending.text.startswith("[Continuing toward your standing goal]")
+        assert pending.internal is False
+        assert pending.allow_gateway_control is False
+        assert pending.goal_continuation is True
+        assert pending.source is event.source
         # The pause/clear stale-work guard must recognize the queued turn as
         # a synthetic goal continuation so it can be cleaned up on /goal pause.
         assert GatewayRunner._is_goal_continuation_event(pending)

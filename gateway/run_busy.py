@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import time
+from dataclasses import dataclass
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
@@ -30,6 +31,17 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+@dataclass
+class _GoalContinuationRetry:
+    """One claimed continuation retained by its current adapter owner."""
+
+    event: MessageEvent
+    wake: asyncio.Event
+    owner_task: Optional[asyncio.Task]
+    dropped: bool = False
+    initial_retry_used: bool = False
+
+
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
@@ -43,16 +55,24 @@ class GatewayBusySessionMixin:
         state = self._peek_session_state(session_key)
         return state.conversation.queued_events if state else None
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
+    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> bool:
+        """Append an event without bypassing an older runner-owned tail."""
+        overflow = self._session_state(session_key).conversation.queued_events
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
-        if pending_slot is None:
-            return
-        if session_key in pending_slot:
-            self._session_state(session_key).conversation.queued_events.append(queued_event)
+        if not isinstance(pending_slot, dict):
+            overflow.append(queued_event)
+            queued_event._gateway_accepted = True
+            logger.warning(
+                "queue: adapter has no pending slot for %s; retaining event in runner FIFO",
+                session_key or "?",
+            )
+            return True
+        if session_key in pending_slot or overflow:
+            overflow.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
         queued_event._gateway_accepted = True
+        return True
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]
@@ -67,9 +87,14 @@ class GatewayBusySessionMixin:
             return pending_event
         if pending_event is None:
             return overflow.pop(0)
-        if adapter is not None and hasattr(adapter, "_pending_messages"):
-            adapter._pending_messages[session_key] = overflow.pop(0)
-        # else: no adapter — leave the head in place so we don't silently drop it.
+        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        if not isinstance(pending_slot, dict):
+            logger.warning(
+                "Cannot promote queued event for session %s: adapter pending slot unavailable",
+                session_key,
+            )
+            return pending_event
+        pending_slot[session_key] = overflow.pop(0)
         return pending_event
 
     def _restore_dequeued_event_front(
@@ -78,29 +103,191 @@ class GatewayBusySessionMixin:
         adapter: Any,
         event: "MessageEvent",
     ) -> None:
-        """Restore a claimed event ahead of every event that arrived after it.
-
-        The adapter slot stays empty so its post-handler drain does not hot-loop on
-        an unavailable authority. The next gateway turn owns the bounded retry:
-        its ordinary post-turn promotion claims this exact event again.
-        """
+        """Publish one exact claimed event ahead of every later event."""
         state = self._session_state(session_key)
         queued_events = state.conversation.queued_events
-        current_slot = (
-            adapter._pending_messages.pop(session_key, None)
-            if adapter is not None and hasattr(adapter, "_pending_messages")
-            else None
-        )
+        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         queued_events[:] = [queued for queued in queued_events if queued is not event]
-        restored = [event]
+        if not isinstance(pending_slot, dict):
+            queued_events.insert(0, event)
+            return
+        current_slot = pending_slot.pop(session_key, None)
         if current_slot is not None and current_slot is not event:
-            restored.append(current_slot)
-        queued_events[:0] = restored
+            queued_events[:] = [queued for queued in queued_events if queued is not current_slot]
+            queued_events.insert(0, current_slot)
+        pending_slot[session_key] = event
+
+    def _claim_goal_continuation_retry(
+        self, session_key: str, adapter: Any, event: "MessageEvent",
+    ) -> Optional[_GoalContinuationRetry]:
+        """Publish one retry record while the current owner retains the head."""
+        retries = getattr(self, "_goal_continuation_retries", None)
+        if retries is None:
+            retries = self._goal_continuation_retries = {}
+        existing = retries.get(session_key)
+        owner_task = asyncio.current_task()
+        if existing is not None:
+            if existing.owner_task is owner_task:
+                return existing
+            if existing.event is not event:
+                self._enqueue_fifo(session_key, event, adapter)
+            return None
+
+        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        if isinstance(pending_slot, dict) and pending_slot.get(session_key) is event:
+            pending_slot.pop(session_key, None)
+        state = self._session_state(session_key)
+        state.conversation.queued_events[:] = [
+            queued for queued in state.conversation.queued_events if queued is not event
+        ]
+        retry = _GoalContinuationRetry(event=event, wake=asyncio.Event(), owner_task=owner_task)
+        retries[session_key] = retry
+        return retry
+
+    def _finish_goal_continuation_retry(
+        self, session_key: str, retry: _GoalContinuationRetry,
+    ) -> None:
+        retries = getattr(self, "_goal_continuation_retries", None)
+        if retries is not None and retries.get(session_key) is retry:
+            retries.pop(session_key, None)
+
+    def _stage_next_queued_event(
+        self,
+        session_key: str,
+        adapter: Any,
+        *,
+        exclude_event: Optional["MessageEvent"] = None,
+    ) -> bool:
+        """Expose the oldest distinct runner successor to adapter finalization."""
+        state = self._peek_session_state(session_key)
+        queued_events = state.conversation.queued_events if state is not None else None
+        if exclude_event is not None and queued_events:
+            queued_events[:] = [queued for queued in queued_events if queued is not exclude_event]
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if not isinstance(pending_slot, dict):
+            return False
+        current_slot = pending_slot.get(session_key)
+        if current_slot is exclude_event and exclude_event is not None:
+            pending_slot.pop(session_key, None)
+        elif session_key in pending_slot:
+            return False
+        if not queued_events:
+            return False
+        pending_slot[session_key] = queued_events.pop(0)
+        return True
+
+    def _drop_goal_continuation_retry(self, session_key: str) -> int:
+        """Wake a parked owner after an authoritative lifecycle transition."""
+        retry = getattr(self, "_goal_continuation_retries", {}).get(session_key)
+        if retry is None or retry.dropped:
+            return 0
+        retry.dropped = True
+        retry.wake.set()
+        return 1
+
+    async def _wait_for_goal_continuation_admission(
+        self,
+        *,
+        event: "MessageEvent",
+        source: "SessionSource",
+        session_id: str,
+        session_key: str,
+        adapter: Any,
+        retain_on_admit: bool = False,
+    ) -> bool:
+        """Retain a claimed continuation until authority gives a definite answer."""
+        from hermes_cli.goals import GoalPersistenceError
+
+        try:
+            active = self._goal_still_active_for_session(session_id)
+            if not active:
+                self._stage_next_queued_event(session_key, adapter, exclude_event=event)
+                return False
+            if retain_on_admit:
+                return self._claim_goal_continuation_retry(session_key, adapter, event) is not None
+            return True
+        except GoalPersistenceError as exc:
+            retry = self._claim_goal_continuation_retry(session_key, adapter, event)
+            if retry is None:
+                return False
+            notice = f"Goal status unavailable: {exc}"
+
+        logger.warning("goal continuation: %s", notice)
+        try:
+            await self._send_goal_status_notice(source, notice)
+        except asyncio.CancelledError:
+            if not retry.dropped:
+                self._restore_dequeued_event_front(session_key, adapter, event)
+            else:
+                self._stage_next_queued_event(session_key, adapter, exclude_event=event)
+            self._finish_goal_continuation_retry(session_key, retry)
+            raise
+        except Exception:
+            logger.warning("goal continuation: status notice delivery failed", exc_info=True)
+        except BaseException:
+            if not retry.dropped:
+                self._restore_dequeued_event_front(session_key, adapter, event)
+            else:
+                self._stage_next_queued_event(session_key, adapter, exclude_event=event)
+            self._finish_goal_continuation_retry(session_key, retry)
+            raise
+
+        initial_delay = max(
+            0.001,
+            float(getattr(self, "_goal_continuation_retry_initial_delay_seconds", 0.25)),
+        )
+        try:
+            while True:
+                if retry.dropped:
+                    self._finish_goal_continuation_retry(session_key, retry)
+                    self._stage_next_queued_event(session_key, adapter, exclude_event=event)
+                    return False
+                try:
+                    if retry.initial_retry_used:
+                        await retry.wake.wait()
+                    else:
+                        retry.initial_retry_used = True
+                        await asyncio.wait_for(retry.wake.wait(), timeout=initial_delay)
+                except asyncio.TimeoutError:
+                    pass
+                retry.wake.clear()
+                if retry.dropped:
+                    self._finish_goal_continuation_retry(session_key, retry)
+                    self._stage_next_queued_event(session_key, adapter, exclude_event=event)
+                    return False
+                try:
+                    active = self._goal_still_active_for_session(session_id)
+                except GoalPersistenceError as retry_exc:
+                    logger.warning("goal continuation remains parked: %s", retry_exc)
+                    continue
+                if not active or not retain_on_admit:
+                    self._finish_goal_continuation_retry(session_key, retry)
+                if not active:
+                    self._stage_next_queued_event(session_key, adapter, exclude_event=event)
+                return active
+        except BaseException:
+            if not retry.dropped:
+                self._restore_dequeued_event_front(session_key, adapter, event)
+            else:
+                self._stage_next_queued_event(session_key, adapter, exclude_event=event)
+            self._finish_goal_continuation_retry(session_key, retry)
+            raise
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
-        """Total pending /queue items for a session — slot + overflow."""
-        depth = len(self._overflow_queue(session_key) or ())
-        if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
+        """Total pending items: claimed head + adapter slot + overflow."""
+        queued_events = self._overflow_queue(session_key) or []
+        depth = len(queued_events)
+        pending_slot = getattr(adapter, "_pending_messages", {}) if adapter is not None else {}
+        slot_event = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+        if slot_event is not None:
+            depth += 1
+        retry = getattr(self, "_goal_continuation_retries", {}).get(session_key)
+        if (
+            retry is not None
+            and not retry.dropped
+            and retry.event is not slot_event
+            and all(queued is not retry.event for queued in queued_events)
+        ):
             depth += 1
         return depth
 
@@ -144,13 +331,23 @@ class GatewayBusySessionMixin:
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
-        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items)."""
-        text = getattr(event_or_text, "text", event_or_text) or ""
-        return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
+        """True only for typed, trusted synthetic /goal continuation turns."""
+        if not isinstance(event_or_text, MessageEvent):
+            return False
+        if not (
+            event_or_text.goal_continuation
+            and not event_or_text.internal
+            and not event_or_text.allow_gateway_control
+        ):
+            return False
+        text = event_or_text.text or ""
+        return text.startswith("[Continuing toward your standing goal]\nGoal:") or text.startswith(
+            "[Continuing toward your standing goal — a quality gate failed]\nGoal:"
+        )
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session; real /queue items are kept."""
-        removed = 0
+        removed = self._drop_goal_continuation_retry(session_key)
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if isinstance(pending_slot, dict):
             pending_event = pending_slot.get(session_key)
@@ -301,11 +498,17 @@ class GatewayBusySessionMixin:
         "gateway_session_id", "gateway_session_strict",
     )
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    def _queue_or_replace_pending_event(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        *,
+        merge_media: bool = True,
+    ) -> bool:
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._adapter_for_source(event.source)
         if not adapter:
-            return
+            return False
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
         # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
         pending_slot = getattr(adapter, "_pending_messages", None)
@@ -323,7 +526,7 @@ class GatewayBusySessionMixin:
                 for key in self._SECURITY_METADATA_KEYS
             )
         )
-        if same_security_context and (
+        if merge_media and same_security_context and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
             or bool(getattr(existing, "media_urls", None))
@@ -335,16 +538,16 @@ class GatewayBusySessionMixin:
                 merge_text=event.message_type == MessageType.TEXT,
             )
             event._gateway_accepted = True
-            return
+            return True
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key, self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            return False
 
-        self._enqueue_fifo(session_key, event, adapter)
+        return self._enqueue_fifo(session_key, event, adapter)
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Steerable text for a busy follow-up, transcribing voice-message media first.
@@ -711,6 +914,20 @@ class GatewayBusySessionMixin:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
             return False  # let default path handle it
+        retry = getattr(self, "_goal_continuation_retries", {}).get(session_key)
+        if retry is not None and not retry.dropped:
+            self._queue_or_replace_pending_event(session_key, event, merge_media=False)
+            retry.wake.set()
+            return True
+
+        queue_state = self._peek_session_state(session_key)
+        if (
+            queue_state is not None
+            and queue_state.conversation.queued_events
+            and self._effective_busy_text_mode(event.source) == "queue"
+        ):
+            self._queue_or_replace_pending_event(session_key, event, merge_media=False)
+            return True
         # Internal synthetic events (delegation / background completions) must never interrupt or
         # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
         # queue them through the FIFO (security metadata kept apart).

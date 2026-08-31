@@ -100,9 +100,22 @@ class GatewayGoalsMixin:
         return await self._manager_for_event(event, "heartbeat", _load)
 
     @staticmethod
-    def _synthetic_prompt_event(source: Any, text: str, *, internal: bool = False) -> MessageEvent:
+    def _synthetic_prompt_event(
+        source: Any,
+        text: str,
+        *,
+        internal: bool = False,
+        goal_continuation: bool = False,
+    ) -> MessageEvent:
         """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session."""
-        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=internal,
+            allow_gateway_control=not goal_continuation,
+            goal_continuation=goal_continuation,
+        )
 
     def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
         """Track the canonical route and start the restart-recoverable poller."""
@@ -332,7 +345,11 @@ class GatewayGoalsMixin:
             adapter = self._adapter_for_source(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
-                self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
+                self._enqueue_fifo(
+                    _quick_key,
+                    self._synthetic_prompt_event(source, prompt, goal_continuation=True),
+                    adapter,
+                )
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 

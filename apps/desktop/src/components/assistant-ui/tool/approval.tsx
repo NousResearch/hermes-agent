@@ -153,12 +153,22 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
           // Bound (not wrapped) so the ambient fallback keeps the exact
           // 2-arg call shape gateway.request callers assert on.
           gateway.request.bind(gateway) as typeof gateway.request,
-          'approval.respond',
-          {
-            choice,
-            request_id: request.requestId,
-            session_id: request.sessionId ?? undefined
-          }
+          request.productionPermit ? 'production_permit.respond' : 'approval.respond',
+          request.productionPermit
+            ? {
+                choice,
+                request_id: request.requestId,
+                session_id: request.sessionId ?? undefined,
+                witness:
+                  choice === 'once'
+                    ? await window.hermesDesktop.productionPermit.sign(request.productionPermit)
+                    : undefined
+              }
+            : {
+                choice,
+                request_id: request.requestId,
+                session_id: request.sessionId ?? undefined
+              }
         )
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
         clearApprovalRequest(request.sessionId, request.requestId)

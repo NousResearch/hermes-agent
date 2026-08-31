@@ -769,7 +769,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
           if (active) {
             setState({
-              error: office ? undefined : 'Could not parse this Office document',
+              error: office ? undefined : translateNow('preview.officeParseError'),
               loading: false,
               office: office || undefined
             })
@@ -1094,7 +1094,13 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }
 
   if (isOffice && state.office) {
-    return <OfficePreviewView preview={state.office} truncatedLabel={t.preview.truncated} />
+    return (
+      <OfficePreviewView
+        preview={state.office}
+        slideLabel={t.preview.slideLabel}
+        truncatedLabel={t.preview.officeTruncated}
+      />
+    )
   }
 
   if (isImage && state.dataUrl) {

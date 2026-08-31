@@ -11,15 +11,34 @@ export type SpreadsheetPreview = {
   truncated?: boolean
 }
 
+export type OfficeTextRun = {
+  bold?: boolean
+  italic?: boolean
+  text: string
+}
+
+export type OfficeParagraph = {
+  heading?: 1 | 2 | 3
+  runs: OfficeTextRun[]
+  type: 'paragraph'
+}
+
+export type OfficeTable = {
+  rows: string[][]
+  type: 'table'
+}
+
+export type OfficeBlock = OfficeParagraph | OfficeTable
+
 export type DocumentPreview = {
-  html: string
+  blocks: OfficeBlock[]
   kind: 'document'
   truncated?: boolean
 }
 
 export type SlidesPreview = {
   kind: 'slides'
-  slides: { html: string }[]
+  slides: { lines: string[] }[]
   truncated?: boolean
 }
 
@@ -215,7 +234,7 @@ async function inflateRawWithZlib(data: Uint8Array): Promise<Uint8Array | null> 
   try {
     const { inflateRawSync } = await import(/* @vite-ignore */ 'node:zlib')
 
-    return new Uint8Array(inflateRawSync(data))
+    return new Uint8Array(inflateRawSync(data, { maxOutputLength: MAX_PART_BYTES }))
   } catch {
     return null
   }
@@ -229,8 +248,37 @@ async function inflateRawWithDecompressionStream(data: Uint8Array): Promise<Uint
   try {
     const copy = new Uint8Array(data)
     const stream = new Blob([copy]).stream().pipeThrough(new DecompressionStream('deflate-raw'))
+    const reader = stream.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
 
-    return new Uint8Array(await new Response(stream).arrayBuffer())
+    while (true) {
+      const { done, value } = await reader.read()
+
+      if (done) {
+        break
+      }
+
+      total += value.byteLength
+
+      if (total > MAX_PART_BYTES) {
+        await reader.cancel()
+
+        return null
+      }
+
+      chunks.push(value)
+    }
+
+    const out = new Uint8Array(total)
+    let offset = 0
+
+    for (const chunk of chunks) {
+      out.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+
+    return out
   } catch {
     return null
   }
@@ -264,8 +312,135 @@ function attr(el: Element, name: string): string {
   return el.getAttribute(name) || el.getAttributeNS(NS_OFFICE_REL, name) || ''
 }
 
-function escapeHtml(value: string) {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+function parseDocx(zip: Map<string, Uint8Array>): DocumentPreview | null {
+  const xml = zipText(zip, 'word/document.xml')
+  const doc = xml ? parseXml(xml) : null
+  const body = doc ? localElements(doc, 'body')[0] : null
+
+  if (!body) {
+    return null
+  }
+
+  const blocks = Array.from(body.children)
+    .map(child => {
+      if (child.localName === 'tbl') {
+        return tableBlock(child)
+      }
+
+      if (child.localName === 'p') {
+        return paragraphBlock(child)
+      }
+
+      return null
+    })
+    .filter((block): block is OfficeBlock => Boolean(block))
+
+  return { blocks: blocks.length ? blocks : [{ runs: [], type: 'paragraph' }], kind: 'document' }
+}
+
+function paragraphBlock(paragraph: Element): OfficeParagraph {
+  const style = paragraphStyle(paragraph)
+
+  const heading: OfficeParagraph['heading'] =
+    style === 'Heading1' || style === 'Title' ? 1 : style === 'Heading2' ? 2 : style === 'Heading3' ? 3 : undefined
+
+  const runs = Array.from(paragraph.children)
+    .filter(child => child.localName === 'r' || child.localName === 'hyperlink')
+    .flatMap(child => (child.localName === 'hyperlink' ? collectRuns(child) : [textRun(child)]))
+    .filter((run): run is OfficeTextRun => Boolean(run?.text))
+
+  return heading ? { heading, runs, type: 'paragraph' } : { runs, type: 'paragraph' }
+}
+
+function paragraphStyle(paragraph: Element): string {
+  const pPr = Array.from(paragraph.children).find(child => child.localName === 'pPr')
+
+  if (!pPr) {
+    return ''
+  }
+
+  const pStyle = localElements(pPr, 'pStyle')[0]
+
+  return pStyle?.getAttribute('val') || pStyle?.getAttribute('w:val') || ''
+}
+
+function collectRuns(root: Element): OfficeTextRun[] {
+  return Array.from(root.children)
+    .filter(child => child.localName === 'r')
+    .map(textRun)
+    .filter((run): run is OfficeTextRun => Boolean(run?.text))
+}
+
+function textRun(run: Element): OfficeTextRun | null {
+  const text = localElements(run, 't')
+    .map(node => node.textContent || '')
+    .join('')
+
+  if (!text) {
+    return null
+  }
+
+  const rPr = Array.from(run.children).find(child => child.localName === 'rPr')
+  const next: OfficeTextRun = { text }
+
+  if (rPr && localElements(rPr, 'b').length) {
+    next.bold = true
+  }
+
+  if (rPr && localElements(rPr, 'i').length) {
+    next.italic = true
+  }
+
+  return next
+}
+
+function tableBlock(table: Element): OfficeTable {
+  const rows = localElements(table, 'tr').map(row =>
+    localElements(row, 'tc').map(cell =>
+      localElements(cell, 't')
+        .map(node => node.textContent || '')
+        .join('')
+    )
+  )
+
+  return { rows, type: 'table' }
+}
+
+function parsePptx(zip: Map<string, Uint8Array>): SlidesPreview | null {
+  const names = [...zip.keys()]
+    .filter(name => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort((a, b) => slideIndex(a) - slideIndex(b))
+
+  if (!names.length) {
+    return null
+  }
+
+  const truncated = names.length > MAX_SLIDES
+  const slides = names.slice(0, MAX_SLIDES).map(name => ({ lines: slideLines(zipText(zip, name) || '') }))
+
+  return { kind: 'slides', slides, truncated }
+}
+
+function slideIndex(name: string) {
+  const match = /slide(\d+)\.xml$/i.exec(name)
+
+  return match ? Number(match[1]) : 0
+}
+
+function slideLines(xml: string): string[] {
+  const doc = parseXml(xml)
+
+  if (!doc) {
+    return []
+  }
+
+  return localElements(doc, 'p')
+    .map(paragraph =>
+      localElements(paragraph, 't')
+        .map(node => node.textContent || '')
+        .join('')
+    )
+    .filter(Boolean)
 }
 
 function parseXlsx(zip: Map<string, Uint8Array>): SpreadsheetPreview | null {
@@ -471,149 +646,4 @@ function directValue(cell: Element): string {
   const value = Array.from(cell.children).find(child => child.localName === 'v')
 
   return (value?.textContent || '').trim()
-}
-
-function parseDocx(zip: Map<string, Uint8Array>): DocumentPreview | null {
-  const xml = zipText(zip, 'word/document.xml')
-  const doc = xml ? parseXml(xml) : null
-  const body = doc ? localElements(doc, 'body')[0] : null
-
-  if (!body) {
-    return null
-  }
-
-  const html = Array.from(body.children)
-    .map(child => {
-      if (child.localName === 'tbl') {
-        return renderTable(child)
-      }
-
-      if (child.localName === 'p') {
-        return renderParagraph(child)
-      }
-
-      return ''
-    })
-    .join('')
-
-  return { kind: 'document', html: html || '<p></p>' }
-}
-
-function renderParagraph(paragraph: Element): string {
-  const style = paragraphStyle(paragraph)
-  const tag =
-    style === 'Heading1' || style === 'Title' ? 'h1' : style === 'Heading2' ? 'h2' : style === 'Heading3' ? 'h3' : 'p'
-
-  const inner = Array.from(paragraph.children)
-    .filter(child => child.localName === 'r' || child.localName === 'hyperlink')
-    .map(child => (child.localName === 'hyperlink' ? renderRuns(child) : renderRun(child)))
-    .join('')
-
-  return `<${tag}>${inner || '<br>'}</${tag}>`
-}
-
-function paragraphStyle(paragraph: Element): string {
-  const pPr = Array.from(paragraph.children).find(child => child.localName === 'pPr')
-
-  if (!pPr) {
-    return ''
-  }
-
-  const pStyle = localElements(pPr, 'pStyle')[0]
-
-  return pStyle?.getAttribute('val') || pStyle?.getAttribute('w:val') || ''
-}
-
-function renderRuns(root: Element): string {
-  return Array.from(root.children)
-    .filter(child => child.localName === 'r')
-    .map(renderRun)
-    .join('')
-}
-
-function renderRun(run: Element): string {
-  const text = localElements(run, 't')
-    .map(node => node.textContent || '')
-    .join('')
-
-  if (!text) {
-    return ''
-  }
-
-  const rPr = Array.from(run.children).find(child => child.localName === 'rPr')
-  const bold = Boolean(rPr && localElements(rPr, 'b').length)
-  const italic = Boolean(rPr && localElements(rPr, 'i').length)
-  let html = escapeHtml(text)
-
-  if (bold) {
-    html = `<strong>${html}</strong>`
-  }
-
-  if (italic) {
-    html = `<em>${html}</em>`
-  }
-
-  return html
-}
-
-function renderTable(table: Element): string {
-  const rows = localElements(table, 'tr')
-    .map(row => {
-      const cells = localElements(row, 'tc')
-        .map(cell => {
-          const text = localElements(cell, 't')
-            .map(node => escapeHtml(node.textContent || ''))
-            .join('')
-
-          return `<td>${text}</td>`
-        })
-        .join('')
-
-      return `<tr>${cells}</tr>`
-    })
-    .join('')
-
-  return `<table>${rows}</table>`
-}
-
-function parsePptx(zip: Map<string, Uint8Array>): SlidesPreview | null {
-  const names = [...zip.keys()]
-    .filter(name => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
-    .sort((a, b) => slideIndex(a) - slideIndex(b))
-
-  if (!names.length) {
-    return null
-  }
-
-  const truncated = names.length > MAX_SLIDES
-  const slides = names.slice(0, MAX_SLIDES).map(name => ({ html: renderSlide(zipText(zip, name) || '') }))
-
-  return { kind: 'slides', slides, truncated }
-}
-
-function slideIndex(name: string) {
-  const match = /slide(\d+)\.xml$/i.exec(name)
-
-  return match ? Number(match[1]) : 0
-}
-
-function renderSlide(xml: string): string {
-  const doc = parseXml(xml)
-
-  if (!doc) {
-    return '<p></p>'
-  }
-
-  const paragraphs = localElements(doc, 'p')
-    .map(paragraph => {
-      const text = localElements(paragraph, 't')
-        .map(node => node.textContent || '')
-        .join('')
-
-      return text ? `<p>${escapeHtml(text)}</p>` : ''
-    })
-    .filter(Boolean)
-    .join('')
-
-  return paragraphs || '<p></p>'
 }

@@ -24,29 +24,58 @@ describe('OfficePreviewView', () => {
             { name: 'Notes', rows: [['hello']] }
           ]
         }}
+        slideLabel={index => `Slide ${index}`}
         truncatedLabel="truncated"
       />
     )
 
     expect(screen.getByText('Name')).toBeTruthy()
     expect(screen.getByText('42')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Notes' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Notes' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Revenue' }).getAttribute('aria-selected')).toBe('true')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Notes' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Notes' }))
     expect(screen.getByText('hello')).toBeTruthy()
     expect(screen.queryByText('Ada')).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Notes' }).getAttribute('aria-selected')).toBe('true')
   })
 
-  it('renders document HTML without executing injected markup', () => {
+  it('renders document runs as React text, not HTML', () => {
     const { container } = render(
       <OfficePreviewView
-        preview={{ kind: 'document', html: '<p>Hello <strong>Ada</strong></p>' }}
+        preview={{
+          blocks: [
+            { heading: 1, runs: [{ text: 'Title' }], type: 'paragraph' },
+            { runs: [{ text: 'Hello ' }, { bold: true, text: 'Ada' }], type: 'paragraph' },
+            { rows: [['A', 'B']], type: 'table' }
+          ],
+          kind: 'document'
+        }}
+        slideLabel={index => `Slide ${index}`}
         truncatedLabel="truncated"
       />
     )
 
+    expect(container.querySelector('h1')?.textContent).toBe('Title')
     expect(container.querySelector('strong')?.textContent).toBe('Ada')
     expect(screen.getByText('Ada')).toBeTruthy()
+    expect(container.querySelector('[data-office-html]')).toBeNull()
+  })
+
+  it('keeps injected markup as text nodes', () => {
+    const { container } = render(
+      <OfficePreviewView
+        preview={{
+          blocks: [{ runs: [{ text: '<img src=x onerror=alert(1)>' }], type: 'paragraph' }],
+          kind: 'document'
+        }}
+        slideLabel={index => `Slide ${index}`}
+        truncatedLabel="truncated"
+      />
+    )
+
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeTruthy()
   })
 
   it('renders slides in order', () => {
@@ -54,8 +83,9 @@ describe('OfficePreviewView', () => {
       <OfficePreviewView
         preview={{
           kind: 'slides',
-          slides: [{ html: '<p>First</p>' }, { html: '<p>Second</p>' }]
+          slides: [{ lines: ['First'] }, { lines: ['Second'] }]
         }}
+        slideLabel={index => `Slide ${index}`}
         truncatedLabel="truncated"
       />
     )
@@ -69,6 +99,7 @@ describe('OfficePreviewView', () => {
     render(
       <OfficePreviewView
         preview={{ kind: 'spreadsheet', sheets: [{ name: 'A', rows: [['x']] }], truncated: true }}
+        slideLabel={index => `Slide ${index}`}
         truncatedLabel="Showing a preview of the first sheets, rows, or slides."
       />
     )

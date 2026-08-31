@@ -117,6 +117,62 @@ function zipFiles(files: Record<string, string>, method: 'store' | 'deflate' = '
   return concat([localBlob, centralBlob, eocd])
 }
 
+function zipDeflatedWithReportedSize(name: string, raw: Uint8Array, reportedUncompressed: number) {
+  const nameBytes = new TextEncoder().encode(name)
+  const payload = new Uint8Array(deflateRawSync(raw))
+  const crc = crc32(raw)
+
+  const local = concat([
+    new Uint8Array([0x50, 0x4b, 0x03, 0x04]),
+    u16(20),
+    u16(0),
+    u16(8),
+    u16(0),
+    u16(0),
+    u32(crc),
+    u32(payload.length),
+    u32(reportedUncompressed),
+    u16(nameBytes.length),
+    u16(0),
+    nameBytes,
+    payload
+  ])
+
+  const central = concat([
+    new Uint8Array([0x50, 0x4b, 0x01, 0x02]),
+    u16(20),
+    u16(20),
+    u16(0),
+    u16(8),
+    u16(0),
+    u16(0),
+    u32(crc),
+    u32(payload.length),
+    u32(reportedUncompressed),
+    u16(nameBytes.length),
+    u16(0),
+    u16(0),
+    u16(0),
+    u16(0),
+    u32(0),
+    u32(0),
+    nameBytes
+  ])
+
+  const eocd = concat([
+    new Uint8Array([0x50, 0x4b, 0x05, 0x06]),
+    u16(0),
+    u16(0),
+    u16(1),
+    u16(1),
+    u32(central.length),
+    u32(local.length),
+    u16(0)
+  ])
+
+  return concat([local, central, eocd])
+}
+
 const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 const NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const NS_PKG_REL = 'http://schemas.openxmlformats.org/package/2006/relationships'
@@ -148,8 +204,9 @@ function xlsxFiles(extraSheets?: Record<string, string>) {
     'xl/worksheets/sheet1.xml': `<?xml version="1.0"?>
 <worksheet xmlns="${NS_MAIN}">
   <sheetData>
-    <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>42</v></c></row>
-    <row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2" t="b"><v>1</v></c></row>
+    <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>42</v></c><c r="C1"><f>B1+1</f><v>43</v></c></row>
+    <row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2" t="b"><v>1</v></c><c r="C2" t="e"><v>#DIV/0!</v></c></row>
+    <row r="3"><c r="A3" t="str"><v>ok</v></c></row>
     <row r="4"><c r="A4" t="s"><v>2</v></c></row>
   </sheetData>
 </worksheet>`,
@@ -175,10 +232,10 @@ describe('parseOfficePreview xlsx', () => {
 
     expect(preview.sheets.map(sheet => sheet.name)).toEqual(['Revenue', 'Notes'])
     expect(preview.sheets[0]?.rows).toEqual([
-      ['Name', '42'],
-      ['Ada', 'TRUE'],
-      ['', ''],
-      ['Q1 total', '']
+      ['Name', '42', '43'],
+      ['Ada', 'TRUE', '#DIV/0!'],
+      ['ok', '', ''],
+      ['Q1 total', '', '']
     ])
     expect(preview.sheets[1]?.rows).toEqual([['hello']])
   })
@@ -189,7 +246,7 @@ describe('parseOfficePreview xlsx', () => {
     expect(preview?.kind).toBe('spreadsheet')
 
     if (preview?.kind === 'spreadsheet') {
-      expect(preview.sheets[0]?.rows[0]).toEqual(['Name', '42'])
+      expect(preview.sheets[0]?.rows[0]).toEqual(['Name', '42', '43'])
     }
   })
 })
@@ -218,12 +275,11 @@ describe('parseOfficePreview docx', () => {
       return
     }
 
-    expect(preview.html).toContain('<h1>')
-    expect(preview.html).toContain('Title')
-    expect(preview.html).toContain('<strong>Ada</strong>')
-    expect(preview.html).toContain('<td>A</td>')
-    expect(preview.html).toContain('<td>B</td>')
-    expect(preview.html).not.toContain('<script')
+    expect(preview.blocks).toEqual([
+      { heading: 1, runs: [{ text: 'Title' }], type: 'paragraph' },
+      { runs: [{ text: 'Hello ' }, { bold: true, text: 'Ada' }], type: 'paragraph' },
+      { rows: [['A', 'B']], type: 'table' }
+    ])
   })
 
   it('escapes HTML injected into document text', async () => {
@@ -242,8 +298,9 @@ describe('parseOfficePreview docx', () => {
     expect(preview?.kind).toBe('document')
 
     if (preview?.kind === 'document') {
-      expect(preview.html).toContain('&lt;img src=x onerror=alert(1)&gt;')
-      expect(preview.html).not.toContain('<img')
+      expect(preview.blocks).toEqual([
+        { runs: [{ text: '<img src=x onerror=alert(1)>' }], type: 'paragraph' }
+      ])
     }
   })
 })
@@ -267,10 +324,7 @@ describe('parseOfficePreview pptx', () => {
     expect(preview?.kind).toBe('slides')
 
     if (preview?.kind === 'slides') {
-      expect(preview.slides.map(slide => slide.html)).toEqual([
-        expect.stringContaining('First'),
-        expect.stringContaining('Second')
-      ])
+      expect(preview.slides.map(slide => slide.lines)).toEqual([['First'], ['Second']])
     }
   })
 })
@@ -282,5 +336,12 @@ describe('parseOfficePreview guards', () => {
 
   it('returns null for unsupported extensions', async () => {
     await expect(parseOfficePreview(zipFiles({ 'xl/workbook.xml': '<workbook/>' }), '.txt')).resolves.toBeNull()
+  })
+
+  it('rejects a deflate bomb whose true size exceeds the part cap', async () => {
+    const raw = new Uint8Array(9 * 1024 * 1024)
+    const archive = zipDeflatedWithReportedSize('xl/worksheets/sheet1.xml', raw, 100)
+
+    await expect(parseOfficePreview(archive, '.xlsx')).resolves.toBeNull()
   })
 })

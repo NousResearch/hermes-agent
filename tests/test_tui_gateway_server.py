@@ -594,6 +594,36 @@ def test_compute_host_interrupt_forwards_when_parent_running_mirror_is_stale(mon
         server._sessions.pop(sid, None)
 
 
+def test_compute_host_interrupt_skips_lazy_session_with_no_hosted_turn(monkeypatch):
+    """A lazy session that never submitted a hosted turn must not spawn a host.
+
+    ``HostSupervisor.interrupt()`` calls ``start()``, so forwarding the
+    interrupt unconditionally would launch a compute-host child just to
+    deliver an interrupt for a session with no work in it.
+    """
+    class _Supervisor:
+        def interrupt(self, sid, *, request_id=None):  # pragma: no cover - must not run
+            raise AssertionError("interrupt must not be forwarded for idle lazy sessions")
+
+    sid = "lazy-idle"
+    session = _session(
+        agent_ready=threading.Event(),
+        running=False,
+    )
+    session["agent"] = None  # _session() substitutes a namespace for None
+    server._sessions[sid] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor())
+
+    try:
+        response = server.handle_request(
+            {"id": "interrupt", "method": "session.interrupt", "params": {"session_id": sid}}
+        )
+        assert response["result"] == {"status": "interrupted", "turn_isolation": True}
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     class _ExplodingWorker:
         def __init__(self, *args, **kwargs):

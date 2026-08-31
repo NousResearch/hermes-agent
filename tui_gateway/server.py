@@ -1246,9 +1246,16 @@ def _interrupt_session_turn(
 
     if use_compute_host:
         # The host owns the live turn. Parent `running` is only a mirror and
-        # can lag behind a blocked interactive tool, so let the host determine
-        # whether there is work to interrupt.
-        _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
+        # can lag behind a blocked interactive tool (a clarify parked on its
+        # Event keeps the host turn alive after the parent flag went stale),
+        # so let the host decide whether there is work to interrupt.
+        # Gate on `_compute_host_active` too: `_session_uses_compute_host`
+        # is also true for lazy sessions that never ran a hosted turn, and
+        # `HostSupervisor.interrupt()` calls `start()` — forwarding
+        # unconditionally would spawn a compute-host child just to deliver
+        # an interrupt no session ever submitted work to.
+        if should_interrupt or session.get("_compute_host_active"):
+            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
     else:
         run_thread = session.get("_run_thread")
         run_thread_alive = run_thread is not None and run_thread.is_alive()

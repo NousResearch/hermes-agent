@@ -39,6 +39,10 @@ _CLONE_SUBDIR_FILES = ["memories/MEMORY.md", "memories/USER.md"]
 # because they are created dynamically and may be absent at copy time.
 _CLONE_ALL_STRIP: list[str] = ["gateway.pid", "gateway_state.json", "processes.json"]
 
+# Named profiles created before SOUL.md seeding may only have their session
+# store. Infrastructure directories under profiles/ have none of these files.
+_PROFILE_HOME_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "state.db")
+
 # Infrastructure excluded from --clone-all ONLY when the source is the default profile
 # (``~/.hermes``): git checkout (+ ~3 GB venv), worktrees, sibling profiles, shared bins,
 # npm packages. Named profiles never hold these at root, so the gate avoids silently
@@ -695,6 +699,8 @@ def list_profiles() -> List[ProfileInfo]:
     if named:
         alias_map = build_alias_map()  # ONCE, not per profile (was the dominant cost)
         for entry in named:
+            if not any((entry / marker).is_file() for marker in _PROFILE_HOME_MARKERS):
+                continue
             alias_name = alias_map.get(normalize_profile_name(entry.name))
             profiles.append(_profile_info(entry.name, entry, is_default=False, alias_name=alias_name))
     return profiles

@@ -238,7 +238,7 @@ class SessionContextMixin:
 
     def _conclusions_scope(self, session: Any, target_peer_id: str) -> Any:
         """ConclusionScope for observing target_peer_id; shared by create/delete/list."""
-        ai_observes = target_peer_id == session.assistant_peer_id or self._ai_observe_others
+        ai_observes = target_peer_id == session.assistant_peer_id or self._ai_observes_others(session)
         observer = self._get_or_create_peer(session.assistant_peer_id if ai_observes else target_peer_id)
         return observer.conclusions_of(target_peer_id)
 
@@ -369,7 +369,7 @@ class SessionContextMixin:
 
         def _chat_once() -> str:
             # The AI peer observes others when allowed; otherwise each peer queries its own context.
-            if self._ai_observe_others and target_peer_id != session.assistant_peer_id:
+            if self._ai_observes_others(session) and target_peer_id != session.assistant_peer_id:
                 observer = self._get_or_create_peer(session.assistant_peer_id)
                 return observer.chat(query, target=target_peer_id, reasoning_level=level) or ""
             return self._get_or_create_peer(target_peer_id).chat(query, reasoning_level=level) or ""

@@ -82,6 +82,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         ):
             setattr(self, f"_{name}", getattr(config, name) if config else default)
         self._turn_counter: int = 0
+        # honcho session id -> observation booleans synced from that session's server config.
+        # Whole-dict values are swapped in one assignment, so lock-free readers never see a partial one.
+        self._session_observation: dict[str, dict[str, bool]] = {}
 
         # Prefetch cache: session_key -> last context result (consumed once per turn).
         # Dialectic results are cached on the plugin side (HonchoMemoryProvider._prefetch_result)
@@ -132,19 +135,34 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         return self._cached_sdk_object(
             self._peers_cache, peer_id, lambda: self._authed_call("peer setup", lambda: self.honcho.peer(peer_id)))
 
+    # ----- Observation config (per session) -----
+
+    def _observation_flags(self, honcho_session_id: str) -> dict[str, bool]:
+        """The four observation booleans for one session: the values synced from that session's
+        server config once setup ran, else the config snapshot held on the manager."""
+        synced = self._session_observation.get(honcho_session_id)
+        if synced is not None:
+            return dict(synced)
+        return {f"{kind}_{name}": getattr(self, f"_{kind}_{name}")
+                for kind in ("user", "ai") for name in ("observe_me", "observe_others")}
+
+    def _ai_observes_others(self, session: HonchoSession) -> bool:
+        """Whether the AI peer observes other peers in this session; this picks the recall observer."""
+        synced = self._session_observation.get(session.honcho_session_id)
+        return synced["ai_observe_others"] if synced is not None else self._ai_observe_others
+
     # ----- Session creation -----
 
     def _configure_session_peers(self, session_id: str, user_peer: Any, assistant_peer: Any) -> bool:
-        """add_peers with the local observation config, then adopt the server's effective
-        config (set via the Honcho UI, it wins over local defaults). Observation booleans are
-        manager-scoped, so the last session init wins. Returns False when auth died mid-way
-        (already recorded by _authed_call)."""
+        """add_peers with this session's observation config, then adopt the server's effective
+        config (set via the Honcho UI, it wins over local defaults) under the session's own id.
+        Returns False when auth died mid-way (already recorded by _authed_call)."""
         peers = (("user", user_peer), ("ai", assistant_peer))
+        flags = self._observation_flags(session_id)
         try:
             from honcho.session import SessionPeerConfig
             peer_entries = [
-                (peer, SessionPeerConfig(observe_me=getattr(self, f"_{kind}_observe_me"),
-                                         observe_others=getattr(self, f"_{kind}_observe_others")))
+                (peer, SessionPeerConfig(observe_me=flags[f"{kind}_observe_me"], observe_others=flags[f"{kind}_observe_others"]))
                 for kind, peer in peers
             ]
             self._authed_call("session peer setup", lambda: self._sdk_session(session_id).add_peers(peer_entries))
@@ -154,13 +172,16 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                     "peer configuration read",
                     lambda: [self._sdk_session(session_id).get_peer_configuration(peer) for _, peer in peers],
                 )
+                synced = dict(flags)
                 for (kind, _), server_cfg in zip(peers, server_cfgs):
                     for field_name in ("observe_me", "observe_others"):
                         value = getattr(server_cfg, field_name)
                         if value is not None:
-                            setattr(self, f"_{kind}_{field_name}", value)
-                logger.debug("Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
-                             self._user_observe_me, self._user_observe_others, self._ai_observe_me, self._ai_observe_others)
+                            synced[f"{kind}_{field_name}"] = value
+                self._session_observation[session_id] = synced
+                logger.debug("Honcho observation synced from server for session '%s': user(me=%s,others=%s) ai(me=%s,others=%s)",
+                             session_id, synced["user_observe_me"], synced["user_observe_others"],
+                             synced["ai_observe_me"], synced["ai_observe_others"])
 
             self._guarded(_adopt_server_config, None, logging.DEBUG,
                           "Honcho get_peer_configuration failed (using local config): %s")

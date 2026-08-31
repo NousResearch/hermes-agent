@@ -97,6 +97,6 @@ class SessionPeersMixin:
         target_peer_id = self._resolve_peer_id(session, peer)
         if target_peer_id == session.assistant_peer_id:
             return session.assistant_peer_id, session.assistant_peer_id
-        if self._ai_observe_others:
+        if self._ai_observes_others(session):
             return session.assistant_peer_id, target_peer_id
         return target_peer_id, None

@@ -101,6 +101,23 @@ gateway:
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 
+## Reply threading
+
+Replies are threaded by default: the agent's answer (and any enabled progress/status messages) is anchored to the message that triggered it. Anchoring is NIP-10 aware — when the triggering message was already **inside** a thread, the agent replies to that thread's *root*, so the answer joins the existing thread instead of nesting a new one-message sub-thread under every turn.
+
+To post replies flat at the channel level instead, set either of these (they are equivalent; `reply_in_thread` matches the key Slack uses):
+
+```yaml
+gateway:
+  platforms:
+    buzz:
+      reply_to_mode: off          # PlatformConfig-level, like Discord/Telegram
+      extra:
+        reply_in_thread: false    # Slack-style key; env: BUZZ_REPLY_IN_THREAD
+```
+
+The opt-out applies to **all** send paths — final answers, streamed updates, interim commentary, tool-progress bubbles, and out-of-process cron delivery (`deliver=buzz`).
+
 ## Access control
 
 By default the allow-list is empty, which means every community member who mentions the agent gets a response only if `BUZZ_ALLOW_ALL_USERS=true`; otherwise restrict access by listing npubs or hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). Community membership itself is enforced by the relay — only members can post.

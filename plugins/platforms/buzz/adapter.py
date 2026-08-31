@@ -25,11 +25,12 @@ Configuration in config.yaml::
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
+            reply_in_thread: true      # false = post replies flat to the channel timeline
 
 Or via environment variables (overrides config.yaml):
     BUZZ_RELAY_URL, BUZZ_CHANNELS, BUZZ_HOME_CHANNEL, BUZZ_POLL_INTERVAL,
     BUZZ_CLI_PATH, BUZZ_CREDENTIALS_FILE, BUZZ_ALLOWED_USERS,
-    BUZZ_ALLOW_ALL_USERS
+    BUZZ_ALLOW_ALL_USERS, BUZZ_REPLY_IN_THREAD, BUZZ_REPLY_TO_MODE
 
 The only secret is BUZZ_PRIVATE_KEY (nsec or hex) — it belongs in
 ``~/.hermes/.env``.  It is passed to the CLI via the subprocess
@@ -548,6 +549,14 @@ class BuzzAdapter(BasePlatformAdapter):
         _rtm = (os.getenv("BUZZ_REPLY_TO_MODE") or getattr(config, "reply_to_mode", "first")
                 or "first")
         self._reply_to_mode: str = str(_rtm).strip().lower()
+        # Slack-convention alias: platforms.buzz.extra.reply_in_thread: false
+        # (the key users already know from Slack) opts out of threading the
+        # same way reply_to_mode: off does. Env (BUZZ_REPLY_IN_THREAD)
+        # overrides config.yaml. See #95842 / #75082.
+        _rit_raw = os.getenv("BUZZ_REPLY_IN_THREAD")
+        _rit = extra.get("reply_in_thread") if _rit_raw is None else _rit_raw
+        if _rit is not None and str(_rit).strip().lower() in ("false", "0", "no", "off"):
+            self._reply_to_mode = "off"
 
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
@@ -1333,23 +1342,10 @@ class BuzzAdapter(BasePlatformAdapter):
         # open with "@Chip" even though no mention is required there, so the
         # strip applies to both chat types.
         dispatch_text = self._strip_mention(content)
-        tags = event.get("tags")
-        thread_id = (
-            next(
-                (
-                    str(tag[1])
-                    for tag in tags
-                    if isinstance(tag, (list, tuple))
-                    and len(tag) > 3
-                    and tag[0] == "e"
-                    and tag[1]
-                    and tag[3] == "root"
-                ),
-                None,
-            )
-            if isinstance(tags, list)
-            else None
-        )
+        # NIP-10 thread root for session scoping: replies inside a thread all
+        # share the root as their thread_id, so the gateway groups them into
+        # one thread session (marked "root" tag preferred, legacy fallback).
+        thread_id = self._extract_thread_root(event)
 
         # Remember where this message sits in the thread graph so our reply
         # can join the SAME thread rather than nesting a new one under it.
@@ -1747,6 +1743,10 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
     if "require_mention" in extra and not _skip_env_bridge and not os.getenv("BUZZ_REQUIRE_MENTION"):
         os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
+    if "reply_in_thread" in extra and not os.getenv("BUZZ_REPLY_IN_THREAD"):
+        os.environ["BUZZ_REPLY_IN_THREAD"] = str(extra["reply_in_thread"]).lower()
+    if "reply_to_mode" in extra and not os.getenv("BUZZ_REPLY_TO_MODE"):
+        os.environ["BUZZ_REPLY_TO_MODE"] = str(extra["reply_to_mode"]).lower()
     return None
 
 
@@ -1830,11 +1830,18 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
     args = ["messages", "send", "--channel", target, "--content", "-"]
-    # Same reply_to_mode gate as the live adapter, so out-of-process cron
-    # delivery (deliver=buzz) doesn't thread when the operator asked for flat.
+    # Same reply_to_mode / reply_in_thread gate as the live adapter, so
+    # out-of-process cron delivery (deliver=buzz) doesn't thread when the
+    # operator asked for flat channel replies.
     _rtm = (os.getenv("BUZZ_REPLY_TO_MODE")
             or getattr(pconfig, "reply_to_mode", "first") or "first")
-    if thread_id and str(_rtm).strip().lower() != "off":
+    _rtm = str(_rtm).strip().lower()
+    _rit = os.getenv("BUZZ_REPLY_IN_THREAD")
+    if _rit is None:
+        _rit = extra.get("reply_in_thread")
+    if _rit is not None and str(_rit).strip().lower() in ("false", "0", "no", "off"):
+        _rtm = "off"
+    if thread_id and _rtm != "off":
         args += ["--reply-to", str(thread_id)]
     for path in media_files or []:
         args += ["--file", str(path)]

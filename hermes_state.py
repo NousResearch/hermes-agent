@@ -5978,8 +5978,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._db_file_application_id = disk_id
         elif self._conn is not None and not self._db_file_application_id:
             try:
-                with self._lock:
-                    pragma_row = self._conn.execute("PRAGMA application_id").fetchone()
+                with self._read_ctx() as conn:
+                    pragma_row = conn.execute("PRAGMA application_id").fetchone()
                 if pragma_row and pragma_row[0]:
                     self._db_file_application_id = int(pragma_row[0])
             except sqlite3.Error:

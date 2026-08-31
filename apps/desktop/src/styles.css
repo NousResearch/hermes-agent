@@ -1681,12 +1681,14 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 /* Stick-to-bottom owns scrollTop while following. Once escaped, native anchoring
-   is safe and keeps sticky human edits from shoving the viewport; data-editing
-   enables that path before React swaps in the inline editor. */
+   is safe and keeps sticky human edits from shoving the viewport. Reader intent
+   enables it synchronously before React publishes data-following=false, and
+   data-editing enables it before React swaps in the inline editor. */
 [data-slot='aui_thread-viewport'] {
   overflow-anchor: none;
 }
 
+[data-slot='aui_thread-viewport'][data-reader-intent='true'],
 [data-slot='aui_thread-viewport'][data-following='false'],
 [data-slot='aui_thread-viewport'][data-editing='true'] {
   overflow-anchor: auto;

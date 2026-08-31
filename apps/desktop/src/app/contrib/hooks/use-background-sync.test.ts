@@ -457,6 +457,122 @@ describe('active transcript refresh', () => {
     expect(updateSessionState).toHaveBeenCalledWith('runtime-local', expect.any(Function), 'stored-local')
   })
 
+  it('does not replace a busy tile projection when the main pane is idle', async () => {
+    const TILE_RUNTIME_ID = 'runtime-tile-busy'
+    const TILE_STORED_ID = 'stored-tile-busy'
+    const state = createClientSessionState(TILE_STORED_ID)
+
+    publishSessionState(TILE_RUNTIME_ID, { ...state, busy: true })
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('stale persisted tail', TILE_STORED_ID) as never)
+
+    const updateSessionState = vi.fn()
+
+    await reconcileTileTranscriptsForTest({
+      tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map<string, string>() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('does not fetch while an accepted queued user owns the between-turn handoff', async () => {
+    const TILE_RUNTIME_ID = 'runtime-tile-queued'
+    const TILE_STORED_ID = 'stored-tile-queued'
+    const state = createClientSessionState(TILE_STORED_ID)
+
+    state.messages = [
+      {
+        id: `user-queued-${TILE_RUNTIME_ID}`,
+        parts: [{ text: 'accepted queued user', type: 'text' }],
+        role: 'user'
+      }
+    ]
+    publishSessionState(TILE_RUNTIME_ID, state)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('stale persisted tail', TILE_STORED_ID) as never)
+
+    const updateSessionState = vi.fn()
+
+    await reconcileTileTranscriptsForTest({
+      tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map<string, string>() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('discards a tile refresh when an accepted queued user arrives during the read', async () => {
+    const TILE_RUNTIME_ID = 'runtime-tile-became-queued'
+    const TILE_STORED_ID = 'stored-tile-became-queued'
+    const state = createClientSessionState(TILE_STORED_ID)
+    let resolveLatest: (value: ReturnType<typeof transcript>) => void = () => undefined
+
+    publishSessionState(TILE_RUNTIME_ID, state)
+    vi.mocked(getLatestSessionMessages).mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveLatest = resolve as typeof resolveLatest
+        })
+    )
+
+    const updateSessionState = vi.fn()
+    const refresh = reconcileTileTranscriptsForTest({
+      tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map<string, string>() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID, undefined, { passive: true })
+    state.messages = [
+      {
+        id: `user-queued-${TILE_RUNTIME_ID}`,
+        parts: [{ text: 'accepted queued user', type: 'text' }],
+        role: 'user'
+      }
+    ]
+    publishSessionState(TILE_RUNTIME_ID, state)
+    resolveLatest(transcript('stale persisted tail', TILE_STORED_ID))
+    await refresh
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('discards a tile refresh that resolves after the tile becomes busy', async () => {
+    const TILE_RUNTIME_ID = 'runtime-tile-became-busy'
+    const TILE_STORED_ID = 'stored-tile-became-busy'
+    const state = createClientSessionState(TILE_STORED_ID)
+    let resolveLatest: (value: ReturnType<typeof transcript>) => void = () => undefined
+
+    publishSessionState(TILE_RUNTIME_ID, state)
+    vi.mocked(getLatestSessionMessages).mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveLatest = resolve as typeof resolveLatest
+        })
+    )
+
+    const updateSessionState = vi.fn()
+    const refresh = reconcileTileTranscriptsForTest({
+      tiles: [{ storedSessionId: TILE_STORED_ID, runtimeId: TILE_RUNTIME_ID }],
+      requestSequenceRef: { current: 0 },
+      signatureRef: { current: new Map<string, string>() },
+      updateSessionState
+    })
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID, undefined, { passive: true })
+    publishSessionState(TILE_RUNTIME_ID, { ...state, busy: true })
+    resolveLatest(transcript('stale persisted tail', TILE_STORED_ID))
+    await refresh
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
   it('skips the tile fetch entirely when nothing changed (signature-gated)', async () => {
     $changeEventsAvailable.set(true)
 
@@ -816,6 +932,54 @@ describe('reconcileActiveTranscript', () => {
   it('does not clobber a busy stream', async () => {
     const fixture = makeRefresh()
     fixture.busyRef.current = true
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(fixture.updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('discards an active transcript refresh when an accepted queued user arrives during the read', async () => {
+    const fixture = makeRefresh()
+    let resolve: ((value: unknown) => void) | undefined
+
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(
+      new Promise(currentResolve => {
+        resolve = currentResolve
+      }) as never
+    )
+
+    const request = fixture.refresh()
+
+    fixture.state.messages = [
+      {
+        id: `user-queued-${ACTIVE_RUNTIME_ID}`,
+        parts: [{ text: 'accepted queued user', type: 'text' }],
+        role: 'user'
+      }
+    ]
+    publishSessionState(ACTIVE_RUNTIME_ID, fixture.state)
+    resolve?.(transcript('stale answer'))
+    await request
+
+    expect(fixture.updateSessionState).not.toHaveBeenCalled()
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.map(message => message.id)).toEqual([
+      `user-queued-${ACTIVE_RUNTIME_ID}`
+    ])
+  })
+
+  it('does not fetch an active transcript while an accepted queued user owns the between-turn handoff', async () => {
+    const fixture = makeRefresh()
+
+    fixture.state.messages = [
+      {
+        id: `user-queued-${ACTIVE_RUNTIME_ID}`,
+        parts: [{ text: 'accepted queued user', type: 'text' }],
+        role: 'user'
+      }
+    ]
+    publishSessionState(ACTIVE_RUNTIME_ID, fixture.state)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('stale answer') as never)
 
     await fixture.refresh()
 

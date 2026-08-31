@@ -35,6 +35,23 @@ const shallowEqual = (a: object, b: object): boolean => {
 
 const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.threadList ?? {}
 
+function hasAuthoritativeQueuedTail(messages: readonly ThreadMessage[]): boolean {
+  const queued = messages.at(-1)
+
+  if (queued?.role !== 'user' || !queued.id.startsWith('user-queued-')) {
+    return false
+  }
+
+  const runtimeId = queued.id.slice('user-queued-'.length)
+  const assistant = messages.at(-2)
+
+  return (
+    assistant?.role === 'assistant' &&
+    assistant.id === `assistant-stream-${runtimeId}` &&
+    assistant.status?.type === 'running'
+  )
+}
+
 /**
  * Write only the items whose (message, parentId) pair actually moved.
  *
@@ -222,7 +239,7 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
 
     // metadata.isOptimistic keeps this placeholder ephemeral: core evicts
     // off-branch optimistic messages on head moves and omits them from export().
-    if (hasUpcomingMessage(isRunning, messages)) {
+    if (hasUpcomingMessage(isRunning, messages) && !hasAuthoritativeQueuedTail(messages)) {
       const optimisticId = generateId()
       this.repository.addOrUpdateMessage(
         messages.at(-1)?.id ?? null,

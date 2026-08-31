@@ -183,6 +183,9 @@ export function composerFocusKeysAllowed(event: KeyboardEvent, combo: string): b
     event.defaultPrevented ||
     event.isComposing ||
     isEditableTarget(event.target) ||
+    (combo === 'type' &&
+      event.key === ' ' &&
+      Boolean((event.target as Element | null)?.closest?.('[data-slot="aui_thread-viewport"]'))) ||
     composerFocusBlockedBySurface() ||
     clarifyCardOwnsKey(event)
   ) {

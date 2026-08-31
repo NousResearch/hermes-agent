@@ -2,12 +2,16 @@ import { fromThreadMessageLike, getAutoStatus, MessageRepository } from '@assist
 import type { ExportedMessageRepository, ThreadMessage } from '@assistant-ui/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { syncRepositoryIncrementally } from './incremental-external-store-runtime'
+import { IncrementalExternalStoreRuntimeCore, syncRepositoryIncrementally } from './incremental-external-store-runtime'
 
 const STATUS = getAutoStatus(false, false, false, false, undefined)
 
 function message(id: string, text: string): ThreadMessage {
   return fromThreadMessageLike({ role: 'assistant', content: [{ type: 'text', text }] }, id, STATUS)
+}
+
+function userMessage(id: string, text: string): ThreadMessage {
+  return fromThreadMessageLike({ role: 'user', content: [{ type: 'text', text }] }, id, STATUS)
 }
 
 /** A real MessageRepository behind the same shape syncRepositoryIncrementally drives. */
@@ -140,5 +144,42 @@ describe('syncRepositoryIncrementally', () => {
     })
 
     expect(result.map(item => item.id)).toEqual(['a'])
+  })
+})
+
+describe('IncrementalExternalStoreRuntimeCore', () => {
+  it('still appends an optimistic assistant after an ordinary running user', () => {
+    const messages = chain([userMessage('user-running', 'ordinary prompt')])
+    const runtime = new IncrementalExternalStoreRuntimeCore({
+      isRunning: true,
+      messageRepository: exported(messages),
+      onNew: async () => {}
+    })
+    const thread = runtime.threads.getMainThreadRuntimeCore() as unknown as { repository: MessageRepository }
+
+    expect(thread.repository.getMessages().map(item => item.role)).toEqual(['user', 'assistant'])
+  })
+
+  it('does not append an optimistic assistant after an accepted queued user follows the running assistant', () => {
+    const runtimeId = 'runtime-queued'
+    const messages = chain([
+      fromThreadMessageLike(
+        { role: 'assistant', content: [{ type: 'text', text: 'partial reply' }] },
+        `assistant-stream-${runtimeId}`,
+        { type: 'running' }
+      ),
+      userMessage(`user-queued-${runtimeId}`, 'queued follow-up')
+    ])
+    const runtime = new IncrementalExternalStoreRuntimeCore({
+      isRunning: true,
+      messageRepository: exported(messages),
+      onNew: async () => {}
+    })
+    const thread = runtime.threads.getMainThreadRuntimeCore() as unknown as { repository: MessageRepository }
+
+    expect(thread.repository.getMessages().map(item => item.id)).toEqual([
+      `assistant-stream-${runtimeId}`,
+      `user-queued-${runtimeId}`
+    ])
   })
 })

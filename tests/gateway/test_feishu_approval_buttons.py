@@ -474,6 +474,139 @@ class TestCardActionCallbackResponse:
         assert 8 in adapter._update_prompt_state
         mock_submit.assert_not_called()
 
+    # Scenarios below are adapted from @liuliu0223's regression suite in
+    # #99021: DM paired-mode (empty allowlist) positive paths, fail-closed
+    # rejection of missing operator identity, and forwarded-card rejection.
+
+    def test_paired_mode_participant_can_approve(self, _patch_callback_card_types):
+        """Empty allowlist (DM paired mode): the card recipient can still approve."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = set()
+        adapter._approval_state[15] = {
+            "session_key": "sess-15",
+            "message_id": "msg-15",
+            "chat_id": "oc_dm_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 15},
+            chat_id="oc_dm_chat",
+            open_id="ou_dm_user",
+        )
+        adapter._sender_name_cache["ou_dm_user"] = ("DM User", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert "Approved once" in response.card.data["header"]["title"]["content"]
+
+    def test_paired_mode_participant_can_confirm_update_prompt(self, _patch_callback_card_types):
+        """Empty allowlist (DM paired mode): the prompt recipient can still confirm."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = set()
+        adapter._update_prompt_state[23] = {
+            "session_key": "sess-up-23",
+            "message_id": "msg_up_023",
+            "chat_id": "oc_dm_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 23},
+            chat_id="oc_dm_chat",
+            open_id="ou_dm_user",
+        )
+        adapter._sender_name_cache["ou_dm_user"] = ("DM User", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+
+    def test_empty_open_id_rejected_on_approval(self, _patch_callback_card_types):
+        """Approval click without an operator identity is rejected (fail-closed)."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = set()
+        adapter._approval_state[24] = {
+            "session_key": "sess-24",
+            "message_id": "msg-24",
+            "chat_id": "oc_dm_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 24},
+            chat_id="oc_dm_chat",
+            open_id="",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+        assert 24 in adapter._approval_state
+
+    def test_empty_open_id_rejected_on_update_prompt(self, _patch_callback_card_types):
+        """Update prompt click without an operator identity is rejected (fail-closed)."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = set()
+        adapter._update_prompt_state[25] = {
+            "session_key": "sess-up-25",
+            "message_id": "msg_up_025",
+            "chat_id": "oc_dm_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 25},
+            chat_id="oc_dm_chat",
+            open_id="",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+        assert 25 in adapter._update_prompt_state
+
+    def test_approval_card_forwarded_to_different_chat_rejected(self, _patch_callback_card_types):
+        """Approval card forwarded out of its DM: chat mismatch rejects the click."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = set()
+        adapter._approval_state[26] = {
+            "session_key": "sess-26",
+            "message_id": "msg-26",
+            "chat_id": "oc_dm_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 26},
+            chat_id="oc_forwarded_group",
+            open_id="ou_dm_user",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+        assert 26 in adapter._approval_state
+
 
 class TestResolveUpdatePrompt:
     """Test update prompt resolution persists the response file."""

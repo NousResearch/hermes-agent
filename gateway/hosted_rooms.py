@@ -16,6 +16,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
+from gateway import hosted_room_safety as room_safety
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, clock as _now, compact_json, connect, fenced_update as _fenced_update,
     identifier, open_sqlite, table_columns, table_exists, transaction, utf8_len)
@@ -36,6 +37,7 @@ MAX_ROOM_LIST_LIMIT = 500
 MAX_ACTIVE_ROOMS = 256
 MAX_DISBANDED_ROOM_TOMBSTONES = 512
 DISBANDED_ROOM_RETENTION_SECONDS = 90 * 24 * 60 * 60
+DISBANDED_REPLICA_RETENTION_SECONDS = 90 * 24 * 60 * 60
 MAX_EVENTS_PER_ROOM = 50_000
 MAX_ROOM_EVENT_BYTES = 256 * 1024 * 1024
 # Leave substantial headroom below the pre-update state.db snapshot ceiling: event accounting excludes
@@ -380,6 +382,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_RETIRE_FROM_ROOMS.format(where="disbanded_at IS NOT NULL"))
     _migrate_remote_run_schema(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor ON hosted_room_events(room_id, seq)")
+    room_safety.initialize_safety_schema(conn)
     if not _schema_is_current(conn):
         raise HostedRoomError("hosted room schema migration did not complete")
 
@@ -392,7 +395,7 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         and (table != "hosted_room_remote_runs" or _remote_run_schema_current(conn, columns))
         for (table, required), columns in zip(_REQUIRED_COLUMNS, actual, strict=True)) and conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_hosted_room_events_cursor'"
-    ).fetchone() is not None
+    ).fetchone() is not None and room_safety.safety_schema_is_current(conn)
 
 
 def default_db_path() -> Path:
@@ -464,7 +467,7 @@ def _reload(conn: sqlite3.Connection, sql: str, params: tuple, missing: str) -> 
 
 def _room_from_row(row: sqlite3.Row, *, idempotent: bool = False) -> dict[str, Any]:
     keys = row.keys()  # sqlite3.Row: ``x in row`` scans values, so ``.keys()`` is load-bearing.
-    return {
+    result = {
         "room_id": row["room_id"], "name": row["name"], "members": json.loads(row["members_json"]),
         "authority_gateway_id": row["authority_gateway_id"], "authority_epoch": int(row["authority_epoch"]),
         "revision": int(row["revision"]), "created_at": float(row["created_at"]),
@@ -472,6 +475,10 @@ def _room_from_row(row: sqlite3.Row, *, idempotent: bool = False) -> dict[str, A
         **({"disbanded_at": float(row["disbanded_at"])} if "disbanded_at" in keys and row["disbanded_at"] is not None
            else {}),
         **({"latest_seq": int(row["next_seq"]) - 1} if "next_seq" in keys else {})}
+    if "quarantine_reason" in row.keys() and row["quarantine_reason"]:
+        result["safety_status"] = "authority_quarantined"
+        result["safety_reason"] = str(row["quarantine_reason"])
+    return result
 
 
 def _event_from_row(row: sqlite3.Row, *, idempotent: bool = False) -> dict[str, Any]:
@@ -492,7 +499,7 @@ def _event_content(row: sqlite3.Row) -> tuple[Any, Any, Any, Any]:
 
 
 def _gateway_event_bytes(conn: sqlite3.Connection) -> int:
-    return int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0])
+    return int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0]) + room_safety._replica_event_bytes_locked(conn)
 
 
 def _insert_event(
@@ -519,6 +526,8 @@ def _prepare_event(
     if gateway_bytes + additional_bytes > gateway_byte_limit:
         _prune_disbanded_rooms_locked(
             conn, now=None, max_gateway_event_bytes=max(0, gateway_byte_limit - additional_bytes))
+        room_safety._prune_disbanded_replicas_locked(
+            conn, now=None, max_replica_event_bytes=max(0, gateway_byte_limit - additional_bytes - int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0])))
         gateway_bytes = _gateway_event_bytes(conn)
     if gateway_bytes + additional_bytes > gateway_byte_limit:
         raise HostedRoomError("Group Chat storage is full on this host. Delete an old Group Chat and try again.")
@@ -835,6 +844,11 @@ def create_room(
     authority_gateway_id = _actor_id(authority_gateway_id, "authority_gateway_id")
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
+        room_safety._raise_if_quarantined(conn, room_id)
+        if room_safety._replica_reserves_room_id_locked(conn, room_id):
+            raise RoomConflictError("room_id belongs to a passive replica")
+        if room_safety._room_id_reservation_kind_locked(conn, room_id) == "replica":
+            raise RoomConflictError("room_id belongs to a retired passive replica")
         if _is_retired(conn, room_id):
             raise RoomConflictError("room_id belongs to a disbanded room")
         existing = conn.execute(_SELECT_ROOM_WITH_BYTES, (room_id,)).fetchone()
@@ -875,8 +889,11 @@ def list_rooms(
     offset = _non_negative(offset, "offset")
     with closing(_read_connection(db_path)) as conn:
         rows = conn.execute(
-            f"""SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE disbanded_at IS NULL OR ?
-                ORDER BY updated_at DESC, room_id ASC LIMIT ? OFFSET ?""", (int(include_disbanded), limit, offset)
+            f"""SELECT {", ".join("rooms." + column.strip() for column in _ROOM_COLUMNS.split(","))},
+                quarantine.reason AS quarantine_reason FROM hosted_rooms AS rooms
+                LEFT JOIN hosted_room_quarantine AS quarantine ON quarantine.room_id=rooms.room_id
+                WHERE rooms.disbanded_at IS NULL OR ?
+                ORDER BY rooms.updated_at DESC, rooms.room_id ASC LIMIT ? OFFSET ?""", (int(include_disbanded), limit, offset)
         ).fetchall()
     return [_room_from_row(row) for row in rows]
 
@@ -890,6 +907,7 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
     actor_json = _system_actor_json("room-control")
     payload_json = _payload_json({"name": name})
     with _transaction(db_path, immediate=True) as conn:
+        room_safety._raise_if_quarantined(conn, room_id)
         room = _room_row(conn, _SELECT_ROOM_WITH_BYTES, (room_id,), room_id)
         if room["disbanded_at"] is not None:
             raise RoomNotFoundError("hosted room not found")
@@ -929,6 +947,7 @@ def append_event(
     payload_json = _payload_json(payload)
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
+        room_safety._raise_if_quarantined(conn, room_id)
         existing = _load_event(conn, room_id, event_id)
         if existing is not None:
             if _event_content(existing) != (kind, actor_json, authority_epoch, payload_json):
@@ -986,6 +1005,7 @@ def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False
     """Return durable replay and authority state for one room."""
     room_id = _room_id(room_id)
     with _transaction(db_path) as conn:
+        room_safety._raise_if_quarantined(conn, room_id)
         row = _room_row(
             conn,
             f"""SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE room_id=? AND (disbanded_at IS NULL
@@ -1023,6 +1043,7 @@ def claim_authority(
     claim_actor_json = _system_actor_json("authority-control")
     claim_payload_json = _claim_payload_json(expected_gateway_id, new_gateway_id, target_epoch)
     with _transaction(db_path, immediate=True) as conn:
+        room_safety._raise_if_quarantined(conn, room_id)
         row = _room_row(
             conn, """SELECT authority_gateway_id, authority_epoch, next_seq, event_bytes
                 FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""", (room_id,), room_id)
@@ -1085,6 +1106,7 @@ def disband_room(
     _require_positive_int(expected_epoch, "expected_epoch")
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
+        room_safety._raise_if_quarantined(conn, room_id)
         room = conn.execute("""SELECT authority_gateway_id, authority_epoch, next_seq, event_bytes, disbanded_at
                 FROM hosted_rooms WHERE room_id=?""", (room_id,)).fetchone()
         if (replay := _disband_replay(conn, room_id, room)) is not None:
@@ -1169,3 +1191,9 @@ from typing import NoReturn  # noqa: F401,E402
 from contextlib import contextmanager  # noqa: F401,E402
 import time  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
+
+
+class RoomQuarantinedError(AuthorityConflictError):
+    """Raised when an unsafe legacy takeover must remain read-only."""
+
+    reason = "room_authority_quarantined"

@@ -1302,6 +1302,104 @@ def test_dispatch_max_in_progress_blocks_review_when_at_limit(
     assert review_task is not None
     assert review_task.status == "review"
 
+
+# Dispatcher pre-spawn parent-readiness gate
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_ready_card_with_complete_parent_spawns(kanban_home, all_assignees_spawnable):
+    """A ready card whose parents are all terminal-successful spawns a worker.
+
+    Baseline for the parent-readiness gate: it must NOT over-gate a card whose
+    parents are genuinely done — the ready card spawns and gets a run row.
+    """
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, result="done")
+        child = kb.create_task(conn, title="child", parents=[parent], assignee="bob")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        child_task = kb.get_task(conn, child)
+        run_count = conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (child,)
+        ).fetchone()[0]
+
+    spawned_ids = [tid for (tid, _who, _ws) in res.spawned]
+    assert child in spawned_ids
+    assert spawns == [child]
+    assert res.parent_gated == []
+    assert child_task is not None
+    assert child_task.status == "running"
+    assert run_count == 1
+
+
+def test_dispatch_parent_incomplete_card_does_not_spawn_and_makes_no_run_row(
+    kanban_home, all_assignees_spawnable,
+):
+    """A ready card behind an incomplete parent must not spawn a worker.
+
+    Regression for the spawn-first-block-later path: if a racy writer leaves a
+    card in ``ready`` while a parent is still incomplete, the dispatcher's
+    pre-spawn readiness check leaves it gated — demoted back to ``todo``, no
+    worker spawned, and no ``task_runs`` row created. ``recompute_ready``
+    re-promotes it when the parent actually finishes.
+    """
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        # Claim the parent so it is 'running' (incomplete) and never picked up
+        # as ready work itself; only the racy 'ready' child is in the queue.
+        kb.claim_task(conn, parent)
+        # Child is created 'todo' behind the incomplete parent; force it to a
+        # racy 'ready' to simulate the spawn-first-block-later state.
+        child = kb.create_task(conn, title="child", parents=[parent], assignee="bob")
+        _set_task_status(conn, child, "ready")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        child_task = kb.get_task(conn, child)
+        run_count = conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (child,)
+        ).fetchone()[0]
+
+    assert res.spawned == []
+    assert spawns == []
+    assert res.parent_gated == [child]
+    assert child_task is not None
+    assert child_task.status == "todo"  # left gated, not spawned
+    assert run_count == 0  # no run row created
+
+
+def test_dispatch_root_ready_card_with_no_parents_spawns(kanban_home, all_assignees_spawnable):
+    """A parent-free ready card is never parent-gated (empty parents = ready)."""
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="root", assignee="bob")
+        _set_task_status(conn, root, "ready")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        root_task = kb.get_task(conn, root)
+
+    spawned_ids = [tid for (tid, _who, _ws) in res.spawned]
+    assert root in spawned_ids
+    assert spawns == [root]
+    assert res.parent_gated == []
+    assert root_task is not None
+    assert root_task.status == "running"
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

@@ -1,0 +1,29 @@
+name: kanban-block-escalator
+version: 1.0.0
+kind: standalone
+author: Agent Smith (WeRoll fleet)
+description: >-
+  Turns a kanban block into an immediate assessor trigger instead of a dead
+  letter. Subscribes to the kanban_task_blocked lifecycle hook (fired by
+  kanban_db.block_task AFTER the write commits) and spawns the assessor agent
+  right away, so a blocked card is escalated the moment it blocks rather than
+  sitting in `blocked` until a human or a cron notices.
+
+  Escalation chain per the standing operator rule (2026-08-27): a blocked card
+  must escalate to the relevant agent and keep escalating until resolved; only
+  critical blocks stop at the human. This plugin drives only the FIRST hop:
+  worker -> assessor. The assessor's first hop targets JOBSY (scope/AC/product,
+  the board owner with the triage mandate in his SOUL); runtime/environment
+  faults go to Agent Smith (profile id `default`). The `switch` profile is never
+  an escalation target — its only ownership is no_agent scheduled output, and a
+  classify-and-stop switchboard must not close or assess build cards.
+
+  Guardrails (all defensive; a misbehaving hook must never break the board):
+  - Only escalates when the task actually landed in `blocked` (the same hook
+    also fires for `dependency` blocks, which route to `todo` and self-resume).
+  - Never escalates a card back to the profile that just blocked it (loop
+    guard); it climbs to the next tier instead.
+  - Fire-and-forget: the assessor is spawned in its own session and this
+    callback returns immediately, since the firing worker process is short-lived.
+provides_hooks:
+  - kanban_task_blocked

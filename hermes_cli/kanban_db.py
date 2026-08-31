@@ -8235,6 +8235,14 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    parent_gated: list[str] = field(default_factory=list)
+    """Ready task ids skipped this tick because at least one parent was not
+    terminal-successful. The card was left gated (demoted back to ``todo``)
+    and NOT spawned — no worker launched and no ``task_runs`` row created.
+    ``recompute_ready`` re-promotes it to ``ready`` when the parent actually
+    reaches a terminal-successful status. This closes the spawn-find-parent-
+    incomplete->block path racy writers (manual unblock, stale-claim
+    re-release, a parent reopened after promote) could otherwise open."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -10352,6 +10360,25 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+def _parents_terminal_successful(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True iff every parent of ``task_id`` has a terminal-successful
+    status (``done`` or ``archived``). A task with no parents is a root and
+    returns True.
+
+    Mirrors the parent-completion status set used by ``recompute_ready``,
+    ``claim_task``'s structural gate, and ``_landing_status_after_parents`` so
+    the dispatcher's pre-spawn readiness check can never disagree with the
+    promotion/claim gates about what "ready to run" means.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row is None
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -10682,6 +10709,30 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
+        # Pre-spawn parent-readiness gate. Never spawn a worker whose parents
+        # aren't all terminal-successful. ``recompute_ready`` normally gates
+        # promotion, but a racy/hostile writer (manual unblock, a stale-claim
+        # re-release, a parent reopened after a child was promoted) can leave
+        # a card in ``ready`` behind an incomplete parent. Spawning it would
+        # just produce a block-later run. Leave the card gated (demote to
+        # ``todo`` so ``recompute_ready`` re-promotes when the parent actually
+        # finishes) and skip this tick entirely — no claim, no worker, no run
+        # row. Ran first so default_assignee auto-assignment also skips a
+        # parent-gated card.
+        if not _parents_terminal_successful(conn, row["id"]):
+            if not dry_run:
+                with write_txn(conn):
+                    conn.execute(
+                        "UPDATE tasks SET status = 'todo' "
+                        "WHERE id = ? AND status = 'ready'",
+                        (row["id"],),
+                    )
+                    _append_event(
+                        conn, row["id"], "respawn_guarded",
+                        {"reason": "parents_not_terminal"},
+                    )
+            result.parent_gated.append(row["id"])
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an

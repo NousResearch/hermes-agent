@@ -5159,41 +5159,53 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
               and leave the stale breadcrumb (#self-heal). The table itself
               stays for a later capable open to rebuild.
         """
-        cjk_present = bool(cursor.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-            "AND name = 'messages_fts_cjk'"
-        ).fetchone())
+        try:
+            cjk_present = bool(cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'messages_fts_cjk'"
+            ).fetchone())
 
-        if not self._fts_cjk_loaded:
-            if cjk_present:
-                live = [
-                    r[0] for r in cursor.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'trigger' "
-                        f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)})",
-                        _FTS_CJK_TRIGGERS,
-                    ).fetchall()
-                ]
-                if live:
-                    # Self-heal: this process cannot tokenize, so every
-                    # message INSERT would die inside the cjk trigger.
-                    # Breadcrumb FIRST (crash between the two statements is
-                    # merely conservative), then drop.
-                    logger.warning(
-                        "messages_fts_cjk triggers present but the "
-                        "cjk_unicode61 tokenizer is unavailable (%s) — "
-                        "dropping the cjk triggers so message writes keep "
-                        "working. CJK search falls back to trigram/LIKE; "
-                        "run `hermes sessions optimize-storage` on a host "
-                        "with the extension to rebuild.",
-                        fts5_cjk_so_path(),
-                    )
-                    cursor.execute(
-                        "INSERT INTO state_meta (key, value) VALUES (?, '1') "
-                        "ON CONFLICT(key) DO UPDATE SET value = '1'",
-                        (FTS_CJK_STALE_KEY,),
-                    )
-                    for trig in live:
-                        cursor.execute(f"DROP TRIGGER IF EXISTS {trig}")
+            if not self._fts_cjk_loaded:
+                if cjk_present:
+                    live = [
+                        r[0] for r in cursor.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                            f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)})",
+                            _FTS_CJK_TRIGGERS,
+                        ).fetchall()
+                    ]
+                    if live:
+                        # Self-heal: this process cannot tokenize, so every
+                        # message INSERT would die inside the cjk trigger.
+                        # Breadcrumb FIRST (crash between the two statements is
+                        # merely conservative), then drop.
+                        logger.warning(
+                            "messages_fts_cjk triggers present but the "
+                            "cjk_unicode61 tokenizer is unavailable (%s) — "
+                            "dropping the cjk triggers so message writes keep "
+                            "working. CJK search falls back to trigram/LIKE; "
+                            "run `hermes sessions optimize-storage` on a host "
+                            "with the extension to rebuild.",
+                            fts5_cjk_so_path(),
+                        )
+                        cursor.execute(
+                            "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+                            "ON CONFLICT(key) DO UPDATE SET value = '1'",
+                            (FTS_CJK_STALE_KEY,),
+                        )
+                        for trig in live:
+                            cursor.execute(f"DROP TRIGGER IF EXISTS {trig}")
+                self._fts_cjk_available = False
+                return
+        except sqlite3.OperationalError:
+            # Mirror the tokenizer-loaded except below: the presence check
+            # and self-heal above run before the loaded/not-loaded branch is
+            # even known to be safe, so they need the same never-raises
+            # guarantee the docstring promises for the rest of the method.
+            logger.warning(
+                "messages_fts_cjk presence check failed; CJK search stays on "
+                "trigram/LIKE", exc_info=True,
+            )
             self._fts_cjk_available = False
             return
 

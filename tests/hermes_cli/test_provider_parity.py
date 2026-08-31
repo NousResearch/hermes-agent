@@ -47,11 +47,18 @@ _DUAL_TAB = {"anthropic"}
 def _keys_tab_providers() -> set[str]:
     """Provider slugs that have at least one card on the desktop API-keys tab."""
     data = client.get("/api/env", headers=HEADERS).json()
-    return {
-        info.get("provider")
-        for info in data.values()
-        if info.get("category") == "provider" and info.get("provider")
-    }
+    providers = set()
+    for info in data.values():
+        if info.get("category") != "provider":
+            continue
+        if info.get("provider"):
+            providers.add(info["provider"])
+        providers.update(
+            profile["provider"]
+            for profile in info.get("provider_profiles", [])
+            if profile.get("provider")
+        )
+    return providers
 
 
 def _accounts_tab_providers() -> set[str]:
@@ -90,3 +97,12 @@ def test_each_provider_lands_on_the_tab_its_auth_type_dictates():
             assert d.slug in accounts, f"{d.slug} (accounts tab) missing from /api/providers/oauth"
 
 
+def test_shared_api_key_preserves_each_provider_profile():
+    """One env var must not collapse distinct built-in provider routes."""
+    data = client.get("/api/env", headers=HEADERS).json()
+    profiles = data["DASHSCOPE_API_KEY"]["provider_profiles"]
+    by_provider = {profile["provider"]: profile for profile in profiles}
+
+    assert {"alibaba", "alibaba-cn"} <= by_provider.keys()
+    assert by_provider["alibaba"]["primary"] is True
+    assert by_provider["alibaba-cn"]["primary"] is True

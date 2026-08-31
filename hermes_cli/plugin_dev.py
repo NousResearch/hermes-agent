@@ -40,34 +40,44 @@ def _doctor_runtime(plugin_path: Path):
     test framework. Registration code executes under a temporary HERMES_HOME
     with outbound socket connects blocked.
     """
-    temporary_home = tempfile.TemporaryDirectory(prefix="hermes-plugin-doctor-")
     stack = ExitStack()
-    home = Path(temporary_home.name)
-    bundled = home / "bundled-plugins"
-    plugins_root = home / "plugins"
-    bundled.mkdir(parents=True)
-    plugins_root.mkdir(parents=True)
-    copied = plugins_root / plugin_path.name
-    shutil.copytree(
-        plugin_path,
-        copied,
-        ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "*.pyc"),
-    )
-
-    stack.enter_context(
-        patch.dict(
-            os.environ,
-            {
-                "HERMES_HOME": str(home),
-                "HERMES_BUNDLED_PLUGINS": str(bundled),
-                "HERMES_ENABLE_PROJECT_PLUGINS": "0",
-            },
-            clear=False,
+    try:
+        # The temp dir enters the stack FIRST so any failure below — including
+        # ENOSPC or KeyboardInterrupt inside copytree — deterministically
+        # removes it instead of stranding a hermes-plugin-doctor-* directory
+        # until interpreter GC (or never, on a hard exit).
+        temporary_home = stack.enter_context(
+            tempfile.TemporaryDirectory(prefix="hermes-plugin-doctor-")
         )
-    )
-    stack.enter_context(patch.object(socket, "create_connection", _deny_network))
-    stack.enter_context(patch.object(socket.socket, "connect", _deny_network))
-    stack.enter_context(patch.object(socket.socket, "connect_ex", _deny_network))
+        home = Path(temporary_home)
+        bundled = home / "bundled-plugins"
+        plugins_root = home / "plugins"
+        bundled.mkdir(parents=True)
+        plugins_root.mkdir(parents=True)
+        copied = plugins_root / plugin_path.name
+        shutil.copytree(
+            plugin_path,
+            copied,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "*.pyc"),
+        )
+
+        stack.enter_context(
+            patch.dict(
+                os.environ,
+                {
+                    "HERMES_HOME": str(home),
+                    "HERMES_BUNDLED_PLUGINS": str(bundled),
+                    "HERMES_ENABLE_PROJECT_PLUGINS": "0",
+                },
+                clear=False,
+            )
+        )
+        stack.enter_context(patch.object(socket, "create_connection", _deny_network))
+        stack.enter_context(patch.object(socket.socket, "connect", _deny_network))
+        stack.enter_context(patch.object(socket.socket, "connect_ex", _deny_network))
+    except BaseException:
+        stack.close()
+        raise
 
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry
@@ -130,7 +140,6 @@ def _doctor_runtime(plugin_path: Path):
             ):
                 sys.modules.pop(name, None)
         stack.close()
-        temporary_home.cleanup()
 
 
 @dataclass(frozen=True)

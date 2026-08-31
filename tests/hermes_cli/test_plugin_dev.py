@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+
+import pytest
 from pathlib import Path
 
 from hermes_cli.subcommands.plugins import build_plugins_parser
@@ -138,8 +140,6 @@ def test_doctor_blocks_live_network(tmp_path: Path) -> None:
 
 def test_resolve_rejects_directory_without_manifest(tmp_path: Path) -> None:
     """A non-plugin directory must not resolve — Doctor copies what it resolves."""
-    import pytest
-
     from hermes_cli.plugin_dev import resolve_plugin_path
 
     not_a_plugin = tmp_path / "home"
@@ -215,3 +215,47 @@ def test_resolve_prefers_installed_id_over_unrelated_local_dir(
     monkeypatch.setattr(plugin_dev, "get_hermes_home", lambda: hermes_home)
 
     assert plugin_dev.resolve_plugin_path("sample") == installed.resolve()
+
+
+def test_doctor_removes_temp_home_when_staging_copy_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A copy failure (e.g. ENOSPC) must not strand a hermes-plugin-doctor-* dir."""
+    import errno
+    import shutil
+    import tempfile
+
+
+
+    from hermes_cli import plugin_dev
+
+    plugin = tmp_path / "sample"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text("name: sample\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text(
+        "def register(ctx):\n    pass\n", encoding="utf-8"
+    )
+
+    scratch = tmp_path / "scratch-tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    def _enospc(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(shutil, "copytree", _enospc)
+
+    caught: OSError | None = None
+    try:
+        with plugin_dev._doctor_runtime(plugin):
+            pass  # pragma: no cover - staging fails before yield
+    except OSError as exc:
+        caught = exc
+
+    assert caught is not None and caught.errno == errno.ENOSPC
+    # Check for leftovers WHILE the exception (and its traceback frames) is
+    # still referenced: the old code relied on TemporaryDirectory's GC
+    # finalizer, which cannot run while the traceback pins the frame — the
+    # exact window where a stranded hermes-plugin-doctor-* dir was observed.
+    leftovers = list(scratch.glob("hermes-plugin-doctor-*"))
+    assert leftovers == [], f"stranded doctor temp dirs: {leftovers}"

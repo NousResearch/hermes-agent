@@ -734,6 +734,15 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             has_downstream_delta = cached_diff.returncode == 1
             if has_downstream_delta:
                 tree = self._git_output(source, "write-tree")
+                # Pin both git dates to the upstream commit's date. Without
+                # this, commit-tree embeds the wall clock and the same
+                # (upstream, downstream) pair materialized in two different
+                # seconds yields two different candidate revisions — the
+                # release-reuse path then never matches and the "never
+                # rebuild the installed release" guarantee silently breaks.
+                upstream_date = self._git_output(
+                    source, "show", "-s", "--format=%cI", upstream_revision
+                ).strip()
                 candidate_environment = os.environ.copy()
                 candidate_environment.update(
                     {
@@ -741,6 +750,8 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
                         "GIT_AUTHOR_EMAIL": "ares-runtime@localhost",
                         "GIT_COMMITTER_NAME": "Ares Runtime",
                         "GIT_COMMITTER_EMAIL": "ares-runtime@localhost",
+                        "GIT_AUTHOR_DATE": upstream_date,
+                        "GIT_COMMITTER_DATE": upstream_date,
                     }
                 )
                 candidate_revision = self._require_revision(

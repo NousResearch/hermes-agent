@@ -2227,3 +2227,33 @@ def test_exact_cooldown_restore_api_propagates_sqlite_write_failure(
                 "error": "must propagate",
             },
         )
+
+
+def test_failed_split_arms_failure_cooldown(tmp_path: Path) -> None:
+    """Regression #97948 symptom B: a failed split/archive must arm the
+    compression failure cooldown so the next automatic turn cannot
+    immediately re-run the identical doomed compression."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "SPLIT_FAIL_COOLDOWN_TEST"
+    db.create_session(session_id, source="test")
+    agent = _build_agent_with_db(db, session_id)
+    setattr(agent, "compression_in_place", True)
+    db.archive_and_compact = MagicMock(side_effect=RuntimeError("archive boom"))
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+        force=True,
+    )
+
+    cooldown_calls = (
+        agent.context_compressor._record_compression_failure_cooldown.call_args_list
+    )
+    assert len(cooldown_calls) == 1, (
+        "split failure must arm the failure cooldown (#97948 symptom B)"
+    )
+    seconds, error = cooldown_calls[0].args
+    assert seconds == 60
+    assert "session_split_failed" in str(error)

@@ -4169,6 +4169,22 @@ def compress_context(
                         lock_holder=_lock_holder,
                     )
                     split_status = "in_place_committed"
+                    # Post-commit contract (#98450, mirrors
+                    # _sync_micro_compact_to_db): archive_and_compact just
+                    # durably wrote every dict in `compressed` as the new
+                    # active set, but compress() returned marker-swept COPIES
+                    # (_strip_persistence_markers, #57491). These exact dict
+                    # instances become the live message list the caller keeps,
+                    # so without the stamp the next _persist_session →
+                    # _flush_messages_to_session_db_unlocked walk treats the
+                    # whole compacted transcript as unpersisted and re-INSERTs
+                    # it — the live set doubles on every compaction
+                    # (~58K → ~512K tokens in production).
+                    from agent.context_compressor import (
+                        stamp_db_persisted_markers,
+                    )
+
+                    stamp_db_persisted_markers(compressed)
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
                     # are passed as conversation_history next turn and skipped by

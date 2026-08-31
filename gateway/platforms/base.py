@@ -1271,26 +1271,66 @@ def _match_extensionless_path(
     or the next ``MEDIA:``).
 
     When that fails validation, the candidate is progressively extended forward across single spaces
-    (validation-gated, bounded at 8 tokens, never past a newline or a subsequent ``MEDIA:`` keyword) so
-    unknown-extension paths containing spaces deliver (#24032). Returns ``(safe_path, end_offset)`` where
-    ``end_offset`` is the index in ``scan_text`` just past the matched path, or ``None`` when nothing
-    validates. Claimed-result planning may set ``include_unavailable`` to return the bounded
-    explicit token before availability and policy checks; the send path validates it later.
+    (bounded at 8 tokens, never past a newline or a subsequent ``MEDIA:`` keyword) so unknown-extension
+    paths containing spaces deliver (#24032). Claimed-result planning may set ``include_unavailable``
+    to resolve the same bounded grammar without filesystem or policy checks; send-time validation remains
+    authoritative.
     """
-    path = _normalize_media_tag_path(match.group("path"))
+    raw = match.group("path")
+    path = _normalize_media_tag_path(raw)
     if not path:
         return None
-    if include_unavailable:
-        return path, match.end("path")
-    safe = validate_media_delivery_path(path)
-    if safe:
-        return safe, match.end("path")
+    quoted = len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "`\"'"
+    if not include_unavailable:
+        safe = validate_media_delivery_path(path)
+        if safe:
+            return safe, match.end("path")
     start = match.start("path")
     segment = scan_text[start:].split("\n", 1)[0]
     nxt = segment.find("MEDIA:", 1)
     if nxt != -1:
         segment = segment[:nxt]
     pos = match.end("path") - start
+    if include_unavailable:
+        if quoted:
+            return path, match.end("path")
+        candidate = path
+        candidate_end = match.end("path")
+        prose_boundaries = {"is", "are", "was", "were"}
+        for _ in range(8):
+            while pos < len(segment) and segment[pos] in " \t":
+                pos += 1
+            if pos >= len(segment):
+                break
+            tok_end = pos
+            while tok_end < len(segment) and segment[tok_end] not in " \t":
+                tok_end += 1
+            token = segment[pos:tok_end]
+            if token.casefold().strip(",;:)]}") in prose_boundaries:
+                break
+            extended = _normalize_media_tag_path(segment[:tok_end])
+            if not extended:
+                break
+            candidate = extended
+            candidate_end = start + tok_end
+            lookahead = tok_end
+            while lookahead < len(segment) and segment[lookahead] in " \t":
+                lookahead += 1
+            following_end = lookahead
+            while following_end < len(segment) and segment[following_end] not in " \t":
+                following_end += 1
+            following = segment[lookahead:following_end]
+            suffix = Path(candidate.replace("\\", "/")).suffix
+            if (
+                tok_end == len(segment)
+                or "/" in token
+                or "\\" in token
+                or bool(suffix)
+                or following.casefold().strip(",;:)]}") in prose_boundaries
+            ):
+                return candidate, candidate_end
+            pos = tok_end
+        return candidate, candidate_end
     for _ in range(8):
         token = re.match(r"[ \t]*[^ \t]+", segment[pos:])
         if not token:

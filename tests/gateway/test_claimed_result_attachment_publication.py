@@ -662,6 +662,137 @@ async def test_queued_unsafe_attachment_is_manifested_failed_not_false_terminal(
 
 
 @pytest.mark.asyncio
+async def test_unavailable_unquoted_spaced_media_retries_complete_private_intent(
+    _isolated_ledger_and_media,
+    caplog,
+):
+    intended = (
+        _isolated_ledger_and_media / "My Documents" / "Caddyfile"
+    ).resolve()
+    truncated = (_isolated_ledger_and_media / "My").resolve()
+    visible_tail = str(Path("Documents") / "Caddyfile")
+    assert not intended.exists()
+    response = f"queued text\nMEDIA:{intended}"
+    source = _source("missing-explicit-spaced-extensionless")
+    oid = _record_owned(
+        source,
+        response,
+        content="queued text",
+        suffix="missing-explicit-spaced-extensionless",
+    )
+    first_adapter = _OwnedMediaAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner._session_key_for_source = lambda _source: (
+        f"agent:main:slack:channel:{source.chat_id}"
+    )
+
+    with pytest.raises(
+        Exception,
+        match="claimed continuation attachment delivery failed",
+    ):
+        await runner._deliver_queued_first_response(
+            response,
+            source=source,
+            adapter=first_adapter,
+            metadata={},
+            delivery_obligation_id=oid,
+        )
+
+    assert first_adapter.calls == [("text", "queued text")]
+    original_parts = dl.get_claimed_result_parts(oid)
+    assert [(row["kind"], row["state"]) for row in original_parts] == [
+        ("text", "delivered"),
+        ("document", "failed"),
+    ]
+    expected_part_id = dl.compute_claimed_result_part_id(
+        oid,
+        1,
+        "document",
+        str(intended),
+    )
+    truncated_part_id = dl.compute_claimed_result_part_id(
+        oid,
+        1,
+        "document",
+        str(truncated),
+    )
+    assert original_parts[1]["part_id"] == expected_part_id
+    assert original_parts[1]["part_id"] != truncated_part_id
+
+    def _claim_after_owner_exit():
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET owner_pid=999999999, "
+                "owner_started_at=1 WHERE obligation_id=?",
+                (oid,),
+            )
+        claimed = dl.sweep_recoverable()
+        assert len(claimed) == 1
+        return GatewayRunner._claimed_result_replay_event(claimed[0])
+
+    session_key = f"agent:main:slack:channel:{source.chat_id}"
+    missing_replay = _claim_after_owner_exit()
+    missing_adapter = _OwnedMediaAdapter()
+    missing_adapter._message_handler = AsyncMock(
+        side_effect=AssertionError("recovery must not invoke the agent")
+    )
+    missing_adapter._active_sessions[session_key] = asyncio.Event()
+    await missing_adapter._process_message_background(missing_replay, session_key)
+
+    missing_parts = dl.get_claimed_result_parts(oid)
+    assert [row["part_id"] for row in missing_parts] == [
+        row["part_id"] for row in original_parts
+    ]
+    assert missing_adapter.calls == []
+
+    intended.parent.mkdir(parents=True)
+    intended.write_bytes(b"claimed-media")
+    available_replay = _claim_after_owner_exit()
+    available_adapter = _OwnedMediaAdapter()
+    available_adapter._message_handler = AsyncMock(
+        side_effect=AssertionError("recovery must not invoke the agent")
+    )
+    available_adapter._active_sessions[session_key] = asyncio.Event()
+    await available_adapter._process_message_background(available_replay, session_key)
+
+    assert available_adapter.calls == [("document", str(intended))]
+    final_parts = dl.get_claimed_result_parts(oid)
+    assert [row["part_id"] for row in final_parts] == [
+        row["part_id"] for row in original_parts
+    ]
+    assert {row["state"] for row in final_parts} == {"delivered"}
+    with dl._connect() as conn:
+        obligation = conn.execute(
+            "SELECT content, raw_content, last_error, source_json, message_ref "
+            "FROM delivery_obligations WHERE obligation_id=?",
+            (oid,),
+        ).fetchone()
+        durable_parts = conn.execute(
+            "SELECT part_id, part_ordinal, kind, state, last_error, remote_receipt "
+            "FROM delivery_obligation_parts WHERE obligation_id=? "
+            "ORDER BY part_ordinal",
+            (oid,),
+        ).fetchall()
+    assert obligation[0] == "queued text"
+    assert obligation[1] == response
+    public_projection = repr(
+        (
+            first_adapter.calls,
+            first_adapter.part_metadata,
+            missing_adapter.calls,
+            missing_adapter.part_metadata,
+            available_adapter.part_metadata,
+            (obligation[0], *obligation[2:]),
+            durable_parts,
+        )
+    )
+    log_projection = "\n".join(record.getMessage() for record in caplog.records)
+    for private_fragment in (str(intended), str(truncated), visible_tail):
+        assert private_fragment not in public_projection
+        assert private_fragment not in log_projection
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["Caddyfile", "payload.unsupported"])
 async def test_unavailable_explicit_media_without_supported_extension_is_retryable(
     _isolated_ledger_and_media,
@@ -722,15 +853,25 @@ async def test_unavailable_explicit_media_without_supported_extension_is_retryab
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "PRIVATE_DENIED_EXTENSIONLESS",
+        "Private Folder/PRIVATE_DENIED_EXTENSIONLESS",
+    ],
+)
 async def test_denied_extensionless_media_is_manifested_before_validation(
     _isolated_ledger_and_media,
     monkeypatch,
+    relative,
 ):
     from gateway.platforms import base as base_module
 
+    denied_path = _isolated_ledger_and_media.parent / relative
+    denied_path.parent.mkdir(parents=True, exist_ok=True)
     denied = _media_file(
-        _isolated_ledger_and_media.parent,
-        "PRIVATE_DENIED_EXTENSIONLESS",
+        denied_path.parent,
+        denied_path.name,
     )
     original_denied = base_module._path_under_denied_prefix
     monkeypatch.setattr(
@@ -791,10 +932,20 @@ async def test_denied_extensionless_media_is_manifested_before_validation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "DISAPPEARING_EXTENSIONLESS",
+        "Spaced Folder/DISAPPEARING_EXTENSIONLESS",
+    ],
+)
 async def test_extensionless_media_disappearing_after_snapshot_remains_incomplete(
     _isolated_ledger_and_media,
+    relative,
 ):
-    intended = _media_file(_isolated_ledger_and_media, "DISAPPEARING_EXTENSIONLESS")
+    intended_path = _isolated_ledger_and_media / relative
+    intended_path.parent.mkdir(parents=True, exist_ok=True)
+    intended = _media_file(intended_path.parent, intended_path.name)
     response = f"queued text\nMEDIA:{intended}"
     source = _source("disappearing-explicit-extensionless")
     oid = _record_owned(

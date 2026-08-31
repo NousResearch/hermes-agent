@@ -201,15 +201,19 @@ class TestYieldedTickIsAFailedTick:
         assert not t.is_alive()
 
 
-    def test_multiplex_yield_in_one_profile_does_not_cancel_siblings(self):
+    def test_multiplex_yield_in_one_profile_does_not_cancel_siblings(self, tmp_path):
         """Multiplex loop: a yield for profile A (its fresh gateway owns the
         runtime lock) must not cancel profile B's tick in the same cycle —
         B may have no other ticker. B's heartbeat stays healthy; A's records
         the yield."""
         from cron.scheduler_provider import InProcessCronScheduler
 
-        home_a = "/tmp/home-a"
-        home_b = "/tmp/home-b"
+        # The multiplex loop skips profile homes that don't exist on disk
+        # (_existing_profile_homes, #47368) — use real directories.
+        home_a = str(tmp_path / "home-a")
+        home_b = str(tmp_path / "home-b")
+        (tmp_path / "home-a").mkdir()
+        (tmp_path / "home-b").mkdir()
         ticked: list[str] = []
         per_home_beats: dict[str, list[bool]] = {home_a: [], home_b: []}
         per_home_errors: dict[str, list[str]] = {home_a: [], home_b: []}

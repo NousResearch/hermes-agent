@@ -3057,6 +3057,32 @@ class TestListSessionsRich:
         assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
         assert "root" in ids
 
+    def test_rich_list_promotes_reset_and_branch_markers(self, db):
+        """List rows expose _reset_from / _branched_from so UIs can tell a
+        /new reset from a genuine /branch without reading model_config."""
+        db.create_session("parent", "cli")
+        db.create_session(
+            "reset_child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_reset_from": "parent"},
+        )
+        db.create_session(
+            "branch_child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+
+        by_id = {row["id"]: row for row in db.list_sessions_rich()}
+        assert by_id["reset_child"]["_reset_from"] == "parent"
+        assert not by_id["reset_child"].get("_branched_from")
+        assert by_id["branch_child"]["_branched_from"] == "parent"
+        assert not by_id["branch_child"].get("_reset_from")
+        compact = {row["id"]: row for row in db.list_sessions_rich(compact_rows=True)}
+        assert compact["reset_child"]["_reset_from"] == "parent"
+        assert compact["branch_child"]["_branched_from"] == "parent"
+
 
 
 class TestCompressionChainProjection:

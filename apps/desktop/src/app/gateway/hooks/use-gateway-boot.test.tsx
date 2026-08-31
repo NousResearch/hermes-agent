@@ -199,6 +199,7 @@ function fakeDesktop() {
       return !key || key === 'default' ? primaryConn : coderConn
     }),
     getGatewayWsUrl: vi.fn(async (conn?: { wsUrl?: string }) => conn?.wsUrl ?? primaryConn.wsUrl),
+    getConnectionConfig: vi.fn(async () => ({ mode: 'local' })),
     getBootProgress: vi.fn(async () => ({
       error: null as null | string,
       fakeMode: false,
@@ -1228,6 +1229,66 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     })
 
     expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('re-attaches once when a local backend becomes ready after the initial renderer timeout (#98124)', async () => {
+    // The main process keeps starting the local child after withTimeout()
+    // rejects in the renderer. Its later backend.ready must re-run the normal
+    // connection + WebSocket handshake exactly once instead of leaving the
+    // failure overlay latched forever.
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise(() => undefined))
+      .mockResolvedValue(primaryConn)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000)
+    })
+
+    expect($desktopBoot.get().error).toContain('Timed out connecting to Hermes backend')
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      desktop.emitBootProgress({
+        error: null,
+        fakeMode: false,
+        message: 'Hermes backend is ready. Finalizing desktop startup',
+        phase: 'backend.ready',
+        progress: 94,
+        running: true,
+        timestamp: Date.now()
+      })
+    })
+    await flushAsync()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().visible).toBe(false)
+
+    // Duplicate ready notifications cannot create a second socket or restart
+    // the finished boot path.
+    act(() => {
+      desktop.emitBootProgress({
+        error: null,
+        fakeMode: false,
+        message: 'Hermes backend is ready. Finalizing desktop startup',
+        phase: 'backend.ready',
+        progress: 94,
+        running: true,
+        timestamp: Date.now()
+      })
+    })
+    await flushAsync()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 
   it('softSwitch(): a getConnection() that hangs on a connection-apply switch does not latch $gatewaySwitching forever (#93454)', async () => {

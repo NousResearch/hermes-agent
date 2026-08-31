@@ -948,14 +948,21 @@ class BuzzAdapter(BasePlatformAdapter):
         # multiplex profile a missing tag fails closed to "" instead of
         # attaching the default profile's tag from os.environ, while
         # single-profile and unscoped default-profile reads keep the legacy
-        # env behavior. ``self._auth_tag`` is populated by connect() via
+        # env behavior. connect() populates ``self._auth_tag`` via
         # ``_resolve_auth_tag`` (scope-aware read + credentials-file
-        # fallback, #79514).
+        # fallback, #79514); resolve lazily here as well so a re-auth on a
+        # bare adapter stays scope-correct.
+        auth_tag = getattr(self, "_auth_tag", "") or ""
+        if not auth_tag:
+            try:
+                auth_tag = _resolve_auth_tag(getattr(self, "_extra", None))
+            except ValueError:
+                auth_tag = ""
         event = build_auth_event(
             private_key=self._private_key,
             challenge=str(message[1]),
             relay_url=self._websocket_url(),
-            auth_tag_json=self._auth_tag,
+            auth_tag_json=auth_tag,
         )
         await websocket.send(json.dumps(["AUTH", event], separators=(",", ":")))
         while True:

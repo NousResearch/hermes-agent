@@ -353,7 +353,7 @@ class TestMultiplexProfileScope:
         cli.write_text("#!/bin/sh\n", encoding="utf-8")
         calls = {}
 
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=None):
+        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=None):
             calls["relay"] = relay_url
             return 0, '{"event_id": "e1"}', ""
 
@@ -532,7 +532,7 @@ class TestMultiplexProfileScope:
         cli.write_text("#!/bin/sh\n", encoding="utf-8")
         calls = {}
 
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=None):
+        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=None):
             calls["args"] = args
             return 0, '{"event_id": "e1"}', ""
 
@@ -568,7 +568,7 @@ class TestMultiplexProfileScope:
         cli = tmp_path / "buzz"
         cli.write_text("#!/bin/sh\n", encoding="utf-8")
 
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=None):
+        async def fake_exec(cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=None):
             raise AssertionError("CLI must not run without a resolved target")
 
         monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)

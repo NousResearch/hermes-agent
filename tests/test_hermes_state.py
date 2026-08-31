@@ -2752,6 +2752,36 @@ class TestCompressionChainProjection:
         assert db.get_compression_tip("mid1") == "tip1"
         assert db.get_compression_tip("tip1") == "tip1"
 
+    def test_get_compression_chain_lists_every_segment(self, db):
+        """Root-first order, intermediates included; a chainless id is its
+        own one-element chain."""
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        assert db.get_compression_chain("root1") == ["root1", "mid1", "tip1"]
+        assert db.get_compression_chain("mid1") == ["mid1", "tip1"]
+        assert db.get_compression_chain("tip1") == ["tip1"]
+        db.create_session("solo_chain", "cli")
+        db._conn.commit()
+        assert db.get_compression_chain("solo_chain") == ["solo_chain"]
+
+    def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
+        """The projected tip row must carry every chain id. Root and tip
+        alone are not enough client-side: a persisted tile or route can hold
+        a MIDDLE segment's id (it was the tip when opened), and without the
+        intermediates that surface cannot prove it names this conversation —
+        which is how one chat ends up open twice after a compaction."""
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["_lineage_ids"] == ["root1", "mid1", "tip1"]
+        solo_row = next(s for s in sessions if s["id"] == "solo")
+        assert solo_row.get("_lineage_ids") is None
+
 
 
     def test_list_surfaces_tip_for_compressed_root(self, db):

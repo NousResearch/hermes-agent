@@ -45,10 +45,12 @@ import {
   keepFailedProfileMeta,
   knownSessionOwner,
   knownSessionProfile,
+  lineageAliases,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
   sessionBelongsToProfile,
+  sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
   sessionPinId,
   setComposerSelectionOwner,
@@ -363,6 +365,27 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('lineageAliases across a deep compression chain', () => {
+  it('aliases every segment, intermediates included', () => {
+    // The projected row carries the full chain: a tile or route can hold a
+    // MIDDLE segment's id from when IT was the tip.
+    const rows = [
+      session({ _lineage_ids: ['root', 'mid', 'tip'], _lineage_root_id: 'root', id: 'tip' })
+    ]
+
+    expect(lineageAliases('mid', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(lineageAliases('tip', rows).sort()).toEqual(['mid', 'root', 'tip'])
+    expect(sessionMatchesStoredId(rows[0], 'mid')).toBe(true)
+  })
+
+  it('keeps the root/tip pairing for gateways without the field', () => {
+    const rows = [session({ _lineage_root_id: 'root', id: 'tip' })]
+
+    expect(lineageAliases('tip', rows).sort()).toEqual(['root', 'tip'])
+    expect(lineageAliases('unknown', rows)).toEqual(['unknown'])
   })
 })
 

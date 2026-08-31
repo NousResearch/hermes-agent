@@ -11556,8 +11556,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return f"{base} #{max_num + 1}"
 
-    def get_compression_tip(self, session_id: str) -> Optional[str]:
-        """Walk the compression-continuation chain forward and return the tip.
+    def get_compression_chain(self, session_id: str) -> List[str]:
+        """Walk the compression-continuation chain forward and return every id.
+
+        Root-first order, ending at the tip; ``[session_id]`` when no
+        continuation exists. ``get_compression_tip`` is this walk's last
+        element — kept as the single implementation so the two can never
+        disagree about what the chain is.
 
         A compression continuation is a child of a session whose
         ``end_reason = 'compression'``.  Older builds tried to distinguish
@@ -11578,6 +11583,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         continuation exists.
         """
         current = session_id
+        chain = [current] if current else []
         seen = {current} if current else set()
         # Bound the walk defensively — compression chains this deep are
         # pathological and shouldn't happen in practice. 100 = plenty.
@@ -11608,13 +11614,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 row = cursor.fetchone()
             if row is None:
-                return current
+                return chain
             child_id = row["id"]
             if not child_id or child_id in seen:
-                return current
+                return chain
             seen.add(child_id)
             current = child_id
-        return current
+            chain.append(child_id)
+        return chain
+
+    def get_compression_tip(self, session_id: str) -> Optional[str]:
+        """The live tip of a compression-continuation chain (see
+        ``get_compression_chain`` for the walk's semantics). Returns the input
+        id when no continuation exists."""
+        chain = self.get_compression_chain(session_id)
+        return chain[-1] if chain else session_id
 
     # Columns excluded from compact_rows projections: only the payload-heavy
     # blob no list consumer renders. Everything else — including gateway
@@ -11992,12 +12006,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # call per compression root. Batch that half instead: resolve
             # every tip id first, then fetch all tip rows in a single query.
             tip_ids_by_root: Dict[str, str] = {}
+            chain_by_root: Dict[str, List[str]] = {}
             for s in sessions:
                 if s.get("end_reason") != "compression":
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                chain = self.get_compression_chain(s["id"])
+                tip_id = chain[-1] if chain else s["id"]
                 if tip_id != s["id"]:
                     tip_ids_by_root[s["id"]] = tip_id
+                    chain_by_root[s["id"]] = chain
 
             tip_rows = (
                 self._get_session_rich_rows_batch(
@@ -12025,6 +12042,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     if key in tip_row:
                         merged[key] = tip_row[key]
                 merged["_lineage_root_id"] = s["id"]
+                # Every id on the chain, intermediates included. Root and tip
+                # alone are not enough client-side: a persisted tile or route
+                # can hold a MIDDLE segment's id (it was the tip when opened,
+                # then rotated again), and with only the root/tip pair such a
+                # surface can no longer prove it names this conversation —
+                # which is how one chat ends up open twice after compaction.
+                merged["_lineage_ids"] = chain_by_root.get(s["id"]) or None
                 projected.append(merged)
             sessions = projected
 

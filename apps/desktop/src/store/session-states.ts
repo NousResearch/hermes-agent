@@ -1406,7 +1406,9 @@ export function openSessionTile(
   markSessionRead(storedSessionId)
   ackStoredSessionId(storedSessionId)
 
-  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+
+  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
     return
   }
 
@@ -1414,7 +1416,7 @@ export function openSessionTile(
 
   const workspaceOwnerKey = workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceOwnerKey : undefined
 
-  if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
+  if (!tiles.some(t => aliases.includes(t.storedSessionId))) {
     saveTiles([
       ...tiles,
       {
@@ -1510,8 +1512,16 @@ export function focusOpenSession(
   storedSessionId: string,
   workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
 ): 'main' | 'tile' | null {
-  if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
-    const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
+  // Compression rotates a conversation's tip id while tiles stay keyed by
+  // whichever segment id they were opened with. An exact-id test right after
+  // a rotation said "not open" for a conversation that IS on screen, and
+  // callers opened the same chat in a second tab. Match any id of the
+  // lineage instead, and front the tile under ITS key.
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+  const tile = $sessionTiles.get().find(t => aliases.includes(t.storedSessionId))
+
+  if (tile) {
+    const paneId = `${TILE_PANE_PREFIX}${tile.storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
     const tree = $layoutTree.get()
     const group = tree ? findGroupOfPane(tree, paneId) : null
@@ -1525,7 +1535,7 @@ export function focusOpenSession(
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (workspaceScope.workspaceMode === 'sessions' && storedSessionId === $selectedStoredSessionId.get()) {
+  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
     revealTreePane('workspace')
     noteActiveTreeGroup(null)
 

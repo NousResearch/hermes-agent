@@ -331,6 +331,24 @@ describe('SessionTile workspace scope', () => {
     expect(focusOpenSession('bot-chat', scope)).toBe('tile')
   })
 
+  it('fronts the existing tab when compaction rotated the tip id — never a duplicate', () => {
+    // The tile was opened when seg-2 was the tip; the conversation has since
+    // rotated to seg-3 (projected row carries the full chain). Opening the
+    // new tip must front that tile, not open the same chat twice.
+    setSessions([
+      { _lineage_ids: ['seg-1', 'seg-2', 'seg-3'], _lineage_root_id: 'seg-1', id: 'seg-3' } as never
+    ])
+    openSessionTile('seg-2')
+
+    expect(focusOpenSession('seg-3')).toBe('tile')
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-2'])
+
+    // The open path dedupes through the same lineage test.
+    openSessionTile('seg-3')
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-2'])
+    setSessions([])
+  })
+
   it('keeps Bot tabs while a profile publication swaps the Sessions bucket', () => {
     const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::writer' }
 

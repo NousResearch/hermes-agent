@@ -1036,7 +1036,94 @@ class TestXaiReservedToolSearchAlias:
             "agent.codex_responses_adapter._normalize_codex_response",
             lambda resp, issuer_kind=None: (msg, "tool_calls"),
         )
+        # Pair the response with a real request so provenance is recorded.
+        transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            is_xai_responses=True,
+        )
+        assert transport._last_wire_aliases == {"hermes_tool_search": "tool_search"}
         normalized = transport.normalize_response(response)
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+
+    def _normalize_named_call(self, transport, monkeypatch, wire_name):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(name=wire_name, arguments="{}"),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        return transport.normalize_response(response)
+
+    def test_no_alias_emitted_means_no_reverse_rewrite(self, transport, monkeypatch):
+        """Provenance contract (#95003 review): a request that emitted no
+        aliases must not have a real ``hermes_tool_search`` tool rewritten."""
+        real_tool = {"type": "function", "function": {
+            "name": "hermes_tool_search", "description": "A real MCP tool.",
+            "parameters": {"type": "object", "properties": {}}}}
+        transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[real_tool],
+            is_xai_responses=True,
+        )
+        assert transport._last_wire_aliases == {}
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["hermes_tool_search"]
+
+    def test_alias_collision_takes_suffix_no_duplicates(self, transport, monkeypatch):
+        """A real tool already named ``hermes_tool_search`` keeps its wire
+        name; the bridge is suffixed and both round-trip independently."""
+        tools = [
+            {"type": "function", "function": {
+                "name": "hermes_tool_search", "description": "Real tool.",
+                "parameters": {"type": "object", "properties": {}}}},
+            {"type": "function", "function": {
+                "name": "tool_search", "description": "Bridge.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+            is_xai_responses=True,
+        )
+        names = self._names(kw)
+        assert names == ["hermes_tool_search", "hermes_tool_search_2"]
+        assert len(names) == len(set(names))
+        assert transport._last_wire_aliases == {"hermes_tool_search_2": "tool_search"}
+        # Bridge alias maps back; the real tool's name is untouched.
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search_2"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+        normalized2 = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized2.tool_calls] == ["hermes_tool_search"]
+
+    def test_legacy_fallback_without_provenance(self, transport, monkeypatch):
+        """Normalize-only call sites (no build_kwargs on this instance) keep
+        the historical unconditional reverse mapping."""
+        assert transport._last_wire_aliases is None
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
         assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
 
 

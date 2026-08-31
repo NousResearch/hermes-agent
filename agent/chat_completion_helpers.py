@@ -1971,6 +1971,12 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         agent.provider in {"xai", "xai-oauth"}
         or agent._base_url_hostname == "api.x.ai"
     )
+    # Reset request-local alias provenance for THIS request; the rewrite
+    # below repopulates it when it actually emits aliases. Without the
+    # reset, a stale map from an earlier request on the same transport
+    # could reverse-map a name this request never aliased.
+    if _ct is not None and hasattr(_ct, "_last_wire_aliases"):
+        _ct._last_wire_aliases = {}
     if _is_xai_chat and tools_for_api:
         try:
             import copy as _copy_xai
@@ -1986,7 +1992,13 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             )
             if _has_bridge:
                 tools_for_api = _copy_xai.deepcopy(tools_for_api)
-                tools_for_api = _rename_tool_search_bridge_for_xai(tools_for_api)
+                tools_for_api, _xai_alias_map = _rename_tool_search_bridge_for_xai(
+                    tools_for_api
+                )
+                # Record provenance so normalize_response reverses ONLY the
+                # aliases this request put on the wire.
+                if _ct is not None:
+                    _ct._last_wire_aliases = _xai_alias_map
         except Exception as exc:
             logger.warning(
                 "%s⚠️ Failed to alias tool_search bridge for xAI: %s",

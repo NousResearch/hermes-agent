@@ -90,6 +90,17 @@ _RESERVED_ALIAS_TO_NAME = {
     for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES)
 }
 
+# Legacy reverse map used ONLY when normalize_response runs on a transport
+# instance that never built a request (normalize-only call sites / tests).
+# Production requests carry request-local provenance instead — see
+# ``_last_wire_aliases`` — so a real user/plugin/MCP tool that happens to be
+# named ``hermes_tool_search`` is never silently rewritten to ``tool_search``
+# unless THIS request actually emitted that alias (#95003 review contract).
+_LEGACY_ALIAS_FALLBACK = {
+    **_RESERVED_ALIAS_TO_NAME,
+    "hermes_web_search": "web_search",
+}
+
 
 def _is_opencode_responses_backend(params: Dict[str, Any]) -> bool:
     """True when this Responses request targets an OpenCode endpoint.
@@ -117,22 +128,41 @@ def _is_opencode_responses_backend(params: Dict[str, Any]) -> bool:
 def _alias_reserved_tools(
     response_tools: List[Dict[str, Any]],
     reserved_names: Tuple[str, ...],
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """Alias provider-reserved client function names on the wire.
 
-    Single owner for every reserved-name collision on this transport; the
-    reverse mapping lives in :data:`_RESERVED_ALIAS_TO_NAME`, applied in
-    ``normalize_response`` so Hermes dispatch never sees the alias.
+    Single owner for every reserved-name collision on this transport.
+    Returns ``(rewritten_tools, alias_map)`` where ``alias_map`` maps each
+    wire alias emitted by THIS request back to the original tool name.
+    The caller stashes the map for ``normalize_response`` so the reverse
+    rewrite only ever applies to aliases this request actually sent —
+    a legitimate user/plugin/MCP tool already named ``hermes_<x>`` is
+    neither shadowed (the alias picks a ``_2``/``_3`` suffix instead of
+    duplicating a wire name) nor mis-dispatched on the response path.
     """
     rewritten: List[Dict[str, Any]] = []
+    alias_map: Dict[str, str] = {}
+    taken = {
+        tool.get("name")
+        for tool in response_tools
+        if isinstance(tool, dict) and tool.get("name")
+    }
     for tool in response_tools:
         if isinstance(tool, dict) and tool.get("name") in reserved_names:
+            base = f"{_RESERVED_TOOL_ALIAS_PREFIX}{tool['name']}"
+            alias = base
+            suffix = 2
+            while alias in taken:
+                alias = f"{base}_{suffix}"
+                suffix += 1
+            taken.add(alias)
+            alias_map[alias] = tool["name"]
             aliased = dict(tool)
-            aliased["name"] = f"{_RESERVED_TOOL_ALIAS_PREFIX}{tool['name']}"
+            aliased["name"] = alias
             rewritten.append(aliased)
         else:
             rewritten.append(tool)
-    return rewritten
+    return rewritten, alias_map
 
 
 def _xai_prefers_native_web_search() -> bool:
@@ -429,6 +459,14 @@ class ResponsesApiTransport(ProviderTransport):
     # attribute default; mutated on the instance, not the class.
     _last_issuer_kind: Optional[str] = None
 
+    # Wire-alias provenance of the most recent build_kwargs call:
+    # ``{alias_sent_on_wire: original_tool_name}``. ``None`` means "no
+    # request built on this instance" (normalize-only call sites), in which
+    # case normalize_response falls back to the static legacy map. An empty
+    # dict means the last request emitted no aliases, so no reverse rewrite
+    # is permitted (#95003 provenance contract).
+    _last_wire_aliases: Optional[Dict[str, str]] = None
+
     @property
     def api_mode(self) -> str:
         return "codex_responses"
@@ -628,6 +666,12 @@ class ResponsesApiTransport(ProviderTransport):
         #    is honored, but rename the wire tool to
         #    ``hermes_web_search`` so Grok cannot hijack the name. The alias
         #    is mapped back to ``web_search`` in ``normalize_response``.
+        # Request-local alias provenance: every wire alias THIS request
+        # emits is recorded here and stashed on the transport, so the
+        # reverse rewrite in ``normalize_response`` applies only to aliases
+        # that were actually sent (never to a real tool that merely shares
+        # an alias-shaped name).
+        wire_aliases: Dict[str, str] = {}
         if is_xai_responses and response_tools:
             has_client_web_search = any(
                 isinstance(t, dict) and t.get("name") == "web_search"
@@ -643,22 +687,30 @@ class ResponsesApiTransport(ProviderTransport):
                     response_tools = filtered
                 else:
                     response_tools = _rename_client_web_search_for_xai(response_tools)
+                    wire_aliases[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
 
         # OpenCode Responses backends reserve web_search / search_files as
         # function names (HTTP 400 "custom function name 'X' is reserved",
         # #85589). Alias them on the wire; normalize_response maps them back.
         if response_tools and _is_opencode_responses_backend(params):
-            response_tools = _alias_reserved_tools(
+            response_tools, _oc_aliases = _alias_reserved_tools(
                 response_tools, _OPENCODE_RESERVED_TOOL_NAMES
             )
+            wire_aliases.update(_oc_aliases)
 
         # xAI reserves ``tool_search`` for its native server-side tool and
         # rejects the client declaration outright (#95003). Alias it on the
         # wire; normalize_response maps it back before dispatch.
         if is_xai_responses and response_tools:
-            response_tools = _alias_reserved_tools(
+            response_tools, _xai_aliases = _alias_reserved_tools(
                 response_tools, _XAI_RESERVED_TOOL_NAMES
             )
+            wire_aliases.update(_xai_aliases)
+
+        # Stash for normalize_response (same request/response pairing model
+        # as ``_last_issuer_kind``). An empty dict is meaningful: it means
+        # this request emitted NO aliases, so no reverse rewrite may run.
+        self._last_wire_aliases = wire_aliases
 
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
@@ -896,14 +948,22 @@ class ResponsesApiTransport(ProviderTransport):
                 if hasattr(tc, "response_item_id") and tc.response_item_id:
                     provider_data["response_item_id"] = tc.response_item_id
                 name = tc.function.name if hasattr(tc, "function") else getattr(tc, "name", "")
-                # Undo the xAI client-path wire alias so Hermes dispatches
-                # the real ``web_search`` tool (Firecrawl / etc.).
-                if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
-                    name = "web_search"
-                # Undo the OpenCode reserved-name wire aliases the same way
-                # (hermes_web_search / hermes_search_files, #85589).
-                elif name in _RESERVED_ALIAS_TO_NAME:
-                    name = _RESERVED_ALIAS_TO_NAME[name]
+                # Undo THIS request's wire aliases before Hermes dispatch.
+                # Request-local provenance: only aliases the paired
+                # build_kwargs call actually emitted are rewritten, so a
+                # legitimate tool that happens to be named
+                # ``hermes_tool_search`` etc. is dispatched as itself when
+                # no alias was sent. The static legacy map is used only for
+                # normalize-only call sites that never built a request on
+                # this transport instance.
+                alias_map = self._last_wire_aliases
+                if alias_map is None:
+                    if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
+                        name = "web_search"
+                    elif name in _LEGACY_ALIAS_FALLBACK:
+                        name = _LEGACY_ALIAS_FALLBACK[name]
+                elif name in alias_map:
+                    name = alias_map[name]
                 tool_calls.append(ToolCall(
                     id=tc.id if hasattr(tc, "id") else (name or None),
                     name=name,

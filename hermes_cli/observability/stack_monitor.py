@@ -69,7 +69,7 @@ def _socket_path(config: Mapping[str, Any]) -> Path:
     override = os.environ.get("ARES_STACK_OBSERVATION_SOCKET")
     if override:
         return Path(override)
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"  # windows-footgun: ok — XDG runtime dir is POSIX-only by definition
     return Path(runtime_dir) / "ares-observatory" / "collector.sock"
 
 

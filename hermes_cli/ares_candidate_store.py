@@ -114,7 +114,7 @@ def _validate_stat(
         or (regular and not stat.S_ISREG(info.st_mode))
     ):
         raise CandidateStoreError("UNSAFE_FILESYSTEM_OBJECT")
-    if require_owner and info.st_uid != os.geteuid():
+    if require_owner and info.st_uid != os.geteuid():  # windows-footgun: ok — module imports fcntl above, Unix-only by construction
         raise CandidateStoreError("UNSAFE_OWNER")
     if require_private and stat.S_IMODE(info.st_mode) & 0o022:
         raise CandidateStoreError("UNSAFE_MODE")
@@ -1100,7 +1100,7 @@ class CandidateStore:
                 # local filesystem (some report 1 for an empty flat tree).
                 # Extra directories are rejected by exact enumeration below.
                 or root.st_nlink not in {1, 2}
-                or root.st_uid != os.geteuid()
+                or root.st_uid != os.geteuid()  # windows-footgun: ok — module imports fcntl above, Unix-only by construction
                 or stat.S_IMODE(root.st_mode) != 0o500
             ):
                 raise CandidateStoreError("CUSTODY_CORRUPT", "artifact root mode")
@@ -1245,7 +1245,7 @@ class CandidateStore:
         try:
             # ``tarfile`` accepts a held file object.  Never hand it a
             # pathname after candidate authority has been established.
-            with os.fdopen(os.dup(archive_fd), "rb") as archive_file:
+            with os.fdopen(os.dup(archive_fd), "rb") as archive_file:  # windows-footgun: ok — binary mode, encoding not applicable
                 with tarfile.open(fileobj=archive_file, mode="r:") as bundle:
                     for member in bundle.getmembers():
                         name = _safe_relative(member.name)

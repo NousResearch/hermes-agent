@@ -258,20 +258,47 @@ describe('OfficePreviewView', () => {
     expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeTruthy()
   })
 
-  it('renders slides in order', () => {
+  it('shows one slide at a time and switches with the slide tabs', () => {
     render(
       <OfficePreviewView
         preview={{
           kind: 'slides',
-          slides: [{ lines: ['First'] }, { lines: ['Second'] }]
+          slides: [
+            { blocks: [{ paragraphs: [{ runs: [{ text: 'First' }] }], role: 'title', type: 'text' }] },
+            { blocks: [{ paragraphs: [{ runs: [{ text: 'Second' }] }], role: 'title', type: 'text' }] }
+          ]
         }}
         {...labels}
       />
     )
 
-    expect(screen.getByText('Slide 1')).toBeTruthy()
     expect(screen.getByText('First')).toBeTruthy()
+    expect(screen.queryByText('Second')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Slide 2' }))
+
     expect(screen.getByText('Second')).toBeTruthy()
+    expect(screen.queryByText('First')).toBeNull()
+  })
+
+  it('paints the designed slide background instead of forcing white', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'slides',
+          slides: [
+            {
+              background: '#1F497D',
+              blocks: [{ paragraphs: [{ runs: [{ color: '#FFFFFF', text: 'Navy' }] }], role: 'title', type: 'text' }]
+            }
+          ]
+        }}
+        {...labels}
+      />
+    )
+
+    expect(screen.getByTestId('office-slide-canvas').style.backgroundColor).toBe('rgb(31, 73, 125)')
+    expect(screen.getByText('Navy').style.color).toBe('rgb(255, 255, 255)')
   })
 
   it('shows a truncation banner when the parser capped the document', () => {

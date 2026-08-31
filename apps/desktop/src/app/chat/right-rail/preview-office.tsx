@@ -1,6 +1,14 @@
 import { type ReactNode, useMemo, useState } from 'react'
 
-import type { OfficeBlock, OfficeParagraph, OfficePreview, OfficeTextRun, SpreadsheetSheet } from '@/lib/ooxml-preview'
+import type {
+  OfficeBlock,
+  OfficeParagraph,
+  OfficePreview,
+  OfficeSlide,
+  OfficeTextRun,
+  SlideBlock,
+  SpreadsheetSheet
+} from '@/lib/ooxml-preview'
 import { cn } from '@/lib/utils'
 
 const OFFICE_CALIBRI_STACK = 'Calibri, Carlito, "Segoe UI", "Liberation Sans", Arial, sans-serif'
@@ -317,24 +325,120 @@ function SlideStack({
   slides
 }: {
   slideLabel: (index: number) => string
-  slides: { lines: string[] }[]
+  slides: OfficeSlide[]
 }) {
+  const [active, setActive] = useState(0)
+  const slide = slides[Math.min(active, Math.max(0, slides.length - 1))]
+
+  if (!slide) {
+    return null
+  }
+
   return (
-    <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
-      {slides.map((slide, index) => (
-        <section className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3" key={index}>
-          <div className="mb-2 text-[0.65rem] font-medium uppercase tracking-wide text-muted-foreground">
-            {slideLabel(index + 1)}
-          </div>
-          <div className="text-sm leading-relaxed text-foreground">
-            {slide.lines.map((line, lineIndex) => (
-              <p className="mb-2 last:mb-0" key={lineIndex}>
-                {line}
-              </p>
-            ))}
-          </div>
-        </section>
-      ))}
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {slides.length > 1 && (
+        <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border/60 px-2 py-1.5" role="tablist">
+          <button
+            aria-label={slideLabel(Math.max(1, active))}
+            className="shrink-0 rounded-md px-2 py-0.5 text-[0.68rem] text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
+            disabled={active === 0}
+            onClick={() => setActive(index => Math.max(0, index - 1))}
+            type="button"
+          >
+            ‹
+          </button>
+          {slides.map((_, index) => (
+            <button
+              aria-selected={index === active}
+              className={cn(
+                'shrink-0 rounded-md px-2 py-0.5 text-[0.68rem] font-medium transition-colors',
+                index === active
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+              )}
+              key={index}
+              onClick={() => setActive(index)}
+              role="tab"
+              type="button"
+            >
+              {slideLabel(index + 1)}
+            </button>
+          ))}
+          <button
+            aria-label={slideLabel(Math.min(slides.length, active + 2))}
+            className="shrink-0 rounded-md px-2 py-0.5 text-[0.68rem] text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
+            disabled={active >= slides.length - 1}
+            onClick={() => setActive(index => Math.min(slides.length - 1, index + 1))}
+            type="button"
+          >
+            ›
+          </button>
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+        <article
+          className="flex w-full max-w-3xl flex-col justify-center gap-4 overflow-hidden rounded-sm px-10 py-8 shadow-md"
+          data-testid="office-slide-canvas"
+          style={{
+            aspectRatio: '16 / 9',
+            backgroundColor: slide.background,
+            color: '#000000',
+            fontFamily: OFFICE_CALIBRI_STACK
+          }}
+        >
+          {slide.blocks.map((block, index) => (
+            <SlideBlockView block={block} key={index} />
+          ))}
+        </article>
+      </div>
     </div>
+  )
+}
+
+function SlideBlockView({ block }: { block: SlideBlock }) {
+  if (block.type === 'table') {
+    return (
+      <table className="w-full border-collapse text-[11pt]">
+        <tbody>
+          {block.rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => (
+                <td key={cellIndex} style={{ border: '1px solid currentColor', padding: '6px 10px' }}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )
+  }
+
+  const Tag = block.role === 'title' ? 'h1' : block.role === 'subtitle' ? 'h2' : 'div'
+
+  return (
+    <Tag
+      style={{
+        fontSize: block.role === 'title' ? '28pt' : block.role === 'subtitle' ? '16pt' : '16pt',
+        fontWeight: block.role === 'title' ? 700 : undefined,
+        lineHeight: 1.25
+      }}
+    >
+      {block.paragraphs.map((paragraph, index) => (
+        <p
+          key={index}
+          style={{
+            margin: '0 0 0.35em',
+            paddingLeft: paragraph.bullet ? '1.1em' : undefined,
+            textIndent: paragraph.bullet ? '-0.85em' : undefined
+          }}
+        >
+          {paragraph.bullet ? '• ' : null}
+          {paragraph.runs.map((run, runIndex) => (
+            <OfficeRun key={runIndex} run={run} />
+          ))}
+        </p>
+      ))}
+    </Tag>
   )
 }

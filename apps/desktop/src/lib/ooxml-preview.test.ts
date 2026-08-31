@@ -2,7 +2,7 @@ import { deflateRawSync } from 'node:zlib'
 
 import { describe, expect, it } from 'vitest'
 
-import { parseOfficePreview } from './ooxml-preview'
+import { type OfficeSlide, parseOfficePreview } from './ooxml-preview'
 
 function crc32(data: Uint8Array): number {
   let crc = ~0
@@ -179,6 +179,12 @@ const NS_PKG_REL = 'http://schemas.openxmlformats.org/package/2006/relationships
 const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 const NS_P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
 const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
+function slideTexts(slide: OfficeSlide): string[] {
+  return slide.blocks.flatMap(block =>
+    block.type === 'text' ? block.paragraphs.flatMap(paragraph => paragraph.runs.map(run => run.text)) : block.rows.flat()
+  )
+}
 
 function xlsxFiles(extraSheets?: Record<string, string>) {
   return {
@@ -515,7 +521,7 @@ describe('parseOfficePreview docx', () => {
 })
 
 describe('parseOfficePreview pptx', () => {
-  it('renders each slide as HTML in numeric order', async () => {
+  it('renders each slide in numeric order with text blocks', async () => {
     const preview = await parseOfficePreview(
       zipFiles({
         'ppt/slides/slide2.xml': `<?xml version="1.0"?>
@@ -533,8 +539,65 @@ describe('parseOfficePreview pptx', () => {
     expect(preview?.kind).toBe('slides')
 
     if (preview?.kind === 'slides') {
-      expect(preview.slides.map(slide => slide.lines)).toEqual([['First'], ['Second']])
+      expect(preview.slides.map(slideTexts)).toEqual([['First'], ['Second']])
     }
+  })
+
+  it('keeps designed slide fills, bullets, and tables', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        'ppt/theme/theme1.xml': `<?xml version="1.0"?>
+<a:theme xmlns:a="${NS_A}"><a:themeElements><a:clrScheme name="Office">
+  <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+  <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+  <a:dk2><a:srgbClr val="1F497D"/></a:dk2>
+  <a:lt2><a:srgbClr val="EEECE1"/></a:lt2>
+</a:clrScheme></a:themeElements></a:theme>`,
+        'ppt/slideMasters/slideMaster1.xml': `<?xml version="1.0"?>
+<p:sldMaster xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg><p:spTree/></p:cSld></p:sldMaster>`,
+        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
+<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld>
+  <p:bg><p:bgPr><a:solidFill><a:srgbClr val="1F497D"/></a:solidFill></p:bgPr></p:bg>
+  <p:spTree>
+    <p:sp>
+      <p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+      <p:txBody><a:p><a:r><a:rPr b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Navy</a:t></a:r></a:p></p:txBody>
+    </p:sp>
+    <p:sp>
+      <p:nvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>
+      <p:txBody><a:p><a:r><a:t>Bullet</a:t></a:r></a:p></p:txBody>
+    </p:sp>
+  </p:spTree>
+</p:cSld></p:sld>`,
+        'ppt/slides/slide2.xml': `<?xml version="1.0"?>
+<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
+  <p:graphicFrame><a:graphic><a:graphicData><a:tbl>
+    <a:tr><a:tc><a:txBody><a:p><a:r><a:t>Check</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+  </a:tbl></a:graphicData></a:graphic></p:graphicFrame>
+</p:spTree></p:cSld></p:sld>`
+      }),
+      '.pptx'
+    )
+
+    expect(preview?.kind).toBe('slides')
+
+    if (preview?.kind !== 'slides') {
+      return
+    }
+
+    expect(preview.slides[0]?.background).toBe('#1F497D')
+    expect(preview.slides[0]?.blocks[0]).toMatchObject({
+      paragraphs: [{ runs: [{ bold: true, color: '#FFFFFF', text: 'Navy' }] }],
+      role: 'title',
+      type: 'text'
+    })
+    expect(preview.slides[0]?.blocks[1]).toMatchObject({
+      paragraphs: [{ bullet: true, runs: [{ text: 'Bullet' }] }],
+      role: 'body',
+      type: 'text'
+    })
+    expect(preview.slides[1]?.blocks[0]).toEqual({ rows: [['Check']], type: 'table' })
+    expect(preview.slides[1]?.background).toBe('#FFFFFF')
   })
 })
 

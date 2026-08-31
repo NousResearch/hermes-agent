@@ -56,8 +56,29 @@ export type DocumentPreview = {
 
 export type SlidesPreview = {
   kind: 'slides'
-  slides: { lines: string[] }[]
+  slides: OfficeSlide[]
   truncated?: boolean
+}
+
+export type OfficeSlide = {
+  background?: string
+  blocks: SlideBlock[]
+}
+
+export type SlideBlock =
+  | {
+      paragraphs: SlideParagraph[]
+      role: 'body' | 'subtitle' | 'title'
+      type: 'text'
+    }
+  | {
+      rows: string[][]
+      type: 'table'
+    }
+
+export type SlideParagraph = {
+  bullet?: boolean
+  runs: OfficeTextRun[]
 }
 
 export type OfficePreview = DocumentPreview | SlidesPreview | SpreadsheetPreview
@@ -500,8 +521,10 @@ function parsePptx(zip: Map<string, Uint8Array>): SlidesPreview | null {
     return null
   }
 
+  const theme = parseThemeColors(zipText(zip, 'ppt/theme/theme1.xml'))
+  const masterBackground = slideFill(zipText(zip, 'ppt/slideMasters/slideMaster1.xml'), theme)
   const truncated = names.length > MAX_SLIDES
-  const slides = names.slice(0, MAX_SLIDES).map(name => ({ lines: slideLines(zipText(zip, name) || '') }))
+  const slides = names.slice(0, MAX_SLIDES).map(name => parseSlide(zipText(zip, name) || '', theme, masterBackground))
 
   return { kind: 'slides', slides, truncated }
 }
@@ -512,20 +535,225 @@ function slideIndex(name: string) {
   return match ? Number(match[1]) : 0
 }
 
-function slideLines(xml: string): string[] {
+function parseThemeColors(xml: string | null): Map<string, string> {
+  const colors = new Map<string, string>()
+  const doc = xml ? parseXml(xml) : null
+  const scheme = doc ? localElements(doc, 'clrScheme')[0] : undefined
+
+  if (!scheme) {
+    return colors
+  }
+
+  for (const child of Array.from(scheme.children)) {
+    if (!(child instanceof Element)) {
+      continue
+    }
+
+    const hex = drawingColor(child, colors)
+
+    if (hex) {
+      colors.set(child.localName, hex)
+    }
+  }
+
+  const aliases: Record<string, string> = { bg1: 'lt1', bg2: 'lt2', tx1: 'dk1', tx2: 'dk2' }
+
+  for (const [alias, key] of Object.entries(aliases)) {
+    const mapped = colors.get(key)
+
+    if (mapped) {
+      colors.set(alias, mapped)
+    }
+  }
+
+  return colors
+}
+
+function drawingColor(node: Element | undefined, theme: Map<string, string>): string | undefined {
+  if (!node) {
+    return undefined
+  }
+
+  const srgb = localElements(node, 'srgbClr')[0]?.getAttribute('val')
+
+  if (srgb) {
+    return `#${srgb.slice(-6)}`
+  }
+
+  const sys = localElements(node, 'sysClr')[0]?.getAttribute('lastClr')
+
+  if (sys) {
+    return `#${sys.slice(-6)}`
+  }
+
+  const scheme = localElements(node, 'schemeClr')[0]?.getAttribute('val')
+
+  return scheme ? theme.get(scheme) : undefined
+}
+
+function slideFill(xml: string | null, theme: Map<string, string>): string | undefined {
+  const doc = xml ? parseXml(xml) : null
+  const bg = doc ? localElements(doc, 'bg')[0] : undefined
+
+  return drawingColor(bg, theme)
+}
+
+function parseSlide(xml: string, theme: Map<string, string>, fallbackFill: string | undefined): OfficeSlide {
   const doc = parseXml(xml)
 
   if (!doc) {
-    return []
+    return { blocks: [], ...(fallbackFill ? { background: fallbackFill } : {}) }
   }
 
-  return localElements(doc, 'p')
-    .map(paragraph =>
-      localElements(paragraph, 't')
-        .map(node => node.textContent || '')
-        .join('')
+  const background = slideFill(xml, theme) || fallbackFill
+  const tree = localElements(doc, 'spTree')[0]
+  const blocks: SlideBlock[] = []
+
+  for (const child of tree ? Array.from(tree.children) : []) {
+    if (child.localName === 'graphicFrame') {
+      const table = slideTable(child)
+
+      if (table) {
+        blocks.push(table)
+      }
+
+      continue
+    }
+
+    if (child.localName !== 'sp') {
+      continue
+    }
+
+    const text = slideText(child, theme)
+
+    if (text) {
+      blocks.push(text)
+    }
+  }
+
+  return { blocks, ...(background ? { background } : {}) }
+}
+
+function slideText(shape: Element, theme: Map<string, string>): Extract<SlideBlock, { type: 'text' }> | null {
+  const role = slideRole(shape)
+
+  if (!role) {
+    return null
+  }
+
+  const body = localElements(shape, 'txBody')[0]
+
+  if (!body) {
+    return null
+  }
+
+  const paragraphs = Array.from(body.children)
+    .filter(child => child.localName === 'p')
+    .map(paragraph => {
+      const runs = Array.from(paragraph.children)
+        .filter(child => child.localName === 'r')
+        .map(run => drawingRun(run, theme))
+        .filter((run): run is OfficeTextRun => Boolean(run?.text))
+
+      if (!runs.length) {
+        return null
+      }
+
+      const next: SlideParagraph = { runs }
+
+      if (role === 'body' && !localElements(paragraph, 'buNone').length) {
+        next.bullet = true
+      }
+
+      return next
+    })
+    .filter((paragraph): paragraph is SlideParagraph => Boolean(paragraph))
+
+  if (!paragraphs.length) {
+    return null
+  }
+
+  return { paragraphs, role, type: 'text' }
+}
+
+function slideRole(shape: Element): 'body' | 'subtitle' | 'title' | null {
+  const placeholder = localElements(shape, 'ph')[0]
+  const type = placeholder?.getAttribute('type') || ''
+
+  if (type === 'dt' || type === 'ftr' || type === 'sldNum') {
+    return null
+  }
+
+  if (type === 'title' || type === 'ctrTitle') {
+    return 'title'
+  }
+
+  if (type === 'subTitle') {
+    return 'subtitle'
+  }
+
+  return 'body'
+}
+
+function drawingRun(run: Element, theme: Map<string, string>): OfficeTextRun | null {
+  const text = localElements(run, 't')
+    .map(node => node.textContent || '')
+    .join('')
+
+  if (!text) {
+    return null
+  }
+
+  const rPr = Array.from(run.children).find(child => child.localName === 'rPr')
+  const next: OfficeTextRun = { text }
+
+  if (!rPr) {
+    return next
+  }
+
+  if (rPr.getAttribute('b') === '1' || isOn(localElements(rPr, 'b')[0])) {
+    next.bold = true
+  }
+
+  if (rPr.getAttribute('i') === '1' || isOn(localElements(rPr, 'i')[0])) {
+    next.italic = true
+  }
+
+  const color = drawingColor(rPr, theme)
+
+  if (color) {
+    next.color = color
+  }
+
+  const size = Number(rPr.getAttribute('sz') || '')
+
+  if (size > 0) {
+    next.fontSize = size / 100
+  }
+
+  return next
+}
+
+function slideTable(frame: Element): Extract<SlideBlock, { type: 'table' }> | null {
+  const table = localElements(frame, 'tbl')[0]
+
+  if (!table) {
+    return null
+  }
+
+  const rows = Array.from(table.children)
+    .filter(child => child.localName === 'tr')
+    .map(row =>
+      Array.from(row.children)
+        .filter(child => child.localName === 'tc')
+        .map(cell =>
+          localElements(cell, 't')
+            .map(node => node.textContent || '')
+            .join('')
+        )
     )
-    .filter(Boolean)
+
+  return rows.length ? { rows, type: 'table' } : null
 }
 
 function parseXlsx(zip: Map<string, Uint8Array>): SpreadsheetPreview | null {

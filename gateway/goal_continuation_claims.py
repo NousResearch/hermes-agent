@@ -877,6 +877,7 @@ def _write_payload(path: Path, payload: dict[str, Any], *, must_not_exist: bool 
         raise GoalContinuationClaimError("durable continuation claim is too large")
     if must_not_exist and path.exists():
         raise GoalContinuationClaimError("durable continuation claim already exists")
+    installed = False
     try:
         descriptor, temp_name = tempfile.mkstemp(
             dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
@@ -895,6 +896,7 @@ def _write_payload(path: Path, payload: dict[str, Any], *, must_not_exist: bool 
             for attempt in range(6):
                 try:
                     os.replace(temp_name, path)
+                    installed = True
                     break
                 except OSError as exc:
                     if (
@@ -914,6 +916,18 @@ def _write_payload(path: Path, payload: dict[str, Any], *, must_not_exist: bool 
     except GoalContinuationClaimError:
         raise
     except Exception as exc:
+        if installed:
+            try:
+                if path.read_bytes() == encoded:
+                    # The atomic namespace transition completed.  A parent
+                    # directory fsync error makes power-loss persistence
+                    # uncertain, but reporting publication failure would split
+                    # caller ownership from the exact visible durable record.
+                    # Adopt that record so same-process retry and process-crash
+                    # recovery share one event identity.
+                    return
+            except OSError:
+                pass
         raise GoalContinuationClaimError(
             "durable continuation claim publication failed"
         ) from exc

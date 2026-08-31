@@ -2785,8 +2785,8 @@ DEFAULT_CONFIG = {
         # changed python files and runs the focused tests BEFORE the review
         # transition is accepted; a failure refuses the review and leaves the
         # card in the builder lane with an auto-comment.  `command` is an
-        # optional per-project override (str or list of argv fragments with
-        # {python} and {tests} placeholders); default resolves to the Sane
+        # optional override (str or list of argv fragments with {python} and
+        # {tests} placeholders); default resolves to the Sane
         # default `<python> -m pytest <focused tests> -q`. Set
         # enabled=false to disable the gate entirely.
         "review_gate": {

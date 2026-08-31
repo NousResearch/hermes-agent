@@ -283,7 +283,10 @@ def _project_python(worktree_root: str) -> Optional[str]:
     found = next(
         (str(c) for c in cands if c.is_file() and os.access(c, os.X_OK)), None
     )
-    _PYTHON_CACHE[root] = found or ""
+    # Cache positive hits only.  "Not found" is re-probed on the next call so
+    # a venv created after a first (empty) probe is picked up.
+    if found:
+        _PYTHON_CACHE[root] = found
     return found
 
 
@@ -349,6 +352,11 @@ def _changed_python_files(worktree_root: str) -> list[str]:
             # porcelain: "XY path" — path after two status chars + a space.
             # Keep the raw line; .strip() would strip the leading status char.
             path = line[2:].lstrip()
+            # porcelain rename, e.g. "R  old.py -> new.py", produces a
+            # pseudo-path "old.py -> new.py".  Feed only the destination, never
+            # the pseudo-path, into the gate (it would be a false FileNotFound).
+            if " -> " in path:
+                path = path.split(" -> ")[-1].strip()
             if path.endswith(".py"):
                 changed.add(path)
     return sorted(p for p in changed if p.endswith(".py"))
@@ -388,10 +396,11 @@ def _focused_test_paths(repo_root: str, changed_py: list[str]) -> list[str]:
 def _gate_command(project_python: str, tests: list[str]) -> list[str]:
     """Build the gate command for the focused tests.
 
-    Default: ``<python> -m pytest <tests> -q``.  A project may override the
-    per-project command via config ``kanban.review_gate.command`` — a list of
-    argv fragments with ``{python}`` and ``{tests}`` placeholders — so the
-    gate is resolvable per-project with a sane default.
+    Default: ``<python> -m pytest <tests> -q``.  An override lives in the
+    worker config key ``kanban.review_gate.command`` (a global knob, not
+    project-scoped) — a string or list of argv fragments with ``{python}``
+    and ``{tests}`` placeholders; every ``{tests}`` expands to one argv
+    element per focused test path.
     """
     from hermes_cli.config import cfg_get, load_config
 
@@ -405,23 +414,67 @@ def _gate_command(project_python: str, tests: list[str]) -> list[str]:
             if isinstance(overrides, str):
                 overrides = shlex.split(overrides)
             if isinstance(overrides, (list, tuple)):
-                argv = [
-                    str(a).replace("{python}", project_python).replace("{tests}", " ".join(tests))
-                    for a in overrides
-                ]
-                return [a for a in argv if a]
+                argv: list[str] = []
+                for a in overrides:
+                    token = str(a).replace("{python}", project_python)
+                    if "{tests}" not in token:
+                        if token:
+                            argv.append(token)
+                        continue
+                    before, _, after = token.partition("{tests}")
+                    for t in tests:
+                        seg = before + t + after
+                        if seg:
+                            argv.append(seg)
+                return argv
         except Exception:
             pass  # fall through to the sane default on any malformed override
     return [project_python, "-m", "pytest", *tests, "-q"]
 
 
-def _build_sanity_command(project_python: str, changed_py: list[str]) -> list[str]:
-    """Build the import/build sanity command: compile each changed file.
+def _build_sanity_command(
+    project_python: str, worktree_root: str, changed_py: list[str]
+) -> list[str]:
+    """Build the import/build sanity command for the changed python files.
 
-    ``python -m py_compile`` catches syntax/import-structure breakage without
-    executing arbitrary code — a cheap standing stand-in for a full build.
+    Real import resolution — not ``py_compile``, which checks syntax only and
+    never resolves imports.  ``py_compile`` on a module that ``import``s an
+    untracked/missing module exits 0, so the unbuildable-import class
+    (2026-08-31 ce14358: a module importing from untracked files) would slip
+    through a compile-only gate.  This child script instead ``exec``s each
+    changed module by file path with the worktree root on ``sys.path``, so a
+    missing/untracked import, a syntax error, or an import-time ``NameError``
+    yields rc != 0.  One subprocess for all changed files (happy-path cheap).
     """
-    return [project_python, "-m", "py_compile", *changed_py]
+    check = (
+        "import importlib.util, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[1]).resolve()\n"
+        "sys.path.insert(0, str(root))\n"
+        "failures = 0\n"
+        "for rel in sys.argv[2:]:\n"
+        "    path = (root / rel).resolve()\n"
+        "    if not path.is_file():\n"
+        "        print(f'import sanity: missing {rel}')\n"
+        "        failures += 1\n"
+        "        continue\n"
+        "    name = '_gate_' + path.stem.replace('-', '_')\n"
+        "    try:\n"
+        "        spec = importlib.util.spec_from_file_location(name, path)\n"
+        "        if spec is None or spec.loader is None:\n"
+        "            print(f'import sanity: no loader for {rel}')\n"
+        "            failures += 1\n"
+        "            continue\n"
+        "        mod = importlib.util.module_from_spec(spec)\n"
+        "        sys.modules[name] = mod\n"
+        "        spec.loader.exec_module(mod)\n"
+        "    except Exception as exc:\n"
+        "        print(f'import sanity FAIL {rel}: {type(exc).__name__}: {exc}')\n"
+        "        failures += 1\n"
+        "    else:\n"
+        "        print(f'import sanity ok {rel}')\n"
+        "sys.exit(1 if failures else 0)\n"
+    )
+    return [project_python, "-c", check, worktree_root, *changed_py]
 
 
 def _run_gate_output_tail(output: str) -> str:
@@ -461,7 +514,9 @@ def _run_pre_review_gate(task: Any) -> Optional[str]:
     output_chunks: list[str] = []
 
     if changed_py:
-        rc, out = _run_capture(_build_sanity_command(pypath, changed_py), cwd=str(ws))
+        rc, out = _run_capture(
+            _build_sanity_command(pypath, str(ws), changed_py), cwd=str(ws)
+        )
         output_chunks.append(f"[import/build sanity: rc={rc}]\n{out}")
         if rc != 0:
             return "\n\n".join(output_chunks)

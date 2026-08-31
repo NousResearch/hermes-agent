@@ -122,7 +122,7 @@ def test_gate_failing_build_bounces_card(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ws = _add_worktree(repo, "bad")
-    # Syntax error so py_compile (the import/build sanity check) fails.
+    # Syntax error so the import/build sanity check fails.
     _change_python_file(ws, "broken.py", "def x(:\n    pass\n")
 
     tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
@@ -163,6 +163,77 @@ def test_gate_comment_carries_output_tail(
         assert "import/build sanity" in body or "focused tests" in body
 
 
+def test_gate_missing_import_bounces_card(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed module importing a missing module bounces the card.
+
+    The card exists because of ce14358 (a module importing from untracked
+    files reached review).  ``py_compile`` cannot see a missing import — this
+    proves the real import-resolution check catches it.
+    """
+    ws = _add_worktree(repo, "badimport")
+    _change_python_file(ws, "broken.py", "import totally_missing_module_xyz\nX = 1\n")
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    resp = json.loads(tools._handle_request_review({"summary": "bad import"}))
+    assert "error" in resp
+    assert "Pre-review build gate failed" in resp["error"]
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.get_task(conn, tid).consecutive_failures == 0
+        comments = kb.list_comments(conn, tid)
+        assert len(comments) == 1
+        assert "import sanity FAIL broken.py" in comments[0].body
+
+
+def test_gate_import_ok_when_sibling_module_resolves(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed module importing a present sibling passes the sanity check."""
+    ws = _add_worktree(repo, "goodimport")
+    _change_python_file(ws, "sibling.py", "VAL = 42\n")
+    _change_python_file(ws, "uses_sibling.py", "from sibling import VAL\nresult = VAL + 1\n")
+    _change_python_file(ws, "tests/test_uses_sibling.py", "def test_ok():\n    assert True\n")
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    resp = json.loads(tools._handle_request_review({"summary": "ok import"}))
+    assert resp.get("ok") is True, resp
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "review"
+
+
+def test_changed_python_files_handles_porcelain_rename(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A porcelain rename entry feeds only the destination path.
+
+    "R  old.py -> new.py" must not pass the pseudo-path "old.py -> new.py"
+    to the gate (it would be a false FileNotFound bounce).
+    """
+    ws = _add_worktree(repo, "rename")
+    old = ws / "renamed.py"
+    old.write_text("OLD = 1\n")
+    # Stage + `git mv` inside the linked worktree so porcelain emits a rename
+    # entry ("R  renamed.py -> renamed_new.py"), not an add/delete pair.
+    subprocess.run(["git", "-C", str(ws), "add", "renamed.py"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(ws), "mv", "renamed.py", "renamed_new.py"],
+        check=True, capture_output=True,
+    )
+
+    from tools import kanban_tools as tools
+    changed = tools._changed_python_files(str(ws))
+    assert "renamed_new.py" in changed, changed
+    assert "renamed.py -> renamed_new.py" not in changed
+    assert "->" not in " ".join(changed)
+
+
 def test_gate_skipped_for_non_worktree_card(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -178,8 +249,12 @@ def test_gate_skipped_for_non_worktree_card(
         assert kb.get_task(conn, tid).status == "review"
 
 
-def test_gate_command_override_is_per_project(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A config override replaces the default pytest gate command."""
+def test_gate_command_override_splats_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A config override replaces the default pytest gate command.
+
+    ``{tests}`` must expand to one argv element per focused test path (not a
+    single space-joined element — pytest would read one bogus path).
+    """
     import hermes_cli.config as hcfg
     from tools import kanban_tools as tools
 
@@ -188,7 +263,20 @@ def test_gate_command_override_is_per_project(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(hcfg, "load_config", lambda: cfg)
 
     cmd = tools._gate_command("/venv/bin/python", ["a.py", "b.py"])
-    assert cmd == ["/venv/bin/python", "myrunner", "a.py b.py"], cmd
+    assert cmd == ["/venv/bin/python", "myrunner", "a.py", "b.py"], cmd
+
+
+def test_gate_command_override_shared_arg_keeps_own_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A placeholder embedded between fixed text stays one element per test."""
+    import hermes_cli.config as hcfg
+    from tools import kanban_tools as tools
+
+    cfg = {"kanban": {"review_gate": {"enabled": True, "command": ["{python}", "--tb={tests}", "-q"]}}}
+    monkeypatch.setattr(tools, "load_config", lambda: cfg)
+    monkeypatch.setattr(hcfg, "load_config", lambda: cfg)
+
+    cmd = tools._gate_command("/venv/bin/python", ["a.py", "b.py"])
+    assert cmd == ["/venv/bin/python", "--tb=a.py", "--tb=b.py", "-q"], cmd
 
 
 def test_gate_command_defaults_to_pytest(monkeypatch: pytest.MonkeyPatch) -> None:

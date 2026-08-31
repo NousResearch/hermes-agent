@@ -3422,17 +3422,16 @@ class AIAgent:
                          atomic signal even while ordinary interrupts are masked.
             tool_reason: Trusted fixed category safe to expose in tool output.
                          Arbitrary diagnostic or caller text belongs in message.
-            require_generation: Optional activity-generation claim (#95663
-                         round-3/round-4/round-6 review). When set, the
-                         interrupt is published only if the turn's activity
-                         generation still equals this value at the final
-                         mutation edge. The claim is RESERVED under the
-                         activity lock — ``_touch_activity`` invalidates the
-                         reservation the instant real progress lands —
-                         survives every blocking boundary in between
-                         (including the compression commit fence), and is
-                         CONSUMED in ONE lock critical section together with
-                         the first observable publication
+            require_generation: Optional activity-generation claim (#95663).
+                         When set, the interrupt is published only if the
+                         turn's activity generation still equals this value
+                         at the final mutation edge. The claim is RESERVED
+                         under the activity lock — ``_touch_activity``
+                         invalidates the reservation the instant real
+                         progress lands — survives every blocking boundary in
+                         between (including the compression commit fence),
+                         and is CONSUMED in ONE lock critical section
+                         together with the first observable publication
                          (``_interrupt_requested`` / ``_interrupt_message`` /
                          ``_tool_interrupt_reason`` and the hard-cancel
                          event). If the turn resumed in the window, the call
@@ -3455,14 +3454,13 @@ class AIAgent:
                 running_agent.interrupt(new_message.text)
         """
         if require_generation is not None:
-            # Round-4 (#95663): RESERVE the abort's generation claim under
-            # the SAME lock `_touch_activity` stamps the clock with. Real
-            # progress invalidates the reservation the instant it lands,
-            # and the claim is CONSUMED at the final mutation edge — after
-            # every blocking boundary — in ONE critical section with the
-            # first observable publication (#95663 round-6). A resumed turn
-            # therefore abandons the abort instead of being hard-cancelled
-            # by a stale proof.
+            # RESERVE the abort's generation claim under the SAME lock
+            # `_touch_activity` stamps the clock with. Real progress
+            # invalidates the reservation the instant it lands, and the
+            # claim is CONSUMED at the final mutation edge — after every
+            # blocking boundary — in ONE critical section with the first
+            # observable publication. A resumed turn therefore abandons
+            # the abort instead of being hard-cancelled by a stale proof.
             with self._liveness_activity_lock():
                 if (
                     getattr(self, "_turn_liveness_activity_generation", 0)
@@ -3478,7 +3476,7 @@ class AIAgent:
             # in-flight commit to finish. This call deliberately publishes
             # NOTHING observable: the generation claim and the first
             # interrupt state (including the hard-stop event) commit
-            # together at the final mutation edge below (#95663 round-6).
+            # together at the final mutation edge below.
             fence = vars(self).get("_active_compression_commit_fence")
             cancel_before_commit = getattr(
                 type(fence), "cancel_before_commit", None
@@ -3507,30 +3505,25 @@ class AIAgent:
                     _hard_event.set()
 
         def _consume_claim_and_publish_first_state() -> bool:
-            # Final mutation edge (#95663 round-6): when a generation claim
-            # is in play, claim consumption and the FIRST observable
-            # interrupt publication are ONE activity-lock critical section.
-            # Round-4 consumed the claim under the lock, released it, and
-            # only then assigned
-            # `_interrupt_requested` / `_interrupt_message` /
-            # `_tool_interrupt_reason` — a turn that resumed in that
-            # consume→publication window (real progress, generation G+1)
-            # was still hard-cancelled by an already-consumed claim. Now
-            # the abort's commit point and its first publication share the
-            # lock `_touch_activity` stamps the clock with, so the
-            # generation winner is total: either the claim survives and
-            # the interrupt state commits under the lock BEFORE any later
-            # activity stamp, or the stamp landed first and the abort
-            # declines without publishing anything.
+            # Final mutation edge: when a generation claim is in play,
+            # claim consumption and the FIRST observable interrupt
+            # publication are ONE activity-lock critical section — the
+            # same lock `_touch_activity` stamps the clock with. The
+            # generation winner is therefore total: either the claim
+            # survives and the interrupt state commits under the lock
+            # BEFORE any later activity stamp, or the stamp landed first
+            # and the abort declines without publishing anything. (A
+            # consume-then-release-then-publish split would let a turn
+            # that resumed in the consume→publication window be
+            # hard-cancelled by an already-consumed claim.)
             if require_generation is None:
                 # No claim to race the activity clock against: publish
-                # exactly as round-4 did, WITHOUT touching the liveness
-                # lock. ``AIAgent`` stand-ins used by unrelated suites
-                # (e.g. the start-order gate `_Stub`) do not carry the
-                # liveness seam, and an unconditional
+                # WITHOUT touching the liveness lock. ``AIAgent``
+                # stand-ins used by unrelated suites (e.g. the
+                # start-order gate `_Stub`) do not carry the liveness
+                # seam, and an unconditional
                 # ``_liveness_activity_lock()`` acquisition here
-                # regressed them (AttributeError caught by round-6
-                # exact-head CI).
+                # regresses them with AttributeError.
                 _publish_interrupt_state()
                 return True
             with self._liveness_activity_lock():
@@ -3556,9 +3549,9 @@ class AIAgent:
         if _redirect_lock is not None:
             with _redirect_lock:
                 # The (potentially blocking) compression fence runs BEFORE
-                # the atomic claim/publication edge (#95663 round-6); the
-                # redirect lock is still held across the fence, exactly as
-                # before, so /stop cannot race with an accepted correction.
+                # the atomic claim/publication edge; the redirect lock is
+                # still held across the fence, exactly as before, so /stop
+                # cannot race with an accepted correction.
                 if hard_cancel:
                     _admit_hard_cancel()
                 if not _consume_claim_and_publish_first_state():
@@ -4337,7 +4330,9 @@ class AIAgent:
         )
 
         # Lazy per-instance lock (inline so bare doubles like
-        # types.SimpleNamespace fixtures keep working — see
+        # types.SimpleNamespace fixtures keep working — they bind
+        # _touch_activity without the class, so they cannot call
+        # self._liveness_activity_lock(); see
         # tests/run_agent/test_session_activity_persist.py).
         _clock_lock = getattr(self, "_turn_liveness_activity_lock", None)
         if _clock_lock is None:
@@ -4350,12 +4345,11 @@ class AIAgent:
             self._last_activity_ts = time.time()
             self._last_activity_desc = bound_activity_description(desc)
             self._last_activity_provenance = normalize_activity_provenance(provenance)
-            # Round-4 (#95663): real progress invalidates any reserved
-            # abort claim. A watchdog interrupt that is still in flight
-            # (e.g. parked inside the compression commit fence) must
-            # abandon itself at the final mutation edge instead of
-            # publishing against a generation the turn has already left
-            # behind.
+            # Real progress invalidates any reserved abort claim. A watchdog
+            # interrupt that is still in flight (e.g. parked inside the
+            # compression commit fence) must abandon itself at the final
+            # mutation edge instead of publishing against a generation the
+            # turn has already left behind.
             self._turn_liveness_abort_claim = None
         if os.environ.get("HERMES_KANBAN_TASK"):
             try:
@@ -9229,6 +9223,13 @@ class AIAgent:
                 )
 
                 def _interrupt_turn(message: str) -> None:
+                    # Lease-loss interrupts fire UNCONDITIONALLY (no
+                    # require_generation claim): losing the durable lease
+                    # means this process no longer owns the session, so
+                    # the turn must stop regardless of activity-clock
+                    # progress. The generation-claim machinery is the
+                    # liveness watchdog's only — its stalls can be
+                    # spuriously stale, a lost lease cannot.
                     nonlocal durable_turn_lease_interrupt_message
                     with durable_turn_lease_activity_lock:
                         if (

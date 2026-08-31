@@ -34,25 +34,24 @@ startup, and a bogus value can never silently disable the watchdog
 (``NaN``) or freeze the watcher thread (``Inf`` poll).
 
 Race safety (#95663 review): the watchdog samples the activity clock and
-binds the abort decision to the observed ``(generation, timestamp)``
-pair. The commit callback revalidates that pair under the *same* lock
+binds the abort decision to the observed ``(generation, timestamp)`` pair.
+The commit callback revalidates that pair under the *same* lock
 ``AIAgent._touch_activity`` uses to stamp the clock, so a turn that
 resumed while the stall was being logged/emitted is never hard-cancelled
-— it continues and its lease keeps renewing. Round-3 carried the
-revalidated generation into ``AIAgent.interrupt``
-(``require_generation``). Round-4 makes that generation an actual
+— it continues and its lease keeps renewing. The revalidated generation
+is carried into ``AIAgent.interrupt`` (``require_generation``) as a
 cancellation claim consumed at the final mutation edge: ``interrupt``
 reserves the claim under the activity lock, ``_touch_activity``
 invalidates the reservation the instant real progress lands, and the
 claim survives every blocking boundary, including the compression
-commit fence. Round-6 consumes the claim and publishes the first
-observable interrupt state in ONE activity-lock critical section, so a
-turn that resumes can only ever interleave before that section (the
-reservation is invalidated and the abort declines) or after it (the
-interrupt already committed under the lock) — never between "claim
-consumed" and "state published". A turn that resumes anywhere in the
-window is never hard-cancelled, and an exceptional interrupt path
-declines the abort fail-closed instead of mutating interrupt state.
+commit fence. Claim consumption and the first observable interrupt
+state publish in ONE activity-lock critical section, so a turn that
+resumes can only ever interleave before that section (the reservation
+is invalidated and the abort declines) or after it (the interrupt
+already committed under the lock) — never between "claim consumed" and
+"state published". A turn that resumes anywhere in the window is never
+hard-cancelled, and an exceptional interrupt path declines the abort
+fail-closed instead of mutating interrupt state.
 """
 
 from __future__ import annotations
@@ -217,6 +216,13 @@ class TurnLivenessWatchdog:
                 return
             if snapshot.idle_seconds < self._timeout_s:
                 continue
+            # Pre-commit surface is OBSERVATIONAL only: it reports the
+            # stall and that a recovery attempt is beginning. It must not
+            # claim the abort or the lease withdrawal has committed — the
+            # next operation can still veto the outcome. The definitive
+            # aborted/lease-stopped settlement is published by
+            # _surface_committed_abort only after _commit_abort succeeds
+            # and the turn is deactivated (#95663 review).
             self._surface_stall(snapshot)
             # Commit point: bind the abort to the sampled generation/ts
             # and revalidate under the lock shared with `_touch_activity`.
@@ -225,8 +231,7 @@ class TurnLivenessWatchdog:
             # keeps renewing. The commit also carries the revalidated
             # generation into the interrupt path, which reserves it as a
             # claim, survives every blocking boundary (compression
-            # fence), and consumes it at the final mutation edge
-            # immediately before publication (#95663 round-4) — progress
+            # fence), and consumes it at the final mutation edge — progress
             # landing anywhere in that window declines the abort.
             if not self._commit_abort(snapshot, self._abort_message(snapshot)):
                 continue
@@ -235,6 +240,7 @@ class TurnLivenessWatchdog:
             # issue's "lease keeps renewing" masking). The TTL expiry then
             # lets stale-turn cleanup reclaim the row.
             self._deactivate_turn()
+            self._surface_committed_abort(snapshot)
             return
 
     def _sample(self) -> Optional[ActivitySnapshot]:
@@ -263,18 +269,33 @@ class TurnLivenessWatchdog:
         )
 
     def _surface_stall(self, snapshot: ActivitySnapshot) -> None:
-        """Log the stall loudly and emit a UI-visible warning.
+        """Observationally surface the stall: log it loudly and emit a
+        UI-visible warning that a recovery attempt is beginning.
 
-        The lock is deliberately NOT held here: acting on the observation
-        happens at the commit point, after this surface window, where the
-        observed generation/timestamp is revalidated.
+        Deliberately does NOT claim the abort or the lease withdrawal has
+        committed: the next operation (``_commit_abort``) can still veto
+        the outcome when the turn resumed while this surface window was
+        open. The definitive aborted/lease-stopped settlement is
+        published by :meth:`_surface_committed_abort` only after the
+        abort wins and the turn is deactivated.
+
+        Rate-limited: a turn whose aborts keep declining (resumed
+        activity, exceptional interrupt path) must not re-log and
+        re-warn every poll interval — the first surface carries the
+        signal, repeats are suppressed until activity actually moves
+        again (a new generation re-arms the surface).
         """
+        generation = snapshot.generation
+        if getattr(self, "_last_surfaced_generation", None) == generation:
+            return
+        self._last_surfaced_generation = generation
         session_id = getattr(self._agent, "session_id", None) or self._session_id
         last_desc = getattr(self._agent, "_last_activity_desc", None)
         logger.error(
             "Turn liveness watchdog fired for session %s: "
             "no progress for %.1fs (last activity: %r). "
-            "Force-aborting the turn and stopping lease renewal (#95548).",
+            "Attempting recovery: force-interrupting the turn and "
+            "stopping lease renewal if it cannot resume (#95548).",
             session_id,
             snapshot.idle_seconds,
             last_desc,
@@ -286,7 +307,37 @@ class TurnLivenessWatchdog:
             emit_warning(
                 "⚠️ This turn stopped making progress "
                 f"({int(snapshot.idle_seconds)}s without activity); "
-                "aborting it so the session can recover."
+                "attempting recovery so the session can continue."
             )
         except Exception:
             logger.debug("Failed to emit turn liveness warning", exc_info=True)
+
+    def _surface_committed_abort(self, snapshot: ActivitySnapshot) -> None:
+        """Publish the definitive settlement AFTER the abort has authority.
+
+        Runs only once ``_commit_abort`` succeeded (the interrupt was
+        published) and the turn lease was deactivated: the turn IS
+        force-aborted and lease renewal IS stopped, so stating that is
+        now true. Separated from the pre-commit surface so a declined
+        abort never reports a committed outcome (#95663 review).
+        """
+        session_id = getattr(self._agent, "session_id", None) or self._session_id
+        logger.error(
+            "Turn liveness watchdog aborted turn for session %s: "
+            "no progress for %.1fs; turn interrupted and lease renewal "
+            "stopped (#95548).",
+            session_id,
+            snapshot.idle_seconds,
+        )
+        emit_warning = getattr(self._agent, "_emit_warning", None)
+        if not callable(emit_warning):
+            return
+        try:
+            emit_warning(
+                "⚠️ Turn aborted by the liveness watchdog "
+                f"({int(snapshot.idle_seconds)}s without activity); "
+                "lease renewal stopped so the session can be reclaimed. "
+                "You can retry your message."
+            )
+        except Exception:
+            logger.debug("Failed to emit committed-abort warning", exc_info=True)

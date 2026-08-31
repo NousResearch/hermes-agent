@@ -71,7 +71,7 @@ class _DB:
 
 
 class _BlockingCommitFence:
-    """Controllable compression commit fence for the round-4 witness.
+    """Controllable compression commit fence for the stall-abort witness.
 
     ``cancel_before_commit`` parks the interrupt thread AFTER it has passed
     the internal ``require_generation`` comparison, simulating the unbounded
@@ -86,9 +86,9 @@ class _BlockingCommitFence:
         self.calls = 0
 
     def cancel_before_commit(self, cancel_event=None):
-        # The round-3 code passes the hard-stop Event; the round-4 code
-        # passes nothing (publication moved to the final claim edge).
-        # Accept both so the same witness is valid across the transition.
+        # `cancel_event` is accepted (and ignored) to mirror the production
+        # fence signature; publication happens at the final claim edge, so
+        # nothing observable is set here.
         self.calls += 1
         self.entered.set()
         assert self.release.wait(10.0), "fence was never released"
@@ -415,8 +415,75 @@ def test_watchdog_declines_abort_when_activity_resumes_during_warning(
         and "stalled-session" in record.getMessage()
         for record in caplog.records
     )
+    # …but the surface was OBSERVATIONAL only: the declined abort must
+    # never publish a committed-abort or lease-stop settlement
+    # (#95663 review — false settlement before commit veto). On the
+    # pre-fix tree the pre-commit surface itself logged the definitive
+    # "Force-aborting … stopping lease renewal" outcome — this assertion
+    # is what made that witness red.
+    assert not any(
+        "watchdog aborted turn" in record.getMessage()
+        for record in caplog.records
+    ), "declined abort published a committed-abort settlement"
+    assert not any(
+        "Force-aborting" in record.getMessage()
+        for record in caplog.records
+    ), "pre-commit surface published the definitive abort outcome"
     # …and the lease kept renewing through the resumed turn.
     assert len(db.refresh_times) >= 1
+    assert db.events[-1][0] == "release"
+
+
+def test_watchdog_publishes_definitive_settlement_only_after_commit(
+    watchdog_config, monkeypatch, caplog
+):
+    """#95663 review: the definitive aborted/lease-stopped settlement is
+    published only AFTER the abort has authority (commit succeeded and
+    the turn lease was deactivated). The committed path must show the
+    settlement; the pre-commit surface must not claim it."""
+    db = _DB()
+    agent = _agent_with_db(db)
+    warnings = []
+
+    def stalled_loop(_agent, _message, _system, history, *_args, **_kwargs):
+        while not _agent._interrupt_requested:
+            time.sleep(0.005)
+        return {
+            "final_response": "aborted",
+            "messages": history,
+            "api_calls": 0,
+            "completed": False,
+            "interrupted": True,
+        }
+
+    agent._emit_warning = lambda msg: warnings.append(msg)
+
+    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+        result = _run_turn(agent, stalled_loop, monkeypatch)
+
+    assert result["interrupted"] is True
+    # Pre-commit surface: observational, recovery-attempt language.
+    assert any(
+        "Turn liveness watchdog fired" in record.getMessage()
+        and "Attempting recovery" in record.getMessage()
+        for record in caplog.records
+    )
+    # Definitive settlement: only present because the abort committed.
+    assert any(
+        "watchdog aborted turn" in record.getMessage()
+        and "lease renewal stopped" in record.getMessage()
+        for record in caplog.records
+    ), "committed abort did not publish the definitive settlement"
+    # User-visible warnings follow the same split: first observational,
+    # then (and only then) the committed outcome.
+    assert any("attempting recovery" in w for w in warnings)
+    assert any("Turn aborted by the liveness watchdog" in w for w in warnings)
+    # Ordering: the committed-abort warning came after the recovery one.
+    recovery_idx = next(i for i, w in enumerate(warnings) if "attempting recovery" in w)
+    aborted_idx = next(
+        i for i, w in enumerate(warnings) if "Turn aborted by the liveness watchdog" in w
+    )
+    assert aborted_idx > recovery_idx
     assert db.events[-1][0] == "release"
 
 

@@ -14,7 +14,7 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import _sanitize_messages_surrogates
-from agent.model_metadata import anchored_context_tokens
+from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
 

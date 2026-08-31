@@ -22,9 +22,8 @@ from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.model_metadata import (
-    anchored_context_tokens, estimate_messages_tokens_rough, estimate_request_tokens_rough
-)
+from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 
 logger = logging.getLogger(__name__)
 
@@ -536,6 +535,9 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]])
     # exact route/issuer/replay filtering and tolerate plugin compressors without the
     # optional hook.
     if agent._user_turn_count == 0:
+        # A fresh process has no in-memory anchor; the persisted one is honored only while the
+        # restored transcript still carries the priced prefix (see agent/usage_anchor.py).
+        restore_usage_anchor(agent, conversation_history)
         note_checkpoint = getattr(
             getattr(agent, "context_compressor", None),
             "note_native_compaction_checkpoint",

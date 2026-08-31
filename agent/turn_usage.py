@@ -15,7 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from agent.model_metadata import capture_usage_anchor
+from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -120,9 +120,7 @@ def record_response_usage(
         aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages
     )
     if _new_anchor is not None:
-        agent._usage_anchor = _new_anchor
-        if api_call_count == 1:
-            agent._turn_base_usage_anchor = _new_anchor
+        set_usage_anchor(agent, _new_anchor, turn_base=api_call_count == 1)
     _compression_threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
     if _loop_mod()._should_rearm_compression_budget(
         compression_attempts, completed_compaction_pending=_completed_compaction_pending,

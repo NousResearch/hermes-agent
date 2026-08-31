@@ -3340,7 +3340,6 @@ export interface Translations {
     truncated: string
     officeTruncated: string
     officeParseError: string
-    slideLabel: (index: number) => string
     formulaBarLabel: string
     noInlineTitle: string
     noInlineBody: (mimeType: string) => string

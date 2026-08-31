@@ -230,8 +230,7 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
     target.previewKind === 'image' ||
     target.previewKind === 'pdf' ||
     target.previewKind === 'spreadsheet' ||
-    target.previewKind === 'document' ||
-    target.previewKind === 'slides'
+    target.previewKind === 'document'
   ) {
     return target
   }

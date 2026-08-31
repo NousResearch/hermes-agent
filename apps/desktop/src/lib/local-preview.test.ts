@@ -183,10 +183,8 @@ describe('Office previews', () => {
     })
   })
 
-  it('classifies PowerPoint decks as slide previews', () => {
-    expect(localPreviewTarget('/tmp/deck.pptx')).toMatchObject({
-      previewKind: 'slides'
-    })
+  it('leaves PowerPoint on the existing non-office preview path', () => {
+    expect(localPreviewTarget('/tmp/deck.pptx')?.previewKind).toBe('text')
   })
 
   it('does not treat legacy OLE office files as OOXML previews', () => {

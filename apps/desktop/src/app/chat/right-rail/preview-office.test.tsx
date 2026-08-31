@@ -11,7 +11,6 @@ function cells(rows: Array<Array<string | SpreadsheetCell>>): SpreadsheetCell[][
 
 const labels = {
   formulaBarLabel: 'Formula',
-  slideLabel: (index: number) => `Slide ${index}`,
   truncatedLabel: 'truncated'
 }
 
@@ -258,140 +257,15 @@ describe('OfficePreviewView', () => {
     expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeTruthy()
   })
 
-  it('shows one slide at a time and switches with the slide tabs', () => {
-    render(
-      <OfficePreviewView
-        preview={{
-          kind: 'slides',
-          slides: [
-            { blocks: [{ paragraphs: [{ runs: [{ text: 'First' }] }], role: 'title', type: 'text' }] },
-            { blocks: [{ paragraphs: [{ runs: [{ text: 'Second' }] }], role: 'title', type: 'text' }] }
-          ]
-        }}
-        {...labels}
-      />
-    )
-
-    expect(screen.getByText('First')).toBeTruthy()
-    expect(screen.queryByText('Second')).toBeNull()
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Slide 2' }))
-
-    expect(screen.getByText('Second')).toBeTruthy()
-    expect(screen.queryByText('First')).toBeNull()
-  })
-
-  it('paints the designed slide background instead of forcing white', () => {
-    render(
-      <OfficePreviewView
-        preview={{
-          kind: 'slides',
-          slides: [
-            {
-              background: '#1F497D',
-              blocks: [{ paragraphs: [{ runs: [{ color: '#FFFFFF', text: 'Navy' }] }], role: 'title', type: 'text' }]
-            }
-          ]
-        }}
-        {...labels}
-      />
-    )
-
-    expect(screen.getByTestId('office-slide-canvas').style.backgroundColor).toBe('rgb(31, 73, 125)')
-    expect(screen.getByText('Navy').style.color).toBe('rgb(255, 255, 255)')
-  })
-
-  it('places slide shapes with absolute coordinates', () => {
-    render(
-      <OfficePreviewView
-        preview={{
-          kind: 'slides',
-          slides: [
-            {
-              blocks: [
-                {
-                  box: { height: 20, left: 5, top: 30, width: 60 },
-                  paragraphs: [{ runs: [{ text: 'Title' }] }],
-                  role: 'title',
-                  type: 'text'
-                }
-              ]
-            }
-          ]
-        }}
-        {...labels}
-      />
-    )
-
-    const box = screen.getByTestId('office-slide-box')
-
-    expect(box.style.position).toBe('absolute')
-    expect(box.style.left).toBe('5%')
-    expect(box.style.top).toBe('30%')
-    expect(box.style.width).toBe('60%')
-    expect(box.style.height).toBe('20%')
-  })
-
-  it('renders slide images and chart titles', () => {
-    render(
-      <OfficePreviewView
-        preview={{
-          kind: 'slides',
-          slides: [
-            {
-              blocks: [
-                { src: 'data:image/png;base64,aaa', type: 'image' },
-                { series: [{ name: 'East', values: [10, 20] }], title: 'Revenue', type: 'chart' }
-              ]
-            }
-          ]
-        }}
-        {...labels}
-      />
-    )
-
-    expect((screen.getByRole('img') as HTMLImageElement).src).toContain('data:image/png;base64,aaa')
-    expect(screen.getByText('Revenue')).toBeTruthy()
-    expect(screen.getByText('East')).toBeTruthy()
-  })
-
-  it('paints auto-shape fills instead of body bullets', () => {
-    render(
-      <OfficePreviewView
-        preview={{
-          kind: 'slides',
-          slides: [
-            {
-              blocks: [
-                {
-                  fill: '#C1FF72',
-                  geometry: 'roundRect',
-                  paragraphs: [{ runs: [{ color: '#0B1F3A', text: 'Lime field' }] }],
-                  type: 'text'
-                }
-              ]
-            }
-          ]
-        }}
-        {...labels}
-      />
-    )
-
-    const shape = screen.getByText('Lime field')
-    expect(shape.style.color).toBe('rgb(11, 31, 58)')
-    expect(shape.closest('[data-office-shape]')?.getAttribute('style')).toMatch(/rgb\(193, 255, 114\)/)
-  })
-
   it('shows a truncation banner when the parser capped the document', () => {
     render(
       <OfficePreviewView
         formulaBarLabel="Formula"
         preview={{ kind: 'spreadsheet', sheets: [{ name: 'A', rows: cells([['x']]) }], truncated: true }}
-        slideLabel={index => `Slide ${index}`}
-        truncatedLabel="Showing a preview of the first sheets, rows, or slides."
+        truncatedLabel="Showing a preview of the first sheets or rows."
       />
     )
 
-    expect(screen.getByText('Showing a preview of the first sheets, rows, or slides.')).toBeTruthy()
+    expect(screen.getByText('Showing a preview of the first sheets or rows.')).toBeTruthy()
   })
 })

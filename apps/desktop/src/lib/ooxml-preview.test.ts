@@ -2,7 +2,7 @@ import { deflateRawSync } from 'node:zlib'
 
 import { describe, expect, it } from 'vitest'
 
-import { type OfficeSlide, parseOfficePreview } from './ooxml-preview'
+import { officePreviewKind, parseOfficePreview } from './ooxml-preview'
 
 function crc32(data: Uint8Array): number {
   let crc = ~0
@@ -177,14 +177,6 @@ const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 const NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const NS_PKG_REL = 'http://schemas.openxmlformats.org/package/2006/relationships'
 const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-const NS_P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
-const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-
-function slideTexts(slide: OfficeSlide): string[] {
-  return slide.blocks.flatMap(block =>
-    block.type === 'text' ? block.paragraphs.flatMap(paragraph => paragraph.runs.map(run => run.text)) : block.rows.flat()
-  )
-}
 
 function xlsxFiles(extraSheets?: Record<string, string>) {
   return {
@@ -497,64 +489,6 @@ describe('parseOfficePreview docx', () => {
     ])
   })
 
-  it('keeps auto-shape fills and does not bullet freeform text', async () => {
-    const preview = await parseOfficePreview(
-      zipFiles({
-        'ppt/presentation.xml': `<?xml version="1.0"?>
-<p:presentation xmlns:p="${NS_P}"><p:sldSz cx="12191695" cy="6858000"/></p:presentation>`,
-        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
-<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
-  <p:sp>
-    <p:spPr>
-      <a:xfrm><a:off x="0" y="0"/><a:ext cx="12191695" cy="164592"/></a:xfrm>
-      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
-      <a:solidFill><a:srgbClr val="C1FF72"/></a:solidFill>
-    </p:spPr>
-    <p:txBody><a:p/></p:txBody>
-  </p:sp>
-  <p:sp>
-    <p:spPr>
-      <a:xfrm><a:off x="640080" y="1463040"/><a:ext cx="7863840" cy="2194560"/></a:xfrm>
-      <a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>
-      <a:solidFill><a:srgbClr val="123056"/></a:solidFill>
-    </p:spPr>
-    <p:txBody><a:p><a:r><a:rPr><a:solidFill><a:srgbClr val="FBF8F0"/></a:solidFill></a:rPr><a:t>Title</a:t></a:r></a:p></p:txBody>
-  </p:sp>
-  <p:sp>
-    <p:spPr>
-      <a:xfrm><a:off x="8595360" y="2103120"/><a:ext cx="1371600" cy="1371600"/></a:xfrm>
-      <a:prstGeom prst="diamond"><a:avLst/></a:prstGeom>
-      <a:solidFill><a:srgbClr val="FF5C7A"/></a:solidFill>
-    </p:spPr>
-    <p:txBody><a:p><a:r><a:t>!</a:t></a:r></a:p></p:txBody>
-  </p:sp>
-</p:spTree></p:cSld></p:sld>`
-      }),
-      '.pptx'
-    )
-
-    expect(preview?.kind).toBe('slides')
-
-    if (preview?.kind !== 'slides') {
-      return
-    }
-
-    expect(preview.slides[0]?.blocks[0]).toMatchObject({
-      fill: '#C1FF72',
-      geometry: 'rect',
-      paragraphs: [],
-      type: 'text'
-    })
-    expect(preview.slides[0]?.blocks[1]).toMatchObject({
-      fill: '#123056',
-      geometry: 'roundRect',
-      paragraphs: [{ runs: [{ color: '#FBF8F0', text: 'Title' }] }],
-      type: 'text'
-    })
-    expect(preview.slides[0]?.blocks[1]).not.toMatchObject({ paragraphs: [{ bullet: true }] })
-    expect(preview.slides[0]?.blocks[2]).toMatchObject({ fill: '#FF5C7A', geometry: 'diamond', type: 'text' })
-  })
-
   it('escapes HTML injected into document text', async () => {
     const preview = await parseOfficePreview(
       zipFiles({
@@ -578,292 +512,6 @@ describe('parseOfficePreview docx', () => {
   })
 })
 
-describe('parseOfficePreview pptx', () => {
-  it('renders each slide in numeric order with text blocks', async () => {
-    const preview = await parseOfficePreview(
-      zipFiles({
-        'ppt/slides/slide2.xml': `<?xml version="1.0"?>
-<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
-  <p:sp><p:txBody><a:p><a:r><a:t>Second</a:t></a:r></a:p></p:txBody></p:sp>
-</p:spTree></p:cSld></p:sld>`,
-        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
-<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
-  <p:sp><p:txBody><a:p><a:r><a:t>First</a:t></a:r></a:p></p:txBody></p:sp>
-</p:spTree></p:cSld></p:sld>`
-      }),
-      '.pptx'
-    )
-
-    expect(preview?.kind).toBe('slides')
-
-    if (preview?.kind === 'slides') {
-      expect(preview.slides.map(slideTexts)).toEqual([['First'], ['Second']])
-    }
-  })
-
-  it('keeps designed slide fills, bullets, and tables', async () => {
-    const preview = await parseOfficePreview(
-      zipFiles({
-        'ppt/theme/theme1.xml': `<?xml version="1.0"?>
-<a:theme xmlns:a="${NS_A}"><a:themeElements><a:clrScheme name="Office">
-  <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
-  <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
-  <a:dk2><a:srgbClr val="1F497D"/></a:dk2>
-  <a:lt2><a:srgbClr val="EEECE1"/></a:lt2>
-</a:clrScheme></a:themeElements></a:theme>`,
-        'ppt/slideMasters/slideMaster1.xml': `<?xml version="1.0"?>
-<p:sldMaster xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg><p:spTree/></p:cSld></p:sldMaster>`,
-        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
-<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld>
-  <p:bg><p:bgPr><a:solidFill><a:srgbClr val="1F497D"/></a:solidFill></p:bgPr></p:bg>
-  <p:spTree>
-    <p:sp>
-      <p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
-      <p:txBody><a:p><a:r><a:rPr b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Navy</a:t></a:r></a:p></p:txBody>
-    </p:sp>
-    <p:sp>
-      <p:nvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>
-      <p:txBody><a:p><a:r><a:t>Bullet</a:t></a:r></a:p></p:txBody>
-    </p:sp>
-  </p:spTree>
-</p:cSld></p:sld>`,
-        'ppt/slides/slide2.xml': `<?xml version="1.0"?>
-<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
-  <p:graphicFrame><a:graphic><a:graphicData><a:tbl>
-    <a:tr><a:tc><a:txBody><a:p><a:r><a:t>Check</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
-  </a:tbl></a:graphicData></a:graphic></p:graphicFrame>
-</p:spTree></p:cSld></p:sld>`
-      }),
-      '.pptx'
-    )
-
-    expect(preview?.kind).toBe('slides')
-
-    if (preview?.kind !== 'slides') {
-      return
-    }
-
-    expect(preview.slides[0]?.background).toBe('#1F497D')
-    expect(preview.slides[0]?.blocks[0]).toMatchObject({
-      paragraphs: [{ runs: [{ bold: true, color: '#FFFFFF', text: 'Navy' }] }],
-      role: 'title',
-      type: 'text'
-    })
-    expect(preview.slides[0]?.blocks[1]).toMatchObject({
-      paragraphs: [{ bullet: true, runs: [{ text: 'Bullet' }] }],
-      role: 'body',
-      type: 'text'
-    })
-    expect(preview.slides[1]?.blocks[0]).toEqual({ rows: [['Check']], type: 'table' })
-    expect(preview.slides[1]?.background).toBe('#FFFFFF')
-  })
-
-  it('places shapes from layout placeholders and slide xfrm', async () => {
-    const preview = await parseOfficePreview(
-      zipFiles({
-        'ppt/presentation.xml': `<?xml version="1.0"?>
-<p:presentation xmlns:p="${NS_P}" xmlns:r="${NS_REL}"><p:sldSz cx="12191695" cy="6858000"/></p:presentation>`,
-        'ppt/slideMasters/slideMaster1.xml': `<?xml version="1.0"?>
-<p:sldMaster xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
-  <p:sp>
-    <p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
-    <p:spPr><a:xfrm><a:off x="457200" y="274638"/><a:ext cx="8229600" cy="1143000"/></a:xfrm></p:spPr>
-    <p:txBody><a:p/></p:txBody>
-  </p:sp>
-</p:spTree></p:cSld></p:sldMaster>`,
-        'ppt/slideLayouts/slideLayout1.xml': `<?xml version="1.0"?>
-<p:sldLayout xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
-  <p:sp>
-    <p:nvSpPr><p:nvPr><p:ph type="ctrTitle"/></p:nvPr></p:nvSpPr>
-    <p:spPr><a:xfrm><a:off x="685800" y="2130425"/><a:ext cx="7772400" cy="1470025"/></a:xfrm></p:spPr>
-    <p:txBody><a:p/></p:txBody>
-  </p:sp>
-</p:spTree></p:cSld></p:sldLayout>`,
-        'ppt/slides/_rels/slide1.xml.rels': `<?xml version="1.0"?>
-<Relationships xmlns="${NS_PKG_REL}">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
-</Relationships>`,
-        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
-<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
-  <p:sp>
-    <p:nvSpPr><p:nvPr><p:ph type="ctrTitle"/></p:nvPr></p:nvSpPr>
-    <p:txBody><a:p><a:r><a:t>Title</a:t></a:r></a:p></p:txBody>
-  </p:sp>
-  <p:graphicFrame>
-    <p:xfrm><a:off x="914400" y="1828800"/><a:ext cx="5486400" cy="1828800"/></p:xfrm>
-    <a:graphic><a:graphicData><a:tbl>
-      <a:tr><a:tc><a:txBody><a:p><a:r><a:t>Cell</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
-    </a:tbl></a:graphicData></a:graphic>
-  </p:graphicFrame>
-</p:spTree></p:cSld></p:sld>`
-      }),
-      '.pptx'
-    )
-
-    expect(preview?.kind).toBe('slides')
-
-    if (preview?.kind !== 'slides') {
-      return
-    }
-
-    const title = preview.slides[0]?.blocks[0]
-    const table = preview.slides[0]?.blocks[1]
-    const cx = 12191695
-    const cy = 6858000
-
-    expect(title?.type).toBe('text')
-    expect(title && 'box' in title ? title.box : undefined).toEqual({
-      height: (1470025 / cy) * 100,
-      left: (685800 / cx) * 100,
-      top: (2130425 / cy) * 100,
-      width: (7772400 / cx) * 100
-    })
-    expect(table?.type).toBe('table')
-    expect(table && 'box' in table ? table.box : undefined).toEqual({
-      height: (1828800 / cy) * 100,
-      left: (914400 / cx) * 100,
-      top: (1828800 / cy) * 100,
-      width: (5486400 / cx) * 100
-    })
-  })
-
-  it('extracts pictures as data URLs and charts as series placeholders', async () => {
-    const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='), ch =>
-      ch.charCodeAt(0)
-    )
-
-    const preview = await parseOfficePreview(
-      zipFiles({
-        'ppt/presentation.xml': `<?xml version="1.0"?>
-<p:presentation xmlns:p="${NS_P}"><p:sldSz cx="12192000" cy="6858000"/></p:presentation>`,
-        'ppt/slides/_rels/slide1.xml.rels': `<?xml version="1.0"?>
-<Relationships xmlns="${NS_PKG_REL}">
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
-  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>
-</Relationships>`,
-        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
-<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}" xmlns:r="${NS_REL}"><p:cSld><p:spTree>
-  <p:pic>
-    <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
-    <p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="2743200" cy="1828800"/></a:xfrm></p:spPr>
-  </p:pic>
-  <p:graphicFrame>
-    <p:xfrm><a:off x="4572000" y="914400"/><a:ext cx="5486400" cy="3657600"/></p:xfrm>
-    <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
-      <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rId3"/>
-    </a:graphicData></a:graphic>
-  </p:graphicFrame>
-</p:spTree></p:cSld></p:sld>`,
-        'ppt/media/image1.png': png,
-        'ppt/charts/chart1.xml': `<?xml version="1.0"?>
-<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="${NS_A}">
-  <c:chart>
-    <c:title><c:tx><c:rich><a:p><a:r><a:t>Revenue</a:t></a:r></a:p></c:rich></c:tx></c:title>
-    <c:plotArea>
-      <c:barChart>
-        <c:ser>
-          <c:tx><c:v>East</c:v></c:tx>
-          <c:val><c:numRef><c:numCache>
-            <c:pt idx="0"><c:v>10</c:v></c:pt>
-            <c:pt idx="1"><c:v>20</c:v></c:pt>
-          </c:numCache></c:numRef></c:val>
-        </c:ser>
-        <c:ser>
-          <c:tx><c:v>West</c:v></c:tx>
-          <c:val><c:numRef><c:numCache>
-            <c:pt idx="0"><c:v>5</c:v></c:pt>
-            <c:pt idx="1"><c:v>15</c:v></c:pt>
-          </c:numCache></c:numRef></c:val>
-        </c:ser>
-      </c:barChart>
-    </c:plotArea>
-  </c:chart>
-</c:chartSpace>`
-      }),
-      '.pptx'
-    )
-
-    expect(preview?.kind).toBe('slides')
-
-    if (preview?.kind !== 'slides') {
-      return
-    }
-
-    expect(preview.slides[0]?.blocks[0]).toMatchObject({
-      src: expect.stringMatching(/^data:image\/png;base64,/),
-      type: 'image'
-    })
-    expect(preview.slides[0]?.blocks[1]).toMatchObject({
-      series: [
-        { name: 'East', values: [10, 20] },
-        { name: 'West', values: [5, 15] }
-      ],
-      title: 'Revenue',
-      type: 'chart'
-    })
-  })
-
-  it('keeps rightArrow geometry, roundRect adj, and theme line strokes', async () => {
-    const preview = await parseOfficePreview(
-      zipFiles({
-        'ppt/theme/theme1.xml': `<?xml version="1.0"?>
-<a:theme xmlns:a="${NS_A}"><a:themeElements>
-  <a:clrScheme name="Office">
-    <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
-    <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
-    <a:accent1><a:srgbClr val="4F81BD"/></a:accent1>
-  </a:clrScheme>
-  <a:fmtScheme name="Office"><a:lnStyleLst>
-    <a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln>
-  </a:lnStyleLst></a:fmtScheme>
-</a:themeElements></a:theme>`,
-        'ppt/presentation.xml': `<?xml version="1.0"?>
-<p:presentation xmlns:p="${NS_P}"><p:sldSz cx="10000000" cy="5000000"/></p:presentation>`,
-        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
-<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
-  <p:sp>
-    <p:spPr>
-      <a:xfrm><a:off x="0" y="0"/><a:ext cx="4000000" cy="1000000"/></a:xfrm>
-      <a:prstGeom prst="rightArrow"><a:avLst/></a:prstGeom>
-      <a:solidFill><a:srgbClr val="2E8BFF"/></a:solidFill>
-    </p:spPr>
-    <p:style><a:lnRef idx="1"><a:schemeClr val="accent1"/></a:lnRef></p:style>
-    <p:txBody><a:p><a:r><a:t>Collect</a:t></a:r></a:p></p:txBody>
-  </p:sp>
-  <p:sp>
-    <p:spPr>
-      <a:xfrm><a:off x="0" y="2000000"/><a:ext cx="8000000" cy="1000000"/></a:xfrm>
-      <a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>
-      <a:solidFill><a:srgbClr val="1F2937"/></a:solidFill>
-    </p:spPr>
-    <p:txBody><a:p><a:r><a:t>KPI</a:t></a:r></a:p></p:txBody>
-  </p:sp>
-</p:spTree></p:cSld></p:sld>`
-      }),
-      '.pptx'
-    )
-
-    expect(preview?.kind).toBe('slides')
-
-    if (preview?.kind !== 'slides') {
-      return
-    }
-
-    expect(preview.slides[0]?.blocks[0]).toMatchObject({
-      fill: '#2E8BFF',
-      geometry: 'rightArrow',
-      stroke: '#4F81BD',
-      strokeWidth: 1,
-      type: 'text'
-    })
-    expect(preview.slides[0]?.blocks[1]).toMatchObject({
-      geometry: 'roundRect',
-      roundAdj: 16667 / 100000,
-      type: 'text'
-    })
-  })
-})
-
 describe('parseOfficePreview guards', () => {
   it('returns null for non-ZIP bytes', async () => {
     await expect(parseOfficePreview(new TextEncoder().encode('not a zip'), '.xlsx')).resolves.toBeNull()
@@ -871,6 +519,13 @@ describe('parseOfficePreview guards', () => {
 
   it('returns null for unsupported extensions', async () => {
     await expect(parseOfficePreview(zipFiles({ 'xl/workbook.xml': '<workbook/>' }), '.txt')).resolves.toBeNull()
+  })
+
+  it('does not claim PowerPoint as a native office preview', async () => {
+    expect(officePreviewKind('.pptx')).toBeNull()
+    await expect(
+      parseOfficePreview(zipFiles({ 'ppt/slides/slide1.xml': '<p:sld/>' }), '.pptx')
+    ).resolves.toBeNull()
   })
 
   it('rejects a deflate bomb whose true size exceeds the part cap', async () => {

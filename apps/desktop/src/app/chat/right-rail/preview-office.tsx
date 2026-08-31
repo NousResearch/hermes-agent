@@ -4,9 +4,7 @@ import type {
   OfficeBlock,
   OfficeParagraph,
   OfficePreview,
-  OfficeSlide,
   OfficeTextRun,
-  SlideBlock,
   SpreadsheetSheet
 } from '@/lib/ooxml-preview'
 import { cn } from '@/lib/utils'
@@ -29,12 +27,10 @@ function columnLabel(index: number) {
 export function OfficePreviewView({
   formulaBarLabel,
   preview,
-  slideLabel,
   truncatedLabel
 }: {
   formulaBarLabel: string
   preview: OfficePreview
-  slideLabel: (index: number) => string
   truncatedLabel: string
 }) {
   return (
@@ -46,10 +42,8 @@ export function OfficePreviewView({
       )}
       {preview.kind === 'spreadsheet' ? (
         <SpreadsheetGrid formulaBarLabel={formulaBarLabel} sheets={preview.sheets} />
-      ) : preview.kind === 'document' ? (
-        <DocumentBlocks blocks={preview.blocks} />
       ) : (
-        <SlideStack slideLabel={slideLabel} slides={preview.slides} />
+        <DocumentBlocks blocks={preview.blocks} />
       )}
     </div>
   )
@@ -318,271 +312,4 @@ function OfficeRun({ run }: { run: OfficeTextRun }) {
       {run.text}
     </span>
   )
-}
-
-function SlideStack({
-  slideLabel,
-  slides
-}: {
-  slideLabel: (index: number) => string
-  slides: OfficeSlide[]
-}) {
-  const [active, setActive] = useState(0)
-  const slide = slides[Math.min(active, Math.max(0, slides.length - 1))]
-
-  if (!slide) {
-    return null
-  }
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {slides.length > 1 && (
-        <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border/60 px-2 py-1.5" role="tablist">
-          <button
-            aria-label={slideLabel(Math.max(1, active))}
-            className="shrink-0 rounded-md px-2 py-0.5 text-[0.68rem] text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
-            disabled={active === 0}
-            onClick={() => setActive(index => Math.max(0, index - 1))}
-            type="button"
-          >
-            ‹
-          </button>
-          {slides.map((_, index) => (
-            <button
-              aria-selected={index === active}
-              className={cn(
-                'shrink-0 rounded-md px-2 py-0.5 text-[0.68rem] font-medium transition-colors',
-                index === active
-                  ? 'bg-muted text-foreground'
-                  : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
-              )}
-              key={index}
-              onClick={() => setActive(index)}
-              role="tab"
-              type="button"
-            >
-              {slideLabel(index + 1)}
-            </button>
-          ))}
-          <button
-            aria-label={slideLabel(Math.min(slides.length, active + 2))}
-            className="shrink-0 rounded-md px-2 py-0.5 text-[0.68rem] text-muted-foreground hover:bg-muted/60 disabled:opacity-40"
-            disabled={active >= slides.length - 1}
-            onClick={() => setActive(index => Math.min(slides.length - 1, index + 1))}
-            type="button"
-          >
-            ›
-          </button>
-        </div>
-      )}
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
-        <article
-          className={cn(
-            'w-full max-w-3xl overflow-hidden rounded-sm shadow-md',
-            slide.blocks.some(block => block.box) ? 'relative' : 'flex flex-col justify-center gap-4 px-10 py-8'
-          )}
-          data-testid="office-slide-canvas"
-          style={{
-            aspectRatio: '16 / 9',
-            backgroundColor: slide.background,
-            color: '#000000',
-            fontFamily: OFFICE_CALIBRI_STACK
-          }}
-        >
-          {slide.blocks.map((block, index) => (
-            <SlideBlockView block={block} key={index} />
-          ))}
-        </article>
-      </div>
-    </div>
-  )
-}
-
-function SlideBlockView({ block }: { block: SlideBlock }) {
-  const positioned = block.box
-    ? {
-        height: `${block.box.height}%`,
-        left: `${block.box.left}%`,
-        overflow: 'hidden',
-        position: 'absolute' as const,
-        top: `${block.box.top}%`,
-        width: `${block.box.width}%`
-      }
-    : undefined
-
-  if (block.type === 'image') {
-    return (
-      <div data-testid={block.box ? 'office-slide-box' : undefined} style={positioned}>
-        <img alt="Image" src={block.src} style={{ height: '100%', objectFit: 'contain', width: '100%' }} />
-      </div>
-    )
-  }
-
-  if (block.type === 'chart') {
-    return (
-      <div data-testid={block.box ? 'office-slide-box' : undefined} style={positioned}>
-        <SlideChart block={block} />
-      </div>
-    )
-  }
-
-  if (block.type === 'table') {
-    return (
-      <div data-testid={block.box ? 'office-slide-box' : undefined} style={positioned}>
-        <table className="h-full w-full border-collapse text-[11pt]">
-          <tbody>
-            {block.rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>
-                {row.map((cell, cellIndex) => (
-                  <td key={cellIndex} style={{ border: '1px solid currentColor', padding: '6px 10px' }}>
-                    {cell}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    )
-  }
-
-  const Tag = block.role === 'title' ? 'h1' : block.role === 'subtitle' ? 'h2' : 'div'
-  const path = shapePolygon(block.geometry)
-  const radius = roundRectRadius(block)
-
-  return (
-    <Tag
-      data-office-shape={block.fill || block.geometry ? '' : undefined}
-      data-testid={block.box ? 'office-slide-box' : undefined}
-      style={{
-        alignItems: 'center',
-        backgroundColor: path ? undefined : block.fill,
-        border: path || !block.stroke ? undefined : `${block.strokeWidth || 1}px solid ${block.stroke}`,
-        borderRadius: path ? undefined : radius,
-        display: 'flex',
-        flexDirection: 'column',
-        fontSize: block.role === 'title' ? '28pt' : '16pt',
-        fontWeight: block.role === 'title' ? 700 : undefined,
-        justifyContent: 'center',
-        lineHeight: 1.25,
-        margin: 0,
-        overflow: path ? 'visible' : 'hidden',
-        textAlign: 'center',
-        ...positioned
-      }}
-    >
-      {path ? (
-        <svg
-          preserveAspectRatio="none"
-          style={{ height: '100%', inset: 0, pointerEvents: 'none', position: 'absolute', width: '100%' }}
-          viewBox="0 0 100 100"
-        >
-          <polygon
-            fill={block.fill || 'transparent'}
-            points={path}
-            stroke={block.stroke}
-            strokeWidth={block.strokeWidth || 0}
-            vectorEffect="non-scaling-stroke"
-          />
-        </svg>
-      ) : null}
-      {block.paragraphs.map((paragraph, index) => (
-        <p
-          key={index}
-          style={{
-            margin: '0 0 0.35em',
-            paddingLeft: paragraph.bullet ? '1.1em' : undefined,
-            position: 'relative',
-            textIndent: paragraph.bullet ? '-0.85em' : undefined,
-            zIndex: 1
-          }}
-        >
-          {paragraph.bullet ? '• ' : null}
-          {paragraph.runs.map((run, runIndex) => (
-            <OfficeRun key={runIndex} run={run} />
-          ))}
-        </p>
-      ))}
-    </Tag>
-  )
-}
-
-const CHART_COLORS = ['#4F81BD', '#C0504D', '#9BBB59', '#8064A2', '#4BACC6', '#F79646']
-
-function SlideChart({ block }: { block: Extract<SlideBlock, { type: 'chart' }> }) {
-  const categories = Math.max(1, ...block.series.map(series => series.values.length), 0)
-  const peak = Math.max(1, ...block.series.flatMap(series => series.values))
-  const groupWidth = 80 / categories
-  const barWidth = groupWidth / Math.max(1, block.series.length + 0.4)
-  const hasValues = block.series.some(series => series.values.length)
-
-  return (
-    <div className="flex h-full flex-col gap-1 p-2 text-[11px]">
-      {block.title ? <div className="font-semibold">{block.title}</div> : null}
-      {hasValues ? (
-        <svg className="min-h-0 w-full flex-1" viewBox="0 0 100 70">
-          {block.series.map((series, seriesIndex) =>
-            series.values.map((value, category) => (
-              <rect
-                fill={CHART_COLORS[seriesIndex % CHART_COLORS.length]}
-                height={(value / peak) * 52}
-                key={`${seriesIndex}-${category}`}
-                width={barWidth * 0.85}
-                x={10 + category * groupWidth + seriesIndex * barWidth}
-                y={58 - (value / peak) * 52}
-              />
-            ))
-          )}
-        </svg>
-      ) : null}
-      <div className="flex flex-wrap gap-x-3 gap-y-1">
-        {block.series.map((series, index) => (
-          <span key={series.name}>
-            <span
-              className="mr-1 inline-block h-2 w-2 align-middle"
-              style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }}
-            />
-            {series.name}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function shapePolygon(geometry: Extract<SlideBlock, { type: 'text' }>['geometry']): string | undefined {
-  if (geometry === 'diamond') {
-    return '50,0 100,50 50,100 0,50'
-  }
-
-  if (geometry === 'chevron') {
-    return '0,0 75,0 100,50 75,100 0,100 25,50'
-  }
-
-  if (geometry === 'rightArrow') {
-    return '0,25 68,25 68,0 100,50 68,100 68,75 0,75'
-  }
-
-  return undefined
-}
-
-function roundRectRadius(block: Extract<SlideBlock, { type: 'text' }>): string | undefined {
-  if (block.geometry === 'ellipse') {
-    return '50%'
-  }
-
-  if (block.geometry !== 'roundRect') {
-    return undefined
-  }
-
-  const adj = block.roundAdj ?? 0.16667
-  const box = block.box
-
-  if (!box?.width || !box.height) {
-    return `${adj * 100}% / ${adj * 100}%`
-  }
-
-  const min = Math.min(box.width, box.height)
-
-  return `${((adj * min) / box.width) * 100}% / ${((adj * min) / box.height) * 100}%`
 }

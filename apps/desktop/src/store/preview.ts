@@ -38,7 +38,7 @@ export interface PreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'document' | 'html' | 'image' | 'pdf' | 'slides' | 'spreadsheet' | 'text'
+  previewKind?: 'binary' | 'document' | 'html' | 'image' | 'pdf' | 'spreadsheet' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */

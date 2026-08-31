@@ -1266,9 +1266,8 @@ const MEDIA_MIME_TYPES = {
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
 const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
 
-const PREVIEW_OFFICE_KIND: Record<string, 'document' | 'slides' | 'spreadsheet'> = {
+const PREVIEW_OFFICE_KIND: Record<string, 'document' | 'spreadsheet'> = {
   '.docx': 'document',
-  '.pptx': 'slides',
   '.xlsm': 'spreadsheet',
   '.xlsx': 'spreadsheet'
 }

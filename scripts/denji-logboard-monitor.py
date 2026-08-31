@@ -15,14 +15,28 @@ Detection rules:
   - error_log_patterns: recurring error patterns in errors.log (last 4h)
   - cron_failures: from system-health JSON findings
 """
-import os, sys, json, glob, time, re
-from datetime import datetime, timedelta
+import os, sys, json, glob, time, re, sqlite3
+from datetime import datetime, timedelta, timezone
 
 HERMES = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 LOGBOARD = os.path.join(HERMES, "governance", "logboard")
 FOUR_HRS = 4 * 3600
+SYSTEM_HEALTH_MAX_AGE_SECONDS = 36 * 3600
 
 SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2, "critical": 3}
+
+
+def _timestamp_epoch(value):
+    """Return an epoch for an ISO timestamp, or None when it is untrusted."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _profile_to_domain(profile_name):
@@ -72,11 +86,22 @@ def parse_system_health():
         return findings
 
     ts = data.get("timestamp", "")
+    observed_at = _timestamp_epoch(ts)
+    if observed_at is None or time.time() - observed_at > SYSTEM_HEALTH_MAX_AGE_SECONDS:
+        # Historical health output proves its own run, not current state.
+        # Live cron failures come from the executions/incident store below.
+        return findings
+
     for finding in data.get("findings", []):
         priority = finding.get("priority", "P3")
         title = finding.get("title", "")
         body = finding.get("body", "")
         slug = finding.get("slug", "")
+
+        if slug == "cron-errors":
+            # Superseded by parse_cron_incidents(), which checks that the
+            # authoritative latest execution still failed.
+            continue
 
         if priority in ("P1", "P2"):
             severity = "warning"
@@ -135,6 +160,83 @@ def parse_system_health():
         })
 
     return findings
+
+
+def parse_cron_incidents():
+    """Return open cron incidents whose authoritative latest run still failed."""
+    db_path = os.path.join(HERMES, "cron", "executions.db")
+    if not os.path.isfile(db_path):
+        return []
+
+    names = {}
+    jobs_path = os.path.join(HERMES, "cron", "jobs.json")
+    try:
+        with open(jobs_path) as f:
+            jobs_data = json.load(f)
+        for job in jobs_data.get("jobs", []):
+            if isinstance(job, dict) and job.get("id"):
+                names[str(job["id"])] = str(job.get("name") or job["id"])
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if not {"cron_incidents", "executions"}.issubset(tables):
+            return []
+
+        incidents = conn.execute(
+            "SELECT * FROM cron_incidents "
+            "WHERE state IN ('detected','alerted') "
+            "ORDER BY last_seen_at DESC, id DESC"
+        ).fetchall()
+        findings = []
+        for incident in incidents:
+            latest = conn.execute(
+                "SELECT status, started_at, finished_at, error FROM executions "
+                "WHERE job_id=? "
+                "ORDER BY COALESCE(started_at, finished_at) DESC, id DESC "
+                "LIMIT 1",
+                (incident["job_id"],),
+            ).fetchone()
+            if latest is None or latest["status"] not in ("failed", "error"):
+                # The incident row can remain open for audit/ack purposes, but
+                # a later successful run makes it non-current.
+                continue
+            job_name = names.get(incident["job_id"], incident["job_id"])
+            error = str(latest["error"] or incident["error"] or "unknown error")
+            failure_type = str(incident["failure_type"] or "unknown")
+            findings.append(
+                {
+                    "rule": f"cron_incident_{incident['id']}",
+                    "severity": (
+                        "error"
+                        if failure_type in {"auth", "config", "delivery"}
+                        else "warning"
+                    ),
+                    "classification": "pattern",
+                    "domain": "ops",
+                    "detail": f"Cron '{job_name}' latest run failed: {error[:200]}",
+                    "source_file": db_path,
+                    "timestamp": latest["started_at"] or incident["last_seen_at"],
+                    "count": 1,
+                    "incident_id": incident["id"],
+                    "job_id": incident["job_id"],
+                }
+            )
+        return findings
+    except (sqlite3.Error, OSError):
+        return []
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def parse_quality_gates():
@@ -348,6 +450,7 @@ def parse_error_logs():
 
 def main():
     findings = []
+    findings.extend(parse_cron_incidents())
     findings.extend(parse_system_health())
     findings.extend(parse_quality_gates())
     findings.extend(parse_ledger_overdue())

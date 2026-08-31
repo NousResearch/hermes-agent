@@ -122,15 +122,11 @@ const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $m
 const $primaryBusy = computed(
   [$primaryState, $busy, $selectedStoredSessionId, $workingSessionIds],
   (state, draftBusy, selected, working) => {
-    if (!selected) {
-      return state ? state.busy : draftBusy
-    }
-
     if (state) {
       return state.busy
     }
 
-    return working.includes(selected)
+    return selected ? working.includes(selected) : draftBusy
   }
 )
 

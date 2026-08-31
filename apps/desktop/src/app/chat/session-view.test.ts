@@ -187,6 +187,26 @@ describe('primary session view reads its own session slice', () => {
     expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('model-a')
   })
 
+  // The plugin SDK's $focusedAwaitingResponse delegates here whenever the
+  // focused surface IS the primary pane, so the ownership rule has to cover
+  // more than `busy`: a plugin asking "is the agent waiting on me?" across a
+  // switch would otherwise be answered by the outgoing session.
+  it('does not report the outgoing session awaitingResponse mid-switch', () => {
+    publishSessionState('runtime-a', { ...stateWith('runtime-a', 'session A turn', false), awaitingResponse: true })
+    $activeSessionId.set('runtime-a')
+    $selectedStoredSessionId.set('stored-runtime-b')
+
+    expect(PRIMARY_SESSION_VIEW.$awaitingResponse.get()).toBe(false)
+  })
+
+  it('reports awaitingResponse once the slice owns the selection', () => {
+    publishSessionState('runtime-a', { ...stateWith('runtime-a', 'session A turn', false), awaitingResponse: true })
+    $activeSessionId.set('runtime-a')
+    $selectedStoredSessionId.set('stored-runtime-a')
+
+    expect(PRIMARY_SESSION_VIEW.$awaitingResponse.get()).toBe(true)
+  })
+
   it('returns to the draft atoms when the active session state is dropped', () => {
     publishSessionState('runtime-a', stateWith('runtime-a', 'session A turn', true))
     $activeSessionId.set('runtime-a')

@@ -585,8 +585,6 @@ class GatewayStartupMixin:
         raw_content = row.get("raw_content")
         if not isinstance(raw_content, str):
             raise ValueError("claimed-result replay payload is unavailable")
-        if row.get("needs_marker"):
-            raw_content = row.get("marker", RECOVERED_MARKER) + raw_content
         event = MessageEvent(
             text="",
             source=source,
@@ -596,6 +594,12 @@ class GatewayStartupMixin:
             goal_continuation=True,
         )
         setattr(event, "_hermes_precomputed_response", raw_content)
+        if row.get("needs_marker"):
+            setattr(
+                event,
+                "_hermes_recovery_marker",
+                row.get("marker", RECOVERED_MARKER),
+            )
         setattr(event, "_hermes_precomputed_obligation_id", row["obligation_id"])
         return event
 

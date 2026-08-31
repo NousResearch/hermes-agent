@@ -2826,11 +2826,23 @@ class GatewayStreamConsumer:
             return False
         try:
             try:
-                result = fn(text, metadata=self.metadata)
+                # Pass the chat id so multi-platform adapters (relay) resolve
+                # the decision through THIS chat's negotiated platform, not
+                # the primary identity's.  Without it a Slack-primary relay
+                # with unfurl force-on misroutes a fronted Telegram/Discord
+                # chat's final through the fresh-send lane (duplicate
+                # delivery: those descriptors advertise no ``delete`` op),
+                # and the mirror posture leaves fronted Slack chats dark.
+                result = fn(text, metadata=self.metadata, chat_id=self.chat_id)
             except TypeError:
-                # Adapter / test double whose hook doesn't accept the metadata
-                # keyword — fall back to the positional-only form.
-                result = fn(text)
+                try:
+                    # Single-platform hook signature (Telegram, base class):
+                    # (content, metadata=None) — no chat_id keyword.
+                    result = fn(text, metadata=self.metadata)
+                except TypeError:
+                    # Adapter / test double whose hook doesn't accept the
+                    # metadata keyword — fall back to the positional-only form.
+                    result = fn(text)
         except Exception as e:
             logger.debug("prefers_fresh_final_streaming check failed: %s", e)
             return False

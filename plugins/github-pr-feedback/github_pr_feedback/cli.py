@@ -857,6 +857,9 @@ def _ci_audit_comment(receipt: CIAuditReceipt) -> str:
             if receipt.status == "passed"
             else "The failed receipt remains merge-blocking; later fail-fast lanes may be absent."
         )
+        + "\n\n"
+        + f"<!-- pr-ci-receipt:v1 status={receipt.status} "
+        f"id={receipt.receipt_id} head={receipt.identity.head_sha} -->"
     )
     if len(body) > 4000:
         raise RuntimeError("CI audit comment exceeds the bounded GitHub payload")

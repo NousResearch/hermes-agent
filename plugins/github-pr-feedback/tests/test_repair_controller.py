@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import subprocess
 import threading
@@ -215,14 +215,14 @@ class MixedConflictBaseGitHub(ManyBehindBaseGitHub):
 
 class ConcurrentReadGitHub(GitHub):
     def __init__(self) -> None:
-        self.barrier = threading.Barrier(3)
+        self.barrier = threading.Barrier(2)
 
     def list_open_pull_requests(self, repository: str, owner: str):
         from github_pr_feedback.policy import PullRequest
 
         return tuple(
             PullRequest(number, "OPEN", repository, repository, owner, "codex/fix", SHA)
-            for number in (17, 18, 19)
+            for number in (17, 18)
         )
 
     def get_merge_state(self, repository: str, number: int):
@@ -402,7 +402,7 @@ def test_terminal_refresh_binding_does_not_hold_slot_before_archived_recovery(
     ).scan()
 
     assert result.created == 1
-    assert result.skipped == {"duplicate": 1}
+    assert result.skipped == {"base_refresh_serialized": 1}
     assert [task.evidence["pr_number"] for task in kanban.tasks] == [18]
     assert any(
         binding.task_id == "repair-task"
@@ -441,7 +441,7 @@ def test_old_head_terminal_binding_does_not_hold_current_refresh_slot(
 
     assert result.created == 1
     assert result.skipped["base_refresh_serialized"] == 1
-    assert [task.evidence["pr_number"] for task in kanban.tasks] == [17]
+    assert [task.evidence["pr_number"] for task in kanban.tasks] == [18]
     ledger.close()
 
 
@@ -514,7 +514,7 @@ def test_unrelated_pending_feedback_does_not_consume_the_base_refresh_slot(
     ).scan()
 
     assert result.created == 1
-    assert result.skipped["duplicate"] == 1
+    assert result.skipped["base_refresh_serialized"] == 1
     assert kanban.tasks[0].evidence["pr_number"] == 18
     ledger.close()
 
@@ -554,11 +554,20 @@ def test_archived_pending_feedback_is_superseded_by_current_base_refresh(
             assert task_id == "archived-feedback-task"
             return "archived"
 
+    class NewerSeventeenGitHub(ManyBehindBaseGitHub):
+        def list_open_pull_requests(self, repository: str, owner: str):
+            pulls = super().list_open_pull_requests(repository, owner)
+            timestamp = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
+            return (
+                replace(pulls[0], updated_at=timestamp + timedelta(minutes=1)),
+                replace(pulls[1], updated_at=timestamp),
+            )
+
     kanban = ArchivedKanban()
     result = RepairController(
         configured,
         ledger,
-        ManyBehindBaseGitHub(),
+        NewerSeventeenGitHub(),
         kanban,
         LocalGit(),
         clock=lambda: now,
@@ -625,7 +634,7 @@ def test_repair_scan_reads_independent_pull_states_concurrently(tmp_path: Path) 
     ).scan()
 
     assert result.created == 0
-    assert result.skipped == {"no_repair_trigger": 3}
+    assert result.skipped == {"no_repair_trigger": 2}
     assert result.degraded is False
     ledger.close()
 

@@ -30,10 +30,10 @@ from .policy import (
 )
 
 MAX_ADMISSIONS_PER_SCAN = 128
-# Each PR snapshot already overlaps its three independent GitHub endpoints.
-# Six PR snapshots keeps a 50-PR scan bounded (18 API reads in flight at most)
-# without turning a rate-limited GitHub API into an unbounded fan-out.
-MAX_PARALLEL_PR_READS = 6
+# The subprocess boundary is globally serialized across profiles, but keeping
+# this pool small also bounds fake/in-process adapters and avoids accumulating
+# a long queue of already-stale snapshots behind the shared request gate.
+MAX_PARALLEL_PR_READS = 2
 LOCAL_CI_FEEDBACK_ID = "local-ci-audit-v2"
 # Additional venv roots trusted as "governed" besides a repository's own
 # tree. This repo's worktrees deliberately symlink .venv to one shared,
@@ -101,6 +101,10 @@ _HEX_RECEIPT_TOKEN = re.compile(r"\b[0-9a-f]{64}\b", flags=re.IGNORECASE)
 _RECEIPT_WORD = re.compile(r"\breceipt(?:_id|\s+id)?\b", flags=re.IGNORECASE)
 _TESTED_HEAD = re.compile(
     r"\btested\s+head\s+`?([0-9a-f]{40})`?\b", flags=re.IGNORECASE
+)
+_CI_RECEIPT_MARKER = re.compile(
+    r"<!--\s*pr-ci-receipt:v1\b[^>]*\bhead=([0-9a-f]{40})\s*-->",
+    flags=re.IGNORECASE,
 )
 _DEGRADED_REASONS = frozenset(
     {
@@ -817,15 +821,19 @@ class ScanController:
             except Exception:  # noqa: BLE001 - an adapter failure must not admit work.
                 skipped["github_error"] += 1
                 continue
-            # GitHub's list order is not a merge-train policy. Preserve a
-            # deterministic oldest-first queue so an old failing PR cannot be
-            # indefinitely bypassed by newer arrivals.
-            pull_requests = tuple(sorted(pull_requests, key=lambda pull: pull.number))
-            required_local_ci_backlog += _required_local_ci_backlog_count(
-                self._policy,
-                self._ledger,
-                target,
-                pull_requests,
+            # GitHub's list order is not a freshness contract.  A PR comment,
+            # review, or synchronize event advances updated_at, so newest-first
+            # keeps the bounded scanner on the changes that can actually need
+            # work instead of replaying hundreds of historical open PRs.
+            pull_requests = tuple(
+                sorted(
+                    pull_requests,
+                    key=lambda pull: (
+                        pull.updated_at or datetime.min.replace(tzinfo=UTC),
+                        pull.number,
+                    ),
+                    reverse=True,
+                )
             )
             if (
                 self._policy.local_ci_audit is not None
@@ -840,6 +848,12 @@ class ScanController:
                 pull_requests = pull_requests[
                     : self._policy.local_ci_audit.max_open_prs_per_scan
                 ]
+            required_local_ci_backlog += _required_local_ci_backlog_count(
+                self._policy,
+                self._ledger,
+                target,
+                pull_requests,
+            )
             if actions_enabled and pull_requests:
                 # actions_enabled is only the repo-level Actions on/off toggle;
                 # it stays True through a billing lockout, where every job
@@ -1449,6 +1463,15 @@ class ScanController:
             return "non_actionable_review_container"
         if _is_codex_review_summary_tracker(feedback):
             return "codex_review_summary_tracker"
+        if (
+            feedback.reviewer.login.casefold() == owner_login.casefold()
+            and _CI_RECEIPT_MARKER.search(feedback.body) is not None
+        ):
+            # The deterministic local-CI publisher owns this marker.  Suppress
+            # it independently of a profile-local ledger: workers may record
+            # the receipt under their profile while the global scanner reads
+            # the comment from the shared GitHub account.
+            return "self_ci_receipt"
         if _is_self_resolution_receipt(feedback, owner_login=owner_login):
             return "self_resolution_receipt"
         return None
@@ -2297,10 +2320,9 @@ def _local_ci_task(
     )
 
     comment_scope = (
-        "After re-reading the PR and confirming the head is still exact, post one factual audit "
-        "summary comment containing the tested SHA, commands, outcomes, durations, and evidence "
-        "classification. End it with `<!-- pr-ci-receipt:v1 status=<passed|failed> "
-        "id=<full 64-hex receipt id> head=<full tested SHA> -->`. "
+        "The governed audit command below is the sole GitHub comment publisher. Do not post a "
+        "second manual summary; if publication is temporarily unavailable, preserve the typed "
+        "receipt for deterministic retry. "
         if post_results
         else "Do not write to GitHub. "
     )

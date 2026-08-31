@@ -1510,8 +1510,8 @@ def test_scan_dispatches_one_read_only_exact_head_ci_audit_when_actions_are_disa
     }
     assert "Do not edit source files" in task.instructions
     assert "Do not publish, approve, or merge" in task.instructions
-    assert "post one factual audit summary" in task.instructions
-    assert "pr-ci-receipt:v1" in task.instructions
+    assert "sole GitHub comment publisher" in task.instructions
+    assert "Do not post a second manual summary" in task.instructions
     assert "scripts/run_hygiene_lane.py" in task.instructions
     assert "scripts/run_static_lane.py" in task.instructions
     assert "scripts/run_test_lane.py" in task.instructions
@@ -1650,7 +1650,7 @@ def test_scan_dispatches_local_ci_when_policy_requires_it_despite_hosted_actions
     ledger.close()
 
 
-def test_scan_dispatches_local_ci_oldest_pull_request_first(tmp_path: Path) -> None:
+def test_scan_dispatches_local_ci_newest_pull_request_first(tmp_path: Path) -> None:
     local_path, sha = initialized_repository(tmp_path)
     older = PullRequest(
         17, "OPEN", "acme/widgets", "acme/widgets", "owner", "codex/older", sha
@@ -1673,12 +1673,12 @@ def test_scan_dispatches_local_ci_oldest_pull_request_first(tmp_path: Path) -> N
     assert result.created == 1
     assert result.skipped["local_ci_dispatch_cap"] == 1
     assert [task.title for task in kanban.tasks] == [
-        "Local PR CI audit: acme/widgets#17",
+        "Local PR CI audit: acme/widgets#18",
     ]
     ledger.close()
 
 
-def test_scan_bounds_oldest_first_per_pr_reads_for_local_ci(tmp_path: Path) -> None:
+def test_scan_bounds_newest_first_per_pr_reads_for_local_ci(tmp_path: Path) -> None:
     local_path, sha = initialized_repository(tmp_path)
     older = PullRequest(
         17, "OPEN", "acme/widgets", "acme/widgets", "owner", "codex/older", sha
@@ -1720,8 +1720,8 @@ def test_scan_bounds_oldest_first_per_pr_reads_for_local_ci(tmp_path: Path) -> N
 
     assert result.created == 1
     assert result.skipped["local_ci_open_pr_scan_cap"] == 1
-    assert github.feedback_calls == [("acme/widgets", 17)]
-    assert github.current_calls == [("acme/widgets", 17)]
+    assert github.feedback_calls == [("acme/widgets", 18)]
+    assert github.current_calls == [("acme/widgets", 18)]
     ledger.close()
 
 
@@ -1789,8 +1789,8 @@ def test_required_local_ci_backlog_signal_counts_missing_receipts_below_read_cap
 
     assert getattr(result, "required_local_ci_backlog", 0) == 2
     assert result.skipped.get("local_ci_open_pr_scan_cap", 0) == 0
-    assert github.feedback_calls == [("acme/widgets", 17), ("acme/widgets", 18)]
-    assert github.current_calls == [("acme/widgets", 17)]
+    assert github.feedback_calls == [("acme/widgets", 18), ("acme/widgets", 17)]
+    assert github.current_calls == [("acme/widgets", 18)]
     ledger.close()
 
 
@@ -1881,7 +1881,7 @@ def test_required_local_ci_backlog_signal_ignores_read_cap_when_receipts_are_cur
 
     assert getattr(result, "required_local_ci_backlog", 0) == 0
     assert result.skipped["local_ci_open_pr_scan_cap"] == 1
-    assert github.feedback_calls == [("acme/widgets", 17)]
+    assert github.feedback_calls == [("acme/widgets", 18)]
     assert github.current_calls == []
     ledger.close()
 
@@ -2303,6 +2303,37 @@ def test_scan_suppresses_high_confidence_self_resolution_receipts(tmp_path: Path
     assert result.skipped["self_resolution_receipt"] == 3
     assert result.skipped["duplicate"] == 1
     assert [task.evidence["feedback_id"] for task in kanban.tasks] == ["superseded"]
+    ledger.close()
+
+
+def test_scan_suppresses_owner_ci_receipt_marker_without_profile_local_ledger(
+    tmp_path: Path,
+) -> None:
+    local_path, sha = initialized_repository(tmp_path)
+    policy = configured_policy(local_path, not_before="2026-08-24T00:00:00Z")
+    item = feedback(
+        "ci-result",
+        reviewer="owner",
+        body=(
+            "Addressed local CI audit. Authoritative receipt: "
+            f"`{'d' * 64}`.\n\n"
+            f"<!-- pr-ci-receipt:v1 status=passed id={'d' * 64} head={sha} -->"
+        ),
+    )
+    ledger = FeedbackLedger(tmp_path / "scanner-ledger.sqlite3")
+    kanban = RecordingKanban()
+
+    result = ScanController(
+        policy,
+        ledger,
+        FakeGitHub(admitted_pull_request(sha), (item,)),
+        kanban,
+        RecordingLocalGit(),
+    ).scan()
+
+    assert result.created == 0
+    assert result.skipped["self_ci_receipt"] == 1
+    assert kanban.tasks == []
     ledger.close()
 
 

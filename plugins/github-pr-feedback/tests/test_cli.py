@@ -2162,6 +2162,10 @@ def test_ci_audit_comment_self_identifies_as_hermes_on_our_own_repository() -> N
     body = _ci_audit_comment(_passed_ci_receipt("mrkillbob/luna-bot"))
 
     assert body.startswith("Hermes automated CI audit (pr-local-ci-auditor)")
+    assert (
+        f"<!-- pr-ci-receipt:v1 status=passed id={'d' * 64} head={'a' * 40} -->"
+        in body
+    )
 
 
 def test_ci_audit_comment_stays_brand_neutral_on_the_upstream_repository() -> None:

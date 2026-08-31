@@ -164,6 +164,8 @@ def assemble_api_request(
         api_msg.pop("reasoning", None)
         api_msg.pop("reasoning_content", None)
         api_msg.pop("reasoning_details", None)
+        api_msg.pop("anthropic_content_blocks", None)
+
     # Context selection may replace the request with a fresh clone of canonical history.
     # Re-apply durable rejection suppression after replay validation so a rejected
     # signed carrier cannot re-enter native conversion through a readable mirror.

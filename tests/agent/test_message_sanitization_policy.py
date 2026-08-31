@@ -377,6 +377,13 @@ class TestReapplyReasoningEcho:
                 "reasoning_details": [
                     {"type": "reasoning.summary", "summary": "PRIVATE"}
                 ],
+                "anthropic_content_blocks": [
+                    {
+                        "type": "thinking",
+                        "thinking": "ANTHROPIC_PRIVATE_TRACE",
+                        "signature": "signed",
+                    }
+                ],
             }
         ]
 
@@ -391,6 +398,7 @@ class TestReapplyReasoningEcho:
         assert "reasoning" not in api_messages[0]
         assert "reasoning_content" not in api_messages[0]
         assert "reasoning_details" not in api_messages[0]
+        assert "anthropic_content_blocks" not in api_messages[0]
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +616,102 @@ class TestPerProviderReasoningEcho:
         assert fallback_api["reasoning_content"] == "FALLBACK_PRIVATE_TRACE"
         assert "_reasoning_route" not in fallback_api
 
+    def test_matching_non_anthropic_route_drops_anthropic_hidden_blocks(self):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent = self._make_agent(
+            provider="custom:destination",
+            model="destination-model",
+            base_url="https://destination.example/v1",
+        )
+        setattr(agent, "api_mode", "chat_completions")
+        hidden_blocks = [
+            {
+                "type": "thinking",
+                "thinking": "ANTHROPIC_PRIVATE_TRACE",
+                "signature": "ANTHROPIC_SIGNATURE",
+            }
+        ]
+        source = {
+            "role": "assistant",
+            "content": "Visible result.",
+            "anthropic_content_blocks": hidden_blocks,
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url
+            ),
+        }
+        api_message = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_message)
+
+        assert "anthropic_content_blocks" not in api_message
+        assert source["anthropic_content_blocks"] == hidden_blocks
+
+    @pytest.mark.parametrize("role", ["system", "user", "tool"])
+    def test_matching_anthropic_route_drops_hidden_blocks_on_non_assistant_roles(
+        self, role
+    ):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent = self._make_agent(
+            provider="custom:anthropic",
+            model="claude-sonnet",
+            base_url="https://anthropic.example/v1",
+        )
+        setattr(agent, "api_mode", "anthropic_messages")
+        hidden_blocks = [
+            {
+                "type": "thinking",
+                "thinking": "ANTHROPIC_PRIVATE_TRACE",
+                "signature": "ANTHROPIC_SIGNATURE",
+            }
+        ]
+        source = {
+            "role": role,
+            "content": "Visible content.",
+            "anthropic_content_blocks": hidden_blocks,
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url
+            ),
+        }
+        api_message = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_message)
+
+        assert "anthropic_content_blocks" not in api_message
+        assert source["anthropic_content_blocks"] == hidden_blocks
+
+    def test_matching_anthropic_route_preserves_anthropic_hidden_blocks(self):
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        agent = self._make_agent(
+            provider="custom:anthropic",
+            model="claude-sonnet",
+            base_url="https://anthropic.example/v1",
+        )
+        setattr(agent, "api_mode", "anthropic_messages")
+        hidden_blocks = [
+            {
+                "type": "thinking",
+                "thinking": "ANTHROPIC_PRIVATE_TRACE",
+                "signature": "ANTHROPIC_SIGNATURE",
+            }
+        ]
+        source = {
+            "role": "assistant",
+            "content": "Visible result.",
+            "anthropic_content_blocks": hidden_blocks,
+            "_reasoning_route": reasoning_route_fingerprint(
+                agent.provider, agent.model, agent.base_url
+            ),
+        }
+        api_message = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_message)
+
+        assert api_message["anthropic_content_blocks"] == hidden_blocks
+        assert source["anthropic_content_blocks"] == hidden_blocks
+
     def test_unprovenanced_rebuild_fails_closed_on_replay_route(self):
         agent = self._make_agent(
             provider="custom:destination",
@@ -620,6 +724,13 @@ class TestPerProviderReasoningEcho:
             "role": "assistant",
             "content": "visible answer",
             "reasoning": "UNKNOWN_ORIGIN_PRIVATE_TRACE",
+            "anthropic_content_blocks": [
+                {
+                    "type": "thinking",
+                    "thinking": "UNKNOWN_ANTHROPIC_PRIVATE_TRACE",
+                    "signature": "signed",
+                }
+            ],
         }
         api_message = dict(source)
 
@@ -628,6 +739,7 @@ class TestPerProviderReasoningEcho:
         assert "reasoning" not in api_message
         assert "reasoning_content" not in api_message
         assert "reasoning_details" not in api_message
+        assert "anthropic_content_blocks" not in api_message
         assert "_reasoning_route" not in api_message
 
     def test_unprovenanced_require_side_rebuild_uses_safe_pad(self):
@@ -636,6 +748,13 @@ class TestPerProviderReasoningEcho:
             "role": "assistant",
             "content": "visible answer",
             "reasoning": "UNKNOWN_ORIGIN_PRIVATE_TRACE",
+            "anthropic_content_blocks": [
+                {
+                    "type": "thinking",
+                    "thinking": "UNKNOWN_ANTHROPIC_PRIVATE_TRACE",
+                    "signature": "signed",
+                }
+            ],
             "tool_calls": [{"id": "call-1", "type": "function"}],
         }
         api_message = dict(source)
@@ -645,6 +764,7 @@ class TestPerProviderReasoningEcho:
         assert "reasoning" not in api_message
         assert api_message["reasoning_content"] == " "
         assert "reasoning_details" not in api_message
+        assert "anthropic_content_blocks" not in api_message
         assert "_reasoning_route" not in api_message
 
     def test_restore_primary_reverts_flag(self):

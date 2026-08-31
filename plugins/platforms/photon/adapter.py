@@ -1292,7 +1292,7 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         ctype = content.get("type")
-        if ctype == "read":
+        if ctype in {"read", "read_receipt"}:
             # Read receipts are presence signals, not a user turn. The sidecar
             # only forwards receipts for messages we sent, so logging the
             # target is enough for observability without waking the agent.

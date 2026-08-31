@@ -601,7 +601,12 @@ async function normalizeContent(content) {
 // the event has crossed the sidecar boundary: this means the gateway has
 // actually received it, while a transient agent/tool delay does not leave the
 // sender staring at Delivered. Receipt events themselves must never recurse.
+const readReceiptsEnabled =
+  (process.env.PHOTON_READ_RECEIPTS || "true").trim().toLowerCase() !==
+  "false";
+
 async function acknowledgeInboundRead(message) {
+  if (!readReceiptsEnabled) return;
   if (message?.content?.type === "read") return;
   if (typeof message?.read !== "function") return;
   try {

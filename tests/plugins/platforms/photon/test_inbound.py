@@ -85,6 +85,25 @@ async def test_dispatch_read_receipt_does_not_wake_agent(
     assert captured == []
 
 
+@pytest.mark.asyncio
+async def test_dispatch_read_receipt_alias_does_not_wake_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Some spectrum-ts streams label receipts ``read_receipt`` — same drop."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    receipt = _dm_event("", msg_id="spc-read-2")
+    receipt["content"] = {
+        "type": "read_receipt",
+        "targetMessageId": "bot-msg-2",
+        "targetDirection": "outbound",
+    }
+
+    await adapter._dispatch_inbound(receipt)
+
+    assert captured == []
+
+
 # A real 1x1 transparent PNG (passes base.py's _looks_like_image magic check).
 _PNG_1X1_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhf"

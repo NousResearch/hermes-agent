@@ -7747,7 +7747,27 @@ def _apply_model_assignment_sync(
             cfg.get("model", {}), provider, model, base_url, api_key
         )
         if isinstance(provider_entry, dict) and provider_entry.get("api_key"):
-            model_cfg["api_key"] = provider_entry["api_key"]
+            # #88990: provider_entry comes from load_config(), which expands
+            # ${VAR} env refs to plaintext. Copying that resolved value into
+            # model.api_key writes the SECRET into config.yaml (and recreates
+            # it on every re-apply, even after the user deletes it by hand).
+            # Only mirror the key when the on-disk entry holds a literal
+            # value; env-ref and key_env entries already resolve at runtime
+            # via the provider entry itself.
+            _raw_entry = None
+            try:
+                _stored, _raw_entry = find_provider_entry(
+                    read_raw_config().get("providers"), provider
+                )
+            except Exception:
+                _raw_entry = None
+            _raw_key = _raw_entry.get("api_key") if isinstance(_raw_entry, dict) else None
+            _entry_uses_env = bool(
+                (isinstance(_raw_entry, dict) and str(_raw_entry.get("key_env") or "").strip())
+                or (isinstance(_raw_key, str) and re.search(r"\$\{[^}]+\}", _raw_key))
+            )
+            if not _entry_uses_env:
+                model_cfg["api_key"] = provider_entry["api_key"]
         cfg["model"] = model_cfg
 
         # When switching the main provider to Nous, mirror the CLI's

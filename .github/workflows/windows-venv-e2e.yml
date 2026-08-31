@@ -59,4 +59,5 @@ jobs:
           uv run --no-sync python -m pytest \
             tests/hermes_cli/test_venv_holder_windows_live.py \
             tests/hermes_cli/test_taskkill_identity_windows_live.py \
+            tests/hermes_cli/test_git_trampoline_windows_live.py \
             -o addopts= -v -p no:cacheprovider

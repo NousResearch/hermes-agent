@@ -2325,6 +2325,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if ordered_blocks:
         msg["anthropic_content_blocks"] = ordered_blocks
 
+    bedrock_blocks = getattr(assistant_message, "bedrock_content_blocks", None)
+    if bedrock_blocks:
+        msg["bedrock_content_blocks"] = bedrock_blocks
+
     # Codex Responses API: preserve encrypted reasoning items for
     # multi-turn continuity. These get replayed as input on the next turn.
     codex_items = getattr(assistant_message, "codex_reasoning_items", None)

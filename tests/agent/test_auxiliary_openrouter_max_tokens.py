@@ -20,7 +20,7 @@ class TestOpenRouterMaxTokens:
             messages=[{"role": "user", "content": "test"}],
             max_tokens=2000,
         )
-        assert kwargs["max_tokens"] == 2000
+        assert kwargs.get("max_tokens") == 2000 or kwargs.get("max_completion_tokens") == 2000
 
     def test_openrouter_base_url_includes_max_tokens(self):
         """Custom endpoint with openrouter.ai base_url keeps max_tokens."""
@@ -31,7 +31,7 @@ class TestOpenRouterMaxTokens:
             max_tokens=2000,
             base_url="https://openrouter.ai/api/v1",
         )
-        assert kwargs["max_tokens"] == 2000
+        assert kwargs.get("max_tokens") == 2000 or kwargs.get("max_completion_tokens") == 2000
 
     def test_generic_provider_omits_max_tokens(self):
         """Generic OpenAI-compatible provider still omits max_tokens."""

@@ -132,10 +132,12 @@ class TestCreateProfile:
         mode = stat.S_IMODE(env_path.stat().st_mode)
         assert mode == 0o600
 
-    def test_managed_runtime_does_not_seed_default_soul_md(self, profile_env, monkeypatch):
+    def test_managed_runtime_seeds_ares_default_soul_md(self, profile_env, monkeypatch):
+        from hermes_cli.default_soul import ARES_DEFAULT_SOUL_MD
+
         monkeypatch.setenv("ARES_MANAGED_RUNTIME", "1")
         profile_dir = create_profile("managed", no_alias=True)
-        assert not (profile_dir / "SOUL.md").exists()
+        assert (profile_dir / "SOUL.md").read_text(encoding="utf-8") == ARES_DEFAULT_SOUL_MD
 
     def test_normal_runtime_seeds_default_soul_md(self, profile_env, monkeypatch):
         monkeypatch.delenv("ARES_MANAGED_RUNTIME", raising=False)

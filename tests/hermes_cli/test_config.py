@@ -62,13 +62,15 @@ class TestEnsureHermesHome:
             assert soul_path.exists()
             assert soul_path.read_text(encoding="utf-8").strip() != ""
 
-    def test_managed_runtime_does_not_seed_default_soul_md(self, tmp_path):
+    def test_managed_runtime_seeds_ares_default_soul_md(self, tmp_path):
+        from hermes_cli.default_soul import ARES_DEFAULT_SOUL_MD
+
         with patch.dict(
             os.environ,
             {"HERMES_HOME": str(tmp_path), "ARES_MANAGED_RUNTIME": "1"},
         ):
             ensure_hermes_home()
-            assert not (tmp_path / "SOUL.md").exists()
+            assert (tmp_path / "SOUL.md").read_text(encoding="utf-8") == ARES_DEFAULT_SOUL_MD
 
 
     def test_upgrades_legacy_template_soul_md(self, tmp_path, monkeypatch):
@@ -84,18 +86,17 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
 
-    def test_managed_runtime_preserves_existing_legacy_soul_md(self, tmp_path):
-        from hermes_cli.default_soul import _LEGACY_TEMPLATE_SOULS
+    def test_managed_runtime_upgrades_existing_legacy_soul_md(self, tmp_path):
+        from hermes_cli.default_soul import ARES_DEFAULT_SOUL_MD, _LEGACY_TEMPLATE_SOULS
 
         with patch.dict(
             os.environ,
             {"HERMES_HOME": str(tmp_path), "ARES_MANAGED_RUNTIME": "1"},
         ):
             soul_path = tmp_path / "SOUL.md"
-            original = _LEGACY_TEMPLATE_SOULS[0] + "\n"
-            soul_path.write_text(original, encoding="utf-8")
+            soul_path.write_text(_LEGACY_TEMPLATE_SOULS[0] + "\n", encoding="utf-8")
             ensure_hermes_home()
-            assert soul_path.read_text(encoding="utf-8") == original
+            assert soul_path.read_text(encoding="utf-8") == ARES_DEFAULT_SOUL_MD
 
     def test_managed_runtime_preserves_existing_custom_soul_md(self, tmp_path):
         with patch.dict(

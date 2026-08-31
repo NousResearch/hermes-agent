@@ -1387,10 +1387,11 @@ def create_profile(
         except OSError:
             pass  # best-effort — save_env_value creates the file on demand
 
-    # Seed a default SOUL.md so the user has a file to customize immediately.
-    # Skipped when the profile already has one (from --clone / --clone-all).
+    # Seed the Ares default SOUL.md so every freshly-created profile/bot has
+    # the same custom baseline identity. Skipped when the profile already has
+    # user-authored content (from --clone / --clone-all).
     soul_path = profile_dir / "SOUL.md"
-    if not soul_path.exists() and os.environ.get("ARES_MANAGED_RUNTIME") != "1":
+    if not soul_path.exists():
         try:
             from hermes_cli.default_soul import DEFAULT_SOUL_MD
             soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")

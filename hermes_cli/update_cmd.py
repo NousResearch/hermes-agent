@@ -7237,6 +7237,121 @@ def _rebuild_desktop_after_update(
     return True
 
 
+def _path_uid(path) -> Optional[int]:
+    """Owner uid of ``path`` via ``os.stat`` — ``None`` when unreadable.
+
+    Separate seam so tests can simulate root-owned files without chown
+    (which needs root). Never raises.
+    """
+    try:
+        return os.stat(path, follow_symlinks=False).st_uid
+    except OSError:
+        return None
+
+
+def _venv_foreign_owned_paths(venv_root, limit: int = 5) -> list:
+    """Bounded scan for venv entries not owned by the current user (#83529).
+
+    A venv that was ever touched by ``sudo pip`` / ``sudo hermes`` contains
+    root-owned files (classically ``*.dist-info/INSTALLER``). A later normal
+    ``hermes update`` then dies mid-mutation inside ``uv pip install -e .``
+    ("Permission denied (os error 13)") with ``venv/bin/hermes`` already
+    deleted — the CLI is bricked. Same philosophy as the contended-venv gate
+    (#87331): a venv we cannot safely mutate is never mutated at all.
+
+    Checks a deliberately BOUNDED set (no full recursion — must never be
+    slow): the venv root, each direct entry of ``venv/bin``, the top-level
+    entries of the first ``lib/python*/site-packages`` found, and the direct
+    children of each ``*.dist-info`` there. Caps stat calls at ~2000 and
+    returned paths at ``limit``. POSIX-only: returns ``[]`` on Windows
+    (no ``os.geteuid``) and when running as root. Swallows every per-entry
+    ``OSError`` and returns ``[]`` on any structural surprise — this helper
+    must NEVER raise and must never add noticeable latency to update.
+
+    Returns a list of ``(path_str, uid)`` tuples, at most ``limit`` long.
+    """
+    try:
+        if not hasattr(os, "geteuid"):
+            return []  # windows-footgun: ok — POSIX ownership concept only
+        euid = os.geteuid()  # windows-footgun: ok — guarded by hasattr above
+        if euid == 0:
+            return []  # root can rewrite anything; nothing to refuse
+
+        venv_root = Path(venv_root)
+        budget = 2000  # max stat() calls — hard bound on preflight cost
+        foreign: list = []
+
+        def _check(p) -> bool:
+            """stat one path; True while scan should continue."""
+            nonlocal budget
+            if budget <= 0 or len(foreign) >= limit:
+                return False
+            budget -= 1
+            uid = _path_uid(p)
+            if uid is not None and uid != euid:
+                foreign.append((str(p), uid))
+            return budget > 0 and len(foreign) < limit
+
+        def _scan_dir(d, recurse_dist_info: bool = False) -> None:
+            try:
+                entries = list(os.scandir(d))
+            except OSError:
+                return
+            for entry in entries:
+                if not _check(entry.path):
+                    return
+                if recurse_dist_info and entry.name.endswith(".dist-info"):
+                    try:
+                        children = list(os.scandir(entry.path))
+                    except OSError:
+                        continue
+                    for child in children:
+                        if not _check(child.path):
+                            return
+
+        if not _check(venv_root):
+            return foreign[:limit]
+        _scan_dir(venv_root / "bin")
+
+        # First lib/python*/site-packages (POSIX venv layout).
+        site_packages = next(
+            iter(sorted(venv_root.glob("lib/python*/site-packages"))), None
+        )
+        if site_packages is not None:
+            _scan_dir(site_packages, recurse_dist_info=True)
+
+        return foreign[:limit]
+    except Exception:
+        # Preflight is advisory: any structural surprise means "no verdict",
+        # never a crashed or blocked update.
+        return []
+
+
+def _refuse_update_if_venv_foreign_owned(project_root) -> None:
+    """Refuse-before-mutate ownership gate for the dependency install (#83529).
+
+    Runs after the code pull (pulling code is safe) and immediately before
+    the first venv mutation. If the venv contains files owned by another
+    uid, the ``uv pip install -e .`` below would die mid-mutation and brick
+    the install — so refuse up front, with the exact recovery command,
+    while the venv is still fully intact. No subprocess calls here: update
+    tests mock ``subprocess.run`` with sequenced side effects.
+    """
+    foreign = _venv_foreign_owned_paths(Path(project_root) / "venv")
+    if not foreign:
+        return
+    print("\n✗ Update stopped: this install's venv contains files owned by another user.")
+    print("  Updating now would fail midway (Permission denied) and leave Hermes broken.")
+    print("  This usually happens after running hermes or pip with sudo. Offending paths:")
+    for p, uid in foreign:
+        print(f"    - {p} (owner uid {uid})")
+    print("\n  Fix ownership, then re-run the update:")
+    print(f"    sudo chown -R $(id -un): {project_root}")
+    print("    hermes update")
+    print("\n  Nothing in the venv was modified.")
+    sys.exit(1)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -8329,6 +8444,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
+        #
+        # Ownership preflight (#83529): refuse before the first venv mutation
+        # if the venv contains foreign-owned files (sudo-pip residue) — the
+        # install below would die mid-mutation and brick the CLI.
+        _refuse_update_if_venv_foreign_owned(_m().PROJECT_ROOT)
         #
         # Self-lock deferral (relocated preflight — #86735): if THIS process
         # holds a native extension the sync must rewrite, defer NOW — after

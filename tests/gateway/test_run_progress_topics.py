@@ -1022,6 +1022,9 @@ async def _run_with_agent(
     *,
     session_id,
     pending_text=None,
+    pending_event=None,
+    overflow_events=(),
+    before_run=None,
     config_data=None,
     platform=Platform.TELEGRAM,
     chat_id="-1001",
@@ -1062,13 +1065,21 @@ async def _run_with_agent(
     session_key = f"agent:main:{platform.value}:{chat_type}:{chat_id}"
     if thread_id:
         session_key = f"{session_key}:{thread_id}"
-    if pending_text is not None:
+    if pending_event is not None:
+        adapter._pending_messages[session_key] = pending_event
+    elif pending_text is not None:
         adapter._pending_messages[session_key] = MessageEvent(
             text=pending_text,
             message_type=MessageType.TEXT,
             source=source,
             message_id="queued-1",
         )
+    if overflow_events:
+        runner._session_state(session_key).conversation.queued_events.extend(
+            overflow_events
+        )
+    if before_run is not None:
+        before_run(runner, adapter, session_key, source)
 
     result = await runner._run_agent(
         message="hello",
@@ -1610,6 +1621,29 @@ async def test_run_agent_queued_goal_read_failure_reports_after_main_response(
     QueuedGoalDispatchAgent.calls = 0
     QueuedGoalDispatchAgent.messages = []
     pending = goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task")
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    continuation = MessageEvent(
+        text=pending,
+        message_type=MessageType.TEXT,
+        user_id="synthetic-user",
+        user_name="synthetic-name",
+        source=source,
+        raw_message={"opaque": "identity"},
+        message_id="goal-continuation-1",
+        platform_update_id=41,
+        reply_to_message_id="prior-message",
+        reply_to_author_id="prior-author",
+        channel_prompt="keep this channel prompt",
+        internal=True,
+        metadata={"identity": "keep-me"},
+        allow_gateway_control=False,
+    )
+    holder = {}
 
     with caplog.at_level(logging.WARNING, logger="gateway.run"):
         adapter, result = await _run_with_agent(
@@ -1617,7 +1651,13 @@ async def test_run_agent_queued_goal_read_failure_reports_after_main_response(
             tmp_path,
             QueuedGoalDispatchAgent,
             session_id=f"queued-goal-{failure}",
-            pending_text=pending,
+            pending_event=continuation,
+            before_run=lambda runner, adapter, key, current_source: holder.update(
+                runner=runner,
+                adapter=adapter,
+                key=key,
+                source=current_source,
+            ),
         )
 
     assert result["final_response"] == "first response"
@@ -1632,6 +1672,204 @@ async def test_run_agent_queued_goal_read_failure_reports_after_main_response(
     assert expected_notice in caplog.text
     assert "sensitive queued-read details" not in caplog.text
     assert all("sensitive queued-read details" not in call["content"] for call in adapter.sent)
+    assert adapter._pending_messages == {}
+    restored = holder["runner"]._queued_events[holder["key"]]
+    assert restored == [continuation]
+    assert restored[0] is continuation
+    assert continuation.source is source
+    assert continuation.raw_message == {"opaque": "identity"}
+    assert continuation.message_id == "goal-continuation-1"
+    assert continuation.platform_update_id == 41
+    assert continuation.metadata == {"identity": "keep-me"}
+    assert continuation.allow_gateway_control is False
+
+
+@pytest.mark.asyncio
+async def test_run_agent_goal_read_failure_restores_ahead_of_fifo_overflow(
+    monkeypatch, tmp_path
+):
+    """The consumed continuation remains the exact FIFO head after failure."""
+    from hermes_cli import goals
+
+    class ReadFailureDB:
+        def get_meta(self, _key):
+            raise OSError("private fifo read detail")
+
+    monkeypatch.setattr(goals, "_get_session_db", lambda: ReadFailureDB())
+    judge = MagicMock(side_effect=AssertionError("goal judge must not run"))
+    monkeypatch.setattr(goals, "judge_goal", judge)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    continuation = MessageEvent(
+        text=goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task"),
+        source=source,
+        message_id="continuation-head",
+        metadata={"identity": "continuation"},
+    )
+    followups = [
+        MessageEvent(text="user follow-up 1", source=source, message_id="user-1"),
+        MessageEvent(text="user follow-up 2", source=source, message_id="user-2"),
+    ]
+    holder = {}
+    QueuedGoalDispatchAgent.calls = 0
+    QueuedGoalDispatchAgent.messages = []
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedGoalDispatchAgent,
+        session_id="queued-goal-fifo-failure",
+        pending_event=continuation,
+        overflow_events=followups,
+        before_run=lambda runner, adapter, key, current_source: holder.update(
+            runner=runner,
+            key=key,
+        ),
+    )
+
+    assert result["final_response"] == "first response"
+    assert QueuedGoalDispatchAgent.messages == ["hello"]
+    judge.assert_not_called()
+    assert adapter._pending_messages == {}
+    restored = holder["runner"]._queued_events[holder["key"]]
+    assert restored == [continuation, *followups]
+    assert restored[0] is continuation
+    assert restored[1] is followups[0]
+    assert restored[2] is followups[1]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_goal_read_failure_preserves_concurrent_slot_arrival(
+    monkeypatch, tmp_path
+):
+    """A slot arrival during the failed read is shifted behind the continuation."""
+    from hermes_cli import goals
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    continuation = MessageEvent(
+        text=goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task"),
+        source=source,
+        message_id="continuation-concurrent",
+    )
+    concurrent = MessageEvent(
+        text="arrived during read",
+        source=source,
+        message_id="concurrent-user",
+        metadata={"identity": "concurrent"},
+    )
+    holder = {}
+
+    class ConcurrentReadFailureDB:
+        def get_meta(self, _key):
+            holder["adapter"]._pending_messages[holder["key"]] = concurrent
+            raise OSError("private concurrent read detail")
+
+    monkeypatch.setattr(goals, "_get_session_db", lambda: ConcurrentReadFailureDB())
+    QueuedGoalDispatchAgent.calls = 0
+    QueuedGoalDispatchAgent.messages = []
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedGoalDispatchAgent,
+        session_id="queued-goal-concurrent-failure",
+        pending_event=continuation,
+        before_run=lambda runner, adapter, key, current_source: holder.update(
+            runner=runner,
+            adapter=adapter,
+            key=key,
+        ),
+    )
+
+    assert result["final_response"] == "first response"
+    assert QueuedGoalDispatchAgent.messages == ["hello"]
+    assert adapter._pending_messages == {}
+    restored = holder["runner"]._queued_events[holder["key"]]
+    assert restored == [continuation, concurrent]
+    assert restored[0] is continuation
+    assert restored[1] is concurrent
+
+
+@pytest.mark.asyncio
+async def test_run_agent_next_gateway_turn_retries_preserved_continuation(
+    monkeypatch, tmp_path
+):
+    """Retry ownership is the next completed gateway turn, not a hot loop."""
+    from hermes_cli import goals
+
+    active_raw = goals.GoalState(goal="finish the task").to_json()
+    reads = 0
+
+    class RecoveringGoalDB:
+        def get_meta(self, _key):
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                raise OSError("private transient read detail")
+            return active_raw
+
+    monkeypatch.setattr(goals, "_get_session_db", lambda: RecoveringGoalDB())
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    continuation = MessageEvent(
+        text=goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task"),
+        source=source,
+        message_id="continuation-retry",
+    )
+    holder = {}
+    QueuedGoalDispatchAgent.calls = 0
+    QueuedGoalDispatchAgent.messages = []
+
+    adapter, first_result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedGoalDispatchAgent,
+        session_id="queued-goal-retry-owner",
+        pending_event=continuation,
+        before_run=lambda runner, adapter, key, current_source: holder.update(
+            runner=runner,
+            key=key,
+            source=current_source,
+        ),
+    )
+
+    assert first_result["final_response"] == "first response"
+    assert reads == 1
+    assert QueuedGoalDispatchAgent.messages == ["hello"]
+    assert holder["runner"]._queued_events[holder["key"]] == [continuation]
+
+    second_result = await holder["runner"]._run_agent(
+        message="later gateway wake",
+        context_prompt="",
+        history=[],
+        source=holder["source"],
+        session_id="queued-goal-retry-owner",
+        session_key=holder["key"],
+    )
+
+    assert second_result["final_response"] == "goal continuation processed"
+    assert reads == 2
+    assert QueuedGoalDispatchAgent.messages == [
+        "hello",
+        "later gateway wake",
+        continuation.text,
+    ]
+    assert adapter._pending_messages == {}
+    assert holder["runner"]._queued_events.get(holder["key"], []) == []
 
 
 @pytest.mark.asyncio
@@ -1655,19 +1893,108 @@ async def test_run_agent_queued_goal_verified_inactivity_remains_silent(
     monkeypatch.setattr(goals, "_get_session_db", lambda: InactiveGoalDB())
     QueuedGoalDispatchAgent.calls = 0
     QueuedGoalDispatchAgent.messages = []
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    continuation = MessageEvent(
+        text=goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task"),
+        source=source,
+        message_id="stale-goal-continuation",
+    )
+    followups = [
+        MessageEvent(text="real user 1", source=source, message_id="real-1"),
+        MessageEvent(text="real user 2", source=source, message_id="real-2"),
+    ]
+    holder = {}
 
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         QueuedGoalDispatchAgent,
         session_id=f"queued-goal-{persisted_state}",
-        pending_text=goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task"),
+        pending_event=continuation,
+        overflow_events=followups,
+        before_run=lambda runner, adapter, key, current_source: holder.update(
+            runner=runner,
+            key=key,
+        ),
     )
 
     assert result["final_response"] == "first response"
     assert QueuedGoalDispatchAgent.calls == 1
     assert QueuedGoalDispatchAgent.messages == ["hello"]
     assert [call["content"] for call in adapter.sent] == ["first response"]
+    assert adapter._pending_messages[holder["key"]] is followups[0]
+    assert holder["runner"]._queued_events[holder["key"]] == [followups[1]]
+    assert all(
+        event is not continuation
+        for event in [
+            *adapter._pending_messages.values(),
+            *holder["runner"]._queued_events[holder["key"]],
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_goal_pause_clear_race_removes_restored_synthetic_only(
+    monkeypatch, tmp_path
+):
+    """Pause/clear cleanup keeps real FIFO entries behind a restored continuation."""
+    from hermes_cli import goals
+
+    class ReadFailureDB:
+        def get_meta(self, _key):
+            raise OSError("private pause race detail")
+
+    monkeypatch.setattr(goals, "_get_session_db", lambda: ReadFailureDB())
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    continuation = MessageEvent(
+        text=goals.CONTINUATION_PROMPT_TEMPLATE.format(goal="finish the task"),
+        source=source,
+        message_id="continuation-before-pause",
+    )
+    followups = [
+        MessageEvent(text="real user 1", source=source, message_id="real-1"),
+        MessageEvent(text="real user 2", source=source, message_id="real-2"),
+    ]
+    holder = {}
+    QueuedGoalDispatchAgent.calls = 0
+    QueuedGoalDispatchAgent.messages = []
+
+    adapter, _result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedGoalDispatchAgent,
+        session_id="queued-goal-pause-race",
+        pending_event=continuation,
+        overflow_events=followups,
+        before_run=lambda runner, adapter, key, current_source: holder.update(
+            runner=runner,
+            key=key,
+        ),
+    )
+
+    assert holder["runner"]._queued_events[holder["key"]] == [
+        continuation,
+        *followups,
+    ]
+    removed = holder["runner"]._clear_goal_pending_continuations(
+        holder["key"], adapter
+    )
+
+    assert removed == 1
+    assert adapter._pending_messages == {}
+    assert holder["runner"]._queued_events[holder["key"]] == followups
+    assert holder["runner"]._queued_events[holder["key"]][0] is followups[0]
+    assert holder["runner"]._queued_events[holder["key"]][1] is followups[1]
 
 
 @pytest.mark.asyncio

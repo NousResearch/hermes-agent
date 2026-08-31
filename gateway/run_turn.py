@@ -3668,6 +3668,11 @@ class GatewayTurnMixin:
                 try:
                     goal_still_active = self._goal_still_active_for_session(session_id)
                 except GoalPersistenceError as exc:
+                    self._restore_dequeued_event_front(
+                        session_key,
+                        adapter,
+                        pending_event,
+                    )
                     notice = f"Goal status unavailable: {exc}"
                     logger.warning("goal continuation: %s", notice)
                     # The queued branch delivered the prior response above, so

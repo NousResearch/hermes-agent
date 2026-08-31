@@ -376,6 +376,9 @@ async def test_reconnect_drain_survives_cancellation_resistant_close(monkeypatch
         mock_polling_req.initialize.assert_awaited_once()
         mock_app.updater.start_polling.assert_awaited_once()
         assert adapter._polling_error_task is None or adapter._polling_error_task.done()
+        # Settle the generation verifier like the sibling tests do, so it does
+        # not outlive this test pending on its 60s progress deadline.
+        await _complete_current_polling_generation(adapter)
     finally:
         release_close.set()
         if not recovery.done():

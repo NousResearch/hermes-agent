@@ -151,9 +151,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `PARALLEL_API_KEY` | AI-native web search ([parallel.ai](https://parallel.ai/)) |
 | `FIRECRAWL_API_KEY` | Web scraping and cloud browser ([firecrawl.dev](https://firecrawl.dev/)) |
 | `FIRECRAWL_API_URL` | Custom Firecrawl API endpoint for self-hosted instances (optional) |
-| `TAVILY_API_KEY` | Optional Tavily API key for higher search/extract limits. After selecting Tavily as the web backend, keyless access works without it ([app.tavily.com](https://app.tavily.com/home), [keyless docs](https://docs.tavily.com/documentation/keyless)) |
 | `SEARXNG_URL` | SearXNG instance URL for free self-hosted web search — no API key required ([searxng.github.io](https://searxng.github.io/searxng/)) |
-| `TAVILY_BASE_URL` | Override the Tavily API endpoint. Useful for corporate proxies and self-hosted Tavily-compatible search backends. Same pattern as `GROQ_BASE_URL`. |
 | `EXA_API_KEY` | Exa API key for AI-native web search and contents ([exa.ai](https://exa.ai/)) |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API subscription token for web search (free tier available) ([brave.com/search/api](https://brave.com/search/api/)) |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |

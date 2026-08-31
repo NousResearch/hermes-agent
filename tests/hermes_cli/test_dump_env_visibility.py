@@ -46,7 +46,7 @@ def test_dump_leaves_unset_key_untouched(monkeypatch, capsys, tmp_path):
     from hermes_cli.config import get_hermes_home
 
     monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("KEENABLE_API_KEY", raising=False)
 
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -54,6 +54,6 @@ def test_dump_leaves_unset_key_untouched(monkeypatch, capsys, tmp_path):
 
     dump.run_dump(SimpleNamespace(show_keys=False))
 
-    line = _api_key_line(capsys.readouterr().out, "tavily")
+    line = _api_key_line(capsys.readouterr().out, "keenable")
     assert "not set" in line
     assert "shell only" not in line

@@ -1,7 +1,0 @@
-name: web-tavily
-version: 1.0.0
-description: "Tavily web search + content extraction. Works keyless (rate-limited); set TAVILY_API_KEY for higher limits — https://app.tavily.com/home."
-author: NousResearch
-kind: backend
-provides_web_providers:
-  - tavily

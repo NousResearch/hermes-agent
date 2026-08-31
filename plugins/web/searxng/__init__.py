@@ -1,7 +1,7 @@
 """SearXNG search plugin — bundled, auto-loaded.
 
 Backed by a user-hosted SearXNG instance (URL configured via ``SEARXNG_URL``).
-Search-only — pair with an extract provider (firecrawl/tavily/exa) for
+Search-only — pair with an extract provider (firecrawl/keenable/exa) for
 ``web_extract`` calls.
 """
 

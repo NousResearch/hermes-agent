@@ -25,7 +25,7 @@ from plugins.web.parallel.provider import ParallelWebSearchProvider
 def _no_web_env(monkeypatch):
     """Blank every web credential and neutralize config lookups."""
     for var in (
-        "EXA_API_KEY", "PARALLEL_API_KEY", "TAVILY_API_KEY",
+        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY",
         "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "BRAVE_SEARCH_API_KEY",
         "SEARXNG_URL", "TOOL_GATEWAY_USER_TOKEN",
     ):
@@ -256,7 +256,7 @@ class TestProviderRouting:
         )
         assert keyless_mcp.provider_tier("exa") == "free"
         assert keyless_mcp.provider_tier("parallel") == "auto"  # invalid → auto
-        assert keyless_mcp.provider_tier("tavily") == "auto"    # unset → auto
+        assert keyless_mcp.provider_tier("keenable") == "auto"  # unset → auto
 
     @pytest.mark.asyncio
     async def test_parallel_keyless_extract(self, monkeypatch):
@@ -299,9 +299,9 @@ class TestResolutionOrder:
         starts = [keyless_mcp._ring_order("exa")[0] for _ in range(len(keyless_mcp._KEYLESS_RING))]
         assert sorted(starts) == sorted(keyless_mcp._KEYLESS_RING)  # full cycle
         # Pinned dispatch starts at the pinned vendor every time.
-        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda name: name == "tavily")
-        assert keyless_mcp._ring_order("tavily")[0] == "tavily"
-        assert keyless_mcp._ring_order("tavily")[0] == "tavily"
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda name: name == "keenable")
+        assert keyless_mcp._ring_order("keenable")[0] == "keenable"
+        assert keyless_mcp._ring_order("keenable")[0] == "keenable"
 
     def test_registry_keyless_disabled_returns_none(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
@@ -336,9 +336,9 @@ class TestResolutionOrder:
     def test_get_backend_key_beats_keyless(self, monkeypatch):
         monkeypatch.setattr(
             web_tools, "_env_value",
-            lambda name: "sk-x" if name == "TAVILY_API_KEY" else "",
+            lambda name: "sk-x" if name == "EXA_API_KEY" else "",
         )
-        assert web_tools._get_backend() == "tavily"
+        assert web_tools._get_backend() == "exa"
 
     def test_get_backend_keyless_disabled(self, monkeypatch):
         monkeypatch.setattr(
@@ -476,9 +476,9 @@ class TestKeylessFailover:
         assert "all keyless vendors throttled" in out["error"]
 
     def test_search_walks_ring_past_multiple_throttles(self, monkeypatch):
-        # exa -> parallel -> tavily all throttled; firecrawl serves.
+        # exa -> parallel all throttled; firecrawl serves.
         self._pin(monkeypatch, "exa")
-        for vendor in ("exa", "parallel", "tavily"):
+        for vendor in ("exa", "parallel"):
             monkeypatch.setitem(
                 keyless_mcp._KEYLESS_SEARCHERS, vendor,
                 lambda q, l, v=vendor: self._throttled(v),
@@ -504,7 +504,7 @@ class TestKeylessFailover:
             keyless_mcp._KEYLESS_SEARCHERS, "exa",
             lambda q, l: called.append(1) or self._ok("exa"),
         )
-        for vendor in ("parallel", "tavily", "firecrawl", "keenable"):
+        for vendor in ("parallel", "firecrawl", "keenable"):
             monkeypatch.setitem(
                 keyless_mcp._KEYLESS_SEARCHERS, vendor,
                 lambda q, l, v=vendor: self._throttled(v),

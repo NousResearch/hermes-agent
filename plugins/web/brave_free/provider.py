@@ -34,7 +34,7 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
     """Search-only Brave provider using the free-tier Data-for-Search API.
 
     Free tier is 2,000 queries/month (1 qps). No content-extraction capability —
-    users pair this with Firecrawl/Tavily/Exa for ``web_extract``.
+    users pair this with Firecrawl/Keenable/Exa for ``web_extract``.
     """
 
     @property

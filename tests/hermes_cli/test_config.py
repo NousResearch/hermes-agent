@@ -655,24 +655,24 @@ class TestSanitizeEnvLines:
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""
 
-    def test_tavily_api_key_registered(self):
-        """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
+    def test_keenable_api_key_registered(self):
+        """KEENABLE_API_KEY is listed in OPTIONAL_ENV_VARS."""
         from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
+        assert "KEENABLE_API_KEY" in OPTIONAL_ENV_VARS
 
 
-    def test_tavily_api_key_has_url(self):
-        """TAVILY_API_KEY has a URL."""
+    def test_keenable_api_key_has_url(self):
+        """KEENABLE_API_KEY has a URL."""
         from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["url"] == "https://app.tavily.com/home"
+        assert OPTIONAL_ENV_VARS["KEENABLE_API_KEY"]["url"] == "https://keenable.ai"
 
-    def test_tavily_in_env_vars_by_version(self):
-        """TAVILY_API_KEY is listed in ENV_VARS_BY_VERSION."""
+    def test_removed_tavily_var_not_in_env_vars_by_version(self):
+        """TAVILY_API_KEY was removed with the Tavily backend."""
         from hermes_cli.config import ENV_VARS_BY_VERSION
         all_vars = []
         for vars_list in ENV_VARS_BY_VERSION.values():
             all_vars.extend(vars_list)
-        assert "TAVILY_API_KEY" in all_vars
+        assert "TAVILY_API_KEY" not in all_vars
 
     def test_max_iterations_not_offered_as_env_var(self):
         """HERMES_MAX_ITERATIONS must NOT be in OPTIONAL_ENV_VARS (issue #17534).

@@ -186,7 +186,7 @@ _CREDENTIAL_NAMES = frozenset({
     "FIRECRAWL_API_KEY",
     "PARALLEL_API_KEY",
     "EXA_API_KEY",
-    "TAVILY_API_KEY",
+    "TAVILY_API_KEY",  # removed backend; still blanked for hermeticity
     "WANDB_API_KEY",
     "ELEVENLABS_API_KEY",
     "HONCHO_API_KEY",

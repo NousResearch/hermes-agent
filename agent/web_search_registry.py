@@ -16,7 +16,7 @@ The active provider is chosen by configuration with this precedence:
 2. ``web.backend`` (shared fallback).
 3. If exactly one capability-eligible provider is registered AND available,
    use it.
-4. Legacy preference order — ``firecrawl`` → ``parallel`` → ``tavily`` →
+4. Legacy preference order — ``firecrawl`` → ``parallel`` →
    ``exa`` → ``searxng`` → ``brave-free`` → ``ddgs`` — filtered by
    availability. Matches the historic ``tools.web_tools._get_backend()``
    candidate order so installs that never set a config key keep landing
@@ -159,7 +159,6 @@ def _read_config_key(*path: str) -> Optional[str]:
 _LEGACY_PREFERENCE = (
     "firecrawl",
     "parallel",
-    "tavily",
     "exa",
     "searxng",
     "brave-free",
@@ -177,7 +176,6 @@ _LEGACY_PREFERENCE = (
 _KEYLESS_PREFERENCE = (
     "exa",
     "parallel",
-    "tavily",
     "firecrawl",
     "keenable",
 )
@@ -222,7 +220,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
        supports *capability* AND ``is_available()`` reports True, return it.
 
     3. **Legacy preference walk, filtered by availability.** Walk the
-       :data:`_LEGACY_PREFERENCE` order (firecrawl → parallel → tavily →
+       :data:`_LEGACY_PREFERENCE` order (firecrawl → parallel →
        exa → searxng → brave-free → ddgs) looking for a provider whose
        ``supports_<capability>()`` is True AND whose ``is_available()`` is
        True. Matches the historic ``tools.web_tools._get_backend()``

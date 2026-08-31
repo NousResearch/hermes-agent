@@ -3,15 +3,15 @@ from types import SimpleNamespace
 from hermes_cli.status import show_status
 
 
-def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tmp_path):
+def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_123456"
-    monkeypatch.setenv("TAVILY_API_KEY", sentinel)
+    monkeypatch.setenv("KEENABLE_API_KEY", sentinel)
 
     show_status(SimpleNamespace(all=True, deep=False))
 
     output = capsys.readouterr().out
-    assert "Tavily" in output
+    assert "Keenable" in output
     assert sentinel not in output
 
 

@@ -3,8 +3,8 @@
 Keenable (https://keenable.ai) operates an independent web index for AI
 apps with public keyless endpoints (rate-limited free tier; keyed access
 via KEENABLE_API_KEY for higher limits). Integrated as a keyless-ring
-member following the Exa/Parallel/Tavily/Firecrawl pattern: fresh installs
-with zero web credentials rotate across all five vendors' free tiers.
+member following the Exa/Parallel/Firecrawl pattern: fresh installs with
+zero web credentials rotate across the ring vendors' free tiers.
 
 Credit: Keenable integration originally proposed by Ilya Gusev (Keenable)
 in PR #49758; the native provider form follows the salvage of that work

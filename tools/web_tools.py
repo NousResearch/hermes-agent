@@ -15,7 +15,6 @@ Backend compatibility:
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
-- Tavily: https://tavily.com (search, extract)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -57,13 +56,6 @@ from plugins.web.firecrawl.provider import (
     _get_firecrawl_gateway_url,
     _is_tool_gateway_ready,
     check_firecrawl_api_key,
-)
-# Tavily helpers re-exported for backward-compat with existing unit tests
-# (tests/tools/test_web_tools_tavily.py imports these names directly).
-from plugins.web.tavily.provider import (  # noqa: F401 — backward-compat names
-    _normalize_tavily_documents,
-    _normalize_tavily_search_results,
-    _tavily_request,
 )
 # Parallel + Exa clients re-exported for backward-compat with existing
 # unit tests (tests/tools/test_web_tools_config.py imports _get_parallel_client
@@ -169,7 +161,7 @@ def _load_web_config() -> dict:
 # WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
 # a registered provider, drop it here so the registry path takes over.
 _LEGACY_WEB_BACKENDS = frozenset(
-    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "keenable"}
+    {"parallel", "firecrawl", "exa", "searxng", "brave-free", "ddgs", "xai", "keenable"}
 )
 
 
@@ -252,14 +244,13 @@ def _get_backend() -> str:
         return "firecrawl"
 
     # Never-configured install — pick the highest-priority available
-    # backend. Explicit user credentials (TAVILY_API_KEY etc.)
+    # backend. Explicit user credentials (EXA_API_KEY etc.)
     # beat the managed-tool-gateway probe so a deliberate setup is not
     # pre-empted by a Nous OAuth token whose subscription tier may not
     # actually grant web-search access (the gateway then fails at runtime
     # with "no subscription" and the tool returns an error to the agent
     # without falling back). Free-tier backends trail the paid ones.
     backend_candidates = (
-        ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("keenable", _has_env("KEENABLE_API_KEY")),
@@ -359,13 +350,6 @@ def _get_capability_backend(capability: str) -> str:
     return _get_backend()
 
 
-def _tavily_explicitly_configured() -> bool:
-    cfg = _load_web_config()
-    return any(
-        (cfg.get(key) or "").lower().strip() == "tavily"
-        for key in ("backend", "search_backend", "extract_backend")
-    )
-
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable.
@@ -392,8 +376,6 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("KEENABLE_API_KEY")
     if backend == "firecrawl":
         return check_firecrawl_api_key()
-    if backend == "tavily":
-        return _has_env("TAVILY_API_KEY") or _tavily_explicitly_configured()
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
@@ -426,6 +408,7 @@ def _ddgs_package_importable() -> bool:
         return True
     except ImportError:
         return False
+
 
 
 # ─── One-shot keyless rescue (keyed/configured backend failed) ───────────────
@@ -469,7 +452,6 @@ def _rescue_eligible(provider) -> bool:
             key_var = {
                 "exa": "EXA_API_KEY",
                 "parallel": "PARALLEL_API_KEY",
-                "tavily": "TAVILY_API_KEY",
                 "firecrawl": "FIRECRAWL_API_KEY",
                 "keenable": "KEENABLE_API_KEY",
             }.get(name, "")
@@ -603,7 +585,6 @@ def _web_requires_env() -> list[str]:
     return [
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
-        "TAVILY_API_KEY",
         "KEENABLE_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
@@ -614,11 +595,10 @@ def _web_requires_env() -> list[str]:
     ]
 
 
-# ─── Parallel / Tavily / Firecrawl helpers — moved into plugins ──────────────
+# ─── Parallel / Firecrawl helpers — moved into plugins ───────────────────────
 # After PR #25182, the per-vendor client construction, request helpers, and
 # response normalizers all live in plugins.web.<vendor>.provider:
 #   - parallel: plugins/web/parallel/provider.py
-#   - tavily:   plugins/web/tavily/provider.py
 #   - firecrawl: plugins/web/firecrawl/provider.py
 # The names from the firecrawl plugin (Firecrawl proxy, _get_firecrawl_client,
 # _to_plain_object, _normalize_result_list, _extract_web_search_results,
@@ -810,7 +790,7 @@ def _ensure_web_plugins_loaded() -> None:
     """Idempotently trigger plugin discovery so the web registry is populated.
 
     Every bundled web provider (brave-free, ddgs, searxng, exa, parallel,
-    tavily, firecrawl) registers itself via ``plugins/web/<vendor>/__init__.py``
+    firecrawl, keenable) registers itself via ``plugins/web/<vendor>/__init__.py``
     during plugin discovery. Tool dispatch can be reached from contexts that
     haven't already triggered discovery — subprocess agent runs, delegate
     children, standalone scripts, certain test paths — and without it the
@@ -892,7 +872,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             return tool_error("Interrupted", success=False)
 
         # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
+        # (brave-free, ddgs, searxng, exa, parallel, firecrawl, keenable)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
@@ -1054,7 +1034,7 @@ async def web_extract_tool(
     Extract content from specific web pages using available extraction API backend.
 
     Returns clean page content (markdown/text) with NO LLM summarization. The
-    extract backends (Firecrawl, Tavily, Exa, Parallel) already return clean,
+    extract backends (Firecrawl, Exa, Parallel, Keenable) already return clean,
     boilerplate-stripped content, so we return it directly and fast. Pages over
     ``char_limit`` are head+tail truncated with an explicit footer; the full
     text is stored under cache/web and the footer tells the model how to
@@ -1163,9 +1143,9 @@ async def web_extract_tool(
             backend = _get_extract_backend()
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
+            # firecrawl, keenable) now live as plugins. The dispatcher is a
             # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
+            # async (parallel, firecrawl), others sync (exa, keenable) — we
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
@@ -1192,7 +1172,7 @@ async def web_extract_tool(
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "keenable, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -1255,7 +1235,7 @@ async def web_extract_tool(
                             "error": (
                                 "No web extract provider configured. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "keenable, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -1304,7 +1284,7 @@ async def web_extract_tool(
                 )
 
                 # Async-or-sync dispatch: parallel + firecrawl have async
-                # extract(); exa + tavily are sync.
+                # extract(); exa + keenable are sync.
                 import inspect
                 _extract_rescued = False
                 try:
@@ -1588,11 +1568,6 @@ if __name__ == "__main__":
             print("   Using Exa API (https://exa.ai)")
         elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
-        elif backend == "tavily":
-            if _has_env("TAVILY_API_KEY"):
-                print("   Using Tavily API (https://tavily.com)")
-            else:
-                print("   Using Tavily keyless (https://docs.tavily.com/documentation/keyless)")
         elif backend == "searxng":
             print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":
@@ -1610,7 +1585,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, KEENABLE_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

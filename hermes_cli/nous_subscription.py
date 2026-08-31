@@ -505,10 +505,6 @@ def get_nous_subscription_features(
     direct_exa = bool(get_env_value("EXA_API_KEY"))
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
-    direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
-    # Keyless Tavily is opt-in: selecting it in `hermes tools` / setup writes
-    # web.backend (or a per-capability override) without requiring a key.
-    tavily_selected = "tavily" in {web_backend, web_search_backend, web_extract_backend}
     direct_searxng = bool(get_env_value("SEARXNG_URL"))
     direct_fal = fal_key_is_configured()
     direct_fal_video = direct_fal  # same FAL_KEY; separate var so use_gateway is independent
@@ -540,8 +536,6 @@ def get_nous_subscription_features(
         direct_firecrawl = False
         direct_exa = False
         direct_parallel = False
-        direct_tavily = False
-        tavily_selected = False
     if image_use_gateway:
         direct_fal = False
     if video_use_gateway:
@@ -630,7 +624,6 @@ def get_nous_subscription_features(
         direct_camofox = False
 
 
-    tavily_ready = direct_tavily or tavily_selected
     web_managed = web_backend == "firecrawl" and managed_web_available and not direct_firecrawl
     web_active = bool(
         web_tool_enabled
@@ -639,7 +632,6 @@ def get_nous_subscription_features(
             or (web_backend == "exa" and direct_exa)
             or (web_backend == "firecrawl" and direct_firecrawl)
             or (web_backend == "parallel" and direct_parallel)
-            or (web_backend == "tavily" and tavily_ready)
             or (web_backend == "searxng" and direct_searxng)
             # Per-capability overrides: search_backend or extract_backend may be set
             # without web.backend (using the new split config from #20061)
@@ -647,8 +639,6 @@ def get_nous_subscription_features(
             or (web_search_backend == "exa" and direct_exa)
             or (web_search_backend == "firecrawl" and direct_firecrawl)
             or (web_search_backend == "parallel" and direct_parallel)
-            or (web_search_backend == "tavily" and tavily_ready)
-            or (web_extract_backend == "tavily" and tavily_ready)
         )
     )
     web_available = bool(
@@ -656,7 +646,6 @@ def get_nous_subscription_features(
         or direct_exa
         or direct_firecrawl
         or direct_parallel
-        or tavily_ready
         or direct_searxng
     )
 
@@ -900,7 +889,6 @@ def apply_nous_managed_defaults(
 
     if "web" in selected_toolsets and not features.web.explicit_configured and not (
         get_env_value("PARALLEL_API_KEY")
-        or get_env_value("TAVILY_API_KEY")
         or get_env_value("FIRECRAWL_API_KEY")
         or get_env_value("FIRECRAWL_API_URL")
     ):
@@ -998,7 +986,6 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
             get_env_value("FIRECRAWL_API_KEY")
             or get_env_value("FIRECRAWL_API_URL")
             or get_env_value("PARALLEL_API_KEY")
-            or get_env_value("TAVILY_API_KEY")
             or get_env_value("EXA_API_KEY")
             # Env-configured keyless local backend: a reachable self-hosted
             # SearXNG is a working web setup even with no stored selection
@@ -1034,7 +1021,7 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
 
 
 _GATEWAY_DIRECT_LABELS = {
-    "web": "Firecrawl/Exa/Parallel/Tavily key or SearXNG",
+    "web": "Firecrawl/Exa/Parallel/Keenable key or SearXNG",
     "image_gen": "FAL key",
     "video_gen": "FAL key",
     "tts": "OpenAI/ElevenLabs key",

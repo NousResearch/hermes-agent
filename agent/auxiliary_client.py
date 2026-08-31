@@ -537,6 +537,14 @@ _CODEX_PROGRESS_DELTA_TYPES = frozenset(
 )
 
 
+# Progress-aware auxiliary stream deadlines (Aug 2026, masoria report):
+# a dead stream fails fast at the no-progress window (first token AND
+# between tokens), a live stream re-arms per substantive event and is
+# bounded only by _aux_stream_total_ceiling() (shared with the streamed
+# chat.completions path).
+_AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS = 60.0
+
+
 def _codex_event_has_content(event: Any) -> bool:
     """Whether a Codex Responses event carries a non-empty payload."""
     event_type = _event_field(event, "type")
@@ -1777,9 +1785,38 @@ class _CodexCompletionsAdapter:
         tool_calls_raw: List[Any] = []
         usage = None
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
-        deadline = time.monotonic() + float(total_timeout) if total_timeout else None
+        # Progress-aware stream deadlines (supersedes the old single absolute
+        # kill at ``total_timeout``). Three regimes:
+        #   1. First token: the stream must produce its first substantive
+        #      payload within ``no_progress_timeout`` (60s default) or we
+        #      fail fast and let the caller's normal retry/fallback chain
+        #      run — a dead (or keepalive-only zombie) Codex stream no
+        #      longer holds the full 300s compression budget before falling
+        #      back (masoria report, Aug 2026: 3 stacked 300s waits ->
+        #      20+ min stuck on "Summarizing").
+        #   2. Streaming: every substantive event re-arms the deadline by
+        #      ``no_progress_timeout`` — a live stream is never killed by an
+        #      absolute total, so a long reasoning summary that is actually
+        #      producing tokens completes instead of timing out at 300s and
+        #      falling back (#54915's original complaint, fixed properly).
+        #      Keepalive/lifecycle frames do NOT re-arm, mirroring the
+        #      commit-fence progress gating (#96707).
+        #   3. Hard ceiling: an absolute backstop from
+        #      ``_aux_stream_total_ceiling`` (max(600s, 4x configured
+        #      timeout) — the same bound the streamed chat.completions path
+        #      uses) so a pathological one-token-per-59s drip still
+        #      terminates.
+        _start_monotonic = time.monotonic()
+        no_progress_timeout = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
+        if total_timeout is not None:
+            no_progress_timeout = min(no_progress_timeout, float(total_timeout))
+        hard_deadline = _start_monotonic + _aux_stream_total_ceiling(total_timeout)
+        deadline_lock = threading.Lock()
+        progress_deadline = [_start_monotonic + no_progress_timeout]
+        saw_content = threading.Event()
         timed_out = threading.Event()
-        timeout_timer: Optional[threading.Timer] = None
+        stream_finished = threading.Event()
+        timeout_timer: List[Optional[threading.Timer]] = [None]
         # A protected provider call may outlive its owning compression attempt:
         # the owner returns promptly on hard cancellation while this adapter is
         # still blocked in the SDK stream on its isolated worker. Timer threads
@@ -1791,8 +1828,34 @@ class _CodexCompletionsAdapter:
         attempt_stream_lock = threading.Lock()
         attempt_stream: List[Any] = []
 
+        def _effective_deadline() -> float:
+            with deadline_lock:
+                return min(hard_deadline, progress_deadline[0])
+
+        def _record_stream_progress() -> None:
+            # A substantive payload re-arms the no-progress window. The hard
+            # ceiling is never extended.
+            with deadline_lock:
+                progress_deadline[0] = time.monotonic() + no_progress_timeout
+
         def _timeout_message() -> str:
-            return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
+            elapsed = time.monotonic() - _start_monotonic
+            if time.monotonic() >= hard_deadline:
+                return (
+                    "Codex auxiliary Responses stream exceeded "
+                    f"{hard_deadline - _start_monotonic:.1f}s hard ceiling"
+                )
+            if not saw_content.is_set():
+                return (
+                    "Codex auxiliary Responses stream produced no output "
+                    f"within {float(no_progress_timeout):.1f}s "
+                    f"(no-progress timeout, {elapsed:.1f}s elapsed)"
+                )
+            return (
+                "Codex auxiliary Responses stream stalled: no new output "
+                f"for {float(no_progress_timeout):.1f}s "
+                f"({elapsed:.1f}s elapsed)"
+            )
 
         def _close_client_on_timeout() -> None:
             begin_timeout_cleanup = getattr(
@@ -1845,7 +1908,7 @@ class _CodexCompletionsAdapter:
                 logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
 
         def _check_cancelled() -> None:
-            if deadline is not None and time.monotonic() >= deadline:
+            if total_timeout is not None and time.monotonic() >= _effective_deadline():
                 if not timed_out.is_set():
                     _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
@@ -1867,11 +1930,30 @@ class _CodexCompletionsAdapter:
                 # new failure mode for auxiliary calls.
                 pass
 
+        def _watchdog_fire() -> None:
+            # Re-armable watchdog: if progress moved the deadline forward
+            # since this timer was scheduled, reschedule instead of killing
+            # a live stream. Only kill when the effective deadline (progress
+            # window or hard ceiling, whichever is sooner) has truly passed.
+            remaining = _effective_deadline() - time.monotonic()
+            if remaining > 0:
+                if timed_out.is_set() or stream_finished.is_set():
+                    return
+                t = threading.Timer(remaining, _watchdog_fire)
+                t.daemon = True
+                timeout_timer[0] = t
+                t.start()
+                return
+            _close_client_on_timeout()
+
         try:
             if total_timeout:
-                timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
-                timeout_timer.daemon = True
-                timeout_timer.start()
+                timeout_timer[0] = threading.Timer(
+                    max(_effective_deadline() - time.monotonic(), 0.0),
+                    _watchdog_fire,
+                )
+                timeout_timer[0].daemon = True
+                timeout_timer[0].start()
             _check_cancelled()
 
             # Event-driven Responses streaming via the low-level
@@ -1903,7 +1985,13 @@ class _CodexCompletionsAdapter:
                 # compression commit fence) counts only substantive
                 # payloads — lifecycle and keepalive events must not reset
                 # the compression idle clock.
+                # The transport no-progress window likewise re-arms only on
+                # substantive payloads: a zombie stream that drips SSE
+                # keepalives but never produces output dies at the same 60s
+                # window as a fully dead connection.
                 if _codex_event_has_content(_event):
+                    _record_stream_progress()
+                    saw_content.set()
                     _notify_aux_provider_response()
                 else:
                     _notify_aux_timing_response()
@@ -1998,8 +2086,10 @@ class _CodexCompletionsAdapter:
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
         finally:
-            if timeout_timer is not None:
-                timeout_timer.cancel()
+            stream_finished.set()
+            _t = timeout_timer[0]
+            if _t is not None:
+                _t.cancel()
 
         content = "".join(text_parts).strip() or None
 
@@ -10029,12 +10119,20 @@ def _call_llm_impl(
             # fall straight through to provider/model fallback; fast blips (a
             # streaming-close or a 5xx) still retry, since those are cheap.
             if task == "compression" and _is_timeout_error(transient_err):
-                logger.info(
-                    "Auxiliary compression: timeout on the critical path; "
-                    "skipping same-provider retry and falling back: %s",
-                    transient_err,
-                )
-                raise
+                # A fast first-token fail (dead stream detected within the
+                # 60s no-progress window, zero output seen) is cheap — take
+                # the normal same-provider retry chain first; the provider
+                # is often fine and only that one stream was stillborn. A
+                # mid-stream stall or hard-ceiling timeout skips straight to
+                # fallback, because re-running a multi-minute summary on the
+                # same provider doubles the user-visible stall (#54465).
+                if "no-progress timeout" not in str(transient_err):
+                    logger.info(
+                        "Auxiliary compression: timeout on the critical path; "
+                        "skipping same-provider retry and falling back: %s",
+                        transient_err,
+                    )
+                    raise
             _max_transient_retries = _transient_retry_count()
             _last_transient = transient_err
             for _attempt in range(1, _max_transient_retries + 1):

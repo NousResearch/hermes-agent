@@ -395,3 +395,50 @@ def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
     assert status._pid_exists(4242) is False
+
+
+
+
+@pytest.mark.asyncio
+async def test_shutdown_mcp_servers_nonblocking_keeps_loop_responsive():
+    """A wedged MCP shutdown must not freeze the gateway event loop (#82874)."""
+    started = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def wedged_shutdown():
+        loop.call_soon_threadsafe(started.set)
+        import time as _time
+
+        _time.sleep(30)
+
+    heartbeats = 0
+
+    async def heartbeat():
+        nonlocal heartbeats
+        while True:
+            heartbeats += 1
+            await asyncio.sleep(0.05)
+
+    hb = asyncio.create_task(heartbeat())
+    try:
+        with patch("tools.mcp_tool.shutdown_mcp_servers", wedged_shutdown):
+            done = await asyncio.wait_for(
+                gateway_run._shutdown_mcp_servers_nonblocking(timeout=0.5),
+                timeout=5,
+            )
+    finally:
+        hb.cancel()
+
+    assert started.is_set()
+    assert done is False  # wedged shutdown exceeded the budget
+    # The loop kept running while the shutdown thread was wedged.
+    assert heartbeats >= 5
+
+
+@pytest.mark.asyncio
+async def test_shutdown_mcp_servers_nonblocking_completes_fast_path():
+    calls = []
+    with patch("tools.mcp_tool.shutdown_mcp_servers", lambda: calls.append(1)):
+        done = await gateway_run._shutdown_mcp_servers_nonblocking(timeout=5)
+    assert done is True
+    assert calls == [1]

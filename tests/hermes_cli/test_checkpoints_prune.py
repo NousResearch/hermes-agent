@@ -121,5 +121,23 @@ def test_empty_preview_binds_empty_allowlist(monkeypatch, capsys):
     assert prune_calls[0]["orphan_allowlist"] == set()
 
 
+@pytest.mark.parametrize("command", ["prune", "clear-legacy"])
+def test_maintenance_reports_lock_contention(monkeypatch, capsys, command):
+    from hermes_cli import checkpoints as cli
+    from tools import checkpoint_manager as manager
+
+    monkeypatch.setattr(manager, "store_status", lambda: {
+        "legacy_archives": [{"name": "legacy-test", "size_bytes": 1, "mtime": 0}],
+    })
+    result = {**_prune_result(errors=1), "deleted": 0, "lock_error": "checkpoint store busy"}
+    function, handler = {
+        "prune": ("prune_checkpoints", cli.cmd_prune),
+        "clear-legacy": ("clear_legacy", cli.cmd_clear_legacy),
+    }[command]
+    monkeypatch.setattr(manager, function, lambda **kwargs: result)
+    assert handler(_ns(force=True)) == 2
+    assert "checkpoint store busy" in capsys.readouterr().out
+
+
 
 

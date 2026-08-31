@@ -4994,9 +4994,20 @@ def compress_context(
                     )
                 else:
                     logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
-                agent.context_compressor._record_compression_failure_cooldown(
-                    60, f"session_split_failed: {e}",
-                )
+                # Arm the failure cooldown so the next turn cannot immediately
+                # re-run the identical doomed compression (#97948 symptom B).
+                # try/except mirrors the sibling record_rejected_compaction
+                # call above: this runs inside the split-failure handler, and
+                # a stub compressor must not mask the original error.
+                try:
+                    agent.context_compressor._record_compression_failure_cooldown(
+                        60, f"session_split_failed: {e}",
+                    )
+                except Exception:
+                    logger.debug(
+                        "could not record split-failure cooldown",
+                        exc_info=True,
+                    )
 
         # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
         # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`

@@ -88,6 +88,11 @@ class TurnContext:
     process_baseline: frozenset[str] = field(default_factory=frozenset)
     _interrupt_depth: int = 0
     event_message_id: Optional[str] = None
+    # Raw platform-side id of the INBOUND user message (event.message_id),
+    # distinct from event_message_id which is the reply/thread anchor and can
+    # be the replied-to message on Slack/Mattermost/Buzz or None for Telegram
+    # topics. Used to stamp platform_message_id on the persisted user turn.
+    inbound_message_id: Optional[str] = None
     moa_config: Optional[dict] = None
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None

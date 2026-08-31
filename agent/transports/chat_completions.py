@@ -392,6 +392,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "tool_name" in msg
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
+                or "platform_message_id" in msg  # gateway dedup id (persistence-only)
                 or "api_content" in msg  # persist-what-you-send sidecar
             ):
                 needs_sanitize = True
@@ -463,6 +464,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "tool_name" in msg
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — leak into strict providers
+                or "platform_message_id" in msg  # gateway dedup id (persistence-only)
                 or "api_content" in msg  # persist-what-you-send sidecar
             ):
                 out_msg = mutable_msg()
@@ -471,6 +473,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("tool_name", None)
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
+                out_msg.pop("platform_message_id", None)  # gateway dedup id
                 out_msg.pop("api_content", None)  # persist-what-you-send sidecar
 
 

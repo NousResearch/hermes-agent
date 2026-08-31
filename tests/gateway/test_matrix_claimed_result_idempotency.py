@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from gateway import delivery_ledger as dl
+from gateway.claimed_result_publication import ClaimedResultPartDeliveryError
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 
 
 def _adapter():
@@ -89,3 +92,65 @@ async def test_claimed_attachment_retries_reuse_matrix_transaction_id():
     first_id = send_event.await_args_list[0].kwargs["txn_id"]
     retry_id = send_event.await_args_list[1].kwargs["txn_id"]
     assert first_id == retry_id
+
+
+@pytest.mark.asyncio
+async def test_claimed_missing_attachment_warning_does_not_complete_part(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "isolated-hermes"
+    home.mkdir()
+    monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
+    missing = tmp_path / "missing.pdf"
+    room_id = "!room:example.org"
+    session_key = "agent:main:matrix:room:example"
+    oid = dl.record_claimed_result(
+        session_key=session_key,
+        claim_id="claim-missing-matrix",
+        claim_event_id="event-missing-matrix",
+        platform="matrix",
+        chat_id=room_id,
+        thread_id=None,
+        content="",
+        raw_content=f"MEDIA:{missing}",
+        adapter_profile=None,
+    )
+    dl.prepare_claimed_result_delivery(
+        oid,
+        session_key=session_key,
+        platform="matrix",
+        chat_id=room_id,
+        thread_id=None,
+        content="",
+        adapter_profile=None,
+    )
+    adapter = _adapter()
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=True, message_id="$warning")
+    )
+
+    with pytest.raises(
+        ClaimedResultPartDeliveryError,
+        match="claimed continuation attachment delivery failed",
+    ):
+        await adapter._deliver_claimed_response_parts(
+            obligation_id=oid,
+            chat_id=room_id,
+            text_content="",
+            images=[],
+            media_files=[],
+            local_files=[str(missing)],
+            force_document_attachments=True,
+            metadata={},
+            reply_to=None,
+        )
+
+    adapter.send.assert_awaited_once()
+    assert str(missing) not in repr(adapter.send.await_args)
+    assert dl.get_claimed_result_parts(oid)[0]["state"] == "failed"
+    with dl._connect() as conn:
+        assert conn.execute(
+            "SELECT state FROM delivery_obligations WHERE obligation_id=?",
+            (oid,),
+        ).fetchone()[0] == "failed"

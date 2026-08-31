@@ -1857,7 +1857,16 @@ class MatrixAdapter(BasePlatformAdapter):
             )
             text = f"{caption}\n⚠️ Couldn't deliver the attachment." if caption \
                 else "⚠️ Couldn't deliver the attachment."
-            return await self.send(room_id, text, reply_to, metadata=metadata)
+            warning_result = await self.send(room_id, text, reply_to, metadata=metadata)
+            if _claimed_delivery_txn_id(metadata, "media"):
+                # The warning is not an acknowledgement of the intended file.
+                # Its stable text txn-id prevents duplicate warnings on Matrix,
+                # while the failed part remains eligible for bounded recovery.
+                return SendResult(
+                    success=False,
+                    error="Matrix attachment source is unavailable",
+                )
+            return warning_result
         try:
             file_size = p.stat().st_size
         except OSError:

@@ -366,6 +366,45 @@ async def test_queued_raw_media_uses_attachment_method_and_propagates_failure(
     assert _state(oid) == "failed"
 
 
+@pytest.mark.asyncio
+async def test_queued_bare_local_file_is_manifested_without_path_disclosure(
+    _isolated_ledger_and_media,
+):
+    document = _media_file(_isolated_ledger_and_media, "queued-bare.pdf")
+    response = f"queued text\n{document}"
+    source = _source("queued-bare-local")
+    oid = _record_owned(source, response, content="queued text", suffix="queued-bare")
+    adapter = _OwnedMediaAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner._session_key_for_source = lambda _source: (
+        f"agent:main:slack:channel:{source.chat_id}"
+    )
+    runner._thread_metadata_for_source = lambda *_args: {}
+    runner._reply_anchor_for_event = lambda *_args: None
+
+    await runner._deliver_queued_first_response(
+        response,
+        source=source,
+        adapter=adapter,
+        metadata={},
+        delivery_obligation_id=oid,
+    )
+
+    assert adapter.calls == [("text", "queued text"), ("document", str(document))]
+    assert [(row["kind"], row["state"]) for row in dl.get_claimed_result_parts(oid)] == [
+        ("text", "delivered"),
+        ("document", "delivered"),
+    ]
+    with dl._connect() as conn:
+        durable_content = conn.execute(
+            "SELECT content FROM delivery_obligations WHERE obligation_id=?",
+            (oid,),
+        ).fetchone()[0]
+    assert durable_content == "queued text"
+    assert str(document) not in durable_content
+    assert str(document) not in adapter.calls[0][1]
+
+
 def test_claimed_part_manifest_is_bounded_private_and_pruned(
     _isolated_ledger_and_media,
     monkeypatch,

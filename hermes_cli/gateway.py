@@ -131,13 +131,15 @@ def _get_service_pids(all_profiles: bool = False) -> set:
     manual processes and killed.  Default-scope callers (``gateway status``,
     cron checks) keep seeing only the current profile's service; the orphan
     reaper passes all_profiles=True for the same friendly-fire reason.  The
-    systemd branch has always been fleet-wide (``hermes-gateway*``) and is
-    unaffected.
+    systemd branch mirrors this: default scope filters to the current
+    profile's exact unit name; ``all_profiles=True`` widens to the
+    ``hermes-gateway*`` fleet glob.
     """
     pids: set = set()
 
     # --- systemd (Linux): user and system scopes ---
-    # systemd always lists every hermes-gateway* unit regardless of scope.
+    # Default scope lists only this profile's unit (the unit name encodes the
+    # profile via get_service_name()); all_profiles widens to the fleet glob.
     if supports_systemd_services():
         if all_profiles:
             pattern = "hermes-gateway*"

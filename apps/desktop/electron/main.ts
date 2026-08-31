@@ -278,7 +278,8 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-import { canAdmitLocalBackend, PoolCapacityError, selectPoolEvictions } from './pool-eviction'
+import { canAdmitLocalBackend, isUnlimitedPoolCapacity, PoolCapacityError, selectPoolEvictions } from './pool-eviction'
+import { normalizeProfileBackendPoolMax, readProfileBackendPoolSettings } from './profile-backend-pool-settings'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
@@ -1409,7 +1410,15 @@ const profileDeletionGate = new ProfileDeletionGate()
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
-const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 4)
+// Pool cap precedence: HERMES_DESKTOP_POOL_MAX env var (operator/test override)
+// > persisted profile-backend-settings.json > 4. A stored 0 means unlimited —
+// hard admission always admits and LRU cap eviction never fires; the idle
+// reaper (POOL_IDLE_MS) remains the sole idle teardown path so an unlimited
+// pool still reclaims MCP-heavy backends instead of accumulating them.
+const POOL_MAX_BACKENDS = normalizeProfileBackendPoolMax(
+  process.env.HERMES_DESKTOP_POOL_MAX,
+  readProfileBackendPoolSettings(app.getPath('userData')).maxBackends
+)
 const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
 
 // A backend touched within this window has a live renderer socket (the keepalive
@@ -11923,6 +11932,10 @@ function touchPoolBackend(profile) {
 // was merely idle past the keepalive window. Descriptors are still reclaimed
 // by the idle reaper.
 function evictLruPoolBackends(keep) {
+  if (isUnlimitedPoolCapacity(POOL_MAX_BACKENDS)) {
+    return
+  }
+
   const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
 
   for (const profile of evictions) {

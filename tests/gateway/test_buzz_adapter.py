@@ -845,6 +845,8 @@ class TestThreadRoots:
 
         adapter._message_handler = AsyncMock()
         adapter.handle_message = capture
+        adapter._run_cli = _ScriptedCli()
+        adapter.send_reaction = AsyncMock(return_value=True)
         event = _tagged_event("latest-child", CHANNEL, content="@Chip follow-up")
         event["tags"] += [
             ["e", "stable-root", "", "root"],

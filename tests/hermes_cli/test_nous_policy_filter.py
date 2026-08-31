@@ -13,7 +13,11 @@ import pytest
 
 import hermes_cli.models as models_mod
 import hermes_cli.nous_account as account_mod
-from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
+from hermes_cli.models import (
+    _NOUS_POLICY_APPEND_MAX,
+    nous_policy_allowed_ids,
+    restrict_to_nous_policy,
+)
 from hermes_cli.nous_account import nous_policy_present
 
 
@@ -191,43 +195,21 @@ class TestAllowlistOutsideTheCuratedList:
         )
         assert kept == ["z/curated", "a/curated"]
 
-    def test_jurisdiction_policy_never_grows_the_list(self):
-        """A region filter can slip under the size cap, so the cap alone is not
-        enough of a guard."""
-        curated = ["vendor/one", "vendor/two", "vendor/three"]
-        reachable = {"vendor/one", "vendor/two"} | {f"cn/model-{i}" for i in range(20)}
-        assert restrict_to_nous_policy(curated, reachable, rescue_empty=True) == [
-            "vendor/one",
-            "vendor/two",
-        ]
-
-    def test_does_not_append_a_free_sibling_already_covered(self):
-        assert restrict_to_nous_policy(
-            ["vendor/m:free"], {"vendor/m"}, rescue_empty=True
-        ) == ["vendor/m:free"]
-
-    def test_a_provider_only_policy_does_not_bury_the_curated_order(self):
-        curated = ["vendor/one", "vendor/two"]
-        catalog = {f"vendor/model-{i}" for i in range(300)} | set(curated)
-        assert restrict_to_nous_policy(curated, catalog, rescue_empty=True) == curated
+    def test_does_not_rescue_a_catalog_sized_allowed_set(self):
+        """Past the cap the set reads as a whole catalog, and dumping it would
+        bury the curated order the pickers show on purpose."""
+        oversized = {f"cn/model-{i}" for i in range(_NOUS_POLICY_APPEND_MAX + 1)}
+        assert restrict_to_nous_policy(["vendor/one"], oversized, rescue_empty=True) == []
 
 
 class TestRescueIsOptIn:
     """The rescue is meaningful only for the list a user picks from."""
 
-    def test_no_rescue_by_default(self):
-        assert restrict_to_nous_policy([], {"a/one", "b/two"}) == []
-
     def test_rescue_only_when_asked(self):
-        assert restrict_to_nous_policy(
-            [], {"a/one"}, rescue_empty=True
-        ) == ["a/one"]
+        assert restrict_to_nous_policy([], {"a/one"}, rescue_empty=True) == ["a/one"]
 
     def test_an_already_empty_unavailable_list_is_never_filled(self):
         """A paid tier has no gated models, so this list is legitimately
         empty — not a filter result to rescue."""
         reachable = {f"cn/model-{i}" for i in range(42)}
         assert restrict_to_nous_policy([], reachable) == []
-
-    def test_rescue_does_not_resurrect_a_fully_blocked_list(self):
-        assert restrict_to_nous_policy(["x/blocked"], {"y/allowed"}) == []

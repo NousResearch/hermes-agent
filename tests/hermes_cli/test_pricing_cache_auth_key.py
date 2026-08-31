@@ -1,8 +1,7 @@
-"""``_pricing_cache`` keys on auth state, not just the base URL.
+"""``_pricing_cache`` keys on the credential, not just the base URL.
 
-Nous ``/v1/models`` answers an authenticated read with a policy-filtered
-catalog and an anonymous one with the full catalog, so the two must not share
-a cache entry.
+Nous ``/v1/models`` answers each caller with the catalog their org may reach,
+so an anonymous read, and two different tokens, must not share a cache entry.
 """
 
 from __future__ import annotations
@@ -57,23 +56,57 @@ def catalog(monkeypatch):
     return requests
 
 
-def test_authenticated_read_is_not_answered_by_an_anonymous_one(catalog):
+@pytest.fixture
+def per_org_catalog(monkeypatch):
+    """Serve each token the catalog its own org may reach."""
+    requests: list[str | None] = []
+
+    def _fake_urlopen(req, timeout=8.0):
+        auth = req.get_header("Authorization")
+        requests.append(auth)
+        org = "a" if auth == "Bearer tok-a" else "b"
+        payload = {
+            "data": [
+                {
+                    "id": f"org-{org}/only",
+                    "pricing": {"prompt": "0.000002", "completion": "0.00001"},
+                }
+            ]
+        }
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(payload).encode()
+        resp.__enter__ = lambda self: self
+        resp.__exit__ = lambda *a: False
+        return resp
+
+    monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", _fake_urlopen)
+    return requests
+
+
+def test_one_token_does_not_receive_another_tokens_catalog(per_org_catalog):
+    """Two orgs in one process — a long-lived gateway or desktop backend after
+    a profile switch or re-login."""
+    a = fetch_models_with_pricing(api_key="tok-a", base_url=BASE)
+    b = fetch_models_with_pricing(api_key="tok-b", base_url=BASE)
+
+    assert list(a) == ["org-a/only"]
+    assert list(b) == ["org-b/only"], "token B was handed token A's catalog"
+    assert len(per_org_catalog) == 2, "token B must reach the network"
+
+
+def test_credential_value_does_not_appear_in_the_cache_key():
+    """Guards against keying on the raw token."""
+    assert "sk-super-secret" not in models_mod._pricing_auth_fingerprint("sk-super-secret")
+
+
+def test_anonymous_and_authenticated_reads_are_separate(catalog):
+    """Also pins the header: anonymous must send none."""
     anon = fetch_models_with_pricing(api_key="", base_url=BASE)
     authed = fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
 
     assert sorted(anon) == sorted(_FULL)
     assert sorted(authed) == sorted(_FILTERED)
-    assert len(catalog) == 2, "the authenticated read must reach the network"
-    assert catalog[0] is None and catalog[1] == "Bearer sk-test"
-
-
-def test_anonymous_read_is_not_answered_by_an_authenticated_one(catalog):
-    authed = fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
-    anon = fetch_models_with_pricing(api_key="", base_url=BASE)
-
-    assert sorted(authed) == sorted(_FILTERED)
-    assert sorted(anon) == sorted(_FULL)
-    assert len(catalog) == 2
+    assert catalog == [None, "Bearer sk-test"]
 
 
 @pytest.mark.parametrize("api_key", ["sk-test", ""])

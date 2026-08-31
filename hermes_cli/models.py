@@ -2256,23 +2256,39 @@ def _cache_catalog(
 
 
 # NUL cannot appear in a URL, so this cannot collide with a real base URL.
-_PRICING_AUTH_KEY_SUFFIX = "\x00auth"
+_PRICING_AUTH_KEY_PREFIX = "\x00auth:"
+
+
+def _pricing_auth_fingerprint(api_key: str | None) -> str:
+    """Key suffix identifying the credential a catalog was read with.
+
+    A governed endpoint answers each token with the catalog its org may reach,
+    so two credentials cannot share an entry. blake2b for cache-key
+    fingerprinting only, same rationale as :func:`_custom_endpoint_fingerprint`.
+    """
+    if not api_key:
+        return ""
+    import hashlib
+
+    digest = hashlib.blake2b(api_key.encode("utf-8", errors="replace"), digest_size=8)
+    return _PRICING_AUTH_KEY_PREFIX + digest.hexdigest()
 
 
 def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:
     """Pricing already cached for *base_url*, or ``{}``. Never fetches.
 
     Accepts a ``/v1``-suffixed URL as well as the pre-``/v1`` root the fetchers
-    key on, and prefers the authenticated catalog.
+    key on, and prefers an authenticated catalog. Scans rather than rebuilding a
+    key, because callers hold a base URL but no credential.
     """
     root = (base_url or "").rstrip("/")
     if root.endswith("/v1"):
         root = root[:-3].rstrip("/")
-    for key in (root + _PRICING_AUTH_KEY_SUFFIX, root):
-        cached = _pricing_cache.get(key)
-        if cached:
+    authed_prefix = root + _PRICING_AUTH_KEY_PREFIX
+    for key, cached in _pricing_cache.items():
+        if cached and key.startswith(authed_prefix):
             return cached
-    return {}
+    return _pricing_cache.get(root) or {}
 
 
 def _format_price_per_mtok(per_token_str: str) -> str:
@@ -2411,8 +2427,8 @@ def fetch_models_with_pricing(
 ) -> dict[str, dict[str, Any]]:
     """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion, ...}}``.
 
-    Results are cached per *base_url* and per auth state, so repeated calls
-    are free and an authenticated read never answers an anonymous one.
+    Results are cached per *base_url* and per credential, so repeated calls are
+    free and one caller's catalog never answers another's read.
     Works with any OpenRouter-compatible endpoint (OpenRouter, Nous Portal).
 
     When *include_sale_original* is true (Nous Portal only) and the gateway
@@ -2424,11 +2440,7 @@ def fetch_models_with_pricing(
     ``original``.
     """
     url_root = (base_url or "").rstrip("/")
-    # A governed endpoint answers an authenticated read with a policy-filtered
-    # catalog and an anonymous one with the full catalog, so the two cannot
-    # share an entry. Only whether a key was supplied participates, never its
-    # value.
-    cache_key = url_root + _PRICING_AUTH_KEY_SUFFIX if api_key else url_root
+    cache_key = url_root + _pricing_auth_fingerprint(api_key)
     if not force_refresh:
         cached = _cached_catalog(cache_key)
         if cached is not None:

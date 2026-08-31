@@ -31,6 +31,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
+import subprocess
+from pathlib import Path
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -225,6 +228,313 @@ def _connect(board: Optional[str] = None):
     """
     from hermes_cli import kanban_db as kb
     return kb, kb.connect(board=board)
+
+
+# ---------------------------------------------------------------------------
+# Pre-review build gate (zero-token)
+# ---------------------------------------------------------------------------
+# A worker calling ``kanban_request_review`` on a card backed by a git
+# worktree gets its work gated *before* the transition is accepted: the
+# project's gate command (default ``python -m pytest <focused tests> -q``)
+# plus an import/build sanity check of the changed python files.  The gate
+# is pure subprocess — no LLM tokens.  On failure the review is refused, a
+# comment carrying the last ~TAIL lines of gate output is posted, and the
+# card stays in its current (builder) lane with no failure counted.  A card
+# with a non-worktree workspace, or a worktree we cannot resolve a python
+# for, skips the gate (never blocks the happy path).
+#
+# Real-world motivation (2026-08-31): an unbuildable commit (ce14358,
+# imports from untracked files) reached review and cost ~8 cards and 90
+# minutes of churn.  The cheapest gates run first: build/tests as an
+# automated block BEFORE any LLM review.
+
+PRE_REVIEW_TAIL_LINES = 30
+_GATE_RUN_TIMEOUT = 600  # generous: a focused suite can take minutes
+_PYTHON_CACHE: dict[str, Optional[str]] = {}
+
+
+def _resolve_primary_repo(worktree_root: str) -> Path:
+    """Return the primary repo a worktree workspace is checked out under.
+
+    A project-linked worktree lives at ``<repo>/.worktrees/<task-id>``; the
+    primary repo (where the project venv lives) is two levels up.  For an
+    unanchored worktree the root is the repo.
+    """
+    p = Path(worktree_root).resolve()
+    if p.parent.name == ".worktrees":
+        return p.parent.parent
+    return p
+
+
+def _project_python(worktree_root: str) -> Optional[str]:
+    """Resolve the project's python interpreter for gate execution.
+
+    Checks ``venv``/``.venv`` under the worktree root first, then under the
+    primary repo (the venv is often only in the primary checkout).  Cached per
+    root so the happy path resolves once.
+    """
+    root = str(Path(worktree_root).resolve())
+    if root in _PYTHON_CACHE:
+        return _PYTHON_CACHE[root] or None
+    cands = []
+    for base in (Path(root), _resolve_primary_repo(root)):
+        for name in ("venv", ".venv"):
+            cands.append(base / name / "bin" / "python")
+    found = next(
+        (str(c) for c in cands if c.is_file() and os.access(c, os.X_OK)), None
+    )
+    # Cache positive hits only.  "Not found" is re-probed on the next call so
+    # a venv created after a first (empty) probe is picked up.
+    if found:
+        _PYTHON_CACHE[root] = found
+    return found
+
+
+def _run_capture(args: list[str], cwd: str) -> tuple[int, str]:
+    """Run a command locally, capturing combined output.  Returns (rc, output)."""
+    try:
+        proc = subprocess.run(
+            args, cwd=cwd, capture_output=True, text=True, timeout=_GATE_RUN_TIMEOUT
+        )
+        combined = proc.stdout or ""
+        if proc.stderr:
+            combined += "\n" + proc.stderr
+        return proc.returncode, combined.strip()
+    except subprocess.TimeoutExpired:
+        return 124, f"gate command timed out after {_GATE_RUN_TIMEOUT}s"
+    except FileNotFoundError:
+        return 127, f"gate command not found: {args[0]}"
+
+
+def _changed_python_files(worktree_root: str) -> list[str]:
+    """Return python files changed in the worktree vs its base branch.
+
+    Uses ``git diff <base>...HEAD`` for committed changes plus ``git status
+    --porcelain`` for uncommitted ones.  Falls back to looking only at the
+    working tree when no base branch resolves.
+    """
+    base = None
+    for candidate in ("origin/main", "main", "master", "HEAD~1"):
+        rc, _ = _run_capture(
+            ["git", "-C", worktree_root, "rev-parse", "--verify", "-q", candidate],
+            cwd=worktree_root,
+        )
+        if rc != 0:
+            continue
+        # Prefer a base only when a real merge-base exists.  A remote-tracking
+        # ref (origin/main) can point at a fully-diverged history (merge-base
+        # empty), which would report every file ever in the repo as "changed".
+        mrc, _ = _run_capture(
+            ["git", "-C", worktree_root, "merge-base", candidate, "HEAD"],
+            cwd=worktree_root,
+        )
+        if mrc == 0:
+            base = candidate
+            break
+    changed: set[str] = set()
+    if base:
+        rc, out = _run_capture(
+            ["git", "-C", worktree_root, "diff", "--name-only", f"{base}...HEAD"],
+            cwd=worktree_root,
+        )
+        if rc == 0:
+            changed.update(
+                line.strip() for line in out.splitlines() if line.strip()
+            )
+    rc, out = _run_capture(
+        ["git", "-C", worktree_root, "status", "--porcelain", "-uall"],
+        cwd=worktree_root,
+    )
+    if rc == 0:
+        for line in out.splitlines():
+            if not line:
+                continue
+            # porcelain: "XY path" — path after two status chars + a space.
+            # Keep the raw line; .strip() would strip the leading status char.
+            path = line[2:].lstrip()
+            # porcelain rename, e.g. "R  old.py -> new.py", produces a
+            # pseudo-path "old.py -> new.py".  Feed only the destination, never
+            # the pseudo-path, into the gate (it would be a false FileNotFound).
+            if " -> " in path:
+                path = path.split(" -> ")[-1].strip()
+            if path.endswith(".py"):
+                changed.add(path)
+    return sorted(p for p in changed if p.endswith(".py"))
+
+
+def _focused_test_paths(repo_root: str, changed_py: list[str]) -> list[str]:
+    """Map changed python files to matching test paths that exist.
+
+    If a changed file is itself a test (name contains ``test`` or lives under
+    a ``tests`` dir) it is used directly.  Otherwise guess the conventional
+    mirror under ``tests/`` and keep the first guess that exists.
+    """
+    root = Path(repo_root).resolve()
+    paths: set[str] = set()
+    for rel in changed_py:
+        p = Path(rel)
+        if "tests" in p.parts or "test" in p.name.lower():
+            if (root / p).is_file():
+                paths.add(str(p))
+            continue
+        name = p.name
+        if not name.endswith(".py"):
+            continue
+        stem = name[: -len(".py")]
+        guesses = []
+        if str(p.parent) != ".":
+            guesses.append(str(Path("tests") / p.parent / f"test_{stem}.py"))
+            guesses.append(str(Path("tests") / p.parent / "tests" / f"test_{stem}.py"))
+        guesses.append(str(Path("tests") / f"test_{stem}.py"))
+        for guess in guesses:
+            if (root / guess).is_file():
+                paths.add(guess)
+                break
+    return sorted(paths)
+
+
+def _gate_command(project_python: str, tests: list[str]) -> list[str]:
+    """Build the gate command for the focused tests.
+
+    Default: ``<python> -m pytest <tests> -q``.  An override lives in the
+    worker config key ``kanban.review_gate.command`` (a global knob, not
+    project-scoped) — a string or list of argv fragments with ``{python}``
+    and ``{tests}`` placeholders; every ``{tests}`` expands to one argv
+    element per focused test path.
+    """
+    from hermes_cli.config import cfg_get, load_config
+
+    overrides: Any = None
+    try:
+        overrides = cfg_get(load_config(), "kanban", "review_gate", "command", default=None)
+    except Exception:
+        overrides = None
+    if overrides:
+        try:
+            if isinstance(overrides, str):
+                overrides = shlex.split(overrides)
+            if isinstance(overrides, (list, tuple)):
+                argv: list[str] = []
+                for a in overrides:
+                    token = str(a).replace("{python}", project_python)
+                    if "{tests}" not in token:
+                        if token:
+                            argv.append(token)
+                        continue
+                    before, _, after = token.partition("{tests}")
+                    for t in tests:
+                        seg = before + t + after
+                        if seg:
+                            argv.append(seg)
+                return argv
+        except Exception:
+            pass  # fall through to the sane default on any malformed override
+    return [project_python, "-m", "pytest", *tests, "-q"]
+
+
+def _build_sanity_command(
+    project_python: str, worktree_root: str, changed_py: list[str]
+) -> list[str]:
+    """Build the import/build sanity command for the changed python files.
+
+    Real import resolution — not ``py_compile``, which checks syntax only and
+    never resolves imports.  ``py_compile`` on a module that ``import``s an
+    untracked/missing module exits 0, so the unbuildable-import class
+    (2026-08-31 ce14358: a module importing from untracked files) would slip
+    through a compile-only gate.  This child script imports each changed
+    module by its dotted name (derived from the root-relative path, e.g.
+    ``gateway/delivery.py`` -> ``gateway.delivery``) with the worktree root on
+    ``sys.path``, so a missing/untracked import, a syntax error, or an
+    import-time error yields rc != 0.
+
+    Driving the real import machinery (rather than ``exec_module`` on a raw
+    file) matters for two reasons: relative imports (``from .config import
+    ...``) need the module's package context, and circular imports that the
+    standard import system resolves (``gateway/__init__.py`` pulling
+    ``.delivery``) must not be falsely bounced.  One subprocess for all
+    changed files (happy-path cheap).
+    """
+    check = (
+        "import importlib, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[1]).resolve()\n"
+        "sys.path.insert(0, str(root))\n"
+        "failures = 0\n"
+        "for rel in sys.argv[2:]:\n"
+        "    path = (root / rel).resolve()\n"
+        "    if not path.is_file():\n"
+        "        print(f'import sanity: missing {rel}')\n"
+        "        failures += 1\n"
+        "        continue\n"
+        "    dotted = '.'.join(pathlib.Path(rel).with_suffix('').parts)\n"
+        "    if dotted == '__main__':\n"
+        "        # Cannot import __main__ by name; it is the running script.\n"
+        "        print(f'import sanity: skip {rel}')\n"
+        "        continue\n"
+        "    try:\n"
+        "        importlib.import_module(dotted)\n"
+        "    except Exception as exc:\n"
+        "        print(f'import sanity FAIL {rel}: {type(exc).__name__}: {exc}')\n"
+        "        failures += 1\n"
+        "    else:\n"
+        "        print(f'import sanity ok {rel}')\n"
+        "sys.exit(1 if failures else 0)\n"
+    )
+    return [project_python, "-c", check, worktree_root, *changed_py]
+
+
+def _run_gate_output_tail(output: str) -> str:
+    """Keep the last ~TAIL lines of gate output for the auto-comment."""
+    lines = [l for l in (output or "").splitlines() if l.strip()]
+    return "\n".join(lines[-PRE_REVIEW_TAIL_LINES:])
+
+
+def _run_pre_review_gate(task: Any) -> Optional[str]:
+    """Run the zero-token build gate for a worktree-backed task.
+
+    Returns ``None`` when the gate passes (or does not apply), otherwise the
+    gate output to attach to the refusal comment.  Pure subprocess.
+    """
+    kind = getattr(task, "workspace_kind", None)
+    if kind != "worktree":
+        return None
+    # Respect the config kill-switch (kanban.review_gate.enabled) — a project
+    # that opts out must not have reviews gated.
+    from hermes_cli.config import cfg_get, load_config
+
+    try:
+        if not cfg_get(
+            load_config(), "kanban", "review_gate", "enabled", default=True
+        ):
+            return None
+    except Exception:
+        pass  # fail open on config read failure — never silently block reviews
+    ws = getattr(task, "workspace_path", None)
+    if not ws or not os.path.isdir(ws):
+        # Can't gate a missing/unresolvable worktree — don't block the flow.
+        return None
+    pypath = _project_python(str(ws))
+    if not pypath:
+        return None
+    changed_py = _changed_python_files(str(ws))
+    output_chunks: list[str] = []
+
+    if changed_py:
+        rc, out = _run_capture(
+            _build_sanity_command(pypath, str(ws), changed_py), cwd=str(ws)
+        )
+        output_chunks.append(f"[import/build sanity: rc={rc}]\n{out}")
+        if rc != 0:
+            return "\n\n".join(output_chunks)
+
+    tests = _focused_test_paths(str(ws), changed_py)
+    if tests:
+        rc, out = _run_capture(_gate_command(pypath, tests), cwd=str(ws))
+        output_chunks.append(f"[focused tests: {' '.join(tests)} rc={rc}]\n{out}")
+        if rc != 0:
+            return "\n\n".join(output_chunks)
+
+    # Nothing failed; no tests matched and build is fine — gate is green.
+    return None
 
 
 _GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
@@ -943,6 +1253,34 @@ def _handle_request_review(args: dict, **kw) -> str:
                     f"Goal review handoff rejected by judge: {rejection}. "
                     "Provide acceptance evidence matching the card before "
                     "requesting review."
+                )
+            # Pre-review build gate: refuse the transition when a worktree
+            # card's changed python files don't build or its focused tests
+            # fail.  Zero LLM tokens; on failure the card stays in its current
+            # (builder) lane, an auto-comment carries the gate output tail,
+            # and no failure is counted against the card.
+            gate_output = _run_pre_review_gate(task)
+            if gate_output is not None:
+                tail = _run_gate_output_tail(gate_output)
+                kb.add_comment(
+                    conn,
+                    tid,
+                    author="pre-review-gate",
+                    body=(
+                        "Pre-review build gate FAILED — review was not "
+                        "started.\n\nThe worktree must build and its focused "
+                        "tests must pass before entering review. Fix the "
+                        "failure and request review again.\n\n"
+                        "```\n" + tail + "\n```"
+                    ),
+                )
+                return tool_error(
+                    f"Pre-review build gate failed for {tid}; review not "
+                    "started. The task stays in its current lane (no failure "
+                    "counted) and a comment carries the last "
+                    f"{PRE_REVIEW_TAIL_LINES} lines of gate output. Fix the "
+                    "build/tests and call kanban_request_review again.\n\n"
+                    + tail
                 )
             ok, fail_reason = kb.request_review(
                 conn, tid,

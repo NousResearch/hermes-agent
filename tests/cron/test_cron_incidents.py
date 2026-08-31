@@ -121,6 +121,14 @@ def test_error_change_mints_new_incident(monkeypatch, tmp_path):
 
 
 def test_redaction_applied_to_incident_error(monkeypatch, tmp_path):
+    # agent.redact snapshots _REDACT_ENABLED from HERMES_REDACT_SECRETS at
+    # module-import time. When another collected test module imports the
+    # gateway/scheduler chain (e.g. test_codex_execution_paths.py), that
+    # import happens at COLLECTION time — before the conftest env scrub —
+    # so a developer shell exporting HERMES_REDACT_SECRETS=false freezes
+    # redaction off and this test fails only in full-directory runs.
+    # Pin the flag explicitly, matching the repo-wide pattern.
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True, raising=False)
     inc = _point_db(monkeypatch, tmp_path)
     secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
 

@@ -1170,12 +1170,62 @@ class DaemonPermitReceiptAdapter:
             raise ContractError("PERMIT_BRIDGE_MALFORMED")
 
 
-def configured_permit_adapter() -> PermitReceiptAdapter | None:
+def _load_runtime_config() -> Mapping[str, Any]:
+    """Read the operator-owned configuration without treating failure as enablement."""
     try:
         from hermes_cli.config import load_config_readonly
-        return DaemonPermitReceiptAdapter.from_ares_config(load_config_readonly())
+
+        loaded = load_config_readonly()
+        return loaded if isinstance(loaded, Mapping) else {}
     except Exception:
+        return {}
+
+
+def _production_permit_canary_config(*, session_id: str | None) -> dict[str, Any] | None:
+    """Return the only production enablement shape, scoped to one session.
+
+    The daemon transport configuration remains non-authoritative: the selected
+    session, explicit operator enablement, and daemon verifier still decide
+    whether an effect is admitted. Ambient process environment never widens
+    this production boundary.
+    """
+    config = _load_runtime_config()
+    ares = config.get("ares") if isinstance(config, Mapping) else None
+    bridge = ares.get("permit_daemon") if isinstance(ares, Mapping) else None
+    if not isinstance(bridge, Mapping):
         return None
+    configured_session = bridge.get("canary_session_id")
+    socket_path = bridge.get("socket_path")
+    worktree_root = bridge.get("worktree_root")
+    timeout_seconds = bridge.get("timeout_seconds")
+    if (
+        bridge.get("mode") != DaemonPermitReceiptAdapter._PRODUCTION_MODE
+        or bridge.get("enabled") is not True
+        or not isinstance(configured_session, str)
+        or not configured_session.strip()
+        or session_id != configured_session
+        or not isinstance(socket_path, str)
+        or not socket_path
+        or not os.path.isabs(socket_path)
+        or not isinstance(worktree_root, str)
+        or not worktree_root
+        or not os.path.isabs(worktree_root)
+        or not isinstance(timeout_seconds, (int, float))
+        or isinstance(timeout_seconds, bool)
+        or not 0 < timeout_seconds <= 300
+    ):
+        return None
+    try:
+        if not Path(worktree_root).resolve(strict=True).is_dir():
+            return None
+    except OSError:
+        return None
+    return dict(bridge)
+
+
+def production_permit_canary_enabled(*, session_id: str | None) -> bool:
+    """Whether this exact live session is the explicit production V1 canary."""
+    return _production_permit_canary_config(session_id=session_id) is not None
 
 
 _ADAPTER: contextvars.ContextVar[PermitReceiptAdapter | None] = contextvars.ContextVar("ares_permit_adapter", default=None)
@@ -1229,19 +1279,41 @@ def target_for(tool_name: str, args: Mapping[str, Any]) -> str:
     return "tool:" + tool_name
 
 
-def dispatcher_boundary(tool_name: str, args: Any, *, mission_ref: str | None, schema: Mapping[str, Any] | None = None, target_ref: str | None = None, authorize_permit: bool = True, consume_permit: bool = True) -> tuple[bool, str | None, Mapping[str, Any] | None]:
-    strict = os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1"
-    permits = os.getenv("ARES_RUNTIME_PERMITS_V1", "0") == "1"
+def dispatcher_boundary(
+    tool_name: str,
+    args: Any,
+    *,
+    mission_ref: str | None,
+    session_id: str | None = None,
+    schema: Mapping[str, Any] | None = None,
+    target_ref: str | None = None,
+    authorize_permit: bool = True,
+    consume_permit: bool = True,
+) -> tuple[bool, str | None, Mapping[str, Any] | None]:
+    bridge = _production_permit_canary_config(session_id=session_id)
+    permits = bridge is not None
+    # The pre-existing strict-argument flag stays independently available. An
+    # enabled production canary always adds strict validation before coercion.
+    strict = permits or os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1"
     if tool_name in _EFFECTFUL_TOOLS and strict:
         strict_schema = schema or _DEFAULT_EFFECT_SCHEMAS.get(tool_name)
-        if strict_schema is None: return False, "EFFECT_SCHEMA_MISSING", None
-        try: validate_effect_args(args, strict_schema)
-        except ContractError as exc: return False, exc.code, None
-    if not permits or tool_name not in _EFFECTFUL_TOOLS or not authorize_permit: return True, None, None
-    adapter = _ADAPTER.get() or configured_permit_adapter()
-    if adapter is None: return False, "PERMIT_BRIDGE_UNAVAILABLE", None
-    if not mission_ref: return False, "PERMIT_MISSING", None
-    if not consume_permit: return True, None, None
+        if strict_schema is None:
+            return False, "EFFECT_SCHEMA_MISSING", None
+        try:
+            validate_effect_args(args, strict_schema)
+        except ContractError as exc:
+            return False, exc.code, None
+    if not permits or tool_name not in _EFFECTFUL_TOOLS or not authorize_permit:
+        return True, None, None
+    adapter = _ADAPTER.get() or DaemonPermitReceiptAdapter.from_ares_config(
+        {"ares": {"permit_daemon": bridge}}
+    )
+    if adapter is None:
+        return False, "PERMIT_BRIDGE_UNAVAILABLE", None
+    if not mission_ref:
+        return False, "PERMIT_MISSING", None
+    if not consume_permit:
+        return True, None, None
     try:
         target = target_ref or target_for(tool_name, args)
         if isinstance(adapter, DaemonPermitReceiptAdapter):
@@ -1258,8 +1330,10 @@ def dispatcher_boundary(tool_name: str, args: Any, *, mission_ref: str | None, s
                 args_digest=digest(args),
                 target_ref=target,
             )
-    except ContractError as exc: return False, exc.code, None
-    except Exception: return False, "PERMIT_DENIED", None
+    except ContractError as exc:
+        return False, exc.code, None
+    except Exception:
+        return False, "PERMIT_DENIED", None
     return True, None, permit
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import ares_runtime.collaboration as collaboration
 from ares_runtime.collaboration import (
     BlindWitness,
     ContractBindings,
@@ -79,12 +80,94 @@ def test_context_is_byte_stable_and_sorted():
     assert a.canonical_bytes() == b.canonical_bytes()
 
 
-def test_strict_effect_schema_denies_coercion_and_missing_permit(monkeypatch):
-    monkeypatch.setenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "1")
+def _production_canary_config(session_id="session:canary"):
+    return {
+        "ares": {
+            "permit_daemon": {
+                "mode": "production_per_call",
+                "enabled": True,
+                "canary_session_id": session_id,
+                "socket_path": "/tmp/ares-production-permit-test.sock",
+                "worktree_root": "/tmp",
+                "timeout_seconds": 5,
+            }
+        }
+    }
+
+
+def test_strict_effect_schema_denies_coercion_and_missing_permit_for_configured_canary(monkeypatch):
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: _production_canary_config(), raising=False)
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["path", "content"],
+    }
+    assert dispatcher_boundary(
+        "write_file", {"path": 3, "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    )[1] == "COERCION_REQUIRED"
+    assert dispatcher_boundary(
+        "write_file", {"path": "/tmp/ares-permit-test.txt", "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    )[1] == "OPERATOR_APPROVAL_WITNESS_MISSING"
+
+
+def test_production_canary_is_config_only_and_exact_session_scoped(monkeypatch):
     monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
-    schema = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
-    assert dispatcher_boundary("write_file", {"path": 3}, mission_ref="mission:1", schema=schema)[1] == "COERCION_REQUIRED"
-    assert dispatcher_boundary("write_file", {"path": "x"}, mission_ref="mission:1", schema=schema)[1] == "PERMIT_BRIDGE_UNAVAILABLE"
+    config = _production_canary_config()
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: config, raising=False)
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["path", "content"],
+    }
+
+    # A legacy ambient environment flag must neither activate production mode nor
+    # pull another session into the canary boundary.
+    assert dispatcher_boundary(
+        "write_file", {"path": "x", "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:other"
+    ) == (True, None, None)
+
+    # The selected session gets strict validation before coercion and fails
+    # closed before daemon contact when the Desktop witness owner is unavailable.
+    assert dispatcher_boundary(
+        "write_file", {"path": 3, "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    )[1] == "COERCION_REQUIRED"
+    assert dispatcher_boundary(
+        "write_file", {"path": "/tmp/ares-permit-test.txt", "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    )[1] == "OPERATOR_APPROVAL_WITNESS_MISSING"
+
+    # Omitting the explicit session binding disables rather than broadens the
+    # production boundary.
+    config["ares"]["permit_daemon"].pop("canary_session_id")
+    assert dispatcher_boundary(
+        "write_file", {"path": "x", "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    ) == (True, None, None)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("canary_session_id", "   "),
+        ("socket_path", "relative.sock"),
+        ("socket_path", 7),
+        ("worktree_root", "relative-root"),
+        ("worktree_root", "/path/that/does/not/exist"),
+        ("timeout_seconds", True),
+        ("timeout_seconds", 0),
+        ("timeout_seconds", 301),
+    ],
+)
+def test_production_canary_requires_complete_well_typed_transport_before_activation(monkeypatch, field, value):
+    config = _production_canary_config()
+    config["ares"]["permit_daemon"][field] = value
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: config, raising=False)
+
+    assert collaboration.production_permit_canary_enabled(session_id="session:canary") is False
+    assert dispatcher_boundary(
+        "write_file",
+        {"path": "/tmp/ares-permit-test.txt", "content": "exact"},
+        mission_ref="mission:1",
+        session_id="session:canary",
+    ) == (True, None, None)
 
 
 def event_exists(ref: str) -> bool:
@@ -269,13 +352,18 @@ def test_daemon_permit_digest_command_rejects_malformed_output(tmp_path):
 
 
 def test_daemon_permit_argument_digest_is_daemon_owned(monkeypatch, tmp_path):
-    monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: _production_canary_config(), raising=False)
     adapter = DaemonPermitReceiptAdapter({
         "socket_path": str(tmp_path / "unneeded.sock"),
     })
     token = permit_adapter(adapter)
     try:
-        allowed, code, _permit = dispatcher_boundary("write_file", {"path": "x", "content": "payload"}, mission_ref="mission:1")
+        allowed, code, _permit = dispatcher_boundary(
+            "write_file",
+            {"path": "x", "content": "payload"},
+            mission_ref="mission:1",
+            session_id="session:canary",
+        )
     finally:
         reset_permit_adapter(token)
     assert (allowed, code) == (False, "TEST_ONLY_ECHO_DISABLED")

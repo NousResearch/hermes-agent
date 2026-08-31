@@ -52,6 +52,7 @@ Every current wiki consumer and writer found in the candidate worktree `scripts/
 | `scripts/research_paper_preprocess.py` (cron `research-paper-synthesis-daily`) | was `~/wiki`, now `~/docs/wiki` (WIKI_PATH override kept) | reader (memory-gate wiki evidence lookup) | **changed** (controller scope correction) |
 | `skills/research/llm-wiki/SKILL.md` (bundled active contract) | was `~/wiki`, now `$HOME/docs/wiki` (WIKI_PATH override kept) | authority contract steering agents/crons | **changed** (controller scope correction) |
 | `skills/research/research-paper-synthesis/SKILL.md` | was `~/wiki`, now `~/docs/wiki` | active synthesis contract steering paper and mashup writes | **changed** (controller completion correction) |
+| 11 `agents/*/skills/research/{llm-wiki,research-paper-synthesis}/SKILL.md` templates | inherited stale `~/wiki` examples, now `~/docs/wiki` | future profile-template copies; active live profiles currently resolve the shared root skill | **changed** with a regression guard |
 | `idea_box/flow.py` wiki fallback | was `~/wiki`, now `~/docs/wiki` (WIKI_PATH override kept) | writer (idea provenance fallback) | **changed** (controller scope correction) |
 | `content_engine/kb_retrieve.py` | was `~/wiki`, now `~/docs/wiki` (WIKI_PATH override kept) | reader (personal-content knowledge retrieval) | **changed** (controller completion correction) |
 | `scripts/ceecee_approval_handler.py`, `scripts/proposal_approval_handler.py` | n/a — no wiki references | not wiki consumers | none |
@@ -182,7 +183,7 @@ When the archive/symlink phase eventually runs, the safe minimum is: for each of
 ## Test evidence
 
 - RED (witnessed, before any source change): `scripts/run_tests.sh tests/scripts/test_wiki_authority_defaults.py -q` → **4 failed** (all four scripts resolved the shallow default).
-- GREEN (final authority contract): `scripts/run_tests.sh content_engine/tests/test_kb_retrieve.py tests/scripts/test_wiki_authority_defaults.py tests/idea_box/test_flow.py -q` → **50 passed, 0 failed**. The authority file itself contains 13 tests: 5 canonical-default behaviours, 5 explicit-override behaviours, 1 alternate-HOME guard and 2 bundled-skill contract cases.
-- Wider P1.4 regression: nine directly affected test files → **125 passed, 0 failed** using the canonical runner.
+- GREEN (final authority contract): `scripts/run_tests.sh content_engine/tests/test_kb_retrieve.py tests/scripts/test_wiki_authority_defaults.py tests/idea_box/test_flow.py -q` → **51 passed, 0 failed**. The authority file itself contains 14 tests: 5 canonical-default behaviours, 5 explicit-override behaviours, 1 alternate-HOME guard, 2 bundled-skill contract cases and 1 all-profile-template guard.
+- Wider P1.4 regression: nine directly affected test files → **126 passed, 0 failed** using the canonical runner.
 - Override contracts preserved: `WIKI_DIR` (three scripts), `WIKI_PATH` (research preprocessor, Idea Box and content knowledge retrieval), and `KENSEI_WIKI_ROOT` (kensei_review_daily.py) still take precedence over the default; no new environment variable introduced.
 - Tests use disposable `HOME`/`HERMES_HOME` (`monkeypatch.setenv`) only; no live tree or live `HERMES_HOME` is touched by the test suite.

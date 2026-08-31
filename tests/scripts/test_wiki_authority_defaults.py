@@ -126,3 +126,30 @@ def test_bundled_wiki_skills_name_only_the_canonical_default(relative_path):
     assert "~/docs/wiki" in content or "$HOME/docs/wiki" in content
     assert "~/wiki" not in content
     assert "$HOME/wiki" not in content
+
+
+def test_profile_skill_templates_name_only_the_canonical_default():
+    paths = sorted(REPO.glob("agents/*/skills/research/llm-wiki/SKILL.md"))
+    paths += sorted(
+        REPO.glob("agents/*/skills/research/research-paper-synthesis/SKILL.md")
+    )
+    assert paths, "expected profile skill templates to audit"
+
+    stale = {}
+    for path in paths:
+        content = path.read_text(encoding="utf-8")
+        matches = [
+            marker
+            for marker in (
+                "~/wiki",
+                "$HOME/wiki",
+                "/home/kensei/wiki",
+                "/home/user/wiki",
+                "WorkingDirectory=%h/wiki",
+            )
+            if marker in content
+        ]
+        if matches:
+            stale[str(path.relative_to(REPO))] = matches
+
+    assert stale == {}

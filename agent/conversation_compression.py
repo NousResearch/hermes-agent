@@ -800,6 +800,16 @@ class CompressionCommitFence:
         """Prevent a timed-out live worker from overlapping a retry."""
         self._retain_cancelled_lock_until_worker_done = True
 
+    def allow_cancelled_lock_release(self) -> None:
+        """Undo :meth:`retain_compression_lock_until_worker_done`.
+
+        Called by the host after a bounded-grace join confirmed the timed-out
+        worker actually exited: the overlap hazard is gone, so the durable
+        lease may be released normally and a fallback/retry attempt can
+        proceed against a genuinely quiescent session.
+        """
+        self._retain_cancelled_lock_until_worker_done = False
+
     def revoke_commit_admission(self) -> None:
         """Revoke FUTURE commit admission without blocking on the fence lock.
 
@@ -930,6 +940,47 @@ _compress_timeout_executor_lock = threading.Lock()
 # silent unbounded future.result(). Clamped down to the ceiling for tiny test
 # ceilings so overrun reporting stays observable at test timescales.
 _COMMIT_OVERRUN_WAIT_SLICE_SECONDS = 30.0
+
+# Bounded grace given to a fence-cancelled compression worker to actually
+# exit before the host moves on (#97488). A worker that exits inside the
+# grace window proves no provider call is still in flight, so the durable
+# lease can be released safely even on the total-ceiling path. A worker that
+# does NOT exit is orphaned behind the poison fence (its late result cannot
+# commit) and, on the total-ceiling path, keeps the holder-qualified lease
+# retained so a new attempt cannot overlap the unchanged session.
+_CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS = 5.0
+
+
+def _join_cancelled_worker(future: Any, grace_seconds: float) -> bool:
+    """Best-effort bounded join of a fence-cancelled compression worker.
+
+    Returns True when the worker future settled (result, exception, or
+    pre-start cancellation) within ``grace_seconds`` — i.e. the worker thread
+    provably exited and cannot be holding a provider call open. Returns
+    False for a worker that is still running; the caller must treat it as an
+    orphan behind the poison fence.
+    """
+    try:
+        grace = max(float(grace_seconds), 0.0)
+    except (TypeError, ValueError):
+        grace = 0.0
+    try:
+        future.result(timeout=grace)
+        return True
+    except concurrent.futures.TimeoutError:
+        return False
+    except concurrent.futures.CancelledError:
+        # Never started; nothing can be in flight.
+        return True
+    except Exception:
+        # The worker raised — it exited. The exception is intentionally
+        # swallowed here: the host already chose the fallback result, and the
+        # fence prevents the failed attempt from touching session state.
+        logger.debug(
+            "cancelled compression worker exited with an exception",
+            exc_info=True,
+        )
+        return True
 
 # Bounded admission for the shared compress-timeout pool (#76354 review F6).
 # The stdlib executor queue is unbounded: with all four workers wedged in hung
@@ -1116,7 +1167,7 @@ def _record_stall_interrupted_backoff(
         f"{_stall_source_fingerprint(agent, messages, approx_tokens)}"
     )
     try:
-        record(error)
+        record(error, failure_kind="stall_interrupted")
     except Exception:
         logger.debug(
             "stall-interrupted compression cooldown persist failed",
@@ -1594,6 +1645,34 @@ def run_compress_context_with_progress_timeout(
         # so a NEW compressor can acquire the lock immediately (no ABA: the
         # DB release is holder-scoped).
         handled_exit = True
+        # #97488 teardown: give the cancelled worker a bounded grace to
+        # actually exit before this host moves on. The worker checks the
+        # poison fence between provider phases, so a cooperative worker
+        # exits quickly; an uninterruptible provider call is orphaned behind
+        # the fence after the grace elapses (its late result is discarded and
+        # cannot touch session state).
+        worker_exited = _join_cancelled_worker(
+            future,
+            min(_CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS, ceiling),
+        )
+        if worker_exited:
+            # The worker provably exited: no in-flight provider call can
+            # outlive this attempt, so the total-ceiling lease retention is
+            # no longer needed and a retry cannot overlap anything.
+            fence.allow_cancelled_lock_release()
+        else:
+            logger.warning(
+                "Cancelled compression worker did not exit within %.1fs "
+                "grace — orphaning it behind the poison fence (late result "
+                "will be discarded)%s",
+                min(_CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS, ceiling),
+                (
+                    "; retaining the session compression lease until it "
+                    "exits so no new attempt overlaps it"
+                    if total_exhausted
+                    else ""
+                ),
+            )
         fence.release_cancelled_compression_lock()
         waited = time.monotonic() - wait_started
         since_progress = fence.seconds_since_progress()
@@ -1773,6 +1852,63 @@ def compression_skipped_due_to_lock(agent: Any) -> bool:
     """
     _sig = getattr(agent, "_compression_skipped_due_to_lock", None)
     return _sig is True or isinstance(_sig, str)
+
+
+def compression_blocked_transiently(agent: Any) -> bool:
+    """Type-pinned read of the transient-block signal (#97488).
+
+    ``agent._compression_blocked_transient`` is set by ``compress_context``
+    when an automatic pass no-ops because a TRANSIENT compressor guard is
+    active — a summary-failure cooldown (e.g. one just recorded by the host
+    ceiling timeout) or a structural no-op backoff — and cleared to ``None``
+    at the entry of every call.
+
+    Consumers (the overflow-recovery loops in ``conversation_loop``) must
+    treat such a no-op as a temporary defer, NOT as evidence the session is
+    incompressible: counting it toward ``compression_exhausted`` lets a real
+    upstream ``context_length_exceeded`` auto-reset (wipe) a session whose
+    compression was merely cooling down (#97488). The permanent
+    ``ineffective`` breaker intentionally does NOT set this signal — a
+    genuinely incompressible session must still be able to exhaust.
+
+    Type-pinned for the same reason as :func:`compression_skipped_due_to_lock`
+    (MagicMock auto-attribute hijack).
+    """
+    _sig = getattr(agent, "_compression_blocked_transient", None)
+    return isinstance(_sig, str) and bool(_sig)
+
+
+def _mark_compression_blocked_transient(agent: Any, compressor: Any) -> None:
+    """Publish the transient-block signal when the active guard is transient.
+
+    Reads the compressor's own block reason so the transient/permanent
+    classification lives in one place (``_compression_block_reason``):
+    ``cooldown:*`` and ``structural_backoff:*`` are timed guards that lapse
+    on their own; ``ineffective`` is the permanent breaker and stays
+    unmarked so exhaustion semantics are preserved.
+    """
+    reason_fn = getattr(compressor, "_compression_block_reason", None)
+    reason = None
+    if callable(reason_fn):
+        try:
+            reason = reason_fn()
+        except Exception:
+            logger.debug("compression block-reason read failed", exc_info=True)
+    if isinstance(reason, str) and (
+        reason.startswith("cooldown") or reason.startswith("structural_backoff")
+    ):
+        logger.info(
+            "Skipping automatic compression re-entry: transient guard "
+            "active (%s, session=%s, last failure: %s) — will retry after "
+            "the backoff lapses; /compress forces an immediate retry",
+            reason,
+            getattr(agent, "session_id", None) or "none",
+            getattr(compressor, "_last_summary_error", None) or "unknown",
+        )
+        try:
+            agent._compression_blocked_transient = reason
+        except Exception:
+            pass
 
 
 def _adopt_live_compression_child(
@@ -2966,6 +3102,10 @@ def compress_context(
     # second clear before lock acquisition below stays for the same reason
     # it was added in #69870 and is simply idempotent now.
     agent._compression_skipped_due_to_lock = None
+    # Transient-block signal (#97488): cleared with the same per-attempt
+    # rule; set by the breaker gates below when a TRANSIENT guard (cooldown /
+    # structural backoff) no-ops this pass.
+    agent._compression_blocked_transient = None
 
     _attempt_started_at = time.monotonic()
     _attempt_id = uuid.uuid4().hex
@@ -3038,6 +3178,7 @@ def compress_context(
             None,
         )
         if callable(blocked) and blocked(agent.context_compressor):
+            _mark_compression_blocked_transient(agent, agent.context_compressor)
             existing_prompt = getattr(agent, "_cached_system_prompt", None)
             if not existing_prompt:
                 existing_prompt = agent._build_system_prompt(system_message)
@@ -3496,6 +3637,7 @@ def compress_context(
             None,
         )
         if callable(blocked) and blocked(compressor):
+            _mark_compression_blocked_transient(agent, compressor)
             _release_lock()
             existing_prompt = getattr(agent, "_cached_system_prompt", None)
             if not existing_prompt:
@@ -3960,6 +4102,47 @@ def compress_context(
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
+            _release_lock()
+            return messages, _existing_sp
+
+        # Supersession guard (#97488): a NEWER attempt claiming this
+        # compressor (via _claim_compressor_attempt) supersedes this one —
+        # this attempt's late candidate must be discarded, never committed
+        # over the newer attempt's state. Checked for fenceless callers too:
+        # the fence poison alone cannot see a successor that minted its own
+        # fresh fence.
+        _attempt_superseded = not _compressor_attempt_is_current(
+            agent.context_compressor, _attempt_generation
+        )
+        if _attempt_superseded:
+            logger.warning(
+                "Discarding late compression candidate: attempt generation "
+                "%s was superseded by a newer attempt (current: %s) "
+                "(session=%s).",
+                _attempt_generation,
+                getattr(
+                    agent.context_compressor,
+                    "_compression_attempt_generation",
+                    None,
+                ),
+                agent.session_id or "none",
+            )
+            if (
+                messages_before_compression is not None
+                and messages != messages_before_compression
+            ):
+                messages[:] = copy.deepcopy(messages_before_compression)
+            agent._last_compaction_in_place = False
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class="attempt_superseded",
+            )
             _release_lock()
             return messages, _existing_sp
 

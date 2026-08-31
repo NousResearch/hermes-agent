@@ -935,6 +935,7 @@ class _OutputScan:
         # Commentary is held aside until the whole output list is known: promotion
         # below depends on tool_calls and saw_final_answer_phase.
         self.commentary_parts: List[str] = []
+        self.promoted_commentary = ""
         self.reasoning_items_raw, self.message_items_raw = [], []
         self.has_incomplete_items = response_status in _INCOMPLETE_STATUSES
         self.saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
@@ -988,11 +989,17 @@ class _OutputScan:
 
         Replay is unaffected: history resends ``codex_message_items`` verbatim and skips
         ``content`` whenever those items exist, so the text is never sent twice.
+
+        The promoted text is left in ``promoted_commentary`` for the caller to merge
+        after its content join, rather than spliced into ``content_parts``: the two are
+        distinct output message items, and the join's single "\n" is only a soft break
+        in Markdown, so a report ending in a list or a paragraph would absorb the text
+        that follows it.
         """
         if not self.commentary_parts:
             return
         if self.tool_calls and not self.saw_final_answer_phase:
-            self.content_parts[:0] = self.commentary_parts
+            self.promoted_commentary = "\n\n".join([p for p in self.commentary_parts if p])
         else:
             self.reasoning_parts.extend(self.commentary_parts)
         self.commentary_parts = []
@@ -1050,6 +1057,11 @@ def _normalize_codex_response(response: Any, *, issuer_kind: Optional[str] = Non
     scan.scan(output, issuer_kind)
     tool_calls, reasoning_parts = scan.tool_calls, scan.reasoning_parts
     final_text = "\n".join(scan.content_parts).strip()
+    if scan.promoted_commentary:
+        final_text = (
+            f"{scan.promoted_commentary}\n\n{final_text}" if final_text
+            else scan.promoted_commentary
+        ).strip()
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")
         final_text = out_text.strip() if isinstance(out_text, str) else final_text

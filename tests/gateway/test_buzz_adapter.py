@@ -1184,8 +1184,9 @@ class TestDmClassification:
     @pytest.mark.asyncio
     async def test_dm_shaped_channel_discovered_when_dms_list_empty(self):
         """Fallback discovery: with `dms list` broken (returns []), a
-        DM-shaped `channels list` entry becomes a DM; real channels not
-        already watched are left alone."""
+        DM-shaped `channels list` entry gets watched. In watch-all mode a
+        real channel is adopted too (live join, #75107) — but seeded from
+        history, so nothing is replayed."""
         a = _make_adapter()
         cli = _ScriptedCli()
         cli.script("dms", "list", [])
@@ -1198,8 +1199,29 @@ class TestDmClassification:
         await a._discover_dms(seed=False)
         assert a._channel_state[DM_CHANNEL]["chat_type"] == "dm"
         assert a._may_reclassify_as_dm(DM_CHANNEL) is True
-        assert CHANNEL not in a._channel_state
+        # Watch-all mode: the real channel is live-adopted (seeded, never
+        # reclassified as DM).
+        assert CHANNEL in a._channel_state
+        assert a._channel_state[CHANNEL]["chat_type"] == "group"
         assert a._may_reclassify_as_dm(CHANNEL) is False
+        # Adoption seeded it via a messages get call (history suppressed).
+        assert any(c[0][:2] == ["messages", "get"] for c in cli.calls)
+
+    @pytest.mark.asyncio
+    async def test_explicit_watch_list_blocks_live_channel_adoption(self):
+        """With an explicit channels: list, discovery must NOT adopt real
+        channels outside that list — the user chose the watch set (#75107
+        scoping)."""
+        a = _make_adapter(extra={"channels": ["some-other-channel"]})
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "general",
+             "description": "General conversation and community updates.", "created_at": 2},
+        ])
+        a._run_cli = cli
+        await a._discover_dms(seed=False)
+        assert CHANNEL not in a._channel_state
 
     @pytest.mark.asyncio
     async def test_dm_metadata_promotes_existing_group_without_recipient_tag(self, adapter):

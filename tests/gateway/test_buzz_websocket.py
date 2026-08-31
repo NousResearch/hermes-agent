@@ -438,3 +438,245 @@ def test_restricted_channels_skipped_during_subscribe():
     assert all(CHANNEL not in ch_list for ch_list in req_channels), (
         "restricted channel must not be sent in any REQ frame"
     )
+
+
+# ── Fresh-conversation subscription window (#78429) ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_new_subscription_without_high_water_mark_has_no_since_floor():
+    """A conversation adopted mid-run (last_ts == 0) must NOT subscribe with
+    `since ≈ now` — that drops the message that created the conversation
+    (#78429). It must request from the beginning with a bounded limit."""
+    adapter = _make_adapter()
+    adapter._channel_state[CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+
+    class _Ws:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+    ws = _Ws()
+    await adapter._send_channel_subscription(ws, "hermes-buzz-dm-1", CHANNEL)
+    assert len(ws.sent) == 1
+    req_filter = ws.sent[0][2]
+    assert "since" not in req_filter, (
+        "fresh conversation must not have a since floor (drops the opening message)"
+    )
+    assert req_filter.get("limit") == _buzz_mod._FETCH_LIMIT
+    assert req_filter["#h"] == [CHANNEL]
+
+
+@pytest.mark.asyncio
+async def test_seeded_subscription_resumes_from_high_water_mark():
+    """A channel with a real high-water mark keeps the since-resume contract
+    (last_ts - 1, same-second overlap de-duped by id)."""
+    adapter = _make_adapter()
+    adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 1_700_000_000, "seen": {}}
+
+    class _Ws:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+    ws = _Ws()
+    await adapter._send_channel_subscription(ws, "hermes-buzz-0", CHANNEL)
+    req_filter = ws.sent[0][2]
+    assert req_filter["since"] == 1_699_999_999
+    assert "limit" not in req_filter
+
+
+# ── Membership-rejection phrasing (#97502 composed into #76850) ────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "restricted: not a channel member",
+        "not a channel member",
+        "auth-required: subscription needs auth",
+    ],
+)
+async def test_closed_membership_phrases_prune_without_reconnect(detail):
+    """Every production-observed membership-rejection phrasing (#76850,
+    #97502) prunes the subscription instead of tearing down the socket."""
+    import sys
+    from unittest.mock import patch, MagicMock
+    from contextlib import asynccontextmanager
+
+    adapter = _make_adapter(extra={"channels": [CHANNEL]})
+    adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+
+    sub_id = "hermes-buzz-0"
+    messages = [json.dumps(["CLOSED", sub_id, detail])]
+    idx = 0
+
+    class _FakeWs:
+        async def send(self, raw):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            nonlocal idx
+            if idx < len(messages):
+                val = messages[idx]
+                idx += 1
+                return val
+            await asyncio.sleep(10)
+            raise StopAsyncIteration
+
+    @asynccontextmanager
+    async def _fake_connect(*_a, **_kw):
+        yield _FakeWs()
+
+    async def _noop_auth(self_inner, ws):
+        pass
+
+    async def _noop_subscribe(self_inner, ws):
+        return {sub_id: CHANNEL}
+
+    fake_ws_mod = MagicMock()
+    fake_ws_mod.connect = _fake_connect
+
+    with (
+        patch.dict(sys.modules, {"websockets": fake_ws_mod}),
+        patch.object(type(adapter), "_authenticate_websocket", _noop_auth),
+        patch.object(type(adapter), "_subscribe_websocket", _noop_subscribe),
+    ):
+        adapter._ws_ready = asyncio.Event()
+        adapter._ws_ready.set()
+        task = asyncio.create_task(adapter._websocket_loop())
+        await asyncio.sleep(0.1)
+
+    assert CHANNEL in adapter._restricted_channels
+    assert CHANNEL not in adapter._channel_state
+    assert not task.done(), "membership rejection must not reconnect the socket"
+
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_restricted_channel_not_readopted_by_discovery():
+    """The live-discovery paths must skip _restricted_channels; otherwise the
+    next sweep silently re-adds the channel and re-triggers the rejection
+    (the re-adoption hole flagged in the #76850 review)."""
+    adapter = _make_adapter()
+    adapter._restricted_channels.add(CHANNEL)
+
+    calls = []
+
+    async def scripted_cli(args, *, input_text=None):
+        calls.append(list(args))
+        if args[:2] == ["dms", "list"]:
+            return 0, json.dumps([{"dm_id": CHANNEL}]), ""
+        if args[:2] == ["channels", "list"]:
+            return 0, json.dumps([{"channel_id": CHANNEL, "name": "DM", "description": ""}]), ""
+        return 0, "[]", ""
+
+    adapter._run_cli = scripted_cli
+    await adapter._discover_dms(seed=False)
+    assert CHANNEL not in adapter._channel_state, (
+        "restricted channel must not be re-adopted by discovery"
+    )
+
+
+# ── WS periodic discovery (#93557 / #75107) ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ws_discovery_loop_subscribes_newly_discovered_conversation(monkeypatch):
+    """Without a kind-44100 membership event, the WS transport's periodic
+    sweep must still find and subscribe a conversation opened mid-session
+    (#93557)."""
+    adapter = _make_adapter()
+    adapter.poll_interval = 0.01
+
+    new_dm = "0f0e0d0c-0b0a-4123-8123-cafecafecafe"
+
+    async def fake_discover(*, seed):
+        adapter._channel_state.setdefault(
+            new_dm, {"chat_type": "dm", "last_ts": 0, "seen": {}}
+        )
+
+    monkeypatch.setattr(adapter, "_discover_dms", fake_discover)
+    monkeypatch.setattr(_buzz_mod, "_MIN_POLL_INTERVAL", 0.01)
+
+    class _Ws:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+    ws = _Ws()
+    subscriptions = {"hermes-buzz-0": CHANNEL}
+    task = asyncio.create_task(adapter._ws_discovery_loop(ws, subscriptions))
+    try:
+        deadline = time.monotonic() + 5.0
+        while not ws.sent and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert new_dm in subscriptions.values(), "sweep did not subscribe the new conversation"
+    req = ws.sent[0]
+    assert req[0] == "REQ" and req[2]["#h"] == [new_dm]
+    # Fresh conversation: no since floor (#78429 applies here too).
+    assert "since" not in req[2]
+
+
+@pytest.mark.asyncio
+async def test_ws_discovery_task_cancelled_when_connection_exits(monkeypatch):
+    """The companion discovery task must not outlive its connection."""
+    adapter = _make_adapter()
+    adapter.poll_interval = 10.0  # sweep never fires; we only test lifecycle
+    adapter._channel_state = {CHANNEL: {"chat_type": "group", "last_ts": 1, "seen": {}}}
+
+    started = []
+    real_create_task = asyncio.create_task
+
+    def tracking_create_task(coro, **kw):
+        t = real_create_task(coro, **kw)
+        if "_ws_discovery_loop" in repr(coro):
+            started.append(t)
+        return t
+
+    monkeypatch.setattr(asyncio, "create_task", tracking_create_task)
+
+    async def closed_anext():
+        raise StopAsyncIteration
+
+    sockets = []
+
+    def fake_connect(*args, **kwargs):
+        if sockets:
+            raise asyncio.CancelledError()
+        ws = _ScriptedWebSocket(closed_anext)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = real_create_task(adapter._websocket_loop())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 10.0)
+
+    assert started, "discovery task was never started with the connection"
+    assert all(t.done() for t in started), "discovery task outlived its connection"

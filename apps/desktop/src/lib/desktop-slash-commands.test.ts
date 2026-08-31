@@ -125,12 +125,29 @@ describe('desktop slash command curation', () => {
     expect(desktopSubcommandUnavailableMessage('/skills', 'install demo')).toContain('not available')
     expect(desktopSubcommandUnavailableMessage('/skills', 'approve write-1')).toBeNull()
     expect(
-      filterDesktopSubcommandCompletions('/skills ', [
+      filterDesktopSubcommandCompletions('/skills\tap', [
         { text: 'pending' },
         { text: 'install' },
         { text: 'approval on' }
       ])
     ).toEqual([{ text: 'pending' }, { text: 'approval on' }])
+  })
+
+  it('lets the live catalog narrow the static /skills allowlist', () => {
+    rememberDesktopCommandsCatalog({
+      commands: {
+        '/skills': {
+          argument_mode: 'options',
+          desktop: null,
+          desktop_subcommands: ['pending', 'approve', 'reject']
+        }
+      },
+      canon: { '/skills': '/skills' }
+    })
+
+    expect(desktopSubcommandAllowlist('/skills')).toEqual(['pending', 'approve', 'reject'])
+    expect(desktopSubcommandUnavailableMessage('/skills', 'diff write-1')).toContain('/skills diff')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBeNull()
   })
 
   it('routes /compress through the session-compression action', () => {

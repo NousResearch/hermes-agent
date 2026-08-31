@@ -581,7 +581,7 @@ export function filterDesktopSubcommandCompletions<T extends { text: string }>(
 
   // Only the argument stage (`/skills …`, including a bare trailing space)
   // carries subcommand items; command-token completions pass through.
-  if (!allowed || !rest.startsWith(' ')) {
+  if (!allowed || !/^\s/.test(rest)) {
     return [...items]
   }
 

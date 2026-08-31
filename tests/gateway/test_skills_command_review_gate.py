@@ -91,6 +91,14 @@ def test_hub_mutations_are_refused_not_routed_to_the_hub(hermes_home):
 def test_review_subcommands_answer_with_pending_state(hermes_home):
     runner = _make_runner()
 
-    out = asyncio.run(runner._handle_skills_command(_make_event("/skills pending")))
-    assert out is not None
-    assert "CLI-only" not in out
+    pending = asyncio.run(runner._handle_skills_command(_make_event("/skills pending")))
+    assert pending is not None
+    assert "No pending skills writes." in pending
+    assert "CLI-only" not in pending
+
+    approve = asyncio.run(runner._handle_skills_command(_make_event("/skills approve")))
+    assert "Usage:" in approve and "approve" in approve
+    reject = asyncio.run(runner._handle_skills_command(_make_event("/skills reject")))
+    assert "Usage:" in reject and "reject" in reject
+    diff = asyncio.run(runner._handle_skills_command(_make_event("/skills diff")))
+    assert "Usage: /skills diff <id>" in diff

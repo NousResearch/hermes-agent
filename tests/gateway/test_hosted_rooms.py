@@ -497,6 +497,7 @@ def test_since_seq_returns_ordered_deltas_and_stable_cursor(tmp_path):
         "cursor": 2,
         "latest_seq": 4,
         "has_more": True,
+        "authority": {"gateway_id": "gateway-a", "epoch": 1},
     }
 
     second = rooms.read_events(
@@ -1016,3 +1017,45 @@ def test_gateway_event_budget_leaves_pre_update_snapshot_headroom():
         rooms.MAX_GATEWAY_EVENT_BYTES * 32
         <= update_cmd._PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
     )
+
+
+def test_room_log_page_bound_counts_bytes_not_characters(tmp_path, monkeypatch):
+    """Char-based accounting (SQLite LENGTH(TEXT) / len(str)) must not let a
+    multibyte page exceed the byte ceiling.
+
+    Budget sits between the character length and the byte length of a
+    two-event page: character accounting would admit both events, byte
+    accounting admits exactly one.
+    """
+    db = tmp_path / "state.db"
+    _create(db)
+    for index in range(2):
+        _append(
+            db,
+            room_id="room-1",
+            event_id=f"bytes-{index}",
+            kind="message.user",
+            actor=USER,
+            payload={"text": "😀" * 200, "index": index},
+        )
+
+    def page_json(page):
+        return json.dumps(page, ensure_ascii=False, separators=(",", ":"))
+
+    def page_bytes(page):
+        return len(page_json(page).encode("utf-8"))
+
+    one_event = rooms.read_events(db, room_id="room-1", since_seq=0, limit=1)
+    unbounded_two = rooms.read_events(db, room_id="room-1", since_seq=0, limit=2)
+    budget = page_bytes(one_event) + 64
+
+    # Precondition: the budget discriminates — char accounting would accept
+    # the two-event page, byte accounting must reject it.
+    assert len(page_json(unbounded_two)) <= budget
+    assert page_bytes(unbounded_two) > budget
+
+    monkeypatch.setattr(rooms, "MAX_LOG_PAGE_BYTES", budget)
+    page = rooms.read_events(db, room_id="room-1", since_seq=0, limit=2)
+    assert [event["seq"] for event in page["events"]] == [1]
+    assert page_bytes(page) <= budget
+    assert page["has_more"] is True

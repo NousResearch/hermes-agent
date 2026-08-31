@@ -19,7 +19,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, NoReturn
 
 
 PROTOCOL_VERSION = 2
@@ -461,7 +461,7 @@ def _transaction(
         conn.close()
 
 
-def _raise_room_not_found(conn: sqlite3.Connection, room_id: str) -> None:
+def _raise_room_not_found(conn: sqlite3.Connection, room_id: str) -> NoReturn:
     retained = conn.execute(
         "SELECT 1 FROM hosted_rooms WHERE room_id=?",
         (room_id,),
@@ -1390,13 +1390,16 @@ def read_events(
 
     with _transaction(db_path) as conn:
         room = conn.execute(
-            """SELECT next_seq FROM hosted_rooms
+            """SELECT next_seq, authority_gateway_id, authority_epoch
+               FROM hosted_rooms
                WHERE room_id=? AND (disbanded_at IS NULL OR ?)""",
             (room_id, int(include_disbanded)),
         ).fetchone()
         if room is None:
             _raise_room_not_found(conn, room_id)
         latest_seq = int(room["next_seq"]) - 1
+        authority_gateway = str(room["authority_gateway_id"])
+        authority_epoch = int(room["authority_epoch"])
         if since_seq > latest_seq:
             raise HostedRoomError("since_seq is ahead of the hosted room log")
         rows = conn.execute(
@@ -1429,6 +1432,10 @@ def read_events(
             "cursor": cursor,
             "latest_seq": latest_seq,
             "has_more": cursor < latest_seq,
+            "authority": {
+                "gateway_id": authority_gateway,
+                "epoch": authority_epoch,
+            },
         }
 
     def page_bytes(page: dict[str, Any]) -> int:

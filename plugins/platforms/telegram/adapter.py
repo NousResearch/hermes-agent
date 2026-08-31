@@ -452,6 +452,31 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+def _sanitize_html_for_telegram(text: str) -> str:
+    """Convert HTML formatting tags to MarkdownV2 equivalents.
+
+    This is the QA8 shared-finalizer convergence seam — it runs on every
+    text chunk consumed by ``format_message`` before the MarkdownV2
+    conversion, so no producer (GA cockpit, cron digest, agent reply,
+    ``hermes send``) can leak literal HTML tags that would cause a
+    MarkdownV2 parse failure in the Telegram adapter.
+
+    Only HTML formatting tags are touched.  JSON, timestamps, hashes,
+    URLs, and all other content pass through unchanged.
+    """
+    # <b>text</b> → **text** (standard markdown bold, converted to MarkdownV2
+    # *text* by format_message step 5)
+    text = re.sub(r"<b>(.+?)</b>", r"**\1**", text, flags=re.IGNORECASE)
+    # <i>text</i> → *text* (standard markdown italic, converted to MarkdownV2
+    # _text_ by format_message step 6)
+    text = re.sub(r"<i>(.+?)</i>", r"*\1*", text, flags=re.IGNORECASE)
+    # <code>text</code> → `text` (MarkdownV2 inline code)
+    text = re.sub(r"<code>(.+?)</code>", r"`\1`", text, flags=re.IGNORECASE)
+    # Strip remaining HTML tags (keep inner content)
+    text = re.sub(r"</?[a-zA-Z][^>]*>", "", text)
+    return text
+
+
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(
     r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$'
 )
@@ -8798,9 +8823,15 @@ class TelegramAdapter(BasePlatformAdapter):
         their contents are never modified.  Standard markdown constructs
         (headers, bold, italic, links) are translated to MarkdownV2 syntax,
         and all remaining special characters are escaped.
+
+        HTML formatting tags are converted to MarkdownV2 equivalents
+        before any other processing — this is the QA8 shared-finalizer
+        convergence seam.
         """
         if not content:
             return content
+
+        content = _sanitize_html_for_telegram(content)
 
         placeholders: dict = {}
         counter = [0]

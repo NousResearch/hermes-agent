@@ -2273,13 +2273,14 @@ def _make_agent(
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
+    from hermes_cli.config import TURN_LIMIT_UNLIMITED
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     agent = AIAgent(
-        model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
+        model=model, max_iterations=_cfg_max_turns(cfg, TURN_LIMIT_UNLIMITED), provider=runtime.get("provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"), quiet_mode=True,

@@ -38,6 +38,9 @@ export const ROSTER_KEY = [ID, 'roster']
 // flap) leaves the Bots sidebar on a spinner with no error card. The 5s
 // refetchInterval and the gateway-open effect already recover drops.
 const ROSTER_QUERY_RETRY = 2
+const ROSTER_FAST_REFRESH_MS = 5000
+const ROSTER_FLEET_REFRESH_MS = 30000
+const ROSTER_FLEET_SIZE = 20
 
 export const BOT_META_V1_KEY = 'bot-meta'
 const BOT_META_V2_KEY = 'bot-meta-v2'
@@ -631,6 +634,15 @@ interface UnionRoster {
   sources?: GatewaySource[]
 }
 
+/** Keep a small Bot Mode roster lively without making a large profile fleet
+ *  rescan every state database twelve times a minute. Explicit mutation
+ *  invalidations and the gateway-open effect still refresh immediately. */
+export function rosterRefetchInterval(snapshot?: Pick<RosterSnapshot, 'profiles'>): number {
+  const count = Array.isArray(snapshot?.profiles) ? snapshot.profiles.length : 0
+
+  return count >= ROSTER_FLEET_SIZE ? ROSTER_FLEET_REFRESH_MS : ROSTER_FAST_REFRESH_MS
+}
+
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
 
@@ -702,7 +714,7 @@ export function useRoster() {
         fetchedAt: issuedAt
       }
     },
-    refetchInterval: 5000,
+    refetchInterval: query => rosterRefetchInterval(query.state.data),
     staleTime: 5000,
     retry: ROSTER_QUERY_RETRY,
     retryDelay: attempt => Math.min(15000, 1000 * 2 ** attempt)

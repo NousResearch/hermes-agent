@@ -265,4 +265,44 @@ describe('the title half: each roster bot’s own profile listing', () => {
 
     expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['room-core-a'])
   })
+
+  it('bounds profile reconciliation instead of opening the whole fleet at once', async () => {
+    lastRoster.value = Array.from({ length: 12 }, (_, index) => ({ name: `bot-${index}` })) as RosterRow[]
+    const releases: Array<() => void> = []
+    let active = 0
+    let peak = 0
+
+    hostMock.listPersistedSessions.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          active += 1
+          peak = Math.max(peak, active)
+          releases.push(() => {
+            active -= 1
+            resolve({ sessions: [] })
+          })
+        })
+    )
+
+    const { startHideSweepScheduler } = await import('./session-sweep')
+
+    startHideSweepScheduler({})
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(hostMock.listPersistedSessions).toHaveBeenCalledTimes(4)
+    expect(peak).toBe(4)
+
+    releases.splice(0, 4).forEach(release => release())
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(hostMock.listPersistedSessions).toHaveBeenCalledTimes(8)
+    expect(peak).toBe(4)
+
+    releases.splice(0, 4).forEach(release => release())
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(hostMock.listPersistedSessions).toHaveBeenCalledTimes(12)
+    expect(peak).toBe(4)
+
+    releases.splice(0).forEach(release => release())
+  })
 })

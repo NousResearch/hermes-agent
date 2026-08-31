@@ -25,7 +25,7 @@ import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $lastRoster, useRoster } from './data'
+import { $lastRoster, rosterRefetchInterval, useRoster } from './data'
 import type { RosterRow } from './types'
 
 const { hostMock } = vi.hoisted(() => ({
@@ -111,6 +111,21 @@ beforeEach(() => {
 
 afterEach(() => {
   $lastRoster.set([])
+})
+
+describe('roster refresh cadence', () => {
+  it('keeps small rosters responsive and backs off large profile fleets', () => {
+    expect(rosterRefetchInterval(undefined)).toBe(5000)
+    expect(rosterRefetchInterval({ profiles: Array.from({ length: 19 }, (_, index) => ({ name: `bot-${index}` })) })).toBe(
+      5000
+    )
+    expect(rosterRefetchInterval({ profiles: Array.from({ length: 20 }, (_, index) => ({ name: `bot-${index}` })) })).toBe(
+      30000
+    )
+    expect(rosterRefetchInterval({ profiles: Array.from({ length: 90 }, (_, index) => ({ name: `bot-${index}` })) })).toBe(
+      30000
+    )
+  })
 })
 
 describe('no union roster', () => {

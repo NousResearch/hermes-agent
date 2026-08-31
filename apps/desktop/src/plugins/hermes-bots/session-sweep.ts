@@ -21,6 +21,26 @@ interface HideSweepContext {
   onDispose?: (fn: () => void) => void
 }
 
+// Each listing is a REST request backed by a profile state.db read. A large
+// Bot Mode fleet used to launch one request per profile simultaneously (90
+// profiles => 90 AnyIO workers), starving the Desktop backend and renderer.
+// Four preserves useful parallelism while bounding CPU, SQLite and JSON work.
+const PROFILE_SWEEP_CONCURRENCY = 4
+
+async function mapWithConcurrency<T>(items: T[], limit: number, visit: (item: T) => Promise<void>) {
+  let next = 0
+
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next
+      next += 1
+      await visit(items[index])
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
+}
+
 /** One-time reconciliation: Bot Mode sessions are always hidden, but rooms
  *  and Bot Chats created before this policy (or while the old pref was off)
  *  left visible rows behind. On every plugin load, sweep the session ids we
@@ -268,8 +288,7 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
     }
   }
 
-  await Promise.all(
-    roster.map(async (bot: RosterRow) => {
+  await mapWithConcurrency(roster, PROFILE_SWEEP_CONCURRENCY, async (bot: RosterRow) => {
       const name = String(bot?.name || '').trim()
 
       if (!name) {
@@ -295,5 +314,4 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
         /* older gateway / unreachable source — leave this profile alone */
       }
     })
-  )
 }

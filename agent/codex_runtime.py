@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
 _codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -121,11 +122,11 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         except Exception:
             logger.debug("codex app-server usage update failed", exc_info=True)
     if isinstance(messages, list):
-        from agent.model_metadata import capture_usage_anchor
+        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 
         anchor = capture_usage_anchor(prompt_tokens, canonical_usage.output_tokens, messages)
         if anchor is not None:
-            agent._usage_anchor = anchor
+            set_usage_anchor(agent, anchor)
     for key, value in usage_dict.items():
         setattr(agent, f"session_{key}", getattr(agent, f"session_{key}") + value)
     cost_result = estimate_usage_cost(
@@ -170,8 +171,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
             compressor.last_prompt_tokens, compressor.last_completion_tokens = -1, 0
             compressor.awaiting_real_usage_after_compression = True
     # Provider-side context was rewritten; the usage anchor's transcript snapshot no longer matches.
-    agent._usage_anchor = None
-    agent._turn_base_usage_anchor = None
+    set_usage_anchor(agent, None)
     agent._last_compaction_in_place = False
     _call_guarded(getattr(agent, "event_callback", None) or None, "event_callback error on codex session:compress",
                   args=("session:compress", {

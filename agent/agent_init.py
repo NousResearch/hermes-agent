@@ -2132,7 +2132,7 @@ def _init_usage_state(agent):
 _USAGE_STATE: Dict[str, Any] = {
     "_user_turn_count": 0,
     "_is_user_initiated_turn": False,  # Copilot x-initiator: first call of a user turn = "user"
-    # Usage anchors (agent/model_metadata.py): last response's exact usage + transcript
+    # Usage anchors (agent/usage_anchor.py): last response's exact usage + transcript
     # snapshot; invalidated on compaction/session switch so stale anchors never suppress compression.
     "_usage_anchor": None,
     "_turn_base_usage_anchor": None,

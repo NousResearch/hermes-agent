@@ -64,6 +64,8 @@ _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 _LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
+_HELPER_REFRESH_TIMEOUT_SECONDS = 1.0
+_HELPER_REFRESH_COOLDOWN_SECONDS = 2.0
 
 
 def _redact(text: str) -> str:
@@ -130,6 +132,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
+        self._helper_refresh_lock = asyncio.Lock()
+        self._helper_refresh_after = 0.0
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
 
     # --- API helpers ---
@@ -179,14 +183,61 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
+    async def _helper_is_connected(self) -> bool:
+        """Refresh a stale negative helper snapshot without blocking hot paths.
+
+        BlueBubbles can report ``helper_connected=False`` during gateway
+        startup while its macOS helper is still attaching. A one-time snapshot
+        would then disable private-API features for the entire process. Refresh
+        negative snapshots with a short timeout, a cooldown, and single-flight
+        locking; once the helper is observed connected, keep the monotonic
+        positive state.
+        """
+        if not self._private_api_enabled or not self.client:
+            return False
+        if self._helper_connected:
+            return True
+
+        loop = asyncio.get_running_loop()
+        if loop.time() < self._helper_refresh_after:
+            return False
+
+        async with self._helper_refresh_lock:
+            if not self._private_api_enabled or not self.client:
+                return False
+            if self._helper_connected:
+                return True
+            if loop.time() < self._helper_refresh_after:
+                return False
+            try:
+                info = await asyncio.wait_for(
+                    self._api_get("/api/v1/server/info"),
+                    timeout=_HELPER_REFRESH_TIMEOUT_SECONDS,
+                )
+                if bool((info or {}).get("data", {}).get("helper_connected")):
+                    self._helper_connected = True
+                    return True
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "[bluebubbles] helper status refresh failed: %s",
+                    type(exc).__name__,
+                )
+
+            self._helper_refresh_after = (
+                loop.time() + _HELPER_REFRESH_COOLDOWN_SECONDS
+            )
+            return False
+
     async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:
         """Fire a private-API chat action (typing/read); True only if the call was made."""
-        if not self._private_api_enabled or not self._helper_connected or not self.client:
+        if not await self._helper_is_connected() or (client := self.client) is None:
             return False
         with suppress(Exception):
             if guid := await self._resolve_chat_guid(chat_id):
                 url = self._api_url(f"/api/v1/chat/{quote(guid, safe='')}/{action}")
-                await getattr(self.client, method)(url, timeout=5)
+                (await getattr(client, method)(url, timeout=5)).raise_for_status()
                 return True
         return False
 
@@ -368,6 +419,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()] or [text]
         chunks = [c for para in paragraphs for c in (
             [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
+        use_private_reply = bool(reply_to and await self._helper_is_connected())
         last = SendResult(success=True)
         for chunk in chunks:
             guid = await self._resolve_chat_guid(chat_id)
@@ -376,7 +428,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     return await self._create_chat_for_handle(chat_id, chunk)
                 return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
             payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
-            if reply_to and self._private_api_enabled and self._helper_connected:
+            if use_private_reply:
                 payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
             if not (last := await self._post_message("/api/v1/message/text", payload)).success:
                 return last

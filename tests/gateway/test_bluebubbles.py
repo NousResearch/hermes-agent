@@ -477,6 +477,250 @@ class TestBlueBubblesWebhookRegistration:
 
 
 # ---------------------------------------------------------------------------
+# Regression for #34371: BlueBubbles can report helper_connected=False while
+# its macOS helper is still attaching during gateway startup.
+# ---------------------------------------------------------------------------
+
+
+class TestBlueBubblesHelperRefresh:
+    @staticmethod
+    def _enable_private_api(adapter):
+        adapter._private_api_enabled = True
+        adapter.client = object()
+
+    @pytest.mark.asyncio
+    async def test_positive_cache_still_requires_private_api_and_client(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch)
+        adapter._helper_connected = True
+        adapter._private_api_enabled = True
+        adapter.client = None
+
+        assert await adapter._helper_is_connected() is False
+
+        adapter.client = object()
+        adapter._private_api_enabled = False
+        assert await adapter._helper_is_connected() is False
+
+    @pytest.mark.asyncio
+    async def test_negative_snapshot_refreshes_and_caches_success(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        self._enable_private_api(adapter)
+        calls = 0
+
+        async def fake_api_get(path):
+            nonlocal calls
+            calls += 1
+            assert path == "/api/v1/server/info"
+            return {"data": {"helper_connected": True}}
+
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+
+        assert await adapter._helper_is_connected() is True
+        assert await adapter._helper_is_connected() is True
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_negative_refresh_is_cooled_down(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        self._enable_private_api(adapter)
+        results = iter([False, True])
+        calls = 0
+
+        async def fake_api_get(path):
+            nonlocal calls
+            calls += 1
+            return {"data": {"helper_connected": next(results)}}
+
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+
+        assert await adapter._helper_is_connected() is False
+        assert await adapter._helper_is_connected() is False
+        assert calls == 1
+
+        adapter._helper_refresh_after = 0.0
+        assert await adapter._helper_is_connected() is True
+        assert calls == 2
+
+    @pytest.mark.asyncio
+    async def test_cancelled_refresh_propagates_without_cooldown(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        self._enable_private_api(adapter)
+
+        async def fake_api_get(path):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._helper_is_connected()
+
+        assert adapter._helper_refresh_after == 0.0
+        assert adapter._helper_refresh_lock.locked() is False
+
+    @pytest.mark.asyncio
+    async def test_concurrent_refresh_is_single_flight(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        self._enable_private_api(adapter)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fake_api_get(path):
+            nonlocal calls
+            calls += 1
+            entered.set()
+            await release.wait()
+            return {"data": {"helper_connected": True}}
+
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+        tasks = [
+            asyncio.create_task(adapter._helper_is_connected())
+            for _ in range(5)
+        ]
+        await entered.wait()
+        release.set()
+
+        assert await asyncio.gather(*tasks) == [True] * 5
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_negative_refresh_is_single_flight(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        self._enable_private_api(adapter)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fake_api_get(path):
+            nonlocal calls
+            calls += 1
+            entered.set()
+            await release.wait()
+            return {"data": {"helper_connected": False}}
+
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+        tasks = [
+            asyncio.create_task(adapter._helper_is_connected())
+            for _ in range(5)
+        ]
+        await entered.wait()
+        release.set()
+
+        assert await asyncio.gather(*tasks) == [False] * 5
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_restores_typing_stop_and_read_receipt(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        requests = []
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+        class Client:
+            async def post(self, url, **kwargs):
+                requests.append(("POST", url, kwargs))
+                return Response()
+
+            async def delete(self, url, **kwargs):
+                requests.append(("DELETE", url, kwargs))
+                return Response()
+
+        adapter.client = Client()
+
+        async def fake_api_get(path):
+            return {"data": {"helper_connected": True}}
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        await adapter.send_typing("chat")
+        await adapter.stop_typing("chat")
+        assert await adapter.mark_read("chat") is True
+
+        assert [method for method, _, _ in requests] == [
+            "POST",
+            "DELETE",
+            "POST",
+        ]
+        assert requests[0][1].endswith("/typing?password=secret")
+        assert requests[1][1].endswith("/typing?password=secret")
+        assert requests[2][1].endswith("/read?password=secret")
+
+    @pytest.mark.asyncio
+    async def test_http_failure_is_nonfatal_for_typing_and_read(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+
+        class Response:
+            def raise_for_status(self):
+                raise RuntimeError("server rejected request")
+
+        class Client:
+            async def post(self, url, **kwargs):
+                return Response()
+
+            async def delete(self, url, **kwargs):
+                return Response()
+
+        adapter.client = Client()
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        await adapter.send_typing("chat")
+        await adapter.stop_typing("chat")
+        assert await adapter.mark_read("chat") is False
+
+    @pytest.mark.asyncio
+    async def test_reply_refresh_runs_once_for_all_chunks(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        helper_calls = 0
+        payloads = []
+
+        async def fake_helper_is_connected():
+            nonlocal helper_calls
+            helper_calls += 1
+            return True
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+
+        async def fake_api_post(path, payload):
+            payloads.append(payload)
+            return {"data": {"guid": f"message-{len(payloads)}"}}
+
+        monkeypatch.setattr(adapter, "_helper_is_connected", fake_helper_is_connected)
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send(
+            "chat",
+            "first paragraph\n\nsecond paragraph",
+            reply_to="original-message",
+        )
+
+        assert result.success is True
+        assert helper_calls == 1
+        assert len(payloads) == 2
+        assert all(payload["method"] == "private-api" for payload in payloads)
+        assert all(
+            payload["selectedMessageGuid"] == "original-message"
+            for payload in payloads
+        )
+
+
+# ---------------------------------------------------------------------------
 # Regression for #78183: httpx timeout exceptions stringify to "" which
 # defeats _is_timeout_error, causing the plain-text fallback to re-send an
 # already-delivered message (duplicate delivery).

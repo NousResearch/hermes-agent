@@ -241,6 +241,33 @@ def test_reconcile_keeps_a_slot_for_a_retryable_task(
     ledger.close()
 
 
+def test_reconcile_keeps_bound_retryable_task_past_stale_timeout(
+    tmp_path: Path,
+) -> None:
+    repo = initialized_repository(tmp_path)
+    sha_a = commit(repo, "a.txt", "a")
+    sha_b = commit(repo, "b.txt", "b")
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    now = [datetime(2026, 8, 31, tzinfo=UTC)]
+    pool = PooledLocalGitRepository(
+        ledger,
+        tmp_path / "pool",
+        slot_count=1,
+        owner_pid=lambda: 4242,
+        clock=lambda: now[0],
+        lease_timeout=timedelta(hours=10),
+    )
+
+    pool.prepare_receipt_worktree(repo, receipt(sha_a, pr_number=1))
+    pool.bind_task(receipt(sha_a, pr_number=1), "task-1", "repairs")
+    now[0] += timedelta(hours=11)
+
+    assert pool.reconcile_leases(FakeKanban({("repairs", "task-1"): "blocked"})) == 0
+    with pytest.raises(WorktreePoolExhausted):
+        pool.prepare_receipt_worktree(repo, receipt(sha_b, pr_number=2))
+    ledger.close()
+
+
 def test_reconcile_leaves_a_slot_whose_task_is_still_running(tmp_path: Path) -> None:
     repo = initialized_repository(tmp_path)
     sha_a = commit(repo, "a.txt", "a")

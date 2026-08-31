@@ -1052,7 +1052,7 @@ class FeedbackLedger:
         stale = _aware_utc(stale_before, "stale_before")
         with self._transaction():
             row = self._connection.execute(
-                "SELECT status, owner_pid, updated_at, lease_version "
+                "SELECT status, owner_pid, updated_at, lease_version, task_id "
                 "FROM worktree_pool_slots WHERE slot_id = ?",
                 (slot_id,),
             ).fetchone()
@@ -1060,6 +1060,14 @@ class FeedbackLedger:
             if row is not None:
                 version = int(row[3]) + 1
                 if row[0] == "leased":
+                    # A bound Kanban task owns this checkout until the board
+                    # positively reports that task terminal and
+                    # reconcile_leases releases it.  Time-based reclamation is
+                    # only safe for an unbound lease stranded mid-dispatch;
+                    # retryable blocked/triage cards may legitimately outlive
+                    # the timeout and must retain their exact-head workspace.
+                    if row[4] is not None:
+                        return None
                     updated_at = datetime.fromisoformat(str(row[2]))
                     if updated_at >= stale:
                         return None

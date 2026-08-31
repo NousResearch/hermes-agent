@@ -751,6 +751,43 @@ class GatewayAuthorizationMixin:
         if global_allowlist:
             allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
 
+        # Adapters that resolve username-shaped allowlist entries to numeric
+        # IDs at connect time (Discord's ``_resolve_allowed_usernames``) keep
+        # the authoritative resolved set in adapter memory and mirror it into
+        # the process env. The gateway's per-turn .env hot-reload
+        # (``load_hermes_dotenv(override=True)`` in
+        # ``_reload_runtime_env_preserving_config_authority``) restores the
+        # RAW username strings from the .env file into the env, so from the
+        # second agent turn onward ``platform_allowlist`` holds usernames
+        # while ``source.user_id`` is numeric — the operator is admitted by
+        # the adapter but dropped here as "Unauthorized user" (Aug 2026:
+        # responded once, then silence). Union in the adapter's resolved IDs
+        # so runtime resolution survives env reloads. This is a UNION of the
+        # resolution of entries already present in the configured allowlist —
+        # never a widening: the empty-allowlist fail-closed branch above has
+        # already returned, and adapters only resolve entries the operator
+        # wrote. Guarded on ``platform_allowlist`` so group/global-only
+        # configurations never consult adapter memory, and duck-typed +
+        # type-checked so bare-runner test fixtures with mock adapters
+        # (pitfall #17) cannot auto-truthy their way into an authorization.
+        if platform_allowlist:
+            try:
+                adapter = self._adapter_for_source(source)
+            except Exception:
+                adapter = None
+            resolver = getattr(adapter, "resolved_allowlist_user_ids", None)
+            if callable(resolver):
+                try:
+                    resolved_ids = resolver()
+                except Exception:
+                    resolved_ids = None
+                if isinstance(resolved_ids, (set, frozenset, list, tuple)):
+                    allowed_ids.update(
+                        str(entry).strip()
+                        for entry in resolved_ids
+                        if isinstance(entry, (str, int)) and str(entry).strip()
+                    )
+
         # "*" in any allowlist means allow everyone (consistent with
         # SIGNAL_GROUP_ALLOWED_USERS precedent)
         if "*" in allowed_ids:

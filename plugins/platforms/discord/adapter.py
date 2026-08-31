@@ -6701,6 +6701,27 @@ class DiscordAdapter(BasePlatformAdapter):
             if str(entry).strip().isdigit()
         }
 
+    def resolved_allowlist_user_ids(self) -> set:
+        """Numeric user IDs from the connect-time username resolution.
+
+        ``_resolve_allowed_usernames`` turns username-shaped
+        ``DISCORD_ALLOWED_USERS`` entries into numeric IDs and keeps the
+        authoritative result in ``self._allowed_user_ids``. The env-var
+        mirror of that result does NOT survive the gateway's per-turn .env
+        hot-reload (``load_hermes_dotenv(override=True)`` restores the raw
+        usernames from the file), so the gateway authz layer
+        (``GatewayAuthorizationMixin._is_user_authorized``) calls this to
+        union the resolved IDs back into the allowlist it builds from env.
+
+        Returns only numeric entries: usernames are not comparable to
+        ``source.user_id`` and the ``"*"`` wildcard is env-file-persistent
+        already (resolution preserves it in the file's value), so passing it
+        through here would only widen access on the gateway layer beyond
+        what the operator's current .env says.
+        """
+        allowed = getattr(self, "_allowed_user_ids", None) or set()
+        return {str(uid) for uid in allowed if str(uid).isdigit()}
+
     def _discord_allow_all_users(self) -> bool:
         """Per-profile DISCORD_ALLOW_ALL_USERS flag."""
         raw = self._gate_raw("allow_all_users", "DISCORD_ALLOW_ALL_USERS")

@@ -204,7 +204,14 @@ _ENV_LOOKUP_VALUE_RE = re.compile(
 # ``(?:[A-Za-z0-9_\-]+\.)+`` (exponential backtracking on long dotted runs).
 # The ``*`` runs bordering {_SECRET_CFG_NAMES} must stay backtrackable
 # (secret words are matchable by the class, e.g. ``app.api.key=…``).
+# The lookbehind anchors each attempt to the start of a key run: without it,
+# ``re.sub`` retries the backtrackable ``*`` prefix at every byte of a long
+# non-matching dotted run, making the sub quadratic whenever the text contains
+# a secret keyword anywhere (the ``_CFG_SECRET_WORD_RE`` pre-gate only skips
+# secret-free text). Match set is unchanged — any match starting mid-run
+# implies a leftmost match starting at the run start (#99255).
 _CFG_DOTTED_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.\-])"
     rf"([A-Za-z0-9_\-]++\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*+"
     rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++)"
     rf"={_CFG_VALUE}",

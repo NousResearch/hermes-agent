@@ -690,6 +690,23 @@ class TestConfigKeyRedosResistance:
         assert redact_sensitive_text(text, force=True) == text
         assert time.perf_counter() - t0 < 2.0
 
+    def test_dotted_cfg_scan_stays_linear_with_keyword_elsewhere(self):
+        """_CFG_DOTTED_RE must stay linear once the pre-gate passes.
+
+        The ``_CFG_SECRET_WORD_RE`` pre-gate only skips secret-FREE text, so a
+        payload that contains a real secret assignment AND a long opaque
+        dotted run still reaches the backtrackable ``*`` prefix. Without the
+        run-start lookbehind the sub retries that prefix from every byte of
+        the run (quadratic while holding the GIL).
+        """
+        import time
+
+        text = "password=hunter2\n" + "a." * 15_000 + "=value"
+        t0 = time.perf_counter()
+        result = redact_sensitive_text(text, force=True)
+        assert "hunter2" not in result
+        assert time.perf_counter() - t0 < 2.0
+
     def test_yaml_assign_redos_resistance(self):
         """_YAML_ASSIGN_RE must not backtrack excessively on long inputs."""
         import time

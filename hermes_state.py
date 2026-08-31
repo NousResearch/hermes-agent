@@ -5053,7 +5053,82 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     self._close_read_conn(conn)
             return
         with self._lock:
+            if self._conn is None:
+                # close() ran while a reader was still unwinding (#94736
+                # class) — reopen instead of yielding None to a .execute.
+                self._reopen_after_close_locked(context="read")
             yield cast(sqlite3.Connection, self._conn)
+
+    def _reopen_after_close_locked(self, context: str = "write") -> None:
+        """Reopen the writer connection after ``close()`` raced a live caller.
+
+        The #94736 failure shape: a teardown owner (cron ``run_job``'s
+        ``finally``, a delegate timeout owner abandoning its worker, agent
+        ``close()``) calls ``SessionDB.close()`` — which sets ``_conn = None``
+        — while a still-unwinding worker thread has one more transcript flush
+        to land. The next ``_execute_write`` then died on
+        ``'NoneType' object has no attribute 'execute'``, the conversation
+        loop force-ended the turn as ``session_persistence_failed``, and the
+        in-flight tail of the subagent/cron session was silently dropped
+        (delivered as ``last_status: ok``).
+
+        The transcript append is THE critical write — losing it destroys the
+        turn — so at this shared persistence boundary we self-heal: reopen a
+        connection to the same database file and let the write land. The
+        reopen is loud (WARNING names the race) and bounded (only fires when
+        ``_conn`` is ``None``, i.e. after an explicit ``close()`` — the
+        constructor never leaves a live instance with a ``None`` handle).
+        ``__del__`` delegates to ``close()``, so the reopened connection is
+        still released at GC/exit time.
+
+        Caller must hold ``self._lock``. Raises ``sqlite3.OperationalError``
+        with an explicit cause when the reopen itself fails, so the surfaced
+        persistence error names the teardown race instead of the opaque
+        ``NoneType`` attribute error.
+        """
+        if self.read_only:
+            raise sqlite3.ProgrammingError(
+                f"SessionDB for {self.db_path} was closed (read-only handle); "
+                f"cannot serve a {context} after close()"
+            )
+        logger.warning(
+            "state.db connection for %s was closed while a %s was still in "
+            "flight — reopening (teardown/worker race, #94736)",
+            self.db_path,
+            context,
+        )
+        try:
+            conn = _connect_tracked_db(
+                str(self.db_path),
+                check_same_thread=False,
+                timeout=1.0,
+                isolation_level=None,
+            )
+        except Exception as exc:
+            raise sqlite3.OperationalError(
+                f"state.db connection was closed while a {context} was still "
+                f"in flight (a session-teardown path called close() before "
+                f"this worker finished — #94736) and the automatic reopen "
+                f"failed: {exc}"
+            ) from exc
+        try:
+            conn.row_factory = sqlite3.Row
+            self._wal_active = (
+                apply_wal_with_fallback(conn, db_label="state.db") == "wal"
+            )
+            apply_database_pragmas(conn, db_label="state.db")
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
+        except Exception as exc:
+            self._close_connection_quietly(conn)
+            raise sqlite3.OperationalError(
+                f"state.db reopen after close() succeeded but connection "
+                f"setup failed: {exc}"
+            ) from exc
+        # Schema was initialised by this instance's original open; the file
+        # cannot have lost it, so no _init_schema here (no DDL races with
+        # sibling processes during teardown).
+        self._conn = conn
 
     # ── Core write helper ──
 
@@ -5355,6 +5430,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         while True:
             try:
                 with self._lock:
+                    if self._conn is None:
+                        # close() ran while this writer was still unwinding
+                        # (#94736) — reopen instead of dying on None.execute.
+                        self._reopen_after_close_locked(context="write")
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         result = fn(self._conn)

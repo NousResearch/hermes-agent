@@ -338,6 +338,53 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_verifier_cannot_complete_with_pytest_usage_failure(
+    monkeypatch, worker_env,
+):
+    """A verifier must block, not complete, when no tests were collected.
+
+    Regression: a contract verifier reported ``pytest`` exit 4 and explicitly
+    said behavioral evidence was unavailable, yet ``kanban_complete`` moved
+    the task to done and released its downstream writer.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET title = ?, body = ?, assignee = ? WHERE id = ?",
+                (
+                    "Verify contracts and focused tests",
+                    "Acceptance criteria: focused behavioral tests pass or "
+                    "fail with a concrete regression.",
+                    "test-contract-steward",
+                    worker_env,
+                ),
+            )
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_PROFILE", "test-contract-steward")
+
+    out = json.loads(kt._handle_complete({
+        "summary": (
+            "Static checks passed, but pytest cannot discover a test suite; "
+            "pytest -q exited 4, so behavioral verification is unavailable."
+        ),
+        "metadata": {
+            "results": {"pytest": "exit 4; no focused test result available"},
+        },
+    }))
+
+    assert "Verifier completion rejected" in out["error"]
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
+    finally:
+        conn.close()
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

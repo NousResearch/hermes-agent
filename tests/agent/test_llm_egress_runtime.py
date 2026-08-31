@@ -3013,6 +3013,62 @@ def test_real_read_file_codex_responses_result_keeps_exact_source_provenance(
     assert receipt.decision.source_segment_count == 1
 
 
+def test_codex_sdk_bypass_input_keeps_exact_source_provenance(
+    tmp_path, monkeypatch
+):
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from agent.source_provenance_tools import (
+        attach_trusted_source_provenance_metadata,
+        build_source_provenance_sidecar,
+        source_provenance_activation,
+    )
+    from agent.tool_dispatch_helpers import make_tool_result_message
+    from tools.file_tools import read_file_tool
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    source = tmp_path / "source.py"
+    source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    agent = _agent(tmp_path / "egress")
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent._current_api_request_id = "turn-1:api:1"
+
+    with source_provenance_activation(agent, "read_file"):
+        result = read_file_tool(str(source), task_id="egress-codex-bypass-read")
+    metadata = attach_trusted_source_provenance_metadata(
+        agent, "read_file", content=result
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_read_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        },
+        make_tool_result_message(
+            "read_file", result, "call_read_1", source_provenance=metadata
+        ),
+    ]
+    sidecar = build_source_provenance_sidecar(messages)
+    input_items = _chat_messages_to_responses_input(messages)
+    agent._current_api_request_id = "turn-1:api:2"
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": "test-model",
+            "extra_body": {"input": input_items},
+            "_hermes_source_provenance": sidecar,
+        },
+    )
+
+    assert authorized["extra_body"]["input"][1]["output"] == result
+    assert receipt.decision.source_grant_count == 1
+    assert receipt.decision.source_segment_count == 1
+
+
 def test_parallel_read_file_codex_results_keep_distinct_source_provenance(
     tmp_path, monkeypatch
 ):

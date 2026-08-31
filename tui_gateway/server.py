@@ -3834,7 +3834,12 @@ def _ensure_session_db_row(session: dict) -> bool:
         db = _get_db()
         close_db = False
     if db is None:
-        return False
+        # Fail loud ONLY when the store actually failed to open (#98924):
+        # _db_error records the SessionDB open exception. A None db with no
+        # recorded error means "no store in this context" (degraded harness,
+        # store deliberately absent) — that keeps the pinned best-effort
+        # contract and stays True.
+        return _db_error is None
     # The session's own model/effort/fast pick — the composer override shipped on
     # session.create, or a restored /model switch — must own the row's model +
     # model_config. The agent isn't built yet at first prompt.submit, so derive

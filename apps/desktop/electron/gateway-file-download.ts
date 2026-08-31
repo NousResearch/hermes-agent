@@ -52,6 +52,37 @@ export interface PumpDeps {
   tempPathFor?: (destPath: string) => string
 }
 
+// Production deps: exclusive create on the real filesystem. Shared by the
+// streaming save and the data-URL fallback in main.ts, and exercised directly
+// by the real-filesystem tests so the guarantees are proven against node:fs,
+// not only against fakes.
+export function fsPumpDeps(): PumpDeps {
+  return {
+    createWriteStream: tempPath => fs.createWriteStream(tempPath, { flags: 'wx' }),
+    rename: (fromPath, toPath) => fs.promises.rename(fromPath, toPath),
+    unlink: tempPath => fs.promises.unlink(tempPath)
+  }
+}
+
+// How long to wait for a destroyed write stream to emit 'close' before giving
+// up and unlinking anyway. fs.WriteStream always emits it; the grace period only
+// protects against a stream shape that never does.
+const CLOSE_GRACE_MS = 2000
+
+// Resolve once `ws` has released its descriptor. destroy() closes the fd
+// asynchronously, and Windows rejects unlink/rename on a path whose handle is
+// still open, so cleanup must not run until 'close' has fired.
+function awaitClosed(ws: WriteStreamLike): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, CLOSE_GRACE_MS)
+
+    ws.once('close', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
 export interface GatewayFileBackendDeps<T> {
   ensureLegacy: (profile: null | string) => Promise<T>
   ensureRegistry: (connectionId: string, profile: null | string) => Promise<T>
@@ -96,10 +127,25 @@ export async function resolveGatewayFileBackend<T>(
   return { connection, connectionId, profile }
 }
 
-// Stream `res` into `destPath`, honoring backpressure. On any read/write error
-// the write stream is torn down and the (partial) destination file is removed
-// before the returned promise rejects, so a failed download never leaves a
-// truncated file behind.
+// Sibling temp name for an in-flight download. It lives in the destination's own
+// directory so the final step is a same-volume rename (and stays inside whatever
+// directory the save dialog approved). The name is short and fixed rather than
+// derived from the destination's basename so a long user-chosen filename cannot
+// push the temp name past the filesystem limit, and the random suffix keeps two
+// concurrent saves into the same directory from sharing a temp file. The leading
+// dot hides the in-flight file in Finder/ls while it exists.
+export function downloadTempPath(destPath: string): string {
+  return path.join(path.dirname(destPath), `.hermes-download-${crypto.randomBytes(4).toString('hex')}.part`)
+}
+
+// Stream `res` to `destPath`, honoring backpressure. Bytes land in a sibling
+// temp file first and are renamed onto `destPath` only after the whole body has
+// been written and the descriptor released. The destination itself is never
+// opened before that point, so a download that fails part-way leaves any file
+// already at `destPath` exactly as it was — only the temp file is removed before
+// the returned promise rejects. (Opening `destPath` directly truncated it on the
+// spot and the error path then unlinked it, destroying a pre-existing file the
+// user had chosen to overwrite; #96597.)
 export function pumpStreamToFile(res: ReadableLike, destPath: string, deps: PumpDeps): Promise<void> {
   return new Promise((resolve, reject) => {
     const tempPath = (deps.tempPathFor ?? downloadTempPath)(destPath)

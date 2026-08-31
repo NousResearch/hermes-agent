@@ -194,8 +194,20 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # this entry is a belt-and-suspenders fallback for stripped/source-build installs that somehow dropped
     # it. See #40490.
     "tool.vision": ("Pillow==12.3.0",),
-    "tool.doc_extract": ("firecrawl-anydoc==0.2.4",),  # imports as `anydoc`; lockstep with pyproject
-    # MCP client SDK for the cua-driver, so computer_use never dead-ends on `No module named 'mcp'`.
+    # Document-to-Markdown extraction for read_file (firecrawl-anydoc, Rust
+    # core, imports as `anydoc`). Widens read_file's auto-extraction beyond
+    # the stdlib .ipynb/.docx/.xlsx to PDF, legacy Office (.doc/.ppt/.xls),
+    # OpenDocument, RTF, and EPUB. Installed on first read of such a file;
+    # the call site uses prompt=False so read_file never blocks on a prompt.
+    # NOTE: bundled in core pyproject dependencies since the hosted-OCR
+    # wiring (keep this lazy pin in lockstep with pyproject) — this entry
+    # survives as the self-heal path for lean/partial installs.
+    "tool.doc_extract": ("firecrawl-anydoc==0.2.4",),  # lockstep with pyproject
+    # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
+    # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
+    # extras in pyproject.toml. The one-liner installer pulls this in via
+    # `[all]`; lazy-installing here covers lean / partial / broken-extra
+    # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
         "mcp==2.0.0",
         "httpx2==2.7.0",  # mcp 2.x HTTP stack — sync with pyproject [computer-use]

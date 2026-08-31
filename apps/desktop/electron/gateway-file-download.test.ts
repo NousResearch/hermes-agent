@@ -5,6 +5,7 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import { pathForRegistryBackendRequest } from './connection-config'
+import type { PumpDeps } from './gateway-file-download'
 import {
   downloadTempPath,
   filenameFromContentDisposition,
@@ -13,7 +14,8 @@ import {
   isNotFoundError,
   parseDataUrlToBuffer,
   pumpStreamToFile,
-  resolveGatewayFileBackend
+  resolveGatewayFileBackend,
+  writeBufferToFile
 } from './gateway-file-download'
 
 // A Readable-like response driven manually in tests.

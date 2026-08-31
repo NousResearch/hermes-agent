@@ -15,13 +15,13 @@ Ground answers and documents in cited, verifiable sources.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/research/grounded-citations` |
-| Version | `1.2.0` |
+| Path | `skills/research\grounded-citations` |
+| Version | `1.1.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Citations`, `Grounding`, `Sources`, `Web`, `Reports` |
-| Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf), [`reddit-reading`](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading), [`rss-feeds`](/docs/user-guide/skills/optional/research/research-rss-feeds), [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content) |
+| Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), `ocr-and-documents` |
 
 ## Reference: full SKILL.md
 

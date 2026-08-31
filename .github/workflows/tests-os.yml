@@ -51,7 +51,9 @@ concurrency:
 jobs:
   os-tests:
     name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    # The 32-core Windows label is private to Nous. Forks keep the same test
+    # contract on standard GitHub-hosted runners.
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && matrix.runner || matrix.fork_runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -59,9 +61,11 @@ jobs:
         include:
           - name: macOS-only tests
             runner: macos-latest
+            fork_runner: macos-latest
             marker: macos_only
           - name: Windows-only tests
-            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
+            runner: windows-latest-32-core
+            fork_runner: windows-latest
             marker: windows_only
     steps:
       - name: Checkout code

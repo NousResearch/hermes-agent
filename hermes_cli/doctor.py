@@ -30,7 +30,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches
 
 from hermes_cli.doctor_config import (
     _check_config_drift,
@@ -64,12 +64,35 @@ from hermes_cli.doctor_state import (
 )
 
 _PROVIDER_ENV_HINTS = (
-    "DEEPINFRA_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "OPENAI_BASE_URL", "NOUS_API_KEY", "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "KIMI_API_KEY",
-    "KIMI_CN_API_KEY", "GMI_API_KEY", "FIREWORKS_API_KEY", "ACTUAL_API_KEY", "ACTUAL_BASE_URL", "MINIMAX_API_KEY",
-    "MINIMAX_CN_API_KEY", "KILOCODE_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "HF_TOKEN",
-    "AI_GATEWAY_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY", "COMMANDCODE_API_KEY", "XIAOMI_API_KEY",
-    "TOKENHUB_API_KEY", "TOKENPLAN_API_KEY",
+    "DEEPINFRA_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_TOKEN",
+    "OPENAI_BASE_URL",
+    "NOUS_API_KEY",
+    "GLM_API_KEY",
+    "ZAI_API_KEY",
+    "Z_AI_API_KEY",
+    "KIMI_API_KEY",
+    "KIMI_CN_API_KEY",
+    "GMI_API_KEY",
+    "FIREWORKS_API_KEY",
+    "ACTUAL_API_KEY",
+    "ACTUAL_BASE_URL",
+    "MINIMAX_API_KEY",
+    "MINIMAX_CN_API_KEY",
+    "KILOCODE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "HF_TOKEN",
+    "AI_GATEWAY_API_KEY",
+    "OPENCODE_ZEN_API_KEY",
+    "OPENCODE_GO_API_KEY",
+    "COMMANDCODE_API_KEY",
+    "XIAOMI_API_KEY",
+    "TOKENHUB_API_KEY",
+    "TOKENPLAN_API_KEY",
 )
 
 
@@ -143,7 +166,7 @@ def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
     ]
     # Non-default kanban boards each keep their own kanban.db.
     for board_db in sorted((hermes_home / "kanban" / "boards").glob("*/kanban.db")):
-        entries.append((board_db.relative_to(hermes_home).as_posix(), board_db))
+        entries.append((str(board_db.relative_to(hermes_home)), board_db))
     return entries
 
 
@@ -312,48 +335,6 @@ def _termux_install_all_fallback_notes() -> list[str]:
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
-
-
-def _configured_model_uses_keyless_local_endpoint(config_path: Path) -> bool:
-    """Return True when the selected provider is configured on loopback.
-
-    A local OpenAI-compatible endpoint such as Ollama does not need an API key,
-    so Doctor must not recommend the setup wizard solely because its .env file
-    is intentionally empty.
-    """
-    if not config_path.exists():
-        return False
-
-    try:
-        from hermes_cli.config import read_user_config_raw
-
-        config = read_user_config_raw(config_path)
-        model = config.get("model") or {}
-        provider_name = str(model.get("provider") or "").strip().lower()
-        providers = config.get("providers") or {}
-        if not provider_name or not isinstance(providers, dict):
-            return False
-
-        provider_config = next(
-            (
-                value
-                for name, value in providers.items()
-                if str(name).strip().lower() == provider_name and isinstance(value, dict)
-            ),
-            None,
-        )
-        if not provider_config:
-            return False
-
-        endpoint = str(
-            provider_config.get("api")
-            or provider_config.get("base_url")
-            or model.get("base_url")
-            or ""
-        ).strip()
-        return base_url_hostname(endpoint) in {"localhost", "127.0.0.1", "::1"}
-    except Exception:
-        return False
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -1244,54 +1225,33 @@ def _macos_desktop_dr(app: Path) -> str | None:
     return (proc.stdout or "") + (proc.stderr or "")
 
 
-def check_macos_tcc_anchor_removed() -> None:
-    """Detect and repair a venv bricked by the reverted TCC anchor.
+def check_macos_tcc_anchor(should_fix: bool = False) -> None:
+    """Report (and optionally install) the dylib-complete TCC anchor (#95596).
 
-    The anchor (#95131/#95478, reverted) replaced ``venv/bin/python`` with a
-    real-file copy of the uv-store interpreter. On real Macs that copy could
-    not start: its ``LC_RPATH`` (``@executable_path/../lib``) resolved to
-    ``venv/lib/``, which holds no libpython — every hermes command died in
-    dyld (#95425), and re-pointed aliases lost the stdlib (#95541). The
-    revert stops NEW anchors; this check heals venvs the anchor already
-    converted, by restoring ``bin/python`` to a symlink pointing at the
-    recorded source interpreter (the marker file the anchor wrote).
-    Silent on non-macOS and on venvs the anchor never touched.
+    Silent on non-macOS and for interpreters that are not uv-managed.  Never
+    raises — a failed check must not crash doctor.  Install is gated by the
+    module's pre-install boot probe, so ``--fix`` cannot brick the CLI.
     """
-    if sys.platform != "darwin":
-        return
-    # Resolved at call time via the module global so tests can retarget it.
-    root = Path(globals()["__file__"]).resolve().parents[1]
-    for name in ("venv", ".venv"):
-        venv_bin = root / name / "bin"
-        marker = venv_bin / ".tcc-anchor-source"
-        if not marker.is_file():
-            continue
-        try:
-            source = Path(marker.read_text(encoding="utf-8").strip())
-            venv_py = venv_bin / "python"
-            if source.is_file() and venv_py.is_file() and not venv_py.is_symlink():
-                tmp = venv_bin / ".python-unanchor-tmp"
-                tmp.unlink(missing_ok=True)
-                os.symlink(source, tmp)
-                os.replace(tmp, venv_py)
-                # Restore versioned aliases to point at bin/python.
-                for alias in venv_bin.glob("python3*"):
-                    if alias.is_symlink() or alias.is_file():
-                        alias_tmp = venv_bin / f".{alias.name}.unanchor-tmp"
-                        alias_tmp.unlink(missing_ok=True)
-                        os.symlink("python", alias_tmp)
-                        os.replace(alias_tmp, alias)
-            marker.unlink(missing_ok=True)
-            check_ok(
-                "macOS TCC anchor removed",
-                f"({name}/bin/python restored to a symlink; the anchor "
-                "(#95425/#95541) is reverted)",
-            )
-        except Exception as e:  # diagnostics must never crash
-            check_warn(
-                "macOS TCC anchor cleanup failed",
-                f"({e}) — restore manually: ln -sf $(cat {marker}) {venv_bin / 'python'}",
-            )
+    try:
+        from hermes_cli import macos_tcc_anchor as tcc
+
+        status, detail = tcc.tcc_anchor_state()
+        if status == "skip":
+            return
+        if status == "active":
+            check_ok("macOS TCC anchor active", f"({detail})")
+            return
+        if should_fix:
+            anchored = tcc.ensure_tcc_anchor()
+            if anchored is not None:
+                check_ok("macOS TCC anchor installed", f"({anchored})")
+                return
+        check_warn(
+            "macOS TCC anchor missing" if status == "missing" else "macOS TCC anchor stale",
+            f"({detail})",
+        )
+    except Exception as e:  # diagnostics must never crash
+        check_warn("macOS TCC anchor check failed", f"({e})")
 
 
 def check_macos_full_disk_access() -> None:
@@ -1513,10 +1473,9 @@ def run_doctor(args):
     else:
         check_warn("Not in virtual environment", "(recommended)")
 
-    # macOS TCC anchor REVERTED (#95425/#95541: anchored copies couldn't load
-    # libpython — every hermes command died in dyld). This heals venvs the
-    # anchor already converted. Silent on non-macOS.
-    check_macos_tcc_anchor_removed()
+    # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the
+    # mechanism reverted in #95563. Silent on non-macOS.
+    check_macos_tcc_anchor(should_fix=should_fix)
 
     # macOS Full Disk Access (issue #52010 follow-up): one grant silences
     # every per-folder prompt permanently. Silent on non-macOS.
@@ -1568,7 +1527,6 @@ def run_doctor(args):
     # Managed scope (administrator-pinned config/env), when present.
     managed_scope_check()
     # Check ~/.hermes/.env (primary location for user config)
-    config_path = HERMES_HOME / 'config.yaml'
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
@@ -1582,8 +1540,6 @@ def run_doctor(args):
             content = env_path.read_text(encoding="latin-1")
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
-        elif _configured_model_uses_keyless_local_endpoint(config_path):
-            check_info("No API key needed for configured local endpoint")
         else:
             check_warn(f"No API key found in {_DHH}/.env")
             issues.append("Run 'hermes setup' to configure API keys")
@@ -1612,6 +1568,7 @@ def run_doctor(args):
                 issues.append("Run 'hermes setup' to create .env")
     
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
+    config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
         check_ok(f"{_DHH}/config.yaml exists")
 
@@ -3194,43 +3151,38 @@ def run_doctor(args):
     _probes.append(("AWS Bedrock", _probe_bedrock))
     _probes.append(("Azure Foundry (Entra ID)", _probe_azure_entra))
 
-    _offline = bool(getattr(args, "offline", False))
-    if _offline:
-        print(color("  Skipped provider connectivity probes (--offline).", Colors.DIM))
-        _results = []
-    else:
-        # Print a single status line so users see something happening, then
-        # fan out. ``\r`` clears it once the first real result line lands.
-        print(f"  {color(f'Running {len(_probes)} connectivity checks in parallel…', Colors.DIM)}",
-              end="", flush=True)
+    # Print a single status line so users see something happening, then
+    # fan out. ``\r`` clears it once the first real result line lands.
+    print(f"  {color(f'Running {len(_probes)} connectivity checks in parallel…', Colors.DIM)}",
+          end="", flush=True)
 
-        # Disable boto3's EC2 instance-metadata-service probe for the duration
-        # of the parallel block. boto's default credential chain tries
-        # 169.254.169.254 with a multi-second timeout when we're not on EC2,
-        # which dominated the section's wall time before this fix
-        # (~2s on a developer laptop, even with the rest parallelized).
-        # Set on the parent thread before submitting work so the env-var
-        # mutation never races with another worker. has_aws_credentials() in
-        # the bedrock probe already gates on real env-var creds, so IMDS is
-        # never the legitimate source for `hermes doctor`.
-        _imds_prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
-        os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
-        try:
-            # 8 workers is plenty — each probe is a single HTTP call plus a TLS
-            # handshake. More than that wastes thread-startup cost and risks
-            # noisy output if anything ever printed from inside a worker.
-            with _futures.ThreadPoolExecutor(max_workers=8,
-                                             thread_name_prefix="doctor-probe") as _ex:
-                _futures_in_order = [_ex.submit(_fn) for _, _fn in _probes]
-                _results = [_f.result() for _f in _futures_in_order]
-        finally:
-            if _imds_prev is None:
-                os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
-            else:
-                os.environ["AWS_EC2_METADATA_DISABLED"] = _imds_prev
+    # Disable boto3's EC2 instance-metadata-service probe for the duration
+    # of the parallel block. boto's default credential chain tries
+    # 169.254.169.254 with a multi-second timeout when we're not on EC2,
+    # which dominated the section's wall time before this fix
+    # (~2s on a developer laptop, even with the rest parallelized).
+    # Set on the parent thread before submitting work so the env-var
+    # mutation never races with another worker. has_aws_credentials() in
+    # the bedrock probe already gates on real env-var creds, so IMDS is
+    # never the legitimate source for `hermes doctor`.
+    _imds_prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
+    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+    try:
+        # 8 workers is plenty — each probe is a single HTTP call plus a TLS
+        # handshake. More than that wastes thread-startup cost and risks
+        # noisy output if anything ever printed from inside a worker.
+        with _futures.ThreadPoolExecutor(max_workers=8,
+                                         thread_name_prefix="doctor-probe") as _ex:
+            _futures_in_order = [_ex.submit(_fn) for _, _fn in _probes]
+            _results = [_f.result() for _f in _futures_in_order]
+    finally:
+        if _imds_prev is None:
+            os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
+        else:
+            os.environ["AWS_EC2_METADATA_DISABLED"] = _imds_prev
 
-        # Clear the "Running …" line and print all results in submission order.
-        print("\r" + " " * 70 + "\r", end="")
+    # Clear the "Running …" line and print all results in submission order.
+    print("\r" + " " * 70 + "\r", end="")
     for _r in _results:
         for _glyph, _label, _detail in _r.lines:
             if _detail:

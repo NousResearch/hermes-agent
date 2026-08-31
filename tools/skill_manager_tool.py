@@ -623,30 +623,131 @@ def _iter_skill_dirs(root: Path):
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """Find a skill (local skills dir, then skills.external_dirs) -> ``{"path": Path}`` | None.
 
-    Accepts the bare dir name (``axolotl``; matches category-nested skills too) and the
-    categorized relative path (``mlops/axolotl``) — the two forms skill_view resolves. The
-    categorized form matches RELATIVE to the local root only (relative_to raises for external dirs)."""
-    from agent.skill_utils import get_all_skills_dirs
-    local_root = None
-    if "/" in name or "\\" in name:
-        try:
-            local_root = _skills_dir().resolve()
-        except OSError:
-            logger.debug(
-                "skills dir resolve failed; categorized lookups fall back to the unresolved path",
-                exc_info=True)
-            local_root = _skills_dir()
+    Searches the local skills dir (~/.hermes/skills/) first, then any
+    external dirs configured via skills.external_dirs.  Returns
+    {"path": Path} or None.
+
+    Accepts both the bare directory name (``axolotl``) and the categorized
+    relative path (``mlops/axolotl``) — the same two forms skill_view
+    resolves, and the form skill_view's ambiguity hint explicitly tells
+    the caller to use. The bare-name match compares the skill's own
+    directory name (``parent.name``), so bare lookups keep working for
+    category-nested skills.
+    """
+    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+
+    # Resolve the local skills root once — the categorized form matches the
+    # skill dir's path RELATIVE to that root. Only computed lazily (bare-name
+    # lookups never need it) and never for external dirs (relative_to raises).
+    _resolved_root: Optional[Path] = None
+
+    def _local_root() -> Path:
+        nonlocal _resolved_root
+        if _resolved_root is None:
+            try:
+                _resolved_root = _skills_dir().resolve()
+            except OSError:
+                logger.debug(
+                    "skills dir resolve failed; categorized lookups fall back to the unresolved path",
+                    exc_info=True,
+                )
+                _resolved_root = _skills_dir()
+        return _resolved_root
+
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
-        for skill_dir in _iter_skill_dirs(skills_dir):
-            if skill_dir.name == name:
-                return {"path": skill_dir}
-            if local_root is not None:
-                resolved = skill_dir.resolve()
-                if (resolved.is_relative_to(local_root)
-                        and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
-                    return {"path": skill_dir}
+        for skill_md in skills_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            # Fast path first: the bare directory name. Avoids the resolve()
+            # machinery entirely on the common match.
+            if skill_md.parent.name == name:
+                return {"path": skill_md.parent}
+            # Categorized form (``category/skill-name``): compare the skill
+            # dir's POSIX relative path so the lookup works on Windows too.
+            if "/" in name or "\\" in name:
+                try:
+                    rel = skill_md.parent.resolve().relative_to(_local_root())
+                except ValueError:
+                    continue
+                if rel.as_posix() == name:
+                    return {"path": skill_md.parent}
+    return None
+
+
+def _maybe_auto_propose_org_edit(name: str, skill_path: Path) -> Optional[str]:
+    """Submit an org-skill edit upstream when `sync.org_auto_propose` is on.
+
+    Returns a short note for the tool result, or None when nothing happened.
+    Never raises: an offline/failed submission must not fail the edit itself —
+    the change is already saved locally and can be proposed later.
+    """
+    try:
+        from agent.skill_utils import is_org_mirror_path
+        from tools import skills_sync_client as ssc
+
+        if not is_org_mirror_path(skill_path, _skills_dir()):
+            return None
+        if not ssc.sync_org_auto_propose():
+            return (
+                f"This skill is shared by your organisation. Your edit is "
+                f"saved locally and will not be overwritten by org updates. "
+                f"Run `hermes sync propose {name}` to share it back."
+            )
+        result = ssc.propose_skill(name)
+        if result.get("proposal_pending"):
+            return (
+                f"Auto-proposed to your organisation as proposal "
+                f"#{result.get('proposal_id')} (pending admin review)."
+            )
+        return "Auto-proposed to your organisation (merged into the shared set)."
+    except Exception as e:
+        logger.debug("auto-propose skipped for %s: %s", name, e)
+        return (
+            f"Edit saved locally. Could not submit it to your organisation "
+            f"right now — run `hermes sync propose {name}` to retry."
+        )
+
+
+def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optional[Dict[str, Any]]:
+    """Org-shared skills are EDITABLE IN PLACE — this only blocks deletion.
+
+    Earlier versions refused every write to `_org/`, which broke the learning
+    loop exactly where it matters most: the agent is told to patch a skill the
+    moment it finds a gap, and shared skills are the ones the most people use.
+    Blocking that froze org skills while personal ones kept improving, and the
+    "fork it into a personal skill" alternative is not something an agent does
+    mid-task — so improvements were simply lost.
+
+    Now an edit lands in the mirror and is protected from being overwritten by
+    the next org pull (see the baseline sidecar in skills_sync_client). It
+    reaches the organisation when the user runs `hermes sync propose`, or
+    immediately if `sync.org_auto_propose` is on.
+
+    Deletion is still refused: the mirror is a materialized view of the org
+    HEAD, so a local delete is meaningless (the next pull restores it) and
+    removing a skill for the organisation is an admin action, not a local one.
+    """
+    if action not in {"delete", "remove_file"}:
+        return None
+    try:
+        from agent.skill_utils import is_org_mirror_path
+
+        if is_org_mirror_path(skill_path, _skills_dir()):
+            return {
+                "success": False,
+                "error": (
+                    f"Cannot {action} '{name}' locally: it is shared by your "
+                    "organisation, so a local delete would just come back on "
+                    "the next sync. Ask an org admin to remove it for "
+                    "everyone. (Editing it IS allowed — your changes are kept "
+                    "and can be proposed back with `hermes sync propose "
+                    f"{name}`.)"
+                ),
+            }
+    except Exception:
+        logger.debug("org mirror guard lookup failed for %s", name, exc_info=True)
     return None
 
 
@@ -693,17 +794,22 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
     from agent.file_safety import _resolve_active_profile_name
     base = f"Skill '{name}' not found in active profile '{_resolve_active_profile_name()}'."
     others = _find_skill_in_other_profiles(name)
-    if len(others) == 1:
-        other_profile, other_path = others[0]
-        base += (
-            f" A skill by that name exists in profile '{other_profile}' ({other_path}). To edit "
-            f"it, switch profiles (`hermes -p {other_profile}`) or edit the file directly "
-            f"(file tools / terminal).")
-    elif others:
-        names = ", ".join(f"'{p}'" for p, _ in others)
-        base += (
-            f" Skills by that name exist in other profiles: {names}. Switch profiles (`hermes -p "
-            f"<name>`) to edit there, or edit the files directly (file tools / terminal).")
+    if others:
+        if len(others) == 1:
+            other_profile, other_path = others[0]
+            base += (
+                f" A skill by that name exists in profile "
+                f"'{other_profile}' ({other_path}). To edit it, switch "
+                f"profiles (`hermes -p {other_profile}`) or edit the file "
+                f"directly (file tools / terminal)."
+            )
+        else:
+            names = ", ".join(f"'{p}'" for p, _ in others)
+            base += (
+                f" Skills by that name exist in other profiles: {names}. "
+                f"Switch profiles (`hermes -p <name>`) to edit there, or "
+                f"edit the files directly (file tools / terminal)."
+            )
     else:
         base += " Use skills_list() to see available skills."
     return base + suffix
@@ -955,18 +1061,36 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
                  replace_all: bool = False) -> Dict[str, Any]:
     """Targeted find-and-replace in SKILL.md (default) or a supporting file; unique match unless replace_all."""
     if not old_string:
-        # A bare "required" error is a dead end: the model retries blindly and often
-        # escapes to action='write_file', clobbering the whole file.
-        return _err(
-            "old_string is required for 'patch' and must be the EXACT text currently in the file. "
-            "Read the target file first (read_file on the skill's SKILL.md, or the file named by "
-            "file_path) and copy the snippet verbatim, then retry 'patch'. Do NOT fall back to "
-            "action='write_file' — that rewrites the entire file and destroys unrelated content.")
+        # A bare "required" error is a dead end: the model cannot tell whether it
+        # omitted the arg or supplied it wrongly, so it retries blindly and often
+        # escapes to action='write_file', clobbering the whole skill file. Tell it
+        # how to recover. Upstream: NousResearch/hermes-agent#33064.
+        return {
+            "success": False,
+            "error": (
+                "old_string is required for 'patch' and must be the EXACT text currently in the "
+                "file. Read the target file first (read_file on the skill's SKILL.md, or the file "
+                "named by file_path) and copy the snippet verbatim, then retry 'patch'. "
+                "Do NOT fall back to action='write_file' — that rewrites the entire file and "
+                "destroys unrelated content."
+            ),
+        }
     if new_string is None:
-        return _err("new_string is required for 'patch'. Use an empty string to delete matched text.")
-    # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
-    # richer error (file_preview) this layer cannot produce.
-    skill_dir, guard = _locate_for_write(name, "patch")
+        return {"success": False, "error": "new_string is required for 'patch'. Use an empty string to delete matched text."}
+    # No old_string == new_string guard here: fuzzy_find_and_replace already
+    # rejects that with "old_string and new_string are identical"
+    # (tools/fuzzy_match.py), and its error carries a file_preview this layer
+    # cannot produce. Duplicating it here would only shadow the richer message.
+
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": _skill_not_found_error(name)}
+
+    skill_dir = existing["path"]
+    org_guard = _org_mirror_write_guard(name, skill_dir, "patch")
+    if org_guard:
+        return org_guard
+    guard = _background_review_write_guard(name, skill_dir, "patch")
     if guard:
         return guard
     target_label = file_path or "SKILL.md"
@@ -1198,15 +1322,297 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
     """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
     token = _skill_gate_bypass.set(True)
     try:
-        return _skill_manage_from(payload)
+        return skill_manage(
+            action=payload.get("action", ""),
+            name=payload.get("name", ""),
+            content=payload.get("content"),
+            category=payload.get("category"),
+            file_path=payload.get("file_path"),
+            file_content=payload.get("file_content"),
+            old_string=payload.get("old_string"),
+            new_string=payload.get("new_string"),
+            replace_all=payload.get("replace_all", False),
+            absorbed_into=payload.get("absorbed_into"),
+            operations=payload.get("operations"),
+        )
     finally:
         _skill_gate_bypass.reset(token)
 
 
-# Sync push debounce: a burst of skill_manage writes collapses into one push on a daemon timer.
-# One timer per profile home: in a multiplexed process B's write must not cancel A's pending push.
-_sync_push_timers: Dict[str, threading.Timer] = {}
-_sync_push_lock = threading.Lock()
+_BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}
+_BATCH_MAX_OPS = 20
+
+
+def _skill_manage_batch(
+    operations,
+    default_name: str = None,
+    task_id: str = None,
+    session_id: str = None,
+) -> str:
+    """Apply a sequence of operations atomically (memory-tool pattern).
+
+    Each op carries its own ``name`` (skill) and ``action``; a single edit
+    is a list of one. Every skill the batch touches is snapshotted before
+    any op runs; any failure rolls ALL touched skills back to their
+    pre-batch state (skills the batch created are removed).
+
+    Rules:
+    - ``delete`` only as the SOLE op of the call (its recoverable-archive
+      path doesn't compose with rollback) — routed to the single-op
+      handler, preserving absorbed_into/archive semantics;
+    - ``create`` for a skill must precede that skill's other ops;
+    - same-file clobber guard (below) rejects silently-lost work.
+
+    ``default_name``: legacy top-level ``name`` fallback for ops that omit
+    their own (staged-replay / back-compat path).
+    """
+    import shutil
+    import tempfile
+
+    # --- validate shape up front (no side effects before this passes) ---
+    if not isinstance(operations, list) or not operations:
+        return tool_error("operations must be a non-empty array.", success=False)
+    if len(operations) > _BATCH_MAX_OPS:
+        return tool_error(f"operations is capped at {_BATCH_MAX_OPS} ops per call.", success=False)
+    # delete: sole-op only; route through the normal single-op path so the
+    # gate, archive, ledger, and curator absorbed_into semantics all apply.
+    if any(isinstance(op, dict) and op.get("action") == "delete" for op in operations):
+        if len(operations) != 1:
+            return tool_error(
+                "delete must be the SOLE op in its call — it doesn't "
+                "compose with other ops' rollback.",
+                success=False,
+            )
+        op = operations[0]
+        nm = op.get("name") or default_name
+        if not nm:
+            return tool_error("operations[0] (delete) needs a 'name'.", success=False)
+        return skill_manage(
+            action="delete",
+            name=nm,
+            absorbed_into=op.get("absorbed_into"),
+            task_id=task_id,
+            session_id=session_id,
+        )
+    names = []
+    for i, op in enumerate(operations):
+        if not isinstance(op, dict) or not op.get("action"):
+            return tool_error(f"operations[{i}] needs an 'action'.", success=False)
+        act = op["action"]
+        if act not in _BATCH_OP_ACTIONS:
+            return tool_error(
+                f"operations[{i}]: unknown action '{act}'. "
+                f"Batchable: {', '.join(sorted(_BATCH_OP_ACTIONS))}; "
+                "delete must be sole.",
+                success=False,
+            )
+        nm = op.get("name") or default_name
+        if not nm:
+            return tool_error(f"operations[{i}] needs a 'name' (the skill it targets).", success=False)
+        names.append(nm)
+        if act == "create" and nm in names[:-1]:
+            return tool_error(
+                f"operations[{i}]: create for '{nm}' must precede that "
+                "skill's other ops.",
+                success=False,
+            )
+        preflight = _background_review_preflight(act, nm)
+        if preflight is not None:
+            return json.dumps(preflight, ensure_ascii=False)
+
+    # --- intra-batch conflict guard: sequential last-wins semantics make
+    # these SILENTLY succeed while discarding earlier ops' work — always a
+    # confused plan, never intentional. Rule: a DESTRUCTIVE op (write_file,
+    # remove_file, full SKILL.md rewrite) on a file some earlier op in the
+    # batch already touched is rejected; ADDITIVE patches are always legal,
+    # so patch CHAINS (each op building on the previous text) and
+    # write-then-patch both stay allowed. Paths are normalized so spelling
+    # variants ('./references/x.md', 'references//x.md') can't slip past. ---
+    import posixpath
+
+    def _norm_target(op) -> str:
+        fp = (op.get("file_path") or "").strip()
+        if not fp:
+            return "SKILL.md"
+        return posixpath.normpath(fp.lstrip("/"))
+
+    touched_files = set()  # (skill, normalized path) touched by ANY earlier op
+    for i, op in enumerate(operations):
+        act = op["action"]
+        nm = names[i]
+        # create and full-rewrite patch (content) always hit SKILL.md —
+        # _edit_skill ignores file_path on the rewrite shape.
+        full_rewrite = act == "patch" and bool(op.get("content"))
+        target = "SKILL.md" if (act == "create" or full_rewrite) else _norm_target(op)
+        key = (nm, target)
+        destructive = act in ("create", "write_file", "remove_file") or full_rewrite
+        if destructive and key in touched_files:
+            return tool_error(
+                f"operations[{i}]: {act} on '{target}' of skill '{nm}' — an "
+                "earlier op in this batch already touched that file, and this "
+                "op would silently discard its work. One destructive op "
+                "(write_file/remove_file/full rewrite) per file per batch; "
+                "put it first, or fold the change in. Patch chains are fine.",
+                success=False,
+            )
+        touched_files.add(key)
+
+    # --- approval gate: stage the WHOLE batch as one pending write ---
+    if not _skill_gate_bypass.get():
+        try:
+            from tools import write_approval as wa
+        except Exception:
+            wa = None  # fail open, matching _apply_skill_write_gate
+        if wa is not None:
+            decision = wa.evaluate_gate(wa.SKILLS)
+            if decision.blocked:
+                return tool_error(decision.message, success=False)
+            if not decision.allow:
+                payload = {"action": "batch", "operations": operations}
+                acts = ", ".join(op["action"] for op in operations)
+                skills = ", ".join(sorted(set(names)))
+                gist = f"batch({len(operations)} ops: {acts}) on {skills}"
+                record = wa.stage_write(
+                    wa.SKILLS, payload, summary=gist, origin=wa.current_origin()
+                )
+                return json.dumps(
+                    {"success": True, "staged": True, "pending_id": record["id"],
+                     "gist": gist, "message": decision.message},
+                    ensure_ascii=False,
+                )
+
+    # --- snapshot every touched skill for rollback ---
+    snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
+    snapshots = {}  # skill name -> (pre_dir or None, snapshot_dir or None)
+    for nm in dict.fromkeys(names):  # ordered unique
+        pre = _find_skill(nm)
+        pre_dir = Path(pre["path"]) if pre else None
+        snap = None
+        if pre_dir is not None and pre_dir.is_dir():
+            snap = snap_root / nm
+            try:
+                shutil.copytree(pre_dir, snap)
+            except Exception as exc:  # noqa: BLE001 — no snapshot, no atomicity
+                shutil.rmtree(snap_root, ignore_errors=True)
+                return tool_error(f"Could not snapshot '{nm}' for atomic batch: {exc}", success=False)
+        snapshots[nm] = (pre_dir, snap)
+
+    rollback_failed = False
+
+    def _rollback() -> str:
+        notes = []
+        for nm, (pre_dir, snap) in snapshots.items():
+            try:
+                post = _find_skill(nm)
+                post_dir = Path(post["path"]) if post else None
+                if snap is not None:
+                    if post_dir is not None and post_dir.is_dir():
+                        # Never destroy the only other copy before the
+                        # restore lands. Deleting first turned a failed
+                        # copytree (disk full, locked file) into total
+                        # skill loss once the finally below removed the
+                        # snapshot too. Move the broken state aside, and
+                        # delete it only after the snapshot is back.
+                        aside = post_dir.with_name(post_dir.name + ".rollback-broken")
+                        shutil.rmtree(aside, ignore_errors=True)
+                        post_dir.rename(aside)
+                        try:
+                            shutil.copytree(snap, pre_dir)
+                        except Exception:
+                            # Restore failed: put the broken state back so
+                            # the skill survives (half applied) rather than
+                            # leaving nothing.
+                            shutil.rmtree(pre_dir, ignore_errors=True)
+                            aside.rename(pre_dir)
+                            raise
+                        shutil.rmtree(aside, ignore_errors=True)
+                    else:
+                        shutil.copytree(snap, pre_dir)
+                elif post_dir is not None and post_dir.is_dir():
+                    # Batch created this skill: remove the partial result.
+                    shutil.rmtree(post_dir)
+            except Exception as exc:  # noqa: BLE001
+                notes.append(
+                    f"ROLLBACK FAILED for '{nm}' ({exc}); snapshot preserved at '{snap}'"
+                    if snap is not None
+                    else f"ROLLBACK FAILED for '{nm}' ({exc})"
+                )
+        nonlocal rollback_failed
+        rollback_failed = bool(notes)
+        return "; ".join(notes) if notes else "all touched skills rolled back"
+
+    # --- execute ops through the normal single-op path (gate bypassed:
+    #     the batch already cleared/staged it above; ledger + telemetry
+    #     fire per-op, which is the audit granularity we want) ---
+    results = []
+    token = _skill_gate_bypass.set(True)
+    try:
+        for i, op in enumerate(operations):
+            raw = skill_manage(
+                action=op["action"],
+                name=names[i],
+                content=op.get("content"),
+                category=op.get("category"),
+                file_path=op.get("file_path"),
+                file_content=op.get("file_content"),
+                old_string=op.get("old_string"),
+                new_string=op.get("new_string"),
+                replace_all=op.get("replace_all", False),
+                task_id=task_id,
+                session_id=session_id,
+            )
+            try:
+                parsed = json.loads(raw)
+            except Exception:  # noqa: BLE001
+                parsed = {"success": False, "error": "unparseable op result"}
+            if not parsed.get("success"):
+                note = _rollback()
+                fail = {
+                    "success": False,
+                    "error": (
+                        f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
+                        f"{parsed.get('error', 'unknown error')} — batch aborted, {note}."
+                    ),
+                    "failed_index": i,
+                    "completed_before_failure": i,
+                }
+                # Carry the failing op's teaching payload through (e.g.
+                # patch's file_preview / fuzzy-match hints): without it the
+                # model recovers blind — live A/B showed sonnet probing a
+                # file with placeholder edits for 8 turns because the batch
+                # path dropped the preview the flat path always returned.
+                for k, v in parsed.items():
+                    if k not in ("success", "error") and v is not None:
+                        fail.setdefault(k, v)
+                return json.dumps(fail, ensure_ascii=False)
+            results.append({"name": names[i], "action": op["action"],
+                            "file_path": op.get("file_path"),
+                            "success": True})
+    finally:
+        _skill_gate_bypass.reset(token)
+        if rollback_failed:
+            # Keep the snapshots so the operator can still recover by
+            # hand. Deleting them here is what turned one failed restore
+            # into permanent skill loss.
+            logger.warning(
+                "skill_manage batch rollback failed, snapshots kept at %s",
+                snap_root,
+            )
+        else:
+            shutil.rmtree(snap_root, ignore_errors=True)
+
+    return json.dumps(
+        {"success": True, "operations_applied": len(results),
+         "results": results},
+        ensure_ascii=False,
+    )
+
+
+# Debounce state for the sync push hook. A burst of skill_manage writes
+# (e.g. create + several write_file calls) collapses into a single push after
+# a short quiet window, on a daemon timer so the agent write never blocks.
+_sync_push_timer = None
+_sync_push_lock = None
 _SYNC_PUSH_DEBOUNCE_S = 5.0
 
 
@@ -1312,16 +1718,36 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
 
 
 def skill_manage(
-    action: str, name: str, content: str = None, category: str = None, file_path: str = None,
-    file_content: str = None, old_string: str = None, new_string: str = None,
-    replace_all: bool = False, absorbed_into: str = None, task_id: str = None,
-    session_id: str = None, operations=None) -> str:
-    """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
-    see _skill_manage_batch) overrides the flat fields."""
+    action: str,
+    name: str,
+    content: str = None,
+    category: str = None,
+    file_path: str = None,
+    file_content: str = None,
+    old_string: str = None,
+    new_string: str = None,
+    replace_all: bool = False,
+    absorbed_into: str = None,
+    task_id: str = None,
+    session_id: str = None,
+    operations=None,
+) -> str:
+    """
+    Manage user-created skills. Dispatches to the appropriate action handler.
+
+    ``operations``: batch shape — a list of {action, ...} dicts applied to
+    ONE skill atomically (see _skill_manage_batch). When set, the flat
+    single-op fields are ignored and ``action`` may be omitted/'batch'.
+
+    Returns JSON string with results.
+    """
     if operations is not None:
         return _skill_manage_batch(
-            operations, default_name=name or None, task_id=task_id, session_id=session_id)
-    if (preflight := _background_review_preflight(action, name)) is not None:
+            operations, default_name=name or None,
+            task_id=task_id, session_id=session_id,
+        )
+    preflight = _background_review_preflight(action, name)
+    if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
     # of origin; bypassed when replaying an approved staged write.
@@ -1368,15 +1794,10 @@ def skill_manage(
         if content:
             result = _edit_skill(name, content)
         else:
-            if not old_string:
-                return tool_error(
-                    "patch needs old_string/new_string for a targeted "
-                    "replacement, or content for a full SKILL.md rewrite "
-                    "(read it first with skill_view()).",
-                    success=False,
-                )
-            if new_string is None:
-                return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+            # Targeted-replacement validation lives in _patch_skill so the
+            # public tool and the helper return the same actionable guidance.
+            # A bare "required" error here would shadow it and leave the
+            # model with nowhere to go but action='write_file'. #33064.
             result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
@@ -1434,90 +1855,98 @@ def _skill_manage_schema_overrides() -> dict:
 
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
+    # ONE call shape (memory-tool pattern, maintainer-directed): the call
+    # IS an operations array — each op names its skill and action; a
+    # single edit is a list of one. The legacy flat shape (top-level
+    # action/name/content/...) is still ACCEPTED by the handler for old
+    # transcripts and staged-write replay, but no longer advertised.
     "description": (
         "Create, update, or delete skills — your procedural memory for "
-        "recurring task types. Actions: create (full SKILL.md + optional "
-        f"category; lands in {display_hermes_home()}/skills/), patch "
-        "(old_string/new_string for a targeted fix — preferred; OR content "
-        "alone for a full SKILL.md rewrite), delete, write_file/remove_file "
-        "(supporting files). Existing skills are modified wherever they "
-        "live. Good skills: a self-contained trigger in the description's "
-        "first 57 chars ('Use when <trigger>. <one-line behavior>.'), "
-        "numbered steps with exact commands, pitfalls, verification (see "
-        "skill_view() for format). Confirm with the user before "
-        "create/delete."
+        "recurring task types. The call is an operations array (a single "
+        "edit is a list of one); it applies atomically — any failure rolls "
+        "every touched skill back. Ops: create (full SKILL.md; lands in "
+        f"{display_hermes_home()}/skills/; must precede that skill's other "
+        "ops), patch (targeted old_string/new_string fix — preferred; "
+        "content alone REPLACES the whole file, read it via skill_view() "
+        "first), write_file/remove_file (supporting files), delete (sole "
+        "op only). Existing skills are modified wherever they live. Keep "
+        "the description's first 57 chars a self-contained trigger: 'Use "
+        "when <trigger>. <one-line behavior>.' — skill_view() shows "
+        "format conventions."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["create", "patch", "delete", "write_file", "remove_file"],
-                "description": "The action to perform."
+            "operations": {
+                "type": "array",
+                "description": "Ordered ops; each names its target skill.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": (
+                                "Skill name (lowercase, hyphens/underscores, "
+                                "max 64 chars); an existing skill's name "
+                                "unless creating."
+                            )
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["create", "patch", "delete", "write_file", "remove_file"]
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": (
+                                "Full SKILL.md text (YAML frontmatter + "
+                                "markdown body) for create, or a full "
+                                "rewrite on patch."
+                            )
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Optional category subdir for create (e.g. 'devops')."
+                        },
+                        # patch args: same fuzzy-matching semantics as the
+                        # `patch` tool — teach only skill-specific facts here.
+                        "old_string": {
+                            "type": "string",
+                            "description": "Text to find (patch; same matching semantics as the patch tool)."
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "Replacement (patch); empty string deletes the match."
+                        },
+                        "replace_all": {
+                            "type": "boolean",
+                            "description": "patch: replace all occurrences (default false)."
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": (
+                                "Path RELATIVE to the skill's own directory, "
+                                "e.g. 'references/api.md' — no leading slash, "
+                                "never absolute. write_file/remove_file: "
+                                "required; first segment references/, "
+                                "templates/, scripts/, or assets/. patch: "
+                                "optional (default SKILL.md)."
+                            )
+                        },
+                        "file_content": {
+                            "type": "string",
+                            "description": "Content for write_file."
+                        }
+                    },
+                    "required": ["name", "action"]
+                }
             },
-            "name": {
-                "type": "string",
-                "description": (
-                    "Skill name (lowercase, hyphens/underscores, max 64 chars). "
-                    "Must match an existing skill for patch/edit/delete/write_file/remove_file."
-                )
-            },
-            "content": {
-                "type": "string",
-                "description": (
-                    "Full SKILL.md content (YAML frontmatter + markdown body). "
-                    "Required for 'create'; on 'patch' it performs a full "
-                    "rewrite (major overhauls only — read the skill first with "
-                    "skill_view(), and don't combine with old_string)."
-                )
-            },
-            "old_string": {
-                "type": "string",
-                "description": (
-                    "Text to find in the file (required for 'patch'). Must be unique "
-                    "unless replace_all=true. Include enough surrounding context to "
-                    "ensure uniqueness."
-                )
-            },
-            "new_string": {
-                "type": "string",
-                "description": (
-                    "Replacement text (required for 'patch'); must differ from "
-                    "old_string. Can be empty string to delete the matched text."
-                )
-            },
-            "replace_all": {
-                "type": "boolean",
-                "description": "For 'patch': replace all occurrences instead of requiring a unique match (default: false)."
-            },
-            "category": {
-                "type": "string",
-                "description": (
-                    "Optional category/domain for organizing the skill (e.g., 'devops', "
-                    "'data-science', 'mlops'). Creates a subdirectory grouping. "
-                    "Only used with 'create'."
-                )
-            },
-            "file_path": {
-                "type": "string",
-                "description": (
-                    "Path to a supporting file within the skill directory. "
-                    "For 'write_file'/'remove_file': required, must be under references/, "
-                    "templates/, scripts/, or assets/. "
-                    "For 'patch': optional, defaults to SKILL.md if omitted."
-                )
-            },
-            "file_content": {
-                "type": "string",
-                "description": "Content for the file. Required for 'write_file'."
-            },
-            # NOTE: the handler also accepts `absorbed_into` on delete — the
-            # curator's consolidation pass declares merge-vs-prune intent with
-            # it. Deliberately NOT advertised in this schema: only curator
-            # sessions need it, the curator's own prompt documents it, and the
-            # curator-context delete guard's error re-teaches it on omission
-            # (_curator_consolidation_delete_guard). Keeping it out saves
-            # ~100 tokens on every call of every other session.
+            # NOTE: the handler also accepts the legacy flat single-op shape
+            # (top-level action/name/content/old_string/new_string/
+            # replace_all/category/file_path/file_content) — old transcripts
+            # and staged-write replay depend on it — plus `absorbed_into` on
+            # delete ops (curator-only vocabulary; the curator's prompt
+            # documents it and the delete guard's error re-teaches it).
+            # None are advertised.
         },
         "required": ["operations"],
     },
@@ -1528,29 +1957,22 @@ SKILL_MANAGE_SCHEMA = {
 from tools.registry import registry, tool_error
 
 registry.register(
-    name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
-    handler=lambda args, **kw: _skill_manage_from(
-        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")),
-    dynamic_schema_overrides=_skill_manage_schema_overrides)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'mark_background_review_skill_read': ('tools.skill_manager_guards', 'mark_background_review_skill_read'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
+    name="skill_manage",
+    toolset="skills",
+    schema=SKILL_MANAGE_SCHEMA,
+    handler=lambda args, **kw: skill_manage(
+        action=args.get("action", ""),
+        name=args.get("name", ""),
+        content=args.get("content"),
+        category=args.get("category"),
+        file_path=args.get("file_path"),
+        file_content=args.get("file_content"),
+        old_string=args.get("old_string"),
+        new_string=args.get("new_string"),
+        replace_all=args.get("replace_all", False),
+        absorbed_into=args.get("absorbed_into"),
+        operations=args.get("operations"),
+        task_id=kw.get("task_id"),
+        session_id=kw.get("session_id")),
+    emoji="📝",
+)

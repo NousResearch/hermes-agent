@@ -2720,13 +2720,18 @@ def terminal_tool(
 
         # Get configuration
         config = _get_env_config()
-        env_type = config["env_type"]
+        env_type = "local" if _host_local else config["env_type"]
 
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
         effective_task_id = _resolve_container_task_id(task_id)
+        if _host_local:
+            # Hermes-owned control-plane children must run beside the current
+            # interpreter, never inside the model's configured Docker/SSH/etc.
+            # Keep their environment cache separate from the configured backend.
+            effective_task_id = f"host-local-{effective_task_id}"
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config. ``resolve_task_overrides``

@@ -115,7 +115,7 @@ jobs:
             python scripts/ci/timebox_process.py \
               --timeout-seconds 1500 \
               --grace-seconds 60 \
-              -- scripts/run_tests.sh
+              -- scripts/run_tests.sh --slice "${{ matrix.slice }}"
           fi
         env:
           # This is the maximum number of test FILES that run together.
@@ -146,7 +146,6 @@ jobs:
           # Retrying that killed process costs the same ten-minute budget but
           # still leaves CI red; allow one bounded six-minute attempt instead.
           HERMES_TEST_FILE_TIMEOUT: ${{ github.repository == 'NousResearch/hermes-agent' && '300' || '600' }}
-          HERMES_TEST_SLICE: ${{ matrix.slice }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

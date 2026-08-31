@@ -27,6 +27,8 @@ def _session_with_compressor(**compression_ctor):
         context_compressor=compressor,
         compression_enabled=True,
         compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
     )
     return {
         "agent": agent,
@@ -65,6 +67,36 @@ def test_live_threshold_tokens_applies_on_next_turn_without_rebuild(monkeypatch)
     assert compressor.proactive_prune_tokens == 48_000
     assert compressor.tail_mode == "lean"
     assert live_agent.compression_idle_compact_after_seconds == 1800
+
+
+def test_live_codex_native_compaction_applies_on_next_turn(monkeypatch):
+    session, _ = _session_with_compressor()
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"compression": {"codex_responses_native": True}},
+    )
+
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert session["agent"].codex_responses_native_compaction is True
+
+
+def test_live_codex_native_threshold_applies_on_next_turn(monkeypatch):
+    session, _ = _session_with_compressor()
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "compression": {"codex_responses_compact_threshold": 120_000}
+        },
+    )
+
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert session["agent"].codex_responses_compact_threshold == 120_000
 
 
 def test_unchanged_compression_config_is_noop(monkeypatch):
@@ -133,6 +165,8 @@ def _neutral_session(**compression_ctor):
         context_compressor=compressor,
         compression_enabled=True,
         compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
     )
     return {"agent": agent, "session_key": "session-unset"}, compressor
 
@@ -233,3 +267,17 @@ def test_removing_enabled_restores_true(monkeypatch):
     session["agent"].compression_enabled = False
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
     assert session["agent"].compression_enabled is True
+
+
+def test_removing_codex_native_compaction_restores_false(monkeypatch):
+    session, _ = _neutral_session()
+    session["agent"].codex_responses_native_compaction = True
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].codex_responses_native_compaction is False
+
+
+def test_removing_codex_native_threshold_restores_default(monkeypatch):
+    session, _ = _neutral_session()
+    session["agent"].codex_responses_compact_threshold = 120_000
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].codex_responses_compact_threshold == 200_000

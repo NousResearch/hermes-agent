@@ -283,14 +283,22 @@ DEFAULT_CONFIG = {
         # traceback.
         "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
-        # Root for terminal session temp files (background logs/pid/exit files, code-exec
-        # sandboxes). Empty = TMPDIR/TMP/TEMP if set, else HERMES_HOME/cache/terminal (auto-pruned
-        # after 72h) — NOT tmpfs /tmp, which is RAM-capped and fills under load. Must be an existing
-        # absolute POSIX path; user-set paths are never auto-pruned.
+        # Root directory for Hermes' terminal session temp files (background
+        # logs/pid/exit files, code-execution sandboxes, etc.). When empty,
+        # Hermes uses TMPDIR/TMP/TEMP if set, otherwise a managed dir on real
+        # storage at HERMES_HOME/cache/terminal (auto-pruned after 72h) — NOT
+        # tmpfs /tmp, which is RAM-capped and small on many distros (e.g.
+        # Arch-based setups) and fills up under load. Set this to redirect
+        # session temp anywhere else; must be an absolute POSIX path that
+        # exists. User-set paths are never auto-pruned.
         "temp_dir": "",
-        # CSS font-family for the desktop app's xterm.js terminal (e.g. "'CaskaydiaCoveNerdFont',
-        # monospace"). Empty = built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono',
-        # Menlo, Consolas, monospace"). Lets users use a Nerd Font without patching the app.
+        # Terminal font family for the desktop app's embedded xterm.js terminal.
+        # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
+        # the desktop terminal uses this as the CSS font-family value, with the
+        # built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo,
+        # Consolas, monospace") as fallback when the field is empty or unset.
+        # This lets users install a Nerd Font (or any custom font) and configure
+        # it here without patching the built desktop app.
         "font_family": "",
         "timeout": 180,
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
@@ -443,7 +451,7 @@ DEFAULT_CONFIG = {
         # never contends with the user's running browser. Turning this back off
         # deletes the snapshot store (~/.hermes/browser-profile/) so copied
         # credentials don't outlive consent. Only Chromium-family default
-        # browsers are supported (Chrome, Edge, Brave, Chromium); a non-Chromium
+        # browsers are supported (Chrome, Edge, Brave, Brave Origin, Chromium); a non-Chromium
         # default (e.g. Firefox) fails closed with a clear message. Default
         # false. Also gates the browser_exec ``local`` argument, which forces a
         # real-profile local session even under a cloud browser backend. Toggle
@@ -459,6 +467,14 @@ DEFAULT_CONFIG = {
         # retry. Still locked afterward → stays blocked, no loop, no auto-kill.
         # OFF by default. No effect on macOS/Linux (copy-while-running works).
         "real_profile_autoclose": False,
+        # Pin WHICH source browser profile directory gets snapshotted for
+        # real-profile browsing (e.g. "Profile 2"). Unset/empty: follows the
+        # browser's last-used profile (Local State → profile.last_used). On a
+        # machine with several profiles (work + personal), last-used roulette
+        # can silently hand the agent the wrong identity; a pin locks it. A pin
+        # naming a directory that doesn't exist FAILS CLOSED with a fixable
+        # message rather than falling back to last-used.
+        "real_profile_pin": "",
         "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
         "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
@@ -670,6 +686,13 @@ DEFAULT_CONFIG = {
                                       # while tokens are still moving — bounds a degenerate
                                       # trickle stream. Clamped to >= hygiene_timeout_seconds.
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
+        "hygiene_max_turn_hold_seconds": 10,  # max seconds an ARRIVING user turn is held while a
+                                      # still-streaming hygiene summary finishes. Distinct from
+                                      # hygiene_timeout_seconds (compressor inactivity budget):
+                                      # this bounds user-visible latency once real input is
+                                      # waiting. Kept well under chat-transport idle timeouts
+                                      # (Telegram ~30s). On expiry the turn proceeds
+                                      # uncompressed — an availability boundary, not a failure.
         "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
                                       # (conversation loop, /compress, preflight, etc.).
                                       # Same progress-aware semantics as hygiene_timeout_seconds:
@@ -738,10 +761,11 @@ DEFAULT_CONFIG = {
                                       # the ChatGPT Codex backend; every other
                                       # route/model is unaffected. Hermes' local
                                       # compression stays armed as the fallback.
-        "codex_responses_compact_threshold": 200000,  # Server-side compaction trigger
-                                      # (input tokens). Clamped below the local
-                                      # compression threshold at request time so
-                                      # the server compacts before Hermes does.
+        "codex_responses_compact_threshold": None,  # Optional absolute server compaction
+                                      # trigger in input tokens. None follows the
+                                      # resolved local compression trigger with a
+                                      # safety margin. Explicit values only clamp
+                                      # downward so the server compacts first.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation
@@ -864,6 +888,10 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            # Guarded fast lane: only honored with a concrete provider/model
+            # and an explicit ``reasoning_effort: none`` certification.
+            # Zero preserves the historic uncapped compression request.
+            "max_output_tokens": 0,
         },
         # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
         # single-shape tool returns DB content directly). The old
@@ -1230,19 +1258,26 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # order shown; drop any to hide
         },
-        # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
-        # config controls visibility not ordering); empty = default set. Available: model,
-        # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
-        # bg_processes, bg_subagents, goal, git_branch (⎇ current branch, opt-in only), duration,
-        # prompt_elapsed, idle_since, focus, yolo,
-        # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
-        # context_detail/prompt_elapsed/idle_since.
+        # CLI/TUI interactive status bar field customization (mirrors the
+        # runtime_footer.fields pattern above). When the list is non-empty,
+        # only the listed fields appear; the built-in order is preserved
+        # (the config controls visibility, not ordering). Empty = show the
+        # default set. Available: model, context_detail, context_pct,
+        # cache_hit, latency, tps, compressions, bg_tasks, bg_processes,
+        # bg_subagents, goal, duration, prompt_elapsed, idle_since, focus,
+        # yolo, stash, battery, title, total_tokens.
+        # total_tokens (session Σ) is opt-in only — it never shows unless
+        # listed here. Narrow terminals still drop wide-mode-only fields
+        # (context_detail, prompt_elapsed, idle_since) regardless of config.
         "status_bar": {
-            "fields": [],
+            "fields": [],  # empty = built-in defaults (all fields)
         },
-        "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
-        # Petdex animated mascot (github.com/crafter-station/petdex): cosmetic sprite across
-        # CLI/TUI/desktop, managed with `hermes pets`. No effect on prompt caching.
+        "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
+        # Petdex animated mascot (https://github.com/crafter-station/petdex).
+        # A purely cosmetic sprite that reacts to agent activity across the
+        # CLI, TUI, and desktop app. Manage with `hermes pets`. Disabled until
+        # a pet is installed + selected (no effect on prompt caching — this is
+        # a display concern only).
         "pet": {
             "enabled": False,
             "slug": "",   # active pet slug in get_hermes_home()/pets/; empty → first installed
@@ -1269,6 +1304,11 @@ DEFAULT_CONFIG = {
         # auxiliary calls, retries, fallbacks and cache writes are missed, so the total can be
         # 10x-100x under the provider bill.
         "show_token_analytics": False,
+        # IP addresses or bounded CIDR networks of reverse proxies allowed to
+        # supply X-Forwarded-Proto / X-Forwarded-For. Loopback remains trusted
+        # automatically. Wildcards and /0 networks are rejected so arbitrary
+        # clients cannot spoof their scheme or source address.
+        "trusted_proxies": [],
         # WebSocket keepalive for the dashboard/desktop web server (#79635).
         # Applied to NON-loopback binds only: loopback always disables the
         # protocol ping (see hermes_cli/web_server.py — an event-loop stall
@@ -1612,34 +1652,28 @@ DEFAULT_CONFIG = {
     # cheaper/faster model. Uses the same runtime provider resolution as CLI/gateway startup, so
     # every configured provider is supported.
     "delegation": {
-        "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
-        "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
-        # Fallback chain for delegated children (same entry format as the top-level list).
-        # For an unpinned child, null = inherit the parent chain; [] = disable fallback.
-        # A child pinned by provider, endpoint, or model gets no fallback unless this
-        # setting declares one explicitly.
-        "fallback_providers": None,
-        "base_url": "",  # direct OpenAI-compatible endpoint for subagents
-        "api_key": "",  # key for delegation.base_url (falls back to OPENAI_API_KEY)
-        # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" |
-        # "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix); set
-        # explicitly for non-standard endpoints.
-        "api_mode": "",
-        # Per-child request settings on every delegation call (all resolution branches). Top-level
-        # keys = API kwargs (e.g. service_tier); "extra_body" sub-dict merges into extra_body, e.g.
-        # {"extra_body": {"provider": {"sort": "throughput"}}}. Explicit values win OVER
-        # runtime/parent overrides (extra_body deep-merged 1 level).
+        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
+        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        "base_url": "",    # direct OpenAI-compatible endpoint for subagents
+        "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",
+                           # "codex_responses", or "anthropic_messages". Empty = auto-detect
+                           # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
+                           # explicitly for non-standard endpoints the heuristic can't detect.
+        # Per-child request settings sent on every delegation API call, on all
+        # three resolution branches (direct base_url, named provider, and
+        # parent-inherit). Top-level keys are API kwargs (e.g. service_tier);
+        # an "extra_body" sub-dict is merged into the request's extra_body —
+        # e.g. {"extra_body": {"provider": {"sort": "throughput"}}} routes
+        # OpenRouter delegation children to the fastest provider. Precedence:
+        # these explicit values merge OVER runtime/parent-derived overrides
+        # (explicit keys win; extra_body deep-merged one level).
         "request_overrides": {},
-        # compression_threshold_tokens: optional absolute cap on a subagent's compaction TRIGGER
-        # (not the request payload), applied as the lower of this and the child's ratio threshold.
-        # 0 (default) = no subagent-specific cap; children compact at the same 0.50 x window as the
-        # parent (500K on a 1M model). A replay of a 1,393-agent run showed 200K-400K caps within
-        # 5% of each other in cost once cache prefixes are intact, and every compaction is a
-        # chance to lose detail, so the default stays off. A token count >= 16000 enables it;
-        # other values (true, "200k") are config errors: warned and ignored.
-        "compression_threshold_tokens": 0,
-        # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
-        # toolsets=["web"] doesn't strip MCP). false = strict intersection.
+        # When delegate_task narrows child toolsets explicitly, preserve any
+        # MCP toolsets the parent already has enabled. On by default so
+        # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
+        # extras" without silently stripping MCP tools the parent already has.
+        # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
@@ -1928,15 +1962,41 @@ DEFAULT_CONFIG = {
         "free_response_rooms": "",  # comma-separated room IDs answered without mention
         "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
     },
-    # Approvals for dangerous commands.
-    # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)
-    # cron_mode / single_query_mode / unattended_mode: deny | approve — what to do when a
-    #   cron job, a -q session (HERMES_INTERACTIVE=1 but nobody to answer), or an unattended
-    #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.
-    #   deny blocks instantly so the agent finds another way instead of waiting out the
-    #   timeout and failing closed.
-    # timeout: seconds before an unanswered prompt fails closed (CLI and gateway). 60s
-    #   proved too tight for Telegram/Discord push notifications, hence 300.
+
+    # Approval mode for dangerous commands:
+    #   manual — always prompt the user
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands (default)
+    #   off    — skip all approval prompts (equivalent to --yolo)
+    #
+    # cron_mode — what to do when a cron job hits a dangerous command:
+    #   deny    — block the command and let the agent find another way (default, safe)
+    #   approve — auto-approve all dangerous commands in cron jobs
+    #
+    # single_query_mode — what to do when a single-query (-q) session hits a
+    # dangerous command. -q runs export HERMES_INTERACTIVE=1 (for interactive
+    # sudo prompts) but have NO user waiting to answer approval prompts — an
+    # unanswered prompt just waits the full timeout then fails closed, so the
+    # agent is forced to work around the block (often via execute_code). This
+    # setting makes that intent explicit:
+    #   deny    — block the command and let the agent find another way (default,
+    #             safe; mirrors cron_mode deny)
+    #   approve — auto-approve all dangerous commands in single-query mode
+    #
+    # unattended_mode — what to do when a session on an unattended
+    # programmatic platform (webhook, msgraph_webhook, api_server) hits a
+    # dangerous command. These surfaces bind a session platform like chat
+    # gateways do, but have no send_exec_approval and no /approve channel —
+    # a pending approval there just blocks for the full timeout with nobody
+    # to answer (#37284, #87509):
+    #   deny    — block the command instantly and let the agent find another
+    #             way (default, safe; mirrors cron_mode deny)
+    #   approve — auto-approve all dangerous commands on unattended platforms
+    #
+    # timeout — seconds to wait for the user's approve/deny before failing
+    # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
+    # Messaging approvals arrive as a push notification the user may not see
+    # immediately — 60s proved too tight on Telegram/Discord (the prompt
+    # expired before the user reached their phone), so the default is 300.
     "approvals": {
         # single_query_mode — what to do when a single-query (-q) session hits a dangerous command. -q runs
         # export HERMES_INTERACTIVE=1 (for interactive sudo prompts) but have NO user waiting to answer
@@ -1956,8 +2016,12 @@ DEFAULT_CONFIG = {
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
-        # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
-        # commands touching /etc".
+        # Operator-customizable policy text for smart approvals. When
+        # non-empty, this is appended to the smart-approval guardian's
+        # SYSTEM prompt (trusted channel) as additional rules — e.g.
+        # "Always ESCALATE commands touching /etc" or "APPROVE docker
+        # compose restarts under ~/deploys". Inspired by ChatGPT Work's
+        # customizable auto-review guardian policy.
         "smart_policy": "",
         # After this many consecutive guardian DENYs in a session, the deny message escalates to a
         # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
@@ -2223,6 +2287,38 @@ DEFAULT_CONFIG = {
         # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
         # tool whitelist apply identically in both modes.
         "mode": "project",
+        # Kernel lifetime:
+        #   per-call (default) — a fresh child process per execute_code call;
+        #     no state carries over. Today's behavior.
+        #   session            — one persistent kernel per (session owner,
+        #     mode, interpreter, cwd, tool-set): variables, imports, and
+        #     loaded data survive across calls AND across the user turns of
+        #     one conversation (the owner is the conversation's approval
+        #     session key; delegated subagent sessions get their own).
+        #     Kernels are disposed with their session (session clear/new),
+        #     reaped after kernel_idle_timeout seconds idle, and capped at
+        #     max_session_kernels live children process-wide (LRU evicted).
+        #     A timed-out or interrupted cell kills the kernel (state lost,
+        #     next call starts fresh), and the child environment is frozen
+        #     at kernel spawn — pass reset=true after changing env
+        #     passthrough. Tool RPC authority is rebound to each cell: a
+        #     later cell's tool calls run under that cell's approval and
+        #     session context, never the first cell's. Security scrubbing,
+        #     the tool whitelist, and output redaction are identical in
+        #     both modes. NOTE for per-script static policy (see
+        #     check_execute_code_guard): a persistent namespace lets cell
+        #     N+1 reach objects cell N created, which a single-cell static
+        #     scan cannot see — the runtime RPC boundary (allow-list, call
+        #     budget, per-cell authority) is the operative cross-cell
+        #     enforcement in this mode.
+        # kernel_mode is retired: session kernels are always on for local
+        # execution. Remote terminal backends still run per-call — their
+        # file-based RPC path has no kernel host yet (tracked follow-up,
+        # not a design limit). A leftover kernel_mode key in user config
+        # is ignored.
+        # Lifecycle bounds for session kernels.
+        "kernel_idle_timeout": 1800,
+        "max_session_kernels": 4,
     },
     "code_execution": {  # execute_code settings (programmatic tool calls).
         # project = run in the session cwd with the active venv/conda python so project deps and
@@ -2782,9 +2878,15 @@ DEFAULT_CONFIG = {
         # #47032; Linux/WSL2 idle spin #28152). cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls
         # set_agent_cursor_enabled(false) after start_session when this is on.
         "no_overlay": None,
-        # standard = cua-driver's own approval boundary; bounded = no runtime prompts, anything
-        # outside capability_manifest fails closed. `unrestricted` is NOT accepted here: it stays on
-        # the per-session YOLO toggle so config can't bypass approvals.
+        # cua-driver permission mode for each Hermes computer-use runtime.
+        #   standard (default) — cua-driver's own approval boundary.
+        #   bounded — repeatable automation under a user-reviewed session
+        #     capability manifest (set capability_manifest below). No runtime
+        #     prompts; anything outside the manifest fails closed inside
+        #     cua-driver.
+        # `unrestricted` is intentionally NOT accepted here: it stays bound to
+        # the explicit per-session YOLO toggle so a config line can never
+        # silently bypass approvals.
         "permission_mode": "standard",
         # Path (~ ok) to the reviewed manifest for permission_mode bounded; passed as
         # --capability-manifest. See cua.ai/docs/reference/cua-driver/permission-modes
@@ -2792,17 +2894,9 @@ DEFAULT_CONFIG = {
         # macOS only: allow launching an UNSIGNED (ad-hoc / TeamIdentifier
         # not set) CuaDriver.app for the private-session daemon. The default
         # (false) fails closed unless the bundle is signed with the official
-        # cua-driver identity (com.trycua.driver / team 4YEC26S9KF). Enable
-        # only when developing the driver locally from source.
+        # cua-driver identity (com.trycua.driver / an official signing team).
+        # Enable only when developing the driver locally from source.
         "allow_unsigned_driver": False,
-        # Pre-authorize existing-profile browser attachment in standard mode
-        # (cua-driver's trusted-launcher `--grant existing-profile`). When
-        # true, the agent can attach to your already-running, signed-in
-        # Chrome/Edge window — exposing that profile's live pages, cookies,
-        # and storage to the browser protocol — without a per-use prompt.
-        # Leave false to keep existing-profile attachment failing closed;
-        # isolated driver-owned profiles work either way.
-        "grant_existing_profile": False,
     },
     # Egress credential-injection proxy (iron-proxy) for remote terminal sandboxes (Docker today):
     # the sandbox sees opaque tokens and iron-proxy swaps in real credentials at egress, so a

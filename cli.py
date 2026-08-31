@@ -4012,7 +4012,17 @@ class _VoiceInputMessage:
 
 
 class _SeededQueryMessage:
-    """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop)."""
+    """Sentinel wrapper for a ``-q/--query`` prompt seeded into an
+    interactive session.
+
+    When ``hermes chat -q "…"`` runs on a real TTY, the query is submitted as
+    the first turn of a normal interactive session instead of the legacy
+    answer-and-exit single-query mode. The prompt is arbitrary user text (an
+    OS launcher, a desktop integration, a script) — it must be treated
+    LITERALLY: no slash-command routing, no ``!`` shell dispatch, no
+    file-drop detection. This sentinel marks the seeded first message so
+    ``process_loop`` skips those dispatchers for it (and only it).
+    """
 
     __slots__ = ("text", "images")
 
@@ -4025,8 +4035,22 @@ class _SeededQueryMessage:
 
 
 def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
-    """``-q`` seeds an interactive session only on a real TTY without ``--oneshot``/``-Q`` (automation answers and exits)."""
-    if not (query or image) or oneshot or quiet:
+    """Whether a ``-q/--image`` invocation should seed an interactive session.
+
+    New default (Aug 2026): on a real TTY, ``chat -q`` submits the prompt as
+    the first turn of a normal interactive session (parity with other coding
+    agents' seeded launches — e.g. Omarchy's prompted agent terminals).
+
+    The legacy answer-and-exit behavior is preserved for every automation
+    surface:
+      - ``--oneshot`` on the chat subcommand (explicit legacy opt-in)
+      - ``-Q/--quiet`` (machine-readable single-query contract)
+      - any non-TTY stdin/stdout (kanban workers, cron, pipes, A2A)
+    ``-z/--oneshot`` at the top level never reaches this path at all.
+    """
+    if not (query or image):
+        return False
+    if oneshot or quiet:
         return False
     try:
         return bool(sys.stdin.isatty() and sys.stdout.isatty())
@@ -4034,64 +4058,18 @@ def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
         return False
 
 
-def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
-    """Stable TUI panel width wide enough for the title and content (incl. borders)."""
-    term_cols = shutil.get_terminal_size((100, 20)).columns
-    longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
-    inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
-    return inner + 2  # leading/trailing space inside the borders
-
-
-def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False) -> list[str]:
-    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews)."""
-    kw = dict(replace_whitespace=False, drop_whitespace=False) if keep_ws else dict(break_long_words=False, break_on_hyphens=False)
-    wrapped = textwrap.wrap(text, width=max(8, width), subsequent_indent=subsequent_indent, **kw)
-    return wrapped or [""]
-
-
-_wrap_panel_text_keep_ws = functools.partial(_wrap_panel_text, keep_ws=True)
-
-
-def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
-    lines.extend(((border_style, "│ "), (content_style, text.ljust(max(0, box_width - 2))), (border_style, " │\n")))
-
-
-def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
-    lines.append((border_style, "│" + (" " * box_width) + "│\n"))
-
-
-@dataclass
-class _ChatTurn:
-    """Per-turn state shared by the ``chat()`` phases and the agent worker thread.
-
-    ``result`` is written by the worker and read after the join; ``tts_normal_exit`` is
-    set only when the TTS worker drained on its own so the last sentence is never cut.
+class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+    """
+    Interactive CLI for the Hermes Agent.
+    
+    Provides a REPL interface with rich formatting, command history,
+    and tool execution capabilities.
     """
 
-    result: Optional[dict] = None
-    use_streaming_tts: bool = False
-    box_opened: bool = False
-    thinking_started: bool = False
-    text_queue: Optional[queue.Queue] = None
-    tts_thread: Optional[threading.Thread] = None
-    stream_callback: Optional[Any] = None
-    stop_event: Optional[threading.Event] = None
-    tts_normal_exit: bool = False
-    voice_prefix: str = ""
-from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
-
-
-_PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
-
-
-class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
-    """Interactive REPL for the Hermes Agent."""
-
-    # Seeded -q first message (see _should_seed_interactive); run() re-creates
-    # _pending_input, so it is enqueued only after the fresh queue exists.
+    # Seeded -q handoff from main() → run() (see _should_seed_interactive):
+    # run() re-creates _pending_input, so the seeded first message rides in
+    # on this attribute and is enqueued after the fresh queue exists.
     _seeded_first_message: Optional["_SeededQueryMessage"] = None
-    # Inspection surfaces (banner, /tools, status line) read this on partially built instances too.
-    disabled_toolsets: Optional[List[str]] = None
 
     def __init__(
         self,
@@ -4493,20 +4471,26 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._pending_agent_seed = None
         self._secret_state = None
         self._secret_deadline = 0
-        self._tool_start_time: float = 0.0
-        self._pending_tool_info: dict = {}  # function_name -> [(preview, args)] for stacked scrollback
-        self._spinner_text = self._command_status = ""
-        self._last_scrollback_tool: str = ""  # "new" mode dedup
-        self._command_running = self._command_blocks_input = False
-        # Petdex mascot (display.pet): kitty placeholders on kitty/Ghostty, half-blocks elsewhere.
-        self._pet_renderer = self._pet_anim_thread = None
-        self._pet_slug = self._pet_kitty_pending = ""
-        self._pet_enabled = self._pet_anim_running = False
+        self._spinner_text: str = ""  # thinking spinner text for TUI
+        self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
+        self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
+        self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
+        self._command_running = False
+        self._command_blocks_input = False
+        self._command_status = ""
+        # Petdex mascot (opt-in via display.pet). Kitty/Ghostty use Unicode
+        # placeholders plus out-of-band image transmission; other terminals
+        # use the truecolor half-block fallback.
+        self._pet_renderer = None  # agent.pet.render.PetRenderer | None
+        self._pet_slug: str = ""
+        self._pet_enabled: bool = False
         self._pet_cols: int = 18
         self._pet_scale: float = 0.7
-        self._pet_frames_cache: dict = {}
-        self._pet_kitty_cache: dict = {}
-        self._pet_kitty_image_id = self._pet_frame_idx = 0
+        self._pet_frames_cache: dict = {}  # state -> list[grid]
+        self._pet_kitty_cache: dict = {}  # state -> kitty placeholder payload
+        self._pet_kitty_image_id: int = 0
+        self._pet_kitty_pending: str = ""
+        self._pet_frame_idx: int = 0
         self._pet_lock = threading.Lock()
         self._pet_cfg_checked = self._pet_event_until = 0.0
         self._pet_event: str = ""
@@ -4555,9 +4539,13 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
-        # Cache-hit baseline, reset on model switch / compression so the bar shows the current regime.
-        self._cache_hit_baseline_prompt = self._cache_hit_baseline_read = self._cache_hit_baseline_compressions = 0
+        # Cache-hit ratio baseline — reset on model switch and on
+        # context compression so the bar reflects the *current* cache
+        # regime, not a lifetime average that survives invalidation.
+        self._cache_hit_baseline_prompt = 0
+        self._cache_hit_baseline_read = 0
         self._cache_hit_baseline_model: Optional[str] = None
+        self._cache_hit_baseline_compressions = 0
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
         """Claim a global active-session slot for this CLI process."""
@@ -4596,8 +4584,1208 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         finally:
             self._active_session_lease = None
 
+    def _mark_terminal_io_broken(self, reason: str = "") -> None:
+        """Stop UI paints after the PTY/stdout becomes unusable (#81521)."""
+        if getattr(self, "_terminal_io_broken", False):
+            return
+        self._terminal_io_broken = True
+        try:
+            self._pet_stop_anim()
+        except Exception:
+            pass
+        logger.warning(
+            "Terminal I/O broken%s — freezing UI paints to avoid redraw storm (#81521)",
+            f" ({reason})" if reason else "",
+        )
+
+    def _invalidate(self, min_interval: float = 0.25) -> None:
+        """Throttled UI repaint for high-frequency background updates.
+
+        Use this for spinner frames, streaming token flushes, and other
+        repaints that can fire many times per second — the throttle prevents
+        terminal blinking on slow/SSH connections, and the resize-recovery
+        guard avoids stamping footer/status-bar chrome into scrollback while a
+        SIGWINCH reflow is in flight.
+
+        Do NOT use this for user-blocking modal prompts (approval / clarify /
+        sudo). Those are rare, one-shot, user-blocking events that must paint
+        immediately; route them through ``self._app.invalidate()`` directly, the
+        same way the modal key-binding handlers already do. Sending a modal's
+        entry paint through this throttle lets an unrelated background repaint
+        within the 250ms window — or an in-flight resize — silently drop it, so
+        the prompt never renders and times out unseen (#41098).
+        """
+        if getattr(self, "_terminal_io_broken", False):
+            return
+        if getattr(self, "_resize_recovery_pending", False):
+            return
+        now = time.monotonic()
+        if hasattr(self, "_app") and self._app and (now - getattr(self, "_last_invalidate", 0.0)) >= min_interval:
+            self._last_invalidate = now
+            try:
+                self._app.invalidate()
+            except OSError as exc:
+                if getattr(exc, "errno", None) == errno.EIO:
+                    self._mark_terminal_io_broken("invalidate")
+                    return
+                raise
+
+    def _paint_now(self) -> None:
+        """Immediate, unthrottled repaint for user-blocking modal prompts.
+
+        Background-thread callbacks (approval / clarify / sudo) set their modal
+        state then call this to make the panel visible at once. It deliberately
+        bypasses the ``_invalidate`` throttle and resize-recovery guard — a
+        modal the user is actively waiting on must never be dropped — mirroring
+        the direct ``event.app.invalidate()`` the modal key-binding handlers
+        already use. See ``_invalidate`` for why the throttle must not gate
+        these paints (#41098).
+        """
+        if getattr(self, "_terminal_io_broken", False):
+            return
+        app = getattr(self, "_app", None)
+        if app is not None:
+            try:
+                app.invalidate()
+            except OSError as exc:
+                if getattr(exc, "errno", None) == errno.EIO:
+                    self._mark_terminal_io_broken("paint_now")
+                    return
+                raise
+            except Exception:
+                pass
+
+    def _force_full_redraw(self) -> None:
+        """Force a clean full-screen repaint of the prompt_toolkit UI.
+
+        Used to recover from terminal buffer drift caused by external
+        redraws we can't detect — e.g. macOS cmux / tmux tab switches,
+        ``clear`` issued from a subshell, or SSH window restores. These
+        wipe or repaint the terminal without firing SIGWINCH, so
+        prompt_toolkit's tracked ``_cursor_pos`` no longer matches reality
+        and the next incremental redraw stacks on top of stale content
+        (ghost status bars, duplicated prompts).
+
+        Bound to Ctrl+L and exposed as the ``/redraw`` slash command,
+        matching the standard terminal-UX convention (bash, zsh, fish,
+        vim, htop).
+        """
+        if getattr(self, "_terminal_io_broken", False):
+            return
+        app = getattr(self, "_app", None)
+        if not app:
+            return
+        self._clear_prompt_toolkit_screen(
+            app,
+            rebuild_scrollback=self._redraw_rebuilds_scrollback(),
+        )
+        if getattr(self, "_terminal_io_broken", False):
+            return
+        _replay_output_history()
+        self._pet_queue_kitty_frame()
+        try:
+            app.invalidate()
+        except OSError as exc:
+            if getattr(exc, "errno", None) == errno.EIO:
+                self._mark_terminal_io_broken("force_full_redraw")
+                return
+            raise
+        except Exception:
+            pass
+
+    def _schedule_focus_regain_redraw(self, min_interval: float = 1.0) -> None:
+        """Repaint after a terminal focus-in report (``CSI I``), rate-limited.
+
+        Terminals with focus tracking active (Ghostty, iTerm2, xterm builds,
+        multiplexers that toggle DECSET 1004 upstream) emit ``\\x1b[I`` when
+        the Hermes tab/window becomes visible again. Emulators can coalesce
+        or drop hidden-tab output and repaint the surface while we're
+        invisible, so on regain prompt_toolkit's incremental diff stacks on
+        stale content — a second copy of the composer/prompt chrome next to
+        the ghost of the old one (#60920 focus-regain variant, #25337).
+
+        The stock handling maps ``CSI I``/``CSI O`` to ``Keys.Ignore`` so the
+        bytes never pollute the input buffer; this hook additionally routes
+        focus-in through the same recovery as Ctrl+L / ``/redraw``. It is
+        self-gating: terminals that never enable focus tracking never emit
+        the sequence, so nothing changes for them. Rate-limited so a burst of
+        focus reports (rapid Alt+Tab, mux pane hops) repaints at most once
+        per ``min_interval`` seconds.
+        """
+        now = time.monotonic()
+        last = getattr(self, "_last_focus_regain_redraw", 0.0)
+        if now - last < min_interval:
+            return
+        self._last_focus_regain_redraw = now
+        self._force_full_redraw()
+
+    @staticmethod
+    def _redraw_rebuilds_scrollback() -> bool:
+        """Return whether CLI redraw/resize recovery should clear scrollback.
+
+        Some terminal/tmux stacks move prompt_toolkit's non-fullscreen bottom
+        chrome into scrollback when the window is maximized/restored. A normal
+        CSI 2J viewport clear cannot remove those stale prompt/input-rule rows,
+        so users who hit that class of bug need CSI 3J as well, followed by the
+        existing bounded output-history replay.
+        """
+        display_config = CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else {}
+        if not isinstance(display_config, dict):
+            display_config = {}
+        raw = display_config.get("cli_rebuild_scrollback_on_redraw", False)
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "on", "always"}
+        return bool(raw)
+
+    def _recover_terminal_after_interrupt(self) -> None:
+        """Recover the terminal after an interrupted agent turn (#33271).
+
+        When the user interrupts a running turn by typing a new message,
+        prompt_toolkit may have an in-flight ``CSI 6n`` cursor-position query
+        whose reply (``ESC[<row>;<col>R``) arrives on stdin after the input
+        parser has torn down. The reply then leaks as literal text
+        (``^[[19;1R``) and the VT100 parser can stall in a partial-escape
+        state, accepting no further keystrokes — the terminal appears frozen.
+
+        Two steps recover a sane state:
+          1. ``flush_stdin()`` drains stray escape bytes from the OS input
+             buffer (``termios.tcflush(TCIFLUSH)``; no-op on non-TTY).
+          2. ``_force_full_redraw()`` drops prompt_toolkit's cached
+             screen/cursor state and forces a clean repaint.
+
+        Both steps are independently safe and self-guard, so a failure of one
+        never prevents the other. If the PTY is already dead (EIO), skip the
+        redraw entirely — painting a broken fd is the #81521 redraw storm.
+        """
+        if getattr(self, "_terminal_io_broken", False):
+            return
+        try:
+            from hermes_cli.curses_ui import flush_stdin
+            flush_stdin()
+        except Exception:
+            pass
+        # #60920: The interruption marker is now printed with
+        # _suspend_output_history in chat(), so _OUTPUT_HISTORY only
+        # contains the normal response text (no marker text). Do NOT
+        # clear history here — _force_full_redraw → _replay_output_history
+        # replays the response correctly without duplicating the marker.
+        # The /redraw + Ctrl+L paths also preserve replay for scrollback
+        # recovery as intended.
+        self._force_full_redraw()
+
+    def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False) -> None:
+        """Clear the terminal and reset prompt_toolkit renderer state."""
+        if getattr(self, "_terminal_io_broken", False):
+            return
+        try:
+            renderer = app.renderer
+            out = renderer.output
+            out.reset_attributes()
+            out.erase_screen()
+            if rebuild_scrollback:
+                try:
+                    out.write_raw("\x1b[3J")
+                except Exception:
+                    pass
+            out.cursor_goto(0, 0)
+            out.flush()
+            # Drop prompt_toolkit's cached screen + cursor state so the
+            # next _redraw() starts from a known (0, 0) origin and
+            # re-renders every cell rather than diffing against stale.
+            renderer.reset(leave_alternate_screen=False)
+        except OSError as exc:
+            if getattr(exc, "errno", None) == errno.EIO:
+                self._mark_terminal_io_broken("clear_screen")
+                return
+            pass
+        except Exception:
+            pass
+
+    def _recover_after_resize(self, app, original_on_resize) -> None:
+        """Recover a resized classic CLI without desynchronizing cursor state.
+
+        Unlike _force_full_redraw, we do NOT clear the physical screen or
+        scrollback here.  The startup banner and tool summary are printed
+        before prompt_toolkit owns the live chrome, so they live in normal
+        terminal scrollback.  Erasing the screen on SIGWINCH removes that
+        startup UI and ``_replay_output_history`` cannot reconstruct it
+        (the banner was never added to ``_OUTPUT_HISTORY``).
+
+        Let prompt_toolkit's own resize path run with its renderer cursor
+        cache intact. Its Application._on_resize() starts with
+        renderer.erase(leave_alternate_screen=False), which needs the cached
+        cursor position to move back to the live prompt origin before
+        erase_down(). Resetting the renderer before that erase loses the
+        origin and can leave stale prompt glyphs after a narrow resize.
+
+        We also flag ``_status_bar_suppressed_after_resize`` so the dynamic
+        status bar and input separator rules stay hidden while the terminal
+        reflow settles.  On column shrink the terminal reflows already-rendered
+        status bar rows into scrollback before prompt_toolkit can erase them;
+        drawing a fresh full-width bar immediately makes the old and new
+        versions look duplicated (#19280, #22976).
+
+        Suppression alone is not enough on a WIDTH change.  prompt_toolkit's
+        ``renderer.erase()`` does ``cursor_up(_cursor_pos.y)`` + ``erase_down()``
+        using the ``_cursor_pos.y`` cached from the LAST render at the OLD
+        width (renderer.py).  When the column count shrinks, the terminal
+        reflows each already-painted full-width chrome row into 2+ physical
+        rows, so the cached ``y`` undershoots: ``cursor_up`` does not climb
+        past the reflowed rows and ``erase_down`` leaves the stale bar stranded
+        ABOVE the live origin.  The next paint then stacks a fresh bar below it
+        — the duplicated-status-bar report (two bars, two elapsed readings).
+        Suppression hides the *new* bar but never erases the already-reflowed
+        *old* one, so the ghost survives the whole suppression window.
+
+        Fix: on a width change, wipe the visible viewport with ``erase_screen``
+        (CSI 2J) BEFORE delegating to prompt_toolkit's resize, then let its
+        repaint redraw from a clean origin.  This is banner-safe: 2J clears
+        only the visible screen, NOT scrollback history (that is CSI 3J, which
+        we do not send here — ``rebuild_scrollback=False``), so the startup
+        banner that scrolled into history is preserved and
+        ``_replay_output_history`` is not needed.  Row-count-only changes skip
+        the clear (no reflow, so no ghost) to avoid an unnecessary repaint.
+
+        The suppression is transient: a short follow-up timer clears it and
+        repaints once the reflow has settled, so the bar returns on its own
+        during idle.  Previously the flag was only cleared on the next
+        *submitted* user input, so a resize/reflow (tmux pane change, SSH
+        window restore, font zoom) followed by idle left the status bar hidden
+        indefinitely even while the refresh clock kept ticking (the dynamic
+        chrome rendered at height 0 on every repaint).  The next-submit clear
+        at the input loop remains as a fast path.
+        """
+        self._status_bar_suppressed_after_resize = True
+        # On a WIDTH change the terminal has already reflowed the old full-width
+        # chrome into extra physical rows that prompt_toolkit's stale-cursor
+        # erase (cursor_up(_cursor_pos.y) cached at the OLD width) will not
+        # reach, leaving a duplicated status bar stranded above the live origin.
+        # Ctrl+L / /redraw clears it cleanly, so route the resize path through
+        # the SAME recovery: wipe the visible viewport (banner-safe — CSI 2J
+        # by default; CSI 3J only when display.cli_rebuild_scrollback_on_redraw
+        # is enabled) and replay the transcript so nothing is lost.
+        # Same-width SIGWINCH (tmux attach, benign focus/tab signals) is left
+        # untouched — no clear, no replay — because a 2J without replay erases
+        # the visible transcript and a replay against preserved scrollback
+        # duplicates it (#65293). The stale-previous_screen crash tmux attach
+        # used to trigger is handled by _hermes_call_output_screen_diff's
+        # retry-with-first-paint instead (#83874).
+        try:
+            new_width = self._get_tui_terminal_width()
+        except Exception:
+            new_width = None
+        prev_width = getattr(self, "_last_resize_width", None)
+        # Replay only on an OBSERVED width change.  The first signal of a
+        # session must not count as one (#65293): GNOME Terminal and friends
+        # deliver benign SIGWINCHes (tab bar appearing, monitor-scale change,
+        # focus events), and a 2J+replay against preserved scrollback
+        # duplicates everything ``_OUTPUT_HISTORY`` holds — after a resume
+        # that is the entire "Previous Conversation" recap plus the first
+        # live exchange.  ``_install_resize_recovery`` seeds the baseline at
+        # startup, so an initial maximize/restore still differs from it and
+        # is still recovered; with no baseline (width probe failed) this
+        # signal just records one for the next comparison.
+        width_changed = (
+            new_width is not None
+            and prev_width is not None
+            and new_width != prev_width
+        )
+        if width_changed:
+            try:
+                self._clear_prompt_toolkit_screen(
+                    app,
+                    rebuild_scrollback=self._redraw_rebuilds_scrollback(),
+                )
+                _replay_output_history()
+            except Exception:
+                pass
+        if new_width is not None:
+            self._last_resize_width = new_width
+        if width_changed:
+            self._pet_queue_kitty_frame()
+        original_on_resize()
+        self._schedule_status_bar_unsuppress(app)
+
+    def _schedule_status_bar_unsuppress(self, app, delay: float = 0.35) -> None:
+        """Clear the post-resize status-bar suppression after the reflow settles.
+
+        Debounced: a fresh resize cancels the pending unsuppress and restarts
+        the timer, so a resize storm only repaints the bar once it stops.
+        """
+        try:
+            old_timer = getattr(self, "_status_bar_unsuppress_timer", None)
+            if old_timer is not None:
+                try:
+                    old_timer.cancel()
+                except Exception:
+                    pass
+
+            def _clear():
+                self._status_bar_suppressed_after_resize = False
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+
+            def _fire():
+                try:
+                    loop = getattr(app, "loop", None)
+                except Exception:
+                    loop = None
+                if loop is not None:
+                    try:
+                        loop.call_soon_threadsafe(_clear)
+                        return
+                    except Exception:
+                        pass
+                _clear()
+
+            timer = threading.Timer(delay, _fire)
+            timer.daemon = True
+            self._status_bar_unsuppress_timer = timer
+            timer.start()
+        except Exception:
+            # Fail open: never leave the bar stuck hidden.
+            self._status_bar_suppressed_after_resize = False
+
+    def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
+        """Debounce resize redraws so footer chrome is not stamped into scrollback."""
+        try:
+            old_timer = getattr(self, "_resize_recovery_timer", None)
+            lock = getattr(self, "_resize_recovery_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                self._resize_recovery_lock = lock
+
+            def _timer_fired(timer_ref):
+                def _run_recovery():
+                    with lock:
+                        if getattr(self, "_resize_recovery_timer", None) is not timer_ref:
+                            return
+                        self._resize_recovery_timer = None
+                        self._resize_recovery_pending = False
+                    self._recover_after_resize(app, original_on_resize)
+
+                try:
+                    loop = app.loop  # type: ignore[attr-defined]
+                except Exception:
+                    loop = None
+                if loop is not None:
+                    try:
+                        loop.call_soon_threadsafe(_run_recovery)
+                        return
+                    except Exception:
+                        pass
+                _run_recovery()
+
+            with lock:
+                if old_timer is not None:
+                    try:
+                        old_timer.cancel()
+                    except Exception:
+                        pass
+                self._resize_recovery_pending = True
+                timer = threading.Timer(delay, lambda: _timer_fired(timer))
+                timer.daemon = True
+                self._resize_recovery_timer = timer
+                timer.start()
+        except Exception:
+            self._resize_recovery_pending = False
+            self._recover_after_resize(app, original_on_resize)
+
+    def _install_resize_recovery(self, app) -> None:
+        """Route prompt_toolkit's ``_on_resize`` through the debounced
+        ghost-clearing recovery (#5474/#49120) and record the current terminal
+        width as the baseline for width-change detection.
+
+        Seeding the baseline here is what keeps the session's FIRST SIGWINCH
+        honest (#65293): ``_recover_after_resize`` replays the transcript only
+        on an observed width change, and without a startup baseline it could
+        not tell a benign signal (GNOME Terminal tab bar, monitor-scale
+        change) from a real one.  An initial maximize/restore still differs
+        from the seeded width, so it is still recovered.
+
+        The probe reads ``app.output`` directly — NOT
+        ``_get_tui_terminal_width`` — because this runs before ``app.run()``,
+        when ``get_app()`` still returns prompt_toolkit's DummyApplication
+        whose DummyOutput reports a hardcoded 80 columns; seeding that fake
+        width would make the first real signal look like a width change and
+        resurrect the duplicate-replay bug this exists to fix.
+        ``app.output`` is the same object the running app's resize handler
+        measures, so install-time and signal-time widths are comparable.
+        """
+        width = None
+        try:
+            width = app.output.get_size().columns
+        except Exception:
+            width = None
+        if not width or width <= 0:
+            try:
+                width = shutil.get_terminal_size((80, 24)).columns
+            except Exception:
+                width = None
+        self._last_resize_width = width
+        original_on_resize = app._on_resize
+
+        def _resize_clear_ghosts():
+            self._schedule_resize_recovery(app, original_on_resize)
+
+        app._on_resize = _resize_clear_ghosts
+
+    def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
+        if percent_used is None:
+            return "class:status-bar-dim"
+        if percent_used >= 95:
+            return "class:status-bar-critical"
+        if percent_used > 80:
+            return "class:status-bar-bad"
+        if percent_used >= 50:
+            return "class:status-bar-warn"
+        return "class:status-bar-good"
+
+    def _cache_hit_rate(self, snapshot: dict, precision: int = 1) -> "tuple[float, str] | None":
+        """Return (cache_pct, formatted_label) or None if no cache data.
+
+        Centralises the cache-hit-rate computation so both the plain-text
+        status bar and the prompt-toolkit fragment path share one formula.
+        Prefers the baseline-delta percentage computed in
+        ``_get_status_bar_snapshot`` (resets on model switch / compression,
+        so it reflects the *current* cache regime); falls back to the
+        session-lifetime ratio when no delta is available.
+        """
+        delta_pct = snapshot.get("cache_hit_pct")
+        if delta_pct is not None:
+            return float(delta_pct), f"◎ {float(delta_pct):.{precision}f}%"
+        cache_read = snapshot.get("session_cache_read_tokens", 0)
+        prompt_total = snapshot.get("session_prompt_tokens", 0)
+        if cache_read > 0 and prompt_total > 0:
+            cache_pct = cache_read / prompt_total * 100
+            return cache_pct, f"◎ {cache_pct:.{precision}f}%"
+        return None
+
+    def _cache_hit_rate_style(self, cache_pct: float) -> str:
+        """Style for cache hit rate — higher is better (opposite of context %)."""
+        if cache_pct >= 70:
+            return "class:status-bar-good"
+        if cache_pct >= 40:
+            return "class:status-bar-warn"
+        return "class:status-bar-bad"
+
+
+    @staticmethod
+    def _battery_status_style(category: str) -> str:
+        """Map a battery colour category to a status-bar style class."""
+        return {
+            "good": "class:status-bar-good",
+            "warn": "class:status-bar-warn",
+            "bad": "class:status-bar-bad",
+            "critical": "class:status-bar-critical",
+        }.get(category, "class:status-bar-dim")
+
+    def _handle_battery_command(self, cmd_original: str) -> None:
+        """Toggle the status-bar battery read-out.
+
+        ``/battery`` toggles, ``/battery on|off`` sets explicitly, and
+        ``/battery status`` reports the current setting plus a live reading.
+        The choice is persisted to ``display.battery`` so it survives restarts.
+        """
+        parts = (cmd_original or "").split()
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        try:
+            from agent.battery import format_battery, read_battery
+            reading = read_battery(use_cache=False)
+        except Exception:
+            reading = None
+
+        if arg in ("status", "show"):
+            state = "on" if self._battery_visible else "off"
+            if reading is not None and reading.available:
+                self._console_print(
+                    f"  Battery indicator {state} — currently {format_battery(reading)}"
+                )
+            elif reading is not None:
+                self._console_print(
+                    f"  Battery indicator {state} — no battery detected on this machine"
+                )
+            else:
+                self._console_print(f"  Battery indicator {state}")
+            return
+
+        if arg in ("on", "true", "yes"):
+            target = True
+        elif arg in ("off", "false", "no"):
+            target = False
+        elif arg in ("", "toggle"):
+            target = not self._battery_visible
+        else:
+            self._console_print("  Usage: /battery [on|off|status]")
+            return
+
+        self._battery_visible = target
+        save_config_value("display.battery", target)
+
+        if target:
+            if reading is not None and not reading.available:
+                self._console_print(
+                    "  Battery indicator on — no battery detected, so nothing will show here"
+                )
+            elif reading is not None and reading.available:
+                self._console_print(
+                    f"  Battery indicator on — {format_battery(reading)}"
+                )
+            else:
+                self._console_print("  Battery indicator on")
+        else:
+            self._console_print("  Battery indicator off")
+
+    @staticmethod
+    def _compression_count_style(count: int) -> str:
+        """Return a style class reflecting context compression pressure."""
+        if count >= 10:
+            return "class:status-bar-bad"
+        if count >= 5:
+            return "class:status-bar-warn"
+        return "class:status-bar-dim"
+
+    def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
+        safe_percent = max(0, min(100, percent_used or 0))
+        filled = round((safe_percent / 100) * width)
+        return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
+
+    @staticmethod
+    def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
+        """Format per-prompt elapsed time for the status bar.
+
+        Always returns a string — shows 0s on fresh start before first turn.
+        Keeps seconds visible at all scales so it increments smoothly:
+            59s → 1m → 1m 1s → ... → 1m 59s → 2m → 2m 1s → ...
+            59m 59s → 1h → 1h 0m 1s → ...
+            23h 59m 59s → 1d → 1d 0h 1m → ...
+
+        Emoji prefix: ⏱ when turn is live, ⏲ when frozen or fresh start.
+        Uses width-1 (no variation selector) glyphs so the status bar stays
+        aligned in monospace terminals.
+        """
+        if prompt_start_time is None and prompt_duration == 0.0:
+            return "⏲ 0s"
+        elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
+        elapsed = max(0.0, elapsed)
+
+        days = int(elapsed // 86400)
+        remaining = elapsed % 86400
+        hours = int(remaining // 3600)
+        remaining = remaining % 3600
+        minutes = int(remaining // 60)
+        seconds = int(remaining % 60)
+
+        if days > 0:
+            time_str = f"{days}d {hours}h {minutes}m"
+        elif hours > 0:
+            time_str = f"{hours}h {minutes}m {seconds}s" if seconds else f"{hours}h {minutes}m"
+        elif minutes > 0:
+            time_str = f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+        else:
+            time_str = f"{int(elapsed)}s"
+
+        emoji = "⏱" if live else "⏲"
+        return f"{emoji} {time_str}"
+
+    @staticmethod
+    def _format_idle_since(last_finished_at: Optional[float], turn_live: bool) -> str:
+        """Format time since the last final agent response for the status bar.
+
+        Returns an empty string while a turn is live (the per-prompt elapsed
+        timer covers that case) or before the first turn has completed.
+        Compact read-out: ``✓ 42s`` / ``✓ 3m`` / ``✓ 1h 12m``.
+        """
+        if turn_live or last_finished_at is None:
+            return ""
+        idle = max(0.0, time.time() - last_finished_at)
+        return f"✓ {format_duration_compact(idle)}"
+
+    def _get_status_bar_snapshot(self) -> Dict[str, Any]:
+        # Prefer the agent's model name — it updates on fallback.
+        # self.model reflects the originally configured model and never
+        # changes mid-session, so the TUI would show a stale name after
+        # _try_activate_fallback() switches provider/model.
+        agent = getattr(self, "agent", None)
+        model_name = (getattr(agent, "model", None) or self.model or "unknown")
+        # Friendly display: prefer reverse-alias from config.yaml ``model_aliases:``
+        # before slash/length truncation. This turns long Palantir RIDs like
+        # ``ri.language-model-service..language-model.anthropic-claude-4-7-opus``
+        # into the user's chosen short name (e.g. ``opus-4.7``) in the status bar.
+        model_short = _reverse_alias_for_display(model_name)
+        if model_short == model_name:
+            model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+            # Strip Palantir RID prefixes via the shared display formatter so
+            # this site and ``ModelSwitchResult`` confirmation can't drift.
+            from hermes_cli.model_switch import format_model_for_display
+            model_short = format_model_for_display(model_short)
+        if model_short.endswith(".gguf"):
+            model_short = model_short[:-5]
+        if len(model_short) > 26:
+            model_short = f"{model_short[:23]}..."
+
+        elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        snapshot = {
+            "model_name": model_name,
+            "model_short": model_short,
+            "duration": format_duration_compact(elapsed_seconds),
+            "session_title": self._get_status_bar_session_title(),
+            "prompt_elapsed": self._format_prompt_elapsed(
+                getattr(self, "_prompt_start_time", None),
+                getattr(self, "_prompt_duration", 0.0),
+                live=getattr(self, "_prompt_start_time", None) is not None,
+            ),
+            "idle_since": self._format_idle_since(
+                getattr(self, "_last_turn_finished_at", None),
+                turn_live=getattr(self, "_prompt_start_time", None) is not None,
+            ),
+            "context_tokens": 0,
+            "context_length": None,
+            "context_percent": None,
+            "session_input_tokens": 0,
+            "session_output_tokens": 0,
+            "session_cache_read_tokens": 0,
+            "session_cache_write_tokens": 0,
+            "session_prompt_tokens": 0,
+            "session_completion_tokens": 0,
+            "session_total_tokens": 0,
+            "session_api_calls": 0,
+            "compressions": 0,
+            "active_background_tasks": 0,
+            "active_background_processes": 0,
+            "active_background_subagents": 0,
+            "battery_label": "",
+            "battery_category": "dim",
+            # Focus view badge (/focus). Persistent indicator so the reduced
+            # output mode is never invisible. Display-only.
+            "focus_label": "",
+        }
+
+        try:
+            from hermes_cli.focus_view import focus_statusbar_segment
+
+            snapshot["focus_label"] = focus_statusbar_segment(
+                bool(getattr(self, "_focus_view_enabled", False))
+            )
+        except Exception:
+            pass
+
+        # Battery read-out (first status-bar element when enabled). Reads are
+        # memoised for a few seconds inside agent.battery, so polling it on
+        # every status-bar repaint is cheap.
+        if getattr(self, "_battery_visible", False):
+            try:
+                from agent.battery import (
+                    battery_category,
+                    format_battery,
+                    read_battery,
+                )
+
+                _batt = read_battery()
+                snapshot["battery_label"] = format_battery(_batt)
+                snapshot["battery_category"] = battery_category(_batt)
+            except Exception:
+                pass
+
+        # Count live /bg tasks. The dict entry is removed in the
+        # task thread's finally block, so len() reflects truly-running tasks.
+        # len() on a CPython dict is atomic; safe to read without a lock.
+        try:
+            bg_tasks = getattr(self, "_background_tasks", None)
+            if bg_tasks:
+                snapshot["active_background_tasks"] = len(bg_tasks)
+        except Exception:
+            pass
+
+        # Count live background terminal processes (terminal tool background
+        # sessions tracked by tools.process_registry). Cheap O(1) read.
+        try:
+            from tools.process_registry import process_registry
+            snapshot["active_background_processes"] = process_registry.count_running()
+        except Exception:
+            pass
+
+        # Count live background/async subagents (delegate_task batches and
+        # background single delegations tracked by tools.async_delegation).
+        # active_count() iterates an in-memory records dict under a lock —
+        # cheap and only counts records still in the "running" state.
+        try:
+            from tools.async_delegation import active_count as _async_active_count
+            snapshot["active_background_subagents"] = _async_active_count()
+        except Exception:
+            pass
+
+        # Standing /goal state (Ralph loop). GoalManager is cached on self and
+        # keeps its state in memory, so this is a cheap attribute read — no DB
+        # hit per repaint. Only an *active* goal earns a segment; paused/done
+        # goals stay out of the bar (matching the desktop's active-first row).
+        snapshot["goal_active"] = False
+        snapshot["goal_turns_used"] = 0
+        snapshot["goal_max_turns"] = 0
+        try:
+            goal_mgr = self._get_goal_manager()
+            if goal_mgr is not None and goal_mgr.is_active():
+                goal_state = goal_mgr.state
+                snapshot["goal_active"] = True
+                snapshot["goal_turns_used"] = int(getattr(goal_state, "turns_used", 0) or 0)
+                snapshot["goal_max_turns"] = int(getattr(goal_state, "max_turns", 0) or 0)
+        except Exception:
+            pass
+
+
+        if not agent:
+            return snapshot
+
+        snapshot["session_input_tokens"] = getattr(agent, "session_input_tokens", 0) or 0
+        snapshot["session_output_tokens"] = getattr(agent, "session_output_tokens", 0) or 0
+        snapshot["session_cache_read_tokens"] = getattr(agent, "session_cache_read_tokens", 0) or 0
+        snapshot["session_cache_write_tokens"] = getattr(agent, "session_cache_write_tokens", 0) or 0
+        snapshot["session_prompt_tokens"] = getattr(agent, "session_prompt_tokens", 0) or 0
+        snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
+        snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
+        snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor:
+            # last_prompt_tokens is parked at the -1 sentinel right after a
+            # compression, until the next real API call reports a prompt count
+            # (awaiting_real_usage_after_compression). The status bar must not
+            # render that sentinel verbatim — it produced "-1/200K" / "-1%".
+            # Clamp it to 0 so the one transitional turn reads as empty context.
+            context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+            if context_tokens < 0:
+                context_tokens = 0
+            context_length = getattr(compressor, "context_length", 0) or 0
+            if context_length < 0:
+                context_length = 0
+            snapshot["context_tokens"] = context_tokens
+            snapshot["context_length"] = context_length or None
+            snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
+            if context_length:
+                snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+
+        # -- Cache-hit ratio (delta since last reset) --
+        # Reset baseline on model switch and on compression — both invalidate
+        # the prompt cache. Formula verified against live logs:
+        #   hit = cache_read / prompt_tokens  (prompt = input+cache_read+cache_write)
+        #   see agent/conversation_loop.py:4314  cache=read/prompt (87%)
+        #   and CanonicalUsage.prompt_tokens = input+read+write
+        try:
+            base_model = getattr(self, "_cache_hit_baseline_model", None)
+            base_prompt = int(getattr(self, "_cache_hit_baseline_prompt", 0) or 0)
+            base_read = int(getattr(self, "_cache_hit_baseline_read", 0) or 0)
+            base_comps = int(getattr(self, "_cache_hit_baseline_compressions", 0) or 0)
+            cur_model = snapshot.get("model_name") or model_name
+            cur_comps = int(snapshot.get("compressions", 0) or 0)
+            cur_prompt = int(snapshot.get("session_prompt_tokens", 0) or 0)
+            cur_read = int(snapshot.get("session_cache_read_tokens", 0) or 0)
+            if base_model is None:
+                self._cache_hit_baseline_model = cur_model
+                self._cache_hit_baseline_compressions = cur_comps
+                base_model = cur_model
+                base_comps = cur_comps
+            if cur_model != base_model:
+                self._cache_hit_baseline_model = cur_model
+                self._cache_hit_baseline_prompt = cur_prompt
+                self._cache_hit_baseline_read = cur_read
+                self._cache_hit_baseline_compressions = cur_comps
+                base_prompt = cur_prompt
+                base_read = cur_read
+                base_comps = cur_comps
+            if cur_comps != base_comps:
+                self._cache_hit_baseline_compressions = cur_comps
+                self._cache_hit_baseline_prompt = cur_prompt
+                self._cache_hit_baseline_read = cur_read
+                base_prompt = cur_prompt
+                base_read = cur_read
+            delta_prompt = cur_prompt - base_prompt
+            delta_read = cur_read - base_read
+            # A zero-read regime hides the segment entirely (no cache data
+            # is not the same as a 0% hit worth alarming about), and the pct
+            # stays a float so renderers control their own precision.
+            if delta_prompt > 0 and delta_read > 0:
+                pct = max(0.0, min(100.0, (delta_read / delta_prompt) * 100))
+                snapshot["cache_hit_pct"] = pct
+                snapshot["cache_hit_label"] = f"{pct:.0f}%"
+            elif cur_prompt > 0 and cur_read > 0 and base_prompt == 0 and base_read == 0:
+                pct = max(0.0, min(100.0, (cur_read / cur_prompt) * 100))
+                snapshot["cache_hit_pct"] = pct
+                snapshot["cache_hit_label"] = f"{pct:.0f}%"
+            else:
+                snapshot["cache_hit_pct"] = None
+                snapshot["cache_hit_label"] = ""
+        except Exception:
+            snapshot["cache_hit_pct"] = None
+            snapshot["cache_hit_label"] = ""
+
+        # -- Rolling avg latency / velocity (last 10 calls) --
+        # Reads the deque maintained in agent/conversation_loop.py (and
+        # agent_init). Codex app-server has no latency, so it stays hidden there.
+        try:
+            agent_obj = getattr(self, "agent", None)
+            lhist = list(getattr(agent_obj, "_api_latency_history", []) or []) if agent_obj else []
+            ohist = list(getattr(agent_obj, "_api_output_history", []) or []) if agent_obj else []
+            # Keep the two histories aligned (they are appended together).
+            n = min(len(lhist), len(ohist))
+            if n:
+                lhist = lhist[-n:]
+                ohist = ohist[-n:]
+                # Simple mean for latency; sum/sum for velocity (true throughput, not mean of ratios).
+                avg_lat = sum(lhist) / len(lhist) if lhist else None
+                total_out = sum(ohist)
+                total_lat = sum(lhist)
+                avg_vel = (total_out / total_lat) if total_lat > 0 else None
+                # Guard against NaN / inf from weird provider timings (e.g. -0.8s in logs).
+                if avg_lat is not None and (avg_lat != avg_lat or avg_lat < 0 or avg_lat > 1e6):
+                    avg_lat = None
+                if avg_vel is not None and (avg_vel != avg_vel or avg_vel < 0 or avg_vel > 1e6):
+                    avg_vel = None
+                snapshot["avg_latency"] = float(avg_lat) if avg_lat is not None else None
+                snapshot["avg_latency_label"] = f"{avg_lat:.1f}s" if avg_lat is not None else ""
+                snapshot["avg_velocity"] = float(avg_vel) if avg_vel is not None else None
+                snapshot["avg_velocity_label"] = f"{avg_vel:.0f} t/s" if avg_vel is not None else ""
+            else:
+                snapshot["avg_latency"] = None
+                snapshot["avg_latency_label"] = ""
+                snapshot["avg_velocity"] = None
+                snapshot["avg_velocity_label"] = ""
+        except Exception:
+            snapshot["avg_latency"] = None
+            snapshot["avg_latency_label"] = ""
+            snapshot["avg_velocity"] = None
+            snapshot["avg_velocity_label"] = ""
+
+        return snapshot
+
+    def _get_status_bar_session_title(self) -> str:
+        """Return the current title without polling state.db on every repaint."""
+        pending = str(getattr(self, "_pending_title", None) or "").strip()
+        session_id = str(getattr(self, "session_id", "") or "")
+        if pending:
+            self._status_bar_title_session_id = session_id
+            self._status_bar_title_cache = pending
+            self._status_bar_title_checked_at = time.monotonic()
+            return pending
+
+        now = time.monotonic()
+        cached_session_id = getattr(self, "_status_bar_title_session_id", None)
+        checked_at = float(getattr(self, "_status_bar_title_checked_at", 0.0) or 0.0)
+        if cached_session_id == session_id and now - checked_at < 1.5:
+            return str(getattr(self, "_status_bar_title_cache", "") or "")
+
+        title = ""
+        db = getattr(self, "_session_db", None)
+        if db is not None and session_id:
+            try:
+                title = str(db.get_session_title(session_id) or "").strip()
+            except Exception:
+                title = ""
+        self._status_bar_title_session_id = session_id
+        self._status_bar_title_cache = title
+        self._status_bar_title_checked_at = now
+        return title
+
+    @staticmethod
+    def _status_bar_display_width(text: str) -> int:
+        """Return terminal cell width for status-bar text.
+
+        len() is not enough for prompt_toolkit layout decisions because some
+        glyphs can render wider than one Python codepoint. Keeping the status
+        bar within the real display width prevents it from wrapping onto a
+        second line and leaving behind duplicate rows.
+        """
+        try:
+            from prompt_toolkit.utils import get_cwidth
+            return get_cwidth(text or "")
+        except Exception:
+            return len(text or "")
+
+    @classmethod
+    def _trim_status_bar_text(cls, text: str, max_width: int) -> str:
+        """Trim status-bar text to a single terminal row."""
+        if max_width <= 0:
+            return ""
+        try:
+            from prompt_toolkit.utils import get_cwidth
+        except Exception:
+            get_cwidth = None
+
+        if cls._status_bar_display_width(text) <= max_width:
+            return text
+
+        ellipsis = "..."
+        ellipsis_width = cls._status_bar_display_width(ellipsis)
+        if max_width <= ellipsis_width:
+            return ellipsis[:max_width]
+
+        out = []
+        width = 0
+        for ch in text:
+            ch_width = get_cwidth(ch) if get_cwidth else len(ch)
+            if width + ch_width + ellipsis_width > max_width:
+                break
+            out.append(ch)
+            width += ch_width
+        return "".join(out).rstrip() + ellipsis
+
+    @classmethod
+    def _right_align_status_title(cls, text: str, title: str, width: int) -> str:
+        """Pin a bounded session-title badge to the far-right status-bar edge."""
+        title = str(title or "").strip()
+        if not title or width < 24:
+            return cls._trim_status_bar_text(text, width)
+
+        title_width = max(6, min(30, width // 3))
+        badge = f" {cls._trim_status_bar_text(title, title_width - 2)} "
+        suffix = f" ─{badge}"
+        left_width = max(0, width - cls._status_bar_display_width(suffix))
+        left = cls._trim_status_bar_text(text.rstrip(), left_width)
+        padding = " " * max(0, left_width - cls._status_bar_display_width(left))
+        return f"{left}{padding}{suffix}"
+
+    @classmethod
+    def _right_align_status_title_fragments(cls, frags, title: str, width: int):
+        """Styled counterpart to :meth:`_right_align_status_title`."""
+        title = str(title or "").strip()
+        if not title or width < 24:
+            return frags
+
+        title_width = max(6, min(30, width // 3))
+        badge = f" {cls._trim_status_bar_text(title, title_width - 2)} "
+        suffix_width = cls._status_bar_display_width(" ─") + cls._status_bar_display_width(badge)
+        left_width = max(0, width - suffix_width)
+        trimmed = []
+        used = 0
+        for style, value in frags:
+            remaining = left_width - used
+            if remaining <= 0:
+                break
+            value_width = cls._status_bar_display_width(value)
+            if value_width <= remaining:
+                trimmed.append((style, value))
+                used += value_width
+                continue
+            clipped = cls._trim_status_bar_text(value, remaining)
+            if clipped:
+                trimmed.append((style, clipped))
+                used += cls._status_bar_display_width(clipped)
+            break
+
+        if used < left_width:
+            trimmed.append(("class:status-bar-dim", " " * (left_width - used)))
+        trimmed.extend([
+            ("class:status-bar-dim", " ─"),
+            ("class:status-bar-session-title", badge),
+        ])
+        return trimmed
+
+    @staticmethod
+    def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
+        """Return the live prompt_toolkit width, falling back to ``shutil``.
+
+        The TUI layout can be narrower than ``shutil.get_terminal_size()`` reports,
+        especially on Termux/mobile shells, so prefer prompt_toolkit's width whenever
+        an app is active.
+        """
+        try:
+            from prompt_toolkit.application import get_app
+            return get_app().output.get_size().columns
+        except Exception:
+            return shutil.get_terminal_size(default).columns
+
+    def _use_minimal_tui_chrome(self, width: Optional[int] = None) -> bool:
+        """Hide low-value chrome on narrow/mobile terminals to preserve rows."""
+        if width is None:
+            width = self._get_tui_terminal_width()
+        return width < 64
+
+    @staticmethod
+    def _scrollback_box_width(width: Optional[int] = None) -> int:
+        """Return the full viewport width for printed scrollback box rules.
+
+        Previously this clamped to ``max(32, min(width, 56))`` as a defense
+        against terminal-emulator reflow on column-shrink (#25975, salvaging
+        #24403).  That clamp made response/reasoning borders look stubby on
+        any modern wide terminal.  We now trust the prompt_toolkit
+        ``_output_screen_diff`` monkey-patch landed in #26137 (salvaging
+        #25981) to keep chrome out of scrollback in the first place, and
+        accept that an aggressive column-shrink may visually reflow already
+        printed Panel borders — that's a cosmetic artifact of stamped
+        scrollback history, not a live-render bug.
+
+        A small floor (32 cols) is kept so the box still renders on tiny
+        terminals without negative ``'─' * (w - 2)`` math.
+        """
+        if width is None:
+            try:
+                width = shutil.get_terminal_size((80, 24)).columns
+            except Exception:
+                width = 80
+        return max(32, int(width or 80))
+
+    def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
+        """Return the visible height for the top/bottom input separator rules."""
+        if position not in {"top", "bottom"}:
+            raise ValueError(f"Unknown input rule position: {position}")
+        if getattr(self, "_status_bar_suppressed_after_resize", False):
+            return 0
+        if position == "top":
+            return 1
+        return 0 if self._use_minimal_tui_chrome(width=width) else 1
+
+    def _agent_spacer_height(self, width: Optional[int] = None) -> int:
+        """Return the spacer height shown above the status bar while the agent runs."""
+        if not getattr(self, "_agent_running", False):
+            return 0
+        return 0 if self._use_minimal_tui_chrome(width=width) else 1
+
+    def _spinner_widget_height(self, width: Optional[int] = None) -> int:
+        """Return the visible height for the spinner/status text line above the status bar."""
+        spinner_line = self._render_spinner_text()
+        if not spinner_line:
+            return 0
+        if self._use_minimal_tui_chrome(width=width):
+            return 0
+        width = width or self._get_tui_terminal_width()
+        if width and width > 10:
+            import math
+            text_width = self._status_bar_display_width(spinner_line)
+            return max(1, math.ceil(text_width / width))
+        return 1
+
+    def _render_spinner_text(self) -> str:
+        """Return the live spinner/status text exactly as rendered in the TUI."""
+        txt = getattr(self, "_spinner_text", "")
+        if not txt:
+            return ""
+        flow = self._spinner_token_flow()
+        t0 = getattr(self, "_tool_start_time", 0) or 0
+        if t0 > 0:
+            elapsed = time.monotonic() - t0
+            if elapsed >= 60:
+                _m, _s = int(elapsed // 60), int(elapsed % 60)
+                # Fixed-width timer to avoid status-line wrap jitter while
+                # scrolling/repainting (e.g. 01m05s, 12m09s).
+                elapsed_str = f"{_m:02d}m{_s:02d}s"
+            else:
+                # Keep width stable before the 60s rollover as well.
+                elapsed_str = f"{elapsed:5.1f}s"
+            if flow:
+                return f"  {txt}  ({elapsed_str} · {flow})"
+            return f"  {txt}  ({elapsed_str})"
+        if flow:
+            return f"  {txt}  ({flow})"
+        return f"  {txt}"
+
+    # ── Per-turn accounting (display.turn_summary / spinner_token_flow) ──
+    #
+    # Both features are CLI-only chrome. The tally is observed from the
+    # tool-progress callback this class already receives on every tool call,
+    # so nothing is threaded through the agent loop. Token flow reads the
+    # agent's cumulative session counters (bumped per API call in
+    # agent/conversation_loop.py) and subtracts a per-turn baseline.
+
+    def _spinner_token_flow(self) -> str:
+        """Cumulative output tokens for the running turn, for the spinner."""
+        if not getattr(self, "_spinner_token_flow_enabled", False):
+            return ""
+        if not getattr(self, "_agent_running", False):
+            return ""
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return ""
+        try:
+            from agent.turn_summary import format_token_flow
+
+            produced = (getattr(agent, "session_output_tokens", 0) or 0) - (
+                getattr(self, "_turn_token_baseline", 0) or 0
+            )
+            return format_token_flow(produced)
+        except Exception:
+            return ""
+
+    def _turn_summary_is_active(self) -> bool:
+        """Whether the per-turn summary line should render for this surface.
+
+        Gated off for: the config key, quiet/tool-progress-off mode, and any
+        non-interactive path (single query, ``-Q``, gateway/messaging) — those
+        surfaces either want machine-readable output or carry their own footer.
+        """
+        if not getattr(self, "_turn_summary_enabled", False):
+            return False
+        if getattr(self, "tool_progress_mode", "all") == "off":
+            return False
+        agent = getattr(self, "agent", None)
+        if agent is not None and getattr(agent, "quiet_mode", False):
+            return False
+        if not getattr(self, "_interactive_turn", False):
+            return False
+        return True
+
+    def _turn_summary_begin(self) -> None:
+        """Start per-turn accounting for the turn that is about to run."""
+        try:
+            from agent.turn_summary import TurnSummaryCollector
+
+            collector = getattr(self, "_turn_summary_collector", None)
+            if collector is None:
+                collector = TurnSummaryCollector()
+                self._turn_summary_collector = collector
+            collector.begin()
+            self._turn_summary_start = time.monotonic()
+            agent = getattr(self, "agent", None)
+            self._turn_token_baseline = (
+                getattr(agent, "session_output_tokens", 0) or 0
+            ) if agent is not None else 0
+        except Exception:
+            self._turn_summary_collector = None
+
+    def _turn_summary_record(self, function_name, result, is_error: bool) -> None:
+        """Feed one completed tool call into the active tally."""
+        collector = getattr(self, "_turn_summary_collector", None)
+        if collector is None:
+            return
+        try:
+            collector.record_tool(function_name, result=result, is_error=bool(is_error))
+        except Exception:
+            pass
+
+    def _turn_summary_emit(self) -> None:
+        """Print the post-turn accounting line, when enabled for this surface."""
+        collector = getattr(self, "_turn_summary_collector", None)
+        if collector is None or not self._turn_summary_is_active():
+            return
+        try:
+            started = getattr(self, "_turn_summary_start", 0.0) or 0.0
+            elapsed = max(0.0, time.monotonic() - started) if started else 0.0
+            line = collector.render(elapsed)
+            if line:
+                _cprint(f"  {_DIM}{line}{_RST}")
+        except Exception:
+            logger.debug("Turn summary render failed", exc_info=True)
+
+    # ── Petdex mascot (base-CLI pet pane) ───────────────────────────────
+    #
+    # Parity with the TUI: a sprite in a prompt_toolkit window above the
+    # prompt. Kitty/Ghostty use Unicode placeholders — prompt_toolkit owns
+    # the measurable grid; image bytes go out-of-band as a virtual placement
+    # via after_render + write_raw (cursor untouched). WezTerm/iTerm/sixel
+    # stay on half-blocks: they are not placeholder-capable.
+
     _PET_FRAME_INTERVAL = 0.16
     _PET_CFG_INTERVAL = 2.5
+
+    def _pet_clear_runtime(self) -> None:
+        """Drop renderer + queued Kitty state. Caller holds ``_pet_lock``."""
+        self._pet_enabled = False
+        self._pet_renderer = None
+        self._pet_frames_cache.clear()
+        self._pet_kitty_cache.clear()
+        self._pet_kitty_pending = ""
+        self._pet_kitty_image_id = 0
 
     def _pet_resolve_config(self) -> None:
         """(Re)resolve the active pet from config — picks up live enable/disable/
@@ -4607,7 +5795,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         """
         try:
             from agent.pet import constants, store
-            from agent.pet.render import PetRenderer
             from hermes_cli.config import load_config
 
             cfg = load_config()
@@ -4620,43 +5807,48 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             slug = str(pet_cfg.get("slug", "") or "")
             scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
             cols = constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
+            configured_mode = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
+            # Placeholders only on kitty/Ghostty. WezTerm speaks kitty APC but
+            # not U+10EEEE — detect_terminal_graphics() still returns kitty
+            # there, which is why this gate is narrower.
+            use_kitty = configured_mode in ("", "auto", "kitty") and pet_render.supports_kitty_placeholders()
+            renderer_mode = "kitty" if use_kitty else "unicode"
 
-            if not enabled:
+            if not enabled or configured_mode == "off":
                 with self._pet_lock:
-                    self._pet_enabled = False
-                    self._pet_renderer = None
-                    self._pet_frames_cache.clear()
+                    self._pet_clear_runtime()
                 return
 
             pet = store.resolve_active_pet(slug)
             if pet is None or not pet.exists:
                 with self._pet_lock:
-                    self._pet_enabled = False
-                    self._pet_renderer = None
-                    self._pet_frames_cache.clear()
+                    self._pet_clear_runtime()
                 return
 
             with self._pet_lock:
-                # Rebuild only when the resolved pet or geometry changes.
+                # Rebuild only when the resolved pet, mode, or geometry changes.
                 if (
                     self._pet_renderer is None
                     or self._pet_slug != pet.slug
                     or self._pet_cols != cols
                     or self._pet_scale != scale
+                    or self._pet_renderer.mode != renderer_mode
                 ):
-                    self._pet_renderer = PetRenderer(
-                        str(pet.spritesheet), mode="unicode", scale=scale, unicode_cols=cols
+                    self._pet_renderer = pet_render.PetRenderer(
+                        str(pet.spritesheet), mode=renderer_mode, scale=scale, unicode_cols=cols
                     )
                     self._pet_slug = pet.slug
                     self._pet_cols = cols
                     self._pet_scale = scale
                     self._pet_frames_cache.clear()
+                    self._pet_kitty_cache.clear()
+                    self._pet_kitty_pending = ""
+                    self._pet_kitty_image_id = pet_render.kitty_image_id(pet.slug)
                     self._pet_frame_idx = 0
                 self._pet_enabled = True
         except Exception:
             with self._pet_lock:
-                self._pet_enabled = False
-                self._pet_renderer = None
+                self._pet_clear_runtime()
 
     def _pet_flash(self, state: str, secs: float = 1.6) -> None:
         """Briefly force a transient reaction (wave/jump/failed) before resting."""
@@ -4731,12 +5923,79 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._pet_frames_cache[state] = grids
         return grids
 
+    def _pet_kitty_payload_for(self, state: str) -> dict | None:
+        """Return and cache a Kitty virtual-placeholder payload for *state*."""
+        with self._pet_lock:
+            cached = self._pet_kitty_cache.get(state)
+            if cached is not None:
+                return cached
+            renderer = self._pet_renderer
+            image_id = self._pet_kitty_image_id
+            if renderer is None or renderer.mode != "kitty":
+                return None
+        try:
+            # PNG encoding is outside _pet_lock: first visit of a state must
+            # not stall the prompt under the lock.
+            payload = renderer.kitty_payload(state, image_id=image_id)
+        except Exception:
+            payload = None
+        if payload is not None:
+            payload = {**payload, "image_id": image_id}
+            with self._pet_lock:
+                if self._pet_renderer is renderer and self._pet_kitty_image_id == image_id:
+                    self._pet_kitty_cache[state] = payload
+        return payload
+
+    def _pet_queue_kitty_frame(self, state: str | None = None) -> None:
+        """Queue one virtual Kitty frame for the next prompt_toolkit render.
+
+        No-op when the pet pane was never initialized (``__new__`` fixtures
+        and ``_force_full_redraw`` / resize recovery on a pet-less CLI).
+        """
+        if not getattr(self, "_pet_enabled", False):
+            return
+        if state is None:
+            state = self._derive_pet_state()
+        payload = self._pet_kitty_payload_for(state)
+        if not payload or not payload.get("frames"):
+            return
+        with self._pet_lock:
+            if self._pet_renderer is not None and self._pet_renderer.mode == "kitty":
+                self._pet_kitty_pending = payload["frames"][self._pet_frame_idx % len(payload["frames"])]
+
+    def _pet_flush_kitty_frame(self, app) -> None:
+        """Write a queued APC after prompt_toolkit has finished its screen diff."""
+        with self._pet_lock:
+            frame = self._pet_kitty_pending
+            self._pet_kitty_pending = ""
+        if not frame:
+            return
+        try:
+            # U=1/q=2 leaves the cursor and input stream untouched.
+            app.output.write_raw(frame)
+            app.output.flush()
+        except (OSError, ValueError):
+            pass
+
     def _pet_fragments(self):
         """Return prompt_toolkit FormattedText for the current pet frame, or []."""
         with self._pet_lock:
             if not self._pet_enabled or self._pet_renderer is None:
                 return []
             state = self._derive_pet_state()
+            kitty = self._pet_renderer.mode == "kitty"
+        if kitty:
+            payload = self._pet_kitty_payload_for(state)
+            if not payload:
+                return []
+            color = pet_render.kitty_color_hex(payload["image_id"])
+            frags = []
+            for y, row in enumerate(payload["placeholder"]):
+                if y:
+                    frags.append(("", "\n"))
+                frags.append((f"fg:{color}", row))
+            return frags
+        with self._pet_lock:
             grids = self._pet_frames_for(state)
             if not grids:
                 return []
@@ -4768,7 +6027,13 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         with self._pet_lock:
             if not self._pet_enabled or self._pet_renderer is None:
                 return 0
-            grids = self._pet_frames_for(self._derive_pet_state())
+            state = self._derive_pet_state()
+            kitty = self._pet_renderer.mode == "kitty"
+        if kitty:
+            payload = self._pet_kitty_payload_for(state)
+            return int(payload.get("rows", 0)) if payload else 0
+        with self._pet_lock:
+            grids = self._pet_frames_for(state)
             if not grids or not grids[0]:
                 return 0
             return len(grids[0])
@@ -4788,6 +6053,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 continue
             with self._pet_lock:
                 self._pet_frame_idx += 1
+                kitty = self._pet_renderer is not None and self._pet_renderer.mode == "kitty"
+            if kitty:
+                self._pet_queue_kitty_frame()
             app = getattr(self, "_app", None)
             if app is not None:
                 try:
@@ -4803,6 +6071,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if self._pet_anim_running:
             return
         self._pet_resolve_config()
+        with self._pet_lock:
+            kitty = self._pet_enabled and self._pet_renderer is not None and self._pet_renderer.mode == "kitty"
+        if kitty:
+            self._pet_queue_kitty_frame()
         self._pet_anim_running = True
         self._pet_anim_thread = threading.Thread(target=self._pet_anim_loop, daemon=True)
         self._pet_anim_thread.start()
@@ -4883,6 +6155,36 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             return f"⊙ goal {used}/{max_turns}"
         return "⊙ goal"
 
+    def _get_status_bar_field_set(self) -> Optional[frozenset]:
+        """Return the set of visible status-bar fields from config.
+
+        Reads ``display.status_bar.fields`` from the module-level
+        ``CLI_CONFIG`` (no per-render YAML parse — the status bar repaints
+        every frame). Returns ``None`` when the user has not customized the
+        bar (use built-in defaults, i.e. show everything), or a
+        ``frozenset`` of field names when the list is non-empty.
+
+        Available fields: model, context_detail, context_pct, cache_hit,
+        latency, tps, compressions, bg_tasks, bg_processes, bg_subagents,
+        goal, duration, prompt_elapsed, idle_since, focus, yolo, stash,
+        battery, title, total_tokens.
+        ``total_tokens`` is opt-in only (never shown by default).
+        The field order is fixed; the config controls visibility only.
+        """
+        if hasattr(self, "_status_bar_field_set_cache"):
+            return self._status_bar_field_set_cache
+        result = None
+        try:
+            display = CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
+            status_bar = (display or {}).get("status_bar") if isinstance(display, dict) else None
+            fields = status_bar.get("fields") if isinstance(status_bar, dict) else None
+            if isinstance(fields, list) and fields:
+                result = frozenset(str(f) for f in fields)
+        except Exception:
+            result = None
+        self._status_bar_field_set_cache = result
+        return result
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
         try:
@@ -4899,75 +6201,124 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
             yolo_active = self._is_session_yolo_active()
             goal_segment = self._status_bar_goal_segment(snapshot)
+            field_set = self._get_status_bar_field_set()
+
+            def _ok(name: str) -> bool:
+                return field_set is None or name in field_set
+
+            if not _ok("title"):
+                session_title = ""
+
+            if not _ok("goal"):
+                goal_segment = ""
+            if not _ok("focus"):
+                focus_label = ""
             if width < 52:
-                text = f"{battery_prefix}⚕ {snapshot['model_short']} · {duration_label}"
+                segs = []
+                if _ok("model"):
+                    segs.append(f"⚕ {snapshot['model_short']}")
+                if _ok("duration"):
+                    segs.append(duration_label)
                 if goal_segment:
-                    text += f" · {goal_segment}"
+                    segs.append(goal_segment)
                 if focus_label:
-                    text += f" · {focus_label}"
-                if yolo_active:
-                    text += " · ⚠ YOLO"
+                    segs.append(focus_label)
+                if yolo_active and _ok("yolo"):
+                    segs.append("⚠ YOLO")
+                text = battery_prefix + " · ".join(segs) if segs else f"{battery_prefix}⚕ {snapshot['model_short']}"
                 return self._right_align_status_title(text, session_title, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = []
+                if _ok("model"):
+                    parts.append(f"⚕ {snapshot['model_short']}")
+                if _ok("context_pct"):
+                    parts.append(percent_label)
+                cache = self._cache_hit_rate(snapshot, precision=0)
+                if cache and _ok("cache_hit"):
+                    parts.append(cache[1])
                 if battery_label:
                     parts.insert(0, battery_label)
                 compressions = snapshot.get("compressions", 0)
-                if compressions:
+                if compressions and _ok("compressions"):
                     parts.append(f"🗜️ {compressions}")
                 bg_count = snapshot.get("active_background_tasks", 0)
-                if bg_count:
+                if bg_count and _ok("bg_tasks"):
                     parts.append(f"▶ {bg_count}")
                 bg_proc_count = snapshot.get("active_background_processes", 0)
-                if bg_proc_count:
+                if bg_proc_count and _ok("bg_processes"):
                     parts.append(f"⚙ {bg_proc_count}")
                 bg_subagent_count = snapshot.get("active_background_subagents", 0)
-                if bg_subagent_count:
+                if bg_subagent_count and _ok("bg_subagents"):
                     parts.append(f"⛓ {bg_subagent_count}")
                 if goal_segment:
                     parts.append(goal_segment)
-                parts.append(duration_label)
+                if _ok("duration"):
+                    parts.append(duration_label)
                 if focus_label:
                     parts.append(focus_label)
-                if yolo_active:
+                if yolo_active and _ok("yolo"):
                     parts.append("⚠ YOLO")
+                if not parts:
+                    parts = [f"⚕ {snapshot['model_short']}"]
                 return self._right_align_status_title(" · ".join(parts), session_title, width)
 
-            if snapshot["context_length"]:
-                ctx_total = _format_context_length(snapshot["context_length"])
-                ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                context_label = f"{ctx_used}/{ctx_total}"
-            else:
-                context_label = "ctx --"
-
-            compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = []
+            if _ok("model"):
+                parts.append(f"⚕ {snapshot['model_short']}")
+            if _ok("context_detail"):
+                if snapshot["context_length"]:
+                    ctx_total = _format_context_length(snapshot["context_length"])
+                    ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                    context_label = f"{ctx_used}/{ctx_total}"
+                else:
+                    context_label = "ctx --"
+                parts.append(context_label)
+            if _ok("context_pct"):
+                parts.append(percent_label)
             if battery_label:
                 parts.insert(0, battery_label)
-            if compressions:
+            compressions = snapshot.get("compressions", 0)
+            cache = self._cache_hit_rate(snapshot)
+            if cache and _ok("cache_hit"):
+                parts.append(cache[1])
+            _avg_lat = snapshot.get("avg_latency_label") or ""
+            if _avg_lat and _ok("latency"):
+                parts.append(f"◷ {_avg_lat}")
+            _avg_vel = snapshot.get("avg_velocity_label") or ""
+            if _avg_vel and _ok("tps"):
+                parts.append(f"↑ {_avg_vel}")
+            if compressions and _ok("compressions"):
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
-            if bg_count:
+            if bg_count and _ok("bg_tasks"):
                 parts.append(f"▶ {bg_count}")
             bg_proc_count = snapshot.get("active_background_processes", 0)
-            if bg_proc_count:
+            if bg_proc_count and _ok("bg_processes"):
                 parts.append(f"⚙ {bg_proc_count}")
             bg_subagent_count = snapshot.get("active_background_subagents", 0)
-            if bg_subagent_count:
+            if bg_subagent_count and _ok("bg_subagents"):
                 parts.append(f"⛓ {bg_subagent_count}")
             if goal_segment:
                 parts.append(goal_segment)
-            parts.append(duration_label)
+            if _ok("duration"):
+                parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
-            if prompt_elapsed:
+            if prompt_elapsed and _ok("prompt_elapsed"):
                 parts.append(prompt_elapsed)
             idle_since = snapshot.get("idle_since")
-            if idle_since:
+            if idle_since and _ok("idle_since"):
                 parts.append(idle_since)
             if focus_label:
                 parts.append(focus_label)
-            if yolo_active:
+            if yolo_active and _ok("yolo"):
                 parts.append("⚠ YOLO")
+            # Session token total (Σ) — opt-in only via an explicit fields
+            # list, so default bars never widen.
+            total_tokens = snapshot.get("session_total_tokens", 0)
+            if total_tokens and field_set is not None and "total_tokens" in field_set:
+                parts.append(f"Σ{format_token_count_compact(total_tokens)}")
+            if not parts:
+                parts = [f"⚕ {snapshot['model_short']}"]
             return self._right_align_status_title(" │ ".join(parts), session_title, width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -4990,23 +6341,42 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))
             focus_label = snapshot.get("focus_label") or ""
             session_title = snapshot.get("session_title") or ""
+            field_set = self._get_status_bar_field_set()
+
+            def _ok(name: str) -> bool:
+                return field_set is None or name in field_set
+
+            if not _ok("title"):
+                session_title = ""
+
+            if not _ok("goal"):
+                goal_segment = ""
+            if not _ok("focus"):
+                focus_label = ""
+
+            def _append(frag_list, sep, *pieces):
+                if frag_list:
+                    frag_list.append(("class:status-bar-dim", sep))
+                frag_list.extend(pieces)
 
             if width < 52:
-                frags = [
-                    ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
-                    ("class:status-bar-dim", " · "),
-                    ("class:status-bar-dim", duration_label),
-                ]
+                frags = []
+                if _ok("model"):
+                    frags.append(("class:status-bar", " ⚕ "))
+                    frags.append(("class:status-bar-strong", snapshot["model_short"]))
+                if _ok("duration"):
+                    _append(frags, " · ", ("class:status-bar-dim", duration_label))
                 if goal_segment:
-                    frags.append(("class:status-bar-dim", " · "))
-                    frags.append(("class:status-bar-strong", goal_segment))
+                    _append(frags, " · ", ("class:status-bar-strong", goal_segment))
                 if focus_label:
-                    frags.append(("class:status-bar-dim", " · "))
-                    frags.append(("class:status-bar-strong", focus_label))
-                if yolo_active:
-                    frags.append(("class:status-bar-dim", " · "))
-                    frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    _append(frags, " · ", ("class:status-bar-strong", focus_label))
+                if yolo_active and _ok("yolo"):
+                    _append(frags, " · ", ("class:status-bar-yolo", "⚠ YOLO"))
+                if not frags:
+                    frags = [
+                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
                 frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
@@ -5016,98 +6386,108 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " · "),
-                        (self._status_bar_context_style(percent), percent_label),
-                    ]
-                    if compressions:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
-                    if bg_count:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
-                    if bg_proc_count:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
-                    if bg_subagent_count:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                    frags = []
+                    if _ok("model"):
+                        frags.append(("class:status-bar", " ⚕ "))
+                        frags.append(("class:status-bar-strong", snapshot["model_short"]))
+                    if _ok("context_pct"):
+                        _append(frags, " · ", (self._status_bar_context_style(percent), percent_label))
+                    cache = self._cache_hit_rate(snapshot, precision=0)
+                    if cache and _ok("cache_hit"):
+                        _append(frags, " · ", (self._cache_hit_rate_style(cache[0]), cache[1]))
+                    if compressions and _ok("compressions"):
+                        _append(frags, " · ", (self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                    if bg_count and _ok("bg_tasks"):
+                        _append(frags, " · ", ("class:status-bar-strong", f"▶ {bg_count}"))
+                    if bg_proc_count and _ok("bg_processes"):
+                        _append(frags, " · ", ("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                    if bg_subagent_count and _ok("bg_subagents"):
+                        _append(frags, " · ", ("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
                     if goal_segment:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", goal_segment))
-                    frags.extend([
-                        ("class:status-bar-dim", " · "),
-                        ("class:status-bar-dim", duration_label),
-                    ])
+                        _append(frags, " · ", ("class:status-bar-strong", goal_segment))
+                    if _ok("duration"):
+                        _append(frags, " · ", ("class:status-bar-dim", duration_label))
                     if focus_label:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-strong", focus_label))
-                    if yolo_active:
-                        frags.append(("class:status-bar-dim", " · "))
-                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                        _append(frags, " · ", ("class:status-bar-strong", focus_label))
+                    if yolo_active and _ok("yolo"):
+                        _append(frags, " · ", ("class:status-bar-yolo", "⚠ YOLO"))
+                    if not frags:
+                        frags = [
+                            ("class:status-bar", " ⚕ "),
+                            ("class:status-bar-strong", snapshot["model_short"]),
+                        ]
                     frags.append(("class:status-bar", " "))
                 else:
-                    if snapshot["context_length"]:
-                        ctx_total = _format_context_length(snapshot["context_length"])
-                        ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                        context_label = f"{ctx_used}/{ctx_total}"
-                    else:
-                        context_label = "ctx --"
-
                     bar_style = self._status_bar_context_style(percent)
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", context_label),
-                        ("class:status-bar-dim", " │ "),
-                        (bar_style, self._build_context_bar(percent)),
-                        ("class:status-bar-dim", " "),
-                        (bar_style, percent_label),
-                    ]
-                    if compressions:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
-                    if bg_count:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
-                    if bg_proc_count:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
-                    if bg_subagent_count:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                    frags = []
+                    if _ok("model"):
+                        frags.append(("class:status-bar", " ⚕ "))
+                        frags.append(("class:status-bar-strong", snapshot["model_short"]))
+                    if _ok("context_detail"):
+                        if snapshot["context_length"]:
+                            ctx_total = _format_context_length(snapshot["context_length"])
+                            ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                            context_label = f"{ctx_used}/{ctx_total}"
+                        else:
+                            context_label = "ctx --"
+                        _append(frags, " │ ", ("class:status-bar-dim", context_label))
+                    if _ok("context_pct"):
+                        _append(
+                            frags,
+                            " │ ",
+                            (bar_style, self._build_context_bar(percent)),
+                            ("class:status-bar-dim", " "),
+                            (bar_style, percent_label),
+                        )
+                    cache = self._cache_hit_rate(snapshot)
+                    if cache and _ok("cache_hit"):
+                        _append(frags, " │ ", (self._cache_hit_rate_style(cache[0]), cache[1]))
+                    _avg_lat = snapshot.get("avg_latency_label") or ""
+                    if _avg_lat and _ok("latency"):
+                        _append(frags, " │ ", ("class:status-bar-dim", f"◷ {_avg_lat}"))
+                    _avg_vel = snapshot.get("avg_velocity_label") or ""
+                    if _avg_vel and _ok("tps"):
+                        _append(frags, " │ ", ("class:status-bar-dim", f"↑ {_avg_vel}"))
+                    if compressions and _ok("compressions"):
+                        _append(frags, " │ ", (self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                    if bg_count and _ok("bg_tasks"):
+                        _append(frags, " │ ", ("class:status-bar-strong", f"▶ {bg_count}"))
+                    if bg_proc_count and _ok("bg_processes"):
+                        _append(frags, " │ ", ("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                    if bg_subagent_count and _ok("bg_subagents"):
+                        _append(frags, " │ ", ("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
                     if goal_segment:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", goal_segment))
-                    frags.extend([
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", duration_label),
-                    ])
+                        _append(frags, " │ ", ("class:status-bar-strong", goal_segment))
+                    if _ok("duration"):
+                        _append(frags, " │ ", ("class:status-bar-dim", duration_label))
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
-                    if prompt_elapsed:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-dim", prompt_elapsed))
+                    if prompt_elapsed and _ok("prompt_elapsed"):
+                        _append(frags, " │ ", ("class:status-bar-dim", prompt_elapsed))
                     # Position 8: idle time since the last final agent response
                     idle_since = snapshot.get("idle_since")
-                    if idle_since:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-dim", idle_since))
+                    if idle_since and _ok("idle_since"):
+                        _append(frags, " │ ", ("class:status-bar-dim", idle_since))
                     # Persistent focus-view badge — so the reduced-output mode
                     # is never invisible (mirrors the YOLO badge convention).
                     if focus_label:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-strong", focus_label))
-                    if yolo_active:
-                        frags.append(("class:status-bar-dim", " │ "))
-                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                        _append(frags, " │ ", ("class:status-bar-strong", focus_label))
+                    if yolo_active and _ok("yolo"):
+                        _append(frags, " │ ", ("class:status-bar-yolo", "⚠ YOLO"))
+                    # Session token total (Σ) — opt-in only via an explicit
+                    # fields list, so default bars never widen.
+                    total_tokens = snapshot.get("session_total_tokens", 0)
+                    if total_tokens and field_set is not None and "total_tokens" in field_set:
+                        _append(frags, " │ ", ("class:status-bar-dim", f"Σ{format_token_count_compact(total_tokens)}"))
+                    if not frags:
+                        frags = [
+                            ("class:status-bar", " ⚕ "),
+                            ("class:status-bar-strong", snapshot["model_short"]),
+                        ]
                     frags.append(("class:status-bar", " "))
 
             # Stash indicator (📌 N) — appended after all width tiers so the
@@ -5119,7 +6499,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 stash_indicator = self._prompt_stash.indicator()
             except Exception:
                 stash_indicator = ""
-            if stash_indicator:
+            if stash_indicator and _ok("stash"):
                 # Insert before the trailing pad fragment so the bar keeps its
                 # one-cell right margin.
                 if frags and frags[-1] == ("class:status-bar", " "):
@@ -5133,7 +6513,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
             # Battery is the first status-bar element when enabled: prepend it
             # ahead of the leading ⚕ marker in whichever width tier ran above.
-            if battery_label:
+            if battery_label and _ok("battery"):
                 frags[0:0] = [
                     ("class:status-bar", " "),
                     (battery_style, battery_label),
@@ -7062,6 +8442,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                             api_key=_reset_result.api_key,
                             base_url=_reset_result.base_url,
                             api_mode=_reset_result.api_mode,
+                            capabilities=getattr(
+                                _reset_result, "runtime_capabilities", None
+                            ),
                         )
                     self.model = _reset_result.new_model
                     self.provider = _reset_result.target_provider
@@ -8236,6 +9619,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     api_key=snapshot.get("api_key", ""),
                     base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
+                    capabilities=snapshot.get("capabilities"),
                 )
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
@@ -8380,6 +9764,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    capabilities=getattr(result, "runtime_capabilities", None),
                 )
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client.
@@ -8770,6 +10155,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    capabilities=getattr(result, "runtime_capabilities", None),
                 )
             except Exception as exc:
                 # Agent rolled itself back; roll the CLI back too and abort so a
@@ -8939,20 +10325,20 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
     def _should_handle_background_command_inline(
         self, text: str, has_images: bool = False
     ) -> bool:
-        """Return True when /background should be dispatched while the agent runs.
+        """Return True when /bg or /btw should be dispatched while the agent runs.
 
-        Same queue problem /steer had. ``/background`` (``/bg``, ``/btw``)
-        exists to start independent work *without* waiting for the current
-        turn, but a slash command typed while the agent is busy goes into
-        ``_pending_input``, and ``process_loop`` is blocked inside
-        ``self.chat()`` for the whole run. The background task therefore only
-        starts once the foreground turn has finished, which is the one moment
-        it was not needed.
+        Same queue problem /steer had. ``/bg`` exists to start independent
+        work *without* waiting for the current turn, and ``/btw`` exists to
+        answer a side question about the in-flight conversation, but a slash
+        command typed while the agent is busy goes into ``_pending_input``,
+        and ``process_loop`` is blocked inside ``self.chat()`` for the whole
+        run. The side task would therefore only start once the foreground
+        turn has finished, which is the one moment it was not needed.
 
-        The command's own ``CommandDef`` already declares
+        Both commands' ``CommandDef`` entries already declare
         ``busy_policy="dispatch"``; the gateway honours that, the classic CLI
         never consulted it. Dispatching inline on the UI thread starts the
-        background session immediately and leaves the foreground turn running
+        side session immediately and leaves the foreground turn running
         untouched: no interrupt, no steer.
         """
         if not text or has_images or not _looks_like_slash_command(text):
@@ -8963,7 +10349,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             from hermes_cli.commands import resolve_command
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
-            return bool(cmd and cmd.name == "background")
+            return bool(cmd and cmd.name in ("bg", "btw"))
         except Exception:
             return False
 
@@ -9567,8 +10953,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             self._handle_agents_command()
         elif canonical == "journey":
             self._handle_journey_command(cmd_original)
-        elif canonical == "background":
+        elif canonical == "bg":
             self._handle_background_command(cmd_original)
+        elif canonical == "btw":
+            self._handle_btw_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -9616,6 +11004,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             self._handle_review_command(cmd_original)
         elif canonical == "loop":
             self._handle_loop_command(cmd_original)
+        elif canonical == "plan":
+            self._handle_plan_command(cmd_original)
         elif canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
             # default MoA preset, then restore the prior model. To *switch* to a
@@ -13279,6 +14669,13 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
+        # Seeded -q handoff: main() can't put directly into _pending_input
+        # (this reinit would discard it), so the seeded first message rides
+        # in on an attribute and is enqueued into the fresh queue here.
+        _seed_msg = getattr(self, "_seeded_first_message", None)
+        if _seed_msg is not None:
+            self._seeded_first_message = None
+            self._pending_input.put(_seed_msg)
         # See constructor note. Mirrored here for the run() path that skips
         # the earlier __init__ branch.
         self._last_turn_interrupted = False
@@ -13593,12 +14990,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     event.app.invalidate()
                     return
 
-                # Same treatment for /background (/bg, /btw) while the agent is
-                # running.  Queuing it defeats the entire point of the command:
-                # process_loop is blocked inside self.chat(), so the background
-                # task would only start once the foreground turn it was meant to
-                # run alongside has already finished (#75221).  The foreground
-                # turn is left alone: no interrupt, no steer.
+                # Same treatment for /bg and /btw while the agent is
+                # running.  Queuing them defeats the entire point of the
+                # commands: process_loop is blocked inside self.chat(), so the
+                # side task would only start once the foreground turn it was
+                # meant to run alongside has already finished (#75221).  The
+                # foreground turn is left alone: no interrupt, no steer.
                 if self._should_handle_background_command_inline(
                     text, has_images=has_images
                 ):
@@ -14964,10 +16361,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             wrap_lines=True,
         )
 
-        # Petdex mascot — right-aligned half-block sprite above the prompt,
-        # mirroring the TUI's PetPane. Collapses to height 0 when no pet is
-        # enabled, so it's a no-op for everyone else. The _pet_anim_loop thread
-        # advances frames + invalidates; align=RIGHT pins it to the edge.
+        # Petdex mascot — right-aligned Kitty placeholder or half-block sprite
+        # above the prompt. Collapses to height 0 when no pet is enabled.
+        # The animation thread queues virtual Kitty frames; after_render
+        # writes them out-of-band while prompt_toolkit owns the placeholder grid.
         self._pet_widget = Window(
             content=FormattedTextControl(self._pet_fragments),
             height=self._pet_widget_height,
@@ -15754,28 +17151,31 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # in _strip_leaked_terminal_responses still guards residual leaks.
         _cpr_disabled_output = _select_classic_cli_pt_output(sys.stdout)
 
-        # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
-        # runs 24-bit there. ColorDepth is imported lazily for tests that stub prompt_toolkit.
-        extra_kw = {}
+        # Kitty placeholders encode their image id in exact foreground RGB, so
+        # placeholder-capable terminals (kitty/Ghostty) use 24-bit color for
+        # the whole prompt_toolkit application — quantizing only that pane
+        # is not supported. WezTerm is excluded: it is not placeholder-capable.
+        # ColorDepth is imported here (not at module load) so tests that stub
+        # ``prompt_toolkit`` as a MagicMock can still import cli.
+        color_depth_kw = {}
         if pet_render.supports_kitty_placeholders():
             from prompt_toolkit.output import ColorDepth
 
-            extra_kw["color_depth"] = ColorDepth.DEPTH_24_BIT
-        if _cpr_disabled_output is not None:
-            extra_kw["output"] = _cpr_disabled_output
-        if _STEADY_CURSOR is not None:
-            extra_kw["cursor"] = _STEADY_CURSOR
-        if EditingMode is not None:
-            # Vi editing mode when display.vim_mode is on.
-            # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
-            extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
-        return Application(
+            color_depth_kw = {"color_depth": ColorDepth.DEPTH_24_BIT}
+        app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
             full_screen=False,
             mouse_support=False,
-            # 0 (default) avoids fighting terminal auto-scroll in non-fullscreen mode.
+            **({"output": _cpr_disabled_output} if _cpr_disabled_output is not None else {}),
+            **color_depth_kw,
+            # Read from display.cli_refresh_interval (default 0 = disabled).
+            # When non-zero, prompt_toolkit redraws the UI on this cadence
+            # during idle, keeping wall-clock status-bar read-outs ticking.
+            # Set to 0 to suppress background redraws entirely — avoids
+            # fighting terminal auto-scroll in non-fullscreen mode (Xshell,
+            # iTerm2, Windows Terminal). See #48309.
             refresh_interval=float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0)),
             # Erase the bottom chrome on exit instead of freezing a copy into scrollback.
             # Without this, prompt_toolkit's render_as_done teardown repaints the chrome one last time and
@@ -15787,9 +17187,477 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             erase_when_done=True,
             **extra_kw,
         )
+        _disable_prompt_toolkit_cpr_warning(app)
+        app.after_render += self._pet_flush_kitty_frame
+        self._app = app  # Store reference for clarify_callback
 
-    def _tui_install_signal_handlers(self):
-        """SIGTERM/SIGHUP -> graceful shutdown; Windows absorbs SIGINT (see body)."""
+        # ── Fix ghost status-bar lines on terminal resize ──────────────
+        # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff
+        # to suppress the deliberate "reserve vertical space" scroll-up.
+        #
+        # Background: prompt_toolkit's renderer (renderer.py L232-242)
+        # explicitly moves the cursor to the bottom of the canvas after
+        # painting "to make sure the terminal scrolls up, even when the
+        # lower lines of the canvas just contain whitespace".  In
+        # non-fullscreen mode this scrolls chrome content (status bar,
+        # input rules) into terminal scrollback on every render.  When
+        # the terminal column-shrinks, the emulator reflows the previously
+        # rendered full-width rows into multiple narrower rows that get
+        # pushed up — leaving ghost duplicates AND polluting scrollback.
+        # Same issue as pt #29 (open since 2014), #1675, #1933.
+        #
+        # Surgical fix: wrap _output_screen_diff so that when its internal
+        # `if current_height > previous_screen.height` branch fires (the
+        # one that does the bottom-cursor-move), we make it fall through
+        # by inflating previous_screen.height first.
+        try:
+            import prompt_toolkit.renderer as _pt_renderer
+            from prompt_toolkit.renderer import _output_screen_diff as _orig_osd
+
+            if not getattr(_pt_renderer, "_hermes_osd_patched", False):
+                def _patched_output_screen_diff(
+                    app, output, screen, current_pos, color_depth,
+                    previous_screen, last_style, is_done, full_screen,
+                    attrs_for_style_string, style_string_has_style,
+                    size, previous_width,
+                ):
+                    """Wraps pt's _output_screen_diff to suppress the
+                    reserve-vertical-space scroll (renderer.py L232-242).
+
+                    Strategy: ONLY when previous_screen is non-None and
+                    its current height is genuinely smaller than the new
+                    screen's height, inflate it to match.  This prevents
+                    the bottom-cursor-move at L242 without changing any
+                    other code path's behavior.
+
+                    Critical: do NOT replace a None previous_screen with
+                    a fresh Screen() on the happy path — that would skip
+                    the proper reset_attributes()+erase_down() at L178-185
+                    which fires when previous_screen is None (first-paint /
+                    width-change).  Without that reset, ANSI styles
+                    leak between renders.
+
+                    Safety net: if the diff crashes with AttributeError /
+                    TypeError (corrupt previous_screen after tmux attach —
+                    "'cell' object has no attribute 'char'"), retry once
+                    with previous_screen=None so pt takes the first-paint
+                    erase path instead of wedging the event loop.
+                    """
+                    return _hermes_call_output_screen_diff(
+                        _orig_osd,
+                        app, output, screen, current_pos, color_depth,
+                        previous_screen, last_style, is_done, full_screen,
+                        attrs_for_style_string, style_string_has_style,
+                        size, previous_width,
+                    )
+
+                _pt_renderer._output_screen_diff = _patched_output_screen_diff
+                _pt_renderer._hermes_osd_patched = True
+        except Exception:
+            pass
+
+        # Apply bracketed-paste timeout recovery so torn ESC[201~ end marks
+        # don't permanently freeze the input (issue #16263). Idempotent.
+        _apply_bracketed_paste_timeout_patch()
+
+        self._install_resize_recovery(app)
+
+        def spinner_loop():
+            while not self._should_exit:
+                if not self._app:
+                    time.sleep(0.1)
+                    continue
+                if self._command_running:
+                    self._invalidate(min_interval=0.1)
+                    time.sleep(0.1)
+                else:
+                    # Do not repaint the idle prompt every second. In non-full-screen
+                    # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux
+                    # viewport restoration after focus changes and visually move the
+                    # command input area. Keep idle stable; input/agent events still
+                    # invalidate explicitly when the UI actually changes.
+                    time.sleep(0.2)
+
+        spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
+        spinner_thread.start()
+        
+        # Background thread to process inputs and run agent
+        def process_loop():
+            while not self._should_exit:
+                try:
+                    # Check for pending input with timeout
+                    try:
+                        user_input = self._pending_input.get(timeout=0.1)
+                    except queue.Empty:
+                        # Periodic config watcher — auto-reload MCP on mcp_servers change
+                        if not self._agent_running:
+                            self._check_config_mcp_changes()
+                            # Heal cooked-mode termios drift (lost
+                            # run_in_terminal restore) before draining
+                            # notifications — a drifted tty makes the CLI
+                            # look dead even though the loop is healthy.
+                            try:
+                                self._check_termios_drift()
+                            except Exception:
+                                pass
+                            # Check for background process notifications (completions
+                            # and watch pattern matches) while agent is idle.
+                            try:
+                                self._drain_process_notifications("cli-idle")
+                            except Exception:
+                                pass
+                            # Fire a due /loop wakeup while idle (defers to
+                            # queued user input and active /goal loops).
+                            try:
+                                self._maybe_fire_loop_tick()
+                            except Exception:
+                                pass
+                        continue
+
+                    # Voice-transcribed messages arrive wrapped in a sentinel
+                    # so only genuine STT output gets the voice prefix (#65827).
+                    is_voice_input = isinstance(user_input, _VoiceInputMessage)
+                    if is_voice_input:
+                        user_input = user_input.text
+
+                    # Seeded -q prompts arrive wrapped in _SeededQueryMessage:
+                    # arbitrary launcher/script text that must be submitted
+                    # LITERALLY — skip slash routing, ! shell dispatch, and
+                    # file-drop detection for this one message.
+                    is_seeded_query = isinstance(user_input, _SeededQueryMessage)
+                    if is_seeded_query:
+                        seeded = user_input
+                        user_input = (
+                            (seeded.text, seeded.images)
+                            if seeded.images
+                            else seeded.text
+                        )
+
+                    if not user_input:
+                        continue
+
+                    # The user has typed and submitted something, so any
+                    # post-resize transient suppression should end here.
+                    self._status_bar_suppressed_after_resize = False
+
+                    # Unpack image payload: (text, [Path, ...]) or plain str
+                    submit_images = []
+                    if isinstance(user_input, tuple):
+                        user_input, submit_images = user_input
+
+                    if isinstance(user_input, str):
+                        user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
+                        user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
+                        if _had_mouse_reports:
+                            self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
+
+                    # Typed bare stop phrase while a voice chat is active ends
+                    # the voice chat (same semantics as SAYING "stop") instead
+                    # of sending the word to the agent. Voice transcripts are
+                    # already stop-checked at the transcription points, so this
+                    # only intercepts typed input.
+                    if not is_voice_input and self._typed_voice_stop(user_input):
+                        continue
+                    
+                    # Check for commands — but detect dragged/pasted file paths first.
+                    # See _detect_file_drop() for details. Seeded -q prompts are
+                    # literal text: no file-drop detection, no !/slash dispatch.
+                    _file_drop = (
+                        _detect_file_drop(user_input)
+                        if isinstance(user_input, str) and not is_seeded_query
+                        else None
+                    )
+                    if _file_drop:
+                        _drop_path = _file_drop["path"]
+                        _remainder = _file_drop["remainder"]
+                        if _file_drop["is_image"]:
+                            submit_images.append(_drop_path)
+                            user_input = _remainder or f"[User attached image: {_drop_path.name}]"
+                            _cprint(f"  📎 Auto-attached image: {_drop_path.name}")
+                        else:
+                            _cprint(f"  📄 Detected file: {_drop_path.name}")
+                            user_input = (
+                                f"[User attached file: {_drop_path}]"
+                                + (f"\n{_remainder}" if _remainder else "")
+                            )
+
+                    # A bare number right after a bare `/resume` prompt selects
+                    # that session (see #34584). Checked before chat routing so
+                    # the digit isn't sent to the agent as a message.
+                    if (
+                        not _file_drop
+                        and self._pending_resume_sessions
+                        and isinstance(user_input, str)
+                        and self._consume_pending_resume_selection(user_input)
+                    ):
+                        continue
+
+                    # `!<command>` shell mode — run it here and loop back to
+                    # idle. Checked BEFORE slash routing and before the chat
+                    # path so nothing enters conversation history and no model
+                    # turn is spent. See handle_bang_shell().
+                    if (
+                        not _file_drop
+                        and not is_seeded_query
+                        and isinstance(user_input, str)
+                        and self.handle_bang_shell(user_input)
+                    ):
+                        continue
+
+                    if (
+                        not _file_drop
+                        and not is_seeded_query
+                        and isinstance(user_input, str)
+                        and _looks_like_slash_command(user_input)
+                    ):
+                        _cprint(f"\n⚙️  {user_input}")
+                        try:
+                            if not self.process_command(user_input):
+                                self._should_exit = True
+                                # Schedule app exit
+                                if app.is_running:
+                                    app.exit()
+                        except KeyboardInterrupt:
+                            # Ctrl+C during a slow slash command (e.g. /skills browse,
+                            # /sessions list with a large DB) should interrupt the
+                            # command and return to the prompt, NOT exit the entire
+                            # session. Without this guard a KeyboardInterrupt unwinds
+                            # to the outer prompt_toolkit loop and the session dies.
+                            _cprint("\n[dim]Command interrupted.[/dim]")
+                            continue
+                        # A slash handler may set a one-shot pending seed (e.g.
+                        # /blueprint <name>) to be run as the next agent turn.
+                        # If present, fall through to the chat path with the seed
+                        # as the user message instead of looping back to idle.
+                        _seed = getattr(self, "_pending_agent_seed", None)
+                        if _seed:
+                            self._pending_agent_seed = None
+                            user_input = _seed
+                        else:
+                            continue
+                    
+                    # Expand paste references back to full content
+                    _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+                    paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
+                    if paste_refs:
+                        user_input = self._expand_paste_references(user_input)
+                    print()
+                    self._print_user_message_preview(user_input)
+                    
+                    # Show image attachment count
+                    if submit_images:
+                        n = len(submit_images)
+                        _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+
+                    # Regular chat - run agent
+                    self._agent_running = True
+                    self._interactive_turn = True
+                    self._pet_turn_error = False
+                    self._pet_reasoning = False
+                    self._turn_summary_begin()
+                    app.invalidate()  # Refresh status line
+
+                    try:
+                        self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
+                    finally:
+                        self._agent_running = False
+                        self._spinner_text = ""
+                        self._tool_start_time = 0.0
+                        self._pending_tool_info.clear()
+                        self._last_scrollback_tool = ""
+                        self._pet_reasoning = False
+                        self._pet_react_turn_end()
+                        # Post-turn accounting line (display.turn_summary).
+                        # Emitted after the response box, before the prompt
+                        # returns, so it reads as a footer for the turn.
+                        self._turn_summary_emit()
+                        self._interactive_turn = False
+
+                        app.invalidate()  # Refresh status line
+
+                        # Post-turn terminal recovery (#33271): after an
+                        # interrupt the prompt_toolkit renderer may have
+                        # drifted from the physical terminal state — CSI 6n
+                        # cursor position reports can leak as literal text
+                        # (^[[19;1R), and the VT100 input parser can stall in
+                        # a partial-escape state, accepting no further
+                        # keystrokes.  Drain stray escape bytes from the OS
+                        # input buffer and force a clean renderer redraw.
+                        if self._last_turn_interrupted:
+                            self._recover_terminal_after_interrupt()
+
+                        # Re-queue any messages that arrived in _interrupt_queue
+                        # while the agent was running and were never claimed by
+                        # the explicit interrupt path. See
+                        # _drain_interrupt_queue_to_pending_input for the full
+                        # rationale. Regression of #17666 / #18760 — the drain
+                        # block from the original PR #17939 was deferred as
+                        # "worth its own review" and never re-landed (#20271).
+                        self._drain_interrupt_queue_to_pending_input()
+
+                        # Goal continuation: if a standing goal is active, ask
+                        # the judge whether the turn satisfied it. If not, and
+                        # there's no real user message already queued, push the
+                        # continuation prompt back into _pending_input so the
+                        # next loop iteration picks it up naturally (and any
+                        # user input that arrives in between still preempts).
+                        try:
+                            self._maybe_continue_goal_after_turn()
+                        except Exception as _goal_exc:
+                            logging.debug("goal continuation hook failed: %s", _goal_exc)
+
+                        # /loop tick completion: if the turn that just ended
+                        # was a loop wakeup, evaluate it (LOOP_COMPLETE marker,
+                        # --until judge, caps) and schedule the next tick.
+                        try:
+                            self._maybe_complete_loop_tick_after_turn()
+                        except Exception as _loop_exc:
+                            logging.debug("loop completion hook failed: %s", _loop_exc)
+
+                        # Continuous voice: auto-restart recording after agent responds.
+                        # Dispatch to a daemon thread so play_beep (sd.wait) and
+                        # AudioRecorder.start (lock acquire) never block process_loop —
+                        # otherwise queued user input would stall silently.
+                        if self._voice_mode and self._voice_continuous and not self._voice_recording:
+                            def _restart_recording():
+                                try:
+                                    if self._voice_tts:
+                                        self._voice_tts_done.wait(timeout=60)
+                                        time.sleep(0.3)
+                                    # A barge-in capture already owns the mic and
+                                    # will submit the interruption itself.
+                                    if self._voice_barge_capture.is_set():
+                                        return
+                                    self._voice_start_recording()
+                                    app.invalidate()
+                                except Exception as e:
+                                    _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+                            threading.Thread(target=_restart_recording, daemon=True).start()
+
+                        # Drain process notifications (completions + watch matches)
+                        # that arrived while the agent was running.
+                        try:
+                            self._drain_process_notifications("cli-post-turn")
+                        except Exception:
+                            pass  # Non-fatal — don't break the main loop
+
+                except OSError as e:
+                    if getattr(e, "errno", None) == errno.EIO:
+                        self._mark_terminal_io_broken("process_loop")
+                        logger.warning(
+                            "process_loop EIO — freezing UI paints (#81521): %s",
+                            e,
+                        )
+                        continue
+                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
+                except Exception as e:
+                    if isinstance(e, OSError) and getattr(e, "errno", None) == errno.EIO:
+                        self._mark_terminal_io_broken("process_loop")
+                        logger.warning(
+                            "process_loop EIO — freezing UI paints (#81521): %s",
+                            e,
+                        )
+                        continue
+                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
+        
+        # Start processing thread
+        process_thread = threading.Thread(target=process_loop, daemon=True)
+        process_thread.start()
+
+        # Wake word ("Hey Hermes") — start the always-on hotword listener if
+        # enabled. Off-thread so a first-run engine install never blocks the
+        # prompt; best-effort, so deps/mic/key gaps are surfaced, never fatal.
+        def _wake_startup():
+            try:
+                self._maybe_start_wake_word()
+            except Exception as e:
+                logger.debug("wake-word startup skipped: %s", e)
+        threading.Thread(target=_wake_startup, daemon=True, name="wake-startup").start()
+
+        # Register atexit cleanup so resources are freed even on unexpected exit
+        atexit.register(_run_cleanup)
+        
+        # Register signal handlers for graceful shutdown on SSH disconnect / SIGTERM
+        def _signal_handler(signum, frame):
+            """Handle SIGHUP/SIGTERM by triggering graceful cleanup.
+
+            Calls ``self.agent.interrupt()`` first so the agent daemon
+            thread's poll loop sees the per-thread interrupt and kills the
+            tool's subprocess group via ``_kill_process`` (os.killpg).
+            Without this, the main thread dies from KeyboardInterrupt and
+            the daemon thread is killed with it — before it can run one
+            more poll iteration to clean up the subprocess, which was
+            spawned with ``os.setsid`` and therefore survives as an orphan
+            with PPID=1.
+
+            Grace window (``HERMES_SIGTERM_GRACE``, default 1.5 s) gives
+            the daemon time to: detect the interrupt (next 200 ms poll) →
+            call _kill_process (SIGTERM + 1 s wait + SIGKILL if needed) →
+            return from _wait_for_process.  ``time.sleep`` releases the
+            GIL so the daemon actually runs during the window.
+
+            Guarded ``logger.debug``: CPython's ``logging`` module is not
+            reentrant-safe.  ``Logger.isEnabledFor`` caches level results
+            in ``Logger._cache``; under shutdown races the cache can be
+            cleared (``_clear_cache``) or mid-mutation when the signal
+            fires, raising ``KeyError: <level_int>`` (e.g. ``KeyError: 10``
+            for DEBUG) inside the handler.  That KeyError then escapes
+            before ``raise KeyboardInterrupt()`` can fire, which bypasses
+            prompt_toolkit's normal interrupt unwind and surfaces as the
+            EIO cascade from issue #13710.  Wrap the log in a bare
+            ``try/except`` so the handler can never raise through it.
+            """
+            try:
+                logger.debug("Received signal %s, triggering graceful shutdown", signum)
+            except Exception:
+                pass  # never let logging raise from a signal handler (#13710 regression)
+            # Shutdown intent is now unambiguous — arm the exit backstop
+            # IMMEDIATELY, before the graceful unwind below.  If any step of
+            # that unwind wedges (main thread parked in a syscall, prompt_toolkit
+            # teardown never returning), _run_cleanup never runs and would
+            # never arm its own watchdog — leaving a "dead" CLI alive for
+            # minutes (#65998 class).  Never raises.
+            _arm_exit_watchdog_on_shutdown_signal()
+            try:
+                _signal_agent = getattr(self, "agent", None)
+                if _signal_agent is not None and getattr(self, "_agent_running", False):
+                    request_hard_interrupt(
+                        _signal_agent, f"received signal {signum}"
+                    )
+                    try:
+                        _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
+                    except (TypeError, ValueError):
+                        _grace = 1.5
+                    if _grace > 0:
+                        time.sleep(_grace)
+            except Exception:
+                pass  # never block signal handling
+            # Prefer a clean prompt_toolkit exit over `raise KeyboardInterrupt()`.
+            # Raising KBI from a signal handler unwinds into whatever Python
+            # frame the interpreter happens to be running — typically an
+            # `await asyncio.sleep()` inside prompt_toolkit's
+            # `_poll_output_size` coroutine.  The KBI becomes a Task
+            # exception, prompt_toolkit's `_handle_exception` prints
+            # "Unhandled exception in event loop" + the full traceback, and
+            # parks the terminal on "Press ENTER to continue..." (#13710
+            # variant — same root cause, different surface).
+            #
+            # `app.exit()` scheduled via `call_soon_threadsafe` lets the
+            # event loop unwind normally; `app.run()` returns and our
+            # existing `except (EOFError, KeyboardInterrupt, BrokenPipeError)`
+            # block at the bottom of the input loop handles the rest.
+            try:
+                from prompt_toolkit.application.current import get_app_or_none
+                _app = get_app_or_none()
+                if _app is not None:
+                    _loop = getattr(_app, "loop", None)
+                    if _loop is not None:
+                        _loop.call_soon_threadsafe(_app.exit)
+                        return  # clean unwind — no traceback, no ENTER pause
+            except Exception:
+                pass
+            raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
+        
         try:
             import signal as _signal
             _signal.signal(_signal.SIGTERM, self._tui_signal_handler)
@@ -16687,6 +18555,21 @@ def main(
     _install_single_query_signal_handlers(cli)
 
     if query or image:
+        # NEW DEFAULT (Aug 2026): on a real TTY, a -q/--image invocation
+        # seeds a normal interactive session with the prompt as the first
+        # turn, submitted LITERALLY (no slash/! dispatch). Legacy
+        # answer-and-exit behavior is kept for --oneshot, -Q, and every
+        # non-TTY invocation (kanban/cron/pipes) — see
+        # _should_seed_interactive().
+        if _should_seed_interactive(query, image, quiet, oneshot):
+            seeded_query, seeded_images = _collect_query_images(query, image)
+            logger.info(
+                "Seeding interactive session with -q prompt (%d chars, %d images)",
+                len(seeded_query or ""), len(seeded_images),
+            )
+            cli._seeded_first_message = _SeededQueryMessage(seeded_query, seeded_images)
+            cli.run()
+            return
         # One-shot mode: no between-turns MCP late-binding refresh, so the
         # agent must wait the full MCP cold-start bound before its first
         # (and only) tool snapshot. See #51316.

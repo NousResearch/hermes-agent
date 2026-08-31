@@ -127,6 +127,47 @@ def _needs_refresh(creds) -> bool:
     )
 
 
+def _read_sa_file(resolved_path: str) -> Tuple[bytes, Tuple[Any, ...]]:
+    """Read the service-account file once, returning (bytes, cache key).
+
+    The cache key fingerprints the file CONTENT (sha256), not stat
+    metadata. A (path, mtime_ns, size) signature — the idiom used for
+    config caches — is not sufficient here: metadata-preserving atomic
+    replacement (deployment tools that restore mtime; equal-length JSON)
+    produces a different private key under an identical stat signature,
+    and this cache guards an identity, not a parse (review finding on
+    #97701, reproduced: inode/content changed, stat key equal). Reading
+    the bytes also lets the caller construct credentials from the SAME
+    snapshot the key was computed from, closing the stat->read TOCTOU.
+
+    The file is a few KB of JSON; one read + sha256 per cache PROBE is
+    noise next to the OAuth token mint the cache exists to avoid.
+    """
+    with open(resolved_path, "rb") as fh:
+        raw = fh.read()
+    digest = hashlib.sha256(raw).hexdigest()
+    return raw, (resolved_path, digest)
+
+
+def _sa_snapshot(resolved_path: Optional[str]) -> Tuple[Optional[bytes], Tuple[Any, ...]]:
+    """Resolve (bytes-or-None, cache key) for one credential attempt.
+
+    - No path (ADC): (None, ("__adc__",)) — sentinel key, existing
+      refresh/expiry handling.
+    - Readable file: (bytes, (path, sha256)) via _read_sa_file — the
+      caller builds credentials from the SAME bytes the key fingerprints.
+    - Unreadable file: (None, (path,)) — bare-path key, and the caller
+      falls back to the SDK's own file read: byte-for-byte the
+      pre-signature behavior.
+    """
+    if not resolved_path:
+        return None, ("__adc__",)
+    try:
+        return _read_sa_file(resolved_path)
+    except OSError:
+        return None, (resolved_path,)
+
+
 def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """Return (fresh access_token, project_id) or (None, None); Credentials cached per file content."""
     if google is None:
@@ -134,33 +175,95 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
         return None, None
 
     resolved_path = _resolve_credentials_path(credentials_path)
-    # One read serves both the cache key and credential construction (creds always match the fingerprint).
+    # One read serves both the cache key and (on a miss) credential
+    # construction, so the credentials always match the bytes the key
+    # fingerprints — no stat/read or read/read TOCTOU.
     sa_raw, cache_key = _sa_snapshot(resolved_path)
 
     try:
         cached = _creds_cache.get(cache_key)
         if cached is None:
-            cached = _load_credentials(resolved_path, sa_raw)
-            if cached is None:
-                return None, None
-            _creds_cache[cache_key] = cached
-            # A rotation leaves the old signature's entry behind; keep at most
-            # one Credentials per file so stale identities can't be reused.
-            for k in [k for k in _creds_cache if k != cache_key and k[0] == cache_key[0]]:
+            if resolved_path:
+                if sa_raw is not None:
+                    creds = service_account.Credentials.from_service_account_info(
+                        json.loads(sa_raw),
+                        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                    )
+                else:
+                    # Unreadable at key time (bare-path key): let the SDK
+                    # try the file directly — pre-signature behavior.
+                    creds = service_account.Credentials.from_service_account_file(
+                        resolved_path,
+                        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                    )
+                project_id = creds.project_id
+            else:
+                # google.auth.default() reads GOOGLE_APPLICATION_CREDENTIALS
+                # straight from os.environ internally — it has no notion of
+                # the profile secret scope. _resolve_credentials_path already
+                # confirmed (via get_secret) that *this* profile doesn't
+                # define the var, but python-dotenv's load_dotenv() mutates
+                # os.environ at boot for whichever profile happened to load
+                # first, so a raw os.environ read here can still pick up a
+                # different profile's service-account path. Refuse rather
+                # than silently authenticating under a stranger's identity.
+                if is_multiplex_active() and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                    logger.warning(
+                        "Vertex ADC skipped for this profile: "
+                        "GOOGLE_APPLICATION_CREDENTIALS is set in the process "
+                        "environment (from another profile's .env) but not in "
+                        "this profile's own config. Set VERTEX_CREDENTIALS_PATH "
+                        "in this profile's .env instead of relying on ADC."
+                    )
+                    return None, None
+                creds, project_id = google.auth.default(
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+            _creds_cache[cache_key] = (creds, project_id)
+            # A rotation leaves the old signature's entry behind; drop any
+            # other entries for the same path so the cache holds at most one
+            # Credentials per file (bounded, and stale identities don't
+            # linger for surprise reuse via an old key).
+            for k in [
+                k for k in _creds_cache
+                if k is not cache_key and k != cache_key and k[0] == cache_key[0]
+            ]:
                 _creds_cache.pop(k, None)
-        creds, project_id = cached
-        if _needs_refresh(creds):
-            creds.refresh(google.auth.transport.requests.Request())
-        return creds.token, _resolve_project_override() or project_id
+        else:
+            creds, project_id = cached
+
+        needs_refresh = (
+            not getattr(creds, "token", None)
+            or getattr(creds, "expired", False)
+            or (
+                getattr(creds, "expiry", None) is not None
+                and (creds.expiry.timestamp() - time.time()) < 300
+            )
+        )
+        if needs_refresh:
+            _refresh_credentials(creds)
+
+        override_project = _resolve_project_override()
+        if override_project:
+            project_id = override_project
+
+        return creds.token, project_id
     except Exception as e:
         logger.error(f"Failed to resolve Vertex AI credentials: {e}")
         _creds_cache.pop(cache_key, None)
-        # If ADC failed (e.g. expired refresh token), try the SA file before giving
-        # up — it may have been added after startup. Keyed on this attempt being ADC.
-        sa_path = None if resolved_path else _resolve_credentials_path(credentials_path)
-        if sa_path:
-            logger.info("ADC failed, retrying with service account: %s", sa_path)
-            return get_vertex_credentials(sa_path)
+
+        # If ADC failed (e.g. expired refresh token), try the SA file
+        # before giving up — it may have been added after initial startup.
+        # Keyed on the RESOLVED PATH being absent (i.e. this attempt was
+        # ADC), not on the cache-key literal: the signature-keyed cache
+        # made keys tuples, and a tuple never equals the old "__adc__"
+        # string (that comparison silently killed this retry path).
+        if not resolved_path:
+            sa_path = _resolve_credentials_path(credentials_path)
+            if sa_path:
+                logger.info("ADC failed, retrying with service account: %s", sa_path)
+                return get_vertex_credentials(sa_path)
+
         return None, None
 
 

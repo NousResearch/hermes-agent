@@ -272,14 +272,10 @@ def _history_message_chunk(role: str, message: dict[str, Any]) -> UserMessageChu
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
         drive = path_text[1].lower()
         rest = path_text[3:].lstrip("/\\").replace("\\", "/")
-        if os.name == "nt":
-            return Path(f"{drive.upper()}:/{rest}")
         return Path("/mnt") / drive / rest
     if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
         drive = path_text[0].lower()
         rest = path_text[2:].lstrip("/\\").replace("\\", "/")
-        if os.name == "nt":
-            return Path(f"{drive.upper()}:/{rest}")
         return Path("/mnt") / drive / rest
 
     return Path(path_text)

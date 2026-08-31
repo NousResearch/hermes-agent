@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+import shutil
+import subprocess
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, Tuple
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
@@ -38,8 +43,10 @@ class CommandDef:
     # Key in ``hermes_cli.slash_exec.EXECUTORS`` (a string, not a callable: keeps this module
     # import-light for the gateway).
     execute: str | None = None
-    argument_mode: str | None = None  # desktop composer: options|text|mixed; None inferred
-    # Desktop availability: None = offered; "hidden" = runs but out of the popover; else a reason.
+    # Desktop composer: ``options`` | ``text`` | ``mixed``. ``None`` is inferred.
+    argument_mode: str | None = None
+    # Desktop availability. ``None`` = offered; ``hidden`` = runs but stays out
+    # of the popover; otherwise a reason (terminal / messaging / settings / …).
     desktop: str | None = None
 
 
@@ -147,13 +154,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",), desktop="terminal"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]", argument_mode="mixed"),
+
+    # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True, desktop="terminal"),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
+               args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",), args_hint="[auto|codex_app_server]",
@@ -174,13 +183,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command",
-               busy_policy="dispatch"),
+               busy_policy="dispatch", desktop="terminal"),
     CommandDef("focus", "Toggle focus view — show only your prompt and the final response",
                "Configuration", cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),
     CommandDef("footer", "Toggle gateway runtime-metadata footer on final replies",
-               "Configuration", args_hint="[on|off|status]", subcommands=("on", "off", "status"),
-               busy_policy="dispatch", desktop="terminal"),
+               "Configuration", args_hint="[on|off|status]",
+               subcommands=("on", "off", "status"), busy_policy="dispatch",
+               desktop="terminal"),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration", busy_policy="dispatch"),
     CommandDef("approvals", "Show or set the persistent dangerous-command approval mode",
@@ -190,9 +200,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[level|show|hide|full|clamp] [--global]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global"),
                desktop="advanced"),
-    CommandDef("fast", "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)", "Configuration",
-               args_hint="[normal|fast|auto|cold|status] [--global]",
-               subcommands=("normal", "fast", "auto", "cold", "status", "on", "off", "--global"),
+    CommandDef("fast", "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)", "Configuration",
+               args_hint="[normal|fast|status] [--global]",
+               subcommands=("normal", "fast", "status", "on", "off", "--global"),
                desktop="advanced"),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]", argument_mode="options"),
@@ -203,7 +213,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status"),
                desktop="composer-voice"),
     CommandDef("wake", "Toggle the 'Hey Hermes' wake word listener", "Configuration",
-               cli_only=True, args_hint="[on|off|status]", subcommands=("on", "off", "status")),
+               cli_only=True, args_hint="[on|off|status]",
+               subcommands=("on", "off", "status")),
     CommandDef("busy", "Control how messages behave while Hermes is working", "Configuration",
                args_hint="[queue|steer|interrupt|status]",
                subcommands=("queue", "steer", "interrupt", "status"),
@@ -211,7 +222,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
-               args_hint="[list|disable|enable] [name...]", cli_only=True, argument_mode="options"),
+               args_hint="[list|disable|enable] [name...]", cli_only=True,
+               argument_mode="options"),
     CommandDef("toolsets", "List available toolsets", "Tools & Skills",
                cli_only=True, desktop="terminal"),
     CommandDef("skills", "Search, install, inspect, or manage skills",
@@ -305,11 +317,48 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
-               cli_only=True, aliases=("exit",), args_hint="[--delete]", desktop="terminal")]
+               cli_only=True, aliases=("exit",), args_hint="[--delete]",
+               desktop="terminal"),
+]
 
 
-# Distinguishes ``mixed`` (subcommands plus free-text) from ``options``; no subcommands => ``text``.
+# Used only to distinguish ``mixed`` (subcommands plus free-text) from
+# ``options`` (subcommand list only). A bare ``args_hint`` with no
+# subcommands is always ``text`` — do not add tokens here for that path.
 _PROSE_HINTS = ("<prompt>", "[text", "instructions", "[interval]", "<what")
+
+
+def infer_argument_mode(cmd: CommandDef) -> str | None:
+    """Composer mode: explicit on the CommandDef, else inferred from its args."""
+    if cmd.argument_mode in {"options", "text", "mixed"}:
+        return cmd.argument_mode
+    hint = (cmd.args_hint or "").strip()
+    if cmd.subcommands and hint and any(token in hint.lower() for token in _PROSE_HINTS):
+        return "mixed"
+    if cmd.subcommands:
+        return "options"
+    if hint:
+        return "text"
+    return None
+
+
+def command_desktop_meta(cmd: CommandDef) -> dict[str, str | None]:
+    """Wire shape for ``commands.catalog`` — reads the CommandDef, nothing else."""
+    return {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
+
+
+# ---------------------------------------------------------------------------
+# Derived lookups -- rebuilt once at import time, refreshed by rebuild_lookups()
+# ---------------------------------------------------------------------------
+
+def _build_command_lookup() -> dict[str, CommandDef]:
+    """Map every name and alias to its CommandDef."""
+    lookup: dict[str, CommandDef] = {}
+    for cmd in COMMAND_REGISTRY:
+        lookup[cmd.name] = cmd
+        for alias in cmd.aliases:
+            lookup[alias] = cmd
+    return lookup
 
 
 def infer_argument_mode(cmd: CommandDef) -> str | None:
@@ -396,7 +445,7 @@ HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
         "compress", "compact", "context", "ctx", "status",
     ),
     "Background & Automation": (
-        "background", "bg", "btw", "agents", "tasks", "queue", "q", "steer",
+        "bg", "btw", "agents", "tasks", "queue", "q", "steer",
         "goal", "subgoal", "heartbeat", "hb", "refine", "loop", "proactive",
         "moa", "journey", "learning", "memory-graph",
     ),
@@ -519,22 +568,225 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
             for name, meta in commands.items() if isinstance(name, str) and isinstance(meta, dict)]
 
 
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-from collections.abc import Callable  # noqa: F401,E402
-from typing import Dict  # noqa: F401,E402
-from collections.abc import Mapping  # noqa: F401,E402
-from typing import Optional  # noqa: F401,E402
-from collections.abc import Sequence  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
-import os  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import time  # noqa: F401,E402
+def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, str]]:
+    """Return (command_name, description) pairs for Telegram setMyCommands.
+
+    Telegram command names cannot contain hyphens, so they are replaced with
+    underscores.  Aliases are skipped -- Telegram shows one menu entry per
+    canonical command.
+
+    Built-in commands that require arguments (e.g. /queue, /steer, /bg)
+    are **included** because their handlers return usage text when selected
+    without a payload, making them discoverable via autocomplete.
+
+    Plugin-registered slash commands that require arguments are **excluded**
+    because plugins may not provide a no-arg usage fallback. Callers that need
+    source metadata can pass ``include_plugins=False`` and collect plugins via
+    :func:`_collect_gateway_skill_entries` instead.
+    """
+    overrides = _resolve_config_gates()
+    result: list[tuple[str, str]] = []
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        # Built-in arg-taking commands are included — their handlers show
+        # usage text when invoked without arguments, and hiding them from
+        # the menu hurts discoverability (issue #24312).
+        tg_name = _sanitize_telegram_name(cmd.name)
+        if tg_name:
+            result.append((tg_name, cmd.description))
+    if include_plugins:
+        for name, description, args_hint in _iter_plugin_command_entries():
+            if _requires_argument(args_hint):
+                continue
+            tg_name = _sanitize_telegram_name(name)
+            if tg_name:
+                result.append((tg_name, description))
+    return result
+
+
+# Telegram allows up to 100 BotCommands. Hermes ships ~50 built-in commands;
+# a 60-slot default keeps every built-in plus common skill commands visible in
+# the `/` menu while staying comfortably under Telegram's ~4KB payload limit.
+# Users can tune this via platforms.telegram.extra.command_menu.max_commands.
+_DEFAULT_TELEGRAM_MENU_MAX_COMMANDS = 60
+_TELEGRAM_BOT_API_MAX_COMMANDS = 100
+_TELEGRAM_PRIORITY_MODES = {"prepend", "append", "replace"}
+
+_TELEGRAM_MENU_PRIORITY = (
+    # Most-typed everyday commands first.
+    "help",
+    "new",
+    "stop",
+    "status",
+    "egress",
+    "resume",
+    "sessions",
+    "model",
+    # Maintenance / diagnostics — the ones that prompted this priority list.
+    "debug",
+    "restart",
+    "update",
+    "verbose",
+    "commands",
+    # Mid-turn session control.
+    "approve",
+    "deny",
+    "queue",
+    "steer",
+    "bg",
+    "btw",
+    # Lower-priority but still useful operational built-ins.
+    "reasoning",
+    "usage",
+    "platforms",
+    "platform",
+    "profile",
+    "whoami",
+)
+"""Built-in commands that should stay visible in Telegram's capped menu.
+
+Telegram only displays a small BotCommand menu in practice.  The full Hermes
+registry is still dispatchable when typed manually, but operational commands
+need to survive the visible menu cap ahead of lower-priority built-ins.
+"""
+
+
+def _nested_mapping(root: Mapping[str, Any], *path: str) -> Mapping[str, Any]:
+    node: Any = root
+    for key in path:
+        if not isinstance(node, Mapping):
+            return {}
+        node = node.get(key)
+    return node if isinstance(node, Mapping) else {}
+
+
+def _telegram_command_menu_config() -> dict[str, Any]:
+    """Return normalized Telegram command-menu config with safe defaults.
+
+    Canonical user-facing path:
+    ``platforms.telegram.extra.command_menu``.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        raw_cfg = read_raw_config() or {}
+    except Exception:
+        raw_cfg = {}
+    if not isinstance(raw_cfg, Mapping):
+        raw_cfg = {}
+
+    menu_cfg = dict(_nested_mapping(raw_cfg, "platforms", "telegram", "extra", "command_menu"))
+
+    max_commands = menu_cfg.get("max_commands", _DEFAULT_TELEGRAM_MENU_MAX_COMMANDS)
+    try:
+        max_commands = int(max_commands)
+    except (TypeError, ValueError):
+        max_commands = _DEFAULT_TELEGRAM_MENU_MAX_COMMANDS
+    max_commands = max(1, min(_TELEGRAM_BOT_API_MAX_COMMANDS, max_commands))
+
+    priority_mode = str(menu_cfg.get("priority_mode") or "prepend").strip().lower()
+    if priority_mode not in _TELEGRAM_PRIORITY_MODES:
+        priority_mode = "prepend"
+
+    raw_priority = menu_cfg.get("priority")
+    if isinstance(raw_priority, list):
+        priority = [str(item) for item in raw_priority if str(item).strip()]
+    elif isinstance(raw_priority, str) and raw_priority.strip():
+        priority = [raw_priority]
+    else:
+        priority = []
+
+    return {
+        "max_commands": max_commands,
+        "priority_mode": priority_mode,
+        "priority": priority,
+    }
+
+
+def telegram_menu_max_commands() -> int:
+    """Return configured Telegram BotCommand menu cap with safe bounds."""
+    return int(_telegram_command_menu_config()["max_commands"])
+
+
+def _dedupe_sanitized_names(raw_names: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_name in raw_names:
+        name = _sanitize_telegram_name(str(raw_name))
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return tuple(result)
+
+
+def _telegram_effective_priority() -> tuple[str, ...]:
+    menu_cfg = _telegram_command_menu_config()
+    configured = list(_dedupe_sanitized_names(menu_cfg["priority"]))
+    defaults = list(_dedupe_sanitized_names(_TELEGRAM_MENU_PRIORITY))
+
+    if menu_cfg["priority_mode"] == "replace":
+        raw_priority = configured
+    elif menu_cfg["priority_mode"] == "append":
+        raw_priority = defaults + configured
+    else:
+        raw_priority = configured + defaults
+
+    return _dedupe_sanitized_names(raw_priority)
+
+
+def _prioritize_telegram_menu_commands(
+    commands: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    candidates = [(name, desc, "core", name) for name, desc in commands]
+    return [(name, desc) for name, desc, _source, _raw_name in _prioritize_telegram_menu_candidates(candidates)]
+
+
+def _prioritize_telegram_menu_candidates(
+    candidates: list[tuple[str, str, str, str]],
+) -> list[tuple[str, str, str, str]]:
+    """Order Telegram candidates while keeping default priority core-only.
+
+    Candidate tuples contain ``(final_name, description, source, raw_name)``.
+    ``raw_name`` preserves the pre-clamp command name so an explicitly
+    configured long command remains addressable after Telegram name clamping.
+    """
+    menu_cfg = _telegram_command_menu_config()
+    configured = _dedupe_sanitized_names(menu_cfg["priority"])
+    defaults = _dedupe_sanitized_names(_TELEGRAM_MENU_PRIORITY)
+    configured_rank = {name: index for index, name in enumerate(configured)}
+    default_rank = {name: index for index, name in enumerate(defaults)}
+    priority_mode = menu_cfg["priority_mode"]
+
+    def _rank(candidate: tuple[str, str, str, str], stable_index: int) -> tuple[int, int, int]:
+        final_name, _desc, source, raw_name = candidate
+        configured_index = configured_rank.get(raw_name)
+        if configured_index is None:
+            configured_index = configured_rank.get(final_name)
+        default_index = default_rank.get(final_name) if source == "core" else None
+
+        if priority_mode == "replace":
+            if configured_index is not None:
+                return (0, configured_index, stable_index)
+            return (1, 0, stable_index)
+        if priority_mode == "append":
+            if default_index is not None:
+                return (0, default_index, stable_index)
+            if configured_index is not None:
+                return (1, configured_index, stable_index)
+            return (2, 0, stable_index)
+        if configured_index is not None:
+            return (0, configured_index, stable_index)
+        if default_index is not None:
+            return (1, default_index, stable_index)
+        return (2, 0, stable_index)
+
+    return [
+        candidate
+        for stable_index, candidate in sorted(
+            enumerate(candidates),
+            key=lambda item: _rank(item[1], item[0]),
+        )
+    ]
 
 def _requires_argument(args_hint: str) -> bool:
     """Return True when selecting a command without text would be incomplete."""
@@ -719,6 +971,53 @@ def _collect_gateway_skill_entries(
 
     return all_entries[:max_slots], hidden_count
 
+
+# ---------------------------------------------------------------------------
+# Platform-specific wrappers
+# ---------------------------------------------------------------------------
+
+def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
+    """Return Telegram menu commands capped to the Bot API limit.
+
+    Priority order (higher priority = never bumped by overflow):
+      1. Core CommandDef commands (always included)
+      2. Plugin slash commands (take precedence over skills)
+      3. Built-in skill commands (fill remaining slots, alphabetical)
+
+    Core, plugin, and skill tiers keep their existing relative order unless a
+    command is named in ``platforms.telegram.extra.command_menu.priority``.
+    Explicit priority is applied to the combined candidate list before the Bot
+    API cap, so a prioritized dynamic command can displace an unprioritized core
+    command when the core tier already fills the menu.
+
+    User-installed hub skills are excluded — accessible via /skills.
+    Skills disabled for the ``"telegram"`` platform (via ``hermes skills
+    config``) are excluded from the menu entirely.
+
+    Returns:
+        (menu_commands, hidden_count) where hidden_count is the number of
+        commands omitted due to the cap.
+    """
+    core_commands = list(telegram_bot_commands(include_plugins=False))
+    reserved_names = {n for n, _ in core_commands}
+    entries, hidden_count = _collect_gateway_skill_entries(
+        platform="telegram",
+        max_slots=None,
+        reserved_names=reserved_names,
+        desc_limit=40,
+        sanitize_name=_sanitize_telegram_name,
+    )
+    candidates = [(name, desc, "core", name) for name, desc in core_commands]
+    for name, desc, cmd_key, raw_name in entries:
+        source = "skill" if cmd_key else "plugin"
+        candidates.append((name, desc, source, raw_name))
+
+    candidates = _prioritize_telegram_menu_candidates(candidates)
+    overflow_count = max(0, len(candidates) - max_commands)
+    menu = [(name, desc) for name, desc, _source, _raw_name in candidates[:max_commands]]
+    return menu, hidden_count + overflow_count
+
+
 def discord_skill_commands(
     max_slots: int,
     reserved_names: set[str],
@@ -747,6 +1046,9 @@ def discord_skill_commands(
         reserved_names=set(reserved_names),  # copy — don't mutate caller's set
         desc_limit=100,
     )
+    return [
+        (name, desc, cmd_key) for name, desc, cmd_key, _raw_name in entries
+    ], hidden_count
 
 
 def discord_skill_commands_by_category(
@@ -950,7 +1252,9 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # would otherwise get, and the Telegram-parity test fails when a canonical
 # gets clamped ("reset" was unpinned for exactly that — /new keeps its
 # native slot, the alias spelling stays reachable via /hermes reset).
-_SLACK_PRIORITY_ALIASES = ("btw", "bg")
+# (Currently empty: /bg and /btw were promoted from aliases of /background
+# to canonical commands, so they win first-pass slots on their own.)
+_SLACK_PRIORITY_ALIASES: tuple[str, ...] = ()
 
 # Canonical commands intentionally NOT given a native Slack slash slot. Slack
 # caps apps at 50 slash commands and the registry is at that ceiling; rather
@@ -996,7 +1300,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "insights"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1020,7 +1324,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     first-class slash and not a ``/hermes <verb>`` subcommand.
 
     Both canonical names and aliases are included so users can type any
-    documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
+    documented form; aliases are surfaced alongside canonical names.
     Plugin-registered slash commands are included too.
 
     Commands whose sanitized name collides with a Slack built-in
@@ -1123,7 +1427,7 @@ def slack_subcommand_map() -> dict[str, str]:
     """Return subcommand -> /command mapping for Slack /hermes handler.
 
     Maps both canonical names and aliases so /hermes bg do stuff works
-    the same as /hermes background do stuff.
+    the same as /hermes bg do stuff.
 
     Plugin-registered slash commands are included so ``/hermes <plugin-cmd>``
     routes through the plugin handler.

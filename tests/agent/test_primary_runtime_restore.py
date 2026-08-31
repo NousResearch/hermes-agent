@@ -300,7 +300,7 @@ class TestRestorePrimaryRuntime:
         agent._fallback_activated = True
         agent.request_overrides = {"extra_body": {"fallback_only": True}}
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
             result = agent._restore_primary_runtime()
 
         assert result is True
@@ -584,7 +584,7 @@ class TestTryRecoverPrimaryTransport:
         error = _make_transport_error("ReadTimeout")
         agent.request_overrides = {"extra_body": {"fallback_only": True}}
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
              patch("time.sleep"):
             result = agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
@@ -806,7 +806,7 @@ class TestSwitchModelRequestOverridesSnapshot:
         from agent.agent_runtime_helpers import switch_model
 
         with (
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
             patch(
                 "agent.model_metadata.get_model_context_length",
                 return_value=128_000,
@@ -842,7 +842,7 @@ class TestSwitchModelRequestOverridesSnapshot:
         # A fallback activation mid-turn clobbers the live overrides…
         agent.request_overrides = {"extra_body": {"fallback_only": True}}
         error = _make_transport_error("ReadTimeout")
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
              patch("time.sleep"):
             result = agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
@@ -862,7 +862,7 @@ class TestSwitchModelRequestOverridesSnapshot:
         )
         agent._fallback_activated = True
         agent.request_overrides = {"extra_body": {"fallback_only": True}}
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
             result = agent._restore_primary_runtime()
         assert result is True
         assert agent.request_overrides == overrides

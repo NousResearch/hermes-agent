@@ -1,13 +1,39 @@
-import type { GatewayEvent, GatewayEventName } from './gateway-events.js'
-import {
-  DEFAULT_HEARTBEAT_DEADLINE_MS,
-  DEFAULT_HEARTBEAT_INTERVAL_MS,
-  type GatewayRequestId,
-  JsonRpcRequestChannel,
-  type JsonRpcTransport,
-  type ServerRequestHandler,
-  wireFrameText
-} from './json-rpc-channel.js'
+export type GatewayEventName =
+  | 'gateway.ready'
+  | 'session.info'
+  | 'session.usage'
+  | 'message.start'
+  | 'message.delta'
+  | 'message.interim'
+  | 'message.complete'
+  | 'thinking.delta'
+  | 'reasoning.delta'
+  | 'reasoning.available'
+  | 'status.update'
+  | 'tool.start'
+  | 'tool.progress'
+  | 'tool.complete'
+  | 'tool.generating'
+  | 'todo.updated'
+  | 'clarify.request'
+  | 'approval.request'
+  | 'sudo.request'
+  | 'secret.request'
+  | 'background.complete'
+  | 'error'
+  | 'skin.changed'
+  | (string & {})
+
+export interface GatewayEvent<P = unknown> {
+  payload?: P
+  /** Renderer-side source tag added by the Desktop gateway registry. */
+  profile?: string
+  /** Registry connection whose socket delivered the event (renderer-side tag;
+   * absent for the local/legacy primary path). */
+  connectionId?: string
+  session_id?: string
+  type: GatewayEventName
+}
 
 export type { GatewayEvent, GatewayEventName } from './gateway-events.js'
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error'

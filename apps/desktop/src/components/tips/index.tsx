@@ -98,7 +98,6 @@ export function TipHost() {
 
   return (
     <TipBubble
-      action={tip.action}
       anchor={anchor}
       keybind={tip.keybind}
       onClose={retireActiveTip}

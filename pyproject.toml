@@ -457,7 +457,11 @@ exclude-newer = "14 days"
 # cutoff can still brick installs. Exempting exact pins is pure brick-risk
 # removal at no supply-chain cost. Guarded by
 # tests/test_packaging_metadata.py::test_build_system_requires_exempt_from_exclude_newer.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false }
+#
+# firecrawl-anydoc: same exact-pin shape (==0.2.4, hosted-OCR wiring PR).
+# The pin bump WAS the review; exclude-newer adds zero float protection to
+# an exact pin and would only delay the reviewed version 14 days.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false }
 
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the
@@ -551,7 +555,6 @@ select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 # process (no wait), an accepted momentary spawn cost pending a dedicated
 # async-subprocess sweep.
 "gateway/run.py" = ["ASYNC220"]
-"gateway/run_shutdown.py" = ["ASYNC220"]
 "gateway/slash_commands.py" = ["ASYNC220"]
 # Off-loop sweep for these routers is in flight (PR #84376).
 "hermes_cli/web_routers/profiles.py" = ["ASYNC220", "ASYNC221"]

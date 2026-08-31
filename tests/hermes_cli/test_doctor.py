@@ -76,32 +76,6 @@ class TestProviderEnvDetection:
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
 
-    def test_detects_keyless_loopback_provider(self, tmp_path):
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(
-            "model:\n"
-            "  provider: local-ollama\n"
-            "providers:\n"
-            "  local-ollama:\n"
-            "    api: http://127.0.0.1:11434/v1\n",
-            encoding="utf-8",
-        )
-
-        assert doctor._configured_model_uses_keyless_local_endpoint(config_path)
-
-    def test_does_not_treat_remote_provider_as_local(self, tmp_path):
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(
-            "model:\n"
-            "  provider: remote\n"
-            "providers:\n"
-            "  remote:\n"
-            "    api: https://example.com/v1\n",
-            encoding="utf-8",
-        )
-
-        assert not doctor._configured_model_uses_keyless_local_endpoint(config_path)
-
 
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):

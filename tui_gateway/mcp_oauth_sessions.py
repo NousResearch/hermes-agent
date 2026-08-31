@@ -1,9 +1,45 @@
-"""Session-backed MCP OAuth flows for the gateway (mcp.servers.oauth.*): ``start`` spawns a
-worker and returns ``{session_id, auth_url, flow}``; ``poll`` reports ``{status}`` until tokens
-land. Reuses ``hermes mcp login``'s probe under ``force_interactive_oauth`` plus
-``DashboardOAuthFlow``; the only new piece is a loopback listener feeding ``deliver_callback``.
-Remote backends host the listener (``client_redirect_uri``) and relay via
-``deliver_callback_flow``."""
+"""Session-backed MCP OAuth flows for the gateway (mcp.servers.oauth.*).
+
+This mirrors the *provider* OAuth model used by the dashboard
+(``/api/providers/oauth/{id}/start`` + ``/poll/{session_id}``) rather than the
+FastAPI-request-coupled MCP dashboard flow: a ``start`` primitive kicks off a
+background worker and returns ``{session_id, auth_url, flow}``; a ``poll``
+primitive reports ``{status: pending|approved|error}`` until the tokens land on
+disk for that server in that profile.
+
+The underlying token machinery is the *same* one the CLI ``hermes mcp login``
+uses — ``hermes_cli.mcp_config._probe_single_server`` under
+``tools.mcp_oauth.force_interactive_oauth`` — so no OAuth logic is reimplemented
+here. The only new piece is decoupling the two browser callbacks (authorization
+URL out, ``code``/``state`` back in) from a FastAPI ``Request``:
+
+* ``tools.mcp_dashboard_oauth.DashboardOAuthFlow`` already provides the two
+  thread-safe rendezvous points (``publish_authorization_url`` /
+  ``deliver_callback``). We reuse it verbatim as the bridge object.
+* Instead of routing the browser redirect through a FastAPI callback route, we
+  run a tiny loopback HTTP listener on ``127.0.0.1:<port>/callback`` and set the
+  flow's ``redirect_uri`` to it. When the provider redirects the user's browser
+  there, the listener calls ``flow.deliver_callback(...)``. This is the same
+  loopback strategy the CLI uses by default, just wired to the shared bridge.
+
+Client contract (what the desktop plugin does):
+  1. call ``mcp.servers.oauth.start(profile, name)`` → ``{session_id, auth_url}``
+  2. open ``auth_url`` in the native browser (``openExternal``)
+  3. poll ``mcp.servers.oauth.poll(profile, name, session_id)`` until
+     ``status == "approved"`` (tokens persisted) or ``"error"``.
+
+Remote-backend variant (client-side callback): when the desktop app runs on a
+DIFFERENT machine than the gateway (SSH/Tailscale remote backend), the
+gateway-side ``127.0.0.1`` listener is unreachable from the user's browser —
+the redirect lands on the user's machine where nothing is listening, and the
+flow times out. For that topology the client binds its OWN loopback listener
+(same pattern as the desktop's native gateway login), passes its
+``redirect_uri`` to ``start`` (``client_redirect_uri``), and relays the
+provider redirect back via ``deliver_callback_flow`` /
+``mcp.servers.oauth.callback``. State verification stays server-side in
+``DashboardOAuthFlow.deliver_callback`` — a relayed code with the wrong
+``state`` is rejected exactly like a forged loopback hit.
+"""
 
 from __future__ import annotations
 
@@ -43,6 +79,31 @@ def _validate_client_redirect_uri(uri: str) -> str:
             or parsed.username is not None or parsed.password is not None):
         raise ValueError(
             "client_redirect_uri must be a loopback http URL like http://127.0.0.1:<port>/callback")
+    return f"http://{'[' + host + ']' if ':' in host else host}:{parsed.port}{parsed.path or '/callback'}"
+
+
+def _validate_client_redirect_uri(uri: str) -> str:
+    """Validate a client-supplied loopback redirect URI.
+
+    Only plain-http loopback URLs are accepted (``http://127.0.0.1:<port>/...``
+    or ``http://localhost:<port>/...``), mirroring RFC 8252 native-app rules —
+    the client hosts a one-shot listener on ITS machine, so anything else
+    (public hosts, https proxies, schemes) is rejected to keep the gateway from
+    pinning an attacker-controlled redirect into a DCR registration.
+    """
+    parsed = urlparse(str(uri or "").strip())
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "http"
+        or host not in ("127.0.0.1", "localhost", "::1")
+        or not parsed.port
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError(
+            "client_redirect_uri must be a loopback http URL like "
+            "http://127.0.0.1:<port>/callback"
+        )
     return f"http://{'[' + host + ']' if ':' in host else host}:{parsed.port}{parsed.path or '/callback'}"
 
 
@@ -149,15 +210,34 @@ def _worker(
 
 
 def start_flow(
-    hermes_home: str, server_name: str, cfg: dict, *, reconnect_live: bool = False,
-    url_timeout: float = 30.0, client_redirect_uri: Optional[str] = None) -> Dict[str, Any]:
-    """Begin an MCP OAuth flow and return ``{session_id, auth_url, flow}``; blocks up to
-    ``url_timeout`` for the authorization URL. With ``client_redirect_uri`` (invalid values
-    raise ``ValueError``) no gateway-side listener is bound."""
+    hermes_home: str,
+    server_name: str,
+    cfg: dict,
+    *,
+    reconnect_live: bool = False,
+    url_timeout: float = 30.0,
+    client_redirect_uri: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Begin an MCP OAuth flow and return ``{session_id, auth_url, flow}``.
+
+    ``cfg`` is the server's resolved config dict (must have ``url`` and be
+    OAuth-capable). ``hermes_home`` is the already-resolved profile home dir
+    string. Blocks up to ``url_timeout`` for the worker to publish the browser
+    authorization URL, then returns it.
+
+    ``client_redirect_uri`` (remote-backend variant): a loopback callback URL
+    the CLIENT hosts on its own machine. When set (and valid), no gateway-side
+    listener is bound — the OAuth ``redirect_uri`` is pinned to the client's
+    listener, and the client relays the redirect's ``code``/``state`` back via
+    ``deliver_callback_flow``. Invalid values raise ``ValueError``.
+    """
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
     if client_redirect_uri is not None:
         client_redirect_uri = _validate_client_redirect_uri(client_redirect_uri)
-    cutoff = time.time() - _SESSION_TTL_SECONDS  # opportunistic GC of expired sessions
+
+    _gc_sessions()
+
     with _sessions_lock:
         for sid in [sid for sid, rec in _sessions.items() if rec["created_at"] < cutoff]:
             _shutdown_listener(_sessions.pop(sid))
@@ -172,11 +252,20 @@ def start_flow(
     flow = DashboardOAuthFlow(
         flow_id=session_id, server_name=server_name, profile=None, hermes_home=hermes_home,
         redirect_uri="",  # set below once the loopback port is known
-        reconnect_live=reconnect_live)
-    # Client-hosted listener: a 127.0.0.1 port here would be unreachable from the browser.
-    httpd = None if client_redirect_uri else _start_loopback_listener(flow)
-    flow.redirect_uri = (
-        client_redirect_uri or f"http://127.0.0.1:{httpd.server_address[1]}/callback")
+        reconnect_live=reconnect_live,
+    )
+    if client_redirect_uri:
+        # Remote-backend variant: the CLIENT hosts the callback listener on its
+        # own machine and relays the code via deliver_callback_flow(). No
+        # gateway-side listener is bound — a 127.0.0.1 port here would be
+        # unreachable from the user's browser anyway.
+        httpd = None
+        flow.redirect_uri = client_redirect_uri
+    else:
+        httpd = _start_loopback_listener(flow)
+        port = httpd.server_address[1]
+        flow.redirect_uri = f"http://127.0.0.1:{port}/callback"
+
     rec = {
         "session_id": session_id, "server_name": server_name, "hermes_home": hermes_home,
         "flow": flow, "httpd": httpd, "created_at": time.time()}
@@ -242,28 +331,36 @@ def poll_flow(session_id: str, server_name: str) -> Dict[str, Any]:
     return out
 
 
-def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str, Any]:
-    """Cancel only the owning profile's flow and release its callback waiter."""
-    rec, err = _lookup(session_id, server_name, hermes_home)
-    if rec is None:
-        return {"ok": False, "error_message": err}
-    flow = rec["flow"]
-    flow.mark_error("OAuth cancelled by user")
-    _shutdown_listener(rec)
-    return {"ok": True, "status": flow.snapshot()["status"]}
-
-
 def deliver_callback_flow(
-    session_id: str, server_name: str, *, code: Optional[str], state: Optional[str],
-    error: Optional[str] = None, iss: Optional[str] = None) -> Dict[str, Any]:
-    """Relay a client-captured OAuth redirect into a session's flow (remote-backend companion
-    to ``start_flow(client_redirect_uri=...)``); ``deliver_callback`` still verifies ``state``
-    and rejects replays. Returns ``{ok: true}`` or ``{ok: false, error_message}``."""
-    rec, err = _lookup(session_id, server_name)
+    session_id: str,
+    server_name: str,
+    *,
+    code: Optional[str],
+    state: Optional[str],
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Relay a client-captured OAuth redirect into a session's flow.
+
+    Remote-backend companion to ``start_flow(client_redirect_uri=...)``: the
+    desktop app's loopback listener caught the provider redirect on the USER'S
+    machine and forwards ``code``/``state`` (or ``error``) here. Security
+    properties are unchanged from the gateway-listener path — the underlying
+    ``DashboardOAuthFlow.deliver_callback`` verifies ``state`` against the
+    pinned authorization request (constant-time compare) and rejects replays,
+    so a forged or replayed relay fails identically to a forged loopback hit.
+
+    Returns ``{ok: true}`` on acceptance or ``{ok: false, error_message}``.
+    """
+    with _sessions_lock:
+        rec = _sessions.get(session_id)
     if rec is None:
-        return {"ok": False, "error_message": err}
+        return {"ok": False, "error_message": "OAuth session not found or expired"}
+    if rec["server_name"] != server_name:
+        return {"ok": False, "error_message": "server name mismatch for session"}
+
+    flow = rec["flow"]
     try:
-        rec["flow"].deliver_callback(code=code, state=state, error=error, iss=iss)
+        flow.deliver_callback(code=code, state=state, error=error)
     except ValueError as exc:
         return {"ok": False, "error_message": str(exc)}
     return {"ok": True, "session_id": session_id}

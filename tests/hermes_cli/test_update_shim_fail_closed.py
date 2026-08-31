@@ -142,6 +142,26 @@ def test_update_sync_installs_are_strict(windows, tmp_path, monkeypatch):
     assert seen["strict"] is True
 
 
+def test_console_script_repair_keeps_patched_h2(windows, tmp_path, monkeypatch):
+    """A post-install shim repair must not bypass the update security pin."""
+    scripts = tmp_path / "venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    captured = []
+    monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: scripts)
+    monkeypatch.setattr(cli_main, "_load_console_script_names", lambda: ["hermes"])
+    monkeypatch.setattr(
+        cli_main,
+        "_run_quarantined_install",
+        lambda cmd, **kwargs: captured.append(list(cmd)),
+    )
+
+    cli_main._verify_console_scripts_installed(["uv", "pip"])
+
+    assert captured == [
+        ["uv", "pip", "install", "--reinstall", "-e", ".", "h2==4.4.1"]
+    ]
+
+
 # ---------------------------------------------------------------------------
 # _install_repair.py: recovery installer is strict unconditionally
 # ---------------------------------------------------------------------------

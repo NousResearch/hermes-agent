@@ -1,12 +1,9 @@
 """macOS TCC-safe behavior for broad file searches."""
 
-import sys
 from pathlib import Path
 
-import pytest
-
 import tools.file_operations as file_operations
-from tools.environments.local import LocalEnvironment, _windows_to_msys_path
+from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations, _macos_protected_search_exclusions
 
 
@@ -131,12 +128,11 @@ def test_grep_fallback_prunes_by_path_not_basename(tmp_path, monkeypatch):
     for dirname in PROTECTED_NAMES:
         # Path-scoped pruning: full protected path present, no basename-wide
         # --exclude-dir for protected names.
-        assert _windows_to_msys_path(str(home / dirname)) in pruned_command
+        assert str(home / dirname) in pruned_command
         assert f"--exclude-dir={dirname}" not in pruned_command
         assert f"--exclude-dir='{dirname}'" not in pruned_command
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="requires a real macOS shell")
 def test_grep_pruned_search_still_finds_nested_protected_names(tmp_path, monkeypatch):
     """A repo-internal directory literally named 'Downloads' must still be
     searched by the pruned grep path — the exact regression --exclude-dir had."""
@@ -192,11 +188,10 @@ def test_find_fallback_prunes_protected_directories(tmp_path, monkeypatch):
     find_commands = [command for command in env.commands if command.startswith("find ")]
     assert find_commands
     for command in find_commands:
-        assert _windows_to_msys_path(str(home / "Downloads")) in command
+        assert str(home / "Downloads") in command
         assert "-prune" in command
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="requires a real macOS shell")
 def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     safe = home / "safe"

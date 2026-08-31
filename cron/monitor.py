@@ -79,6 +79,7 @@ def _write_last_output(job_id: str, output: str) -> None:
         from cron.jobs import _ensure_cron_dir
 
         path = _snapshot_path(job_id)
+        from cron.jobs import _ensure_cron_dir
         _ensure_cron_dir(path.parent)
         path.write_text(output, encoding="utf-8")
     except Exception as exc:

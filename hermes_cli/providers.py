@@ -178,6 +178,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="TOKENHUB_BASE_URL",
     ),
+    "tencent-tokenplan": HermesOverlay(
+        transport="anthropic_messages",
+        base_url_override="https://api.lkeap.cloud.tencent.com/plan/anthropic",
+        base_url_env_var="TOKENPLAN_BASE_URL",
+    ),
     "arcee": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
@@ -205,6 +210,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("UPSTAGE_API_KEY",),
         base_url_override="https://api.upstage.ai/v1",
         base_url_env_var="UPSTAGE_BASE_URL",
+    ),
+    "nebius-token-factory": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("NEBIUS_API_KEY", "NEBIUS_TOKEN_FACTORY_API_KEY"),
+        base_url_override="https://api.tokenfactory.nebius.com/v1",
+        base_url_env_var="NEBIUS_BASE_URL",
     ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
@@ -359,6 +370,8 @@ ALIASES: Dict[str, str] = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "tokenplan": "tencent-tokenplan",
+    "tencent-lkeap": "tencent-tokenplan",
 
     # bedrock
     "aws": "bedrock",
@@ -385,6 +398,12 @@ ALIASES: Dict[str, str] = {
     "actual-computer": "actual",
     "actualcomputer": "actual",
     "aci": "actual",
+    # Nebius Token Factory
+    "nebius": "nebius-token-factory",
+    "nebius-tokenfactory": "nebius-token-factory",
+    "nebius-tf": "nebius-token-factory",
+    "token-factory": "nebius-token-factory",
+    "tokenfactory": "nebius-token-factory",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
@@ -412,6 +431,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "upstage": "Upstage Solar",
     "actual": "Actual Computer",
     "tencent-tokenhub": "Tencent TokenHub",
+    "nebius-token-factory": "Nebius Token Factory",
+    "tencent-tokenplan": "Tencent TokenPlan",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
@@ -583,12 +604,28 @@ _RESPONSES_NATIVE_HOSTS: frozenset[str] = frozenset({"api.meta.ai", "api.router.
 
 
 def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
-    """Return the wire protocol a specific endpoint *requires*, or None. Some hosts accept exactly
-    one API mode (api.openai.com 400s chat/completions for reasoning models with tools); these are
-    *mandatory*: a session carrying a stale api_mode (a /model switch that kept the previous
-    provider's ``chat_completions``) must be overridden, not merely filled in when empty.
-    Exact-hostname matching only — never substring — so lookalike hosts and path-segment spoofs are
-    not treated as the real endpoint."""
+    """Return the wire protocol a specific endpoint *requires*, or None.
+
+    Some hosts only accept one API mode and reject the others outright:
+      - api.openai.com only accepts the Responses API for its (reasoning)
+        models when tools + reasoning are in play (chat/completions 400s).
+      - api.meta.ai only achieves KV-cache hits on /v1/responses with
+        prompt_cache_retention; /v1/chat/completions returns 0 cached
+        tokens (measured 0% vs 93-99% on /responses with retention).
+      - api.router.com (Ramp Router) is Responses-native: per-model
+        reasoning-effort validation, reasoning summaries, and prompt
+        caching live on /v1/responses; /v1/chat/completions is only a
+        minimal compatibility shim translated onto it.
+      - api.anthropic.com / ``…/anthropic`` suffixes speak native Messages.
+      - Kimi's ``/coding`` endpoint speaks native Messages.
+      - AWS Bedrock runtime hosts speak Converse.
+
+    These are *mandatory* — a session carrying a stale api_mode (e.g. a
+    /model switch that kept the previous provider's ``chat_completions``)
+    must be overridden to the host's required mode, not merely filled in
+    when empty. Generic / unknown endpoints return None so an explicitly
+    configured api_mode on them is never clobbered.
+    """
     if not base_url:
         return None
     url_lower = base_url.rstrip("/").lower()
@@ -608,6 +645,13 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
         # Ramp Router (api.router.com) is Responses-native: reasoning-effort validation, reasoning
         # summaries, and prompt caching live on /v1/responses, and /v1/chat/completions is only a minimal
         # compatibility shim (docs.router.com/api/endpoint). Exact-hostname match per #32243.
+        return "codex_responses"
+    # Ramp Router (api.router.com) is Responses-native: reasoning-effort
+    # validation, reasoning summaries, and prompt caching live on
+    # /v1/responses, and /v1/chat/completions is only a minimal
+    # compatibility shim (docs.router.com/api/endpoint). Exact-hostname
+    # match per #32243.
+    if hostname == "api.router.com":
         return "codex_responses"
     if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
         return "bedrock_converse"

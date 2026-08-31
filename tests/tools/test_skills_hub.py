@@ -8,10 +8,27 @@ from unittest.mock import patch, MagicMock
 import httpx
 import pytest
 
-from tools.skills_hub import HubLockFile, TapsManager, append_audit_log
-from tools.skills_hub_github import GitHubAuth, GitHubSource
-from tools.skills_hub_install import (
-    bundle_content_hash, check_for_skill_updates, install_from_quarantine, quarantine_bundle,
+from tools.skills_hub import (
+    GitHubAuth,
+    GitHubSource,
+    LobeHubSource,
+    SkillsShSource,
+    UrlSource,
+    WellKnownSkillSource,
+    OptionalSkillSource,
+    SkillSource,
+    SkillBundle,
+    SkillMeta,
+    HubLockFile,
+    TapsManager,
+    bundle_content_hash,
+    check_for_skill_updates,
+    create_source_router,
+    parallel_search_sources,
+    unified_search,
+    append_audit_log,
+    quarantine_bundle,
+    _referenced_support_paths,
 )
 from tools.skills_hub_models import SkillBundle, SkillMeta, SkillSource, _referenced_support_paths
 from tools.skills_hub_official import OptionalSkillSource

@@ -41,7 +41,7 @@ def _install_test_section(manager: PluginManager, content) -> None:
     )
 
 
-def test_real_aiagent_builds_section_once_and_keeps_it_out_of_static_prefix(monkeypatch):
+def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(monkeypatch):
     # Pin the workspace snapshot: build_coding_workspace_block shells out to
     # live `git status`/`git log` on every build, and a git call failing or
     # timing out under xdist contention makes the two builds differ in the

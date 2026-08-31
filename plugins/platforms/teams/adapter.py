@@ -199,6 +199,74 @@ def _env_enablement() -> dict | None:
     return seed
 
 
+# Bot Framework default service URL for the global Teams endpoint.  Some
+# regional/government tenants need a different host (e.g.
+# ``https://smba.infra.gov.teams.microsoft.us/``) which can be supplied via
+# ``TEAMS_SERVICE_URL`` or ``extra['service_url']``.
+_DEFAULT_TEAMS_SERVICE_URL = "https://smba.trafficmanager.net/teams/"
+
+# Allowlist of Bot Framework service hosts that may receive a freshly
+# minted bearer token.  Operator-supplied URLs are matched against this
+# allowlist to block SSRF / token-exfiltration via a tampered env var.
+_ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({
+    "smba.trafficmanager.net",
+    "smba.infra.gov.teams.microsoft.us",
+})
+
+
+def _is_botframework_attachment_url(url: str) -> bool:
+    """True if ``url`` points at a Bot Framework connector attachment host.
+
+    Exact-match against ``_ALLOWED_TEAMS_SERVICE_HOSTS`` — the same allowlist
+    that gates where outbound sends may carry a freshly minted bearer token —
+    plus scheme/port sanity: only https on the default port qualifies. A
+    lookalike host must never receive the bot's bearer token: note that any
+    Azure customer can register ``<name>.trafficmanager.net`` Traffic Manager
+    profiles, so a suffix match would not be safe either. New Bot Framework
+    regions are allowlist additions, not predicate changes.
+    """
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.scheme != "https":
+            return False
+        if parsed.port not in (None, 443):
+            return False
+        return parsed.hostname in _ALLOWED_TEAMS_SERVICE_HOSTS
+    except Exception:
+        return False
+
+# Conservative pattern for Bot Framework conversation IDs.  Real values
+# combine digits, colons, hyphens, dots, '@', and the ``thread.skype`` /
+# ``thread.tacv2`` suffixes; reject anything outside this set so a hostile
+# value cannot path-traverse out of ``/v3/conversations/<id>/activities``.
+import re as _re_teams
+_TEAMS_CONV_ID_RE = _re_teams.compile(r"^[A-Za-z0-9:@\-_.]+$")
+
+
+def _validate_teams_service_url(raw: str) -> Optional[str]:
+    """Return a normalized service URL or ``None`` if it is not allowed.
+
+    Requires ``https://`` and a host in ``_ALLOWED_TEAMS_SERVICE_HOSTS``.
+    The trailing slash is added if absent so callers can append
+    ``v3/conversations/...`` without double slashes.
+    """
+    if not raw:
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    if parsed.scheme != "https":
+        return None
+    if parsed.hostname not in _ALLOWED_TEAMS_SERVICE_HOSTS:
+        return None
+    normalized = raw if raw.endswith("/") else raw + "/"
+    return normalized
+
 
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *,
@@ -361,13 +429,19 @@ class TeamsAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
         extra = config.extra or {}
-        self._client_id, self._client_secret, self._tenant_id = _credentials(config)
-        # (token, expiry monotonic ts) for connector attachment auth; refreshed under
-        # _bf_token_lock so concurrent attachments can't stampede the STS.
+        self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
+        self._client_secret = extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET", "")
+        self._tenant_id = extra.get("tenant_id") or os.getenv("TEAMS_TENANT_ID", "")
+        # (token, expiry monotonic ts) for Bot Framework connector attachment
+        # auth; refreshed under _bf_token_lock so concurrent attachments
+        # can't stampede the token endpoint.
         self._bf_token_cache: Optional[tuple] = None
         self._bf_token_lock: Optional[asyncio.Lock] = None
-        self._port = coerce_port(extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
-        _raw_host = extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
+        self._port = _coerce_port(
+            extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT))
+        )
+        # Falsy host (unset/"") collapses to the dual-stack default (None).
+        _raw_host = extra.get("host") or os.getenv("TEAMS_HOST", "") or _DEFAULT_HOST
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
@@ -470,46 +544,87 @@ class TeamsAdapter(BasePlatformAdapter):
         logger.info("[teams] Disconnected")
 
     async def _get_botframework_token(self) -> str:
-        """Bot Framework bearer token (client credentials), cached until ~5 min before expiry; connector
-        attachments are NOT pre-authenticated, unlike SharePoint downloadUrls. The lock is created lazily
-        because ``asyncio.Lock()`` in __init__ may bind the wrong loop."""
+        """Acquire a Bot Framework bearer token via client credentials.
+
+        Needed to download connector attachments (smba.trafficmanager.net
+        /v3/attachments/...), which -- unlike SharePoint file downloadUrls --
+        are NOT pre-authenticated and return 401 without the bot's own
+        token. Token is cached until ~5 minutes before expiry. The refresh
+        is serialized by an asyncio lock (lazily created on first use —
+        ``asyncio.Lock()`` at __init__ time would bind to the wrong event
+        loop on Python < 3.10) so concurrent attachments share one POST.
+        """
         import time
         import httpx
-        if self._bf_token_lock is None:
-            self._bf_token_lock = asyncio.Lock()
-        async with self._bf_token_lock:
+
+        # The gateway may run adapters on a loop created after __init__;
+        # bind the lock on first use instead of at construction.
+        lock = self._bf_token_lock
+        if lock is None:
+            lock = self._bf_token_lock = asyncio.Lock()
+        async with lock:
             cached = self._bf_token_cache
             if cached and cached[1] > time.monotonic() + 300:
                 return cached[0]
-            if not (self._client_id and self._client_secret and self._tenant_id):
+
+            client_id = self._client_id
+            client_secret = self._client_secret
+            tenant_id = self._tenant_id
+            if not (client_id and client_secret and tenant_id):
                 raise ValueError("Missing TEAMS_CLIENT_ID/SECRET/TENANT_ID for attachment auth")
-            token_url, token_form = _bf_token_request(self._tenant_id, self._client_id, self._client_secret)
+
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(token_url, data=token_form)
+                resp = await client.post(
+                    f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "scope": "https://api.botframework.com/.default",
+                    },
+                )
                 resp.raise_for_status()
                 payload = resp.json()
+            token = payload["access_token"]
             expires_in = float(payload.get("expires_in", 3600) or 3600)
-            self._bf_token_cache = (payload["access_token"], time.monotonic() + expires_in)
-            return self._bf_token_cache[0]
+            self._bf_token_cache = (token, time.monotonic() + expires_in)
+            return token
 
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
-        """Download attachment bytes with SSRF protection. Connector URLs get the bot's bearer token;
-        redirects and body size go through the shared guards (as the cache_*_from_url helpers)."""
+        """Download attachment bytes with SSRF protection.
+
+        Teams file attachments carry pre-authenticated SharePoint download
+        URLs (no extra auth header needed). Bot Framework connector
+        attachment URLs (pasted/inline images on _ALLOWED_TEAMS_SERVICE_HOSTS
+        hosts) require the bot's bearer token -- detected below and fetched
+        with auth. Validates the URL against the SSRF guard, streams the
+        body through the shared inbound media cap, and follows redirects
+        through the shared redirect guard, matching the cache_*_from_url
+        helpers in gateway.platforms.base.
+        """
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         from gateway.platforms.base import _ssrf_redirect_guard, _read_httpx_body_with_limit
+
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
+
         headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
         if _is_botframework_attachment_url(url):
             try:
                 headers["Authorization"] = f"Bearer {await self._get_botframework_token()}"
             except Exception as e:
                 logger.warning("[teams] Could not acquire Bot Framework token for attachment: %s", e)
+
         async with create_ssrf_safe_async_client(
-            timeout=timeout, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}) as client:
+            timeout=timeout,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
             async with client.stream("GET", url, headers=headers) as response:
                 response.raise_for_status()
-                # Never buffer .content — a lying Content-Length must not OOM the gateway.
+                # Stream through the shared inbound media cap (matches
+                # cache_image_from_url) instead of buffering .content — a
+                # lying Content-Length must not OOM the gateway.
                 return await _read_httpx_body_with_limit(response, media_type="attachment")
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
@@ -544,39 +659,84 @@ class TeamsAdapter(BasePlatformAdapter):
             text=text, source=source, message_type=msg_type, message_id=msg_id,
             media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
 
-    async def _cache_attachment(self, att: Any) -> Optional[tuple]:
-        """Download + cache one inbound attachment → ``(path, media_type, kind)`` or ``None``."""
-        content_url = getattr(att, "content_url", None)
-        content_type = (getattr(att, "content_type", None) or "").lower()
-        att_name = getattr(att, "name", None) or ""
-        # Skip non-file payloads: Teams mirrors the message body as a text/html attachment,
-        # and cards arrive as application/vnd.microsoft.card.*
-        if (content_type in ("text/html", "text/plain") and not content_url) or content_type.startswith("application/vnd.microsoft.card"):
-            return None
-        if content_type == "application/vnd.microsoft.teams.file.download.info":
-            # Consent-free download: content carries a pre-authed SharePoint downloadUrl + file type.
-            content = getattr(att, "content", None)
-            if not isinstance(content, dict):
-                content = getattr(content, "__dict__", None) or {}
-            download_url = content.get("downloadUrl") or content.get("download_url")
-            file_type = (content.get("fileType") or content.get("file_type") or "").lstrip(".")
-            if not download_url:
-                return None
-            filename = att_name or (f"document.{file_type}" if file_type else "document")
-            try:
-                data = await self._fetch_attachment_bytes(download_url)
-                cached = await cache_media_bytes_async(data, filename=filename, mime_type="")
-                if not cached:
-                    logger.warning("[teams] Unsupported document type for attachment '%s', skipping", filename)
-                    return None
-                return cached.path, cached.media_type, cached.kind
-            except Exception as e:
-                logger.warning("[teams] Failed to cache file attachment '%s': %s", filename, e)
-            return None
-        if content_url and content_type.startswith("image/"):
-            try:
-                if _is_botframework_attachment_url(content_url):
-                    # Connector URL needs the bot's bearer token; the generic cache helper sends none.
+        # Handle attachments (images, documents, video, audio)
+        media_urls = []
+        media_types = []
+        media_kinds = []
+        for att in getattr(activity, "attachments", None) or []:
+            content_url = getattr(att, "content_url", None)
+            content_type = (getattr(att, "content_type", None) or "").lower()
+            att_name = getattr(att, "name", None) or ""
+
+            # Skip non-file payloads: Teams mirrors the message body as a
+            # text/html attachment on every message, and adaptive/hero cards
+            # arrive as application/vnd.microsoft.card.* attachments.
+            if content_type in ("text/html", "text/plain") and not content_url:
+                continue
+            if content_type.startswith("application/vnd.microsoft.card"):
+                continue
+
+            if content_type == "application/vnd.microsoft.teams.file.download.info":
+                # File consent-free download: content carries a pre-authed
+                # SharePoint downloadUrl plus the real file type.
+                content = getattr(att, "content", None)
+                if not isinstance(content, dict):
+                    content = getattr(content, "__dict__", None) or {}
+                download_url = content.get("downloadUrl") or content.get("download_url")
+                file_type = (content.get("fileType") or content.get("file_type") or "").lstrip(".")
+                if not download_url:
+                    continue
+                filename = att_name or (f"document.{file_type}" if file_type else "document")
+                try:
+                    data = await self._fetch_attachment_bytes(download_url)
+                    cached = cache_media_bytes(data, filename=filename, mime_type="")
+                    if cached:
+                        media_urls.append(cached.path)
+                        media_types.append(cached.media_type)
+                        media_kinds.append(cached.kind)
+                    else:
+                        logger.warning(
+                            "[teams] Unsupported document type for attachment '%s', skipping",
+                            filename,
+                        )
+                except Exception as e:
+                    logger.warning("[teams] Failed to cache file attachment '%s': %s", filename, e)
+                continue
+
+            if content_url and content_type.startswith("image/"):
+                try:
+                    if _is_botframework_attachment_url(content_url):
+                        # Bot Framework connector URL: needs the bot's own
+                        # bearer token; the generic cache helper sends none.
+                        data = await self._fetch_attachment_bytes(content_url)
+                        ext = content_type.split("/")[-1].split(";")[0] or "png"
+                        cached_m = cache_media_bytes(
+                            data,
+                            filename=att_name or f"image.{ext}",
+                            mime_type=content_type,
+                        )
+                        if cached_m:
+                            media_urls.append(cached_m.path)
+                            media_types.append(cached_m.media_type)
+                            media_kinds.append("image")
+                        else:
+                            logger.warning(
+                                "[teams] Bot Framework attachment '%s' returned data that failed image validation, skipping",
+                                att_name or content_url,
+                            )
+                    else:
+                        cached = await cache_image_from_url(content_url)
+                        if cached:
+                            media_urls.append(cached)
+                            media_types.append(content_type)
+                            media_kinds.append("image")
+                except Exception as e:
+                    logger.warning("[teams] Failed to cache image attachment: %s", e)
+                continue
+
+            if content_url:
+                # Direct-URL non-image attachment (video/audio/document).
+                try:
                     data = await self._fetch_attachment_bytes(content_url)
                     ext = content_type.split("/")[-1].split(";")[0] or "png"
                     cached = await cache_media_bytes_async(data, filename=att_name or f"image.{ext}", mime_type=content_type)

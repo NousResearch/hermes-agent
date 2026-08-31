@@ -313,7 +313,9 @@ def _maybe_apply_moa_cache_control(
     try:
         from agent.agent_runtime_helpers import anthropic_prompt_cache_policy, blank_cache_policy_stub
         from agent.prompt_caching import (
-            apply_anthropic_cache_control, effective_cache_ttl, envelope_tool_part_cache_markers_supported,
+            apply_anthropic_cache_control,
+            effective_cache_ttl,
+            envelope_tool_part_cache_markers_supported,
         )
 
         # Explicit kwarg > runtime snapshot (threaded from the live agent) > config.
@@ -332,7 +334,11 @@ def _maybe_apply_moa_cache_control(
         return apply_anthropic_cache_control(
             messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
             native_anthropic=native_layout,
-            tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
+            # LiteLLM-style envelope routes forward part-level markers into
+            # tool_result.content[] → non-retryable 400 (#89886).
+            tool_part_markers=envelope_tool_part_cache_markers_supported(
+                runtime.get("provider") or "", runtime.get("base_url") or ""
+            ),
         )
     except Exception as exc:  # pragma: no cover - decoration must never break a call
         logger.debug("MoA cache_control decoration skipped: %s", exc)

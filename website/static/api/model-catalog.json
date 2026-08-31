@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-27T11:03:10Z",
+  "updated_at": "2026-08-29T02:38:32Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -145,6 +145,10 @@
           "description": ""
         },
         {
+          "id": "qwen/qwen3.8-flash",
+          "description": ""
+        },
+        {
           "id": "moonshotai/kimi-k3",
           "description": "recommended"
         },
@@ -167,6 +171,10 @@
         },
         {
           "id": "xiaomi/mimo-v2.5-pro",
+          "description": ""
+        },
+        {
+          "id": "tencent/hy4-preview",
           "description": ""
         },
         {
@@ -343,6 +351,9 @@
           "id": "qwen/qwen3.8-flash"
         },
         {
+          "id": "qwen/qwen3.8-flash"
+        },
+        {
           "id": "moonshotai/kimi-k3"
         },
         {
@@ -357,6 +368,9 @@
         {
           "id": "z-ai/glm-5.2",
           "default": true
+        },
+        {
+          "id": "tencent/hy4-preview"
         },
         {
           "id": "tencent/hy4-preview"

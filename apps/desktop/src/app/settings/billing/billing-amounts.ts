@@ -114,9 +114,7 @@ export function formatMoney(value?: null | number | string): string {
     return EMPTY_BILLING_VALUE
   }
 
-  // Keep USD validation and charge messages consistent with the server's
-  // dollar-denominated display strings on non-English Windows locales.
-  return new Intl.NumberFormat('en-US', {
+  return new Intl.NumberFormat(undefined, {
     currency: 'USD',
     maximumFractionDigits: amount % 1 === 0 ? 0 : 2,
     minimumFractionDigits: amount % 1 === 0 ? 0 : 2,

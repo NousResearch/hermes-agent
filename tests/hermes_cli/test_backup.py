@@ -368,27 +368,6 @@ class TestBackup:
         assert staged_dirs, "no SQLite snapshot was staged"
         assert all(d == str(out_zip.parent) for d in staged_dirs), staged_dirs
 
-    def test_full_backup_excludes_prior_backup_tree(self, tmp_path, monkeypatch):
-        """A manual archive must never contain old archives recursively."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        _make_hermes_tree(hermes_home)
-        prior = hermes_home / "backups" / "old-run" / "backups" / "older-run"
-        prior.mkdir(parents=True)
-        (prior / "prior-backup.bin").write_bytes(b"old backup payload")
-
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        out_zip = tmp_path / "backup.zip"
-        from hermes_cli.backup import run_backup
-        run_backup(Namespace(output=str(out_zip)))
-
-        with zipfile.ZipFile(out_zip, "r") as zf:
-            names = zf.namelist()
-        assert "config.yaml" in names
-        assert not any(name.startswith("backups/") for name in names)
-
 
 
 
@@ -1220,10 +1199,8 @@ class TestProfileRestoration:
         run_import(args)
 
         # Only valid profile should get a wrapper
-        valid_wrapper = wrapper_dir / ("valid.bat" if os.name == "nt" else "valid")
-        empty_wrapper = wrapper_dir / ("empty.bat" if os.name == "nt" else "empty")
-        assert valid_wrapper.exists()
-        assert not empty_wrapper.exists()
+        assert (wrapper_dir / "valid").exists()
+        assert not (wrapper_dir / "empty").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1657,10 +1634,7 @@ class TestQuickSnapshotProjectsKanban:
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(
-            Path(s).as_posix().endswith("boards/work/kanban.db")
-            for s in called["db"]
-        ), called["db"]
+        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -1699,19 +1673,6 @@ class TestPreUpdateBackup:
         assert not any("__pycache__" in n for n in names)
         # pid files excluded
         assert "gateway.pid" not in names
-
-    def test_excludes_prior_backup_tree(self, hermes_home):
-        """The automatic pre-update archive must not nest prior backups."""
-        prior = hermes_home / "backups" / "old-run" / "previous.zip"
-        prior.parent.mkdir(parents=True)
-        prior.write_bytes(b"previous backup")
-
-        from hermes_cli.backup import create_pre_update_backup
-        out = create_pre_update_backup(hermes_home=hermes_home)
-        assert out is not None
-        with zipfile.ZipFile(out) as zf:
-            names = zf.namelist()
-        assert not any(name.startswith("backups/") for name in names)
 
     def test_pre_update_zip_does_not_nest_the_pre_update_snapshot(self, hermes_home):
         """``hermes update`` in ``full`` mode takes the quick snapshot *before*
@@ -2182,10 +2143,11 @@ class TestMemoryProviderExternalPaths:
         restored = dst_home / ".honcho" / "config.json"
         assert restored.exists()
         assert restored.read_text() == '{"peer":"bob"}'
-        # Credential-shaped file tightened where POSIX mode bits are enforced.
-        # Windows does not expose Unix permission bits through pathlib.stat().
-        if os.name != "nt":
-            assert (restored.stat().st_mode & 0o777) == 0o600
+        # Credential-shaped file tightened.
+        assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
+
+
+
 

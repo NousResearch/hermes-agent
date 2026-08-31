@@ -54,7 +54,8 @@ logger = logging.getLogger(__name__)
 # Native compaction fires this many tokens below the local compressor's
 # trigger so the server always gets the first shot at compaction.
 LOCAL_TRIGGER_SAFETY_MARGIN = 8_192
-# Fallback when automatic mode has no local trigger to follow.
+
+# Deterministic fallback when automatic mode cannot inspect a local trigger.
 DEFAULT_COMPACT_THRESHOLD = 200_000
 # Substring match so dated snapshots and variants (gpt-5.6-mini) stay eligible.
 _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
@@ -66,16 +67,31 @@ def is_native_compaction_model(model: Optional[str]) -> bool:
 
 
 def resolve_native_compaction_capabilities(
-    *, model: Optional[str], base_url: Optional[str], provider: Optional[str] = None, is_codex_backend: bool = False,
+    *,
+    model: Optional[str],
+    base_url: Optional[str],
+    provider: Optional[str] = None,
+    is_codex_backend: bool = False,
 ) -> Dict[str, bool]:
-    """Resolve the native-compaction capability for a runtime destination (a resolved ``False``
-    is distinct from "unresolved" and must survive model switches unchanged)."""
-    direct_default = (provider or "").strip().lower() == "openai" and not base_url
-    return {"native_compaction": is_native_compaction_model(model) and (
-        direct_default or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend))}
+    """Resolve the native-compaction capability for a runtime destination.
+
+    The result is deliberately explicit: a resolved ``False`` is different
+    from an unresolved capability and must survive model switches unchanged.
+    """
+    normalized_provider = (provider or "").strip().lower()
+    direct_default = normalized_provider == "openai" and not base_url
+    eligible = is_native_compaction_model(model) and (
+        direct_default
+        or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend)
+    )
+    return {"native_compaction": eligible}
 
 
-def is_direct_openai_route(base_url: Optional[str], *, is_codex_backend: bool = False) -> bool:
+def is_direct_openai_route(
+    base_url: Optional[str],
+    *,
+    is_codex_backend: bool = False,
+) -> bool:
     """True for api.openai.com or the ChatGPT Codex backend — nothing else."""
     if is_codex_backend:
         return True
@@ -86,29 +102,42 @@ def is_direct_openai_route(base_url: Optional[str], *, is_codex_backend: bool = 
     return hostname == "api.openai.com"
 
 
-def _positive_int(value: Any, *, reject: tuple = (bool,)) -> Optional[int]:
-    """``int(value)`` when it is a positive integer-like (never a bool), else None."""
-    if value is None or isinstance(value, reject):
-        return None
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
-def resolve_compact_threshold(configured_threshold: Any, local_trigger_tokens: Any = None) -> int:
+def resolve_compact_threshold(
+    configured_threshold: Any,
+    local_trigger_tokens: Any = None,
+) -> int:
     """Resolve automatic mode or clamp an explicit native threshold.
 
-    Omitted/invalid follows the local compressor trigger minus the safety margin. An
-    explicit positive integer is absolute unless it must be clamped so native compaction
-    fires first. Booleans are never thresholds.
+    An omitted or invalid setting follows the resolved local compressor trigger.
+    An explicit positive integer remains absolute unless it must be clamped so
+    native compaction fires first. ``local_trigger_tokens`` is
+    ``ContextCompressor.threshold_tokens`` when a compressor is attached.
     """
-    local = _positive_int(local_trigger_tokens)
-    upper = None if local is None else max(
-        1_024, local - LOCAL_TRIGGER_SAFETY_MARGIN if local > LOCAL_TRIGGER_SAFETY_MARGIN else int(local * 0.8))
-    configured = _positive_int(configured_threshold, reject=(bool, float))
-    if configured is None:
+    local = None
+    try:
+        if local_trigger_tokens is not None and not isinstance(local_trigger_tokens, bool):
+            local = int(local_trigger_tokens)
+    except (TypeError, ValueError):
+        local = None
+    if local is not None and local <= 0:
+        local = None
+
+    upper = None
+    if local is not None:
+        if local > LOCAL_TRIGGER_SAFETY_MARGIN:
+            upper = max(1_024, local - LOCAL_TRIGGER_SAFETY_MARGIN)
+        else:
+            upper = max(1_024, int(local * 0.8))
+
+    try:
+        configured = (
+            None
+            if isinstance(configured_threshold, (bool, float))
+            else int(configured_threshold)
+        )
+    except (TypeError, ValueError):
+        configured = None
+    if isinstance(configured_threshold, bool) or configured is None or configured <= 0:
         return upper if upper is not None else DEFAULT_COMPACT_THRESHOLD
     if upper is None:
         return configured
@@ -165,7 +194,10 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     kill switch (``agent.codex_responses_native_compaction = False``) takes effect next call.
     """
     capabilities = getattr(agent, "runtime_capabilities", None)
-    if isinstance(capabilities, dict) and not capabilities.get("native_compaction", False):
+    if isinstance(capabilities, dict):
+        if not bool(capabilities.get("native_compaction", False)):
+            return None
+    if not bool(getattr(agent, "codex_responses_native_compaction", False)):
         return None
     # compression.enabled: false disables ALL automatic compaction, native included.
     if not getattr(agent, "codex_responses_native_compaction", False) or not getattr(agent, "compression_enabled", True):
@@ -182,13 +214,19 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
         return None
     if is_xai_responses or is_github_responses or not is_native_compaction_model(getattr(agent, "model", None)):
         return None
-    trusted_proxy = bool(getattr(agent, "capabilities", {}).get("openai_native_compaction", False))
-    if not trusted_proxy and not is_direct_openai_route(getattr(agent, "base_url", None), is_codex_backend=is_codex_backend):
+    trusted_proxy = bool(
+        getattr(agent, "capabilities", {}).get("openai_native_compaction", False)
+    )
+    if not trusted_proxy and not is_direct_openai_route(
+        getattr(agent, "base_url", None), is_codex_backend=is_codex_backend
+    ):
         return None
 
     compressor = getattr(agent, "context_compressor", None)
-    local_trigger = getattr(compressor, "threshold_tokens", None) if compressor is not None else None
-    threshold = resolve_compact_threshold(getattr(agent, "codex_responses_compact_threshold", None), local_trigger)
+    threshold = resolve_compact_threshold(
+        getattr(agent, "codex_responses_compact_threshold", None),
+        getattr(compressor, "threshold_tokens", None) if compressor is not None else None,
+    )
     return [{"type": "compaction", "compact_threshold": threshold}]
 
 
@@ -210,10 +248,11 @@ def _approx_tokens(text: str) -> int:
 
 
 def _extract_item_text(item: Any) -> Optional[str]:
-    """Extract measurable text from string, list content, output_text, or nested metadata text.
+    """Extract measurable text from message content and fallback fields.
 
-    Returns None when the item carries no measurable text.
-    Handles string content, multipart lists (input_text/text/output_text), and fallback keys.
+    Returns None when the item carries no measurable text. Handles string
+    content, multipart lists (input_text/text/output_text), and nested
+    metadata text.
     """
     if not isinstance(item, dict):
         return None
@@ -243,6 +282,30 @@ def _extract_item_text(item: Any) -> Optional[str]:
         return text if text.strip() else None
 
     return None
+
+
+def _has_retainable_image_content(item: Any) -> bool:
+    """Return True for a converted Responses message with a valid image part.
+
+    The pruning boundary receives normalized Responses items, so only the
+    adapter-owned ``input_image`` shape is authority here. Unknown, malformed,
+    or empty multipart placeholders must not become durable history merely
+    because their list is non-empty.
+    """
+    if not isinstance(item, dict):
+        return False
+    content = item.get("content")
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if str(part.get("type") or "").strip().lower() != "input_image":
+            continue
+        image_url = part.get("image_url")
+        if isinstance(image_url, str) and image_url.strip():
+            return True
+    return False
 
 
 def _is_summary_item(item: Any) -> bool:
@@ -289,7 +352,8 @@ def prune_pre_checkpoint_items(
     - Retained user messages are kept verbatim within
       ``retained_user_token_budget``; the boundary message is head-truncated
       when it only partially fits (string content only) — goals are usually
-      stated up front, so the head is the valuable end.
+      stated up front, so the head is the valuable end. A recognized
+      image-only user message is retained whole at one-token cost.
     - Compression summary messages (``_is_summary_item``, the canonical
       ``agent.context_compressor`` provenance check) are retained whole
       within ``retained_summary_token_budget``. A summary is never
@@ -394,14 +458,11 @@ def prune_pre_checkpoint_items(
             continue
 
         text = _extract_item_text(item)
+        has_retainable_image = is_user and _has_retainable_image_content(item)
+        if text is None and not has_retainable_image:
+            continue
         if text is None:
-            continue
-        # Image-only user messages have empty text but non-empty content —
-        # main retains them at 1-token cost (images count as zero, matching
-        # Codex's retention accounting). Don't skip them just because text
-        # is falsy.
-        if not text and not is_user:
-            continue
+            text = ""
 
         if is_summary:
             result = _try_retain_summary(text)

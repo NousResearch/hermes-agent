@@ -702,12 +702,12 @@ class TestTeamsBotFrameworkAttachments:
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG fake")
         adapter._get_botframework_token = AsyncMock(return_value="tok")
 
-        async def fake_cache_media_bytes(data, **kwargs):
+        def fake_cache_media_bytes(data, **kwargs):
             return SimpleNamespace(
                 path="/tmp/img.png", media_type="image/png", kind="image"
             )
 
-        with patch.object(_teams_mod, "cache_media_bytes_async", fake_cache_media_bytes):
+        with patch.object(_teams_mod, "cache_media_bytes", fake_cache_media_bytes):
             activity = self._make_activity([self._bf_image_attachment()])
             await adapter._on_message(self._make_ctx(activity))
 
@@ -943,10 +943,7 @@ class TestTeamsBotFrameworkAttachments:
         adapter = self._make_adapter()
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"<html>error page</html>")
 
-        async def _no_media(*a, **kw):
-            return None
-
-        with patch.object(_teams_mod, "cache_media_bytes_async", _no_media):
+        with patch.object(_teams_mod, "cache_media_bytes", lambda *a, **kw: None):
             with patch.object(_teams_mod.logger, "warning") as warn:
                 activity = self._make_activity([self._bf_image_attachment()])
                 await adapter._on_message(self._make_ctx(activity))

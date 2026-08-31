@@ -542,11 +542,10 @@ export const ja = defineLocale({
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
       tipsTitle: 'アプリ内ヒント',
       tipsDesc:
-        'アプリや Hermes からのヒントをときどき表示します。各ヒントは一度だけ表示されます。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
-      tipsReset: (count: number) => `${count}件のヒントをもう一度表示`,
+        'アプリの一部を指す小さな吹き出し。待機中にときどき、また役に立つときは Hermes からも表示します。閉じたヒントは二度と表示されません。',
+      tipsReset: (count: number) => `閉じた${count}件のヒントを元に戻す`,
       toursTitle: 'ガイドツアー',
-      toursDesc:
-        '各ステップを強調しながら、Hermes がアプリを案内します。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
+      toursDesc: '画面を暗くして各ステップを強調しながら、Hermes がアプリを案内します。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
       vibeHeartsTitle: 'バイブハート',
@@ -1401,17 +1400,7 @@ export const ja = defineLocale({
         enabledMessage: '新しいセッションは既定ブラウザプロファイルのスナップショットでブラウジングします。',
         disabledTitle: '実プロファイルブラウジング：オフ',
         disabledMessage: 'プロファイルのスナップショットは削除され、新しいセッションはクリーンなブラウザを使用します。',
-        failedSave: '実プロファイル設定を保存できませんでした',
-        prompt: {
-          title: 'サイトにログインしたまま利用',
-          body: 'Hermes が既定ブラウザプロファイルのスナップショットでブラウジングできるようにすると、サイトはログイン済みの状態で開きます。',
-          bulletSnapshot: 'Cookie とログイン情報は管理されたスナップショットにコピーされます。',
-          bulletLiveProfile: '実際のブラウザプロファイルが直接開かれることはありません。',
-          bulletLocal: 'データがこのコンピュータの外に出ることはありません。',
-          dontShowAgain: '今後表示しない',
-          notNow: '今はしない',
-          enable: 'プロファイルを使用'
-        }
+        failedSave: '実プロファイル設定を保存できませんでした'
       }
     }
   },
@@ -3621,15 +3610,9 @@ export const ja = defineLocale({
         title: 'ファイルとコマンド',
         text: '@ でファイルを会話に取り込み、/ でコマンドを実行できます。'
       },
-      'local-runtime-update': {
-        title: 'ローカルエンジンの更新があります',
-        text: 'ローカルモデルを実行するエンジンを更新します。実行中のローカルリクエストが中断される場合があります。',
-        action: '今すぐ更新'
-      },
-      'local-setup': {
-        title: 'このマシンはローカルでモデルを実行できます',
-        text: 'お使いのハードウェアでローカルモデルを動かせます。会話はこのコンピュータから出ず、料金もかかりません。',
-        action: 'セットアップ'
+      'model-switch': {
+        title: '会話の途中でモデルを変更',
+        text: 'モデル名はボタンです。作業の性質が変わったら切り替えてください。'
       },
       'right-pane': {
         title: '作業用ペイン',

@@ -270,60 +270,6 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="shell-wrapper integration runs on Linux CI")
-def test_shell_runner_consumes_slice_before_test_subprocess(tmp_path: Path) -> None:
-    """A CI slice selects the outer suite only, never a nested runner probe."""
-    repo_root = Path(__file__).resolve().parent.parent
-    shell_root = subprocess.check_output(
-        ["bash", "-lc", "pwd"], cwd=repo_root, text=True
-    ).strip()
-    shell_runner = f"{shell_root}/{(repo_root / 'scripts' / 'run_tests.sh').relative_to(repo_root).as_posix()}"
-    probe_dir = tmp_path / "probe"
-    probe_dir.mkdir()
-    (probe_dir / "test_slice_env.py").write_text(
-        "import os\n\n"
-        "def test_slice_env_is_not_inherited():\n"
-        "    assert 'HERMES_TEST_SLICE' not in os.environ\n",
-        encoding="utf-8",
-    )
-
-    env = os.environ.copy()
-    env["HERMES_TEST_SLICE"] = "1/2"
-    proc = subprocess.run(
-        [
-            "bash",
-            shell_runner,
-            "--paths",
-            str(probe_dir),
-            "-j",
-            "1",
-            "--file-timeout",
-            "30",
-        ],
-        cwd=repo_root,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        encoding="utf-8",
-        errors="replace",
-        timeout=90,
-    )
-
-    assert proc.returncode == 0, proc.stdout
-    assert "1 tests passed" in proc.stdout
-
-
-def test_shell_runner_does_not_forward_slice_env() -> None:
-    """The CI control variable becomes a CLI argument before test children run."""
-    repo_root = Path(__file__).resolve().parent.parent
-    script = (repo_root / "scripts" / "run_tests.sh").read_text(encoding="utf-8")
-    test_env_block = script.split("for _test_var in", 1)[1].split("done", 1)[0]
-
-    assert "HERMES_TEST_SLICE" not in test_env_block
-    assert 'TEST_SLICE_ARGS=(--slice "$HERMES_TEST_SLICE")' in script
-    assert '"${TEST_SLICE_ARGS[@]}" "$@"' in script
-
-
 
 
 def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:

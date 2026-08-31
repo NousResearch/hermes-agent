@@ -78,12 +78,13 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     (tmp_path / ".git").mkdir()  # pass the "is a git repo" gate
-    monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
+    monkeypatch.setattr(
+        hermes_main, "_resolve_update_branch", lambda args: "main"
+    )
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
     monkeypatch.setattr(
-        hermes_main,
-        "_get_origin_url",
+        hermes_main, "_get_origin_url",
         lambda *a, **k: "https://github.com/NousResearch/hermes-agent.git",
     )
     monkeypatch.setattr(update_cmd, "_is_fork", lambda *a, **k: False)
@@ -94,24 +95,21 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None
     )
-    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(
+        hermes_main, "_run_pre_update_backup", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        hermes_main, "_pause_windows_gateways_for_update", lambda: None
+    )
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
-    monkeypatch.setattr(hermes_main, "_detect_venv_python_processes", lambda: [])
-    # This is a mocked in-process update. Purging Hermes modules here would
-    # discard the gateway safety patches below and let the test touch the
-    # developer's live runtime after the simulated checkout.
-    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
     # Short-circuit the long tail: dependency install + desktop build.
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
     # Gateway restart path (called after a successful update).
-    monkeypatch.setattr(
-        hermes_main, "_finish_dashboard_update_cleanup", lambda *a: None
-    )
+    monkeypatch.setattr(hermes_main, "_finish_dashboard_update_cleanup", lambda *a: None)
     # Keep the (now surfaced — #78574) gateway auto-restart phase away from
     # this machine's real gateways: discovery returns nothing, systemd is
     # unsupported, so the phase is a clean no-op for both snapshots.
@@ -120,7 +118,9 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
     )
-    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(
+        hermes_gateway, "supports_systemd_services", lambda: False
+    )
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )

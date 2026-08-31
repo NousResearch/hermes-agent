@@ -217,14 +217,10 @@ def setup_logging(
     """
     global _logging_initialized
     home = hermes_home or get_hermes_home()
+    from hermes_constants import mkdir_under_hermes_home
     log_dir = mkdir_under_hermes_home(home / "logs")
-    # A second Hermes home in a process that already logs for another one — a dashboard or
-    # ``hermes serve`` backend building agents for several profiles, a multiplexed gateway —
-    # gets routed by record home. Stacking another file handler here would hand it EVERY
-    # profile's records (the handlers carry no home filter), and a duplicate writer on top of
-    # an existing router.
-    if _adopt_secondary_home(home):
-        return log_dir
+
+    # Read config defaults (best-effort — config may not be loaded yet).
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -659,13 +655,13 @@ def _add_rotating_handler(
             isinstance(existing, RotatingFileHandler)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
         ):
-            return
-        if isinstance(existing, _ProfileRoutingFileHandler) and existing._filename == resolved.name and (
-            resolved.parent.parent == existing._default_home or resolved.parent.parent in existing._profile_homes
-        ):
-            return
-    handler = _new_file_handler(
-        path, level=level, max_bytes=max_bytes, backup_count=backup_count, formatter=formatter,
+            return  # already attached
+
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
+    handler = _ManagedRotatingFileHandler(
+        str(path), maxBytes=max_bytes, backupCount=backup_count,
+        encoding="utf-8",
     )
     if log_filter is not None:
         handler.addFilter(log_filter)

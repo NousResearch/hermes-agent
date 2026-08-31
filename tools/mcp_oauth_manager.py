@@ -81,6 +81,15 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             **kwargs: Any,
         ):
             super().__init__(*args, **kwargs)
+            # mcp 2.0.0 uses a task-owned anyio.Lock and holds it across the
+            # yielded resource request.  A session-long GET therefore blocks
+            # every concurrent POST, and HTTPX may later close the auth-flow
+            # generator from a different task than the lock owner.  A binary
+            # semaphore preserves mutual exclusion without task ownership;
+            # async_auth_flow below narrows its scope around resource I/O.
+            import anyio
+
+            self.context.lock = anyio.Semaphore(1, max_value=1)
             self._hermes_server_name = server_name
             self._hermes_home = ""
             # When the client_id comes from config.yaml (pre-registered), an
@@ -287,65 +296,83 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                                  self._hermes_server_name, asm.token_endpoint)
                     break
 
-    def _persist_oauth_metadata_if_changed(self) -> None:
-        """Save metadata the SDK discovered lazily (401 branch); no-op when absent/unchanged."""
-        meta = self.context.oauth_metadata
-        storage = self._hermes_storage()
-        if meta is None or storage is None:
-            return
-        existing = storage.load_oauth_metadata()
-        if existing is None or str(existing.token_endpoint) != str(meta.token_endpoint):
-            storage.save_oauth_metadata(meta)
-
-    async def _is_invalid_client_at_token_endpoint(self, response: Any) -> bool:
-        """True when *response* is the token endpoint (same scheme/host/path, query ignored)
-        rejecting our client_id with ``invalid_client`` — whole word, so RFC 7591's
-        ``invalid_client_metadata`` does not trip it. The body is read only after the endpoint matches."""
-        from urllib.parse import urlsplit
-        token_endpoint = getattr(getattr(self.context, "oauth_metadata", None), "token_endpoint", None)
-        req = getattr(response, "request", None)
-        if not token_endpoint or req is None:
-            return False
-        try:
-            pa, pb = urlsplit(str(req.url)), urlsplit(str(token_endpoint))
-        except ValueError:  # pragma: no cover — malformed URL
-            return False
-        if (pa.scheme, pa.netloc.lower(), pa.path.rstrip("/")) != (pb.scheme, pb.netloc.lower(), pb.path.rstrip("/")):
-            return False
-        return re.search(rb"\binvalid_client\b", (await response.aread()).lower()) is not None
-
-    async def _maybe_flag_poisoned_client(self, response: Any) -> None:
-        """An ``invalid_client`` rejection of our ``client_id`` at the token endpoint proves the cached registration
-        is dead server-side: delete ``client.json`` (+ stale metadata) so the SDK re-runs DCR next flow.
-        Conservative: acts ONLY on 400/401 at the discovered ``token_endpoint`` (the only request carrying our
-        ``client_id``) with ``invalid_client`` in the body; pre-registered clients are never poisoned; any failure
-        is swallowed. The browser-side "Redirect URI Mismatch" case has no HTTP signal (``hermes mcp reauth``).
-
-        See #36767.
-        """
-        try:
-            if (self._hermes_preregistered or getattr(response, "status_code", None) not in (400, 401)
-                    or not await self._is_invalid_client_at_token_endpoint(response)):
+            # Manually bridge the bidirectional generator protocol. httpx's
+            # auth_flow driver (httpx._client._send_handling_auth) calls
+            # ``auth_flow.asend(response)`` to feed HTTP responses back into
+            # the generator. A naive wrapper using ``async for item in inner:
+            # yield item`` DISCARDS those .asend(response) values and resumes
+            # the inner generator with None, so the SDK's
+            # ``response = yield request`` branch in
+            # mcp/client/auth/oauth2.py sees response=None and crashes at
+            # ``if response.status_code == 401`` with AttributeError.
+            #
+            # The bridge below forwards each .asend() value into the inner
+            # generator via inner.asend(incoming), preserving the bidirectional
+            # contract. Regression from PR #11383 caught by
+            # tests/tools/test_mcp_oauth_bidirectional.py.
+            inner = super().async_auth_flow(request)
+            resource_lock_released = False
+            sent_access_token = None
+            retry_after_concurrent_auth = False
+            try:
+                outgoing = await inner.__anext__()
+                while True:
+                    # The SDK holds context.lock for its entire generator,
+                    # including while HTTPX waits on the actual MCP request.
+                    # Release it only for that request.  OAuth discovery,
+                    # refresh, registration, and token exchange remain
+                    # serialized exactly as the SDK implements them.
+                    if outgoing is request:
+                        tokens = self.context.current_tokens
+                        sent_access_token = (
+                            tokens.access_token if tokens is not None else None
+                        )
+                        self.context.lock.release()
+                        resource_lock_released = True
+                    incoming = yield outgoing
+                    if resource_lock_released:
+                        await self.context.lock.acquire()
+                        resource_lock_released = False
+                    # A different request may have completed refresh or full
+                    # authorization while this resource request was in
+                    # flight.  Retry with that token instead of starting a
+                    # duplicate OAuth transition from the stale 401/403.
+                    tokens = self.context.current_tokens
+                    if (
+                        getattr(incoming, "status_code", None) in (401, 403)
+                        and self.context.is_token_valid()
+                        and tokens is not None
+                        and tokens.access_token != sent_access_token
+                    ):
+                        self._add_auth_header(request)
+                        await inner.aclose()
+                        retry_after_concurrent_auth = True
+                        break
+                    # Sniff the response for a dead-client-registration signal
+                    # before handing it back to the SDK (best-effort, GH#36767).
+                    await self._maybe_flag_poisoned_client(incoming)
+                    outgoing = await inner.asend(incoming)
+            except StopAsyncIteration:
+                # Persist any metadata the SDK discovered lazily during the
+                # 401 branch so a subsequent cold-load skips discovery.
+                self._persist_oauth_metadata_if_changed()
                 return
-            storage = self._hermes_storage()
-            # A rejected CIMD URL would loop if re-presented (the server already fetched and refused
-            # it): drop it so the retry takes DCR, and mark it on disk so the next process doesn't walk
-            # back into the same refusal (`hermes mcp login` clears the marker).
-            cimd_url = getattr(self.context, "client_metadata_url", None)
-            if cimd_url and getattr(self.context.client_info, "client_id", None) == cimd_url:
-                logger.warning("MCP OAuth '%s': authorization server rejected our Client ID Metadata Document (%s) "
-                               "with invalid_client — falling back to dynamic client registration.",
-                               self._hermes_server_name, cimd_url)
-                self.context.client_metadata_url = None
-                if storage is not None:
-                    storage.mark_cimd_rejected()
-            if storage is not None:
-                storage.poison_client_registration()
-            # Drop the in-memory client so the SDK re-registers next flow.
-            self.context.client_info = None
-            self._initialized = False
-        except Exception as exc:  # pragma: no cover — must not throw
-            self._log_nonfatal("invalid_client detection", exc)
+            finally:
+                if resource_lock_released:
+                    # Balance the SDK's surrounding ``async with`` even when
+                    # HTTPX cancels or closes the flow while the resource
+                    # request is still in flight.  Shield only this local
+                    # bookkeeping; general inner-generator teardown remains
+                    # the separate concern tracked by the cleanup PR.
+                    import anyio
+
+                    with anyio.CancelScope(shield=True):
+                        await self.context.lock.acquire()
+
+            if retry_after_concurrent_auth:
+                yield request
+                self._persist_oauth_metadata_if_changed()
+                return
 
     async def async_auth_flow(self, request):  # type: ignore[override]
         try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)

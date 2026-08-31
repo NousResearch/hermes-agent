@@ -40,7 +40,6 @@ import { hiddenPaneProps, PaneGroupContext, PaneLifecycleContext, PaneVisibleCon
 import {
   $workspaceMode,
   $workspaceOwnerKey,
-  contributesToWorkspace,
   rememberActivePane,
   resolveRememberedActivePane,
   workspaceScopeKey
@@ -276,10 +275,7 @@ export function TreeGroup({
   // Edit mode forces toggle-hidden panes visible so they can be rearranged
   // (mirrors tree-split's paneGone) — restores itself on exit.
   const paneShown = (id: string) =>
-    Boolean(paneFor(id)) &&
-    contributesToWorkspace(paneFor(id), workspaceMode, workspaceOwnerKey) &&
-    (editMode || !hiddenPanes.has(id)) &&
-    !(narrow && paneChrome(paneFor(id)).collapsible)
+    Boolean(paneFor(id)) && (editMode || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
 
   const shown = node.panes.filter(paneShown)
   const memoryKey = workspaceScopeKey(workspaceMode, workspaceOwnerKey)
@@ -353,9 +349,11 @@ export function TreeGroup({
   // (tabs reading top-to-bottom). In a column (stacked zones) the horizontal
   // header IS the collapsed form, exactly as before.
   //
-  // Every minimized row group becomes a vertical restore rail. A horizontal
-  // multi-tab strip cannot fit in the collapsed 28px track.
-  const verticalCollapse = Boolean(node.minimized) && parentAxis === 'row' && !isEmpty
+  // EXCEPTION: when the zone has ≥2 shown panes, keep the horizontal tab bar
+  // even when minimized — the user can still switch (and restore) without
+  // expanding first. The vertical rail is only for a lone pane, where it
+  // still renders that pane's tab as the restore handle.
+  const verticalCollapse = Boolean(node.minimized) && parentAxis === 'row' && !isEmpty && shown.length <= 1
   // A minimized group IS its header, so it shows one regardless.
   const headerVisible = !isEmpty && !verticalCollapse && (Boolean(node.minimized) || stripVisible)
 
@@ -511,12 +509,19 @@ export function TreeGroup({
             data-zone-tabstrip={node.id}
             listRef={tabsRef}
             onPointerDown={e =>
-              // Tap the header to collapse to it / expand back — the DetailPane
-              // / sidebar-section gesture (never for the main zone). Drag still
-              // moves the pane. No double-tap hide belongs here: hiding the
-              // strip unmounts every affordance the zone has, including the
-              // menu offering "Show", so it stays a named command.
-              startPaneDrag(activeId, e, () => minimizable && toggleCollapse(), undefined, active?.title ?? activeId)
+              // Drag still moves the pane. Tapping the strip never collapses:
+              // the chevron is the collapse affordance. Overloading the header
+              // (and, in a lone-tab zone, the tab sitting in it) made a click
+              // on the active chip fold the zone — and on a row-docked tile
+              // the chip vanished with the body, leaving no mouse path back.
+              // A minimized strip still restores on tap (it IS the handle).
+              startPaneDrag(
+                activeId,
+                e,
+                node.minimized ? () => restoreTreePane(activeId) : undefined,
+                undefined,
+                active?.title ?? activeId
+              )
             }
             ref={stripRef}
             style={{ cursor: 'grab' }}
@@ -575,10 +580,10 @@ export function TreeGroup({
                     }
 
                     // Tabs ACTIVATE (restoring a collapsed group). Minimize
-                    // lives on the chevron / single-pane label — overloading
-                    // the active tab made double-click a minimize/restore/hide
-                    // lottery. A plain click also collapses any multi-tab
-                    // selection back to the one tab (Chrome semantics).
+                    // lives on the chevron — overloading the active tab made
+                    // double-click a minimize/restore/hide lottery. A plain
+                    // click also collapses any multi-tab selection back to the
+                    // one tab (Chrome semantics).
                     const onTap = () => {
                       clearTabSelection()
 

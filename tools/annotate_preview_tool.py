@@ -89,22 +89,14 @@ def annotate_preview_tool(
 ANNOTATE_PREVIEW_SCHEMA = {
     "name": "annotate_preview",
     "description": (
-        "Draw a lasting mark on the page open in the in-app browser / preview "
-        "pane of the Hermes desktop GUI. Everything drive_preview draws as it "
-        "works fades on its own; an annotation STAYS until you remove it, so "
-        "this is how you point at something. Use it to show the user what you "
-        "found ('here are the three cheapest'), flag what you are about to "
-        "change before you change it, or keep your place while you work "
-        "elsewhere on the page. Address elements by the same refs "
-        "drive_preview action='elements' hands back. action='add' outlines an "
-        "element and gives it an optional short label; 'hold' freezes the WHOLE "
-        "visible field at once — every element the page offers, outlined and "
-        "named — which is the "
-        "picture drive_preview flashes as it works, made to stay; 'remove' "
-        "takes one down; 'clear' takes them all down. Annotations follow their element "
-        "as the page scrolls and disappear if it does, so a navigation clears "
-        "them for you. Keep labels to a word or two — they are drawn on the "
-        "page, not read aloud."
+        "Leave a LASTING mark on the preview-pane page (drive_preview's own "
+        "marks fade; annotations stay until removed) — point at findings, "
+        "flag what you're about to change, keep your place. Use the refs "
+        "from drive_preview action='elements'. add: outline one element "
+        "(optional short label — a word or two, drawn on the page). hold: "
+        "freeze the whole visible field, every element outlined and named. "
+        "remove/clear: take one/all down. Marks follow their element on "
+        "scroll; navigation clears them."
     ),
     "parameters": {
         "type": "object",
@@ -112,23 +104,19 @@ ANNOTATE_PREVIEW_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": list(ACTIONS),
-                "description": (
-                    "'add' marks one element, 'hold' freezes the whole visible "
-                    "field, 'remove' takes one down, 'clear' takes them all "
-                    "down. Defaults to 'add'."
-                ),
+                "description": "Defaults to 'add'.",
             },
             "ref": {
                 "type": "string",
-                "description": "Element reference from drive_preview action='elements' (e.g. 'btn-sign-in').",
+                "description": "Ref from drive_preview elements.",
             },
             "selector": {
                 "type": "string",
-                "description": "CSS selector, as a fallback when no ref fits. Prefer ref.",
+                "description": "CSS selector fallback. Prefer ref.",
             },
             "label": {
                 "type": "string",
-                "description": "Short caption drawn on the mark, e.g. 'cheapest'. Optional.",
+                "description": "Optional caption, e.g. 'cheapest'.",
             },
         },
         "required": [],

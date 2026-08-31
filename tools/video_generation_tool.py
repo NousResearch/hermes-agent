@@ -26,9 +26,13 @@ logger = logging.getLogger(__name__)
 
 VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
     "name": "video_generate",
-    # Placeholder: description AND params are rebuilt at get_tool_definitions() time by
-    # _build_dynamic_video_schema() from capabilities() + the model's catalog entry. Optional
-    # args are advertised ONLY when honored; the handler accepts them regardless (replay compat).
+    # Placeholder — description AND params are rebuilt dynamically at
+    # get_tool_definitions() time from the active provider's declared
+    # capabilities() and the active model's catalog entry. Optional args
+    # (image_url, reference_image_urls, negative_prompt, audio, seed,
+    # upscale) are advertised ONLY when the active backend/model honors
+    # them; the handler accepts them regardless (replay compat — providers
+    # clamp/ignore). See _build_dynamic_video_schema().
     "description": "(rebuilt at get_definitions() time — see _build_dynamic_video_schema)",
     "parameters": {
         "type": "object",
@@ -66,7 +70,10 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                     "``video_gen.model``. Unknown models are rejected."
                 ),
             },
-            # Capability-gated args are added by _build_dynamic_video_schema; never statically.
+            # NOTE (schema diet, #95681): image_url / reference_image_urls /
+            # negative_prompt / audio / seed / upscale are added
+            # per-capability by _build_dynamic_video_schema. Do not re-add
+            # them statically.
         },
         # NOTE (schema diet, #95681): image_url / reference_image_urls / negative_prompt / audio / seed /
         # upscale are added per-capability by _build_dynamic_video_schema.
@@ -283,8 +290,14 @@ def _provider_call(provider: Any, method: str, default: Any) -> Any:
 
 
 def _build_dynamic_video_schema() -> Dict[str, Any]:
-    """Description AND params from capabilities() + the model's catalog entry; enums and duration
-    bounds tighten to the active model. Unadvertised args are still accepted (replay compat)."""
+    """Render description AND params from the active backend's declared surface.
+
+    Optional args are advertised only when the resolved provider/model
+    honors them (capabilities() + the model's catalog entry — coverage is
+    contract-tested per provider); enums and duration bounds tighten to
+    the active model's actual sets. The handler still accepts unadvertised
+    args (replay compat): providers clamp or ignore, as before.
+    """
     static_props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
     parts: List[str] = [_GENERIC_DESCRIPTION]
     configured_model = _read_configured_video_model()
@@ -292,15 +305,33 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     if provider is None:
         parts.append(
             "\nNo video backend is available. Calls will return an error "
-            "until the user picks one via `hermes tools` → Video Generation.")
-        return _schema("\n".join(parts), {"prompt": static_props["prompt"]})
-    caps = _provider_call(provider, "capabilities", {})
-    models = _provider_call(provider, "list_models", [])
+            "until the user picks one via `hermes tools` → Video Generation."
+        )
+        return {
+            "description": "\n".join(parts),
+            "parameters": {
+                "type": "object",
+                "properties": {"prompt": static_props["prompt"]},
+                "required": ["prompt"],
+            },
+        }
+
+    try:
+        caps = provider.capabilities() or {}
+    except Exception:
+        caps = {}
+    try:
+        models = provider.list_models() or []
+    except Exception:
+        models = []
+
     active_model = configured_model or provider.default_model()
     model_meta = next((m for m in models if isinstance(m, dict) and m.get("id") == active_model), {})
 
-    # Model caveats surface only what differs from the backend's overall capabilities.
-    # FAL's plugin uses the singular ``modality`` key for single-modality entries.
+    # ---- description -------------------------------------------------
+    for c in _format_model_caveats(model_meta, caps):
+        parts.append(f"- {c}")
+
     model_modalities = set(model_meta.get("modalities") or [])
     modality = model_meta.get("modality")
     if modality:
@@ -318,6 +349,7 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         parts.append("- image-to-video only: image_url is REQUIRED")
     elif not can_i2v:
         parts.append("- text-to-video only (no image input)")
+
     if provider.name == "xai":
         parts.append(
             "- chaining: for edit/extend pass the public HTTPS MP4 in `video` "
@@ -358,22 +390,99 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
             "Omit for the provider default.")
     properties["duration"] = duration_param
 
+    # ---- params ------------------------------------------------------
+    properties: Dict[str, Any] = {"prompt": static_props["prompt"]}
+
+    if can_i2v:
+        properties["image_url"] = {
+            "type": "string",
+            "description": (
+                "Public HTTPS URL of a still image to animate "
+                "(image-to-video). Omit for text-to-video."
+            ),
+        }
+        max_refs = int(caps.get("max_reference_images") or 0)
+        if max_refs > 0:
+            properties["reference_image_urls"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": max_refs,
+                "description": (
+                    f"Up to {max_refs} public HTTPS reference image URLs "
+                    "(style or character refs)."
+                ),
+            }
+
+    min_duration = model_meta.get("min_duration", caps.get("min_duration"))
+    max_duration = model_meta.get("max_duration", caps.get("max_duration"))
+    duration_param = dict(static_props["duration"])
+    if min_duration and max_duration:
+        duration_param["minimum"] = int(min_duration)
+        duration_param["maximum"] = int(max_duration)
+        duration_param["description"] = (
+            f"Video duration in seconds ({min_duration}-{max_duration}). "
+            "Omit for the provider default."
+        )
+    properties["duration"] = duration_param
+
     # Tighten enums to the active backend's actual sets when declared.
-    for key, caps_key in (("aspect_ratio", "aspect_ratios"), ("resolution", "resolutions")):
-        param = dict(static_props[key])
-        if caps.get(caps_key):
-            param["enum"] = list(caps[caps_key])
-        properties[key] = param
-    for flag, key, param in _CAPABILITY_PARAMS:
-        if caps.get(flag):
-            properties[key] = param
-    if caps.get("audio_always_on") and not caps.get("supports_audio"):
+    aspect_param = dict(static_props["aspect_ratio"])
+    if caps.get("aspect_ratios"):
+        aspect_param["enum"] = list(caps["aspect_ratios"])
+    properties["aspect_ratio"] = aspect_param
+
+    resolution_param = dict(static_props["resolution"])
+    if caps.get("resolutions"):
+        resolution_param["enum"] = list(caps["resolutions"])
+    properties["resolution"] = resolution_param
+
+    if caps.get("supports_negative_prompt"):
+        properties["negative_prompt"] = {
+            "type": "string",
+            "description": "Content to avoid in the output.",
+        }
+    if caps.get("supports_audio"):
+        properties["audio"] = {
+            "type": "boolean",
+            "description": (
+                "Enable native audio generation (affects pricing tier)."
+            ),
+        }
+    elif caps.get("audio_always_on"):
         parts.append(
             "- audio: native stereo audio is generated with every video "
             "(always on; no toggle) — describe the desired sound in the "
-            "prompt")
+            "prompt"
+        )
+    if caps.get("supports_seed"):
+        properties["seed"] = {
+            "type": "integer",
+            "description": "Seed for reproducible outputs.",
+        }
+    if caps.get("supports_upscale"):
+        properties["upscale"] = {
+            "type": "boolean",
+            "description": (
+                "High-resolution pass via the backend's video upscaler "
+                "(~2x, extra cost/latency). Omit for native resolution."
+            ),
+        }
+
     properties["model"] = static_props["model"]
-    return _schema("\n".join(parts), properties)
+
+    return {
+        "description": "\n".join(parts),
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": ["prompt"],
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
 
 
 registry.register(

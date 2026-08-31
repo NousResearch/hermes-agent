@@ -213,10 +213,25 @@ class SubdirectoryHintTracker:
                 self._loaded_digests.add(digest)
                 # Same security scan as startup context loading.
                 content = _scan_context_content(content, filename)
-                rel_path = self._display_path(hint_path)
-                content = _truncate_content(content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path)
-                logger.debug("Loaded subdirectory hints from %s: %s", directory, [rel_path])
-                return f"[Subdirectory context discovered: {rel_path}]\n{content}"  # first match wins per directory
+                if len(content) > _MAX_HINT_CHARS:
+                    content = (
+                        content[:_MAX_HINT_CHARS]
+                        + f"\n\n[...truncated {filename}: {len(content):,} chars total]"
+                    )
+                # Best-effort relative path for display
+                rel_path = str(hint_path)
+                try:
+                    rel_path = str(hint_path.relative_to(self.working_dir))
+                except (ValueError, RuntimeError):
+                    try:
+                        # as_posix: "~/" shorthand implies POSIX rendering
+                        # (avoids ~/AppData\Local\... chimeras on Windows).
+                        rel_path = "~/" + hint_path.relative_to(Path.home()).as_posix()
+                    except (ValueError, RuntimeError):
+                        pass  # keep absolute
+                found_hints.append((rel_path, content))
+                # First match wins per directory (like startup loading)
+                break
             except Exception as exc:
                 logger.debug("Could not read %s: %s", hint_path, exc)
         return None

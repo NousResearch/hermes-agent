@@ -15,13 +15,13 @@ Watch named companies for material news; cited digests.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/research/competitor-news-monitor` |
+| Path | `skills/research\competitor-news-monitor` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Competitors`, `News`, `Market-Research`, `Monitoring` |
-| Related skills | [`blogwatcher`](/docs/user-guide/skills/optional/research/research-blogwatcher), [`rss-feeds`](/docs/user-guide/skills/optional/research/research-rss-feeds), [`reddit-reading`](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading) |
+| Related skills | [`blogwatcher`](/docs/user-guide/skills/optional/research/research-blogwatcher) |
 
 ## Reference: full SKILL.md
 

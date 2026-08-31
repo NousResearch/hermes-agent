@@ -14,6 +14,7 @@ exclude-newer-span = "P14D"
 [options.exclude-newer-package]
 elevenlabs = false
 setuptools = false
+huggingface-hub = false
 vercel = false
 pillow = false
 unpaddedbase64 = false
@@ -34,9 +35,9 @@ defusedxml = false
 ruff = false
 exa-py = false
 mcp = false
-nemo-relay = false
-huggingface-hub = false
 python-olm = false
+firecrawl-anydoc = false
+nemo-relay = false
 
 [manifest]
 overrides = [

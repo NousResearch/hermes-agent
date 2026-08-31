@@ -50,8 +50,33 @@ def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
     return 0
 
 
-def _guarded_store_write(action, description, *args, **kwargs):
-    """Run a ticker status-marker write so a failing store never ends the ticker thread.
+def _existing_profile_homes(profile_homes: list) -> list:
+    """Drop profile homes whose directory no longer exists on disk.
+
+    The multiplex ticker's ``profile_homes`` is a snapshot taken at startup
+    (``web_server.py`` calls ``profiles_to_serve(multiplex=True)`` once, and
+    the gateway multiplex path does the same). If a profile is deleted while
+    the ticker runs — via ``hermes profile delete``, the desktop's DELETE
+    ``/api/profiles/<name>`` route, or any other path that removes the home
+    directory — that stale entry stays in the list.
+
+    Ticking or heartbeating a deleted home recreates its ``cron/`` workspace
+    (``record_ticker_heartbeat`` -> ``ensure_dirs`` -> ``mkdir(parents=True)``)
+    on every 60s cycle, so the "deleted" profile silently comes back on disk
+    and in ``hermes profile list`` (#47368). Filtering on directory existence
+    leaves a deleted profile's home untouched, which is the correct invariant:
+    a home that does not exist cannot hold jobs to fire.
+    """
+    live = []
+    for entry in profile_homes:
+        home = entry[1] if isinstance(entry, tuple) else entry
+        if Path(home).is_dir():
+            live.append(entry)
+    return live
+
+
+class CronScheduler(ABC):
+    """Axis-B trigger provider. Decides WHEN a due cron job fires.
 
     The gateway runs the provider on an unsupervised daemon thread: one escaping exception
     there stops cron silently while the gateway keeps serving (#111010). Heartbeat/error
@@ -519,22 +544,13 @@ class InProcessCronScheduler(CronScheduler):
             " (re-enumerated every cycle)" if callable(profile_homes) else "",
         )
 
-        def tick_adapters_for(profile_name):
-            # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
-            # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
-            # an exact enabled route maps here; else fail closed (delivery skipped this tick).
-            if profile_name is None or profile_name == default_profile:
-                return adapters
-            tick_adapters = (profile_adapters or {}).get(profile_name) or {}
-            if not tick_adapters and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
-            return tick_adapters
-
-        # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
-        # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's
-        # cron workspace via the heartbeat below (#47368).
-        for entry in initial_homes:
-            _, home = _profile_entry(entry)
+        # Recovery + initial heartbeat for every profile.
+        # A profile may have been deleted since this snapshot was taken;
+        # never recreate a deleted home's cron workspace via the heartbeat
+        # below (#47368).
+        for entry in _existing_profile_homes(profile_homes):
+            home = entry[1] if isinstance(entry, tuple) else entry
+            home_token = set_hermes_home_override(str(home))
             try:
                 with _profile_cron_scope(home):
                     recovered = self.recover_interrupted()
@@ -575,7 +591,9 @@ class InProcessCronScheduler(CronScheduler):
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
-                    for _pname, home in cycle_homes:
+                    for entry in _existing_profile_homes(profile_homes):
+                        home = entry[1] if isinstance(entry, tuple) else entry
+                        home_token = set_hermes_home_override(str(home))
                         try:
                             with _profile_cron_scope(home):
                                 cron_tick(
@@ -602,25 +620,24 @@ class InProcessCronScheduler(CronScheduler):
                 _tick_error = f"{type(e).__name__}: {e}"
                 # EMFILE: reclaim fds + exponential backoff (#87644).
                 consecutive_failures = _note_tick_failure(e, consecutive_failures)
-            # Completed cycle: each profile's own outcome; aborted cycle: all beats unsuccessful.
-            for _, home in cycle_homes:
-                with _profile_cron_scope(home):
-                    _home_ok = _tick_error is None and str(home) not in _profile_errors
-                    _guarded_store_write(
-                        record_ticker_heartbeat, "heartbeat", success=_home_ok
-                    )
-                    if _home_ok:
-                        _guarded_store_write(clear_ticker_error, "error clear")
-                    elif str(home) in _profile_errors:
-                        _guarded_store_write(
-                            record_ticker_error,
-                            "tick error",
-                            _profile_errors[str(home)],
-                        )
-                    elif _tick_error:
-                        _guarded_store_write(
-                            record_ticker_error, "tick error", _tick_error
-                        )
+            else:
+                _tick_error = None
+            # Record per-profile heartbeat after each tick cycle.
+            for entry in _existing_profile_homes(profile_homes):
+                home = entry[1] if isinstance(entry, tuple) else entry
+                home_token = set_hermes_home_override(str(home))
+                try:
+                    with use_cron_store(home):
+                        record_ticker_heartbeat(success=ok)
+                        # Surface the failure reason (or clear it) per profile
+                        # so `hermes cron status` can show WHY ticks fail
+                        # (#68483).
+                        if ok:
+                            clear_ticker_error()
+                        elif _tick_error:
+                            record_ticker_error(_tick_error)
+                finally:
+                    reset_hermes_home_override(home_token)
             if ok:
                 consecutive_failures = 0
             stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))

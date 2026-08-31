@@ -307,7 +307,7 @@ class TestResolveAnthropicToken:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
         broken_entry = SimpleNamespace(auth_type="oauth", access_token=None)
@@ -327,7 +327,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
         api_key_entry = PooledCredential.from_dict("anthropic", {
@@ -349,7 +349,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
         captured = {}

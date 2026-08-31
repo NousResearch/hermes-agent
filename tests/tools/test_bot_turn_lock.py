@@ -9,6 +9,7 @@ process, so threads exercise the true kernel-lock semantics.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -16,8 +17,6 @@ import threading
 import time
 
 import pytest
-
-fcntl = pytest.importorskip("fcntl", reason="POSIX flock is unavailable")
 
 from tools import bot_mode_dm, bot_relay
 from tools.bot_relay import TurnBusyError, acquire_turn_lock, turn_lock_path

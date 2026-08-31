@@ -318,14 +318,7 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
-    # Provider failures often include a human-readable final_response (for
-    # example an HTTP 400 model error). Preserve that text on stdout, but do
-    # not let automation interpret the run as successful merely because the
-    # error was printable.
-    if result.get("failed"):
-        return 2
-
-    if result.get("partial") and not (response or "").strip():
+    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
         return 2
 
     if not (response or "").strip():

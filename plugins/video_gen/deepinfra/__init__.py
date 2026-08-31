@@ -36,9 +36,18 @@ class DeepInfraVideoGenProvider(OpenAICompatibleVideoGenProvider):
                 for item in (_fetch_deepinfra_models_by_tag("video-gen") or []) if item.get("id")]
 
     def capabilities(self) -> Dict[str, Any]:
-        return {"modalities": ["text", "image"], "aspect_ratios": ["16:9", "9:16", "1:1"], "resolutions": ["480p", "720p", "1080p"],
-                "max_duration": 10, "min_duration": 1, "supports_audio": False, "supports_negative_prompt": True,
-                "supports_seed": True, "supports_upscale": False, "max_reference_images": 0}
+        return {
+            "modalities": ["text", "image"],
+            "aspect_ratios": ["16:9", "9:16", "1:1"],
+            "resolutions": ["480p", "720p", "1080p"],
+            "max_duration": 10,
+            "min_duration": 1,
+            "supports_audio": False,
+            "supports_negative_prompt": True,
+            "supports_seed": True,
+            "supports_upscale": False,
+            "max_reference_images": 0,
+        }
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {"name": "DeepInfra", "badge": "paid",

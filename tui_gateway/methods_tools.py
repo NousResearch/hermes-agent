@@ -342,10 +342,103 @@ def _(rid, params: dict) -> dict:
         _mcp_reload_loaded_rev = loaded
         _mcp_reload_gen += 1
 
-    # LEADER (won the non-blocking acquire) runs the full reload. FOLLOWER waits, then — still
-    # holding the lock — coalesces only if a reload COMPLETED meanwhile (generation advanced
-    # ⇒ leader didn't throw) AND it loaded the requested revision; otherwise it re-runs.
-    if _mcp_reload_lock.acquire(blocking=False):
+            return _finish_reload(rid, params, coalesced=False)
+
+        gen_before = _mcp_reload_gen
+
+        with _mcp_reload_lock:
+            leader_completed = _mcp_reload_gen > gen_before
+            rev_satisfied = not req_rev or req_rev == _mcp_reload_loaded_rev
+
+            if leader_completed and rev_satisfied:
+                _refresh_session_agent()
+                coalesced = True
+            else:
+                _do_full_reload()
+                coalesced = False
+
+        return _finish_reload(rid, params, coalesced=coalesced)
+    except Exception as e:
+        return _err(rid, 5015, str(e))
+
+
+@method("reload.env")
+def _(rid, params: dict) -> dict:
+    """Re-read ``~/.hermes/.env`` into the gateway process via
+    ``hermes_cli.config.reload_env``, matching classic CLI's ``/reload``
+    handler.  Newly added API keys take effect on the next agent call
+    without restarting the TUI.
+
+    The credential pool / provider routing for any *already-constructed*
+    agent does not auto-rebuild — that's the same behaviour as classic
+    CLI's ``/reload``.  Users who want a brand-new credential resolution
+    should follow with ``/new``.
+    """
+    try:
+        from hermes_cli.config import reload_env
+
+        count = reload_env()
+        return _ok(rid, {"updated": int(count)})
+    except Exception as e:
+        return _err(rid, 5015, str(e))
+
+
+@method("commands.catalog")
+def _(rid, params: dict) -> dict:
+    """Registry-backed slash metadata for the TUI — categorized, no aliases."""
+    try:
+        from hermes_cli.commands import (
+            COMMAND_REGISTRY,
+            SUBCOMMANDS,
+            _build_description,
+            command_desktop_meta,
+        )
+
+        all_pairs: list[list[str]] = []
+        canon: dict[str, str] = {}
+        commands: dict[str, dict[str, str | None]] = {}
+        categories: list[dict] = []
+        cat_map: dict[str, list[list[str]]] = {}
+        cat_order: list[str] = []
+
+        for cmd in COMMAND_REGISTRY:
+            meta = command_desktop_meta(cmd)
+            commands[f"/{cmd.name}"] = dict(meta)
+            for alias in cmd.aliases:
+                commands[f"/{alias}"] = dict(meta)
+
+            if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
+                continue
+
+            c = f"/{cmd.name}"
+            canon[c.lower()] = c
+            for a in cmd.aliases:
+                canon[f"/{a}".lower()] = c
+
+            desc = _build_description(cmd)
+            all_pairs.append([c, desc])
+
+            cat = cmd.category
+            if cat not in cat_map:
+                cat_map[cat] = []
+                cat_order.append(cat)
+            cat_map[cat].append([c, desc])
+
+        for name, desc, cat in _TUI_EXTRA:
+            # Dedup guard: skip TUI extras that collide with a registry
+            # command or one of its aliases (e.g. the historical /compact
+            # collision, #57133, or /sessions which the registry also
+            # advertises). The registry entry is canonical.
+            if name.lower() in canon:
+                continue
+            canon[name.lower()] = name
+            all_pairs.append([name, desc])
+            if cat not in cat_map:
+                cat_map[cat] = []
+                cat_order.append(cat)
+            cat_map[cat].append([name, desc])
+
+        warning = ""
         try:
             _do_full_reload()
         finally:
@@ -357,6 +450,39 @@ def _(rid, params: dict) -> dict:
         _refresh_session_agent() if coalesced else _do_full_reload()
     return _finish_reload(rid, params, coalesced=coalesced)
 
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+
+            plugin_cmds = get_plugin_commands() or {}
+            if plugin_cmds:
+                bucket = "Plugin commands"
+                if bucket not in cat_map:
+                    cat_map[bucket] = []
+                    cat_order.append(bucket)
+                for pname, info in sorted(plugin_cmds.items()):
+                    if not isinstance(info, dict):
+                        continue
+                    key = f"/{pname}"
+                    if key.lower() in canon:
+                        continue
+                    canon[key.lower()] = key
+                    pdesc = str(info.get("description") or "Plugin command")
+                    pdesc = pdesc[:120] + ("…" if len(pdesc) > 120 else "")
+                    all_pairs.append([key, pdesc])
+                    cat_map[bucket].append([key, pdesc])
+                    hint = str(info.get("args_hint") or "").strip()
+                    mode = info.get("argument_mode")
+                    if mode not in {"options", "text", "mixed"}:
+                        mode = "text" if hint else None
+                    commands[key] = {"argument_mode": mode, "desktop": None}
+        except Exception as e:
+            if not warning:
+                warning = f"plugin command discovery unavailable: {e}"
+
+        skill_count = 0
+        skills: dict[str, dict] = {}
+        try:
+            from agent.skill_commands import scan_skill_commands
 
 # ─── Command catalog / dispatch ──────────────────────────────────────────────
 class _Catalog:
@@ -374,70 +500,20 @@ class _Catalog:
         self.pairs.append([key, desc])
         self.cat_map.setdefault(cat, []).append([key, desc])
 
-
-def _catalog_registry(cat: _Catalog) -> None:
-    commands = _tools_mod("hermes_cli.commands")
-    for cmd in commands.COMMAND_REGISTRY:
-        meta = commands.command_desktop_meta(cmd)
-        cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
-        if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
-            continue
-        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
-        for a in cmd.aliases:
-            cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
-    for name, desc, category in _TUI_EXTRA:
-        # Registry command/alias wins over a colliding TUI extra (e.g. /compact, /sessions).
-        if name.lower() not in cat.canon:
-            cat.add(name, desc, category)
-
-
-def _catalog_quick_commands(cat: _Catalog) -> None:
-    qcmds = _load_cfg().get("quick_commands", {}) or {}
-    if not (isinstance(qcmds, dict) and qcmds):
-        return
-    cat.cat_map.setdefault("User commands", [])  # category exists even when every entry is malformed
-    for qname, qc in sorted(qcmds.items()):
-        if not isinstance(qc, dict):
-            continue
-        qtype = qc.get("type", "")
-        default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}"}
-        desc = str(qc.get("description") or default_desc.get(qtype, qtype or "quick command"))
-        cat.add(f"/{qname}", desc, "User commands")
-
-
-def _catalog_plugin_commands(cat: _Catalog) -> None:
-    plugin_cmds = _tools_mod("hermes_cli.plugins").get_plugin_commands() or {}
-    if plugin_cmds:
-        cat.cat_map.setdefault("Plugin commands", [])
-    for pname, info in sorted(plugin_cmds.items()):
-        key = f"/{pname}"
-        if not isinstance(info, dict) or key.lower() in cat.canon:
-            continue
-        cat.add(key, str(info.get("description") or "Plugin command"), "Plugin commands")
-        mode = info.get("argument_mode")
-        if mode not in {"options", "text", "mixed"}:
-            mode = "text" if str(info.get("args_hint") or "").strip() else None
-        cat.commands[key] = {"argument_mode": mode, "desktop": None}
-
-
-def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
-    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
-    usage, origin_of = _skill_usage_lookup()
-    for k, info in sorted(_tools_mod("agent.skill_commands").scan_skill_commands().items()):
-        cat.pairs.append([k, str(info.get("description", "Skill"))])
-        name = str(info.get("name") or k.lstrip("/"))
-        skills[k] = {"usage": usage(name), "origin": origin_of(name)}
-
-
-@_rpc("commands.catalog", 5020)
-def _(rid, params: dict) -> dict:
-    """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins')."""
-    cat = _Catalog()
-    _catalog_registry(cat)
-    warning = ""
-    try:
-        _catalog_quick_commands(cat)
+        sub = {k: v[:] for k, v in SUBCOMMANDS.items()}
+        return _ok(
+            rid,
+            {
+                "pairs": all_pairs,
+                "sub": sub,
+                "canon": canon,
+                "commands": commands,
+                "categories": categories,
+                "skills": skills,
+                "skill_count": skill_count,
+                "warning": warning,
+            },
+        )
     except Exception as e:
         warning = f"quick_commands discovery unavailable: {e}"
     try:
@@ -984,6 +1060,14 @@ def _(rid, params: dict) -> dict:
         from agent.learn_prompt import build_learn_prompt
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
+    if name == "plan":
+        # Plan mode: build the plan-mode prompt and submit it as a normal
+        # agent turn (same pattern as /learn). The live agent inspects the
+        # workspace read-only and saves the markdown plan under
+        # .hermes/plans/ via write_file. Works on any backend.
+        from agent.plan_prompt import build_plan_prompt
+
+        return _ok(rid, {"type": "send", "message": build_plan_prompt(arg)})
     if name == "init":
         # Generate-or-update AGENTS.md: build the guidance-laden prompt and
         # submit it as a normal agent turn (same pattern as /learn). The live
@@ -2073,11 +2157,39 @@ def _(rid, params: dict) -> dict:
 
 @_mcp_rpc("oauth.start")
 def _(rid, params: dict) -> dict:
-    """Begin a session-backed OAuth flow → ``{ok, session_id, auth_url, flow: "pkce"}``; the client
-    opens ``auth_url`` and polls ``mcp.servers.oauth.poll``. With ``client_redirect_uri`` the CLIENT
-    hosts the loopback and relays the code via ``mcp.servers.oauth.callback`` (desktop and gateway
-    on different machines). Runs on the RPC pool (_LONG_HANDLERS)."""
-    client_redirect_uri = _str_arg(params, "client_redirect_uri") or None
+    """Begin a session-backed OAuth flow for an MCP server in a profile.
+
+    Params: optional ``profile``, ``name`` (required), optional
+    ``client_redirect_uri``. Result:
+    ``{ok: true, session_id, auth_url, flow: "pkce"}``.
+
+    The client (desktop) opens ``auth_url`` in the native browser
+    (``window.hermesDesktop.openExternal``) and then polls
+    ``mcp.servers.oauth.poll`` with the returned ``session_id`` until
+    ``status == "approved"``. This mirrors the provider-OAuth start/poll model
+    (``/api/providers/oauth/{id}/start`` + ``/poll``): a background worker drives
+    the SAME interactive MCP OAuth machinery ``hermes mcp login`` uses
+    (``_probe_single_server`` under ``force_interactive_oauth``), and a loopback
+    listener captures the browser redirect — no FastAPI request object needed.
+
+    ``client_redirect_uri`` (remote backends): a loopback URL the CLIENT hosts
+    on its own machine (``http://127.0.0.1:<port>/callback``). When supplied,
+    the gateway binds NO listener — the provider redirects to the client's
+    listener and the client relays the code via ``mcp.servers.oauth.callback``.
+    This is the only flow that works when the desktop app and the gateway run
+    on different machines (SSH/Tailscale remote backend), where the gateway's
+    own 127.0.0.1 listener is unreachable from the user's browser.
+
+    Runs on the RPC thread pool (see _LONG_HANDLERS): start blocks briefly for
+    the authorization URL to be published.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    client_redirect_uri = str(params.get("client_redirect_uri") or "").strip() or None
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
     try:
         name, servers, err = _mcp_named_server(rid, params)
         if err:
@@ -2088,12 +2200,26 @@ def _(rid, params: dict) -> dict:
         if cfg.get("headers") and cfg.get("auth") != "oauth":
             return _err(rid, 4001, "this server uses header/API-key auth, not OAuth")
         cfg["auth"] = "oauth"
-        hermes_home = str(_tools_mod("hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
-        result = _tools_mod("tui_gateway.mcp_oauth_sessions").start_flow(
-            hermes_home, name, cfg, client_redirect_uri=client_redirect_uri)
+
+        hermes_home = str(get_hermes_home().expanduser().resolve(strict=False))
+        result = mcp_oauth_sessions.start_flow(
+            hermes_home, name, cfg, client_redirect_uri=client_redirect_uri
+        )
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "session_id": result["session_id"],
+                "auth_url": result["auth_url"],
+                "flow": result["flow"],
+            },
+        )
     except ValueError as e:
         return _err(rid, 4001, str(e))
-    return _ok(rid, {"ok": True, **{k: result[k] for k in ("session_id", "auth_url", "flow")}})
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
 
 
 @_mcp_rpc("oauth.poll", _NAME_SESSION)
@@ -2198,11 +2324,45 @@ def _plugins_update(rid, params):
     return _ok(rid, {"ok": True, "unchanged": not changed, "sha": sha})
 
 
-_PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
-                    "update": _plugins_update}
+@method("mcp.servers.oauth.callback")
+def _(rid, params: dict) -> dict:
+    """Relay a client-captured OAuth redirect into a running MCP OAuth flow.
+
+    Remote-backend companion to ``mcp.servers.oauth.start`` with
+    ``client_redirect_uri``: the desktop app's local loopback listener caught
+    the provider redirect on the user's machine and forwards its query params
+    here. Params: optional ``profile``, ``name`` (required), ``session_id``
+    (required), ``code``, ``state``, ``error``. Result: ``{ok: true}`` once the
+    callback is accepted (state verified inside the flow bridge), or
+    ``{ok: false, error_message}`` on mismatch/expiry.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        return _err(rid, 4063, "session_id required")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from tui_gateway import mcp_oauth_sessions
+
+        result = mcp_oauth_sessions.deliver_callback_flow(
+            session_id,
+            name,
+            code=str(params.get("code") or "") or None,
+            state=str(params.get("state") or "") or None,
+            error=str(params.get("error") or "") or None,
+        )
+        return _ok(rid, result)
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
 
 
-@_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
+@method("skills.reload")
 def _(rid, params: dict) -> dict:
     try:
         from agent.skill_commands import reload_skills

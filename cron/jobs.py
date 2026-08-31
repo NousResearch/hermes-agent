@@ -576,6 +576,37 @@ def is_terminal_job(job: Dict[str, Any]) -> bool:
     return job.get("state") in {"completed", "error"}
 
 
+def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
+    """True for a recurring job stuck in ``state=error``.
+
+    ``state=error`` is set ONLY on a cron/interval job when
+    ``compute_next_run()`` fails to produce a next occurrence (e.g. the
+    ``croniter`` package is missing, or a malformed schedule) — see
+    ``_mark_job_run_locked``'s issue #16265 comment: recurring jobs must
+    NEVER be silently disabled. Unlike ``state=completed`` (a one-shot
+    that genuinely has no more occurrences, ever), an error-state
+    recurring job still has a schedule with future occurrences once the
+    underlying issue resolves — it is stuck pending a ``next_run_at``
+    recompute, not truly done.
+
+    ``is_terminal_job()`` treats both states identically, which is correct
+    for blocking bare reactivation through ``update_job`` on a genuinely
+    completed job, but wrong here: it also blocks the due-scan's own
+    ``next_run_at`` self-heal (``_get_due_jobs_locked`` already recomputes
+    it for ``cron``/``interval`` jobs, but never reaches that code), the
+    at-most-once pre-advance (``advance_next_runs``), the dispatch claim
+    (``_claim_job_for_fire_locked``), and manual recovery (``resume_job``)
+    — wedging the job forever with no exit except deleting and recreating
+    it. Callers that need "is this job truly done" should keep using
+    ``is_terminal_job()`` alone; callers that need "can this job still
+    reach a future occurrence" should exclude this case.
+    """
+    return (
+        job.get("state") == "error"
+        and (job.get("schedule") or {}).get("kind") in {"cron", "interval"}
+    )
+
+
 def _secure_dir(path: Path):
     """Owner-only (0700) via the shared helper, so cron/ and cron/output honor the same managed/
     container/HERMES_HOME_MODE rules as the rest of HERMES_HOME (#10757)."""
@@ -631,6 +662,41 @@ def _ensure_cron_dir(cron_dir: Path) -> None:
     cron_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _is_named_profile_path(path: Path) -> bool:
+    """Return True if *path* is inside a named profile home.
+
+    Named profiles live under ``<hermes_home>/profiles/<name>/``.  The
+    default profile lives at ``<hermes_home>`` directly (no ``profiles``
+    parent), as do custom ``HERMES_HOME`` paths outside ``~/.hermes``.
+
+    Checks both the resolved path (handles symlinks in the parent chain)
+    and the raw path (catches symlinked profile homes whose resolve()
+    target no longer contains ``profiles``).
+    """
+    try:
+        if "profiles" in path.resolve().parts:
+            return True
+    except (OSError, RuntimeError):
+        pass
+    return "profiles" in path.parts
+
+
+def _ensure_cron_dir(cron_dir: Path) -> None:
+    """Create a cron directory without resurrecting a deleted profile home.
+
+    Named profiles are created by the profile lifecycle, not cron.  A stale
+    multiplex scheduler may still hold a path to a deleted profile after the
+    user removes it; ``parents=False`` makes that race fail closed
+    (FileNotFoundError) instead of silently restoring the directory tree.
+    Default and custom Hermes homes keep ``parents=True`` so first-run
+    directory creation still works.
+    """
+    if _is_named_profile_path(cron_dir):
+        cron_dir.mkdir(exist_ok=True)
+        return
+    cron_dir.mkdir(parents=True, exist_ok=True)
+
+
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
     store = _current_cron_store()
@@ -674,19 +740,63 @@ def normalize_repeat_value(repeat: Any) -> Optional[int]:
 _DURATION_MULTIPLIERS = {'m': 1, 'h': 60, 'd': 1440}
 
 
+def normalize_repeat_value(repeat: Any) -> Optional[int]:
+    """Coerce a repeat value from any entry point into ``Optional[int]``.
+
+    The tool schema exposes ``repeat`` as an integer, but agents and users
+    legitimately pass the user-facing strings ``'forever'``/``'once'`` or
+    numeric strings (``'3'``). Uncoerced strings previously died with
+    ``'<=' not supported between instances of 'str' and 'int'`` at create
+    (#66824/#64520/#7142/#71987/#95706) and were stored raw by update paths,
+    breaking ``mark_job_run`` later. Semantics: ``'forever'``-family -> None
+    (infinite), ``'once'``-family -> 1, numeric -> int, 0/negative -> None,
+    anything else -> ValueError (never store garbage).
+    """
+    if repeat is None:
+        return None
+    if isinstance(repeat, str):
+        repeat_str = repeat.strip().lower()
+        if repeat_str in ("forever", "infinite", "inf", "none", ""):
+            return None
+        if repeat_str in ("once", "one", "1x"):
+            return 1
+        try:
+            repeat = int(repeat_str)
+        except ValueError:
+            raise ValueError(
+                f"Invalid repeat value {repeat!r}: use an integer, "
+                f"'forever', or 'once'."
+            )
+    return None if repeat <= 0 else int(repeat)
+
+
 def parse_duration(s: str) -> int:
-    """Parse a duration into minutes: "30m" → 30, "2h" → 120, "1d" → 1440, bare "hour" → 60."""
+    """
+    Parse duration string into minutes.
+    
+    Examples:
+        "30m" → 30
+        "2h" → 120
+        "1d" → 1440
+        "hour" → 60 (bare unit, no leading number)
+    """
     s = s.strip().lower()
     match = re.match(r'^(\d*)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$', s)
     if not match:
         raise ValueError(
             f"Invalid duration: '{s}'. Use format like '30m', '2h', '1d', "
-            "or a bare unit like 'hour' (defaults to 1).")
+            "or a bare unit like 'hour' (defaults to 1)."
+        )
+    
     value = int(match.group(1)) if match.group(1) else 1
-    return value * _DURATION_MULTIPLIERS[match.group(2)[0]]
+    unit = match.group(2)[0]  # First char: m, h, or d
+
+    multipliers = {'m': 1, 'h': 60, 'd': 1440}
+    return value * multipliers[unit]
 
 
-# Day-spec phrases for "every monday 9am" / "every day at 9am". Cron weekday numbering is
+# Natural-language day-spec phrases for the documented "every monday 9am" /
+# "every day at 9am" schedule forms. Cron weekday numbering is
 # 0=Sunday … 6=Saturday (croniter's default).
 _WEEKDAY_TO_CRON_DOW = {
     "sunday": "0", "sun": "0",
@@ -707,8 +817,12 @@ _DAYSPEC_TO_CRON_DOW = {
 
 
 def _parse_clock_time(text: str) -> Optional[tuple]:
-    """Parse ``9am``/``9:30am``/``14:00``/``7`` (bare 24h hour)/``noon``/``midnight`` into a
-    24-hour ``(hour, minute)`` tuple, or None when unrecognized."""
+    """Parse a wall-clock time into a ``(hour, minute)`` 24-hour tuple.
+
+    Accepts ``9am``, ``9:30am``, ``9 am``, ``14:00``, ``7`` (bare hour, 24h),
+    ``noon``/``midday``, and ``midnight``. Returns None when the text is not a
+    recognized clock time so the caller can reject the schedule cleanly.
+    """
     t = text.strip().lower().replace(" ", "")
     if not t:
         return None
@@ -725,41 +839,64 @@ def _parse_clock_time(text: str) -> Optional[tuple]:
     if meridiem:
         if not 1 <= hour <= 12:
             return None
-        hour = hour % 12 + (12 if meridiem == "pm" else 0)
+        if meridiem == "am":
+            hour = 0 if hour == 12 else hour
+        else:  # pm
+            hour = 12 if hour == 12 else hour + 12
     if hour > 23 or minute > 59:
         return None
     return (hour, minute)
 
 
 def _natural_every_to_cron(rest: str) -> Optional[str]:
-    """Convert ``<when> [at] <time>`` ("monday 9am", "weekday at 9am", "monday, wednesday at 9am")
-    to a 5-field cron expr, or None so ``parse_schedule`` can fall back to the interval path."""
+    """Convert a documented ``every <when> [at] <time>`` phrase to a 5-field
+    cron expression, or None when *rest* is not such a phrase.
+
+    Examples::
+
+        "monday 9am"      -> "0 9 * * 1"
+        "day at 9am"      -> "0 9 * * *"
+        "weekday at 9am"  -> "0 9 * * 1-5"
+        "monday, wednesday at 9am" -> "0 9 * * 1,3"
+
+    Returning None lets ``parse_schedule`` fall back to the interval
+    (``every 30m``) path, so existing duration schedules are unaffected.
+    """
     tokens = rest.lower().replace(",", " ").split()
     if not tokens:
         return None
-    # Leading day tokens: a keyword spec ("weekdays") or a comma/"and"-separated weekday list.
-    dow = _DAYSPEC_TO_CRON_DOW.get(tokens[0])
+
+    # Consume one or more leading day tokens: a keyword spec ("weekdays"),
+    # a single weekday, or a comma/"and"-separated weekday list
+    # ("monday, wednesday at 9am").
+    day_token = tokens[0]
+    dow = _DAYSPEC_TO_CRON_DOW.get(day_token)
     idx = 1
     if dow is None:
         days = []
-        idx = len(tokens)
-        for i, tok in enumerate(tokens):
+        while idx <= len(tokens):
+            tok = tokens[idx - 1]
             if tok == "and":
+                idx += 1
                 continue
             mapped = _WEEKDAY_TO_CRON_DOW.get(tok)
             if mapped is None:
-                idx = i
                 break
             if mapped not in days:
                 days.append(mapped)
+            idx += 1
         if not days:
             return None
         dow = ",".join(days)
+        idx -= 1
+
     time_tokens = tokens[idx:]
-    if time_tokens and time_tokens[0] == "at":  # optional separator: "every day at 9am"
+    # Optional "at" separator: "every day at 9am".
+    if time_tokens and time_tokens[0] == "at":
         time_tokens = time_tokens[1:]
     if not time_tokens:
         return None
+
     parsed = _parse_clock_time(" ".join(time_tokens))
     if parsed is None:
         return None
@@ -767,52 +904,100 @@ def _natural_every_to_cron(rest: str) -> Optional[str]:
     return f"{minute} {hour} * * {dow}"
 
 
-def _cron_schedule(
-    expr: str, display: str, missing_croniter: str, invalid_label: str
-) -> Dict[str, Any]:
-    """Validate a cron expression with croniter and build the stored schedule dict."""
-    if not _ensure_croniter():
-        raise ValueError(f"{missing_croniter} Install with: pip install croniter")
-    try:
-        croniter(expr)
-    except Exception as e:
-        raise ValueError(f"Invalid {invalid_label} '{display}': {e}")
-    return {"kind": "cron", "expr": expr, "display": display}
-
-
-def _interval_schedule(minutes: int) -> Dict[str, Any]:
-    return {"kind": "interval", "minutes": minutes, "display": f"every {minutes}m"}
-
-
 def parse_schedule(schedule: str) -> Dict[str, Any]:
-    """Parse a schedule string into ``{"kind": "once"|"interval"|"cron", ...}`` with ``run_at`` /
-    ``minutes`` / ``expr``. "30m" and "every 30m" are recurring intervals; "every monday 9am" and
-    "0 9 * * *" are cron; an ISO timestamp is once."""
+    """
+    Parse schedule string into structured format.
+    
+    Returns dict with:
+        - kind: "once" | "interval" | "cron"
+        - For "once": "run_at" (ISO timestamp)
+        - For "interval": "minutes" (int)
+        - For "cron": "expr" (cron expression)
+    
+    Examples:
+        "30m"              → every 30 minutes (recurring)
+        "2h"               → every 2 hours (recurring)
+        "every 30m"        → recurring every 30 minutes
+        "every 2h"         → recurring every 2 hours
+        "every monday 9am" → recurring weekly (cron)
+        "every day at 9am" → recurring daily (cron)
+        "0 9 * * *"        → cron expression
+        "2026-02-03T14:00" → once at timestamp
+    """
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
 
-    # Natural day/time phrase → cron ("every monday 9am", or sans prefix "weekdays at 9am");
-    # any other "every X" → recurring interval.
-    is_every = schedule_lower.startswith("every ")
-    rest = schedule[6:].strip() if is_every else schedule_lower
-    cron_expr = _natural_every_to_cron(rest)
-    # Reuse the same helper — the phrase shape is identical without the "every " prefix. See #51975.
+    # "every X" pattern → recurring interval, OR a documented natural-language
+    # day/time phrase ("every monday 9am", "every day at 9am") → cron.
+    if schedule_lower.startswith("every "):
+        rest = schedule[6:].strip()
+        cron_expr = _natural_every_to_cron(rest)
+        if cron_expr is not None:
+            if not _ensure_croniter():
+                raise ValueError(
+                    "Weekday/time schedules like 'every monday 9am' require the "
+                    "'croniter' package. Install with: pip install croniter"
+                )
+            try:
+                croniter(cron_expr)
+            except Exception as e:
+                raise ValueError(f"Invalid schedule '{original}': {e}")
+            return {
+                "kind": "cron",
+                "expr": cron_expr,
+                "display": original,
+            }
+        minutes = parse_duration(rest)
+        return {
+            "kind": "interval",
+            "minutes": minutes,
+            "display": f"every {minutes}m"
+        }
+
+    # No-"every" natural day/time phrases advertised by the Desktop dialog:
+    # "weekdays at 9am", "monday at 9:30", "daily at 7am" (#51975). Reuse the
+    # same helper — the phrase shape is identical without the "every " prefix.
+    cron_expr = _natural_every_to_cron(schedule_lower)
     if cron_expr is not None:
-        example = "every monday 9am" if is_every else "weekdays at 9am"
-        return _cron_schedule(
-            cron_expr, original,
-            f"Weekday/time schedules like '{example}' require the 'croniter' package.", "schedule")
-    if is_every:
-        return _interval_schedule(parse_duration(rest))
+        if not _ensure_croniter():
+            raise ValueError(
+                "Weekday/time schedules like 'weekdays at 9am' require the "
+                "'croniter' package. Install with: pip install croniter"
+            )
+        try:
+            croniter(cron_expr)
+        except Exception as e:
+            raise ValueError(f"Invalid schedule '{original}': {e}")
+        return {
+            "kind": "cron",
+            "expr": cron_expr,
+            "display": original,
+        }
 
-    # Cron expression (5-6 fields). Letters are allowed so named months/weekdays (JAN-DEC, MON-FRI)
-    # reach croniter, which supports them.
+    # Check for cron expression (5 or 6 space-separated fields)
+    # Cron fields: minute hour day month weekday [year]
+    # Allow letters so named months/weekdays (JAN-DEC, MON-SUN, incl. ranges
+    # and lists like MON-FRI or MON,WED,FRI) are routed to croniter, which
+    # supports them. The previous digit-only pattern silently rejected these
+    # valid expressions as "Invalid schedule".
     parts = schedule.split()
-    if len(parts) >= 5 and all(re.match(r'^[A-Za-z\d\*\-,/]+$', p) for p in parts[:5]):
-        return _cron_schedule(
-            schedule, schedule, "Cron expressions require 'croniter' package.", "cron expression")
-
+    if len(parts) >= 5 and all(
+        re.match(r'^[A-Za-z\d\*\-,/]+$', p) for p in parts[:5]
+    ):
+        if not _ensure_croniter():
+            raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
+        # Validate cron expression
+        try:
+            croniter(schedule)
+        except Exception as e:
+            raise ValueError(f"Invalid cron expression '{schedule}': {e}")
+        return {
+            "kind": "cron",
+            "expr": schedule,
+            "display": schedule
+        }
+    
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
@@ -833,23 +1018,37 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             }
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
-
-    # "in 30m"/"in 2h" is the explicit one-shot-by-duration form; a bare duration ("30m") is a
-    # RECURRING interval per the documented tool contract.
+    
+    # Duration like "30m", "2h", "1d" → RECURRING interval, matching the
+    # documented tool contract ("30m (every 30 minutes)"). Previously this
+    # returned kind="once", silently creating a one-shot job for a schedule
+    # the schema documents as recurring — an agent passing '30m' for "every
+    # 30 minutes" got a job that ran once and died (cron contract bug, fixed
+    # 2026-08-04). Explicit one-shot-by-duration is "in 30m"/"in 2h".
     if schedule_lower.startswith("in "):
         duration_str = schedule[3:].strip()
         try:
             minutes = parse_duration(duration_str)
         except ValueError:
             raise ValueError(
-                f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'.")
-        now = _hermes_now()
-        # Durations measure elapsed time, not wall-clock hours across a DST transition.
-        run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
-        return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
-    with contextlib.suppress(ValueError):
-        return _interval_schedule(parse_duration(schedule))
-
+                f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'."
+            )
+        run_at = _hermes_now() + timedelta(minutes=minutes)
+        return {
+            "kind": "once",
+            "run_at": run_at.isoformat(),
+            "display": f"once in {duration_str}",
+        }
+    try:
+        minutes = parse_duration(schedule)
+        return {
+            "kind": "interval",
+            "minutes": minutes,
+            "display": f"every {minutes}m",
+        }
+    except ValueError:
+        pass
+    
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
         f"  - Interval: '30m', 'every 30m', 'every 2h' (recurring)\n"
@@ -1051,8 +1250,15 @@ def _record_persisted_error_recovery(job: Dict[str, Any], previous_next_run: str
         "rearmed_at": _hermes_now().isoformat(),
     }
     _persisted_error_recoveries += 1
-    _append_telemetry_record(
-        "persisted_error_recoveries.jsonl", entry, _persisted_error_recoveries_recent)
+    _persisted_error_recoveries_recent.append(entry)
+    del _persisted_error_recoveries_recent[:-_PERSISTED_ERROR_RECOVERY_HISTORY]
+    try:
+        path = _current_cron_store().cron_dir / "persisted_error_recoveries.jsonl"
+        _ensure_cron_dir(path.parent)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except Exception as exc:  # never let telemetry break a tick
+        logger.debug("Could not append persisted-error-recovery record: %s", exc)
 
 
 def get_persisted_error_recovery_stats() -> Dict[str, Any]:
@@ -1846,10 +2052,14 @@ def create_job(
         The created job dict
     """
     parsed_schedule = parse_schedule(schedule)
-    # Normalize repeat: treat 0 or negative values as None (infinite). String forms
-    # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
+
+    # Normalize repeat: treat 0 or negative values as None (infinite).
+    # String forms ('forever'/'once'/numeric) coerce via
+    # normalize_repeat_value — the shared chokepoint with update paths
     # (#66824/#64520/#7142/#71987/#95706).
     repeat = normalize_repeat_value(repeat)
+
+    # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
     if deliver is None:
@@ -2170,13 +2380,36 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["reasoning_effort"]
                 )
 
+            # Normalize repeat the same way create_job does. Callers pass
+            # either the stored dict shape ({"times": N, "completed": M}) or
+            # a bare value ("forever", "once", 3, "3"); bare values coerce
+            # through normalize_repeat_value and preserve the completed
+            # counter. A raw string stored here previously broke
+            # mark_job_run ('str' has no .get) and repeat accounting.
+            if "repeat" in updates:
+                _rp = updates["repeat"]
+                if isinstance(_rp, dict):
+                    _rp = dict(_rp)
+                    _rp["times"] = normalize_repeat_value(_rp.get("times"))
+                    _rp.setdefault("completed", (job.get("repeat") or {}).get("completed", 0))
+                    updates["repeat"] = _rp
+                else:
+                    updates["repeat"] = {
+                        "times": normalize_repeat_value(_rp),
+                        "completed": (job.get("repeat") or {}).get("completed", 0),
+                    }
+
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
 
-            if is_terminal_job(job) and (
-                updated.get("state") not in {"completed", "error"}
-                or updated.get("enabled") is True
-                or updated.get("next_run_at") is not None
+            if (
+                is_terminal_job(job)
+                and not _is_recoverable_error_job(job)
+                and (
+                    updated.get("state") not in {"completed", "error"}
+                    or updated.get("enabled") is True
+                    or updated.get("next_run_at") is not None
+                )
             ):
                 raise ValueError(
                     f"Cannot activate terminal cron job '{job.get('name', job_id)}' "
@@ -2241,10 +2474,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     )
                 updated["next_run_at"] = next_run
 
-            if is_terminal_job(job) and (
-                updated.get("state") not in {"completed", "error"}
-                or updated.get("enabled") is True
-                or updated.get("next_run_at") is not None
+            if (
+                is_terminal_job(job)
+                and not _is_recoverable_error_job(job)
+                and (
+                    updated.get("state") not in {"completed", "error"}
+                    or updated.get("enabled") is True
+                    or updated.get("next_run_at") is not None
+                )
             ):
                 raise ValueError(
                     f"Cannot activate terminal cron job '{job.get('name', job_id)}' "
@@ -2322,9 +2559,18 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     })
 
 
-def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Schedule a job for the next tick (ID or name). ``extra_prompt`` is stamped as
-    ``manual_run_prompt`` for that single fire only; ``mark_job_run`` clears it."""
+def trigger_job(
+    job_id: str, extra_prompt: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Schedule a job to run on the next scheduler tick. Accepts a job ID or name.
+
+    ``extra_prompt``: optional transient per-run context for the manual fire
+    (from ``cronjob(action='run', prompt=...)`` forwarded through the gateway
+    api_server). Stamped as ``manual_run_prompt`` alongside ``manual_run_at``
+    and consumed by ``run_one_job`` for that single fire only —
+    ``mark_job_run`` clears it, so it never persists into the job definition
+    or later scheduled fires.
+    """
     job = resolve_job_ref(job_id)
     if not job:
         return None
@@ -2348,6 +2594,9 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
             # Persist run-now intent alongside the arbitrary instant so cron
             # expression/TZ repair guards do not mistake it for stale state.
             "manual_run_at": manual_run_at,
+            # Transient run context rides with the run-now intent (None
+            # clears any stale prompt from a previous trigger).
+            "manual_run_prompt": (extra_prompt or None),
         },
     )
 
@@ -2748,6 +2997,9 @@ def _mark_job_run_locked(
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
                 job.pop("manual_run_at", None)
+                # The transient manual-run context is single-fire: whatever
+                # run just completed consumed it (or superseded it).
+                job.pop("manual_run_prompt", None)
                 job["last_status"] = status or ("ok" if success else "error")
                 job["last_error"] = error if not success else None
                 # A healthy run means the configuration validates again — drop
@@ -3059,7 +3311,7 @@ def advance_next_runs(job_ids) -> int:
         for job in jobs:
             if job["id"] not in ids:
                 continue
-            if is_terminal_job(job):
+            if is_terminal_job(job) and not _is_recoverable_error_job(job):
                 continue
             kind = job.get("schedule", {}).get("kind")
             if kind not in {"cron", "interval"}:
@@ -3156,7 +3408,7 @@ def _claim_job_for_fire_locked(
         for job in jobs:
             if job["id"] != job_id:
                 continue
-            if is_terminal_job(job):
+            if is_terminal_job(job) and not _is_recoverable_error_job(job):
                 return False
             # enabled + pause markers must both clear — a half-paused record
             # (enabled=true, state=paused/paused_at set) must not claim. An
@@ -3719,7 +3971,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         # above repairs known shapes; this catches FUTURE variants so healthy siblings still
         # run/persist.
         try:
-            if is_terminal_job(job):
+            if is_terminal_job(job) and not _is_recoverable_error_job(job):
                 continue
             if not job.get("enabled", True):
                 continue

@@ -10,7 +10,7 @@ import re
 import unicodedata
 import uuid
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
@@ -202,22 +202,69 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
 
 
 def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> List[Dict[str, Any]]:
-    """Chat-style multimodal content → Responses API input parts ([] if not a list). Text is
-    ``input_text`` (user) / ``output_text`` (assistant) — the API rejects the wrong type per role;
-    ``input_image`` is only legal on user messages (see :func:`_input_image_part`). Unsupported
-    video parts fail closed instead of silently turning a video request into a text-only request."""
-    for part in _as_list(content):
-        if isinstance(part, dict) and (ptype := _part_type(part)) in _VIDEO_PART_TYPES:
-            raise ValueError(
-                f"Codex Responses does not support {ptype} input; use a video-capable provider."
-            )
-    text_type = _text_type_for(role)
+    """Convert chat-style multimodal content to Responses API input parts.
+
+    Input:  ``[{"type":"text"|"image_url", ...}]`` (native OpenAI Chat format)
+    Output: ``[{"type":"input_text"|"output_text"|"input_image", ...}]`` (Responses format)
+
+    The ``role`` parameter controls the text content type:
+    - ``"user"`` (default) → ``"input_text"``
+    - ``"assistant"`` → ``"output_text"``
+
+    The Responses API rejects ``input_text`` inside assistant messages and
+    ``output_text`` inside user messages, so callers MUST pass the correct
+    role for the message being converted.
+
+    Image parts are likewise role-restricted: the API only accepts
+    ``input_image`` on user-role messages. An assistant message carrying
+    ``input_image`` is rejected with HTTP 400 on every history replay, which
+    permanently bricks the session (#96816), so image parts are dropped for
+    the assistant role here (the API cannot carry them in any form, so the
+    drop is lossless w.r.t. what would survive the wire).
+
+    Returns an empty list when ``content`` is not a list or contains no
+    recognized parts — callers fall back to the string path.
+    """
+    text_type = "output_text" if role == "assistant" else "input_text"
+    if not isinstance(content, list):
+        return []
     converted: List[Dict[str, Any]] = []
-    for kind, payload in _iter_content_parts(_as_list(content)):
-        if kind == "text":
-            converted.append({"type": text_type, "text": payload})
-        elif (part := _input_image_part(payload, role, keep_empty_url=False)) is not None:
-            converted.append(part)
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                converted.append({"type": text_type, "text": part})
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in {"text", "input_text", "output_text"}:
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                converted.append({"type": text_type, "text": text})
+            continue
+        if ptype in {"image_url", "input_image"}:
+            if role == "assistant":
+                # Responses output messages cannot carry input_image. Keep a
+                # text marker so image-only assistant turns still survive in
+                # replay and later references retain their conversational slot.
+                converted.append({
+                    "type": "output_text",
+                    "text": "[Assistant image omitted during replay]",
+                })
+                continue
+            image_ref = part.get("image_url")
+            detail = part.get("detail")
+            if isinstance(image_ref, dict):
+                url = image_ref.get("url")
+                detail = image_ref.get("detail", detail)
+            else:
+                url = image_ref
+            if not isinstance(url, str) or not url:
+                continue
+            image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+            if isinstance(detail, str) and detail.strip():
+                image_part["detail"] = detail.strip()
+            converted.append(image_part)
     return converted
 
 
@@ -879,211 +926,125 @@ def _chat_messages_to_responses_input(
 
 
 class ResponsesRouteFlags(NamedTuple):
-    """Which special Responses-API route an agent is talking to. Single owner of the
-    codex/xai/github predicates — every site must call :func:`classify_responses_route`.
+    """Which special Responses-API route an agent is talking to.
 
-    Every site that needs these flags (request kwargs build, preflight estimation, silent- reject hints)
-    must call :func:`classify_responses_route` instead of re-implementing the string comparisons inline —
-    inline copies drift (backend-identity class: #22548/#70893/#59561/#72468).
+    Single owner of the codex/xai/github route predicates. Every site that
+    needs these flags (request kwargs build, preflight estimation, silent-
+    reject hints) must call :func:`classify_responses_route` instead of
+    re-implementing the string comparisons inline — inline copies drift
+    (backend-identity class: #22548/#70893/#59561/#72468).
     """
+
     is_codex_backend: bool
     is_xai_responses: bool
     is_github_responses: bool
 
 
 def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
-    """Classify the agent's Responses route from provider + base URL. Host checks are
-    exact-host-or-subdomain, never substring (``evil.com/models.github.ai`` is not GitHub)."""
+    """Classify the agent's Responses route from provider + base URL.
+
+    Host checks are exact-host-or-subdomain (``base_url_hostname``
+    semantics), never substring matching — ``https://evil.com/models.github.ai``
+    must not classify as a GitHub route.
+    """
     from utils import base_url_hostname
+
     provider = getattr(agent, "provider", None)
     base_url = str(getattr(agent, "base_url", "") or "")
-    hostname = str(getattr(agent, "_base_url_hostname", "") or "").lower() or base_url_hostname(base_url)
+    hostname = str(getattr(agent, "_base_url_hostname", "") or "").lower()
+    if not hostname:
+        hostname = base_url_hostname(base_url)
     lower = str(getattr(agent, "_base_url_lower", "") or base_url).lower()
+
     def _host_is(domain: str) -> bool:
         return hostname == domain or hostname.endswith("." + domain)
+
+    is_codex_backend = provider == "openai-codex" or (
+        _host_is("chatgpt.com") and "/backend-api/codex" in lower
+    )
+    is_github_responses = _host_is("models.github.ai") or _host_is("githubcopilot.com")
+    is_xai_responses = provider in {"xai", "xai-oauth"} or hostname == "api.x.ai"
     return ResponsesRouteFlags(
-        is_codex_backend=provider == "openai-codex" or (_host_is("chatgpt.com") and "/backend-api/codex" in lower),
-        is_xai_responses=provider in {"xai", "xai-oauth"} or hostname == "api.x.ai",
-        is_github_responses=_host_is("models.github.ai") or _host_is("githubcopilot.com"),
+        is_codex_backend=is_codex_backend,
+        is_xai_responses=is_xai_responses,
+        is_github_responses=is_github_responses,
     )
 
 
-def _native_responses_replay_items(
-    agent: Any, messages: List[Dict[str, Any]]
-) -> Optional[List[Dict[str, Any]]]:
-    """Build the native-compaction-eligible wire items, or ``None`` when ineligible."""
-    if getattr(agent, "api_mode", None) != "codex_responses" or not isinstance(messages, list):
+def estimate_native_responses_preflight_tokens(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    *,
+    system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[int]:
+    """Estimate tokens for the checkpoint-pruned Responses payload.
+
+    Automatic preflight previously counted the full durable transcript.
+    On a natively compacted Codex session that overstates the wire by
+    several times and fires local compression against history the main
+    request will never send (#96155).
+
+    Returns None when native compaction is not proven eligible for this
+    request, or when conversion fails — the caller must then use the
+    generic durable-transcript estimate (conservative).
+    """
+    if getattr(agent, "api_mode", None) != "codex_responses":
         return None
-    route = classify_responses_route(agent)._asdict()
+    if not isinstance(messages, list):
+        return None
+
+    is_codex_backend, is_xai_responses, is_github_responses = classify_responses_route(agent)
+
     from agent.native_compaction import native_compaction_context_management
-    from agent.fast_mode import effective_request_overrides
-    if not native_compaction_context_management(agent, **route):
+
+    context_management = native_compaction_context_management(
+        agent,
+        is_codex_backend=is_codex_backend,
+        is_xai_responses=is_xai_responses,
+        is_github_responses=is_github_responses,
+    )
+    if not context_management:
         return None
-    # The wire model may be rewritten per request (fast mode); provenance must match what the transport stamps.
-    effective_model = effective_request_overrides(agent).get("model", getattr(agent, "model", None))
+
     try:
         items = _chat_messages_to_responses_input(
-            messages, is_xai_responses=route["is_xai_responses"], is_github_responses=route["is_github_responses"],
-            replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
-            current_issuer_kind=_classify_responses_issuer(base_url=getattr(agent, "base_url", None), **route),
-            current_issuer_model=_wire_model_identity(effective_model),
+            messages,
+            is_xai_responses=is_xai_responses,
+            is_github_responses=is_github_responses,
+            replay_encrypted_reasoning=bool(
+                getattr(agent, "_codex_reasoning_replay_enabled", True)
+            ),
+            current_issuer_kind=_classify_responses_issuer(
+                is_xai_responses=is_xai_responses,
+                is_github_responses=is_github_responses,
+                is_codex_backend=is_codex_backend,
+                base_url=getattr(agent, "base_url", None),
+            ),
             native_compaction_eligible=True,
         )
     except Exception:
         logger.debug(
-            "native Responses replay conversion failed; using the generic fallback",
+            "native Responses preflight conversion failed; falling back to generic estimate",
             exc_info=True,
         )
         return None
-    return items
 
-
-def has_replayable_native_compaction_checkpoint(
-    agent: Any, messages: List[Dict[str, Any]]
-) -> bool:
-    """Whether the current route would replay a persisted native checkpoint."""
-    items = _native_responses_replay_items(agent, messages)
-    if items is None:
-        return False
-    from agent.native_compaction import has_compaction_checkpoint
-    return has_compaction_checkpoint(items)
-
-
-def estimate_native_responses_preflight_tokens(
-    agent: Any, messages: List[Dict[str, Any]], *, system_prompt: str = "", tools: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[int]:
-    """Estimate tokens for the checkpoint-pruned Responses payload (the full transcript overstates a natively compacted
-    session and fires local compression needlessly). None when native compaction is not proven eligible or conversion fails.
-
-    Automatic preflight previously counted the full durable transcript. On a natively compacted Codex
-    session that overstates the wire by several times and fires local compression against history the main
-    request will never send (#96155).
-    """
-    items = _native_responses_replay_items(agent, messages)
-    if items is None:
+    if not isinstance(items, list):
         return None
+
     from agent.model_metadata import estimate_request_tokens_rough
-    return estimate_request_tokens_rough(items, system_prompt=system_prompt or "", tools=tools)
+
+    return estimate_request_tokens_rough(
+        items,
+        system_prompt=system_prompt or "",
+        tools=tools,
+    )
 
 
-# --- Input preflight / validation --------------------------------------------
-
-_PreflightCtx = NamedTuple("_PreflightCtx", [
-    ("sanitize_text", Callable[[str], str]), ("sanitize_harmony_tokens", bool), ("is_github_responses", bool), ("seen_ids", set),
-])
-
-
-def _preflight_function_call(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
-    call_id, name = item.get("call_id"), item.get("name")
-    if not _nonblank(call_id):
-        raise ValueError(f"Codex Responses input[{idx}] function_call is missing call_id.")
-    if not _nonblank(name):
-        raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
-    return {
-        "type": "function_call", "call_id": call_id.strip(), "name": _sanitize_replayed_fn_name(name),
-        "arguments": ctx.sanitize_text(_coerce_arguments(item.get("arguments", "{}"))),
-    }
-
-
-def _preflight_function_call_output(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
-    call_id = item.get("call_id")
-    if not _nonblank(call_id):
-        raise ValueError(f"Codex Responses input[{idx}] function_call_output is missing call_id.")
-    output = item.get("output", "")
-    if isinstance(output, list):
-        # Multimodal tool result: keep recognised input_text/input_image parts, drop the rest (4xx otherwise).
-        cleaned: List[Dict[str, Any]] = []
-        for part in output:
-            ptype = part.get("type") if isinstance(part, dict) else None
-            if ptype == "input_text" and _nonempty_str(part.get("text")):
-                cleaned.append({"type": "input_text", "text": ctx.sanitize_text(part["text"])})
-            elif ptype == "input_image" and _nonempty_str(part.get("image_url")):
-                cleaned.append(_input_image_part(part, keep_empty_url=False))
-        output_value: Any = cleaned or ""
-    else:
-        output_value = ctx.sanitize_text(_str_or_empty(output))
-    return {"type": "function_call_output", "call_id": call_id.strip(), "output": output_value}
-
-
-def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Optional[Dict[str, Any]]:
-    """``reasoning`` / ``compaction`` items: opaque, issuer-sealed; forward only API-defined fields."""
-    encrypted = item.get("encrypted_content")
-    if not _nonempty_str(encrypted):
-        return None
-    if item["type"] == "compaction":
-        return {"type": "compaction", "encrypted_content": encrypted}
-    # ``id`` is used only for local dedup and NOT forwarded (store=False → server-side 404).
-    item_id = item.get("id")
-    if _nonempty_str(item_id):
-        if item_id in ctx.seen_ids:
-            return None
-        ctx.seen_ids.add(item_id)
-    summary = _as_list(item.get("summary"))
-    return {
-        "type": "reasoning", "encrypted_content": encrypted,
-        "summary": _neutralize_harmony_structure(summary) if ctx.sanitize_harmony_tokens else summary,
-    }
-
-
-def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
-    if item.get("role") != "assistant":
-        raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant'.")
-    content = item.get("content")
-    if not isinstance(content, list):
-        raise ValueError(f"Codex Responses input[{idx}] message item must have content list.")
-    normalized_content = []
-    for part_idx, part in enumerate(content):
-        if not isinstance(part, dict):
-            raise ValueError(f"Codex Responses input[{idx}] message content[{part_idx}] must be an object.")
-        part_type = part.get("type")
-        if part_type not in _OUTPUT_TEXT_TYPES:
-            raise ValueError(
-                f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
-            )
-        normalized_content.append({"type": "output_text", "text": ctx.sanitize_text(_str_or_empty(part.get("text", "")))})
-    if not normalized_content:
-        raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
-    return _assistant_message_item(item, normalized_content, is_github_responses=ctx.is_github_responses)
-
-
-def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
-    """Untyped ``user``/``assistant`` role message — the only legal shape besides typed items."""
-    role = item.get("role")
-    if role not in {"user", "assistant"}:
-        raise ValueError(
-            f"Codex Responses input[{idx}] has unsupported item shape (type={item.get('type')!r}, role={role!r})."
-        )
-    content = item.get("content", "")
-    if not isinstance(content, list):
-        return {"role": role, "content": ctx.sanitize_text(_str_or_empty(content))}
-    # Parts are already Responses-shaped; validate and re-type text for the role.
-    # Unlike history conversion, empty text / empty image urls are kept, not dropped.
-    text_type = _text_type_for(role)
-    validated: List[Dict[str, Any]] = []
-    for part_idx, part in enumerate(content):
-        if isinstance(part, str):
-            if part:
-                validated.append({"type": text_type, "text": ctx.sanitize_text(part)})
-        elif not isinstance(part, dict):
-            raise ValueError(f"Codex Responses input[{idx}].content[{part_idx}] must be an object or string.")
-        elif (ptype := _part_type(part)) in _TEXT_PART_TYPES:
-            text = part.get("text", "")
-            text = text if isinstance(text, str) else str(text or "")
-            validated.append({"type": text_type, "text": ctx.sanitize_text(text)})
-        elif ptype in _IMAGE_PART_TYPES:
-            validated.append(_input_image_part(part, role, keep_empty_url=True))
-        else:
-            raise ValueError(
-                f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
-            )
-    return {"role": role, "content": validated}
-
-
-_PREFLIGHT_ITEM_HANDLERS: Dict[str, Callable[..., Optional[Dict[str, Any]]]] = {
-    "function_call": _preflight_function_call, "function_call_output": _preflight_function_call_output,
-    "reasoning": _preflight_encrypted, "compaction": _preflight_encrypted, "message": _preflight_message,
-}
-
+# ---------------------------------------------------------------------------
+# Input preflight / validation
+# ---------------------------------------------------------------------------
 
 def _preflight_codex_input_items(
     raw_items: Any, *, is_github_responses: bool = False, sanitize_harmony_tokens: bool = False,
@@ -1257,6 +1218,74 @@ def _preflight_codex_input_items(
             if isinstance(phase, str) and phase.strip():
                 normalized_item["phase"] = phase.strip()
             normalized.append(normalized_item)
+            continue
+
+        role = item.get("role")
+        if role in {"user", "assistant"}:
+            content = item.get("content", "")
+            if content is None:
+                content = ""
+            if isinstance(content, list):
+                # Multimodal content from ``_chat_messages_to_responses_input``
+                # is already in Responses format (``input_text`` / ``output_text``
+                # / ``input_image``).  Validate each part and pass through.
+                # Use the correct text type for the role — ``output_text`` for
+                # assistant messages, ``input_text`` for user messages.
+                text_type = "output_text" if role == "assistant" else "input_text"
+                validated: List[Dict[str, Any]] = []
+                for part_idx, part in enumerate(content):
+                    if isinstance(part, str):
+                        if part:
+                            validated.append({"type": text_type, "text": sanitize_text(part)})
+                        continue
+                    if not isinstance(part, dict):
+                        raise ValueError(
+                            f"Codex Responses input[{idx}].content[{part_idx}] must be an object or string."
+                        )
+                    ptype = str(part.get("type") or "").strip().lower()
+                    if ptype in {"input_text", "text", "output_text"}:
+                        text = part.get("text", "")
+                        if not isinstance(text, str):
+                            text = str(text or "")
+                        validated.append({"type": text_type, "text": sanitize_text(text)})
+                    elif ptype in {"input_image", "image_url"}:
+                        if role == "assistant":
+                            # Enforce the same output-message invariant for
+                            # raw request overrides as for normal history.
+                            validated.append({
+                                "type": "output_text",
+                                "text": "[Assistant image omitted during replay]",
+                            })
+                            continue
+                        image_ref = part.get("image_url", "")
+                        detail = part.get("detail")
+                        if isinstance(image_ref, dict):
+                            url = image_ref.get("url", "")
+                            detail = image_ref.get("detail", detail)
+                        else:
+                            url = image_ref
+                        if not isinstance(url, str):
+                            url = str(url or "")
+                        image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                        if isinstance(detail, str) and detail.strip():
+                            image_part["detail"] = detail.strip()
+                        validated.append(image_part)
+                    else:
+                        raise ValueError(
+                            f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
+                        )
+                normalized.append({"role": role, "content": validated})
+                continue
+            if not isinstance(content, str):
+                content = str(content)
+
+            normalized.append({"role": role, "content": sanitize_text(content)})
+            continue
+
+        raise ValueError(
+            f"Codex Responses input[{idx}] has unsupported item shape (type={item_type!r}, role={role!r})."
+        )
+
     return normalized
 
 

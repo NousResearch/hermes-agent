@@ -161,7 +161,7 @@ function BoardNameField({
       <Input
         autoFocus
         onChange={event => onChange(event.target.value)}
-        onKeyDown={event => isSubmitEnter(event) && onEnter()}
+        onKeyDown={event => event.key === 'Enter' && onEnter()}
         placeholder={k.boardNamePlaceholder}
         value={value}
       />

@@ -35,44 +35,104 @@ _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
 
-# The selected shell is cached so path translation stays consistent for the
-# whole environment.  In particular, WSL bash uses /mnt/<drive>, while Git
-# Bash uses /<drive>.
-_resolved_bash_path: str | None = None
+# --- Terminal temp-cache pruning -------------------------------------------
+#
+# get_temp_dir() now defaults to HERMES_HOME/cache/terminal (real storage)
+# instead of tmpfs /tmp, so stale session artifacts no longer disappear on
+# reboot for free. Prune them ourselves: the gateway housekeeping loop calls
+# cleanup_terminal_temp_cache() hourly (same contract as the other
+# cleanup_*_cache helpers), and a once-per-process best-effort sweep covers
+# CLI-only installs that never run the gateway.
+#
+# Background-process artifacts come in triplets (hermes_bg_<id>.log/.pid/
+# .exit). A long-running server's .pid file never changes mtime while its
+# .log keeps updating — so age is judged per GROUP (newest mtime among files
+# sharing a stem) to avoid yanking the pid/exit files out from under a
+# still-live background session.
+TERMINAL_TEMP_MAX_AGE_HOURS = 72
+
+_terminal_temp_prune_lock = threading.Lock()
+_terminal_temp_pruned_once = False
+
+_BG_GROUP_RE = re.compile(r"^(hermes_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
 
 
-def _is_wsl_bash_path(path: str | None) -> bool:
-    """Return whether *path* is the Windows WSL launcher."""
-    if not _IS_WINDOWS or not path:
-        return False
-    system_root = (
-        os.environ.get("WINDIR")
-        or os.environ.get("SystemRoot")
-        or r"C:\Windows"
-    )
-    normalized = ntpath.normcase(ntpath.normpath(path))
-    candidates = {
-        ntpath.normcase(ntpath.normpath(
-            ntpath.join(system_root, "System32", "bash.exe")
-        )),
-        ntpath.normcase(ntpath.normpath(
-            ntpath.join(system_root, "Sysnative", "bash.exe")
-        )),
-    }
-    return normalized in candidates
+def _default_terminal_temp_dir() -> "Path | None":
+    """Return HERMES_HOME/cache/terminal, or None if unresolvable."""
+    try:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / "cache" / "terminal"
+    except Exception:
+        return None
 
 
-def _uses_wsl_bash() -> bool:
-    """Return whether the resolved local shell needs WSL path spelling."""
-    global _resolved_bash_path
-    if not _IS_WINDOWS:
-        return False
-    if _resolved_bash_path is None:
+def cleanup_terminal_temp_cache(
+    max_age_hours: int = TERMINAL_TEMP_MAX_AGE_HOURS,
+) -> int:
+    """Delete session temp artifacts older than *max_age_hours*.
+
+    Same contract as the ``cleanup_*_cache`` helpers in
+    ``gateway.platforms.base`` — returns the number of entries removed — so
+    the gateway housekeeping loop can prune this dir on its hourly cadence.
+
+    Only prunes the managed default dir (``HERMES_HOME/cache/terminal``).
+    User-pointed ``terminal.temp_dir`` locations are the user's to manage —
+    we never bulk-delete inside a directory we don't own.
+    """
+    root = _default_terminal_temp_dir()
+    if root is None:
+        return 0
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+
+    # Newest mtime per hermes_bg_<id> group, so a live server's fresh .log
+    # protects its stale-looking .pid/.exit siblings.
+    group_newest: dict[str, float] = {}
+    for f in entries:
+        m = _BG_GROUP_RE.match(f.name)
+        if m:
+            try:
+                mt = f.stat().st_mtime
+            except OSError:
+                continue
+            key = m.group(1)
+            group_newest[key] = max(group_newest.get(key, 0.0), mt)
+
+    for f in entries:
         try:
-            _resolved_bash_path = _find_bash()
-        except (OSError, RuntimeError):
-            return False
-    return _is_wsl_bash_path(_resolved_bash_path)
+            mt = f.stat().st_mtime
+        except OSError:
+            continue
+        m = _BG_GROUP_RE.match(f.name)
+        effective = group_newest.get(m.group(1), mt) if m else mt
+        if effective >= cutoff:
+            continue
+        try:
+            if f.is_dir():
+                shutil.rmtree(f, ignore_errors=True)
+            else:
+                f.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _prune_terminal_temp_once() -> None:
+    """Best-effort prune, at most once per process (CLI-only installs)."""
+    global _terminal_temp_pruned_once
+    with _terminal_temp_prune_lock:
+        if _terminal_temp_pruned_once:
+            return
+        _terminal_temp_pruned_once = True
+    try:
+        cleanup_terminal_temp_cache()
+    except Exception as exc:
+        logger.debug("Terminal temp prune failed: %s", exc)
 
 
 
@@ -169,10 +229,8 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
 
 
 def _windows_to_msys_path(cwd: str) -> str:
-    """Translate a native Windows path to the selected bash's POSIX form.
-
-    Git Bash uses ``/c/Users/x`` and WSL bash uses ``/mnt/c/Users/x`` so
-    ``builtin cd`` resolves the same host directory in either backend.
+    """Translate a native Windows path (``C:\\Users\\x``) to Git Bash /
+    MSYS form (``/c/Users/x``) so ``builtin cd`` resolves it reliably.
 
     No-ops on non-Windows hosts or for paths that aren't drive-qualified
     native Windows paths. Returns the input unchanged when no translation
@@ -184,23 +242,21 @@ def _windows_to_msys_path(cwd: str) -> str:
     if not m:
         return cwd
     tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
-    root = "/mnt" if _uses_wsl_bash() else ""
-    return f"{root}/{drive}/{tail}" if tail else f"{root}/{drive}/"
+    return f"/{drive}/{tail}" if tail else f"/{drive}/"
 
 
 def _bash_safe_path(path: str) -> str:
-    """Return *path* in a form safe to embed in a bash script.
+    """Return *path* in a form safe to embed in a Git Bash script.
 
-    Native ``C:\\Users\\x`` / ``C:/Users/x`` is converted to the selected
-    bash spelling via
+    Native ``C:\\Users\\x`` / ``C:/Users/x`` → ``/c/Users/x`` via
     :func:`_windows_to_msys_path`. Mixed MSYS leftovers
     (``/c/Users\\Alexander\\Documents``) get backslashes normalized so
     bash does not eat ``\\U`` and trip the ``Directory \\drivers\\etc``
     failure class. No-op off Windows and for empty input.
 
     ``get_temp_dir`` already emits forward-slash ``C:/...`` forms for
-    Python compatibility; those still need the POSIX rewrite —
-    argument conversion treats ``C:/...`` as a Windows path and
+    Python compatibility; those still need the ``/c/...`` rewrite —
+    MSYS argument conversion treats ``C:/...`` as a Windows path and
     can corrupt the login-shell ``drivers\\etc`` lookup.
     """
     if not _IS_WINDOWS or not path:
@@ -811,7 +867,6 @@ def _windows_bash_candidates(custom: "str | None") -> list[str]:
 
 def _find_bash() -> str:
     """Find bash for command execution."""
-    global _resolved_bash_path
     if not _IS_WINDOWS:
         return (shutil.which("bash")
                 or next((p for p in ("/usr/bin/bash", "/bin/bash") if os.path.isfile(p)), None)
@@ -828,13 +883,6 @@ def _find_bash() -> str:
                     custom,
                     candidate,
                 )
-            _resolved_bash_path = candidate
-            if _is_wsl_bash_path(candidate):
-                logger.warning(
-                    "Git Bash child-process probe failed; using WSL bash at %s "
-                    "with /mnt path mapping",
-                    candidate,
-                )
             return candidate
     if candidates:
         probe_details = "\n".join(
@@ -845,7 +893,6 @@ def _find_bash() -> str:
         # Last resort for failures unrelated to the known MSYS/ASLR class:
         # return the first path so the caller still sees the real bash error
         # instead of the less useful "not found" message.
-        _resolved_bash_path = candidates[0]
         return candidates[0]
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
@@ -955,15 +1002,11 @@ def _bash_starts(bash: str) -> bool:
         return cached
 
     try:
-        # The Windows WSL launcher has a cold-start cost that is materially
-        # higher than Git Bash on some installations.  Keep the normal probe
-        # bounded while allowing the known local fallback to initialize.
-        probe_timeout = 30 if _is_wsl_bash_path(bash) else 15
         result = subprocess.run(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
-            timeout=probe_timeout,
+            timeout=15,
             creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )
         ok = result.returncode == 0
@@ -1303,34 +1346,69 @@ class LocalEnvironment(BaseEnvironment):
         self.init_session()
 
     def get_temp_dir(self) -> str:
-        """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
-        (Termux has no /tmp), ``HERMES_HOME/cache/terminal`` (real storage: tmpfs /tmp
-        fills under Hermes load; pruned by ``cleanup_terminal_temp_cache``), /tmp,
-        ``tempfile.gettempdir()``; backend env before process env so terminal.env
-        overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,
-        so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid)."""
+        """Return a shell-safe writable temp dir for local execution.
+
+        Termux does not provide /tmp by default, but exposes a POSIX TMPDIR.
+        Prefer POSIX-style env vars when available, keep using /tmp on regular
+        Unix systems, and only fall back to tempfile.gettempdir() when it also
+        resolves to a POSIX path.
+
+        Check the environment configured for this backend first so callers can
+        override the temp root explicitly (for example via terminal.temp_dir,
+        terminal.env, or a custom TMPDIR), then fall back to the host process
+        environment.
+
+        **Default (no override set):** a dedicated cache dir under
+        ``HERMES_HOME`` (``~/.hermes/cache/terminal``) rather than ``/tmp``.
+        On several distros (Arch and friends) ``/tmp`` is a small RAM-backed
+        tmpfs, and Hermes session artifacts — background-process logs,
+        code-execution sandboxes, spilled tool results — can fill it under
+        load. Real storage is the safer default; stale artifacts are pruned
+        by ``cleanup_terminal_temp_cache`` (gateway housekeeping + a
+        once-per-process best-effort sweep) since we no longer get tmpfs
+        reboot wipes for free.
+
+        **Windows:** hardcoded ``/tmp`` is wrong in two ways — native Python
+        can't open the path, and the Windows default temp (``%TEMP%``) often
+        contains spaces (``C:\\Users\\Some Name\\AppData\\Local\\Temp``) that
+        break unquoted bash interpolations.  Use a dedicated cache dir under
+        ``HERMES_HOME`` instead — single-word path, guaranteed to exist, same
+        string resolves in both Git Bash and native Python.
+        """
         if _IS_WINDOWS:
             cache_dir = (_default_terminal_temp_dir()
                          or Path(tempfile.gettempdir()) / "hermes_terminal")
             cache_dir.mkdir(parents=True, exist_ok=True)
             _prune_terminal_temp_once()
+            # Force forward slashes so the same string serves both contexts.
             return str(cache_dir).replace("\\", "/")
-        def _posix(p: str) -> str:
-            return p.rstrip("/") or "/"
-        for env_var in ("TERMINAL_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
+
+        # Explicit temp-dir override from terminal.temp_dir (TERMINAL_TEMP_DIR).
+        # Honored ahead of the generic TMPDIR so users can redirect Hermes' temp
+        # root to real storage when /tmp is a small tmpfs.
+        configured = self.env.get("TERMINAL_TEMP_DIR") or os.environ.get("TERMINAL_TEMP_DIR")
+        if configured and configured.startswith("/") and os.path.isdir(configured):
+            return configured.rstrip("/") or "/"
+
+        for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
-            if candidate and candidate.startswith("/") and (
-                    env_var != "TERMINAL_TEMP_DIR" or os.path.isdir(candidate)):
-                return _posix(candidate)
+            if candidate and candidate.startswith("/"):
+                return candidate.rstrip("/") or "/"
+
+        # Default: HERMES_HOME/cache/terminal — real storage, mirroring the
+        # Windows branch above. /tmp is only a last-resort fallback now
+        # because RAM-backed tmpfs /tmp fills up under Hermes load.
         try:
-            cache_dir = _default_terminal_temp_dir()
+            from hermes_constants import get_hermes_home
+            cache_dir = get_hermes_home() / "cache" / "terminal"
             cache_dir.mkdir(parents=True, exist_ok=True)
             resolved = str(cache_dir)
             if resolved.startswith("/") and os.access(resolved, os.W_OK | os.X_OK):
                 _prune_terminal_temp_once()
-                return _posix(resolved)
+                return resolved.rstrip("/") or "/"
         except Exception:
             pass
+
         if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK | os.X_OK):
             return "/tmp"
         fallback = tempfile.gettempdir()

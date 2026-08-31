@@ -35,6 +35,7 @@ import {
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
+import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getLatestSessionMessages } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -51,7 +52,7 @@ import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { requestGatewayForProfile } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
-import { notify, notifyError } from '@/store/notifications'
+import { notifyError } from '@/store/notifications'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
@@ -1022,23 +1023,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // carries plain session tabs alongside bot chats, so a "+" there must never
   // be dead just because the sidebar's current selection has nowhere to route.
   const openNewSessionTab = useCallback(() => {
-    const workspaceMode = $workspaceMode.get()
     const workspaceOwnerKey = $workspaceOwnerKey.get()
     const workspaceNewSessionTarget = $workspaceNewSessionTarget.get()
 
-    if (workspaceMode === 'bots') {
-      if (workspaceNewSessionTarget?.kind !== 'route' || !workspaceOwnerKey) {
-        notify({
-          kind: 'info',
-          message:
-            workspaceNewSessionTarget?.kind === 'blocked'
-              ? workspaceNewSessionTarget.message
-              : 'Select a Bot or group first.'
-        })
-
-        return
-      }
-
+    if ($workspaceMode.get() === 'bots' && workspaceNewSessionTarget?.kind === 'route' && workspaceOwnerKey) {
       void openNewSessionTile('center', {
         listed: false,
         route: workspaceNewSessionTarget.route,
@@ -1437,6 +1425,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* Petdex floating mascot — renders nothing unless installed + enabled.
           Never in the HUD: that window is the chat bar and nothing else. */}
       {!isHudWindow() && !isBrowserWindow() && <FloatingPet />}
+
+      {/* In-app tips. Renders nothing until the app is quiet and has something
+          to point at, and nothing at all once they're off or all retired. The
+          HUD and browser windows have none of the surfaces a tip talks about. */}
+      {!isHudWindow() && !isBrowserWindow() && <TipHost />}
 
       {/* Single persistent xterm host chasing the terminal pane's slot rect.
           The HUD has no terminal pane, so it has nothing to chase. */}

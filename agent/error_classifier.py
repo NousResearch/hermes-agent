@@ -37,7 +37,9 @@ class FailoverReason(enum.Enum):
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
-    image_corrupt = "image_corrupt"       # Provider can't decode image bytes — strip and retry (shrinking won't help)
+    image_corrupt = "image_corrupt"       # Provider says the image bytes are undecodable — shrinking won't help, strip and retry instead
+
+    # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
@@ -180,26 +182,87 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request exceeds the maximum size",
 )
 
-# Per-image size/dimension 400s (Anthropic 5 MB / 8000 px; MiniMax "media
-# exceeds size limit" #76039) — a specific 400 before the request hits 413. A
-# non-image media hit is harmless: the shrink pass finds no image parts.
-# "patches after processing": OpenAI Codex Responses rejects an image whose
-# tile-patch budget (ceil(w/32)×ceil(h/32)) exceeds its 30000-patch ceiling
-# with wording that names no image-size vocabulary — without this pattern it
-# fell to format_error (non-retryable), bypassing the shrink recovery (#106337).
-_IMAGE_TOO_LARGE_PATTERNS = (
-    "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
-    "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
-    "patches after processing",
-)
+# Image-size patterns.  Matched against 400 bodies (not 413) because most
+# providers return a 400 with a specific image-too-big message before the
+# whole request hits the 413 size limit.  Anthropic's wording is the most
+# important here (hard 5 MB per image, returned as
+# "messages.N.content.K.image.source.base64: image exceeds 5 MB maximum").
+_IMAGE_TOO_LARGE_PATTERNS = [
+    "image exceeds",        # Anthropic: "image exceeds 5 MB maximum"
+    "image too large",      # generic
+    "image_too_large",      # error_code variant
+    "image size exceeds",   # variant
+    "image dimensions exceed",  # Anthropic: "image dimensions exceed max allowed size: 8000 pixels"
+    "dimensions exceed max allowed size",  # Anthropic dimension-cap (wording variant)
+    "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
+    # Vendors that reject the same oversized image without using the word
+    # "image".  MiniMax's Anthropic-compatible endpoint returns
+    # "media exceeds size limit: max 10485760 bytes (2013)" for a native
+    # image part above its 10 MB ceiling (#76039).  Matched on the "media"
+    # fragment to mirror "image exceeds" above and catch reworded variants.
+    # A non-image media rejection (audio/video) that lands here is safe: the
+    # shrink pass finds no image parts, returns False, and the caller
+    # surfaces the original error unchanged.
+    "media exceeds",
+    "media too large",
+    # "request_too_large" on a request known to contain an image → image is
+    # the likely culprit; we still try the shrink path before giving up.
+]
 
-# Undecodable image bytes → strip-and-retry, never shrink. xAI wordings
-# (#69078); the last is the full sentence because shorter fragments also match
-# non-image download failures.
-_IMAGE_CORRUPT_PATTERNS = (
-    "invalid png image", "invalid jpeg image", "base64 string of provided image cannot be decoded",
+# Image-corruption patterns — distinct from _IMAGE_TOO_LARGE_PATTERNS above.
+# These fire when the provider can decode the request but not the image
+# bytes themselves (e.g. a re-serialized image part in replayed history that
+# lost data along the way). Re-encoding/shrinking corrupt bytes does not fix
+# corruption, so this list is routed to the strip-and-retry path
+# (FailoverReason.image_corrupt), never to the shrink path.
+#
+# xAI wording: {"code":"invalid-argument","error":"...Invalid PNG image."}
+# xAI has a second wording for the same failure class depending on where
+# the truncation lands: "Invalid PNG image." for aligned truncation,
+# "base64 string of provided image cannot be decoded" for unaligned
+# truncation (confirmed by the issue reporter — same root cause, two wire
+# messages).
+# A third xAI wording covers the URL-image path — the provider downloads
+# the image itself and rejects the fetched bytes:
+# {"code":"invalid-argument","error":"code: 'Client specified an invalid
+# argument', message: \"Downloaded response does not contain a valid JPG,
+# PNG, WebP, or ICO image.\""}
+# Matched as the full observed sentence on purpose — shorter fragments
+# ("downloaded response does not contain a valid") also match non-image
+# download failures and would misroute them into strip-and-retry.
+# See: https://github.com/NousResearch/hermes-agent/issues/69078
+_IMAGE_CORRUPT_PATTERNS = [
+    "invalid png image",
+    "invalid jpeg image",
+    "base64 string of provided image cannot be decoded",
     "downloaded response does not contain a valid jpg, png, webp, or ico image",
-)
+]
+
+# Providers that follow the OpenAI spec strictly require tool message
+# ``content`` to be a string.  Some (Anthropic native, Codex Responses,
+# Gemini native, first-party OpenAI) extend this to accept a content-parts
+# list (text + image_url) so screenshots from computer_use survive.  Others
+# (Xiaomi MiMo, some Alibaba endpoints, a long tail of OpenAI-compatible
+# providers) reject the list with a 400 — the patterns below are the most
+# common error shapes we see.  Recovery: strip image parts from tool
+# messages in-place, record the (provider, model) for the rest of the
+# session so we don't waste another call learning the same lesson, retry.
+#
+# See: https://github.com/NousResearch/hermes-agent/issues/27344
+_MULTIMODAL_TOOL_CONTENT_PATTERNS = [
+    # Xiaomi MiMo: {"error":{"code":"400","message":"Param Incorrect","param":"text is not set"}}
+    "text is not set",
+    # Generic "tool message must be string" shapes
+    "tool message content must be a string",
+    "tool content must be a string",
+    "tool message must be a string",
+    # OpenAI-compat servers that reject list-type tool content with a
+    # schema-validation message
+    "expected string, got list",
+    "expected string, got array",
+    # Alibaba/DashScope variant
+    "tool_call.content must be string",
+]
 
 # 400s rejecting list-type ``content`` in tool messages (Xiaomi MiMo "text is
 # not set", Alibaba, OpenAI-compat long tail). Recovery: strip image parts from
@@ -2039,6 +2102,16 @@ def _classify_400(
             retryable=True,
         )
 
+    # Image-corruption from 400 (xAI's undecodable-image check fires this way).
+    # Must be checked BEFORE image_too_large: both are image-shaped 400s, but
+    # corrupt bytes need strip-and-retry, not shrink-and-retry — shrinking
+    # can't repair a truncated/malformed PNG.
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
+            retryable=True,
+        )
+
     # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
     # Must be checked BEFORE context_overflow because messages can trip both
     # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
@@ -2221,8 +2294,173 @@ def _body_message_candidates(body: dict) -> Iterator[Any]:
     yield args.get("reason") if isinstance(args, dict) else None
 
 
-def _from_cause_chain(error: Exception, pick: Callable[[Any], Any], default: Any) -> Any:
-    """First non-None ``pick(exc)`` over the error and its __cause__/__context__ chain (max 5 deep)."""
+# ── Message pattern classification ──────────────────────────────────────
+
+def _classify_by_message(
+    error_msg: str,
+    error_type: str,
+    *,
+    approx_tokens: int,
+    context_length: int,
+    result_fn,
+) -> Optional[ClassifiedError]:
+    """Classify based on error message patterns when no status code is available."""
+
+    # Payload-too-large patterns (from message text when no status_code)
+    if any(p in error_msg for p in _PAYLOAD_TOO_LARGE_PATTERNS):
+        return result_fn(
+            FailoverReason.payload_too_large,
+            retryable=True,
+            should_compress=True,
+        )
+
+    # Multimodal tool content patterns (from message text when no status_code)
+    if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
+        return result_fn(
+            FailoverReason.multimodal_tool_content_unsupported,
+            retryable=True,
+        )
+
+    # Image-corruption patterns (from message text when no status_code)
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
+            retryable=True,
+        )
+
+    # Image-too-large patterns (from message text when no status_code)
+    if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
+        return result_fn(
+            FailoverReason.image_too_large,
+            retryable=True,
+        )
+
+    # Usage-limit patterns need the same disambiguation as 402: some providers
+    # surface "usage limit" errors without an HTTP status code.  A transient
+    # signal ("try again", "resets at", …) means it's a periodic quota, not
+    # billing exhaustion.
+    has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+    if has_usage_limit:
+        has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
+        if has_transient_signal:
+            return result_fn(
+                FailoverReason.rate_limit,
+                retryable=True,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
+        return result_fn(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+
+    # Overloaded / server-busy patterns — must come BEFORE the rate_limit and
+    # billing checks so that a message-only "overloaded" (no 503/529 status,
+    # e.g. some Anthropic-compatible proxies) classifies as a transient
+    # overload (backoff + retry) instead of falling through to `unknown` or
+    # incorrectly triggering credential rotation.
+    if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+        )
+
+    # Billing patterns
+    if any(p in error_msg for p in _BILLING_PATTERNS):
+        return result_fn(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+            # Status-less path: adapters can strip the HTTP status from the
+            # Anthropic "out of extra usage" 400, so the same ambiguity
+            # marking applies here (#82154).
+            error_context=_billing_ambiguity_context(error_msg),
+        )
+
+    # Rate limit patterns
+    if any(p in error_msg for p in _RATE_LIMIT_PATTERNS):
+        return result_fn(
+            FailoverReason.rate_limit,
+            retryable=True,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+
+    # Empty-provider-response advisories (often mention "max_tokens") must
+    # retry without compression — see the matching 400-path guard above.
+    if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_compress=False,
+        )
+
+    # Context overflow patterns
+    if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
+        return result_fn(
+            FailoverReason.context_overflow,
+            retryable=True,
+            should_compress=True,
+        )
+
+    # Auth patterns
+    # Auth errors should NOT be retried directly — the credential is invalid and
+    # retrying with the same key will always fail.  Set retryable=False so the
+    # caller triggers credential rotation (should_rotate_credential=True) or
+    # provider fallback rather than an immediate retry loop.
+    if any(p in error_msg for p in _AUTH_PATTERNS):
+        return result_fn(
+            FailoverReason.auth,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+
+    # Provider policy-block (aggregator-side guardrail) — check before
+    # model_not_found so we don't mis-label as a missing model.
+    if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
+        return result_fn(
+            FailoverReason.provider_policy_blocked,
+            retryable=False,
+            should_fallback=False,
+        )
+
+    # Model not found patterns
+    if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
+        return result_fn(
+            FailoverReason.model_not_found,
+            retryable=False,
+            should_fallback=True,
+        )
+
+    # Timeout message patterns — generic exception types (e.g. RuntimeError)
+    # raised by local shims or custom providers that internally wrap a
+    # subprocess/HTTP timeout.  Classified as transport timeout so the retry
+    # loop rebuilds the client instead of treating the turn as an empty
+    # model response.
+    if any(p in error_msg for p in _TIMEOUT_MESSAGE_PATTERNS):
+        return result_fn(FailoverReason.timeout, retryable=True)
+
+    # Connection-establishment / DNS failure message patterns — same shim
+    # problem as the timeout patterns above: the wrapping exception type is
+    # generic, so _TRANSPORT_ERROR_TYPES never matches and the error would
+    # fall through to FailoverReason.unknown. Classified as timeout (the
+    # transport bucket) so the retry loop's eager transport fallback and
+    # client rebuild apply. Never routes to compression: a connection that
+    # was never established is not a context-overflow signal.
+    if any(p in error_msg for p in _CONNECTION_MESSAGE_PATTERNS):
+        return result_fn(FailoverReason.timeout, retryable=True)
+
+    return None
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────
+
+def _extract_status_code(error: Exception) -> Optional[int]:
+    """Walk the error and its cause chain to find an HTTP status code."""
     current = error
     for _ in range(5):
         found = pick(current)

@@ -49,7 +49,7 @@ def _current_suggestions_file() -> Path:
 def _ensure_dir() -> None:
     from cron.jobs import _ensure_cron_dir
 
-    _ensure_cron_dir(_current_suggestions_file().parent)
+    _ensure_cron_dir(CRON_DIR)
 
 
 def _load_raw() -> Dict[str, Any]:

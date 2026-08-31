@@ -16,8 +16,17 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
-from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
-from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
+from hermes_cli.archive_safe import (
+    archive_root_dirs,
+    make_targz,
+    normalize_archive_parts,
+    safe_extract_targz,
+)
+from hermes_constants import (
+    clear_named_profile_deleted,
+    mark_named_profile_deleted,
+    named_profile_is_deleted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -297,53 +306,11 @@ def get_profile_dir(name: str) -> Path:
 
 def profile_exists(name: str) -> bool:
     """Check whether a live (non-tombstoned) profile directory exists."""
-    try:
-        canon = normalize_profile_name(name)
-        profile_dir = get_profile_dir(canon)
-    except ValueError:
-        return False
+    canon = normalize_profile_name(name)
     if canon == "default":
         return True
+    profile_dir = get_profile_dir(canon)
     return profile_dir.is_dir() and not named_profile_is_deleted(profile_dir)
-
-
-def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
-    """True when *name* refers to the profile served from *home* (default: current home).
-
-    Lets single-profile gateways decide whether a ``/p/<profile>/`` URL prefix is
-    self-referential (safe on the bare route) or names a different profile, which must fail
-    closed rather than silently resolve the owner's config. Invalid names return False."""
-    try:
-        target = get_profile_dir(name)
-        if home is None:
-            from hermes_constants import get_hermes_home
-            home = get_hermes_home()
-        return Path(target).expanduser().resolve(strict=False) == Path(home).expanduser().resolve(strict=False)
-    except Exception:
-        return False
-
-
-def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
-    """Sorted named-profile dirs (valid ids, never ``default``); ``live_only`` skips tombstones."""
-    profiles_root = _get_profiles_root()
-    if not profiles_root.is_dir():
-        return []
-    return [
-        entry for entry in sorted(profiles_root.iterdir())
-        if entry.is_dir()
-        and entry.name != "default"
-        and _PROFILE_ID_RE.match(entry.name)
-        and not (live_only and named_profile_is_deleted(entry))
-    ]
-
-
-def list_profile_names() -> List[str]:
-    """Cheap name-only listing (``default`` + profile dirs). Unlike :func:`list_profiles` this
-    reads NO per-profile config — safe for hot paths (cron target listings, create validation)."""
-    names = ["default"]
-    with contextlib.suppress(OSError):
-        names.extend(entry.name for entry in _iter_named_profile_dirs(live_only=False))
-    return names
 
 
 def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
@@ -627,6 +594,41 @@ def _seed_model_config(profile_dir: Path) -> None:
             config_path.write_text(yaml.safe_dump({"model": model_cfg}, sort_keys=False), encoding="utf-8")
 
 
+def _seed_model_config(profile_dir: Path) -> None:
+    """Give a profile created without a clone source a usable model block.
+
+    Such a profile gets its directory tree but no ``config.yaml`` at all, so it
+    resolves no provider and its first turn dies with "No LLM provider
+    configured" — created, but unable to run. Copy the active profile's
+    ``model`` block over at creation time.
+
+    This is a copy, not a link: profiles remain independent islands, and
+    editing either one afterwards never touches the other. "Fresh" means fresh
+    skills and SOUL, not unreachable.
+    """
+    config_path = profile_dir / "config.yaml"
+    if config_path.exists():
+        return
+    try:
+        import yaml
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import read_user_config_raw
+
+        source = get_hermes_home() / "config.yaml"
+        if not source.is_file():
+            return
+        model_cfg = read_user_config_raw(source).get("model")
+        if not model_cfg:
+            return
+        config_path.write_text(
+            yaml.safe_dump({"model": model_cfg}, sort_keys=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        # Creation must not fail over this; `hermes model` still sets it later.
+        pass
+
+
 def _check_gateway_running(profile_dir: Path) -> bool:
     """Gateway liveness for a profile dir, never mutating HERMES_HOME.
 
@@ -855,6 +857,8 @@ def list_profiles() -> List[ProfileInfo]:
                 continue  # already added as the built-in default above
             if not _PROFILE_ID_RE.match(name):
                 continue
+            if named_profile_is_deleted(entry):
+                continue
             model, provider = _read_config_model(entry)
             alias_name = alias_map.get(normalize_profile_name(name))
             if alias_name:
@@ -898,7 +902,45 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     if not multiplex:
         return [(active, get_profile_dir(active))]
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
-    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs())
+    allowed: Optional[set[str]] = None
+    if profile_allowlist is not None:
+        allowed = set()
+        for entry in profile_allowlist:
+            if not isinstance(entry, str):
+                continue
+            try:
+                name = normalize_profile_name(entry)
+                validate_profile_name(name)
+            except ValueError:
+                continue
+            if name != "default":
+                allowed.add(name)
+
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name == "default":
+                continue  # default is the built-in entry already added above
+            if not _PROFILE_ID_RE.match(name):
+                continue
+            if named_profile_is_deleted(entry):
+                continue
+            if allowed is not None and name not in allowed:
+                continue
+            serve.append((name, entry))
+
+    if allowed is not None:
+        missing = tuple(sorted(allowed - {name for name, _ in serve}))
+        if missing and missing not in _WARNED_MISSING_ALLOWLIST_ENTRIES:
+            _WARNED_MISSING_ALLOWLIST_ENTRIES.add(missing)
+            logger.warning(
+                "Skipping missing gateway.multiplex_profile_allowlist profile(s): %s",
+                ", ".join(missing),
+            )
+
     return serve
 
 
@@ -1051,28 +1093,22 @@ def create_profile(
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists() and named_profile_is_deleted(profile_dir):
-        # Empty shells left by post-delete mkdir may be replaced. Identity files mean the
-        # leftover is not a shell — fail closed, no rmtree.
+        # Empty shells left by post-delete mkdir may be replaced. Identity
+        # files mean the leftover is not a shell — fail closed, no rmtree.
         if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
-            raise _profile_exists_error(canon)
+            raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
-        raise _profile_exists_error(canon)
-    source_dir = _resolve_clone_source(clone_from) if cloning else None
-    if source_dir is not None and clone_channels:
-        from hermes_cli.profile_channels import clone_channels_refusal
-        refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
-        if refusal:
-            raise ValueError(refusal)
+        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
     clear_named_profile_deleted(profile_dir)
-    # Build in a hidden sibling and publish with one rename: a running multiplexer rescans profiles/
-    # on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists valid ids (no leading
-    # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
-    # below has not removed yet.
-    staging = _clone_staging_dir(profile_dir)
-    try:
-        if clone_all and source_dir:
-            _clone_all_into(source_dir, staging, canon)
+
+    # Resolve clone source
+    source_dir = None
+    if clone_from is not None or clone_all or clone_config:
+        if clone_from is None:
+            # Default: clone from active profile
+            from hermes_constants import get_hermes_home
+            source_dir = get_hermes_home()
         else:
             _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
         if source_dir is not None and not clone_channels:
@@ -1095,6 +1131,25 @@ def create_profile(
     _notify_multiplexer(canon)
     return profile_dir
 
+        if source_dir is None:
+            _seed_model_config(profile_dir)
+
+        # Clone config files from source
+        if source_dir is not None:
+            for filename in _CLONE_CONFIG_FILES:
+                src = source_dir / filename
+                if src.exists():
+                    dst = profile_dir / filename
+                    shutil.copy2(src, dst)
+                    # Tighten .env to owner-only after copy. shutil.copy2
+                    # preserves source mode bits, but if the source's .env
+                    # was loose (host umask 0o022 leaving 0o644), tighten
+                    # explicitly so the clone doesn't inherit weak perms.
+                    if filename == ".env":
+                        try:
+                            os.chmod(str(dst), 0o600)
+                        except OSError:
+                            pass
 
 def _clone_staging_dir(profile_dir: Path) -> Path:
     """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
@@ -1210,7 +1265,14 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
     """
     backfilled: List[str] = []
     default_env = _get_default_hermes_home() / ".env"
-    for entry in _iter_named_profile_dirs():
+
+    for entry in sorted(profiles_root.iterdir()):
+        if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
+            continue
+        if entry.name == "default":
+            continue
+        if named_profile_is_deleted(entry):
+            continue
         env_path = entry / ".env"
         if env_path.exists():
             continue
@@ -1446,11 +1508,19 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         _stop_gateway_process(profile_dir)
     _stop_profile_backends(canon, profile_dir)
 
-    # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
+    # Tombstone before rmtree so a stale serve/logging mkdir cannot relist
+    # this name as a live profile.
     mark_named_profile_deleted(profile_dir)
-    # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
-    # into the directory before we remove it.
-    _notify_multiplexer(canon)
+
+    # 2c. Release this process's holographic memory-store connections into
+    # the profile. The Desktop's *main* serve process opens memory_store.db
+    # for every known profile and is deliberately not stopped above, so on
+    # Windows its open handles make the rmtree below fail with WinError 32
+    # (#88347). When this delete runs inside serve (the DELETE
+    # /api/profiles/<name> route) the handles live in this process and are
+    # closed here; from the CLI this finds nothing and is a no-op.
+    try:
+        from plugins.memory.holographic.store import MemoryStore as _MemoryStore
 
     # The main serve process survives this deletion. Stop only this profile's MCP
     # transports and release cached stderr handles, including completed probes.
@@ -1752,10 +1822,9 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-# Credential files dropped from named-profile exports.
-_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env"})
-
-# Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
+# Text / config suffixes walked during export secret scrubbing. Binary DBs,
+# images, and other non-text artifacts are left alone (they may still leave
+# via named-profile export — scrubbing those is a separate concern).
 _EXPORT_REDACT_SUFFIXES = frozenset({
     ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
     ".bash", ".zsh", ".js", ".ts", ".tsx", ".jsx", ".css", ".html", ".xml", ".csv",
@@ -1807,24 +1876,44 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     # Archive base name without extension (.tar.gz appended by the writer).
     base = str(Path(output_path)).removesuffix(".tar.gz").removesuffix(".tgz")
 
-    # The default profile IS ~/.hermes (dir name ".hermes"), so both paths stage a filtered
-    # copy under a temp dir named after the canonical id: root allow-list for default,
-    # credential exclusion for named profiles.
-    def _ignore_credentials(directory: str, contents: list) -> set:
-        ignored = _non_exportable_entries(directory, contents)
-        ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
-        return ignored
-
-    ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials
-    with tempfile.TemporaryDirectory() as tmpdir:
-        staged = Path(tmpdir) / canon
-        shutil.copytree(profile_dir, staged, symlinks=True, ignore=ignore)
+    def _stage_extras(staged: Path) -> None:
         for rel, content in (extra_files or {}).items():
-            target = staged.joinpath(*normalize_archive_parts(rel))
+            parts = normalize_archive_parts(rel)
+            target = staged.joinpath(*parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
+
+    if canon == "default":
+        # The default profile IS ~/.hermes itself — its parent is ~/ and its
+        # directory name is ".hermes", not "default".  We stage a clean copy
+        # under a temp dir so the archive contains ``default/...``.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            staged = Path(tmpdir) / "default"
+            shutil.copytree(
+                profile_dir,
+                staged,
+                symlinks=True,
+                ignore=_default_export_ignore(profile_dir),
+            )
+            _stage_extras(staged)
+            _scrub_export_secrets(staged)
+            result = make_targz(base, tmpdir, "default")
+            return Path(result)
+
+    # Named profiles — stage a filtered copy to exclude credentials
+    with tempfile.TemporaryDirectory() as tmpdir:
+        staged = Path(tmpdir) / canon
+        _CREDENTIAL_FILES = {"auth.json", ".env"}
+        shutil.copytree(
+            profile_dir,
+            staged,
+            symlinks=True,
+            ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
+        )
+        _stage_extras(staged)
         _scrub_export_secrets(staged)
-        return Path(make_targz(base, tmpdir, canon))
+        result = make_targz(base, tmpdir, canon)
+        return Path(result)
 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
@@ -1833,6 +1922,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     archive = Path(archive_path)
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
+
     top_dirs = archive_root_dirs(archive)
     archive_root = top_dirs.pop() if len(top_dirs) == 1 else None
     inferred_name = name or archive_root
@@ -1859,6 +1949,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
         staging_root = Path(tmpdir)
         safe_extract_targz(archive, staging_root)
+
         extracted = staging_root / archive_root
         if not extracted.is_dir():
             raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
@@ -2035,8 +2126,13 @@ def resolve_profile_env(profile_name: str) -> str:
     if canon == "default":
         return str(root)
     profile_dir = root / "profiles" / canon
+
     if not profile_dir.is_dir() or named_profile_is_deleted(profile_dir):
-        raise _missing_profile_error(canon)
+        raise FileNotFoundError(
+            f"Profile '{canon}' does not exist. "
+            f"Create it with: hermes profile create {canon}"
+        )
+
     return str(profile_dir)
 
 

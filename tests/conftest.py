@@ -564,7 +564,6 @@ def _hermetic_environment(tmp_path, monkeypatch):
     #    singleton might still be cached from a previous test).
     try:
         import hermes_cli.plugins as _plugins_mod
-
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
         # Also clear the keyed per-home manager cache (and any plugin
         # submodules it left in sys.modules) so a manager built for a
@@ -714,16 +713,21 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
     if request.node.get_closest_marker(_ALLOW_MACOS_KEYCHAIN_MARK):
         return None
 
-    try:
-        _mod = importlib.import_module("agent.anthropic_credentials")
-    except Exception:
-        return None
-    monkeypatch.setattr(
-        _mod,
-        "_read_claude_code_credentials_from_keychain",
-        lambda *_args, **_kwargs: None,
-        raising=False,
-    )
+    # Patch the implementation owner (agent.anthropic_credentials) AND the
+    # adapter re-export: after the adapter godfile split, the real call
+    # executes inside agent.anthropic_credentials, so patching only the
+    # adapter alias silently stopped intercepting Keychain reads.
+    for _module_name in ("agent.anthropic_credentials", "agent.anthropic_adapter"):
+        try:
+            _mod = importlib.import_module(_module_name)
+        except Exception:
+            continue
+        monkeypatch.setattr(
+            _mod,
+            "_read_claude_code_credentials_from_keychain",
+            lambda *_args, **_kwargs: None,
+            raising=False,
+        )
     return None
 
 
@@ -759,7 +763,6 @@ def _capture_real_kanban_root() -> Path:
         # honor it via the normal resolver (it may be a profile dir whose
         # root matters).
         from hermes_constants import get_default_hermes_root
-
         return get_default_hermes_root().resolve()
     # No pre-existing HERMES_HOME: the real root is the platform default,
     # NOT the sandbox tempdir now sitting in the env.
@@ -805,7 +808,9 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
             resolved = Path(db_path).expanduser().resolve()
         else:
             resolved = (
-                _kdb.kanban_db_path(board=kwargs.get("board")).expanduser().resolve()
+                _kdb.kanban_db_path(board=kwargs.get("board"))
+                .expanduser()
+                .resolve()
             )
         try:
             resolved.relative_to(_REAL_KANBAN_ROOT)
@@ -852,8 +857,12 @@ def _state_db_write_guard(request, monkeypatch):
     if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
         _PRE_SANDBOX_HERMES_HOME
     ):
-        extra_roots.append(Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve())
-    monkeypatch.setattr(_hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", tuple(extra_roots))
+        extra_roots.append(
+            Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve()
+        )
+    monkeypatch.setattr(
+        _hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", tuple(extra_roots)
+    )
     yield
 
 
@@ -1318,10 +1327,7 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     # raises AttributeError at timer setup and the whole run aborts before any
     # test executes. Fall back to the thread-based timer on Windows so the
     # suite runs natively there (POSIX keeps the more reliable signal method).
-    if (
-        sys.platform == "win32"
-        and getattr(config.option, "timeout_method", None) == "signal"
-    ):
+    if sys.platform == "win32" and getattr(config.option, "timeout_method", None) == "signal":
         config.option.timeout_method = "thread"
 
 
@@ -1416,35 +1422,6 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
 
 
 @pytest.fixture(autouse=True)
-def _isolate_mocked_update_runtime(request, monkeypatch):
-    """Keep in-process update tests from mutating the shared test runtime.
-
-    A real update must purge stale Hermes modules after replacing the checkout.
-    In tests, however, that checkout is simulated.
-    Purging here discards pytest's monkeypatches and splits module identity for
-    every test collected afterward. Keep that production side effect inert by
-    default. The dedicated purge regression module is the sole exception.
-    """
-    from hermes_cli import main as hermes_main
-
-    if request.module.__name__ != "tests.hermes_cli.test_update_stale_module_purge":
-        monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
-
-
-@pytest.fixture(autouse=True)
-def _block_update_gateway_resume_at_process_exit(monkeypatch):
-    """Never let a mocked updater schedule machine-level work at pytest exit."""
-    real_register = atexit.register
-
-    def guarded_register(func, *args, **kwargs):
-        if getattr(func, "__name__", "") == "_resume_windows_gateways_after_update":
-            return func
-        return real_register(func, *args, **kwargs)
-
-    monkeypatch.setattr(atexit, "register", guarded_register)
-
-
-@pytest.fixture(autouse=True)
 def _live_system_guard(request, monkeypatch):
     """Block real os.kill / systemctl / gateway-pid scans during tests.
 
@@ -1481,7 +1458,6 @@ def _live_system_guard(request, monkeypatch):
     # the live psutil walk below. Static set keeps the fast path cheap.
     try:
         import psutil as _psutil
-
         _initial_children = {
             c.pid for c in _psutil.Process(test_pid).children(recursive=True)
         }
@@ -1573,19 +1549,9 @@ def _live_system_guard(request, monkeypatch):
         "hermes gateway",
     )
     _MUTATING_VERBS = (
-        "restart",
-        "start",
-        "stop",
-        "kill",
-        "reload",
-        "reset-failed",
-        "enable",
-        "disable",
-        "mask",
-        "unmask",
-        "daemon-reload",
-        "try-restart",
-        "reload-or-restart",
+        "restart", "start", "stop", "kill", "reload",
+        "reset-failed", "enable", "disable", "mask", "unmask",
+        "daemon-reload", "try-restart", "reload-or-restart",
     )
     _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
     _CONTAINER_RUNTIMES = ("docker", "podman", "nerdctl")
@@ -1599,20 +1565,8 @@ def _live_system_guard(request, monkeypatch):
     # Shell/launcher executables whose arguments are themselves commands —
     # argv[0]-only scanning must not exempt what they wrap.
     _WRAPPER_COMMANDS = (
-        "sh",
-        "bash",
-        "zsh",
-        "dash",
-        "env",
-        "nohup",
-        "setsid",
-        "timeout",
-        "sudo",
-        "xargs",
-        "nice",
-        "ionice",
-        "stdbuf",
-        "flock",
+        "sh", "bash", "zsh", "dash", "env", "nohup", "setsid",
+        "timeout", "sudo", "xargs", "nice", "ionice", "stdbuf", "flock",
     )
 
     def _cmd_to_string(cmd) -> str:
@@ -1767,7 +1721,6 @@ def _live_system_guard(request, monkeypatch):
         def _guarded(cmd, *args, **kwargs):
             _check_subprocess_cmd(name, cmd)
             return real(cmd, *args, **kwargs)
-
         _guarded.__name__ = f"_guarded_{name}"
         # Make the wrapper subscriptable like the wrapped callable when
         # the wrapped object is. ``subprocess.Popen[bytes]`` is used as
@@ -1837,7 +1790,6 @@ def _live_system_guard(request, monkeypatch):
     # pty.spawn — POSIX-only.
     try:
         import pty as _pty
-
         if hasattr(_pty, "spawn"):
             real_pty_spawn = _pty.spawn
 
@@ -1852,12 +1804,13 @@ def _live_system_guard(request, monkeypatch):
     # asyncio.create_subprocess_* — bypasses subprocess module entirely.
     try:
         import asyncio as _asyncio
-
         real_async_exec = _asyncio.create_subprocess_exec
         real_async_shell = _asyncio.create_subprocess_shell
 
         async def _guarded_async_exec(program, *args, **kwargs):
-            _check_subprocess_cmd("asyncio.create_subprocess_exec", [program, *args])
+            _check_subprocess_cmd(
+                "asyncio.create_subprocess_exec", [program, *args]
+            )
             return await real_async_exec(program, *args, **kwargs)
 
         async def _guarded_async_shell(cmd, *args, **kwargs):
@@ -1865,7 +1818,9 @@ def _live_system_guard(request, monkeypatch):
             return await real_async_shell(cmd, *args, **kwargs)
 
         monkeypatch.setattr(_asyncio, "create_subprocess_exec", _guarded_async_exec)
-        monkeypatch.setattr(_asyncio, "create_subprocess_shell", _guarded_async_shell)
+        monkeypatch.setattr(
+            _asyncio, "create_subprocess_shell", _guarded_async_shell
+        )
     except Exception:
         pass
 

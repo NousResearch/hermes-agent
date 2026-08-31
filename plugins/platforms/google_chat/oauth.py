@@ -31,8 +31,42 @@ from utils import atomic_write_text
 # Pinned legacy logger name so operator log filters keep matching (see adapter.py).
 logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 
-# Filesystem-safe key: lowercase, keep ``[a-z0-9._-@]`` so token files stay
-# human-readable under ``ls ~/.hermes/google_chat_user_tokens/``.
+# Use the project's HERMES_HOME helper so the token follows the user's
+# profile (e.g. tests can override via HERMES_HOME=/tmp/...).
+try:
+    from hermes_constants import display_hermes_home, get_hermes_home
+except (ModuleNotFoundError, ImportError):
+    # Fallback for environments where hermes_constants isn't importable
+    # (mirrors the same fallback used by the google-workspace skill's
+    # _hermes_home.py shim).
+    def get_hermes_home() -> Path:
+        val = os.environ.get("HERMES_HOME", "").strip()
+        return Path(val) if val else Path.home() / ".hermes"
+
+    def display_hermes_home() -> str:
+        home = get_hermes_home()
+        try:
+            return "~/" + home.relative_to(Path.home()).as_posix()
+        except ValueError:
+            return str(home)
+
+from utils import atomic_replace
+
+
+def _hermes_home() -> Path:
+    """Resolve HERMES_HOME at call time (NOT module import).
+
+    Tests and ``HERMES_HOME=...`` env overrides need this to be late-
+    binding. If we cached the path at import time, switching profiles
+    or tweaking env vars in tests would silently keep using the old
+    path."""
+    return get_hermes_home()
+
+
+# Filesystem-safe key: lowercase, allow ``[a-z0-9._-@]``, replace anything
+# else with ``_``. ``ramon.fernandez@nttdata.com`` stays human-readable
+# (``ramon.fernandez@nttdata.com.json``) which makes admin debugging by
+# ``ls ~/.hermes/google_chat_user_tokens/`` trivial.
 _EMAIL_FS_RE = re.compile(r"[^a-z0-9._@-]+")
 
 # Least privilege: chat.messages.create covers BOTH media.upload and the

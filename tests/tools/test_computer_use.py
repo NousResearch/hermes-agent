@@ -1425,11 +1425,8 @@ class TestCuaDriverSessionReconnect:
             returncode = 0
             stderr = ""
             # Daemon returns a path, not inline base64.
-            stdout = json.dumps({
-                "element_count": 7,
-                "tree_markdown": "- [0] AXButton",
-                "screenshot_file_path": str(shot),
-            })
+            stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
+                      ' "screenshot_file_path": "%s"}' % str(shot))
 
         import subprocess as _sp
         orig_run = _sp.run

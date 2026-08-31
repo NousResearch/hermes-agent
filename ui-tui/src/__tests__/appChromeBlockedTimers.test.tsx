@@ -305,20 +305,22 @@ describe('status-chrome timers under an occluding overlay', () => {
     rule.clear()
     resetOverlayState()
 
+    // Wait on the observable frame instead of assuming React's scheduler
+    // completes within 20ms. The full workspace CI runs this suite under
+    // enough parallel load that the fixed delay can expire before Ink emits
+    // the reveal frame, leaving an empty output even though the re-render is
+    // still queued.
     await vi.waitFor(() => {
-      expect(rule.output()).toContain('6m 0s')
-      expect(rule.output()).toContain('✓ 5m 5s')
+      const resumed = rule.output()
+
+      // Caught up to real elapsed time, not stuck on the pre-overlay values.
+      expect(resumed).toContain('6m 0s')
+      expect(resumed).toContain('✓ 5m 5s')
+      expect(resumed).not.toContain('1m 0s')
+
+      // …and the clocks are running again.
+      expect(oneSecondTimers(intervalSpy)).toBe(2)
     })
-
-    const resumed = rule.output()
-
-    // Caught up to real elapsed time, not stuck on the pre-overlay values.
-    expect(resumed).toContain('6m 0s')
-    expect(resumed).toContain('✓ 5m 5s')
-    expect(resumed).not.toContain('1m 0s')
-
-    // …and the clocks are running again.
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
   })
 
   it('tears the clocks down when an overlay opens over an already-running status rule', async () => {

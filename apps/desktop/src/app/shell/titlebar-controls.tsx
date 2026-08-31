@@ -194,8 +194,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
-      leftEdge.toggle()
-    }
+      rightEdge.toggle()
+    },
+    tour: 'right-pane-toggle'
   }
 
   const flipTool: TitlebarTool = {

@@ -1299,10 +1299,13 @@ from tools.registry import registry, tool_error
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
-    # Placeholder: description AND params are rebuilt at get_tool_definitions() time by
-    # _build_dynamic_image_schema() from the active backend's capabilities. Edit-only args
-    # and upscale are advertised ONLY when supported; the handler accepts them regardless
-    # (replay compat + teaching errors).
+    # Placeholder — description AND params are rebuilt dynamically at
+    # get_tool_definitions() time from the active backend's declared
+    # capabilities (FAL catalog metadata, or plugin provider.capabilities()).
+    # Edit-only args (image_url, reference_image_urls) and upscale are
+    # advertised ONLY when the active model actually supports them; the
+    # handler accepts them regardless (replay compat + teaching errors).
+    # See _build_dynamic_image_schema().
     "description": (
         "Generate images from text prompts. The active model's edit/reference "
         "capabilities are rendered at serving time."
@@ -1324,7 +1327,9 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
-            # image_url / reference_image_urls / upscale are added per-capability; never statically.
+            # NOTE (schema diet, #95681): image_url / reference_image_urls /
+            # upscale are added per-capability by _build_dynamic_image_schema.
+            # Do not re-add them statically.
         },
         # See #95681.
         "required": ["prompt"],
@@ -1668,10 +1673,23 @@ _NO_CAPABILITIES = {"modalities": ["text"], "max_reference_images": 0, "supports
 def _active_image_capabilities() -> Dict[str, Any]:
     """Best-effort capabilities of the active backend/model; never raises.
 
-    Mirrors runtime dispatch: a set ``image_gen.provider`` asks that plugin, else the FAL
-    catalog. Fail-closed: an undeclared capability is advertised as absent.
+    Resolution order mirrors the runtime dispatch:
+    1. If ``image_gen.provider`` is set, ask that plugin provider.
+    2. Otherwise inspect the in-tree FAL model catalog for the active model.
+
+    Returns ``{"modalities": [...], "max_reference_images": N,
+    "supports_upscale": bool, "model": "...", "provider": "..."}``.
+    Fail-closed on every axis: an unknown/undeclared capability is
+    advertised as absent (a provider that can edit but didn't declare it
+    under-advertises — that is the provider's bug to fix in
+    ``capabilities()``, not a safety problem). Never raises.
     """
-    info: Dict[str, Any] = dict(_NO_CAPABILITIES)
+    info: Dict[str, Any] = {
+        "modalities": ["text"],
+        "max_reference_images": 0,
+        "supports_upscale": False,
+    }
+
     configured_provider = _read_configured_image_provider()
     if configured_provider and configured_provider != "fal":
         try:
@@ -1692,15 +1710,26 @@ def _active_image_capabilities() -> Dict[str, Any]:
                 return info
         except Exception:  # noqa: BLE001
             pass
-    # In-tree FAL path (provider unset or == "fal"); _resolve_fal_model() never raises.
-    model_id, meta = _resolve_fal_model()
-    can_edit = bool(meta.get("edit_endpoint"))
-    info["provider"] = "FAL.ai"
-    info["model"] = meta.get("display", model_id)
-    info["modalities"] = ["text", "image"] if can_edit else ["text"]
-    info["max_reference_images"] = int(meta.get("max_reference_images") or 1) if can_edit else 0
-    # Clarity is available on request for ANY catalog model (``upscale`` is only the default).
-    info["supports_upscale"] = True
+
+    # In-tree FAL path (provider unset or == "fal").
+    try:
+        model_id, meta = _resolve_fal_model()
+        info["provider"] = "FAL.ai"
+        info["model"] = meta.get("display", model_id)
+        if meta.get("edit_endpoint"):
+            info["modalities"] = ["text", "image"]
+            info["max_reference_images"] = int(meta.get("max_reference_images") or 1)
+        else:
+            info["modalities"] = ["text"]
+            info["max_reference_images"] = 0
+        # FAL: the Clarity Upscaler is a separate endpoint chained on
+        # explicit request for ANY catalog model (the per-model ``upscale``
+        # key is only the default-on flag, retired Aug 2026 — not a
+        # capability). Plugin providers must declare supports_upscale.
+        info["supports_upscale"] = True
+    except Exception:  # noqa: BLE001
+        pass
+
     return info
 
 
@@ -1726,22 +1755,40 @@ _UPSCALE_PARAM = {
 
 
 def _build_dynamic_image_schema() -> Dict[str, Any]:
-    """Render description AND params from the active model's capabilities; args it cannot
-    honor are NOT advertised (the handler still accepts them for replay compat)."""
+    """Render description AND params from the active model's capabilities.
+
+    Capability coverage is guaranteed: all in-tree FAL catalog entries
+    carry edit/refs/upscale metadata (contract-tested), and the plugin
+    provider ABC's capabilities() fail-closed default is text-only. Args a
+    model cannot honor are NOT advertised — the handler still accepts them
+    (replay compat) and answers with a capability error.
+    """
     base_desc = (
         "Generate high-quality images from text prompts{edit_clause}. "
         "Returns the result in the `image` field — a URL or an absolute "
         "file path; reference it in your response using the current "
         "platform's file-delivery convention."
     )
-    info = _active_image_capabilities()
+
+    try:
+        info = _active_image_capabilities()
+    except Exception:  # noqa: BLE001
+        info = {"modalities": ["text"], "max_reference_images": 0,
+                "supports_upscale": False}
+
+    modalities = set(info.get("modalities") or ["text"])
     max_refs = int(info.get("max_reference_images") or 0)
-    can_edit = "image" in set(info.get("modalities") or ["text"])
-    static_props = IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
+    can_edit = "image" in modalities
+
     properties: Dict[str, Any] = {
-        "prompt": static_props["prompt"], "aspect_ratio": static_props["aspect_ratio"]}
+        "prompt": IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["prompt"],
+        "aspect_ratio": IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"],
+    }
+
     if can_edit:
-        edit_clause = ", or edit / transform an existing image by passing image_url"
+        edit_clause = (
+            ", or edit / transform an existing image by passing image_url"
+        )
         properties["image_url"] = _IMAGE_URL_PARAM
         if max_refs > 1:
             properties["reference_image_urls"] = {
@@ -1755,11 +1802,24 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
                 ),
             }
     else:
-        edit_clause = " (text-to-image only — the active model cannot edit existing images)"
+        edit_clause = (
+            " (text-to-image only — the active model cannot edit existing "
+            "images)"
+        )
+
     if info.get("supports_upscale"):
         properties["upscale"] = _UPSCALE_PARAM
-    return {"description": base_desc.format(edit_clause=edit_clause),
-            "parameters": {"type": "object", "properties": properties, "required": ["prompt"]}}
+
+    description = base_desc.format(edit_clause=edit_clause)
+
+    return {
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": ["prompt"],
+        },
+    }
 
 
 registry.register(

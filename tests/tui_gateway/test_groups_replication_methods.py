@@ -6,7 +6,6 @@ from __future__ import annotations
 import pytest
 
 import tui_gateway.server as srv
-from tui_gateway import methods_groups
 
 MEMBERS = [{"kind": "bot", "id": "planner"}]
 
@@ -15,12 +14,8 @@ MEMBERS = [{"kind": "bot", "id": "planner"}]
 def home(tmp_path, monkeypatch):
     path = tmp_path / ".hermes"
     path.mkdir()
-    (path / "profiles" / "ops").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(path))
-    methods_groups.stop_hosted_room_service(timeout=1.0)
-    methods_groups.start_hosted_room_service()
-    yield path
-    methods_groups.stop_hosted_room_service(timeout=1.0)
+    return path
 
 
 def _result(envelope):
@@ -129,18 +124,7 @@ def test_demote_fences_local_room_against_newer_epoch(home):
     _result(
         srv._methods["groups.create"](
             1,
-            {
-                "room_id": "room-1",
-                "name": "Local room",
-                "members": [
-                    {
-                        "member_id": "default",
-                        "profile": "default",
-                        "handle": "hermes",
-                    },
-                    {"member_id": "ops", "profile": "ops", "handle": "ops"},
-                ],
-            },
+            {"room_id": "room-1", "name": "Local room", "members": MEMBERS},
         )
     )
     observed_gateway = "install:" + "b" * 32

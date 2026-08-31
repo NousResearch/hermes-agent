@@ -21,15 +21,14 @@ def _race_first_install_id(
     if start_barrier is not None:
         start_barrier.wait(timeout=10)
     if writer_entered is not None:
-        import utils
-        original_mkstemp = utils.tempfile.mkstemp
+        original_mkstemp = install_identity.tempfile.mkstemp
 
         def held_mkstemp(*args, **kwargs):
             writer_entered.set()
             assert release_writer.wait(timeout=10)
             return original_mkstemp(*args, **kwargs)
 
-        utils.tempfile.mkstemp = held_mkstemp
+        install_identity.tempfile.mkstemp = held_mkstemp
     results.put(read_or_create_install_id(root))
 
 

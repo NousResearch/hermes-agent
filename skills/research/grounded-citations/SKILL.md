@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [Research, Citations, Grounding, Sources, Web, Reports]
     category: research
-    related_skills: [arxiv, pdf, reddit-reading, rss-feeds, youtube-content]
+    related_skills: [arxiv, pdf]
 ---
 
 # Grounded Citations

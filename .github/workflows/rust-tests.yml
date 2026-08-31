@@ -30,6 +30,8 @@ jobs:
     # cargo builds codegen units and test binaries in parallel across the
     # cores. This lane also builds the crate from the start when Cargo.toml
     # changes.
+    # Nous owns the larger runner label. Forks fall back to GitHub-hosted
+    # capacity so pull requests cannot wait forever for an unavailable runner.
     runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-latest' }}
     timeout-minutes: 30
     defaults:

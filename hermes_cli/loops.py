@@ -420,26 +420,39 @@ class LoopManager:
         until: str = "",
         route: Optional[Dict[str, str]] = None,
     ) -> LoopState:
-        """Start a new loop (replaces any existing one for the session)."""
+        """Start a new loop (replaces any existing one for the session).
+
+        The first wakeup is due immediately (next idle poll / gateway
+        watcher scan); subsequent wakeups follow the cadence.
+        """
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("loop prompt is empty")
 
         now = time.time()
-        self_paced = interval_seconds is None
-        interval = 0.0 if self_paced else float(max(int(interval_seconds), min_interval_seconds()))
-        state = LoopState(
-            prompt=prompt,
-            mode="self_paced" if self_paced else "interval",
-            interval_seconds=interval,
-            current_delay=float(self_paced_floor_seconds()) if self_paced else interval,
-            times=max(0, int(times or 0)),
-            until=(until or "").strip(),
-            max_ticks=max_ticks_default(),
-            created_at=now,
-            next_due_at=now,
-            route=dict(route or {}),
-        )
+        if interval_seconds is not None:
+            interval = max(int(interval_seconds), min_interval_seconds())
+            state = LoopState(
+                prompt=prompt,
+                mode="interval",
+                interval_seconds=float(interval),
+                current_delay=float(interval),
+                next_due_at=now,
+            )
+        else:
+            floor = self_paced_floor_seconds()
+            state = LoopState(
+                prompt=prompt,
+                mode="self_paced",
+                interval_seconds=0.0,
+                current_delay=float(floor),
+                next_due_at=now,
+            )
+        state.times = max(0, int(times or 0))
+        state.until = (until or "").strip()
+        state.max_ticks = max_ticks_default()
+        state.created_at = now
+        state.route = dict(route or {})
         self._state = state
         return self._save()
 
@@ -644,9 +657,45 @@ def dispatch_loop_command(
     gateway's idle watcher can inject wakeups into the right chat; CLI/TUI pass None.
     """
     arg = (args or "").strip()
-    control = _CONTROL_COMMANDS.get(arg.lower())
-    if control is not None:
-        return {"output": control(mgr), "created": False}
+    lower = arg.lower()
+
+    if not arg or lower == "status":
+        return {"output": mgr.status_line(), "created": False}
+
+    if lower == "pause":
+        state = mgr.pause(reason="user-paused")
+        if state is None:
+            return {"output": "No loop set.", "created": False}
+        return {"output": f"⏸ Loop paused: {state.prompt}\nUse /loop resume to continue.", "created": False}
+
+    if lower == "resume":
+        state = mgr.resume()
+        if state is None:
+            return {"output": "No loop to resume.", "created": False}
+        return {
+            "output": f"▶ Loop resumed ({state.cadence_label()}): {state.prompt}",
+            "created": False,
+        }
+
+    if lower in {"stop", "clear", "cancel"}:
+        had = mgr.clear()
+        return {"output": "✓ Loop stopped." if had else "No active loop.", "created": False}
+
+    if lower in {"help", "--help", "-h"}:
+        return {
+            "output": (
+                "Usage: /loop [interval] <prompt> [--times N] [--until <condition>]\n"
+                "  /loop 5m check the deploy status      — first run now, then every 5m\n"
+                "  /loop every 10m /recap                — loop a slash command\n"
+                "  /loop keep fixing tests until green   — self-paced (backs off while output is unchanged)\n"
+                "  /loop 2m poll CI --times 30           — stop after 30 runs\n"
+                "  /loop 5m watch the queue --until queue is empty\n"
+                "Controls: /loop status · /loop pause · /loop resume · /loop stop\n"
+                "The loop also stops itself when the agent replies with "
+                f"{LOOP_COMPLETE_MARKER}."
+            ),
+            "created": False,
+        }
 
     parsed = parse_loop_args(arg)
     if parsed["error"]:
@@ -685,8 +734,12 @@ def dispatch_loop_command(
         lines.append(f"Stops when: {state.until}")
     if not state.times and state.max_ticks:
         lines.append(f"Backstop budget: {state.max_ticks} ticks (loops.max_ticks; 0 = unlimited).")
-    first = "fires now, then on the cadence above" if state.status == "active" else state.remaining_label()
-    lines.append(f"First wakeup {first}. Controls: /loop status · pause · resume · stop.")
+    if state.status == "active":
+        lines.append("First wakeup fires now, then on the cadence above. Controls: /loop status · pause · resume · stop.")
+    else:
+        lines.append(f"First wakeup {state.remaining_label()}. Controls: /loop status · pause · resume · stop.")
+    if replacing:
+        lines.insert(1, "(replaced the previous loop for this session)")
     return {"output": "\n".join(lines), "created": True}
 
 

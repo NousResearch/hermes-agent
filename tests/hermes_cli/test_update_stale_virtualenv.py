@@ -4,6 +4,7 @@ Simulates the real crash: a pip/system-Python install where PROJECT_ROOT is
 site-packages and VIRTUAL_ENV=PROJECT_ROOT/venv does not exist.
 """
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -108,6 +109,40 @@ class StaleVirtualEnvTest(unittest.TestCase):
         self.assertTrue(captured, "no subprocess call captured")
         _, _, scripts_dir = captured[0]
         self.assertEqual(scripts_dir, fake_scripts)
+
+    def test_every_update_install_attempt_requests_patched_h2(self):
+        """The uv and pip paths must pin h2 on primary and fallback installs."""
+        for install_prefix in (["uv", "pip"], [sys.executable, "-m", "pip"]):
+            with self.subTest(install_prefix=install_prefix):
+                captured = []
+
+                def fake_quarantine(
+                    cmd, *, env=None, scripts_dir=None, strict_quarantine=False
+                ):
+                    captured.append(list(cmd))
+                    if len(captured) == 1:
+                        raise subprocess.CalledProcessError(1, cmd)
+
+                with mock.patch.object(
+                    main_mod, "_run_quarantined_install", fake_quarantine
+                ), mock.patch.object(
+                    main_mod, "_verify_console_scripts_installed", lambda *a, **k: None
+                ), mock.patch.object(
+                    main_mod, "_verify_core_dependencies_installed", lambda *a, **k: None
+                ), mock.patch.object(
+                    main_mod, "_load_installable_optional_extras", return_value=["youtube"]
+                ), mock.patch.object(
+                    main_mod, "_venv_scripts_dir", return_value=None
+                ), mock.patch.object(
+                    main_mod, "_is_windows", return_value=False
+                ):
+                    main_mod._install_python_dependencies_with_optional_fallback(
+                        list(install_prefix)
+                    )
+
+                self.assertEqual(len(captured), 3)
+                for command in captured:
+                    self.assertIn("h2==4.4.1", command)
 
 
 if __name__ == "__main__":

@@ -1351,10 +1351,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'btw.complete':
-        if (!ev.payload) {
-          return
-        }
-
         sys(`[btw${ev.payload.question ? ` "${ev.payload.question}"` : ''}] ${ev.payload.text}`)
 
         return

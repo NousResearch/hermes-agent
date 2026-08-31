@@ -25,7 +25,6 @@ import pytest
 import hermes_cli.doctor as doctor
 import hermes_cli.macos_tcc_anchor as tcc
 from hermes_constants import venv_python_path
-from hermes_cli import doctor_platform
 
 
 def _darwin(monkeypatch):
@@ -529,7 +528,7 @@ class TestDoctorCheck:
         monkeypatch.setattr(
             tcc, "tcc_anchor_state", lambda *a, **k: ("missing", "/x/.venv/bin/python")
         )
-        doctor_platform.check_macos_tcc_anchor(should_fix=False)
+        doctor.check_macos_tcc_anchor(should_fix=False)
         out = capsys.readouterr().out
         assert "macOS TCC anchor missing" in out
 
@@ -540,7 +539,7 @@ class TestDoctorCheck:
         monkeypatch.setattr(
             tcc, "ensure_tcc_anchor", lambda *a, **k: Path("/x/.venv/bin/python")
         )
-        doctor_platform.check_macos_tcc_anchor(should_fix=True)
+        doctor.check_macos_tcc_anchor(should_fix=True)
         out = capsys.readouterr().out
         assert "macOS TCC anchor installed" in out
 
@@ -548,7 +547,7 @@ class TestDoctorCheck:
         monkeypatch.setattr(
             tcc, "tcc_anchor_state", lambda *a, **k: ("active", "/x/.venv/bin/python")
         )
-        doctor_platform.check_macos_tcc_anchor(should_fix=False)
+        doctor.check_macos_tcc_anchor(should_fix=False)
         out = capsys.readouterr().out
         assert "macOS TCC anchor active" in out
 
@@ -556,7 +555,7 @@ class TestDoctorCheck:
         monkeypatch.setattr(
             tcc, "tcc_anchor_state", lambda *a, **k: ("skip", "not macOS")
         )
-        doctor_platform.check_macos_tcc_anchor(should_fix=False)
+        doctor.check_macos_tcc_anchor(should_fix=False)
         assert capsys.readouterr().out == ""
 
     def test_never_crashes_on_exception(self, monkeypatch, capsys):
@@ -564,7 +563,7 @@ class TestDoctorCheck:
             raise RuntimeError("tccd down")
 
         monkeypatch.setattr(tcc, "tcc_anchor_state", boom)
-        doctor_platform.check_macos_tcc_anchor(should_fix=False)
+        doctor.check_macos_tcc_anchor(should_fix=False)
         out = capsys.readouterr().out
         assert "macOS TCC anchor check failed" in out
 

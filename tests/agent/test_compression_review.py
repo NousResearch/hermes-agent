@@ -417,9 +417,8 @@ class TestF6ExecutorSaturation:
 
         from hermes_state import SessionDB
 
-        with tempfile.TemporaryDirectory() as td, SessionDB(
-            db_path=Path(td) / "state.db"
-        ) as db:
+        with tempfile.TemporaryDirectory() as td:
+            db = SessionDB(db_path=Path(td) / "state.db")
             session_id = "F6_PRESTART_FENCE"
             db.create_session(session_id, source="cli")
             with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):

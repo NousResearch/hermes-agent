@@ -953,36 +953,28 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
 
 
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
-    """Return a soft-guard warning when ``filepath`` lands in another Hermes
-    profile's scoped area, a host-side sandbox-mirror of authoritative profile
-    state, or the Docker container's sandbox mirror of Hermes state.
+    """Return a soft-guard warning when ``filepath`` lands on a host-side
+    sandbox-mirror of authoritative profile state, or the Docker
+    container's sandbox mirror of Hermes state.
 
-    Three detectors run in order:
+    Two detectors (both #32049): these catch writes that would be
+    SILENTLY LOST — the host Hermes process never reads the mirror, so
+    the write succeeds but changes nothing. That is a lost-work guard,
+    not profile isolation.
 
-    * cross-profile — writes that hit another profile's
-      ``skills/plugins/cron/memories`` directory.
-    * sandbox-mirror (#32049) — writes that hit the
-      ``…/sandboxes/<backend>/<task>/home/.hermes/…`` mirror created by a
-      non-local terminal backend (Docker, Daytona, etc.), where the host
-      Hermes process never reads the mirror and the authoritative file is
-      left untouched.
-    * container-mirror (#32049 follow-up) — writes from inside a Docker
-      container whose bind-mounted home strips the ``sandboxes/`` prefix, so
-      the agent sees a plain ``/root/.hermes/…`` path.
+    NOTE: the third detector this shared check used to run — the
+    cross-PROFILE write guard (another profile's skills/plugins/cron/
+    memories) — was removed by maintainer decision: profiles were never
+    isolated (same OS user; terminal writes anywhere), so the guard was
+    ceremony. The system prompt's profile hint remains the only
+    steering. ``cross_profile=True`` still bypasses the mirror guards
+    (name kept for replay/transcript compat).
 
     Returns ``None`` when the write is in-scope or outside Hermes scope.
-    All detectors are soft guards — the agent can override any by
-    passing ``cross_profile=True`` to its write tool after explicit user
-    direction. Defense-in-depth, NOT a security boundary — the terminal
-    tool runs as the same OS user and can write any of these paths
-    directly. See ``agent/file_safety.classify_cross_profile_target``,
-    ``classify_sandbox_mirror_target`` and ``classify_container_mirror_target``
-    for the detection rules.
     """
     try:
         from agent.file_safety import (
             get_container_mirror_warning,
-            get_cross_profile_warning,
             get_sandbox_mirror_warning,
         )
     except Exception:
@@ -990,17 +982,12 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
         # plus the write_denied list still apply.
         return None
 
-    # Resolve via the task's cwd so a relative ``skills/foo/SKILL.md``
-    # in a session that cd'd into ``~/.hermes/profiles/other/`` is
-    # classified against the right base.
+    # Resolve via the task's cwd so a relative path in a session that
+    # cd'd elsewhere is classified against the right base.
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-
-    warning = get_cross_profile_warning(resolved)
-    if warning is not None:
-        return warning
 
     warning = get_sandbox_mirror_warning(resolved)
     if warning is not None:
@@ -1532,18 +1519,76 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             result_dict.setdefault("_hint", (
                 f"This file is large ({file_size:,} bytes). "
                 "Consider reading only the section you need with offset and limit "
-                "to keep context usage efficient."))
+                "to keep context usage efficient."
+            ))
 
-        total_lines = result_dict.get("total_lines")
-        if result_dict.get("truncated_by") == "bytes":
-            end_line = int(result_dict.get("next_offset", offset)) - 1
-        else:
-            end_line = offset + limit - 1
-            if isinstance(total_lines, int) and total_lines > 0:
-                end_line = min(end_line, total_lines)
-        count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
-                                        dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        redacted=redacted, end_line=end_line, total_lines=total_lines)
+        # ── Track for consecutive-loop detection ──────────────────────
+        read_key = ("read", path, offset, limit)
+        with _read_tracker_lock:
+            # Ensure "dedup" / "dedup_hits" keys exist (backward compat with
+            # old tracker state from pre-dedup-guard sessions).
+            if "dedup" not in task_data:
+                task_data["dedup"] = {}
+            if "dedup_hits" not in task_data:
+                task_data["dedup_hits"] = {}
+            # Real read succeeded — this key is no longer in a stub-loop, so
+            # reset its hit counter.  (File either changed or stat failed
+            # earlier and we fell through.)
+            task_data["dedup_hits"].pop(dedup_key, None)
+            task_data["read_history"].add((path, offset, limit))
+            if task_data["last_key"] == read_key:
+                task_data["consecutive"] += 1
+            else:
+                task_data["last_key"] = read_key
+                task_data["consecutive"] = 1
+            count = task_data["consecutive"]
+
+            # Store mtime at read time for two purposes:
+            # 1. Dedup: skip identical re-reads of unchanged files.
+            # 2. Staleness: warn on write/patch if the file changed since
+            #    the agent last read it (external edit, concurrent agent, etc.).
+            try:
+                _mtime_now = os.path.getmtime(resolved_str)
+                task_data["dedup"][dedup_key] = _mtime_now
+                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            except OSError:
+                pass  # Can't stat — skip tracking for this entry
+
+            # Bound the per-task containers so a long CLI session doesn't
+            # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
+            _cap_read_tracker_data(task_data)
+
+        # Cross-agent file-state registry (separate from per-task read
+        # tracker above): records that THIS agent has read this path so
+        # write/patch can detect sibling-subagent writes that happened
+        # after our read.  Partial read when offset>1 or the read was
+        # truncated (large file with more content than limit covered).
+        # Outside the _read_tracker_lock so the registry's own locking
+        # isn't nested under ours.
+        _partial = (offset > 1) or bool(result_dict.get("truncated"))
+        try:
+            file_state.record_read(task_id, resolved_str, partial=_partial)
+        except Exception:
+            logger.debug("file_state.record_read failed", exc_info=True)
+
+        # Background-review read-before-write guard integration (#61521):
+        # when the self-improvement review fork reads a skill file with
+        # read_file (now whitelisted dispatch-side), register the read the
+        # same way skill_view does, so a follow-up
+        # skill_manage(action='patch') on the loaded file is accepted.
+        # A partial read doesn't count — the guard requires the CURRENT
+        # full content to have been seen. No-op outside review forks
+        # (mark_background_review_skill_read gates on is_background_review).
+        if not _partial:
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(Path(resolved_str))
+            except Exception:
+                logger.debug(
+                    "background-review read-mark failed", exc_info=True
+                )
+
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -1668,9 +1713,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                     session_id: str | None = None) -> str:
     """Write content to a file.
 
-    ``cross_profile`` bypasses the sandbox-mirror lost-write guards only
-    (unadvertised in the schema; the mirror rejection error teaches it — the
-    cross-PROFILE guard it was named for no longer exists).
+    ``cross_profile`` bypasses the #32049 sandbox-mirror lost-write
+    guards (writes the host process would never read). Unadvertised in
+    the schema — the mirror rejection error teaches it. The cross-PROFILE
+    guard this flag was named for is removed (profiles are not isolated).
     """
     # write_file checks the binary-document guard before the mirror guard.
     err = (_check_sensitive_path(path, task_id)

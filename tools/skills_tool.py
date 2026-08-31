@@ -591,10 +591,174 @@ def skill_view(
         if _is_skill_disabled(resolved_name):
             return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
         if file_path and skill_dir:
-            return _serve_skill_file(
-                skill_dir, file_path, name, list_available=True, mark_read=True,
-                hint="Use a relative path within the skill directory")
-        # tags/related_skills: metadata.hermes.* (agentskills.io) first, then top-level.
+            from tools.path_security import validate_within_dir, has_traversal_component
+
+            # Security: Prevent path traversal attacks
+            if has_traversal_component(file_path):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "Path traversal ('..') is not allowed.",
+                        "hint": "Use a relative path within the skill directory",
+                    },
+                    ensure_ascii=False,
+                )
+
+            target_file = skill_dir / file_path
+
+            # Security: Verify resolved path is still within skill directory
+            traversal_error = validate_within_dir(target_file, skill_dir)
+            if traversal_error:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": traversal_error,
+                        "hint": "Use a relative path within the skill directory",
+                    },
+                    ensure_ascii=False,
+                )
+            # Gate on is_file(), not exists(): a directory (e.g. requesting
+            # 'references' bare) must take the not-found listing branch, not
+            # fall through to read_text() and surface a raw [Errno 21]
+            # "Is a directory" OS error. Matches the plugin-skill branch above.
+            if not target_file.is_file():
+                # List available files in the skill directory, organized by type
+                available_files = {
+                    "references": [],
+                    "templates": [],
+                    "assets": [],
+                    "scripts": [],
+                    "other": [],
+                }
+
+                # Scan for all readable files
+                for f in skill_dir.rglob("*"):
+                    if f.is_file() and f.name != "SKILL.md":
+                        rel = str(f.relative_to(skill_dir))
+                        if rel.startswith("references/"):
+                            available_files["references"].append(rel)
+                        elif rel.startswith("templates/"):
+                            available_files["templates"].append(rel)
+                        elif rel.startswith("assets/"):
+                            available_files["assets"].append(rel)
+                        elif rel.startswith("scripts/"):
+                            available_files["scripts"].append(rel)
+                        elif f.suffix in {
+                            ".md",
+                            ".py",
+                            ".yaml",
+                            ".yml",
+                            ".json",
+                            ".tex",
+                            ".sh",
+                        }:
+                            available_files["other"].append(rel)
+
+                # Remove empty categories
+                available_files = {k: v for k, v in available_files.items() if v}
+
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"File '{file_path}' not found in skill '{name}'.",
+                        "available_files": available_files,
+                        "hint": "Use one of the available file paths listed above",
+                    },
+                    ensure_ascii=False,
+                )
+
+            # Read the file content
+            try:
+                content = target_file.read_text(encoding="utf-8-sig", errors="replace")
+            except UnicodeDecodeError:
+                # Binary file - return info about it instead
+                return json.dumps(
+                    {
+                        "success": True,
+                        "name": name,
+                        "file": file_path,
+                        "content": f"[Binary file: {target_file.name}, size: {target_file.stat().st_size} bytes]",
+                        "is_binary": True,
+                    },
+                    ensure_ascii=False,
+                )
+
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(target_file)
+            except Exception:
+                logger.debug(
+                    "Could not record background-review skill read for %s",
+                    target_file,
+                    exc_info=True,
+                )
+
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": name,
+                    "file": file_path,
+                    "content": content,
+                    "file_type": target_file.suffix,
+                    # Internal: absolute source path for the repeat-view dedup
+                    # fingerprint (mtime+size change detection).
+                    "_source_path": str(target_file),
+                },
+                ensure_ascii=False,
+            )
+
+        # Reuse the parse from the platform check above
+        frontmatter = parsed_frontmatter
+
+        # Get reference, template, asset, and script files if this is a directory-based skill
+        reference_files = []
+        template_files = []
+        asset_files = []
+        script_files = []
+
+        if skill_dir:
+            references_dir = skill_dir / "references"
+            if references_dir.exists():
+                reference_files = [
+                    str(f.relative_to(skill_dir)) for f in references_dir.glob("*.md")
+                ]
+
+            templates_dir = skill_dir / "templates"
+            if templates_dir.exists():
+                for ext in [
+                    "*.md",
+                    "*.py",
+                    "*.yaml",
+                    "*.yml",
+                    "*.json",
+                    "*.tex",
+                    "*.sh",
+                ]:
+                    template_files.extend(
+                        [
+                            str(f.relative_to(skill_dir))
+                            for f in templates_dir.rglob(ext)
+                        ]
+                    )
+
+            # assets/ — agentskills.io standard directory for supplementary files
+            assets_dir = skill_dir / "assets"
+            if assets_dir.exists():
+                for f in assets_dir.rglob("*"):
+                    if f.is_file():
+                        asset_files.append(str(f.relative_to(skill_dir)))
+
+            scripts_dir = skill_dir / "scripts"
+            if scripts_dir.exists():
+                for ext in ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"]:
+                    script_files.extend(
+                        [str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
+                    )
+
+        # Read tags/related_skills with backward compat:
+        # Check metadata.hermes.* first (agentskills.io convention), fall back to top-level
+        hermes_meta = {}
         metadata = frontmatter.get("metadata")
         hermes_meta = (metadata.get("hermes", {}) or {}) if isinstance(metadata, dict) else {}
         tags, related_skills = (

@@ -33,8 +33,15 @@ except ImportError:  # pragma: no cover - platform-specific fallback
 STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED = "active", "stale", "archived"
 _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 
-# Load-bearing built-ins (by frontmatter ``name``) the curator must NEVER archive/consolidate regardless of
-# ``curator.prune_builtins``, pins or LLM judgment — archiving one breaks its slash command. Keep tiny.
+# Load-bearing bundled built-ins the curator must NEVER archive or consolidate,
+# regardless of ``curator.prune_builtins``, pin state, or LLM judgment. These
+# back advertised UX paths; silently archiving one turns its slash command
+# into "Unknown command" with no signal to the user.
+# Protection is by skill ``name`` (frontmatter ``name:``), matching the keys used
+# throughout this module. Keep this list tiny and intentional — it is not a
+# substitute for ``curator.prune_builtins: false``, which exempts ALL built-ins.
+# (``plan`` used to live here; it is now a first-class built-in command with
+# no skill on disk, so the set is currently empty.)
 PROTECTED_BUILTIN_SKILLS: Set[str] = set()
 
 

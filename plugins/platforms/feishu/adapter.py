@@ -1747,8 +1747,14 @@ class FeishuAdapter(BasePlatformAdapter):
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> SendResult:
-        """Native voice message (Feishu only accepts Opus): non-opus audio is transcoded via ffmpeg
-        first; without ffmpeg the original file goes out as a file attachment."""
+        """Send audio to Feishu as a native voice message (opus) or file.
+
+        Feishu's voice channel only accepts Opus (msg_type='audio' with an
+        opus upload). Non-opus audio (mp3/wav/flac/...) is transcoded on the
+        fly via the shared ffmpeg engine so audio actually arrives as a
+        playable voice message; when ffmpeg is unavailable the original
+        file is sent as a file attachment (previous behavior).
+        """
         transcoded_path: Optional[str] = None
         ext = Path(audio_path).suffix.lower()
         if ext not in _FEISHU_OPUS_UPLOAD_EXTENSIONS:
@@ -1758,8 +1764,12 @@ class FeishuAdapter(BasePlatformAdapter):
                 audio_path = transcoded_path
         try:
             return await self._send_uploaded_file_message(
-                chat_id=chat_id, file_path=audio_path, reply_to=reply_to, metadata=metadata,
-                caption=caption, outbound_message_type="audio",
+                chat_id=chat_id,
+                file_path=audio_path,
+                reply_to=reply_to,
+                metadata=metadata,
+                caption=caption,
+                outbound_message_type="audio",
             )
         finally:
             if transcoded_path:

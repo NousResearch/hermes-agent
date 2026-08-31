@@ -116,34 +116,33 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
     return _activated(proj, task_id)
 
 
-_ACTIONS = {
-    "list": lambda args, tid: project_list(task_id=tid),
-    "create": lambda args, tid: project_create(
-        name=args.get("name", ""), path=args.get("path"), task_id=tid),
-    "switch": lambda args, tid: project_switch(project=args.get("name", ""), task_id=tid)}
-
-
 def _handle_project(args, **kw):
-    action = _ACTIONS.get((args.get("action") or "").strip())
-    if action is None:
-        return json.dumps({"success": False, "error": "action must be one of: create, switch, list."})
-    return action(args, kw.get("task_id"))
+    action = (args.get("action") or "").strip()
+    tid = kw.get("task_id")
+    if action == "list":
+        return project_list(task_id=tid)
+    if action == "create":
+        return project_create(name=args.get("name", ""), path=args.get("path"), task_id=tid)
+    if action == "switch":
+        return project_switch(project=args.get("name", ""), task_id=tid)
+    return json.dumps({"success": False, "error": "action must be one of: create, switch, list."})
 
 
-# One action enum instead of three tools: each re-taught "desktop Projects" (244 -> ~145 tok).
-# Consolidated (#95681, maintainer-directed): project_list/create/switch each re-taught "desktop Projects
-# (named workspaces)"; one action enum says it once (244 -> ~145 tok).
+# Consolidated (#95681, maintainer-directed): project_list/create/switch each
+# re-taught "desktop Projects (named workspaces)"; one action enum says it
+# once (244 -> ~145 tok).
 registry.register(
     name="desktop_project",
     toolset="project",
     schema={
         "name": "desktop_project",
         "description": (
-            "Create or switch desktop Projects (named workspaces). create: one and switch "
+            "Desktop Projects (named workspaces). create: make one and switch "
             "this chat into it — pass path to anchor it to a repo/folder (the "
             "chat's workspace moves there, the sidebar follows). switch: move "
             "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. list: all projects + which is active."
+            "intentional way to move the session, not `cd`. list: all "
+            "projects + which is active."
         ),
         "parameters": {
             "type": "object",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -95,6 +96,60 @@ def test_fork_python_suite_has_a_process_tree_watchdog():
         fork_timeout - watchdog_timeout - shutdown_grace
         >= _MINIMUM_FORK_JOB_HEADROOM_SECONDS
     )
+    expected_slice_command = [
+        "scripts/run_tests.sh",
+        "--slice",
+        "${{ matrix.slice }}",
+    ]
+    assert any(
+        command[index : index + len(expected_slice_command)] == expected_slice_command
+        for index in range(len(command))
+    )
+    assert "HERMES_TEST_SLICE" not in run_tests.get("env", {})
+
+
+def test_contributor_attribution_is_upstream_only():
+    """Fork syncs must not republish upstream contributor email mappings."""
+    condition = str(_ci_workflow()["jobs"]["contributor-check"]["if"])
+    normalized = re.sub(r"\s+", "", condition)
+
+    assert "needs.detect.outputs.python=='true'" in normalized
+    assert "github.repository=='NousResearch/hermes-agent'" in normalized
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "job_name"),
+    [
+        ("js-tests.yml", "check"),
+        ("rust-tests.yml", "bootstrap-installer"),
+    ],
+)
+def test_fork_heavy_linux_jobs_use_standard_runners(
+    workflow_name: str, job_name: str
+):
+    """Fork jobs must not wait for runner labels owned by the upstream repo."""
+    runner = str(_workflow(workflow_name)["jobs"][job_name]["runs-on"])
+    normalized = re.sub(r"\s+", "", runner)
+
+    assert normalized == (
+        "${{github.repository=='NousResearch/hermes-agent'"
+        "&&'ubuntu-latest-32-core'||'ubuntu-latest'}}"
+    )
+
+
+def test_fork_os_jobs_use_standard_runners():
+    """OS lanes must retain coverage when upstream-only labels are unavailable."""
+    job = _workflow("tests-os.yml")["jobs"]["os-tests"]
+    normalized = re.sub(r"\s+", "", str(job["runs-on"]))
+    rows = {row["name"]: row for row in job["strategy"]["matrix"]["include"]}
+
+    assert normalized == (
+        "${{github.repository=='NousResearch/hermes-agent'"
+        "&&matrix.runner||matrix.fork_runner}}"
+    )
+    assert rows["macOS-only tests"]["fork_runner"] == "macos-latest"
+    assert rows["Windows-only tests"]["runner"] == "windows-latest-32-core"
+    assert rows["Windows-only tests"]["fork_runner"] == "windows-latest"
 
 
 @pytest.mark.parametrize(
@@ -142,6 +197,7 @@ def test_required_gate_rejects_cancelled_detect_job(tmp_path):
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
 
     assert completed.returncode != 0, completed.stdout

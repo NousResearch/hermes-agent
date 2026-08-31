@@ -12,7 +12,6 @@ import copy
 import json
 import logging
 import os
-import posixpath
 import re
 import sys
 import threading
@@ -37,26 +36,15 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
         raw = "."
     expanded = os.path.expanduser(raw)
 
-    # Normalize cross-boundary drive spellings for the host that is actually
-    # running Hermes. Native Windows must not turn C:\... into /mnt/c/... and
-    # then resolve it as C:\mnt\c\..., which breaks symlinks and ACP history.
-    from hermes_constants import is_wsl, windows_path_to_wsl
+    # Normalize Windows drive paths into the equivalent WSL mount form so
+    # ACP history filters match the same workspace across Windows and WSL.
+    from hermes_constants import windows_path_to_wsl
 
-    if os.name == "nt" and not is_wsl():
-        from tools.environments.local import _msys_to_windows_path
-
-        native = _msys_to_windows_path(expanded)
-        if native != expanded:
-            expanded = native
-        elif expanded.startswith("/"):
-            # Preserve non-drive POSIX paths received from remote ACP clients.
-            return posixpath.normpath(expanded)
-    else:
-        translated = windows_path_to_wsl(expanded)
-        if translated is not None:
-            expanded = translated
-        elif re.match(r"^/mnt/[A-Za-z]/", expanded):
-            expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
+    translated = windows_path_to_wsl(expanded)
+    if translated is not None:
+        expanded = translated
+    elif re.match(r"^/mnt/[A-Za-z]/", expanded):
+        expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
 
     # realpath resolves symlink aliases (macOS ``/var`` vs ``/private/var``, ``/tmp`` vs
     # ``/private/tmp``) that otherwise drop a workspace's own sessions; it is lexical

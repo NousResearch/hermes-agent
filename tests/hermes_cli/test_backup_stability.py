@@ -82,7 +82,7 @@ def test_quick_snapshot_is_published_with_manifest(tmp_path, monkeypatch) -> Non
         (home / "state-snapshots" / snapshot_id / "manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["id"] == snapshot_id
-    assert manifest["files"] == {"config.yaml": (home / "config.yaml").stat().st_size}
+    assert manifest["files"] == {"config.yaml": 10}
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")

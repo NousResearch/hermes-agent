@@ -384,6 +384,7 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
 
 def _is_openai_codex_backend(agent) -> bool:
     from agent.codex_responses_adapter import classify_responses_route
+
     return classify_responses_route(agent).is_codex_backend
 
 
@@ -695,7 +696,38 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         request_client = make_client("anthropic_messages_request", kind="anthropic_messages")
         return agent._anthropic_messages_create(api_kwargs, client=request_client)
     if agent.api_mode == "bedrock_converse":
-        return _bedrock_converse_call(api_kwargs, stream=False)
+        # Bedrock uses boto3 directly — no OpenAI client needed.
+        # normalize_converse_response produces an OpenAI-compatible
+        # SimpleNamespace so the rest of the agent loop can treat
+        # bedrock responses like chat_completions responses.
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            invalidate_runtime_client,
+            is_stale_connection_error,
+            normalize_converse_response,
+            recover_from_cache_point_rejection,
+        )
+        region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+        api_kwargs.pop("__bedrock_converse__", None)
+        client = _get_bedrock_runtime_client(region)
+        try:
+            raw_response = client.converse(**api_kwargs)
+        except Exception as _bedrock_exc:
+            # A model that refuses cachePoint in one section (Nova rejects it
+            # inside toolConfig.tools, #97281) fails every turn otherwise —
+            # drop that marker and resend before surfacing the error.
+            _retry_kwargs = recover_from_cache_point_rejection(
+                _bedrock_exc, api_kwargs
+            )
+            if _retry_kwargs is not None:
+                raw_response = client.converse(**_retry_kwargs)
+                return normalize_converse_response(raw_response)
+            # Evict the cached client on stale-connection failures
+            # so the outer retry loop builds a fresh client/pool.
+            if is_stale_connection_error(_bedrock_exc):
+                invalidate_runtime_client(region)
+            raise
+        return normalize_converse_response(raw_response)
     if agent.provider == "moa":
         # MoA is a virtual provider backed by the in-process MoAClient facade — never
         # rebuild a request-local client from the virtual metadata. After a client
@@ -1300,6 +1332,133 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     transport = agent._get_transport()
     tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
 
+    if agent.api_mode == "anthropic_messages":
+        _transport = agent._get_transport()
+        anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
+        ctx_len = getattr(agent, "context_compressor", None)
+        ctx_len = ctx_len.context_length if ctx_len else None
+        ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
+        if ephemeral_out is not None:
+            agent._ephemeral_max_output_tokens = None  # consume immediately
+        anthropic_kwargs = _transport.build_kwargs(
+            model=agent.model,
+            messages=anthropic_messages,
+            tools=tools_for_api,
+            max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
+            reasoning_config=agent.reasoning_config,
+            is_oauth=agent._is_anthropic_oauth,
+            preserve_dots=agent._anthropic_preserve_dots(),
+            context_length=ctx_len,
+            base_url=getattr(agent, "_anthropic_base_url", None),
+            fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
+            drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+        )
+        # Nous Portal reads ``tags`` and ``session_id`` as top-level body fields
+        # on its Messages route the same way it does on /chat/completions, but
+        # the profile hook that produces them is only consulted by the
+        # OpenAI-wire transport. Merge them here so Messages traffic keeps
+        # product attribution and sticky routing.
+        return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
+
+    # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
+    # The adapter handles message/tool conversion and boto3 calls directly.
+    if agent.api_mode == "bedrock_converse":
+        _bt = agent._get_transport()
+        region = getattr(agent, "_bedrock_region", None) or "us-east-1"
+        guardrail = getattr(agent, "_bedrock_guardrail_config", None)
+        return _bt.build_kwargs(
+            model=agent.model,
+            messages=api_messages,
+            tools=tools_for_api,
+            max_tokens=agent.max_tokens or 4096,
+            region=region,
+            guardrail_config=guardrail,
+        )
+
+    # Rotation-stable logical cache scope, shared by every OpenAI-wire branch
+    # below (codex + both chat_completions paths). Memoized on the agent —
+    # cheap after the first call. Resolved after the anthropic/bedrock early
+    # returns above, which don't use prompt_cache_key.
+    _cache_scope_id = _prompt_cache_scope_for_agent(agent)
+
+    if agent.api_mode == "codex_responses":
+        _ct = agent._get_transport()
+        from agent.codex_responses_adapter import classify_responses_route
+
+        is_codex_backend, is_xai_responses, is_github_responses = (
+            classify_responses_route(agent)
+        )
+        _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
+
+        # Native server-side compaction (gpt-5.6 on direct OpenAI API /
+        # ChatGPT Codex routes only) — None on every other route/model, in
+        # which case the request is unchanged from pre-feature behavior.
+        from agent.native_compaction import native_compaction_context_management
+        _context_management = native_compaction_context_management(
+            agent,
+            is_codex_backend=is_codex_backend,
+            is_xai_responses=is_xai_responses,
+            is_github_responses=is_github_responses,
+        )
+
+        # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
+        # in tool schemas (HTTP 400 "Invalid arguments passed to the model").
+        # Most commonly hit when MCP-derived tools carry JSON Schema validation
+        # keywords through. Strip them before building kwargs. See #27197.
+        # It also rejects ``enum`` values containing ``/`` (HuggingFace IDs
+        # like ``Qwen/Qwen3.5-0.8B`` shipped by MCP servers) — same 400 with
+        # the same opaque message; strip those enums too.
+        #
+        # Deep-copy ``tools_for_api`` before sanitizing: the sanitizers
+        # mutate in place (documented contract on ``strip_slash_enum`` /
+        # ``strip_pattern_and_format``), and ``tools_for_api`` is a direct
+        # reference to ``agent.tools``.  Without the copy, the first xAI
+        # request permanently strips constraints from the shared per-agent
+        # tool registry — every subsequent non-xAI call from the same
+        # agent (auxiliary task routed to Anthropic, OpenRouter fallback,
+        # main-model swap) sees the already-stripped schema.  See #27907.
+        if is_xai_responses:
+            try:
+                import copy as _copy
+                from tools.schema_sanitizer import (
+                    strip_pattern_and_format,
+                    strip_slash_enum,
+                )
+                tools_for_api = _copy.deepcopy(tools_for_api)
+                tools_for_api, _ = strip_pattern_and_format(tools_for_api)
+                tools_for_api, _ = strip_slash_enum(tools_for_api)
+            except Exception as exc:
+                logger.warning(
+                    "%s⚠️ Failed to sanitize tool schemas for xAI: %s",
+                    getattr(agent, "log_prefix", ""), exc,
+                )
+
+        return _ct.build_kwargs(
+            model=agent.model,
+            messages=_msgs_for_codex,
+            tools=tools_for_api,
+            reasoning_config=agent.reasoning_config,
+            session_id=getattr(agent, "session_id", None),
+            cache_scope_id=_cache_scope_id,
+            base_url=agent.base_url,
+            max_tokens=agent.max_tokens,
+            timeout=agent._resolved_api_call_timeout(),
+            request_overrides=agent.request_overrides,
+            provider=getattr(agent, "provider", None),
+            is_github_responses=is_github_responses,
+            is_codex_backend=is_codex_backend,
+            is_xai_responses=is_xai_responses,
+            github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
+            replay_encrypted_reasoning=bool(
+                getattr(agent, "_codex_reasoning_replay_enabled", True)
+            ),
+            context_management=_context_management,
+        )
+
+    # ── chat_completions (default) ─────────────────────────────────────
+    _ct = agent._get_transport()
+
+    # Provider detection flags
     _is_qwen = agent._is_qwen_portal()
     _is_or = agent._is_openrouter_url()
     _host = agent._base_url_lower
@@ -1885,6 +2044,7 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
 
         old_model = agent.model
         old_provider = agent.provider
+        old_base_url = agent.base_url
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -2053,6 +2213,62 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
             )
             # Keep whatever reasoning_config was active — don't break the fallback swap.
 
+        # Re-resolve extra_body for the fallback provider (Closes #75091).
+        # The OLD provider's custom_providers-contributed extra_body (e.g. a
+        # vendor-specific reasoning toggle) must not ride along onto the
+        # fallback provider, which is a different API that may reject those
+        # fields.  Removal is KEY-SCOPED: only keys the old provider's
+        # custom_providers entry contributed (value unchanged since init)
+        # are dropped; the fallback provider's own extra_body is then merged
+        # back in.  Caller/profile-provided extra_body keys
+        # (request_overrides passed at init, which win over provider config
+        # per _merge_custom_provider_extra_body precedence) MUST survive the
+        # swap untouched.
+        try:
+            from agent.agent_init import (
+                _custom_provider_extra_body_for_agent,
+                _merge_custom_provider_extra_body,
+            )
+            _custom_providers = getattr(agent, "_custom_providers", None) or []
+            # What did the OLD provider's config contribute?
+            _old_provider_eb = _custom_provider_extra_body_for_agent(
+                provider=old_provider,
+                model=old_model,
+                base_url=old_base_url,
+                custom_providers=_custom_providers,
+            ) or {}
+            _overrides = dict(getattr(agent, "request_overrides", {}) or {})
+            _existing_eb = _overrides.get("extra_body")
+            if isinstance(_existing_eb, dict) and _old_provider_eb:
+                _scrubbed = dict(_existing_eb)
+                for _k, _v in _old_provider_eb.items():
+                    # Drop only keys the old provider contributed: the value
+                    # must still match what its config injected — a caller
+                    # override of the same key would have won at init and
+                    # differ, so it survives.  Keys the new provider
+                    # redefines are re-added with the NEW provider's value
+                    # by the merge below.
+                    if _k in _scrubbed and _scrubbed[_k] == _v:
+                        _scrubbed.pop(_k)
+                if _scrubbed:
+                    _overrides["extra_body"] = _scrubbed
+                else:
+                    _overrides.pop("extra_body", None)
+                agent.request_overrides = _overrides
+            # Merge in the fallback provider's own extra_body (existing
+            # caller-provided keys win on conflict inside the merge helper).
+            _merge_custom_provider_extra_body(agent, _custom_providers)
+            logger.info(
+                "Fallback %s: extra_body resolved: %s",
+                agent.model,
+                (getattr(agent, "request_overrides", {}) or {}).get("extra_body"),
+            )
+        except Exception as _eb_err:
+            logger.debug(
+                "Failed to resolve extra_body for fallback %s; keeping current: %s",
+                agent.model, _eb_err,
+            )
+
         # Keep the prompt's self-identity in sync with the model actually
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
@@ -2086,6 +2302,13 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         # short-circuit the freshly activated fallback before it gets a
         # single stream attempt.
         _reset_stale_streak(agent)
+        from agent.native_compaction import resolve_native_compaction_capabilities
+        agent.runtime_capabilities = resolve_native_compaction_capabilities(
+            model=agent.model,
+            base_url=agent.base_url,
+            provider=fb_provider,
+            is_codex_backend=fb_provider == "openai-codex",
+        )
         return True
     return False
 
@@ -2629,15 +2852,64 @@ class _BedrockStream:
             with contextlib.suppress(Exception):
                 self.on_first_delta()
 
-    def _after_first(self, fire):
-        """Wrap a delta callback so the first delivered event also fires ``on_first_delta``."""
-        def _on(value):
-            self._fire_first()
-            fire(value)
-        return _on
+        def _bedrock_call():
+            stream = None
+            try:
+                from agent import relay_llm
+                from agent.bedrock_adapter import (
+                    _get_bedrock_runtime_client,
+                    invalidate_runtime_client,
+                    is_stale_connection_error,
+                    is_streaming_access_denied_error,
+                    normalize_converse_response,
+                    recover_from_cache_point_rejection,
+                    stream_converse_with_callbacks,
+                )
+                intercepted_events = []
+                writer_token = {"value": None}
 
-    def _open_stream(self, next_api_kwargs: dict[str, Any]):
-        return _bedrock_converse_call(dict(next_api_kwargs), stream=True, on_stream_denied=self._fall_back_to_converse)
+                def _open_bedrock_stream(next_api_kwargs: dict[str, Any]):
+                    final_kwargs = dict(next_api_kwargs)
+                    region = final_kwargs.pop("__bedrock_region__", "us-east-1")
+                    final_kwargs.pop("__bedrock_converse__", None)
+                    client = _get_bedrock_runtime_client(region)
+                    try:
+                        raw_response = client.converse_stream(**final_kwargs)
+                    except Exception as _bedrock_exc:
+                        # Bedrock refuses a cachePoint block in one section for
+                        # some families (Nova: toolConfig.tools, #97281) and
+                        # fails the whole request. Drop that marker and reopen
+                        # the stream inside the same Relay attempt.
+                        _retry_kwargs = recover_from_cache_point_rejection(
+                            _bedrock_exc, final_kwargs
+                        )
+                        if _retry_kwargs is not None:
+                            return client.converse_stream(**_retry_kwargs).get(
+                                "stream", []
+                            )
+                        # InvokeModel-only policies cannot open a stream. Keep
+                        # the fallback inside the same managed Relay attempt so
+                        # the real provider request and terminal response still
+                        # share one lifecycle boundary.
+                        if is_streaming_access_denied_error(_bedrock_exc):
+                            agent._disable_streaming = True
+                            agent._safe_print(
+                                "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream — "
+                                "falling back to non-streaming InvokeModel.\n"
+                                "   Grant that action to restore streaming output.\n"
+                            )
+                            logger.info(
+                                "bedrock: converse_stream denied by IAM (%s) — "
+                                "using non-streaming converse() for this session.",
+                                type(_bedrock_exc).__name__,
+                            )
+                            return normalize_converse_response(
+                                client.converse(**final_kwargs)
+                            )
+                        if is_stale_connection_error(_bedrock_exc):
+                            invalidate_runtime_client(region)
+                        raise
+                    return raw_response.get("stream", [])
 
     def _fall_back_to_converse(self, client, final_kwargs: dict, exc: Exception):
         # InvokeModel-only IAM policies cannot stream; fall back inside the same Relay
@@ -3146,13 +3418,16 @@ class _StreamingCall(StreamingWaitMonitor):
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
 
-            # Accumulate text content — fire callback only when no tool calls
-            delta_content = getattr(delta, "content", None)
+            # Accumulate text content — fire callback only when no tool calls.
+            # Some OpenAI-compatible providers emit a text delta as a list of
+            # content blocks.  Convert it once so callbacks and the synthetic
+            # completion message always receive plain text.
+            delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
             if delta_content:
                 content_parts.append(delta_content)
                 if not tool_calls_acc:
-                    if pending_text_parts or _provider_stream_text_may_be_sse(delta.content):
-                        pending_text_parts.append(delta.content)
+                    if pending_text_parts or _provider_stream_text_may_be_sse(delta_content):
+                        pending_text_parts.append(delta_content)
                         pending_text = "".join(pending_text_parts)
                         if _provider_stream_text_may_be_sse(pending_text):
                             continue

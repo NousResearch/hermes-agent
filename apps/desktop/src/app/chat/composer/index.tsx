@@ -37,7 +37,6 @@ import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
   implicitSlashAcceptIndex,
-  liveComposerDraft,
   type QueueEditState,
   shouldDisableComposerInput,
   slashArgStage
@@ -192,13 +191,6 @@ export function ChatBar({
   // session id — gateway events and process.list both speak that id. Only the
   // queue uses the stored-session fallback key (prompts can queue pre-resume).
   const statusSessionId = sessionId ?? null
-
-  // The guide uses the setup profile's inference route; the model pill and
-  // git controls would expose settings unrelated to its conversational steps.
-  // Solo covers startup before the guide's session ids are known.
-  const onboardingThreadIds = useStore($chatOnboardingThreadIds)
-  const chatOnboardingSolo = useStore($chatOnboardingSolo)
-  const guidedChat = chatOnboardingSolo || (sessionId != null && onboardingThreadIds.includes(sessionId))
 
   const composerTourMarker = useTourMarker('composer')
 
@@ -1395,7 +1387,10 @@ export function ChatBar({
                   onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null), scope.target)}
                   onOpenWorktree={openInWorktree}
                   onSwitchBranch={handleSwitchBranch}
-                  repoPath={cwd}
+                  // Blank in a bot chat: the row hides itself without a repo,
+                  // and stops probing git / GitHub for a surface that has no
+                  // branch to show. Cheaper than a second composer.
+                  repoPath={botChat ? undefined : cwd}
                 />
                 <div
                   className={cn(

@@ -1716,12 +1716,35 @@ class PluginContext:
 
     @_serialized_replacement
     def register_command(
-        self, name: str, handler: Callable, description: str = "", args_hint: str = "",
+        self,
+        name: str,
+        handler: Callable,
+        description: str = "",
+        args_hint: str = "",
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
-        """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
+
+        The handler signature is ``fn(raw_args: str) -> str | None``.
+        It may also be an async callable — the gateway dispatch handles both.
+
+        Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
+        terminal commands), this registers in-session slash commands that users
+        invoke during a conversation.
+
+        ``args_hint`` is an optional short string (e.g. ``"<file>"`` or
+        ``"dias:7 formato:json"``) used by gateway adapters to surface the
+        command with an argument field — for example Discord's native slash
+        command picker. Plugin commands without ``args_hint`` register as
+        parameterless in Discord and still accept trailing text when invoked
+        as free-form chat.
+
+        ``argument_mode`` tells the desktop composer how text after the command
+        name behaves (``options``, ``text``, or ``mixed``). Omit it to infer
+        ``text`` whenever ``args_hint`` is set, so ``/myplugin `` stays typeable.
+
+        Names conflicting with built-in commands are rejected with a warning.
+        """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -1732,12 +1755,21 @@ class PluginContext:
                 logger.warning("Plugin '%s' tried to register command '/%s' which conflicts "
                                "with a built-in command. Skipping.", self.manifest.name, clean)
                 return
+        except Exception:
+            pass  # If commands module isn't available, skip the check
+
+        previous = self._manager._plugin_commands.get(clean)
         hint = (args_hint or "").strip()
+        mode = argument_mode if argument_mode in {"options", "text", "mixed"} else (
+            "text" if hint else None
+        )
         entry = {
-            "handler": handler, "description": description or "Plugin command",
-            "plugin": self.manifest.name, "plugin_key": self.plugin_id, "args_hint": hint,
-            "argument_mode": argument_mode if argument_mode in {"options", "text", "mixed"}
-            else ("text" if hint else None),
+            "handler": handler,
+            "description": description or "Plugin command",
+            "plugin": self.manifest.name,
+            "plugin_key": self.manifest.key or self.manifest.name,
+            "args_hint": hint,
+            "argument_mode": mode,
         }
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)

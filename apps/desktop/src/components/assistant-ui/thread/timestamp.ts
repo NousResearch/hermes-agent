@@ -1,7 +1,6 @@
 import { fmtClock, fmtDayTime } from '@/lib/time'
 
-// Keep precise technical timestamps stable across Windows display languages.
-const fmtTimelineClock = new Intl.DateTimeFormat('en-US', {
+const fmtTimelineClock = new Intl.DateTimeFormat(undefined, {
   fractionalSecondDigits: 3,
   hour: 'numeric',
   minute: '2-digit',

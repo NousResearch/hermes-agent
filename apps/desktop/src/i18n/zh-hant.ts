@@ -524,10 +524,10 @@ export const zhHant = defineLocale({
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       tipsTitle: '應用程式內提示',
-      tipsDesc: '偶爾顯示來自應用程式和 Hermes 的提示，每則提示只出現一次。開始使用滿30天後自動關閉，你可以重新開啟。',
-      tipsReset: (count: number) => `再次顯示 ${count} 則提示`,
+      tipsDesc: '指向應用程式某處的小氣泡：閒置時偶爾出現，需要時 Hermes 也會給你一則。關掉一則就不再出現。',
+      tipsReset: (count: number) => `復原 ${count} 則已關閉的提示`,
       toursTitle: '導覽',
-      toursDesc: '讓 Hermes 逐步標示每個位置，帶你認識應用程式。開始使用滿30天後自動關閉，你可以重新開啟。',
+      toursDesc: '讓 Hermes 帶你認識應用程式：調暗畫面並逐步標示每個位置。',
       composerPopoutTitle: '懸浮輸入框',
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
       vibeHeartsTitle: '心情愛心',
@@ -1414,17 +1414,7 @@ export const zhHant = defineLocale({
         enabledMessage: '新工作階段將使用預設瀏覽器設定檔的快照進行瀏覽。',
         disabledTitle: '真實設定檔瀏覽：已關閉',
         disabledMessage: '設定檔快照將被刪除；新工作階段使用乾淨的瀏覽器。',
-        failedSave: '無法儲存真實設定檔設定',
-        prompt: {
-          title: '讓網站保持登入狀態',
-          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，網站開啟時即已登入。',
-          bulletSnapshot: 'Cookie 與登入資訊會複製到受管理的快照中。',
-          bulletLiveProfile: '絕不會直接開啟你的真實瀏覽器設定檔。',
-          bulletLocal: '所有資料都不會離開這台電腦。',
-          dontShowAgain: '不再顯示',
-          notNow: '暫不',
-          enable: '使用我的設定檔'
-        }
+        failedSave: '無法儲存真實設定檔設定'
       }
     }
   },
@@ -3551,15 +3541,9 @@ export const zhHant = defineLocale({
         title: '附件與指令',
         text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
       },
-      'local-runtime-update': {
-        title: '本機引擎有可用更新',
-        text: '更新執行本機模型的引擎。進行中的本機請求可能會中斷。',
-        action: '立即更新'
-      },
-      'local-setup': {
-        title: '這台電腦可以本地執行模型',
-        text: '你的硬體可以執行本地模型。對話不離開你的電腦，而且完全免費。',
-        action: '立即設定'
+      'model-switch': {
+        title: '對話中隨時換模型',
+        text: '模型名稱就是按鈕。工作性質變了就換一個。'
       },
       'right-pane': {
         title: '工作面板',

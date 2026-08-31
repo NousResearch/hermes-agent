@@ -731,14 +731,14 @@ class PhotonAdapter(BasePlatformAdapter):
         timestamp = _parse_timestamp(event.get("timestamp") or "")
         message_id = event.get("messageId")
         ctype = content.get("type")
-
-        def _event(text: str, mtype: MessageType = MessageType.TEXT, **kwargs: Any) -> MessageEvent:
-            source = self.build_source(chat_id=space_id, chat_name=space_id, chat_type=chat_type,
-                                       user_id=sender_id, user_name=sender_id or None, message_id=message_id)
-            return MessageEvent(text=text, message_type=mtype, source=source, message_id=message_id,
-                                raw_message=event, timestamp=timestamp, **kwargs)
-        if ctype in {"read", "read_receipt"}:  # presence signal, not a user turn (receipts for our sends)
-            logger.debug("[photon] outbound message read: %s", content.get("targetMessageId") or "unknown")
+        if ctype in {"read", "read_receipt"}:
+            # Read receipts are presence signals, not a user turn. The sidecar
+            # only forwards receipts for messages we sent, so logging the
+            # target is enough for observability without waking the agent.
+            logger.debug(
+                "[photon] outbound message read: %s",
+                content.get("targetMessageId") or "unknown",
+            )
             return
         if ctype == "reaction":
             # Only tapbacks on messages WE sent are addressed to the bot. Checked before the

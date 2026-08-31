@@ -429,71 +429,67 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
+    capabilities: Optional[Dict[str, bool]] = None,
 ):
     """
     Initialize the AI Agent.
 
 
-
-def _refuse_checkpoint_required_on_codex_app_server(
-    checkpoint_required: bool, api_mode: Optional[str]
-) -> None:
-    """Fail closed at init: the codex app-server compacts its own thread without a truthful
-    pre-compaction boundary (default "native" mode), so a required checkpoint can't be
-    guaranteed — the compress_context() guard alone cannot cover native turns."""
-    if checkpoint_required and api_mode == "codex_app_server":
-        raise RuntimeError(
-            "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
-            "is incompatible with the codex_app_server API mode: the codex "
-            "agent compacts its own thread without a truthful pre-compaction "
-            "transcript boundary, so a required pre-compress checkpoint "
-            "cannot be guaranteed. Disable compression.checkpoint_required "
-            "or use a non-app-server API mode."
-        )
-
-
-def _parse_config_int(raw: Any, default: int) -> int:
-    """Strict int coercion: rejects bool (YAML ``true`` → 1) and fractional floats."""
-    if isinstance(raw, bool):
-        return default
-    if isinstance(raw, int):
-        return raw
-    if isinstance(raw, float):
-        return int(raw) if raw.is_integer() else default
-    try:
-        return int(str(raw).strip())
-    except (TypeError, ValueError):
-        return default
-
-
-def _cfg_flag(cfg: Dict[str, Any], key: str, default: bool) -> bool:
-    """Legacy string-set truthiness used by the ``compression`` section."""
-    return str(cfg.get(key, default)).lower() in {"true", "1", "yes"}
-
-
-def _cfg_dict(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
-    """``cfg[key]`` if it is a mapping, else ``{}`` (malformed sections are ignored)."""
-    section = cfg.get(key, {})
-    return section if isinstance(section, dict) else {}
-
-
-class CompressionSettings(SimpleNamespace):
-    """Parsed ``compression`` config section (see ``_parse_compression_config``)."""
-
-
-_EXPLICIT_API_MODES = {
-    "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
-}
-
-
-def _resolve_api_mode(agent, api_mode, provider_name, base_url):
-    """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
-    from hermes_cli.providers import is_actual_route
-    host, url = agent._base_url_hostname, agent._base_url_lower
-    if is_actual_route(agent.provider, base_url):
-        agent.api_mode = "chat_completions"
-    elif api_mode in _EXPLICIT_API_MODES:
+    agent.model = model
+    agent.max_iterations = max_iterations
+    # Shared iteration budget — parent creates, children inherit.
+    # Consumed by every LLM turn across parent + all subagents.
+    agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
+    agent.save_trajectories = save_trajectories
+    agent.verbose_logging = verbose_logging
+    agent.quiet_mode = quiet_mode
+    agent.tool_progress_mode = tool_progress_mode
+    agent.ephemeral_system_prompt = ephemeral_system_prompt
+    agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+    agent._user_id = user_id  # Platform user identifier (gateway sessions)
+    agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
+    agent._user_name = user_name
+    agent._chat_id = chat_id
+    agent._chat_name = chat_name
+    agent._chat_type = chat_type
+    agent._thread_id = thread_id
+    agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
+    # Pluggable print function — CLI replaces this with _cprint so that
+    # raw ANSI status lines are routed through prompt_toolkit's renderer
+    # instead of going directly to stdout where patch_stdout's StdoutProxy
+    # would mangle the escape sequences.  None = use builtins.print.
+    agent._print_fn = None
+    agent.background_review_callback = None  # Optional sync callback for gateway delivery
+    agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
+    agent.skip_context_files = skip_context_files
+    agent.load_soul_identity = load_soul_identity
+    # Background review (memory/skill) opt-out switch. When True, skips the
+    # _spawn_background_review fork at end-of-turn -- avoids ~30K tokens /
+    # event of extra LLM cost on cron-style sessions where review forks
+    # provide no value (no human in the loop, no skill-creation pressure).
+    # skip_memory=True already disables the memory-review trigger; this
+    # flag is the explicit single-switch off for both review paths.
+    agent.skip_background_review = bool(skip_background_review)
+    agent.pass_session_id = pass_session_id
+    agent.log_prefix_chars = log_prefix_chars
+    agent.log_prefix = f"{log_prefix} " if log_prefix else ""
+    # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
+    agent.base_url = base_url or ""
+    provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
+    agent.provider = provider_name or ""
+    agent.requested_provider = (
+        requested_provider.strip().lower()
+        if isinstance(requested_provider, str) and requested_provider.strip()
+        else agent.provider
+    )
+    agent.capabilities = {
+        key: value for key, value in (capabilities or {}).items()
+        if isinstance(key, str) and isinstance(value, bool)
+    }
+    agent._credential_pool = credential_pool
+    agent.acp_command = acp_command or command
+    agent.acp_args = list(acp_args or args or [])
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
         agent.api_mode = api_mode
     elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
@@ -1995,57 +1991,27 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     _refuse_checkpoint_required_on_codex_app_server(
         checkpoint_required, getattr(agent, "api_mode", None)
     )
-    app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
-    # Opt-in idle compaction: compact up front when a session resumes after this many
-    # seconds idle (0 = disabled). Consumed by build_turn_context().
-    idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
-    return CompressionSettings(
-        threshold=threshold,
-        autoraise_notice_enabled=autoraise_notice_enabled,
-        enabled=_cfg_flag(cfg, "enabled", True),
-        target_ratio=target_ratio,
-        protect_last=protect_last,
-        # "lean" keeps a clamped 2.5%/10K-25K verbatim tail (continuity rides the summary);
-        # "legacy" restores the 0.20*threshold tail. Unknown → lean inside the compressor.
-        tail_mode=str(cfg.get("tail_mode", "lean")).strip().lower(),
-        # Actionable user messages guaranteed to survive in the tail (default 1, floor 1).
-        min_tail_users=max(1, _parse_config_int(cfg.get("min_tail_user_messages", 1), 1)),
-        max_attempts=min(max_attempts, 10),
-        # Opt-in proactive tool-result prune trigger (0 = disabled; negatives = disabled).
-        proactive_prune_tokens=max(0, _parse_config_int(cfg.get("proactive_prune_tokens", 0), 0)),
-        proactive_prune_min_chars=_parse_config_int(
-            cfg.get("proactive_prune_min_result_chars", 8000), 8000
-        ),
-        proactive_prune_min_reclaim=max(
-            0, _parse_config_int(cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096)
-        ),
-        protect_first=protect_first,
-        abort_on_summary_failure=_cfg_flag(cfg, "abort_on_summary_failure", False),
-        # Per-model threshold overrides: keys substring-matched against the model name
-        # (longest match wins); {} = global threshold for all models.
-        model_thresholds={
-            str(k): float(v) for k, v in _cfg_dict(cfg, "model_thresholds").items()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        },
-        threshold_tokens=threshold_tokens,
-        checkpoint_required=checkpoint_required,
-        # In-place compaction: no session-id rotation. default=True MUST match DEFAULT_CONFIG
-        # (a False default flipped agents into rotation mode when the key was omitted).
-        in_place=is_truthy_value(cfg.get("in_place"), default=True),
-        # Opt-in: micro-compaction rewrites sent history per turn (breaks the cache prefix).
-        micro_compact=is_truthy_value(cfg.get("micro_compact"), default=False),
-        # Pass cadence in completed turns; each pass costs one prompt-cache break (>= 1).
-        micro_compact_every_n_turns=max(
-            1, _parse_config_int(cfg.get("micro_compact_every_n_turns", 1), 1)
-        ),
-        # Rolling-summary defrag threshold, in tokens.
-        micro_compact_defrag_tokens=max(
-            1, _parse_config_int(cfg.get("micro_compact_defrag_threshold_tokens", 2000), 2000)
-        ),
-        codex_app_server_auto=app_server_auto,
-        codex_responses_native=responses_native,
-        codex_responses_compact_threshold=compact_threshold,
-        idle_compact_after_seconds=idle_compact_after_seconds,
+    _native_threshold_raw = _compression_cfg.get("codex_responses_compact_threshold")
+    codex_responses_compact_threshold = None
+    if _native_threshold_raw is not None:
+        try:
+            if isinstance(_native_threshold_raw, (bool, float)):
+                raise ValueError
+            codex_responses_compact_threshold = int(_native_threshold_raw)
+            if codex_responses_compact_threshold <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            _ra().logger.warning(
+                "Invalid compression.codex_responses_compact_threshold=%r; "
+                "using the automatic threshold derived from local compression.",
+                _native_threshold_raw,
+            )
+            codex_responses_compact_threshold = None
+    # Opt-in idle compaction: compact a session up front when it resumes after
+    # this many seconds of inactivity (0 = disabled). Time-based, so it
+    # complements the size-based threshold above. Consumed by build_turn_context().
+    compression_idle_compact_after_seconds = max(
+        0, int(_compression_cfg.get("idle_compact_after_seconds", 0))
     )
 
 
@@ -2432,6 +2398,13 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.codex_responses_native_compaction = codex_responses_native_compaction
     agent.codex_responses_compact_threshold = codex_responses_compact_threshold
+    from agent.native_compaction import resolve_native_compaction_capabilities
+    agent.runtime_capabilities = resolve_native_compaction_capabilities(
+        model=agent.model,
+        base_url=agent.base_url,
+        provider=agent.provider,
+        is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
+    )
     agent.max_compression_attempts = compression_max_attempts
     agent.compression_idle_compact_after_seconds = (
         compression_idle_compact_after_seconds
@@ -2533,9 +2506,39 @@ def _inject_context_engine_tools(agent):
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
 
-def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
-    # Ollama defaults num_ctx to 2048, so detect the max window and send num_ctx per request.
-    # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
+    # Usage-anchored context accounting (agent/model_metadata.py): the last
+    # main-loop provider response's exact usage + transcript snapshot. None
+    # until the first response with usage; invalidated on compaction and
+    # session switches so stale anchors can never suppress compression.
+    agent._usage_anchor = None
+
+    # Cumulative token usage for the session
+    agent.session_prompt_tokens = 0
+    agent.session_completion_tokens = 0
+    agent.session_total_tokens = 0
+    agent.session_api_calls = 0
+    agent.session_input_tokens = 0
+    agent.session_output_tokens = 0
+    agent.session_cache_read_tokens = 0
+    agent.session_cache_write_tokens = 0
+    agent.session_reasoning_tokens = 0
+    agent.session_estimated_cost_usd = 0.0
+    agent.session_cost_status = "unknown"
+    agent.session_cost_source = "none"
+    # Rolling history for status-bar avg latency / velocity (last 10 calls).
+    # Stored on the agent so both conversation_loop and codex_runtime share it
+    # and the CLI snapshot can read it without extra IPC.
+    from collections import deque as _deque
+    agent._api_latency_history = _deque(maxlen=10)
+    agent._api_output_history = _deque(maxlen=10)
+    
+    # ── Ollama num_ctx injection ──
+    # Ollama defaults to 2048 context regardless of the model's capabilities.
+    # When running against an Ollama server, detect the model's max context
+    # and pass num_ctx on every chat request so the full window is used.
+    # User override: set model.ollama_num_ctx in config.yaml to cap VRAM use.
+    # If model.context_length is set, it caps num_ctx so the user's VRAM
+    # budget is respected even when GGUF metadata advertises a larger window.
     agent._ollama_num_ctx: int | None = None
     _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
     if _override is not None:

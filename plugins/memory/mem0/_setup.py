@@ -114,12 +114,29 @@ def _model_block(flags: dict, registry: dict, prefix: str) -> tuple[str, dict, d
 
 
 def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
-    """Build (oss_config for mem0.json, env_writes of secrets for .env) from parsed flags."""
-    llm_id, llm_def, llm_config = _model_block(flags, LLM_PROVIDERS, "oss_llm")
-    if llm_id == "openai" and llm_config["model"] == "gpt-5-mini":
+    """Build OSS config dict + env_writes from parsed flags.
+
+    Returns (oss_config, env_writes) where oss_config goes into mem0.json
+    and env_writes maps env var names to secret values for .env.
+    """
+    llm_id = flags.get("oss_llm", "openai")
+    llm_def = LLM_PROVIDERS[llm_id]
+    llm_model = flags.get("oss_llm_model") or llm_def["default_model"]
+    llm_config: dict[str, Any] = {"model": llm_model}
+    if llm_id == "openai" and llm_model == "gpt-5-mini":
         llm_config["is_reasoning_model"] = True
-    embedder_id, embedder_def, embedder_config = _model_block(flags, EMBEDDER_PROVIDERS, "oss_embedder")
-    dims = KNOWN_DIMS.get(embedder_config["model"])
+    llm_url = flags.get("oss_llm_url") or llm_def.get("default_url")
+    if llm_url and llm_def.get("base_url_key"):
+        llm_config[llm_def["base_url_key"]] = llm_url
+
+    embedder_id = flags.get("oss_embedder", "openai")
+    embedder_def = EMBEDDER_PROVIDERS[embedder_id]
+    embedder_model = flags.get("oss_embedder_model") or embedder_def["default_model"]
+    embedder_config: dict[str, Any] = {"model": embedder_model}
+    embedder_url = flags.get("oss_embedder_url") or embedder_def.get("default_url")
+    if embedder_url and embedder_def.get("base_url_key"):
+        embedder_config[embedder_def["base_url_key"]] = embedder_url
+    dims = KNOWN_DIMS.get(embedder_model)
     if dims:
         embedder_config["embedding_dims"] = dims
     vector_id = flags.get("oss_vector", "qdrant")

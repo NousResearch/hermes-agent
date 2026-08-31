@@ -33,11 +33,14 @@ def test_webbrowser_get_controller_is_neutralized(_neutralize_webbrowser):
 
 
 def _isolate_anthropic_credentials(monkeypatch, tmp_path):
+    from agent import anthropic_adapter as aa
     from agent import anthropic_credentials as ac
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    # Patch the implementation owner (anthropic_credentials); the adapter
+    # merely re-exports these functions after the godfile split.
     monkeypatch.setattr(ac.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ac.platform, "system", lambda: "Darwin")
 
@@ -45,7 +48,7 @@ def _isolate_anthropic_credentials(monkeypatch, tmp_path):
         raise AssertionError("test reached the real macOS Keychain command")
 
     monkeypatch.setattr(ac.subprocess, "run", _real_keychain_reached)
-    return ac
+    return aa
 
 
 def test_claude_code_credential_read_does_not_touch_macos_keychain(

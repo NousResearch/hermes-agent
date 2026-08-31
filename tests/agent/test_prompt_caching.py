@@ -654,8 +654,6 @@ class TestApplyIdempotency:
 
 
 
-
-
 class TestOpenCodeGoOneHourPrecedence:
     """Precedence + eligibility guards for the opencode-go 1h allowance.
 

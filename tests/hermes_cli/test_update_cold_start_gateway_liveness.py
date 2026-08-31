@@ -21,7 +21,6 @@ from hermes_cli import update_cmd
 
 def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
-    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
 
     # The pre-spawn re-check (``all_profiles=True``) must find nothing
     # running so the cold-start path proceeds and actually spawns.

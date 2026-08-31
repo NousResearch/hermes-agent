@@ -214,7 +214,7 @@ def test_standard_backend_does_not_spawn_an_embedded_daemon():
 
 
 def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypatch):
-    from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+    from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
 
     (tmp_path / "config.yaml").write_text(
         "computer_use:\n  grant_existing_profile: true\n",
@@ -230,10 +230,10 @@ def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypa
             return MagicMock()
 
         with patch(
-            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
             return_value="/opt/cua-driver",
         ), patch(
-            "tools.computer_use.cua_backend_driver._resolve_mcp_invocation",
+            "tools.computer_use.cua_backend._resolve_mcp_invocation",
             return_value=("/opt/cua-driver", ["mcp"]),
         ), patch(
             "mcp.StdioServerParameters", side_effect=capture_params
@@ -269,17 +269,6 @@ def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypa
 
     assert captured["command"] == "/opt/cua-driver"
     assert captured["args"] == ["mcp"]
-
-
-def test_standard_existing_profile_grant_stays_in_process_off_macos():
-    from tools.computer_use.cua_backend import _standard_runtime_launch_args
-
-    args, socket_path = _standard_runtime_launch_args(
-        ["mcp"], grant_existing_profile=True, platform="linux"
-    )
-
-    assert args == ["mcp", "--grant", "existing-profile"]
-    assert socket_path is None
 
 
 def test_transport_reset_invalidates_native_capabilities():

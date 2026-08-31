@@ -172,8 +172,11 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
         if not getattr(turn, "token_usage_last", None):
             compressor.last_prompt_tokens, compressor.last_completion_tokens = -1, 0
             compressor.awaiting_real_usage_after_compression = True
-    # Provider-side context was rewritten; the usage anchor's transcript snapshot no longer matches.
-    set_usage_anchor(agent, None)
+
+    # Native compaction rewrote the provider-side context; the usage anchor's
+    # transcript snapshot no longer matches what will be sent. Invalidate it.
+    agent._usage_anchor = None
+
     agent._last_compaction_in_place = False
     _call_guarded(getattr(agent, "event_callback", None) or None, "event_callback error on codex session:compress",
                   args=("session:compress", {

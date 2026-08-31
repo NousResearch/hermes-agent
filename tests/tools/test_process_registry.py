@@ -3010,16 +3010,16 @@ def _make_delegation_batch_evt(results):
 def _patch_delegation_config(
     monkeypatch, model="upstage/solar-pro-4", provider="openrouter", **over
 ):
-    import tools.process_registry_notifications as _prn
+    import tools.process_registry as _pr
 
     cfg = {"model": model, "provider": provider}
     cfg.update(over)
-    monkeypatch.setattr(_prn, "_delegation_config", lambda: cfg)
+    monkeypatch.setattr(_pr, "_delegation_config", lambda: cfg)
     return cfg
 
 
 def _format_async(evt) -> str:
-    from tools.process_registry_notifications import format_process_notification
+    from tools.process_registry import format_process_notification
 
     text = format_process_notification(evt)
     assert text is not None, "format_process_notification returned None"

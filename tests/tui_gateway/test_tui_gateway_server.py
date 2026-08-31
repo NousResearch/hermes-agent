@@ -4824,7 +4824,7 @@ def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
     thread.start()
     acquired = False
     try:
-        assert teardown_started.wait(timeout=1.0)
+        assert teardown_started.wait(timeout=2.0)
         assert "slow-close" not in server._sessions
         acquired = server._session_resume_lock.acquire(timeout=0.2)
         assert acquired, "slow teardown kept the global resume lock held"
@@ -5215,10 +5215,6 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
 
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
-    # This test exercises lock release around teardown, not delegation
-    # bookkeeping.  Keep it independent of the process-global delegation
-    # registry populated by neighbouring tests in this large module.
-    monkeypatch.setattr(server, "_session_has_active_delegations", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
     server._sessions["slow-orphan"] = _session(
         transport=server._detached_ws_transport,
@@ -5230,10 +5226,7 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
     thread.start()
     acquired = False
     try:
-        # Shared CI runners can delay a fresh Python thread beyond one second;
-        # the bounded wait preserves the lock-release assertion without a
-        # scheduler-timing flake.
-        assert teardown_started.wait(timeout=3.0)
+        assert teardown_started.wait(timeout=1.0)
         assert "slow-orphan" not in server._sessions
         acquired = server._session_resume_lock.acquire(timeout=0.2)
         assert acquired, "orphan teardown kept the global resume lock held"
@@ -9970,7 +9963,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
         "hermes_cli.model_selection_guards.combined_selection_warning",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr("hermes_state_registry.acquire", FakeDb)
+    monkeypatch.setattr("hermes_state.SessionDB", FakeDb)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_transfer_db_to_agent", barrier_transfer)
     monkeypatch.setattr(

@@ -20,6 +20,14 @@ import {
   SIDEBAR_ROW_PAD_TRAIL
 } from './row-geometry'
 
+import {
+  SIDEBAR_ROW_INSET,
+  SIDEBAR_ROW_LABEL,
+  SIDEBAR_ROW_LEAD,
+  SIDEBAR_ROW_MIN_H,
+  SIDEBAR_ROW_PAD_TRAIL
+} from './row-geometry'
+
 // Shared, content-agnostic sidebar chrome — used by both the flat session
 // sections and the project/workspace tree, so it lives outside either to keep
 // imports one-directional (no index <-> projects cycle).
@@ -29,96 +37,10 @@ export function SidebarSectionMeta({ children }: { children: React.ReactNode }) 
   return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
 
-// ── Row geometry (session row is canonical — everything composes these) ─────
-//
-// Height lives ONLY on SidebarRowShell (min-h-[1.625rem]). Inset children
-// stretch to fill the cell and center content internally — never items-center
-// on the shell grid, or short clusters (projects) float 1–2px off sessions.
-//
-// `rowPadX` is the BODY's padding: the lead's inset, plus the gap the label
-// keeps from the actions column, both inside the row's click target.
-// `rowPadTrail` is the row's own trailing inset and belongs to the SHELL — the
-// only box containing both the actions column AND the card's in-body cluster,
-// so one class insets every trailing thing a row can render. Owned anywhere
-// else, the age / chips / kebab sit flush on the border box, which is exactly
-// where a working row paints its arc (`.arc-row` has zero standoff) — the ring
-// ran through the text.
-
-const rowMinH = 'min-h-[1.625rem]'
-const rowPadX = 'pl-2 pr-2'
-const rowPadTrail = 'pr-2'
-const rowGap = 'gap-1.5'
-const rowLead = 'grid size-3.5 shrink-0 place-items-center'
-const rowInset = cn(rowPadX, rowGap, 'flex h-full min-w-0 items-center self-stretch py-0.5')
-// `truncate` is overflow:hidden. `leading-none` (line-height: 1) makes the
-// line box equal the em-square, so glyph ink that sticks out — Segoe UI on
-// Windows is ~1.33em — gets shaved. 1.35 leaves room; the shell still owns
-// row height, so the extra leading just centers.
-export const SIDEBAR_TRUNCATED_LEADING = 'leading-[1.35]' as const
-const rowLabel = cn('min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary)', SIDEBAR_TRUNCATED_LEADING)
-
-// The sessions section header's "+" — the flat list's top-level new-session
-// control. Also a drag source, the same gesture as the nav's "New session"
-// row: drag it onto a chat zone's tab strip / edge / center to create the
-// session exactly there (stack / split). The pointer drag session owns the
-// gesture — a sub-threshold release falls through to the onClick (ordinary
-// new session), and an engaged drag suppresses that click so it never
-// double-creates. Both paths resolve the session's profile identically: the
-// create path (`openNewSessionTile`) reads `$newChatProfile` at commit, and
-// neither gesture resets it — matching the header "+" click behavior exactly
-// (only the nav "New session" row resets it, since it navigates to the draft
-// composer instead).
-export function SidebarSectionAddButton({
-  ariaLabel,
-  onNewProjectDrag,
-  onNewSessionSplit,
-  onPlainClick
-}: {
-  ariaLabel: string
-  /** Present when this header "+" creates a PROJECT (the project-overview
-   *  mode's "New project" button): dragging it arms where that project should
-   *  start and a valid drop opens the same "New project" dialog. `onArm` also
-   *  receives null so an aborted/deny-zone drag can clear a stale placement. */
-  onNewProjectDrag?: {
-    onArm: (placement: { anchor: string; before?: null | string; cwd?: null | string; dir: TileDock } | null) => void
-  }
-  /** Absent when this header "+" has no session-creating drag semantics
-   *  (e.g. the project-overview mode, where the "+" opens the project
-   *  dialog). Then the button stays click-only unless `onNewProjectDrag` is
-   *  supplied. */
-  onNewSessionSplit?: NewSessionSplitHandler
-  onPlainClick: () => void
-}) {
-  return (
-    <Tip label={ariaLabel}>
-      <Button
-        aria-label={ariaLabel}
-        className={HEADER_ACTION_BTN}
-        onClick={event => {
-          event.stopPropagation()
-          onPlainClick()
-        }}
-        onPointerDown={
-          onNewProjectDrag
-            ? event => {
-                startNewProjectDrag(onNewProjectDrag.onArm, event, { onTap: onPlainClick })
-              }
-            : onNewSessionSplit
-              ? event => {
-                  startNewSessionDrag(placement => {
-                    onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
-                  }, event)
-                }
-              : undefined
-        }
-        size="icon-xs"
-        variant="ghost"
-      >
-        <Codicon name="add" size="0.75rem" />
-      </Button>
-    </Tip>
-  )
-}
+// Row geometry lives in `row-geometry.ts` — see that file for why each class
+// belongs to the box it belongs to. Re-exported here because this module is
+// where callers already look for row chrome.
+export { SIDEBAR_LEAD_ICON_SIZE, SIDEBAR_ROW_CARD_MIN_H, SIDEBAR_TRUNCATED_LEADING } from './row-geometry'
 
 /** Vertical stack of rows (gap-px, single column). */
 export function SidebarRowStack({ className, ...props }: React.ComponentProps<'div'>) {
@@ -200,7 +122,12 @@ export function SidebarRowShell({
 }: React.ComponentProps<'div'> & { actions?: React.ReactNode; actionsClassName?: string }) {
   return (
     <div
-      className={cn(rowMinH, rowPadTrail, 'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md', className)}
+      className={cn(
+        SIDEBAR_ROW_MIN_H,
+        SIDEBAR_ROW_PAD_TRAIL,
+        'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md',
+        className
+      )}
       {...props}
     >
       {children}

@@ -10,8 +10,6 @@ const MOVE_TOLERANCE = 8
 
 interface PressState {
   armed: boolean
-  lastX: number
-  lastY: number
   mode: 'control' | 'hold'
   originH: number
   originW: number
@@ -55,6 +53,24 @@ function setWorkspaceTransfer(transferring: boolean): void {
   window.hermesDesktop?.hud?.setWorkspaceTransfer?.(transferring)
 }
 
+function moveHud(state: PressState): void {
+  window.hermesDesktop?.hud?.moveBy?.({
+    width: state.originW,
+    height: state.originH
+  })
+}
+
+function armGrab(state: PressState, workspaceTransfer: boolean): void {
+  state.armed = true
+  state.workspaceTransfer = workspaceTransfer
+
+  if (workspaceTransfer) {
+    setWorkspaceTransfer(true)
+  }
+
+  window.hermesDesktop?.hud?.beginMove?.()
+}
+
 /**
  * HUD-only: press and hold the composer, then drag to move the window. On X11,
  * Ctrl+primary-button is an immediate grab that also works over selected text.
@@ -95,6 +111,10 @@ export function useHudComposerDrag(
     const state = stateRef.current
 
     if (state) {
+      if (state.armed) {
+        window.hermesDesktop?.hud?.endMove?.()
+      }
+
       if (state.workspaceTransfer) {
         setWorkspaceTransfer(false)
       }
@@ -124,9 +144,7 @@ export function useHudComposerDrag(
       }
 
       const state: PressState = {
-        armed: immediate,
-        lastX: event.screenX,
-        lastY: event.screenY,
+        armed: false,
         mode: immediate ? 'control' : 'hold',
         originH: window.outerHeight,
         originW: window.outerWidth,
@@ -144,12 +162,7 @@ export function useHudComposerDrag(
       }
 
       if (immediate) {
-        state.workspaceTransfer = workspaceTransfer
-
-        if (workspaceTransfer) {
-          setWorkspaceTransfer(true)
-        }
-
+        armGrab(state, workspaceTransfer)
         setGrabbing(true)
         triggerHaptic('selection')
         capturePointer(state)
@@ -164,13 +177,7 @@ export function useHudComposerDrag(
           return
         }
 
-        state.armed = true
-        state.workspaceTransfer = workspaceTransfer
-
-        if (workspaceTransfer) {
-          setWorkspaceTransfer(true)
-        }
-
+        armGrab(state, workspaceTransfer)
         setGrabbing(true)
         triggerHaptic('selection')
 
@@ -229,6 +236,28 @@ export function useHudComposerDrag(
       reset()
     }
 
+    // Crossing a display often cancels the pointer without a matching up.
+    // Ending the grab there is what parks the HUD on the first monitor; snap
+    // to the native cursor and keep the hold so the next move (or mouseup)
+    // can finish on the other display.
+    const onCancel = (event: PointerEvent) => {
+      const state = stateRef.current
+
+      if (!state || event.pointerId !== state.pointerId) {
+        return
+      }
+
+      if (!state.armed) {
+        reset()
+
+        return
+      }
+
+      event.preventDefault()
+      moveHud(state)
+      capturePointer(state)
+    }
+
     const preventEditorGesture = (event: Event) => {
       if (stateRef.current?.mode === 'control') {
         event.preventDefault()
@@ -240,14 +269,16 @@ export function useHudComposerDrag(
     // `selectstart` stops the same press from replacing that range.
     window.addEventListener('pointermove', onMove, true)
     window.addEventListener('pointerup', onUp, true)
-    window.addEventListener('pointercancel', onUp, true)
+    window.addEventListener('mouseup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
     window.addEventListener('dragstart', preventEditorGesture, true)
     window.addEventListener('selectstart', preventEditorGesture, true)
 
     return () => {
       window.removeEventListener('pointermove', onMove, true)
       window.removeEventListener('pointerup', onUp, true)
-      window.removeEventListener('pointercancel', onUp, true)
+      window.removeEventListener('mouseup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
       window.removeEventListener('dragstart', preventEditorGesture, true)
       window.removeEventListener('selectstart', preventEditorGesture, true)
     }

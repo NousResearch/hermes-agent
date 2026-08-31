@@ -111,6 +111,32 @@ def _register_direct_openai_provider() -> None:
         register_provider(_DIRECT_OPENAI_PROVIDER, _DIRECT_OPENAI_CLASS_PATH, OpenAIConfig)
 
 
+_DIRECT_OPENAI_PROVIDER = "hermes_openai"
+_DIRECT_OPENAI_CLASS_PATH = "plugins.memory.mem0._openai_llm.DirectOpenAILLM"
+
+
+def _register_direct_openai_provider() -> None:
+    """Register Hermes' OpenAI-only Mem0 LLM provider once per factory."""
+    from mem0.configs.llms.openai import OpenAIConfig
+    from mem0.utils.factory import LlmFactory
+
+    provider_map = getattr(LlmFactory, "provider_to_class", None)
+    register_provider = getattr(LlmFactory, "register_provider", None)
+    if not isinstance(provider_map, dict) or not callable(register_provider):
+        raise RuntimeError(
+            "mem0 LlmFactory does not support the provider registration required "
+            "for the Hermes OpenAI OSS backend"
+        )
+
+    registration = (_DIRECT_OPENAI_CLASS_PATH, OpenAIConfig)
+    if provider_map.get(_DIRECT_OPENAI_PROVIDER) != registration:
+        register_provider(
+            _DIRECT_OPENAI_PROVIDER,
+            _DIRECT_OPENAI_CLASS_PATH,
+            OpenAIConfig,
+        )
+
+
 class OSSBackend(Mem0Backend):
     """Wraps mem0.Memory for self-hosted (OSS) mode."""
 
@@ -140,16 +166,28 @@ class OSSBackend(Mem0Backend):
             vs_config["embedding_model_dims"] = dims
             self._recreate_collection_if_dims_changed(vector_store.get("provider", "qdrant"), vs_config, dims)
         vector_store["config"] = vs_config
-        config = {"vector_store": vector_store, "llm": _provider_block("llm", LLM_PROVIDERS), "embedder": _provider_block("embedder", EMBEDDER_PROVIDERS), "version": "v1.1"}
+
+        config = {
+            "vector_store": vector_store,
+            "llm": _provider_block("llm"),
+            "embedder": _provider_block("embedder"),
+            "version": "v1.1",
+        }
         if str(config["llm"].get("provider") or "").strip().lower() == "openai":
-            # mem0 validates LlmConfig.provider before its factory lookup: build the supported OpenAI config, then swap the provider.
+            # mem0 validates LlmConfig.provider before its factory lookup, so
+            # first build the supported OpenAI config and only then swap the
+            # provider on that validated in-memory object.
             _register_direct_openai_provider()
             from mem0.configs.base import MemoryConfig
+
             memory_config = MemoryConfig(**config)
             try:
                 memory_config.llm.provider = _DIRECT_OPENAI_PROVIDER
             except (AttributeError, TypeError) as exc:
-                raise RuntimeError("mem0 MemoryConfig does not expose a mutable llm.provider for the Hermes OpenAI OSS backend") from exc
+                raise RuntimeError(
+                    "mem0 MemoryConfig does not expose a mutable llm.provider "
+                    "for the Hermes OpenAI OSS backend"
+                ) from exc
             self._memory = Memory(memory_config)
         else:
             self._memory = Memory.from_config(config)

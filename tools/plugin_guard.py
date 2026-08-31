@@ -53,13 +53,27 @@ CHANGELOG_FILENAMES = {"changelog.md"}
 # Pattern ids exempt on code files (every legitimate provider plugin trips them); still
 # applied in full to docs/config files.
 CODE_EXEMPT_PATTERN_IDS = {
-    "python_environ_get_secret", "python_getenv_secret", "python_os_environ", "node_process_env",
-    "ruby_env_secret", "env_exfil_httpx", "env_exfil_requests", "env_exfil_fetch",
-    "env_exfil_curl", "env_exfil_wget",
-    # Agent-facing instruction patterns are meaningless inside code (prompt docstrings trip them).
-    "context_exfil", "send_to_url", "fake_policy",
-    # Plugins legitimately write config.yaml in post_setup and base64 credentials (Basic auth).
-    "agent_config_mod", "agent_config_contract", "encoded_exfil"}
+    "python_environ_get_secret",
+    "python_getenv_secret",
+    "python_os_environ",
+    "node_process_env",
+    "ruby_env_secret",
+    "env_exfil_httpx",
+    "env_exfil_requests",
+    "env_exfil_fetch",
+    "env_exfil_curl",
+    "env_exfil_wget",
+    # Agent-facing instruction patterns are meaningless inside code
+    # (docstrings/comments about prompts trip them constantly).
+    "context_exfil",
+    "send_to_url",
+    "fake_policy",
+    # Plugins legitimately write their own settings into config.yaml during
+    # post_setup, and encode credentials (e.g. HTTP Basic auth) with base64.
+    "agent_config_mod",
+    "agent_config_contract",
+    "encoded_exfil",
+}
 
 # Severity remaps: a bundled binary is warn-tier (repos occasionally vendor one); a mere
 # ``~/.hermes/.env`` mention is how READMEs say where keys go (READING it still trips

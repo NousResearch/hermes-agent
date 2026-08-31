@@ -682,7 +682,7 @@ def _configure_journal_mode(monkeypatch, tmp_path, mode) -> None:
         yaml.safe_dump({"database": {"journal_mode": mode}}), encoding="utf-8",
     )
     monkeypatch.setattr(
-        hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: False,
+        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: False,
     )
 
 
@@ -733,7 +733,7 @@ def test_repair_restore_matches_canonical_on_vulnerable_sqlite(
     db_path = tmp_path / "state.db"
     _configure_journal_mode(monkeypatch, tmp_path, "wal")
     monkeypatch.setattr(
-        hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: True
+        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: True
     )
     _build_healthy_db(db_path)
     conn = sqlite3.connect(str(db_path))
@@ -767,7 +767,7 @@ def test_repair_logs_mode_change_when_probe_succeeded(
 
     with (
         patch.object(
-            hermes_state_repair, "_probe_journal_mode_for_repair", return_value="delete"
+            hermes_state, "_probe_journal_mode_for_repair", return_value="delete"
         ),
         caplog.at_level(logging.WARNING, logger="hermes_state"),
     ):
@@ -824,7 +824,7 @@ def test_repair_restore_failure_is_nonfatal_and_logged(
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch.object(hermes_state_wal, "apply_wal_with_fallback", _refused),
+        patch.object(hermes_state, "apply_wal_with_fallback", _refused),
         caplog.at_level(logging.WARNING, logger="hermes_state"),
     ):
         report = repair_state_db_schema(db_path)
@@ -851,42 +851,3 @@ def test_repair_honors_configured_delete_mode(tmp_path, monkeypatch):
 
     assert report["repaired"] is True
     assert _mode_of(db_path) == "delete"
-
-
-# ── #98924 companion: recovery surface beyond the probe fix (#98935) ───────
-
-# The probe itself is fixed in #98935; this test must not depend on it.
-def test_fts_recovery_includes_vtables_that_raise_decode_errors(tmp_path):
-    """Drop-and-recreate recovery must include corrupt vtables whose probe
-    raises UnicodeDecodeError, not only sqlite3.DatabaseError (#98924)."""
-    db_path = tmp_path / "state.db"
-    db = SessionDB(db_path=db_path)
-    sid = db.create_session(session_id=str(uuid.uuid4()), source="cli")
-    db.append_message(sid, role="user", content="searchable needle")
-    cursor = db._conn.cursor()
-
-    original_probe = db._fts_table_probe
-
-    def _decode_boom(probe_cursor, table_name):
-        if table_name == "messages_fts_trigram":
-            raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
-        return original_probe(probe_cursor, table_name)
-
-    db._fts_table_probe = _decode_boom
-    try:
-        assert db._recover_stale_fts(cursor, legacy=False) is True
-    finally:
-        db.close()
-
-    check = sqlite3.connect(str(db_path))
-    try:
-        names = {
-            row[0]
-            for row in check.execute(
-                "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts%'"
-            )
-        }
-    finally:
-        check.close()
-    assert "messages_fts" in names
-    assert "messages_fts_trigram" in names

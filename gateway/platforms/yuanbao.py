@@ -1013,8 +1013,21 @@ class PlaceholderFilterMiddleware(InboundMiddleware):
 class OwnerCommandMiddleware(InboundMiddleware):
     """Bot-owner slash commands in groups: allowlisted commands skip @Bot; non-owner attempts are rejected."""
     name = "owner-command"
-    ALLOWLIST: frozenset = frozenset({"/new", "/reset", "/retry", "/undo", "/stop", "/approve", "/deny", "/bg", "/btw", "/queue", "/q"})
-    _rewrite_slash_command = staticmethod(ExtractContentMiddleware._rewrite_slash_command)
+
+    # Slash command allowlist that bot owner can execute in group without @Bot
+    ALLOWLIST: frozenset = frozenset({
+        "/new", "/reset", "/retry", "/undo", "/stop",
+        "/approve", "/deny", "/bg",
+        "/btw", "/queue", "/q",
+    })
+
+    @staticmethod
+    def _rewrite_slash_command(text: str) -> str:
+        """Normalize full-width slash to ASCII slash and strip whitespace."""
+        text = text.strip()
+        if text.startswith('\uff0f'):  # Full-width slash
+            text = '/' + text[1:]
+        return text
 
     @classmethod
     def _detect_owner_command(cls, *, push: dict, msg_body: list, chat_type: str, from_account: str) -> Tuple[Optional[str], Optional[str], bool]:

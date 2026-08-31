@@ -30,9 +30,35 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
     has_usable_secret, is_actual_local_base_url, normalize_actual_base_url,
 )
 from hermes_cli import config as _config_mod
-from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
+from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.providers import determine_api_mode, is_actual_route, is_official_openai_host, nous_api_mode
+from hermes_cli.providers import is_official_openai_host
+
+
+def load_config():
+    """Late-bound delegate to :func:`hermes_cli.config.load_config`.
+
+    Deliberately NOT a module-level ``from hermes_cli.config import
+    load_config``: this module is often imported lazily (inside functions),
+    so its first import can happen while a test has
+    ``hermes_cli.config.load_config`` patched — a from-import would then
+    bind the MagicMock *permanently*, poisoning every later caller in the
+    process (the mock's fixed config shadows the real one long after the
+    patch exits). Delegating at call time keeps both patch targets working:
+    patching ``hermes_cli.config.load_config`` OR
+    ``hermes_cli.runtime_provider.load_config`` behaves as expected.
+    """
+    return _config_mod.load_config()
+
+
+def get_compatible_custom_providers(config=None):
+    """Late-bound delegate — see :func:`load_config` for why."""
+    return _config_mod.get_compatible_custom_providers(config)
+
+
+def normalize_extra_headers(value):
+    """Late-bound delegate — see :func:`load_config` for why."""
+    return _config_mod.normalize_extra_headers(value)
 from utils import base_url_host_matches, base_url_hostname, env_int
 
 
@@ -115,9 +141,34 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     hostname = base_url_hostname(base_url)
-    mandated = _HOST_MANDATED_API_MODES.get(hostname) or ("codex_responses" if is_official_openai_host(base_url) else None)
-    if mandated:
-        return mandated
+    if hostname == "api.x.ai":
+        return "codex_responses"
+    # Official OpenAI host family: canonical api.openai.com plus the
+    # data-residency regional hosts (us./eu.api.openai.com). Same API
+    # surface, same Responses-API mandate. Shared predicate — see
+    # providers.is_official_openai_host for the spoof-rejection contract.
+    if is_official_openai_host(base_url):
+        return "codex_responses"
+    # Meta Model API: prompt caching only on Responses API (0% on
+    # chat/completions vs 93-99% on /responses with retention). Exact
+    # hostname per #32243.
+    if hostname == "api.meta.ai":
+        return "codex_responses"
+    if hostname == "api.actual.inc":
+        return "codex_responses"
+    # Ramp Router: Responses-native host — /v1/chat/completions is only a
+    # minimal compatibility shim, while reasoning and caching support live
+    # on /v1/responses (docs.router.com/api/endpoint). Mirrors the
+    # host_mandated_api_mode clause in hermes_cli/providers.py so the
+    # runtime resolver stays in lockstep. Exact hostname per #32243.
+    if hostname == "api.router.com":
+        return "codex_responses"
+    # Direct native Anthropic host: realign with providers.determine_api_mode,
+    # which already maps this host to anthropic_messages. The exact-hostname
+    # match rejects lookalike subdomains (api.anthropic.com.attacker.test) and
+    # path-segment spoofing (proxy.test/api.anthropic.com/v1). (#32243)
+    if hostname == "api.anthropic.com":
+        return "anthropic_messages"
     path = urlparse(normalized).path.rstrip("/")
     if path.endswith(("/anthropic", "/anthropic/v1")) or (hostname == "api.kimi.com" and "/coding" in normalized):
         # Direct native Anthropic host: realign with providers.determine_api_mode, which already maps this
@@ -710,6 +761,30 @@ def _try_resolve_from_custom_pool(
         return None
 
 
+def _filter_capabilities(value: Any) -> Dict[str, bool]:
+    """Return the string-keyed boolean capabilities accepted at runtime."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: enabled
+        for key, enabled in value.items()
+        if isinstance(key, str) and isinstance(enabled, bool)
+    }
+
+
+def _lift_model_capabilities(
+    entry: Dict[str, Any], model: Optional[str], result: Dict[str, Any]
+) -> None:
+    """Copy explicit boolean per-model capabilities into the runtime."""
+    capabilities = _filter_capabilities(entry.get("capabilities"))
+    models = entry.get("models")
+    model_config = models.get(model) if isinstance(models, dict) and model else None
+    if isinstance(model_config, dict):
+        capabilities.update(_filter_capabilities(model_config))
+    if capabilities:
+        result["capabilities"] = capabilities
+
+
 def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
     """Propagate a per-provider output cap onto the resolved runtime dict.
 
@@ -807,7 +882,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
-                    result = {
+                    result: Dict[str, Any] = {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
@@ -835,6 +910,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     if api_mode:
                         result["api_mode"] = api_mode
                     _lift_max_output_tokens(entry, result)
+                    capabilities = _filter_capabilities(entry.get("capabilities"))
+                    if capabilities:
+                        result["capabilities"] = capabilities
                     return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -882,6 +960,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         if model_name:
             result["model"] = model_name
         _lift_max_output_tokens(entry, result)
+        capabilities = _filter_capabilities(entry.get("capabilities"))
+        if capabilities:
+            result["capabilities"] = capabilities
         return result
 
     return None
@@ -1114,6 +1195,45 @@ def canonical_custom_identity(
     return None
 
 
+def is_routable_provider(provider: Optional[str]) -> bool:
+    """Whether a provider name currently resolves to a routable route.
+
+    Empty/None is vacuously routable: agent build falls back to the
+    configured default instead of failing. A name that resolves through
+    the full chain (built-in -> user ``providers:`` -> ``custom_providers:``
+    -> models.dev) is routable; anything else would fail agent init with
+    "Unknown provider '<name>'".
+
+    Session resume uses this to detect a stale/renamed/removed provider
+    persisted in an older session snapshot, so recovery can fall back to
+    the configured default or the model the user picked instead of letting
+    the agent build die.
+    """
+    name = str(provider or "").strip()
+    if not name or name.lower() == "auto":
+        return True
+    if name.lower() == "custom":
+        # The bare string is the resolved billing class shared by every
+        # named custom entry — not a routable identity. restore paths must
+        # heal it (canonical_custom_identity) or fall back, never hand it
+        # straight to agent init.
+        return False
+    try:
+        from hermes_cli.providers import resolve_provider_full
+
+        config = load_config()
+        return (
+            resolve_provider_full(
+                name,
+                config.get("providers"),
+                get_compatible_custom_providers(config),
+            )
+            is not None
+        )
+    except Exception:
+        return False
+
+
 def _normalize_base_url_for_match(value) -> str:
     return str(value or "").strip().rstrip("/").lower()
 
@@ -1203,6 +1323,7 @@ def _resolve_named_custom_runtime(
         model_name = target_model or custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        _lift_model_capabilities(custom_provider, model_name, pool_result)
         if isinstance(custom_provider.get("max_output_tokens"), int):
             pool_result["max_output_tokens"] = custom_provider["max_output_tokens"]
         request_overrides = _custom_provider_request_overrides(custom_provider)
@@ -1258,6 +1379,7 @@ def _resolve_named_custom_runtime(
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+        "requested_provider": requested_provider,
     }
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
@@ -1269,6 +1391,9 @@ def _resolve_named_custom_runtime(
         result["model"] = target_model
     elif custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    _lift_model_capabilities(
+        custom_provider, result.get("model"), result
+    )
     if isinstance(custom_provider.get("max_output_tokens"), int):
         result["max_output_tokens"] = custom_provider["max_output_tokens"]
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).

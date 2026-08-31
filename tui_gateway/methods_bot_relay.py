@@ -212,3 +212,7 @@ def _(rid, params: dict) -> dict:
 
 def register(server) -> None:
     _registry.install(server)
+    from . import methods_groups
+
+    methods_groups.register(server)
+    server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS

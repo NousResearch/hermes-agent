@@ -829,15 +829,28 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] invalid repo format: %r", repo)
             return SendResult(success=False, error="Invalid repo format")
         try:
-            # Off-loop: `gh` does network I/O up to its 30s timeout; inline it froze every adapter and
-            # timer on the gateway event loop.
-            # Running it inline froze every adapter and timer on the gateway event loop for the duration
-            # (Pattern A, #91912 class). asyncio.to_thread keeps the loop serving while the subprocess runs;
-            # the worker thread is bounded by the subprocess timeout below.
+            # Off-loop: `gh` does network I/O and can take its full 30s
+            # timeout. Running it inline froze every adapter and timer on
+            # the gateway event loop for the duration (Pattern A, #91912
+            # class). asyncio.to_thread keeps the loop serving while the
+            # subprocess runs; the worker thread is bounded by the
+            # subprocess timeout below.
             result = await asyncio.to_thread(
-                subprocess.run, ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
-                env=self._github_env(delivery.get("profile")))
+                subprocess.run,
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    str(pr_int),
+                    "--repo",
+                    repo,
+                    "--body",
+                    content,
+                ],
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=30,
+            )
             if result.returncode == 0:
                 logger.info("[webhook] Posted comment on %s#%s", repo, pr_number)
                 return SendResult(success=True)

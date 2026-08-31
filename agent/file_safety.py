@@ -370,26 +370,6 @@ def get_read_block_error(path: str) -> Optional[str]:
             "can still bypass.)"
         )
 
-    # Profile mode keeps sibling homes at <root>/profiles/<name>. The active
-    # profile and root checks above do not cover a different sibling, so block
-    # that structural path without relying on directory enumeration.
-    try:
-        profiles_root = (_hermes_root_path() / "profiles").resolve()
-        profile_relative = resolved.relative_to(profiles_root)
-    except (OSError, ValueError):
-        profile_relative = None
-    if (
-        profile_relative is not None
-        and len(profile_relative.parts) >= 2
-        and profile_relative.parts[1].lower() == "browser-profile"
-    ):
-        return (
-            f"Access denied: {path} is inside a Hermes profile's real-profile "
-            "browser snapshot (copied cookies/logins) and cannot be read "
-            "directly. (Defense-in-depth — not a security boundary; the "
-            "terminal tool can still bypass.)"
-        )
-
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw
     # .env contents — .env.example is the documented-shape substitute. The
@@ -602,5 +582,47 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
     steering; the classifier below survives for that hint and for
     diagnostics. Kept as a stub so external callers/plugins fail soft.
     """
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Sandbox-mirror write guard (#32049)
+#
+# Non-local terminal backends (Docker, Daytona, etc.) bind a sandbox-local
+# directory to the container's ``$HOME``. The on-disk layout looks like
+#
+#   <HERMES_HOME>/profiles/<name>/sandboxes/<backend>/<task>/home/.hermes/...
+#
+# When the agent (running host-side) speculates that authoritative profile
+# state lives at one of those sandbox-mirror paths, the write lands on the
+# mirror — never read by the host process — while the host file is left
+# untouched. The agent reports success, the user sees no change, and on
+# disk two divergent copies accumulate. See #32049 for evidence.
+#
+# This guard is path-shape-only: it detects the
+# ``…/sandboxes/<backend>/<task>/home/.hermes/…`` segment and warns
+# regardless of which Hermes profile is active. It does NOT cover the
+# inner-container case where the bind mount strips the ``sandboxes/`` prefix
+# (the agent's view inside the container is plain ``/root/.hermes/...``);
+# that case needs a separate dispatch-layer or host-side ``profile_state``
+# tool.
+# ---------------------------------------------------------------------------
+
+
+def _find_sandbox_mirror_segments(parts: tuple) -> Optional[int]:
+    """Return the index of the inner ``.hermes`` part in a sandbox-mirror path.
+
+    Matches ``…/sandboxes/<backend>/<task>/home/.hermes/…`` and returns the
+    index where the inner Hermes-state portion starts. Returns ``None`` for
+    paths that do not contain the sandbox-mirror shape.
+    """
+    for i, part in enumerate(parts):
+        if part != "sandboxes":
+            continue
+        # Need at least: sandboxes / <backend> / <task> / home / .hermes / <thing>
+        if i + 5 >= len(parts):
+            continue
+        if parts[i + 3] == "home" and parts[i + 4] == ".hermes":
+            return i + 4
     return None
 # ---- END PLUGIN-COMPAT ----

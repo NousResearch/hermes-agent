@@ -525,10 +525,10 @@ export function StatusRule({
     ok('context_detail') || ok('context_pct')
       ? usage.context_max
         ? segs.compactCtx
-          ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
-          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
-        : (usage.total ?? 0) > 0
-          ? `${compactNumber(usage.total)} tok`
+          ? `${fmtK(usage.context_used ?? 0)} tok`
+          : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+        : usage.total > 0
+          ? `${fmtK(usage.total)} tok`
           : ''
       : ''
 
@@ -605,7 +605,7 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${contextMark}${pct}%` : ''}`))
+  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
   // Idle clock — time since the last final agent response. Hidden while busy

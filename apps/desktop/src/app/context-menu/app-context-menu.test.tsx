@@ -118,6 +118,28 @@ describe('AppContextMenu', () => {
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
   })
 
+  it('skips Open in in-app browser on the HUD — that window has no browser pane', async () => {
+    const originalLocation = window.location
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, search: '?win=hud' }
+    })
+
+    try {
+      installBridge()
+      mountMenu()
+      const host = attach('<a href="https://accounts.google.com/o/oauth2/auth">Sign in</a>')
+
+      fireEvent.contextMenu(host.querySelector('a')!)
+
+      expect(await screen.findByText('Open in external browser')).toBeTruthy()
+      expect(screen.queryByText('Open in in-app browser')).toBeNull()
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
+  })
+
   it('offers the resolved copy only for loopback links on a remote gateway', async () => {
     $connection.set({ mode: 'remote' } as never)
     const reachPreviewUrl = vi.fn(async () => 'http://127.0.0.1:45173/')

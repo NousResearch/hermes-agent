@@ -38,7 +38,9 @@ beforeEach(() => {
   moveBy.mockClear()
   setWorkspaceTransfer.mockClear()
   setWindowSize(620, 320)
-  desktopWindow.hermesDesktop = { hud: { moveBy, setWorkspaceTransfer } } as unknown as Window['hermesDesktop']
+  desktopWindow.hermesDesktop = {
+    hud: { beginMove, endMove, moveBy, setWorkspaceTransfer }
+  } as unknown as Window['hermesDesktop']
 })
 
 afterEach(() => {
@@ -69,7 +71,8 @@ describe('useHudComposerDrag', () => {
     act(() => void vi.advanceTimersByTime(LONG_PRESS_MS))
     act(() => void window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, screenX: 110, screenY: 210 })))
 
-    expect(moveBy).toHaveBeenCalledWith({ x: 10, y: 10, width: 620, height: 320 })
+    expect(beginMove).toHaveBeenCalledTimes(1)
+    expect(moveBy).toHaveBeenCalledWith({ width: 620, height: 320 })
     expect(setWorkspaceTransfer).not.toHaveBeenCalled()
 
     // A window that drifted wider mid-drag must not feed its new size back in —
@@ -100,6 +103,7 @@ describe('useHudComposerDrag', () => {
     act(() => void window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, screenX: 102, screenY: 201 })))
 
     expect(moveBy).not.toHaveBeenCalled()
+    expect(beginMove).not.toHaveBeenCalled()
     expect(setWorkspaceTransfer).not.toHaveBeenCalled()
   })
 
@@ -121,10 +125,12 @@ describe('useHudComposerDrag', () => {
     )
 
     expect(setWorkspaceTransfer).toHaveBeenLastCalledWith(true)
+    expect(beginMove).toHaveBeenCalledTimes(1)
 
     act(() => void window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9 })))
 
     expect(setWorkspaceTransfer).toHaveBeenLastCalledWith(false)
+    expect(endMove).toHaveBeenCalledTimes(1)
   })
 
   it('moves immediately with Ctrl over selected text without destroying the selection', () => {
@@ -185,8 +191,43 @@ describe('useHudComposerDrag', () => {
         )
     )
 
-    expect(moveBy).toHaveBeenCalledWith({ x: 1, y: 2, width: 620, height: 320 })
+    expect(moveBy).toHaveBeenCalledWith({ width: 620, height: 320 })
     expect(document.activeElement).toBe(editor)
     expect(selection.toString()).toBe('selected text')
+  })
+
+  it('keeps the grab alive when crossing a display cancels the pointer', () => {
+    const target = pressTarget()
+    const { result } = renderHook(() => useHudComposerDrag(true))
+
+    act(() =>
+      result.current.onPointerDown({
+        button: 0,
+        currentTarget: target,
+        pointerId: 3,
+        screenX: 1880,
+        screenY: 400
+      } as never)
+    )
+    act(() => void vi.advanceTimersByTime(LONG_PRESS_MS))
+    act(() => void window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 3, screenX: 1900, screenY: 400 })))
+
+    expect(beginMove).toHaveBeenCalledTimes(1)
+    expect(endMove).not.toHaveBeenCalled()
+
+    act(
+      () =>
+        void window.dispatchEvent(
+          new PointerEvent('pointercancel', { cancelable: true, pointerId: 3, screenX: 2100, screenY: 400 })
+        )
+    )
+
+    expect(endMove).not.toHaveBeenCalled()
+    expect(moveBy).toHaveBeenLastCalledWith({ width: 620, height: 320 })
+    expect(target.setPointerCapture).toHaveBeenCalled()
+
+    act(() => void window.dispatchEvent(new MouseEvent('mouseup')))
+
+    expect(endMove).toHaveBeenCalledTimes(1)
   })
 })

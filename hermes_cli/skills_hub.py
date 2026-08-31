@@ -199,7 +199,10 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         c.print(f"[dim]Resolved to: {exact[0].identifier}[/]")
         return exact[0].identifier
     if len(exact) > 1:
-        official = [r for r in exact if r.source == "official"]  # outranks community mirrors
+        # Official catalog entries outrank community mirrors of the same
+        # skill: `hermes skills install impeccable` should resolve to the
+        # curated official/... entry, not stall on skills.sh duplicates.
+        official = [r for r in exact if r.source == "official"]
         if len(official) == 1:
             c.print(f"[dim]Resolved to: {official[0].identifier} (official catalog)[/]")
             return official[0].identifier

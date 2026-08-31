@@ -11,8 +11,9 @@ Invariants under test:
 - pin unset              -> native last_used behavior, byte-for-byte
 """
 import json
+import os
 
-from tests.tools.test_browser_real_profile import _auth_db
+import pytest
 
 
 class TestRealProfilePin:
@@ -20,8 +21,8 @@ class TestRealProfilePin:
         """Synthetic Chromium user-data-dir with two profiles + last_used."""
         for prof in ("Default", "Profile 2", "Profile 4"):
             (root / prof / "Network").mkdir(parents=True)
-            _auth_db((root / prof / "Cookies"), f"cookies-{prof}")
-            _auth_db((root / prof / "Login Data"), f"logins-{prof}")
+            (root / prof / "Cookies").write_text(f"cookies-{prof}")
+            (root / prof / "Login Data").write_text(f"logins-{prof}")
             (root / prof / "Preferences").write_text("{}")
         (root / "Crashpad").mkdir()
         (root / "Local State").write_text(
@@ -39,7 +40,7 @@ class TestRealProfilePin:
 
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None and dst
-        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
+        got = (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text()
         assert got == "cookies-Profile 2", "pin must override last_used"
 
     def test_bad_pin_fails_closed(self, tmp_path, monkeypatch):
@@ -65,7 +66,7 @@ class TestRealProfilePin:
 
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None and dst
-        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
+        got = (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text()
         assert got == "cookies-Profile 4", "no pin = native last_used"
 
     def test_re_sync_respects_pin_when_last_used_flips(self, tmp_path, monkeypatch):
@@ -85,9 +86,9 @@ class TestRealProfilePin:
         (src / "Local State").write_text(
             json.dumps({"os_crypt": {}, "profile": {"last_used": "Profile 4"}})
         )
-        _auth_db((src / "Profile 2" / "Cookies"), "cookies-Profile 2-v2")
+        (src / "Profile 2" / "Cookies").write_text("cookies-Profile 2-v2")
 
         dst2, err2 = bc.snapshot_real_profile("chrome", src=str(src))
         assert err2 is None and dst2 == dst1
-        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
+        got = (home / "browser-profile" / "chrome" / "Default" / "Cookies").read_text()
         assert got == "cookies-Profile 2-v2", "auth re-sync must stay on the pin"

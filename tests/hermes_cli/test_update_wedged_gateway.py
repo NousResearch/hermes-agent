@@ -473,48 +473,6 @@ class TestLaunchdRestartWedgedIntegration:
         assert ("drain", 4242, 195.0) in events
 
 
-@pytest.mark.asyncio
-async def test_unavailable_loop_tick_witness_is_fail_safe(tmp_path, monkeypatch):
-    """Native Windows keeps the heartbeat when UNIX sockets are unavailable."""
-
-    async def unavailable_unix_server(*_args, **_kwargs):
-        raise OSError("UNIX stream sockets unavailable")
-
-    monkeypatch.setattr(
-        asyncio,
-        "start_unix_server",
-        unavailable_unix_server,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "gateway.shutdown_watchdog.logger.warning",
-        lambda *_args, **_kwargs: None,
-    )
-    task = asyncio.create_task(
-        loop_heartbeat_forever(interval_s=60.0, home=tmp_path)
-    )
-    try:
-        heartbeat = get_loop_heartbeat_path(tmp_path)
-        for _ in range(100):
-            if heartbeat.exists():
-                break
-            await asyncio.sleep(0.01)
-        else:
-            raise AssertionError("heartbeat was not written without UNIX sockets")
-
-        payload = json.loads(heartbeat.read_text(encoding="utf-8"))
-        assert payload["loop_tick_socket"] is False
-    finally:
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-
-@pytest.mark.skipif(
-    not hasattr(socket, "AF_UNIX")
-    or not hasattr(asyncio, "start_unix_server"),
-    reason="loop tick witness composition requires UNIX stream sockets",
-)
 class TestLoopTickWitness:
     """Two-witness liveness (#90502 review).
 

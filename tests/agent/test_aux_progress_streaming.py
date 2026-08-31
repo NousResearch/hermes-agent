@@ -23,6 +23,7 @@ from agent.auxiliary_client import (
     _aggregate_chat_stream_async,
     _anthropic_event_has_content,
     _aux_stream_total_ceiling,
+    _codex_event_has_content,
     _create_with_progress,
     _notify_aux_progress,
     _provider_requires_stream,
@@ -349,34 +350,6 @@ class TestContentBearingProgress:
 
         assert ticks == [1]
 
-    def test_openrouter_reasoning_details_keep_compression_alive(self):
-        """Reasoning-only streams must refresh the compression idle fence."""
-        ticks = []
-        accumulator = _ChatStreamAccumulator()
-        detail = {"type": "reasoning.summary", "summary": "working..."}
-
-        with aux_progress_hook(lambda: ticks.append(1)):
-            accumulator.feed(_chunk(reasoning_details=[detail]))
-
-        result = accumulator.finish()
-        assert ticks == [1]
-        assert result.choices[0].message.reasoning_details == [detail]
-
-    def test_structural_reasoning_details_are_not_progress(self):
-        ticks = []
-        accumulator = _ChatStreamAccumulator()
-
-        with aux_progress_hook(lambda: ticks.append(1)):
-            accumulator.feed(
-                _chunk(
-                    reasoning_details=[
-                        {"type": "reasoning.encrypted", "signature": "sig"}
-                    ]
-                )
-            )
-
-        assert ticks == []
-
     def test_codex_adapter_updates_fence_only_for_substantive_events(self):
         events = [
             SimpleNamespace(type="response.created"),
@@ -494,7 +467,7 @@ class TestContentBearingProgress:
         any kind (transport liveness), not only on the first token."""
         from agent.auxiliary_client import (
             _aux_provider_response,
-            _aux_thread_local_hook,
+            _aux_timing_hook,
             _notify_aux_timing_response,
         )
 
@@ -507,7 +480,7 @@ class TestContentBearingProgress:
         accumulator = _ChatStreamAccumulator()
 
         with (
-            _aux_thread_local_hook(_aux_provider_response, _timed_response),
+            _aux_timing_hook(_aux_provider_response, _timed_response),
             aux_progress_hook(lambda: None),
         ):
             accumulator.feed(keepalive)

@@ -244,7 +244,7 @@ describe('host workspace scope', () => {
     tree.removeTreePane('plugin-workspace:scope-test')
   })
 
-  it('registers plugin workspace ownership and chrome options', async () => {
+  it('registers plugin workspace chrome options', async () => {
     const { registry } = await import('@/contrib/registry')
 
     const close = host.openWorkspace('scope-test', {
@@ -252,9 +252,7 @@ describe('host workspace scope', () => {
       headerVeto: true,
       render: () => null,
       title: 'Scoped',
-      uncloseable: true,
-      workspaceMode: 'bots',
-      workspaceOwnerKey: 'connection-a::default'
+      uncloseable: true
     })
 
     expect(registry.getArea('panes').find(pane => pane.id === 'plugin-workspace:scope-test')).toMatchObject({
@@ -262,9 +260,7 @@ describe('host workspace scope', () => {
         dock: { pane: 'workspace', pos: 'right' },
         headerVeto: true,
         uncloseable: true
-      },
-      workspaceMode: 'bots',
-      workspaceOwnerKey: 'connection-a::default'
+      }
     })
 
     close()

@@ -722,10 +722,10 @@ export const zh = defineLocale({
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       tipsTitle: '应用内提示',
-      tipsDesc: '偶尔显示来自应用和 Hermes 的提示，每条提示只出现一次。开始使用满30天后自动关闭，你可以重新开启。',
-      tipsReset: (count: number) => `再次显示 ${count} 条提示`,
+      tipsDesc: '指向应用某处的小气泡：空闲时偶尔出现，需要时 Hermes 也会给你一条。关掉一条就不再出现。',
+      tipsReset: (count: number) => `恢复 ${count} 条已关闭的提示`,
       toursTitle: '引导导览',
-      toursDesc: '让 Hermes 逐步高亮每个位置，带你熟悉应用。开始使用满30天后自动关闭，你可以重新开启。',
+      toursDesc: '让 Hermes 带你熟悉应用：调暗界面并逐步高亮每个位置。',
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
       vibeHeartsTitle: '心情爱心',
@@ -1788,17 +1788,7 @@ export const zh = defineLocale({
         enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
         disabledTitle: '真实配置文件浏览：已关闭',
         disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
-        failedSave: '无法保存真实配置文件设置',
-        prompt: {
-          title: '让网站保持登录状态',
-          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
-          bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
-          bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
-          bulletLocal: '所有数据都不会离开这台电脑。',
-          dontShowAgain: '不再显示',
-          notNow: '暂不',
-          enable: '使用我的配置文件'
-        }
+        failedSave: '无法保存真实配置文件设置'
       }
     }
   },
@@ -4327,15 +4317,9 @@ export const zh = defineLocale({
         title: '附件与命令',
         text: '输入 @ 把文件带入对话，输入 / 运行命令。'
       },
-      'local-runtime-update': {
-        title: '本地引擎有可用更新',
-        text: '更新运行本地模型的引擎。正在进行的本地请求可能会中断。',
-        action: '立即更新'
-      },
-      'local-setup': {
-        title: '这台电脑可以本地运行模型',
-        text: '你的硬件可以运行本地模型。对话不离开你的电脑，而且完全免费。',
-        action: '立即设置'
+      'model-switch': {
+        title: '对话中随时换模型',
+        text: '模型名称就是按钮。工作性质变了就换一个。'
       },
       'right-pane': {
         title: '工作面板',

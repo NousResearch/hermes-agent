@@ -8,6 +8,7 @@ hooks/middleware) plus registry pass-throughs.
 
 import os
 import json
+import re
 import asyncio
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -19,8 +20,6 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import (
     CHECK_FN_CACHE_BYPASS,
-    _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN,
-    _sanitize_tool_error,
     check_fn_cache_scope,
     discover_builtin_tools,
     registry,
@@ -685,8 +684,40 @@ _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 # still *reads* those tokens and they can confuse downstream tool-call
 # parsing or, in adversarial cases, nudge it toward role-confusion framing.
 #
-# Tool errors are sanitized in ``tools.registry`` so both direct registry
-# dispatch and this orchestration layer use the same lightweight boundary.
+# This helper strips structural framing tokens (XML role tags, CDATA,
+# markdown code fences) and caps the message at a sane upper bound before it
+# becomes part of the conversation. It's defense-in-depth — the json layer
+# already prevents framing escape — but cheap and worth having.
+#
+# Ported from ironclaw#1639.
+_TOOL_ERROR_ROLE_TAG_RE = re.compile(
+    r'</?(?:tool_call|function_call|result|response|output|input|system|assistant|user)>',
+    re.IGNORECASE,
+)
+_TOOL_ERROR_FENCE_OPEN_RE = re.compile(r'^\s*```(?:json|xml|html|markdown)?\s*', re.MULTILINE)
+_TOOL_ERROR_FENCE_CLOSE_RE = re.compile(r'\s*```\s*$', re.MULTILINE)
+_TOOL_ERROR_CDATA_RE = re.compile(r'<!\[CDATA\[.*?\]\]>', re.DOTALL)
+# Single home for the tool-error context cap: tools/registry.py. Both this
+# sanitizer (exception paths) and the dispatch-boundary bounding
+# (tool_error / _bound_json_error_result) trim to the same budget so text
+# never passes two different caps with two different markers.
+from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
+
+
+def _sanitize_tool_error(error_msg: str) -> str:
+    """Strip structural framing tokens from a tool error before showing it to the model.
+
+    See _TOOL_ERROR_ROLE_TAG_RE docstring above for rationale.
+    """
+    if not error_msg:
+        return "[TOOL_ERROR] "
+    sanitized = _TOOL_ERROR_ROLE_TAG_RE.sub("", error_msg)
+    sanitized = _TOOL_ERROR_FENCE_OPEN_RE.sub("", sanitized)
+    sanitized = _TOOL_ERROR_FENCE_CLOSE_RE.sub("", sanitized)
+    sanitized = _TOOL_ERROR_CDATA_RE.sub("", sanitized)
+    if len(sanitized) > _TOOL_ERROR_MAX_LEN:
+        sanitized = sanitized[:_TOOL_ERROR_MAX_LEN - 3] + "..."
+    return f"[TOOL_ERROR] {sanitized}"
 
 
 @dataclass(frozen=True)

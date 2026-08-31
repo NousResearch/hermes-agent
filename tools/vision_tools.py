@@ -124,6 +124,218 @@ async def _validate_image_url_async(url: str) -> bool:
     return await async_is_safe_url(url)
 
 
+def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
+    """Magic-byte MIME sniff on raw bytes (authoritative; no extension trust).
+
+    Returns ``None`` for anything without a recognized image header — including
+    SVG, which has no magic bytes. The resolver special-cases SVG (sniffs
+    ``<svg``) and passes it through for rasterization at the call sites.
+    """
+    header = data[:64]
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        # Magic bytes alone are insufficient: native vision history is
+        # immutable, so reject corrupt PNGs before they can be embedded.
+        # Pillow is an optional dependency — when it is missing we fall back
+        # to header-only sniffing (the full-decode gate in
+        # _validate_raster_image_decodable is likewise skipped without PIL);
+        # only an actual failed verify() rejects the bytes.
+        try:
+            from PIL import Image
+        except ImportError:
+            return "image/png"
+        try:
+            with Image.open(BytesIO(data)) as image:
+                image.verify()
+        except Exception:
+            return None
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if header.startswith(b"BM"):
+        return "image/bmp"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+# Media types the major vision providers (Anthropic in particular) accept for
+# inline base64 images.  Anything outside this set — SVG, BMP, TIFF, etc. — is
+# rejected with a non-retryable 400.  Because a vision tool-result is baked into
+# immutable conversation history and re-sent every turn, embedding an
+# unsupported media_type permanently wedges the session (retries re-send the
+# same bad bytes).  We MUST normalize to one of these before embedding.
+_ANTHROPIC_SUPPORTED_MEDIA_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/gif", "image/webp"}
+)
+
+
+def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
+    """Best-effort SVG → PNG rasterization. Returns True on success.
+
+    Tries, in order: cairosvg, svglib+reportlab, then system rasterizers
+    (rsvg-convert, inkscape).  All are soft dependencies; if none is available
+    we return False and the caller rejects the image with an actionable error
+    rather than embedding an unsupported media_type that would wedge the
+    session.
+    """
+    # 1) cairosvg (pure-python-ish, most common)
+    try:
+        import cairosvg  # type: ignore
+        cairosvg.svg2png(url=str(svg_path), write_to=str(out_path))
+        return out_path.exists() and out_path.stat().st_size > 0
+    except Exception:
+        pass
+    # 2) svglib + reportlab
+    try:
+        from svglib.svglib import svg2rlg  # type: ignore
+        from reportlab.graphics import renderPM  # type: ignore
+        drawing = svg2rlg(str(svg_path))
+        if drawing is not None:
+            renderPM.drawToFile(drawing, str(out_path), fmt="PNG")
+            return out_path.exists() and out_path.stat().st_size > 0
+    except Exception:
+        pass
+    # 3) system rasterizers
+    import shutil as _shutil
+    import subprocess as _subprocess
+    for cmd in (
+        ["rsvg-convert", "-o", str(out_path), str(svg_path)],
+        ["inkscape", str(svg_path), "--export-type=png",
+         f"--export-filename={out_path}"],
+    ):
+        if _shutil.which(cmd[0]):
+            try:
+                _subprocess.run(
+                    cmd, check=True, capture_output=True, timeout=30,
+                    stdin=_subprocess.DEVNULL,
+                )
+                if out_path.exists() and out_path.stat().st_size > 0:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _normalize_to_supported_image(
+    image_path: Path, detected_mime: str
+) -> tuple[Optional[Path], Optional[str], Optional[str]]:
+    """Ensure an image is in a vision-provider-supported format.
+
+    Returns a 3-tuple ``(path, mime, error)``:
+      - If ``detected_mime`` is already supported: ``(image_path, detected_mime, None)``.
+      - If conversion succeeds: ``(new_png_path, "image/png", None)`` — the new
+        path is a temp file the CALLER must clean up.
+      - If conversion is impossible: ``(None, None, <error message>)``.
+
+    SVG is rasterized to PNG (best-effort, soft deps).  Other raster formats
+    Pillow can read (BMP, TIFF, etc.) are re-encoded to PNG.  This runs BEFORE
+    the image is base64-embedded into conversation history, so an unsupported
+    media_type can never reach the provider and wedge the session.
+    """
+    if detected_mime in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
+        return image_path, detected_mime, None
+
+    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"converted_{uuid.uuid4()}.png"
+
+    # SVG: needs a rasterizer (Pillow cannot render SVG).
+    if detected_mime == "image/svg+xml":
+        if _rasterize_svg_to_png(image_path, out_path):
+            return out_path, "image/png", None
+        return (
+            None,
+            None,
+            "This is an SVG, which vision models cannot read directly, and no "
+            "SVG rasterizer is installed (tried cairosvg, svglib, rsvg-convert, "
+            "inkscape). Convert the SVG to PNG first — e.g. open it in a browser "
+            "and screenshot it, or install a rasterizer "
+            "(`pip install cairosvg`) — then re-run vision_analyze on the PNG.",
+        )
+
+    # Other non-supported raster formats (BMP, TIFF, ...): re-encode via Pillow.
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as _img:
+            if _img.mode not in ("RGB", "RGBA", "L"):
+                _img = _img.convert("RGBA")
+            _img.save(out_path, format="PNG")
+        if out_path.exists() and out_path.stat().st_size > 0:
+            return out_path, "image/png", None
+    except Exception as _exc:
+        logger.warning("Failed to normalize %s image to PNG: %s",
+                       detected_mime, _exc)
+    return (
+        None,
+        None,
+        f"Image format {detected_mime!r} is not supported by the vision API "
+        f"and could not be converted to PNG (install Pillow for raster "
+        f"conversion). Convert it to PNG or JPEG and try again.",
+    )
+
+
+# Full raster validation runs on untrusted images in a shared CPU executor.
+# Bound animated-image work by both iteration count and total decoded area so a
+# compact file cannot monopolize a worker with an effectively unbounded number
+# of frames. Images at or below both limits still have every frame decoded.
+_VISION_MAX_VALIDATED_FRAME_COUNT = 100
+_VISION_MAX_VALIDATED_AGGREGATE_PIXELS = 100_000_000
+
+
+def _validate_raster_image_decodable(image_path: Path) -> Optional[str]:
+    """Return an error when Pillow cannot completely decode every image frame.
+
+    Magic-byte MIME sniffing and ``Image.open`` only inspect container headers.
+    A timed-out download can therefore look like a supported PNG/JPEG/GIF/WebP
+    while its pixel stream is truncated. Native vision results are retained in
+    conversation history, so embedding those bytes poisons every later provider
+    request. Verify structure, then reopen and force every frame within the
+    validation resource limits to decode before the image can enter history.
+    """
+    try:
+        from PIL import Image as _PILImage
+        from PIL import ImageSequence as _PILImageSequence
+    except ImportError:
+        # Pillow is optional — without it we cannot decode-validate, so pass
+        # the image through unvalidated rather than rejecting everything.
+        return None
+    try:
+        with _PILImage.open(image_path) as image:
+            image.verify()
+        with _PILImage.open(image_path) as image:
+            validated_pixels = 0
+            for frame_number, frame in enumerate(
+                _PILImageSequence.Iterator(image), start=1
+            ):
+                if frame_number > _VISION_MAX_VALIDATED_FRAME_COUNT:
+                    return (
+                        "Image validation rejected animation: "
+                        f"frame {frame_number} exceeds the maximum "
+                        f"{_VISION_MAX_VALIDATED_FRAME_COUNT} validated frames."
+                    )
+
+                frame_pixels = frame.width * frame.height
+                next_validated_pixels = validated_pixels + frame_pixels
+                if (
+                    next_validated_pixels
+                    > _VISION_MAX_VALIDATED_AGGREGATE_PIXELS
+                ):
+                    return (
+                        "Image validation rejected animation: aggregate decoded "
+                        f"pixel count would reach {next_validated_pixels} at frame "
+                        f"{frame_number}, exceeding the maximum "
+                        f"{_VISION_MAX_VALIDATED_AGGREGATE_PIXELS}."
+                    )
+
+                frame.load()
+                validated_pixels = next_validated_pixels
+    except Exception as exc:
+        return f"Image could not be fully decoded: {exc}"
+    return None
+
+
 def _is_retryable_download_error(error: Exception) -> bool:
     """Transient failures only: 429, 5xx, transport errors and anything unclassified. Fail-fast on
     other 4xx, PermissionError (policy/SSRF block) and ValueError (too large / blocked redirect)."""
@@ -625,6 +837,65 @@ async def _vision_analyze_native(
             prepared = await _prepare_image(image_url, task_id, region, validate_decode=True)
         except _ImagePrepError as exc:
             return tool_error(str(exc), success=False)
+
+        detected_mime_type = resolved.mime
+        image_size_bytes = len(resolved.data)
+        temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
+        await asyncio.to_thread(temp_image_path.write_bytes, resolved.data)
+        should_cleanup = True
+
+        # Normalize unsupported formats (SVG, BMP, ...) to PNG BEFORE embedding.
+        # Anthropic only accepts jpeg/png/gif/webp; an unsupported media_type
+        # baked into immutable history wedges the session with a 400 on every
+        # resume.  Convert here so it can never enter history. Offloaded — the
+        # rasterizers/Pillow are blocking.
+        normalized_path, detected_mime_type, _norm_err = await asyncio.to_thread(
+            _normalize_to_supported_image, temp_image_path, detected_mime_type,
+        )
+        if _norm_err or normalized_path is None:
+            return tool_error(
+                _norm_err or "Image normalization failed.", success=False,
+            )
+        if normalized_path != temp_image_path:
+            # We created a temp PNG — swap to it and ensure it's cleaned up.
+            if should_cleanup and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
+            temp_image_path = normalized_path
+            should_cleanup = True
+            image_size_bytes = temp_image_path.stat().st_size
+
+        decode_error = await _run_encode_on_cpu_executor(
+            _validate_raster_image_decodable, temp_image_path,
+        )
+        if decode_error:
+            return tool_error(decode_error, success=False)
+
+        # Optional region zoom: crop BEFORE the downscale/embed-cap pipeline
+        # so the cropped area gets the full resolution budget.
+        _crop_offset: dict = {}
+        _scale_info: dict = {}
+        if region is not None:
+            cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
+                _crop_image_region, temp_image_path, region,
+                offset_out=_crop_offset,
+            )
+            if crop_err or cropped_path is None:
+                return tool_error(crop_err or "Region crop failed.", success=False)
+            if should_cleanup and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
+            temp_image_path = cropped_path
+            detected_mime_type = cropped_mime
+            should_cleanup = True
+            image_size_bytes = temp_image_path.stat().st_size
+
         image_data_url = await _run_encode_on_cpu_executor(
             _image_to_base64_data_url,
             temp_image_path, mime_type=detected_mime_type,
@@ -872,13 +1143,13 @@ from tools.registry import registry, tool_error
 
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
-    # Routing mechanics are deliberately absent (the route is automatic and the
-    # native result says so itself); region keeps its pre-effect guidance — a
-    # model that doesn't know crops keep full resolution never zooms.
+    # Dieted (#95681): routing mechanics (native attach vs aux-model text
+    # fallback) removed — the route is automatic and the native path's own
+    # tool result says "you can see it natively now"; the schema doesn't
+    # need to predict plumbing. Region keeps its flow teaching: it's
+    # pre-effect guidance (a model that doesn't know crops keep full
+    # resolution never zooms).
     "description": (
-        # Dieted (#95681): routing mechanics (native attach vs aux-model text fallback) removed — the route
-        # is automatic and the native path's own tool result says "you can see it natively now"; the schema
-        # doesn't need to predict plumbing.
         "Load an image into the conversation so you can see it. Call it "
         "any time the user references an image — then answer from what "
         "you see."

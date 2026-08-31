@@ -99,14 +99,6 @@ class TestSmartApproval:
 
 
 class TestDetectDangerousRm:
-    def test_browser_close_profile_requires_approval(self):
-        dangerous, _, description = detect_dangerous_command(
-            "hermes browser close-profile --browser chrome"
-        )
-        assert dangerous is True
-        assert "browser" in description.lower()
-        assert detect_dangerous_command("hermes browser --help") == (False, None, None)
-
     def test_rm_flags_after_operands_detected(self):
         # GNU rm permutes options: `rm build/ -rf` == `rm -rf build/`.
         # Port of openai/codex#33464.
@@ -844,8 +836,10 @@ class TestWebhookApprovalExclusion:
 
     def test_all_unattended_platforms_return_false(self, monkeypatch):
         """Every unattended programmatic platform is excluded, not just webhook."""
-        from tools.approval import _is_gateway_approval_context
-        from tools.approval_context import _UNATTENDED_APPROVAL_PLATFORMS
+        from tools.approval import (
+            _UNATTENDED_APPROVAL_PLATFORMS,
+            _is_gateway_approval_context,
+        )
 
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -885,11 +879,9 @@ class TestWebhookApprovalExclusion:
     def _isolate(self, monkeypatch):
         """Neutralize host leakage: yolo frozen at import time + real config."""
         import tools.approval as approval_mod
-        from tools import approval_context
-        from tools import approval_context
 
         monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(approval_mod, "_get_approval_mode", lambda: "smart")
 
     def test_webhook_dangerous_command_denies_by_default(self, monkeypatch):
         """Webhook sessions that trigger dangerous commands DENY instantly.
@@ -925,7 +917,7 @@ class TestWebhookApprovalExclusion:
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "webhook")
         monkeypatch.setenv("HERMES_SESSION_KEY", "test-webhook-session")
         monkeypatch.setattr(
-            approval_context, "_get_unattended_approval_mode", lambda: "approve"
+            approval_mod, "_get_unattended_approval_mode", lambda: "approve"
         )
 
         result = check_all_command_guards("sudo systemctl restart nginx", "local")

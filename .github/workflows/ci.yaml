@@ -65,6 +65,8 @@ jobs:
         id: classify
         uses: ./.github/actions/detect-changes
         with:
+          sparse-checkout: scripts/ci/classify_changes.py
+          sparse-checkout-cone-mode: false
           github-token: ${{ github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
@@ -154,7 +156,11 @@ jobs:
   contributor-check:
     name: Check contributors
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    # Contributor mappings feed the upstream release attribution machinery.
+    # A fork sync can contain thousands of already-attributed upstream commits;
+    # requiring private mapping files again would both fail spuriously and copy
+    # contributor email addresses into the fork.
+    if: needs.detect.outputs.python == 'true' && github.repository == 'NousResearch/hermes-agent'
     uses: ./.github/workflows/contributor-check.yml
 
   uv-lockfile:

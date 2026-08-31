@@ -49,39 +49,42 @@ _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 
 
-def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k", timeout: int = 60,
-                          output_path: "str | None" = None) -> "str | None":
-    """Best-effort ffmpeg transcode to Ogg/Opus (voip-tuned) for native voice bubbles: the written
-    ``.ogg`` path (a NEW temp file unless ``output_path`` is given; caller cleans up), or None when
-    ffmpeg is missing/fails. ``output_path`` may equal ``path`` (in-place container repair) — the
-    encode goes through a sidecar so a failed run never truncates the source. Blocking (to_thread)."""
+def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k") -> "str | None":
+    """Best-effort ffmpeg transcode of any audio file to Ogg/Opus (voip-tuned).
+
+    The shared engine behind native voice-bubble delivery for platforms whose
+    voice channel only accepts Opus/OGG (Telegram sendVoice, Feishu opus
+    audio, Matrix MSC3245, WhatsApp voice notes). Returns the path of a NEW
+    temp ``.ogg`` file (caller owns cleanup), or ``None`` when ffmpeg is
+    missing or the conversion fails — callers keep their previous fallback
+    (document/attachment delivery). Blocking; call via ``asyncio.to_thread``
+    from async code.
+    """
     import shutil as _shutil
+    import subprocess as _subprocess
+    import tempfile as _tempfile
+
     ffmpeg = _shutil.which("ffmpeg")
     if not ffmpeg:
         return None
-    if output_path is None:
-        fd, ogg_path = tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
-        os.close(fd)
-    else:
-        ogg_path = output_path
-    in_place = os.path.abspath(str(path)) == os.path.abspath(ogg_path)
-    work_path = ogg_path + ".tmp.ogg" if in_place else ogg_path
+
+    fd, ogg_path = _tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
+    os.close(fd)
     try:
-        result = subprocess.run(
+        result = _subprocess.run(
             [ffmpeg, "-v", "error", "-y", "-i", str(path),
              "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
-             "-application", "voip", "-compression_level", "10", "-f", "ogg", work_path],
-            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
-        if result.returncode == 0 and os.path.getsize(work_path) > 0:
-            if in_place:
-                os.replace(work_path, ogg_path)
+             "-application", "voip", "-compression_level", "10", ogg_path],
+            capture_output=True, timeout=60, stdin=_subprocess.DEVNULL,
+        )
+        if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
             return ogg_path
-        logger.warning("ffmpeg Ogg/Opus transcode of %s failed (returncode=%s): %s", path, result.returncode,
-                       (result.stderr or b"").decode("utf-8", errors="replace")[:500])
     except Exception:
-        logger.warning("voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
-    with contextlib.suppress(OSError):
-        os.unlink(work_path)
+        logger.debug("voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
+    try:
+        os.unlink(ogg_path)
+    except OSError:
+        pass
     return None
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 # History dedup is best-effort: stay well below the Discord heartbeat watchdog and fail open.
@@ -188,9 +191,17 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     normalized_ext = (ext or "").lower()
     if normalized_ext not in _AUDIO_EXTS:
         return False
-    if _platform_name(platform) != "telegram":
-        return True
-    return is_voice or normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
+    if _platform_name(platform) == "telegram":
+        if is_voice:
+            # Explicit [[audio_as_voice]] intent: ANY audio format routes to
+            # the voice sender — the adapter transcodes non-Opus input to
+            # Ogg/Opus on the fly (transcode_to_ogg_opus), so the intent no
+            # longer dead-ends into document delivery for .mp3/.wav/etc.
+            return True
+        if normalized_ext in _TELEGRAM_VOICE_EXTS:
+            return is_voice
+        return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
+    return True
 
 
 def build_auto_tts_output_path(platform) -> str:
@@ -3992,29 +4003,22 @@ class BasePlatformAdapter(ABC):
                 # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.
                 if cmd and is_interrupt_then_dispatch(cmd):
                     self._discard_text_debounce(session_key)
-                    await self._dispatch_active_session_command(event, session_key, cmd)
-                else:
-                    logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",
-                                 self.name, cmd, session_key)
-                    await self._dispatch_inline_reply(event)
-            except Exception as e:
-                logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
-            return
-        # Clarify bypass: while blocked on clarify_tool the next message must reach the
-        # text-intercept so numeric/exact/"Other" answers resolve it and unblock the agent.
-        # Otherwise it lands in _pending_messages as a follow-up turn and the answer is
-        # discarded.  Same shape as the /approve deadlock fix (PR #4926): agent thread
-        # blocked on Event.wait, message must reach the resolver before being a new turn.
-        # See #4926.
-        if not cmd and event.allow_gateway_control:
-            try:
-                from tools import clarify_gateway as _clarify_mod
-                _has_text_clarify = _clarify_mod.get_pending_for_session(
-                    session_key, include_choice_prompts=True) is not None
-            except Exception:
-                _has_text_clarify = False
-            if _has_text_clarify:
-                logger.debug("[%s] Routing message to clarify text-intercept for %s", self.name, session_key)
+                    try:
+                        await self._dispatch_active_session_command(event, session_key, cmd)
+                    except Exception as e:
+                        logger.error(
+                            "[%s] Command '/%s' dispatch failed: %s",
+                            self.name, cmd, e, exc_info=True,
+                        )
+                    return
+
+                # Other bypass commands (/approve, /deny, /status,
+                # /bg, /restart) just need direct dispatch — they
+                # don't cancel the running task.
+                logger.debug(
+                    "[%s] Command '/%s' bypassing active-session guard for %s",
+                    self.name, cmd, session_key,
+                )
                 try:
                     await self._dispatch_inline_reply(event)
                 except Exception as e:
@@ -4734,6 +4738,7 @@ class BasePlatformAdapter(ABC):
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
                                 metadata=_final_thread_metadata,
+                                is_voice=is_voice,
                             )
                         elif ext in _VIDEO_EXTS:
                             logger.info(

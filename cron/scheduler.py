@@ -532,13 +532,20 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 
 from cron.jobs import (
-    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
-    clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
-from cron.executions import (
-    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
-    get_execution, mark_execution_handoff_pending, mark_execution_running,
-    recover_interrupted_executions)
+    _ensure_cron_dir,
+    advance_next_runs,
+    claim_dispatch,
+    claim_job_for_fire,
+    fire_claim_fence,
+    clear_run_claim,
+    get_due_jobs,
+    heartbeat_fire_claim,
+    heartbeat_run_claim,
+    mark_job_run,
+    save_job_output,
+    use_cron_store,
+)
+from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -2814,8 +2821,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = transport.config
             runtime_adapter = transport.adapter
         else:
-            # No live transport: preserve the existing standalone delivery path,
-            # which uses the logical platform's configured credential.
+            # No live transport. A relay-fronted platform's ONLY sender is the
+            # gateway's live relay adapter — there is no standalone fallback
+            # (the connector owns the credential). A manual in-process run
+            # (`hermes cron run`) has no live relay adapter, so surface the
+            # accurate remediation instead of the native configured/enabled
+            # gate, which misdiagnoses relay-fronted deployments.
+            from gateway.relay import relay_fronted_platforms
+
+            if platform_name in relay_fronted_platforms():
+                msg = (
+                    f"platform '{platform_name}' is relay-fronted and has no "
+                    "live gateway transport; start the gateway (its ticker "
+                    "owns relay-fronted delivery and will fire the job on "
+                    "schedule)"
+                )
+                logger.warning("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+            # Preserve the existing standalone delivery path, which uses the
+            # logical platform's configured credential.
             pconfig = config.platforms.get(platform)
             runtime_adapter = None
 
@@ -3836,7 +3861,7 @@ def _run_job_script(
         LLM can report the problem to the user.
     """
     scripts_dir = _get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_cron_dir(scripts_dir)
     scripts_dir_resolved = scripts_dir.resolve()
 
     # Same ingestion contract as cron.lifecycle_guard._expand_candidate_path:
@@ -6396,6 +6421,7 @@ def run_job(
             provider=runtime.get("provider"),
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
+            request_overrides=runtime.get("request_overrides"),
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
@@ -6972,30 +6998,29 @@ def run_one_job(
             job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))
         job["execution_id"] = execution["id"]
 
-    execution_id = str(job["execution_id"])
-    external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
-    if not external_owner:
-        try:
-            if _launch_external_cron_worker(job):
-                return True
-        except Exception as handoff_error:
-            error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
-            logger.error("Job '%s': %s", job["id"], error)
-            claim = job.get("fire_claim")
-            owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
-            try:
-                mark_job_run(
-                    job["id"],
-                    False,
-                    error,
-                    **({"expected_fire_owner": owner} if owner else {}),
-                )
-            finally:
-                finish_execution(execution_id, success=False, error=error)
-            return True
+    This is the shared firing body extracted from ``tick``'s per-job closure so
+    that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
+    Chronos) run the identical sequence — no duplicated correctness.
+
+    It does NOT decide whether the job is due or acquire the initial claim —
+    both the ticker and external providers use the same store CAS before
+    calling it. It does keep an acquired claim alive for the full execution.
+
+    Returns True if the job was processed (even if the job itself failed —
+    failure is recorded via ``mark_job_run``), False only if processing raised.
+
+    ``cancel_event``: optional transport-level cancellation source (dashboard
+    webhook drain, API server shutdown). It is OR-combined with the internal
+    fire-claim heartbeat's lost-ownership event, so either trigger stops the
+    run cooperatively — agent interruption AND script process-tree kill —
+    through the single fenced completion path.
+    """
     if extra_prompt is None:
-        # Gateway-forwarded manual run stamps its prompt on the job via trigger_job; the fire that
-        # consumes the manual occurrence picks it up here. Single-fire: mark_job_run clears it.
+        # A gateway-forwarded manual run (`hermes cron run --prompt` /
+        # cronjob(action='run', prompt=...) on a relay-fronted target) stamps
+        # its transient context on the job via trigger_job; the ticker/Chronos
+        # fire that consumes the manual occurrence carries it here. Single-fire:
+        # mark_job_run clears the field after the run.
         _stamped = job.get("manual_run_prompt")
         if _stamped and job.get("manual_run_at"):
             extra_prompt = str(_stamped)
@@ -8180,10 +8205,11 @@ _last_worktree_maintenance_at: Optional[float] = None
 _worktree_maintenance_lock = threading.Lock()
 
 
-def _worktree_maintenance_repos() -> List[str]:
-    """Repos whose ``.worktrees/`` to keep pruned: the hermes checkout plus job workdir repo roots,
-    filtered to those that actually have a ``.worktrees/`` dir."""
-    repos: set = set()
+    Returns:
+        Number of jobs executed (0 if another tick is already running)
+    """
+    lock_dir, lock_file = _get_lock_paths()
+    _ensure_cron_dir(lock_dir)
 
     # Hermes source checkout (git installs only; wheel installs have no .git).
     with contextlib.suppress(Exception):

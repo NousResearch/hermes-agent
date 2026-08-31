@@ -155,6 +155,12 @@ export function mergeFinalAssistantText(
   finalText: string,
   fallbackTimestamp?: number
 ): ChatMessagePart[] {
+  // Empty / whitespace-only completion is not authoritative — keep streamed
+  // text, reasoning, and tool parts (#95514).
+  if (!finalText.trim()) {
+    return parts
+  }
+
   const dedupeReference = normalizeWs(finalText)
 
   const streamedText = normalizeWs(

@@ -83,7 +83,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "read_preview", "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "tour", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "read_terminal", "desktop_preview", "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "tour", "delegate_task"}
 )
 
 
@@ -438,6 +438,52 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     if content_rewritten:
         drop_stale_api_content(prev)
 
+    Repairs applied:
+      0. Consecutive ``assistant`` messages with no intervening
+         ``tool``/``user`` turn — merged into a single assistant turn
+         (union of ``tool_calls``, concatenated ``content``). Strict
+         OpenAI-compatible providers (DeepSeek v4, Moonshot/Kimi) reject
+         a history where an ``assistant`` message carrying ``tool_calls``
+         is immediately followed by another ``assistant`` message instead
+         of its ``tool`` results — HTTP 400 "An assistant message with
+         'tool_calls' must be followed by tool messages…". The split
+         shape is produced by recovery/continuation paths that append an
+         interim assistant turn (thinking-prefill, codex
+         incomplete-continuation) or by host-fed / legacy-persisted /
+         resumed histories. Refs #29148, #49147.
+      1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
+         any preceding assistant tool_call — dropped.
+      2. ``tool_calls`` on an assistant message that no immediately
+         following ``tool`` result answers are pruned — and the turn is
+         dropped entirely if that leaves it payload-empty (an empty
+         non-final assistant message is itself a 400 on most providers).
+      3. Consecutive ``user`` messages — merged with newline separator
+         so no user input is lost.
+
+    Deliberately does NOT rewind orphan ``assistant(tool_calls)+tool``
+    pairs that precede a user message — that pattern IS valid when the
+    previous turn completed normally and the user jumped in to redirect
+    before the model got a continuation turn (the ongoing dialog
+    pattern). The empty-response scaffolding stripper handles the
+    genuinely-broken variant via its flag-gated rewind.
+
+    Pass 2 (prune unanswered ``tool_calls``) answers the complement of
+    Pass 1: Pass 1 removes the stray result, Pass 2 removes the orphaned
+    call it was displaced from. Context compression can move a tool
+    result past a user turn; without this pass the declaring assistant
+    message would keep replaying an unanswered ``tool_call`` and strict
+    providers (DeepSeek v4) reject that with HTTP 400 "An assistant
+    message with 'tool_calls' must be followed by tool messages
+    responding to each 'tool_call_id'". A call counts as answered when
+    the run of ``tool`` messages immediately following its assistant
+    message contains a result keyed to ANY of the call's ids (``id`` or
+    ``call_id`` — the same superset rule Pass 1 registers). Codex
+    interim turns are exempt, as in Pass 0.
+
+    Returns the number of repairs made (for logging/telemetry).
+    """
+    if not messages:
+        return 0
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 0: merge consecutive assistant turns (codex interims exempt)."""
@@ -454,7 +500,66 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
             if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
                 collapsed[-1] = msg
             else:
-                _merge_assistant_into(prev, msg)
+                # Neither turn carries tool calls, but the surviving turn may
+                # still carry a stale ``tool_calls: []`` from the earlier
+                # message.  An empty array is semantically "no tool calls",
+                # yet strict OpenAI-compatible providers (DeepSeek v4,
+                # Moonshot/Kimi) reject it with HTTP 400 ("Invalid
+                # 'messages[N].tool_calls': empty array...").  Drop the key
+                # HERE, at the source: ``sanitize_api_messages`` only fixes
+                # the per-call wire copy, so a ``[]`` left on the repaired
+                # turn survives in the live/persisted trajectory returned to
+                # callers (gateway/WebUI transcripts, session resume,
+                # subagents, cron) and is replayed on the next turn — which
+                # is how #58755 kept reproducing after the chokepoint fix
+                # (#77921).  Popping is non-destructive: an empty array
+                # carries no information.
+                prev.pop("tool_calls", None)
+            # Concatenate plain-text content; leave multimodal (list)
+            # content on either side alone to avoid mangling attachment
+            # blocks — fall back to keeping the existing content.
+            prev_content = prev.get("content")
+            new_content = msg.get("content")
+            content_rewritten = False
+            if isinstance(prev_content, str) and isinstance(new_content, str):
+                joined = "\n".join(
+                    p for p in (prev_content.strip(), new_content.strip()) if p
+                )
+                prev["content"] = joined
+                # A falsy ``new_content`` (e.g. "") strips to nothing and
+                # ``joined`` collapses back to ``prev_content`` unchanged --
+                # that must NOT count as a rewrite (wz-heng, #78063 review).
+                content_rewritten = joined != prev_content
+            elif not prev_content and new_content is not None:
+                prev["content"] = new_content
+                content_rewritten = new_content != prev_content
+            # Carry reasoning_content from the later turn only if the
+            # earlier turn lacks it (strict thinking providers require a
+            # reasoning_content on the merged tool-call turn; the first
+            # non-empty one suffices).
+            if not prev.get("reasoning_content") and msg.get("reasoning_content"):
+                prev["reasoning_content"] = msg["reasoning_content"]
+            # ``prev`` may carry an ``api_content`` sidecar (the exact bytes
+            # previously sent to the API, e.g. a sanitize-divergence stamp —
+            # see ``_flush_messages_to_session_db``) from BEFORE this merge.
+            # The sidecar takes priority over ``content`` at API-build time
+            # (``conversation_loop``'s ``api_messages`` build substitutes it
+            # back in for role ``assistant``), so leaving it in place while
+            # ``prev["content"]`` changes would silently replay the pre-merge
+            # bytes and discard everything this merge just concatenated on —
+            # the same stale-field-survives-the-merge shape as the
+            # ``tool_calls`` gap above, just for a different field. Only drop
+            # it when the merge actually changed the resulting value (e.g.
+            # the later turn's content is ``None``, or either side is
+            # multimodal/list — both branches skip the reassignment and
+            # ``prev["content"]`` is untouched; a falsy ``new_content`` that
+            # strips to nothing also leaves ``joined`` equal to the original
+            # ``prev_content``): in those cases the sidecar is still the
+            # exact bytes previously sent for the UNCHANGED content, and
+            # dropping it would break the prompt-cache replay invariant for
+            # no reason (wz-heng, #78063 review).
+            if content_rewritten:
+                drop_stale_api_content(prev)
             repairs += 1
             continue
         collapsed.append(msg)
@@ -519,10 +624,86 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
                 matched_tool_groups = set()
             filtered.append(msg)
 
-    # Pass 2: merge consecutive user messages. Preserves all user input
+    # Pass 2: prune tool_calls that were never answered positionally.
+    #
+    # Pass 1 dropped the stray/displaced tool RESULT — but a tool_call
+    # whose result was displaced far beyond the following turn (context
+    # compression can move it past a user turn) leaves its declaring
+    # assistant message carrying an UNANSWERED tool_call, and strict
+    # OpenAI-compatible providers (DeepSeek v4) reject the payload with
+    # HTTP 400 "An assistant message with 'tool_calls' must be followed
+    # by tool messages responding to each 'tool_call_id' (insufficient
+    # tool messages following tool_calls message)". The per-call
+    # sanitizer's stub pass is keyed on GLOBAL id presence, which a
+    # displaced-but-present result masks (see sanitize_api_messages) —
+    # so the durable history must not keep replaying the poisoned turn
+    # either. Enforce the positional invariant here: a tool_call is only
+    # legitimate when a result for ANY of its id variants (``id`` /
+    # ``call_id`` / ``response_item_id`` / composite bridge — the same
+    # unified alias policy as Pass 1, via ``tool_call_id_variants`` /
+    # ``tool_result_id_variants``) appears in the run of tool messages
+    # IMMEDIATELY following the declaring assistant message — before any
+    # user turn or further assistant turn. Unanswered calls are pruned;
+    # if the message then carries no other payload (no content,
+    # reasoning, codex items), the whole turn is dropped — an empty
+    # non-final assistant message is itself rejected by providers.
+    # Codex interim turns are exempt, as in Pass 0: their calls are
+    # replayed through the Responses-items chain, not the tool-result
+    # run.
+    pruned: List[Dict] = []
+    i = 0
+    n = len(filtered)
+    while i < n:
+        msg = filtered[i]
+        if not (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and msg.get("tool_calls")
+            and not _is_codex_interim(msg)
+        ):
+            pruned.append(msg)
+            i += 1
+            continue
+        answered: set = set()
+        j = i + 1
+        while (
+            j < n
+            and isinstance(filtered[j], dict)
+            and filtered[j].get("role") == "tool"
+        ):
+            tid = (filtered[j].get("tool_call_id") or "").strip()
+            if tid:
+                answered.update(tool_result_id_variants(tid))
+            j += 1
+        kept_calls: List[Dict] = []
+        dropped_calls = 0
+        for tc in msg.get("tool_calls") or []:
+            variants = tool_call_id_variants(tc)
+            if variants and (variants & answered):
+                kept_calls.append(tc)
+            else:
+                dropped_calls += 1
+        if dropped_calls:
+            repairs += 1
+            if not kept_calls and not _msg_has_payload(
+                {k: v for k, v in msg.items() if k != "tool_calls"}
+            ):
+                # The pruned call(s) were the message's only payload —
+                # dropping the whole turn beats sending an empty
+                # assistant message (which most providers 400).
+                i += 1
+                continue
+            if kept_calls:
+                msg["tool_calls"] = kept_calls
+            else:
+                msg.pop("tool_calls", None)
+        pruned.append(msg)
+        i += 1
+
+    # Pass 3: merge consecutive user messages. Preserves all user input
     # so nothing the user typed is lost.
     merged: List[Dict] = []
-    for msg in filtered:
+    for msg in pruned:
         if (
             merged
             and isinstance(msg, dict)
@@ -1060,6 +1241,7 @@ def try_recover_primary_transport(
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
 
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -1337,7 +1519,19 @@ def restore_primary_runtime(agent) -> bool:
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
+        if "runtime_capabilities" in rt:
+            raw_capabilities = rt["runtime_capabilities"]
+            if not isinstance(raw_capabilities, dict):
+                logger.warning("Ignoring malformed runtime capabilities snapshot")
+            else:
+                agent.runtime_capabilities = dict(raw_capabilities)
+        elif "capabilities" in rt:
+            # Read snapshots written by the initial capability propagation patch.
+            raw_capabilities = rt["capabilities"]
+            if isinstance(raw_capabilities, dict):
+                agent.runtime_capabilities = dict(raw_capabilities)
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+        agent.request_overrides = dict(rt.get("request_overrides") or {})
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout for snapshots predating the native-vs-proxy split.
@@ -1667,8 +1861,11 @@ def plan_cache_sections_for_destination(
     the user turned caching off (#76085).
     """
     from agent.prompt_caching import (
-        build_prompt_cache_plan, effective_cache_ttl, envelope_tool_part_cache_markers_supported,
-        strip_anthropic_cache_control, strip_anthropic_tool_cache_control,
+        build_prompt_cache_plan,
+        effective_cache_ttl,
+        envelope_tool_part_cache_markers_supported,
+        strip_anthropic_cache_control,
+        strip_anthropic_tool_cache_control,
     )
     # The policy function reads agent.* only as fallbacks for kwargs we don't pass; blank_cache_policy_stub
     # is the only sanctioned stub so _cache_disabled cannot be left off again (#76085).
@@ -1684,11 +1881,21 @@ def plan_cache_sections_for_destination(
         # effective_cache_ttl resolves None → "5m"; cache-disabled agents never reach here.
         cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
         native_anthropic=native_layout,
-        static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
-        direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(stub, **dest),
-        # LiteLLM-style envelope routes forward part-level markers into tool_result.content[] →
-        # non-retryable 400.
-        tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
+        static_system_prefix=(
+            static_system_prefix if isinstance(static_system_prefix, str) else None
+        ),
+        direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(
+            stub,
+            provider=provider,
+            base_url=base_url,
+            api_mode=api_mode,
+            model=model,
+        ),
+        # LiteLLM-style envelope routes forward part-level markers into
+        # tool_result.content[] → non-retryable 400 (#89886).
+        tool_part_markers=envelope_tool_part_cache_markers_supported(
+            provider, base_url
+        ),
     )
     return plan.messages, plan.tools
 
@@ -2075,20 +2282,61 @@ def _ensure_copilot_headers(client_kwargs: dict) -> None:
     return client
 
 
-def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-    from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
-    from agent.ssl_verify import resolve_httpx_verify
-    # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
-    # leaks into later requests (a torn-down httpx transport got reused).
-    # Callers pass agent._client_kwargs (or shallow copies of it) in; any in-place mutation leaks back into
-    # the stored dict and is reused on subsequent requests. #10933 hit this by injecting an httpx.Client
-    # transport that was torn down after the first request, so the next request wrapped a closed transport
-    # and raised "Cannot send a request, as the client has been closed" on every retry. The revert resolved
-    # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
-    # the same class of bug.
-    client_kwargs = dict(client_kwargs)
-    try:
-        from providers import get_provider_profile
+def _apply_switched_provider_request_overrides(agent, new_provider):
+    """Re-derive the switched-to provider's ``request_overrides`` onto a live agent.
+
+    A ``custom_providers`` entry can carry an ``extra_body`` (e.g.
+    ``chat_template_kwargs`` to toggle a local model's thinking). The gateway
+    rebuild path carries this via ``request_overrides``; an *in-place* swap
+    (CLI / TUI ``/model``) must re-derive it for the switched-to provider,
+    otherwise the previous provider's ``extra_body`` lingers.
+
+    The switched-to entry is matched by **provider key, base_url, and model** —
+    the same condition ``agent_init._merge_custom_provider_extra_body`` applies
+    at build time — via the shared ``_custom_provider_extra_body_for_agent``
+    matcher. Matching by name alone would let a *different* model selected at the
+    same named endpoint inherit an ``extra_body`` configured for another model.
+    A stale ``extra_body`` is always cleared when the switched-to provider/model
+    resolves none; non-provider overrides (``service_tier`` / ``speed`` from
+    ``/fast``) are preserved.
+    """
+    from agent.agent_init import _custom_provider_extra_body_for_agent
+
+    # Prefer the init-time cache (agent_init stores ``agent._custom_providers``
+    # right where it runs its own _merge_custom_provider_extra_body); fall back
+    # to a fresh load only if a caller built the agent without it.
+    custom_providers = getattr(agent, "_custom_providers", None)
+    if custom_providers is None:
+        try:
+            from hermes_cli.config import load_config, get_compatible_custom_providers
+            custom_providers = get_compatible_custom_providers(load_config())
+        except Exception:
+            custom_providers = []
+
+    new_extra_body = _custom_provider_extra_body_for_agent(
+        provider=new_provider,
+        model=getattr(agent, "model", "") or "",
+        base_url=getattr(agent, "base_url", "") or "",
+        custom_providers=custom_providers or [],
+    )
+
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    overrides.pop("extra_body", None)  # always drop the previous provider's extra_body
+    if new_extra_body:
+        overrides["extra_body"] = dict(new_extra_body)
+    agent.request_overrides = overrides
+
+
+def switch_model(
+    agent,
+    new_model,
+    new_provider,
+    api_key='',
+    base_url='',
+    api_mode='',
+    capabilities=None,
+):
+    """Switch the model/provider in-place for a live agent.
 
         profile = get_provider_profile(getattr(agent, "provider", ""))
         if profile is not None:
@@ -2193,6 +2441,16 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     _ra().logger.info("OpenAI client created (%s, shared=%s) %s", reason, shared, agent._client_log_context())
     return client
 
+    The implementation mirrors ``_try_activate_fallback()`` for the
+    client-swap logic but also updates ``_primary_runtime`` so the
+    change persists across turns (unlike fallback which is
+    turn-scoped).
+    """
+    from hermes_cli.providers import determine_api_mode
+    from agent.native_compaction import resolve_native_compaction_capabilities
+
+    old_model = agent.model
+    old_provider = agent.provider
 
 def _apply_switched_provider_request_overrides(agent, new_provider):
     """Re-derive the switched-to provider's ``request_overrides`` (custom_providers ``extra_body``).
@@ -2256,6 +2514,32 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
 
+    normalized_new_provider = (new_provider or "").strip().lower()
+    if not base_url and normalized_new_provider == "openai":
+        # An omitted URL means the provider's canonical direct endpoint.
+        base_url = "https://api.openai.com/v1"
+
+    # Same-provider switches may omit base_url intentionally (for example, a
+    # direct caller refreshing credentials). Resolve capabilities from the
+    # endpoint that the normalization below will retain, not from the empty
+    # raw argument.
+    effective_base_url = base_url
+    if not effective_base_url and (old_provider or "").strip().lower() == (
+        new_provider or ""
+    ).strip().lower():
+        effective_base_url = getattr(agent, "base_url", "")
+
+    destination_capabilities = (
+        dict(capabilities)
+        if isinstance(capabilities, dict)
+        else resolve_native_compaction_capabilities(
+            model=new_model,
+            base_url=effective_base_url,
+            provider=new_provider,
+            is_codex_backend=(new_provider or '').strip().lower() == 'openai-codex',
+        )
+    )
+
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
     # hit /v1/v1/messages.  `model_switch.switch_model()` already strips
@@ -2271,7 +2555,6 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     ):
         base_url = re.sub(r"/v1/?$", "", base_url)
     return api_mode, base_url, destination_capabilities
-
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -2301,6 +2584,7 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
             "_is_anthropic_oauth",
             "_config_context_length",
             "_reasoning_echo_flag",
+            "runtime_capabilities",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -2418,126 +2702,100 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
             get_compatible_custom_providers(load_config_readonly()),
         )
     except Exception:
-        logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
-    timeout = get_provider_request_timeout(agent.provider, agent.model)
-    if timeout is not None:
-        agent._client_kwargs["timeout"] = timeout
-    # Reapply provider headers (OpenRouter HTTP-Referer/X-Title) lost when _client_kwargs was
-    # rebuilt; otherwise attribution shows "Unknown".
-    agent._apply_client_headers_for_base_url(effective_base)
-    agent.client = agent._create_openai_client(dict(agent._client_kwargs), reason="switch_model", shared=True)
-
-
-def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm) -> None:
-    """Swap identity/transport fields, reload the pool, rebuild the client (rolled back by the caller on error)."""
-    # Clear the per-config override so the new model's context window is re-resolved.
-    agent._config_context_length = None
-    agent.model = new_model
-    agent.provider = agent.requested_provider = new_provider
-    # Re-read reasoning_echo so the flag reflects the new primary model (see _reasoning_echo_opt_in).
-    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
-    # Empty base_url while the provider changes means upstream resolution failed; falling back to
-    # the old provider's URL pairs the wrong host and persists via _primary_runtime. Fail loud.
-    # Same-provider re-select (credential refresh) may keep the URL.
-    if base_url:
-        agent.base_url = base_url
-    elif old_norm != new_norm:
-        raise ValueError(
-            f"switch_model: no base_url resolved for provider "
-            f"'{new_provider}' (switching from '{old_provider}'); "
-            "refusing to keep the previous provider's endpoint"
-        )
-    agent.api_mode = api_mode
-    # New api_mode may need a different transport.
-    if hasattr(agent, "_transport_cache"):
-        agent._transport_cache.clear()
-    if api_key:
-        agent.api_key = api_key
-    # Reload the credential pool on provider change: a pool with a mismatched provider makes
-    # recover_with_credential_pool short-circuit. Reload failure is non-fatal.
-    if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
-        # A pool bound to the old provider is worse than none: the recovery guard rejects it.
-        agent._credential_pool = None
-        agent._credential_pool_entry_id = None
-        try:
-            from agent.credential_pool import load_pool
-            agent._credential_pool = load_pool(new_provider)
-        except Exception as _pool_exc:  # noqa: BLE001
-            logger.warning(
-                "switch_model: credential pool reload failed for %s (%s); "
-                "continuing without pool rotation this turn", new_provider, _pool_exc,
-            )
-    _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm)
-    sync_credential_pool_entry_id(agent)
-
-
-def _resolve_switch_context_length(agent, snapshot):
-    """Resolve the destination context length (LM Studio preload first); returns ``(custom_providers, effective_len)``."""
-    custom_providers = None
-    try:
-        from hermes_cli.config import (
-            get_compatible_custom_providers, get_custom_provider_context_length, load_config
-        )
-        custom_providers = get_compatible_custom_providers(load_config())
-        intent = get_custom_provider_context_length(
-            model=agent.model, base_url=agent.base_url, custom_providers=custom_providers
-        )
-    except Exception:
-        intent = None
-    agent._config_context_length = intent
-    runtime_len = None
+        _destination_context_intent = None
+    agent._config_context_length = _destination_context_intent
     if hasattr(agent, "_ensure_lmstudio_runtime_loaded"):
         try:
-            runtime_len = agent._ensure_lmstudio_runtime_loaded(intent)
+            _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
+                _destination_context_intent
+            )
         except Exception:
-            _restore_switch_snapshot(agent, snapshot)
+            _restore_snapshot()
             raise
-    if hasattr(agent, "_lmstudio_load_was_unverified") and agent._lmstudio_load_was_unverified(runtime_len):
+    else:
+        _runtime_context_length = None
+    if (
+        hasattr(agent, "_lmstudio_load_was_unverified")
+        and agent._lmstudio_load_was_unverified(_runtime_context_length)
+    ):
         logger.warning(
             "LM Studio model activation was rejected or completed without a "
             "verifiable active context length during model switch; continuing "
             "with configured context"
         )
-    effective = intent
     if hasattr(agent, "_effective_lmstudio_context_length"):
-        effective = agent._effective_lmstudio_context_length(intent, runtime_len)
-    return custom_providers, effective
+        _effective_context_length = agent._effective_lmstudio_context_length(
+            _destination_context_intent,
+            _runtime_context_length,
+        )
+    else:
+        _effective_context_length = _destination_context_intent
 
 
-def _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot) -> None:
-    """Point the context compressor at the new model (rolls back the switch on failure)."""
-    from agent.model_metadata import get_model_context_length
-    if custom_providers is None:
+    # ── Update context compressor ──
+    if hasattr(agent, "context_compressor") and agent.context_compressor:
+        from agent.model_metadata import get_model_context_length
+        if _sm_custom_providers is None:
+            try:
+                from hermes_cli.config import get_compatible_custom_providers, load_config
+                _sm_custom_providers = get_compatible_custom_providers(load_config())
+            except Exception:
+                _sm_custom_providers = None
+        # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
+        # token provider). ``get_model_context_length`` expects a
+        # string for its live-probe paths; for Foundry the context
+        # length normally resolves via config or static catalogs and
+        # never hits a probe, but coerce to empty string defensively.
+        _ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
         try:
-            from hermes_cli.config import get_compatible_custom_providers, load_config
-            custom_providers = get_compatible_custom_providers(load_config())
+            new_context_length = get_model_context_length(
+                agent.model,
+                base_url=agent.base_url,
+                api_key=_ctx_api_key,
+                provider=agent.provider,
+                config_context_length=_effective_context_length,
+                custom_providers=_sm_custom_providers,
+            )
+            agent.context_compressor.update_model(
+                model=agent.model,
+                context_length=new_context_length,
+                base_url=agent.base_url,
+                api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
+                provider=agent.provider,
+                api_mode=agent.api_mode,
+            )
         except Exception:
-            custom_providers = None
-    # agent.api_key may be a callable (Azure Foundry Entra ID); get_model_context_length expects a
-    # string for live probes, so coerce defensively.
-    ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
-    try:
-        new_context_length = get_model_context_length(
-            agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
-            config_context_length=effective_context_length, custom_providers=custom_providers,
-        )
-        agent.context_compressor.update_model(
-            model=agent.model,
-            context_length=new_context_length,
-            base_url=agent.base_url,
-            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
-            provider=agent.provider,
-            api_mode=agent.api_mode,
-        )
-    except Exception:
-        _restore_switch_snapshot(agent, snapshot)
-        raise
+            _restore_snapshot()
+            raise
 
 
-def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
-    """The ``_primary_runtime`` record that persists a switch across turns."""
-    cc = getattr(agent, "context_compressor", None) or None
-    rt = {
+        _reasoning_cfg = _sm_load_config() or {}
+        agent.reasoning_config = resolve_reasoning_config(_reasoning_cfg, agent.model)
+        logger.info(
+            "switch_model: reasoning_config resolved for %s: %s",
+            agent.model, agent.reasoning_config,
+        )
+    except Exception as _reasoning_err:
+        logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
+
+    # ── Invalidate cached system prompt so it rebuilds next turn ──
+    agent._cached_system_prompt = None
+
+    # Publish the destination capability map only after every runtime setup
+    # above has succeeded. Failed switches must leave the old map intact.
+    agent.runtime_capabilities = destination_capabilities
+
+    # ── Reset the cross-turn stale-call circuit breaker (#58962) ──
+    # The breaker's error text tells the user to "switch models ... then
+    # retry"; without this reset the streak stays latched and the freshly
+    # selected (healthy) provider would keep short-circuiting before any
+    # stream is even attempted.
+    from agent.chat_completion_helpers import _reset_stale_streak
+    _reset_stale_streak(agent)
+
+    # ── Update _primary_runtime so the change persists across turns ──
+    _cc = agent.context_compressor if hasattr(agent, "context_compressor") and agent.context_compressor else None
+    agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
         "requested_provider": agent.requested_provider,
@@ -2549,6 +2807,12 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        # Request-level overrides (extra_body etc.) must travel with the
+        # switched-to identity; without this, a post-switch transport
+        # recovery or fallback restore would resurrect the PRE-switch
+        # overrides via the stale init-time snapshot (#75091 seam).
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -2588,83 +2852,13 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     except Exception:
         logger.debug("switch_model: request_overrides re-derivation failed", exc_info=True)
 
-
-def _persist_switch_billing_route(agent) -> None:
-    """Persist the billing route so dashboard Model cards show the post-switch provider."""
-    # _session_db / session_id may be unset (tests, bare agents).
-    session_db = getattr(agent, "_session_db", None)
-    session_id = getattr(agent, "session_id", None)
-    if session_db is None or not session_id:
-        return
+    # Apply the switched-to provider's request_overrides (custom_providers
+    # extra_body, e.g. chat_template_kwargs). See helper for rationale.
     try:
-        session_db.update_session_billing_route(
-            session_id, provider=agent.provider, base_url=agent.base_url,
-            billing_mode=getattr(agent, "api_mode", None),
-        )
+        _apply_switched_provider_request_overrides(agent, new_provider)
     except Exception:
-        logger.warning("Failed to persist billing route after model switch", exc_info=True)
+        logger.debug("switch_model: request_overrides re-derivation failed", exc_info=True)
 
-
-def switch_model(
-    agent, new_model, new_provider, api_key='', base_url='', api_mode='', capabilities=None
-):
-    """Switch the model/provider in-place for a live agent (rebuild clients, caching flags,
-    compressor). Mirrors ``_try_activate_fallback()`` but also updates ``_primary_runtime`` so
-    the change persists across turns. A failed swap/rebuild rolls back to the pre-switch
-    snapshot and re-raises (callers catch)."""
-    old_model = agent.model
-    old_provider = agent.provider
-    # ── Reload credential pool for the new provider (issue #52727) ── Without this,
-    # ``recover_with_credential_pool`` sees a ``pool.provider != agent.provider`` mismatch and
-    # short-circuits, leaving the new provider with no rotation/recovery on 401/429 and burning the original
-    # pool's entries. Only reload when the provider actually changed (or the pool was missing) —
-    # re-selecting the same provider must not churn the pool reference. A reload failure is logged +
-    # swallowed: the switch itself must still complete.
-    old_norm = (old_provider or "").strip().lower()
-    new_norm = (new_provider or "").strip().lower()
-    api_mode, base_url, destination_capabilities = _resolve_switch_destination(
-        agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm
-    )
-    snapshot = _snapshot_switch_state(agent)
-    try:
-        _swap_switch_runtime(
-            agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm
-        )
-    except Exception:
-        _restore_switch_snapshot(agent, snapshot)
-        raise
-    custom_providers, effective_context_length = _resolve_switch_context_length(agent, snapshot)
-    # Refresh the custom-provider snapshot from the config just loaded so the prompt_caching lookup
-    # sees flags added to config.yaml after session start.
-    if custom_providers is not None:
-        agent._custom_providers = custom_providers
-    agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
-        provider=new_provider, base_url=agent.base_url, api_mode=api_mode, model=new_model
-    )
-    if hasattr(agent, "context_compressor") and agent.context_compressor:
-        _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
-    # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
-    # YAML False = disabled).
-    try:
-        from hermes_constants import resolve_reasoning_config
-        from hermes_cli.config import load_config as _sm_load_config
-        agent.reasoning_config = resolve_reasoning_config(_sm_load_config() or {}, agent.model)
-        logger.info(
-            "switch_model: reasoning_config resolved for %s: %s", agent.model, agent.reasoning_config
-        )
-    except Exception as _reasoning_err:
-        logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
-    # Invalidate the cached system prompt so it rebuilds next turn.
-    agent._cached_system_prompt = None
-    # Publish the destination capability map only after every runtime setup above has succeeded.
-    # Failed switches must leave the old map intact.
-    agent.runtime_capabilities = destination_capabilities
-    # Reset the cross-turn stale-call circuit breaker; otherwise the latched streak keeps
-    # short-circuiting the freshly selected healthy provider.
-    from agent.chat_completion_helpers import _reset_stale_streak
-    _reset_stale_streak(agent)
-    agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
-    _finish_switch(agent, new_provider, old_norm, new_norm)
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,
@@ -2832,17 +3026,22 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
-    elif function_name == "read_preview":
+    elif function_name == "desktop_preview":
         def _execute(next_args: dict) -> Any:
-            from tools.read_preview_tool import read_preview_tool as _read_preview_tool
-            return _finish_agent_tool(
-                _read_preview_tool(
-                    start=next_args.get("start"),
-                    count=next_args.get("count"),
-                    callback=getattr(agent, "read_preview_callback", None),
-                ),
-                next_args,
-            )
+            # action=read needs the GUI callback (agent-level); open/close go
+            # through the registry handler like any other tool.
+            if (next_args.get("action") or "").strip() == "read":
+                from tools.read_preview_tool import read_preview_tool as _read_preview_tool
+                return _finish_agent_tool(
+                    _read_preview_tool(
+                        start=next_args.get("start"),
+                        count=next_args.get("count"),
+                        callback=getattr(agent, "read_preview_callback", None),
+                    ),
+                    next_args,
+                )
+            from tools.preview_tool import _handle_preview
+            return _finish_agent_tool(_handle_preview(next_args), next_args)
     elif function_name == "drive_preview":
         def _execute(next_args: dict) -> Any:
             from tools.drive_preview_tool import drive_preview_tool as _drive_preview_tool
@@ -3184,29 +3383,79 @@ def repair_empty_non_final_messages(messages: List[Dict[str, Any]]) -> List[Dict
 
 
 def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
-    """Classify orphaned tool-call / tool-result pairs; single source of truth for GLOBAL orphan
-    detection. Returns ``(surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls)``;
-    every id variant of a tool_call is registered so a result matching any alias survives, and
-    ``orphaned_results`` are the actual dicts (filter by ``id(msg)``). ``sanitize_api_messages``
-    pairs positionally instead but shares the ``*_id_variants`` alias policy."""
-    assistant_call_variants = [
-        (tc, variants)
-        for msg in messages if msg.get("role") == "assistant"
-        for tc in msg.get("tool_calls") or []
-        if (variants := tool_call_id_variants(tc))
-    ]
-    surviving_call_ids: set[str] = set().union(*(v for _, v in assistant_call_variants))
+    """Classify orphaned tool-call / tool-result pairs in *messages*.
+
+    Returns a 4-tuple ``(surviving_call_ids, result_call_ids,
+    orphaned_results, missing_tool_calls)``:
+
+    - ``surviving_call_ids``: every id variant carried by any assistant
+      ``tool_calls`` entry. A tool_call may carry SEVERAL equivalent id
+      spellings (``id`` fc_..., ``call_id`` call_..., ``response_item_id``,
+      or a composite ``call|item`` bridge id) — register EVERY variant so a
+      result matching any of them survives (#55626, #63000).
+    - ``result_call_ids``: every id variant referenced by a ``tool`` result.
+    - ``orphaned_results``: the actual ``tool`` message dicts whose complete
+      alias set matches no assistant call (compare by identity — ``id(msg)``
+      — when filtering, since dicts are unhashable).
+    - ``missing_tool_calls``: the actual tool_call entries with no matching
+      result on ANY alias (after orphaned results are excluded).
+
+    This is the single source of truth for GLOBAL orphan *detection* (does
+    a matching id exist anywhere in the transcript). Its remaining consumer
+    is the context compressor's ``_sanitize_tool_pairs`` (strip orphans from
+    the durable history); the id-resolution and variant-expansion rules live
+    here so they can never drift between call sites again (#58357).
+
+    ``sanitize_api_messages`` no longer uses the global check: strict
+    positional providers (DeepSeek v4, Kimi) reject a call whose result is
+    not in the IMMEDIATELY-following tool run even when a matching id exists
+    elsewhere, so its pairing pass walks the transcript positionally instead
+    (#94704) — a strictly stronger invariant that subsumes the global one at
+    that site. Both share the same ``tool_call_id_variants`` /
+    ``tool_result_id_variants`` alias policy, which is the part that must
+    not fork.
+    """
+    assistant_call_variants: List[tuple[Any, frozenset[str]]] = []
+    surviving_call_ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            variants = tool_call_id_variants(tc)
+            if variants:
+                assistant_call_variants.append((tc, variants))
+                surviving_call_ids.update(variants)
+
     result_entries = [
-        (msg, tool_result_id_variants(msg.get("tool_call_id"))) for msg in messages if msg.get("role") == "tool"
+        (msg, tool_result_id_variants(msg.get("tool_call_id")))
+        for msg in messages
+        if msg.get("role") == "tool"
     ]
-    result_call_ids: set[str] = set().union(*(v for _, v in result_entries))
-    orphaned_results = [msg for msg, v in result_entries if v and not (v & surviving_call_ids)]
+    result_call_ids: set[str] = set()
+    for _, variants in result_entries:
+        result_call_ids.update(variants)
+
+    orphaned_results = [
+        msg
+        for msg, variants in result_entries
+        if variants and not (variants & surviving_call_ids)
+    ]
     orphaned_ids = {id(msg) for msg in orphaned_results}
-    surviving_result_variants = [v for msg, v in result_entries if v and id(msg) not in orphaned_ids]
+    surviving_result_variants = [
+        variants
+        for msg, variants in result_entries
+        if variants and id(msg) not in orphaned_ids
+    ]
     missing_tool_calls = [
-        tc for tc, v in assistant_call_variants if not any(v & rv for rv in surviving_result_variants)
+        tc
+        for tc, variants in assistant_call_variants
+        if not any(variants & rv for rv in surviving_result_variants)
     ]
     return surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls
+
+
+def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
 
 def _drop_invalid_roles(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -3342,84 +3591,131 @@ def _pair_tool_calls_positionally(messages: List[Dict[str, Any]]) -> List[Dict[s
             stubs += 1
         declared_calls.clear()
 
-    assistant_call_variants: List[tuple[Any, frozenset[str]]] = []
-    surviving_call_ids: set[str] = set()
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        for tc in msg.get("tool_calls") or []:
-            # A tool_call may carry SEVERAL equivalent id spellings (``id``
-            # fc_..., ``call_id`` call_..., ``response_item_id``, or a
-            # composite ``call|item`` bridge id). ``_get_tool_call_id_static``
-            # returns only the preferred one, but a tool result keyed on any
-            # OTHER spelling would then look orphaned and get dropped +
-            # replaced with a bogus "[Result unavailable]" stub — silently
-            # eating a perfectly valid tool result (#55626, #63000). Register
-            # EVERY variant so a result matching any of them survives.
-            variants = tool_call_id_variants(tc)
-            if variants:
-                assistant_call_variants.append((tc, variants))
-                surviving_call_ids.update(variants)
-
-    result_entries = [
-        (msg, tool_result_id_variants(msg.get("tool_call_id")))
-        for msg in messages
-        if msg.get("role") == "tool"
+    # --- Drop tool results with a missing/empty tool_call_id ---
+    # The positional pairing walk below also catches this shape (an id-less
+    # result expands to zero variants, matches no declared call, and is
+    # dropped as a positional orphan), but keep the explicit early filter so
+    # the distinct failure mode keeps its own log line and the guarantee
+    # doesn't silently depend on the walk's internals: a result with no
+    # ``tool_call_id`` at all is a schema violation strict OpenAI-compatible
+    # providers reject outright. ``repair_message_sequence``'s
+    # Pass 1 already drops this shape (`if tc_id and tc_id in
+    # known_tool_ids`) when it runs first on the same list, but any caller
+    # that reaches this function without going through
+    # ``repair_message_sequence`` first has no such guard. Drop explicitly
+    # here so this "final chokepoint" claim (see module docstring) actually
+    # holds regardless of caller (#78071).
+    _pre_id_filter_count = len(messages)
+    messages = [
+        m for m in messages
+        if not (m.get("role") == "tool" and not (m.get("tool_call_id") or "").strip())
     ]
-
-    # 1. Drop tool results whose complete alias set matches no assistant call.
-    orphaned_result_objects = {
-        id(msg)
-        for msg, variants in result_entries
-        if variants and not (variants & surviving_call_ids)
-    }
-    if orphaned_result_objects:
-        messages = [m for m in messages if id(m) not in orphaned_result_objects]
-        result_entries = [
-            (msg, variants)
-            for msg, variants in result_entries
-            if id(msg) not in orphaned_result_objects
-        ]
+    if len(messages) != _pre_id_filter_count:
         _ra().logger.debug(
-            "Pre-call sanitizer: removed %d orphaned tool result(s)",
-            len(orphaned_result_objects),
+            "Pre-call sanitizer: dropped %d tool result(s) with missing/empty tool_call_id",
+            _pre_id_filter_count - len(messages),
         )
     return paired if (dropped or stubs) else messages
 
-    # 2. Inject one stub per assistant call with no result on ANY alias.
-    surviving_result_variants = [
-        variants for _, variants in result_entries if variants
-    ]
-    missing_tool_calls = [
-        tc
-        for tc, variants in assistant_call_variants
-        if not any(variants & result_variants for result_variants in surviving_result_variants)
-    ]
-    if missing_tool_calls:
-        missing_tool_call_objects = {id(tc) for tc in missing_tool_calls}
-        patched: List[Dict[str, Any]] = []
-        for msg in messages:
-            patched.append(msg)
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    if id(tc) not in missing_tool_call_objects:
-                        continue
-                    cid = coalesce_tool_call_id(tc)
-                    if not cid:
-                        variants = tool_call_id_variants(tc)
-                        cid = sorted(variants)[0] if variants else ""
-                    if not cid:
-                        continue
-                    patched.append({
-                        "role": "tool",
-                        "name": _ra().AIAgent._get_tool_call_name_static(tc),
-                        "content": "[Result unavailable — see context summary above]",
-                        "tool_call_id": cid,
-                    })
-        messages = patched
+    # --- Positional tool_call <-> tool_result pairing ---
+    # Strict OpenAI-compatible providers (DeepSeek v4, Kimi) enforce the
+    # POSITIONAL invariant: an assistant message carrying tool_calls must
+    # be IMMEDIATELY followed by tool messages covering every
+    # tool_call_id. The previous implementation compared global id sets,
+    # which misses the failure mode where a result exists somewhere in
+    # the transcript but not in the run right after its call — an
+    # interrupted turn or a compression window can displace a result
+    # past a user turn. The id then survives in the global result set,
+    # so the call looks answered, no stub is injected, and the provider
+    # rejects the payload with HTTP 400 "An assistant message with
+    # 'tool_calls' must be followed by tool messages responding to each
+    # 'tool_call_id' (insufficient tool messages following tool_calls
+    # message)". Rewritten as a single rolling walk on the per-call
+    # copy (#94704):
+    #   (a) tool results that do not immediately follow an assistant
+    #       message declaring their id are dropped (positional orphans —
+    #       includes results appearing BEFORE their call, which strict
+    #       providers also reject);
+    #   (b) declared ids not covered by the immediately-following tool
+    #       run get a stub result injected at the end of that run, even
+    #       when a mispositioned result exists elsewhere.
+    # Matching is variant-aware (``tool_call_id_variants`` /
+    # ``tool_result_id_variants``): a result keyed on ANY alias spelling
+    # (``id`` / ``call_id`` / ``response_item_id`` / composite bridge)
+    # answers the call, preserving the unified alias policy from
+    # #55626/#63000/#93251.
+    paired: List[Dict[str, Any]] = []
+    declared_calls: Dict[str, tuple] = {}
+    dropped_positional_orphans = 0
+    added_stubs = 0
+
+    def _flush_unanswered_stubs() -> None:
+        nonlocal added_stubs
+        for key in sorted(declared_calls):
+            tc, _variants = declared_calls[key]
+            cid = coalesce_tool_call_id(tc) or key
+            paired.append({
+                "role": "tool",
+                "name": _ra().AIAgent._get_tool_call_name_static(tc),
+                "content": "[Result unavailable — see context summary above]",
+                "tool_call_id": cid,
+            })
+            added_stubs += 1
+        declared_calls.clear()
+
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant":
+            # A new assistant turn closes the previous tool-result run:
+            # anything still pending was never answered positionally.
+            _flush_unanswered_stubs()
+            declared_calls = {}
+            for tc in msg.get("tool_calls") or []:
+                variants = tool_call_id_variants(tc)
+                if variants:
+                    # Key on a stable representative of the alias group so
+                    # a result matching ANY spelling can consume the call.
+                    declared_calls[sorted(variants)[0]] = (tc, variants)
+            paired.append(msg)
+        elif role == "tool":
+            result_variants = tool_result_id_variants(msg.get("tool_call_id"))
+            matched = next(
+                (
+                    key
+                    for key, (_tc, variants) in declared_calls.items()
+                    if variants & result_variants
+                ),
+                None,
+            )
+            if matched is not None:
+                paired.append(msg)
+                # Consume so a duplicate result reusing the id falls into
+                # the drop branch (same semantics as the old global
+                # dedup; strict providers reject duplicate tool_call_id).
+                declared_calls.pop(matched, None)
+            else:
+                dropped_positional_orphans += 1
+        else:
+            if role == "user":
+                # A user turn closes the tool-result run; subsequent
+                # tool messages without a fresh declaring assistant
+                # turn are orphans.
+                _flush_unanswered_stubs()
+            paired.append(msg)
+    # The transcript may end right after an unanswered assistant turn.
+    _flush_unanswered_stubs()
+    if dropped_positional_orphans or added_stubs:
+        messages = paired
+    if dropped_positional_orphans:
         _ra().logger.debug(
-            "Pre-call sanitizer: added %d stub tool result(s)",
-            len(missing_tool_calls),
+            "Pre-call sanitizer: removed %d positionally orphaned tool result(s)",
+            dropped_positional_orphans,
+        )
+    if added_stubs:
+        _ra().logger.debug(
+            "Pre-call sanitizer: added %d stub tool result(s) for "
+            "positionally unanswered tool call(s)",
+            added_stubs,
         )
 
     # 3. Deduplicate tool_call_ids. Strict providers (DeepSeek) reject a

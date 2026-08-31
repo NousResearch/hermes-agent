@@ -769,10 +769,137 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _claim_for_manual_run(job_id: str, log_label: str):
-    """At-most-once claim shared by the sync and background run paths: ``(claimed_job, None)`` or
-    ``(None, error_dict)`` in the ``_execute_job_now`` shape. A lost claim is labelled precisely —
-    claim_job_for_fire also returns False for paused/disabled/missing jobs, not just in-flight ones."""
+def _relay_fronted_delivery_platforms(job: Dict[str, Any]) -> set:
+    """Delivery-platform names for this job that the relay connector fronts."""
+    try:
+        from gateway.relay import relay_fronted_platforms
+    except Exception:
+        return set()
+    fronted = relay_fronted_platforms()
+    if not fronted:
+        return set()
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+
+        targets = _resolve_delivery_targets(job) or []
+    except Exception:
+        return set()
+    theirs = {t.get("platform") for t in targets if t.get("platform")}
+    return theirs & fronted
+
+
+def _forward_relay_fronted_run(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None
+) -> Optional[str]:
+    """Forward a manual run to the gateway when it targets a relay-fronted
+    platform and this process has no live relay adapter.
+
+    Relay-fronted delivery has no standalone sender: the connector owns the
+    credential and the gateway's live relay adapter is the only path. The
+    gateway api_server's ``POST /api/jobs/{id}/run`` marks the job due for its
+    own ticker, which fires it with the live adapter. ``extra_prompt``
+    (transient per-run context) rides in the request body so the forwarded
+    fire keeps it. Returns a JSON result string when forwarding engages
+    (dispatch or the accurate error), else None to fall through to the normal
+    in-process run.
+    """
+    if not _relay_fronted_delivery_platforms(job):
+        return None
+    job_id = job["id"]
+    import os
+
+    port_raw = os.getenv("API_SERVER_PORT", "").strip()
+    try:
+        port = int(port_raw) if port_raw else 8642
+    except ValueError:
+        port = 8642
+    # Mirror the api_server's own bind resolution (adapter reads
+    # extra.host -> API_SERVER_HOST -> 127.0.0.1). A wildcard bind
+    # (0.0.0.0/::) listens on loopback too, so dial loopback for those.
+    host = ""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        host = str(
+            cfg_get(
+                load_config_readonly(), "platforms", "api_server", "extra", "host",
+                default="",
+            )
+            or ""
+        ).strip()
+    except Exception:
+        host = ""
+    if not host:
+        host = os.getenv("API_SERVER_HOST", "").strip()
+    if not host or host in ("0.0.0.0", "::", "*"):
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"  # bare IPv6 literal
+    url = f"http://{host}:{port}/api/jobs/{job_id}/run"
+
+    from agent.secret_scope import get_secret
+
+    key = get_secret("API_SERVER_KEY", "") or ""
+
+    resp = None
+    try:
+        import httpx
+
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {key}"},
+            json=({"prompt": extra_prompt} if extra_prompt else {}),
+            timeout=10.0,
+        )
+    except Exception:
+        resp = None
+
+    if resp is not None and resp.status_code < 300:
+        return json.dumps(
+            {
+                "success": True,
+                "forwarded_to_gateway": True,
+                "note": (
+                    "This job targets a relay-fronted platform; it was dispatched "
+                    "to the running gateway, whose live relay adapter owns that "
+                    "delivery."
+                ),
+            },
+            indent=2,
+        )
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                "This job targets a relay-fronted platform, which has no "
+                "standalone sender. Start the gateway — its ticker will "
+                "deliver the job on schedule via the live relay adapter."
+            ),
+        },
+        indent=2,
+    )
+
+
+def _execute_job_now(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Execute a cron job immediately, outside the scheduler tick.
+
+    Atomically claims the job first via ``claim_job_for_fire`` — the same
+    at-most-once CAS the scheduler/external-provider fire path uses — so a
+    concurrently-running gateway ticker cannot also fire it (the claim both
+    blocks a duplicate fire and advances ``next_run_at`` for recurring jobs).
+    If the claim is lost (another fire is in flight), this is a no-op.
+
+    The actual firing is delegated to ``run_one_job`` — the single shared
+    execute→save→deliver→mark body the ticker and external providers use — so
+    failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
+    identical across paths and can't drift.
+
+    Returns {"claimed": bool, "success": bool, "error": str|None}.
+    """
+    job_id = job["id"]
+    claimed_job = None
     try:
         claimed_job = claim_job_for_fire(job_id, manual=True, return_job=True)
         if isinstance(claimed_job, dict):
@@ -1844,10 +1971,16 @@ def cronjob(
             # bg carries a terminal result (claim lost, or inline fallback
             # after pool rejection); None means background delivery is
             # unsupported here — run synchronously as before.
-            exec_result = (
-                bg if bg is not None
-                else _execute_job_now(job, extra_prompt=extra_prompt)
-            )
+            if bg is not None:
+                exec_result = bg
+            else:
+                # Relay-fronted manual run: a standalone process has no live
+                # relay adapter and no standalone sender, so forward to the
+                # running gateway (its live adapter owns that delivery).
+                forwarded = _forward_relay_fronted_run(job, extra_prompt=extra_prompt)
+                if forwarded is not None:
+                    return forwarded
+                exec_result = _execute_job_now(job, extra_prompt=extra_prompt)
             # A claimed direct run advances next_run_at and may race the
             # external one-shot for the same occurrence. If Chronos loses that
             # claim, its consumed fire cannot re-arm itself; reconcile from the
@@ -2003,8 +2136,12 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Coerce string forms ('forever'/'once'/'3') and 0/negative
+                # via the shared chokepoint — a bare `repeat <= 0` here
+                # raised TypeError for string repeats on the UPDATE path
+                # (create was fixed first; same class).
+                from cron.jobs import normalize_repeat_value
+                normalized_repeat = normalize_repeat_value(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
@@ -2076,7 +2213,8 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for create. '30m' (every 30 minutes), 'every 2h', cron syntax '0 9 * * *' (daily 9am), or an ISO timestamp for one-shot ('2026-06-01T09:00:00')."
+                "type": "string",
+                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
             },
             "name": {
                 "type": "string",

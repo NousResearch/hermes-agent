@@ -3879,8 +3879,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
 
     # ── Slash command authorization ─────────────────────────────────────
-    # ``_check_slash_authorization`` mirrors the on_message gates one-for-one. No allowlist =>
-    # fail closed unless allow-all; DISCORD_ALLOWED_CHANNELS alone authorizes per validated channel.
+    # Slash commands (``_run_simple_slash`` and ``_handle_thread_create_slash``)
+    # are a separate Discord interaction surface from regular messages and
+    # historically ran with NO authorization check — bypassing every gate
+    # ``on_message`` enforces (DISCORD_ALLOWED_USERS, DISCORD_ALLOWED_ROLES,
+    # DISCORD_ALLOWED_CHANNELS, DISCORD_IGNORED_CHANNELS). Any guild member
+    # could invoke ``/bg``, ``/restart``, ``/sethome``, etc. as the
+    # operator. ``_check_slash_authorization`` mirrors the on_message gates
+    # one-for-one so the slash surface honors the same trust boundary.
+    #
+    # Deployments with no allowlist env vars fail closed unless an explicit
+    # allow-all opt-in is set. When only ``DISCORD_ALLOWED_CHANNELS`` is
+    # configured, guild traffic is authorized per validated channel context
+    # (not as a user-wide bypass). Slash and on_message both pass the
+    # resolved channel ids into ``_is_allowed_user`` after the channel gate.
 
     def _evaluate_slash_authorization(
         self, interaction: "discord.Interaction",
@@ -4292,12 +4304,215 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not self._client:
             return
         tree = self._client.tree
-        for name, description, args, template, followup in _NATIVE_SLASH_COMMANDS:
-            if template is None:
-                self._register_thread_slash(tree, name, description)
-                continue
-            tree.command(name=name, description=description)(
-                self._slash_proxy(name, args, template, followup, strip=name != "insights")
+
+        @tree.command(name="new", description="Start a new conversation")
+        async def slash_new(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/reset", "New conversation started~")
+
+        @tree.command(name="reset", description="Reset your Hermes session")
+        async def slash_reset(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/reset", "Session reset~")
+
+        @tree.command(name="model", description="Show or change the model")
+        @discord.app_commands.describe(name="Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.")
+        async def slash_model(interaction: discord.Interaction, name: str = ""):
+            await self._run_simple_slash(interaction, f"/model {name}".strip())
+
+        @tree.command(name="reasoning", description="Show/change reasoning effort, or toggle showing it")
+        @discord.app_commands.describe(effort="Pick a level, reset the override, or show/hide reasoning. Leave empty to see current.")
+        @discord.app_commands.choices(effort=[
+            # Effort levels and the reset/show/hide subcommands all arrive on the
+            # gateway's single `/reasoning <arg>` handler. Discord's native UI has
+            # no subcommand affordance for a free-text field (it just funnels the
+            # user into the `effort` box), so expose every accepted value as an
+            # explicit choice. --global persistence stays reachable by typing the
+            # command as plain text.
+            discord.app_commands.Choice(name="none — disable reasoning", value="none"),
+            discord.app_commands.Choice(name="minimal", value="minimal"),
+            discord.app_commands.Choice(name="low", value="low"),
+            discord.app_commands.Choice(name="medium", value="medium"),
+            discord.app_commands.Choice(name="high", value="high"),
+            discord.app_commands.Choice(name="xhigh", value="xhigh"),
+            discord.app_commands.Choice(name="max", value="max"),
+            discord.app_commands.Choice(name="ultra — maximum reasoning", value="ultra"),
+            discord.app_commands.Choice(name="reset — clear this session's override", value="reset"),
+            discord.app_commands.Choice(name="show — reveal reasoning in replies", value="show"),
+            discord.app_commands.Choice(name="hide — hide reasoning from replies", value="hide"),
+        ])
+        async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
+            await self._run_simple_slash(interaction, f"/reasoning {effort}".strip())
+
+        @tree.command(name="personality", description="Set a personality")
+        @discord.app_commands.describe(name="Personality name. Leave empty to list available.")
+        async def slash_personality(interaction: discord.Interaction, name: str = ""):
+            await self._run_simple_slash(interaction, f"/personality {name}".strip())
+
+        @tree.command(name="retry", description="Retry your last message")
+        async def slash_retry(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/retry", "Retrying~")
+
+        @tree.command(name="undo", description="Remove the last exchange")
+        async def slash_undo(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/undo")
+
+        @tree.command(name="status", description="Show Hermes session status")
+        async def slash_status(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/status", "Status sent~")
+
+        @tree.command(name="sethome", description="Set this chat as the home channel")
+        async def slash_sethome(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/sethome")
+
+        @tree.command(name="stop", description="Stop the running Hermes agent")
+        async def slash_stop(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/stop", "Stop requested~")
+
+        @tree.command(name="steer", description="Inject a message after the next tool call (no interrupt)")
+        @discord.app_commands.describe(prompt="Text to inject into the agent's next tool result")
+        async def slash_steer(interaction: discord.Interaction, prompt: str):
+            await self._run_simple_slash(interaction, f"/steer {prompt}".strip())
+
+        @tree.command(name="plan", description="Write a markdown implementation plan (no execution)")
+        @discord.app_commands.describe(task="What to plan. Leave empty to infer from the conversation.")
+        async def slash_plan(interaction: discord.Interaction, task: str = ""):
+            await self._run_simple_slash(interaction, f"/plan {task}".strip())
+
+        @tree.command(name="compress", description="Compress conversation context")
+        async def slash_compress(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/compress")
+
+        @tree.command(name="title", description="Set or show the session title")
+        @discord.app_commands.describe(name="Session title. Leave empty to show current.")
+        async def slash_title(interaction: discord.Interaction, name: str = ""):
+            await self._run_simple_slash(interaction, f"/title {name}".strip())
+
+        @tree.command(name="resume", description="Resume a previously-named session")
+        @discord.app_commands.describe(name="Session name to resume. Leave empty to list sessions.")
+        async def slash_resume(interaction: discord.Interaction, name: str = ""):
+            await self._run_simple_slash(interaction, f"/resume {name}".strip())
+
+        @tree.command(name="usage", description="Show token usage for this session")
+        async def slash_usage(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/usage")
+
+        @tree.command(name="help", description="Show available commands")
+        async def slash_help(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/help")
+
+        @tree.command(name="insights", description="Show usage insights and analytics")
+        @discord.app_commands.describe(days="Number of days to analyze (default: 7)")
+        async def slash_insights(interaction: discord.Interaction, days: int = 7):
+            await self._run_simple_slash(interaction, f"/insights {days}")
+
+        @tree.command(name="reload-mcp", description="Reload MCP servers from config")
+        async def slash_reload_mcp(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/reload-mcp")
+
+        @tree.command(name="reload-skills", description="Re-scan ~/.hermes/skills/ for new or removed skills")
+        async def slash_reload_skills(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/reload-skills")
+
+        @tree.command(name="voice", description="Toggle voice reply mode")
+        @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
+        @discord.app_commands.choices(mode=[
+            # `join` and `channel` both route to _handle_voice_channel_join in
+            # gateway/run.py — expose both in the slash UI so autocomplete
+            # matches what the docs advertise and what the runner accepts when
+            # the command is typed as plain text.
+            discord.app_commands.Choice(name="join — join your voice channel", value="join"),
+            discord.app_commands.Choice(name="channel — join your voice channel (alias)", value="channel"),
+            discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
+            discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
+            discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
+            discord.app_commands.Choice(name="off — text only", value="off"),
+            discord.app_commands.Choice(name="status — show current mode", value="status"),
+        ])
+        async def slash_voice(interaction: discord.Interaction, mode: str = ""):
+            await self._run_simple_slash(interaction, f"/voice {mode}".strip())
+
+        @tree.command(name="update", description="Update Hermes Agent to the latest version")
+        async def slash_update(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/update", "Update initiated~")
+
+        @tree.command(name="restart", description="Gracefully restart the Hermes gateway")
+        async def slash_restart(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/restart", "Restart requested~")
+
+        @tree.command(name="approve", description="Approve a pending dangerous command")
+        @discord.app_commands.describe(scope="Optional: 'all', 'session', 'always', 'all session', 'all always'")
+        async def slash_approve(interaction: discord.Interaction, scope: str = ""):
+            await self._run_simple_slash(interaction, f"/approve {scope}".strip())
+
+        @tree.command(name="deny", description="Deny a pending dangerous command")
+        @discord.app_commands.describe(scope="Optional: 'all' to deny all pending commands")
+        async def slash_deny(interaction: discord.Interaction, scope: str = ""):
+            await self._run_simple_slash(interaction, f"/deny {scope}".strip())
+
+        @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
+        @discord.app_commands.describe(
+            name="Thread name",
+            message="Optional first message to send to Hermes in the thread",
+            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080)",
+        )
+        async def slash_thread(
+            interaction: discord.Interaction,
+            name: str,
+            message: str = "",
+            auto_archive_duration: int = 1440,
+        ):
+            # defer() is performed inside the handler *after* the auth gate
+            # so a rejected invoker can receive an ephemeral rejection.
+            await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
+
+        @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
+        @discord.app_commands.describe(prompt="The prompt to queue")
+        async def slash_queue(interaction: discord.Interaction, prompt: str):
+            await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
+
+        @tree.command(name="bg", description="Run a prompt in a separate background session")
+        @discord.app_commands.describe(prompt="The prompt to run in the background")
+        async def slash_background(interaction: discord.Interaction, prompt: str):
+            await self._run_simple_slash(interaction, f"/bg {prompt}", "Background task started~")
+
+        @tree.command(name="btw", description="Ask a side question about the current conversation")
+        @discord.app_commands.describe(question="The side question to answer without interrupting")
+        async def slash_btw(interaction: discord.Interaction, question: str):
+            await self._run_simple_slash(interaction, f"/btw {question}", "Side question dispatched~")
+
+        # ── Auto-register any gateway-available commands not yet on the tree ──
+        # This ensures new commands added to COMMAND_REGISTRY in
+        # hermes_cli/commands.py automatically appear as Discord slash
+        # commands without needing a manual entry here.
+        def _build_auto_slash_command(_name: str, _description: str, _args_hint: str = ""):
+            """Build a discord.app_commands.Command that proxies to _run_simple_slash."""
+            discord_name = _name.lower()[:32]
+            desc = (_description or f"Run /{_name}")[:100]
+            has_args = bool(_args_hint)
+
+            if has_args:
+                def _make_args_handler(__name: str, __hint: str):
+                    @discord.app_commands.describe(args=f"Arguments: {__hint}"[:100])
+                    async def _handler(interaction: discord.Interaction, args: str = ""):
+                        await self._run_simple_slash(
+                            interaction, f"/{__name} {args}".strip()
+                        )
+                    _handler.__name__ = f"auto_slash_{__name.replace('-', '_')}"
+                    return _handler
+
+                handler = _make_args_handler(_name, _args_hint)
+            else:
+                def _make_simple_handler(__name: str):
+                    async def _handler(interaction: discord.Interaction):
+                        await self._run_simple_slash(interaction, f"/{__name}")
+                    _handler.__name__ = f"auto_slash_{__name.replace('-', '_')}"
+                    return _handler
+
+                handler = _make_simple_handler(_name)
+
+            return discord.app_commands.Command(
+                name=discord_name,
+                description=desc,
+                callback=handler,
             )
         # Auto-register COMMAND_REGISTRY + plugin commands not yet on the tree. Native
         # commands above always survive the 100-command cap; reserve one slot for /skill.

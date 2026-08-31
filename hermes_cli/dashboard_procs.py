@@ -34,26 +34,23 @@ def _append_row(rows: list[tuple[int, str]], pid_text: str, command: str) -> Non
                 timeout=10,
                 errors="ignore",
             )
-            if (
-                result is not None
-                and result.returncode == 0
-                and result.stdout is not None
-            ):
-                current_cmd = ""
-                for line in result.stdout.split("\n"):
-                    line = line.strip()
-                    if line.startswith("CommandLine="):
-                        current_cmd = line[len("CommandLine=") :]
-                    elif line.startswith("ProcessId="):
-                        pid_str = line[len("ProcessId=") :]
-                        if (
-                            any(p in current_cmd for p in patterns)
-                            and int(pid_str) != self_pid
-                        ):
-                            try:
-                                dashboard_processes.append((int(pid_str), current_cmd))
-                            except ValueError:
-                                pass
+            if result is None or result.returncode != 0 or result.stdout is None:
+                return []
+            current_cmd = ""
+            for line in result.stdout.split("\n"):
+                line = line.strip()
+                if line.startswith("CommandLine="):
+                    current_cmd = line[len("CommandLine=") :]
+                elif line.startswith("ProcessId="):
+                    pid_str = line[len("ProcessId=") :]
+                    if (
+                        any(p in current_cmd for p in patterns)
+                        and int(pid_str) != self_pid
+                    ):
+                        try:
+                            dashboard_processes.append((int(pid_str), current_cmd))
+                        except ValueError:
+                            pass
         else:
             # Linux / macOS: scan the process table via ps and match against
             # the same explicit patterns list used on Windows.  Using ps
@@ -64,9 +61,7 @@ def _append_row(rows: list[tuple[int, str]], pid_text: str, command: str) -> Non
             result = subprocess.run(
                 ["ps", "-A", "-o", "pid=,command="],
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                text=True, encoding="utf-8", errors="replace",
                 timeout=10,
             )
             if result.returncode == 0:
@@ -181,7 +176,9 @@ def _normalize_dashboard_cmdline(argv: list[str]) -> tuple[str, ...]:
     return tuple(prefix + list(argv[idx:]))
 
 
-def _profile_key_for_respawn(argv: list[str], hermes_home: str | None = None) -> str:
+def _profile_key_for_respawn(
+    argv: list[str], hermes_home: str | None = None
+) -> str:
     """Stable owner key: ``HERMES_HOME`` when known, else ``--profile`` / ``-p``.
 
     A home ending in ``profiles/<name>`` → ``profile:<name>`` (shares a cap with an explicit
@@ -414,9 +411,7 @@ def _kill_stale_dashboard_processes(
                 result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
+                    text=True, encoding="utf-8", errors="replace",
                     timeout=10,
                 )
                 if result.returncode == 0:
@@ -451,7 +446,6 @@ def _kill_stale_dashboard_processes(
             # On Windows, os.kill(pid, 0) is NOT a no-op. Route through
             # the cross-platform existence check.
             from gateway.status import _pid_exists
-
             for pid in pending:
                 if _pid_exists(pid):
                     still_pending.append(pid)
@@ -486,13 +480,12 @@ def _kill_stale_dashboard_processes(
                 if _m()._try_restart_systemd_service(svc_name, pid_cgroup.get(pid)):
                     restarted_services.append(svc_name)
                 else:
-                    failed_restarts.append((
-                        svc_name,
-                        "systemctl restart returned non-zero",
-                    ))
+                    failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
                     unrecovered.append(pid)
             elif pid in pid_cmdline:
-                respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid)))
+                respawn_candidates.append(
+                    (pid, pid_cmdline[pid], pid_home.get(pid))
+                )
             else:
                 unrecovered.append(pid)
 
@@ -505,9 +498,7 @@ def _kill_stale_dashboard_processes(
         if respawn_cmds:
             failed_cmds = _m()._respawn_dashboard_processes(respawn_cmds)
             if failed_cmds:
-                unrecovered.extend(
-                    p for p in killed if pid_cmdline.get(p) in failed_cmds
-                )
+                unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
 
         if failed_restarts or unrecovered:
             print("  Restart anything not auto-restarted when you're ready:")
@@ -566,7 +557,6 @@ def _norm_exe(path) -> str:
         return str(Path(path).resolve()).lower()
     except (OSError, ValueError):
         return str(path).lower()
-
 
 
 def _detect_concurrent_hermes_instances(
@@ -713,8 +703,8 @@ def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
     (best-effort: a bad record contributes no PID; never raises)."""
     import json
 
-    root = (
-        base_dir if base_dir is not None else (_hermes_home_dir() / _REMOTE_LOCK_SUBDIR)
+    root = base_dir if base_dir is not None else (
+        _hermes_home_dir() / _REMOTE_LOCK_SUBDIR
     )
     owned: set[int] = set()
     try:
@@ -893,3 +883,4 @@ def _reap_orphaned_desktop_local_serves(
     with contextlib.suppress(Exception):
         print(f"⟲ Reaped {len(killed)} orphaned desktop-local serve backend(s) ({reason}): {killed or matched}")
     return {"matched": matched, "killed": killed, "failed": failed}
+

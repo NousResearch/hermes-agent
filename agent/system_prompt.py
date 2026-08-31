@@ -134,18 +134,27 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
     stored_prompt = getattr(agent, "_cached_system_prompt", None)
     if isinstance(stored_prompt, str) and stored_prompt:
         rendered = _restore_plugin_prompt_sections(stored_prompt)
-    else:
-        try:
-            from hermes_cli.plugins import render_system_prompt_sections
-            rendered = tuple(render_system_prompt_sections(_plugin_session_info(agent)))
-        except Exception as exc:
-            rendered = getattr(agent, "_plugin_system_prompt_sections_previous", None)
-            if rendered:
-                logger.warning("Plugin system prompt sections failed to re-render (%s); keeping the previous frozen sections", exc)
-            else:
-                logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
-                rendered = ()
-    agent._plugin_system_prompt_sections_snapshot = rendered
+        setattr(agent, attr, rendered)
+        return rendered
+    try:
+        from hermes_cli.plugins import render_system_prompt_sections
+
+        rendered = tuple(render_system_prompt_sections(_plugin_session_info(agent)))
+    except Exception as exc:
+        # Fail-open: a plugin whose render raises at a rebuild boundary
+        # keeps its last good bytes (stashed by invalidate_system_prompt)
+        # instead of silently vanishing from the prompt.
+        previous = getattr(agent, "_plugin_system_prompt_sections_previous", None)
+        if previous:
+            logger.warning(
+                "Plugin system prompt sections failed to re-render (%s); "
+                "keeping the previous frozen sections", exc,
+            )
+            rendered = previous
+        else:
+            logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
+            rendered = ()
+    setattr(agent, attr, rendered)
     return rendered
 
 
@@ -189,28 +198,45 @@ def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
 
 def _session_start_like(agent: Any, now: Any) -> Any:
     """Best-known conversation start time, or ``now`` as a fallback.
-    ``Conversation started:`` must be byte-stable across rebuilds (compression,
-    resume, fresh gateway turns), so prefer immutable sources in order: the
-    lineage-root session id's embedded stamp (compaction rotates ids, each with
-    its own mint time), the current session id's stamp, ``agent.session_start``,
-    then ``now``.  Stamps are box-local wall-clock: attach that zone first, then
-    convert to ``now``'s zone so the date matches the per-turn clock.
 
-    0. the LINEAGE-ROOT session id's embedded timestamp — compaction can rotate the session id, and each
-    rotated id embeds its OWN mint time, so after months of compactions rung 1 alone would quietly re-birth
-    the conversation at its latest rotation. Walking to the lineage root (same walk as
-    ``_conversation_root_id``) recovers the ORIGINAL birth stamp — a Bot Mode forever-chat keeps knowing
-    when it was first born, across every compaction (maintainer-directed, #98426); 1. the timestamp embedded
-    in ``session_id`` (``YYYYMMDD_HHMMSS_...``) — immutable for the life of the session, so the line is
-    byte-stable across every rebuild boundary (preserving prefix-cache KV); 2. 3. ``now`` (initial/legacy
-    build without either).
+    ``Conversation started:`` must reference when the conversation actually
+    began, not when the system prompt was last (re)built.  The prompt is
+    rebuilt on compression, fresh-agent gateway turns, and resume paths, and
+    stamping build time made the date drift forward across midnight (a chat
+    that started on Wednesday read as "Conversation started: Thursday" after
+    a Thursday-morning resume), contradicting the fresh per-turn time hint.
+    Prefer, in order:
+
+    0. the LINEAGE-ROOT session id's embedded timestamp — compaction can
+       rotate the session id, and each rotated id embeds its OWN mint time,
+       so after months of compactions rung 1 alone would quietly re-birth
+       the conversation at its latest rotation. Walking to the lineage root
+       (same walk as ``_conversation_root_id``) recovers the ORIGINAL
+       birth stamp — a Bot Mode forever-chat keeps knowing when it was
+       first born, across every compaction (maintainer-directed, #98426);
+    1. the timestamp embedded in ``session_id`` (``YYYYMMDD_HHMMSS_...``) —
+       immutable for the life of the session, so the line is byte-stable
+       across every rebuild boundary (preserving prefix-cache KV);
+    2. ``agent.session_start`` (session-creation stamp);
+    3. ``now`` (initial/legacy build without either).
+
+    Session-id and ``session_start`` stamps are recorded in the box's local
+    wall-clock; attach that zone first, then convert to the configured /
+    rendered zone (``now``'s tzinfo) so the displayed date is consistent with
+    the per-turn clock even when the box's TZ differs from the configured one.
     """
     from datetime import datetime
+
+    try:
+        machine_local_tz = datetime.now().astimezone().tzinfo
+    except (ValueError, OSError):
+        machine_local_tz = None
+
     def _to_display_tz(dt: Any) -> Any:
-        if dt.tzinfo is None:
+        if machine_local_tz is not None and dt.tzinfo is None:
             try:
-                dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
-            except (ValueError, OSError):
+                dt = dt.replace(tzinfo=machine_local_tz)
+            except ValueError:
                 pass
         if getattr(now, "tzinfo", None) is not None and dt.tzinfo is not None:
             try:
@@ -218,21 +244,39 @@ def _session_start_like(agent: Any, now: Any) -> Any:
             except (ValueError, OSError):
                 pass
         return dt
+
+    # 0. Lineage root: compaction rotation mints NEW ids with NEW embedded
+    # stamps. Walk to the root id (cached on the agent — the lineage only
+    # grows at compaction, and this function runs at that exact boundary,
+    # so one walk per rebuild is fresh enough) and prefer ITS embedded
+    # timestamp: the conversation's true birth. Fail-open to rung 1.
     session_id = getattr(agent, "session_id", None)
-    db = getattr(agent, "_session_db", None)
+    root_id = None
     try:
-        root_id = db.get_conversation_root(session_id) if db is not None and isinstance(session_id, str) and session_id else None
+        db = getattr(agent, "_session_db", None)
+        if db is not None and isinstance(session_id, str) and session_id:
+            root_id = db.get_conversation_root(session_id)
     except Exception:
         root_id = None
     for candidate in (root_id, session_id):
-        m = re.match(r"^(\d{8})_(\d{6})", candidate) if isinstance(candidate, str) else None
-        if m:
-            try:
-                return _to_display_tz(datetime.strptime(f"{m.group(1)}_{m.group(2)}", "%Y%m%d_%H%M%S"))
-            except ValueError:
-                pass
+        if isinstance(candidate, str) and candidate:
+            m = re.match(r"^(\d{8})_(\d{6})", candidate)
+            if m:
+                try:
+                    embedded = datetime.strptime(
+                        f"{m.group(1)}_{m.group(2)}", "%Y%m%d_%H%M%S"
+                    )
+                    return _to_display_tz(embedded)
+                except ValueError:
+                    pass
+
+    # 2. Session-creation stamp set by the runner.
     session_start = getattr(agent, "session_start", None)
-    return _to_display_tz(session_start) if hasattr(session_start, "astimezone") else now
+    if hasattr(session_start, "astimezone"):
+        return _to_display_tz(session_start)
+
+    # 3. Fallback: build time.
+    return now
 
 
 def _agent_home(agent: Any) -> Optional[Path]:
@@ -338,15 +382,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
-    # Pointer to the hermes-agent skill + docs for user questions about Hermes
-    # itself. When the session has no skill tools (Blank Slate with the skills
-    # toolset off), skill_view() would be a dangling reference — inject the
-    # docs-only variant instead. Toolset is fixed per-session, so cache-safe.
+    # Pointer to the docs (and, when it exists, the hermes-agent skill) for
+    # user questions about Hermes itself. The skill_view() pointer is a
+    # dangling reference in two cases — no skill tools in the toolset
+    # (Blank Slate) OR the hermes-agent skill not installed — so the
+    # variant is chosen AFTER the skills index is built (see below) and
+    # this slot holds its position. Toolset and skill set are fixed
+    # per-session, so cache-safe either way.
     _has_skill_view = "skill_view" in (agent.valid_tool_names or set())
-    stable_parts.append(
-        HERMES_AGENT_HELP_GUIDANCE if _has_skill_view
-        else HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
-    )
+    _help_guidance_slot = len(stable_parts)
+    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -495,6 +540,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         )
     else:
         skills_prompt = ""
+
+    # Resolve the help-guidance variant now that the skills index exists:
+    # the skill-pointer variant requires BOTH skill_view in the toolset AND
+    # the hermes-agent skill actually present in the index (gating on the
+    # rendered index line keeps this a pure string check — no second
+    # filesystem scan, and it inherits the index cache's stability).
+    if _has_skill_view and "- hermes-agent:" in skills_prompt:
+        stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
@@ -701,24 +754,25 @@ def _active_profile_line(agent: Any) -> str:
             "skills/plugins/cron/memories unless the user explicitly directs "
             "you to."
         )
-    # A non-default name is only returned when the resolved home is ALREADY
-    # <root>/profiles/<name>, so the profile home is the session home itself.
-    profile_home = str(_agent_home_path) if _agent_home_path is not None else str(get_hermes_home())
-    # A non-default name is only ever returned when the resolved home is ALREADY <root>/profiles/<name> —
-    # that is exactly how both _profile_name_for_home() and _resolve_active_profile_name() derive it. So the
-    # profile home is the session home itself; appending /profiles/<name> again doubled it (#72894). The
-    # default profile's data sits at the ROOT (get_default_hermes_root()), which in ambient profile mode is
-    # NOT get_hermes_home().
-    default_root = get_default_hermes_root()
-    return (
-        f"Active Hermes profile: {active_profile}. This session reads "
-        f"and writes {profile_home}/. The default "
-        f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
-        f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
-        f"different session run from a different shell. Do NOT modify "
-        f"another profile's skills/plugins/cron/memories unless the user "
-        f"explicitly directs you to."
-    )
+    else:
+        # A non-default name is only ever returned when the resolved home is
+        # ALREADY <root>/profiles/<name> — that is exactly how both
+        # _profile_name_for_home() and _resolve_active_profile_name() derive
+        # it. So the profile home is the session home itself; appending
+        # /profiles/<name> again doubled it (#72894). The default profile's
+        # data sits at the ROOT (get_default_hermes_root()), which in ambient
+        # profile mode is NOT get_hermes_home().
+        profile_home = _home_str
+        default_root = get_default_hermes_root()
+        post_workspace_parts.append(
+            f"Active Hermes profile: {active_profile}. This session reads "
+            f"and writes {profile_home}/. The default "
+            f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
+            f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
+            f"different session run from a different shell. Do NOT modify "
+            f"another profile's skills/plugins/cron/memories unless the user "
+            f"explicitly directs you to."
+        )
 
 
 def platform_hint(agent: Any) -> str:
@@ -827,20 +881,58 @@ def _timestamp_line(agent: Any) -> str:
     rebuild days (the cache prefix is already invalidated at that boundary)."""
     from hermes_time import get_timezone as _hermes_tz, now as _hermes_now
     now = _hermes_now()
-    _bits = _zone_bits(now, _hermes_tz())
-    _zone_suffix = f" ({', '.join(_bits)})" if _bits else ""
+    # Date-only (not minute-precision) so the system prompt is byte-stable
+    # for the full day.  Minute-precision changes invalidate prefix-cache KV
+    # on every rebuild path (compression boundary, fresh-agent gateway turns,
+    # session resume without a stored prompt).  The model can still query the
+    # exact wall-clock time via tools when it actually needs it.
+    # Credit: @iamfoz (PR #20451).
+    #
+    # Zone and UTC offset ARE included: tools that accept instants reject naive
+    # datetimes and require an explicit offset, and with the bare date the model
+    # has to infer EST vs EDT on its own (a coin-flip near a DST boundary, and a
+    # wrong guess silently writes the record onto the wrong day).  Both values
+    # are constant for the whole day -- they shift only at a DST transition --
+    # so the byte-stability the comment above depends on is preserved.
+    # ``get_timezone()`` returns None when no timezone is configured, in which
+    # case we fall back to the abbreviation of the server-local (still tz-aware)
+    # time.
+    _tz = _hermes_tz()
+    _zone_bits = []
+    _iana = getattr(_tz, "key", None)
+    if _iana:
+        _zone_bits.append(_iana)
+    _abbrev = now.strftime("%Z")
+    if _abbrev and _abbrev != _iana:
+        _zone_bits.append(_abbrev)
+    _offset = now.strftime("%z")
+    if _offset:  # '-0400' -> 'UTC-04:00'
+        _zone_bits.append(f"UTC{_offset[:3]}:{_offset[3:]}")
+    _zone_suffix = f" ({', '.join(_zone_bits)})" if _zone_bits else ""
     _start = _session_start_like(agent, now)
-    timestamp_line = f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
-    # Second line (maintainer design, salvaging #96224's anchor): long-lived sessions — Bot Mode
-    # forever-chats, messenger channels people never close — span many days and many compactions. A lone
-    # birth date leads the model to believe it is still living in that old day. The prompt is rebuilt at
-    # every compaction boundary, so stamp the rebuild day too: 'started' stays anchored and byte-stable, 'as
-    # of' refreshes exactly when the cache prefix is already being invalidated (compaction), so the added
-    # line costs no extra cache churn. Same-day sessions skip the second line entirely — nothing to correct,
-    # and the single-line shape stays byte-identical for the day (prefix-cache safe).
+    timestamp_line = (
+        f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+    )
+    # Second line (maintainer design, salvaging #96224's anchor): long-lived
+    # sessions — Bot Mode forever-chats, messenger channels people never
+    # close — span many days and many compactions. A lone birth date leads
+    # the model to believe it is still living in that old day. The prompt is
+    # rebuilt at every compaction boundary, so stamp the rebuild day too:
+    # 'started' stays anchored and byte-stable, 'as of' refreshes exactly
+    # when the cache prefix is already being invalidated (compaction), so
+    # the added line costs no extra cache churn. Same-day sessions skip the
+    # second line entirely — nothing to correct, and the single-line shape
+    # stays byte-identical for the day (prefix-cache safe).
     if now.strftime("%Y%m%d") != _start.strftime("%Y%m%d"):
-        timestamp_line += (f"\nToday's date (as of the last context rebuild): {now.strftime('%A, %B %d, %Y')} "
-                           "— trust this over the start date for what day it is now; query tools for exact time.")
+        timestamp_line += (
+            f"\nToday's date (as of the last context rebuild): "
+            f"{now.strftime('%A, %B %d, %Y')} — trust this over the start "
+            f"date for what day it is now; query tools for exact time."
+        )
+    # Bot Chat sessions are effectively eternal — a birth date frozen in the
+    # prompt becomes confidently-wrong misinformation within days. Timeless
+    # prompts keep the identity lines but drop the date (the timezone still
+    # rides workspace context; live time comes from the terminal tool).
     if getattr(agent, "_bot_chat_timeless_prompt", False):
         timestamp_line = f"Timezone: {', '.join(_bits)}" if _bits else ""
     trailer = (("Session ID", agent.session_id if agent.pass_session_id else None), ("Model", agent.model),
@@ -1073,18 +1165,22 @@ def invalidate_system_prompt(agent: Any) -> None:
     disk and clear the frozen plugin snapshot (previous bytes stashed as the
     fail-open fallback) so plugins re-render at the same boundary.
 
-    Called after context compression events. Also reloads memory from disk so the rebuilt prompt captures
-    any writes from this session, and clears the frozen plugin-section snapshot so plugins re-render at the
-    same boundary (maintainer-directed, #95681 arc): a plugin section is just another prompt block carrying
-    state — freezing it while memory, skills, and guidance refresh would recreate the stale-block disease
-    inside plugin-land. The previous bytes are stashed so a plugin whose render RAISES falls back to its
-    last good section instead of vanishing (fail-open guard, not a freeze).
+    Called after context compression events. Also reloads memory from disk
+    so the rebuilt prompt captures any writes from this session, and clears
+    the frozen plugin-section snapshot so plugins re-render at the same
+    boundary (maintainer-directed, #95681 arc): a plugin section is just
+    another prompt block carrying state — freezing it while memory, skills,
+    and guidance refresh would recreate the stale-block disease inside
+    plugin-land. The previous bytes are stashed so a plugin whose render
+    RAISES falls back to its last good section instead of vanishing
+    (fail-open guard, not a freeze).
     """
     agent._cached_system_prompt = None
     agent._cached_system_prompt_static = None
-    if hasattr(agent, "_plugin_system_prompt_sections_snapshot"):
-        agent._plugin_system_prompt_sections_previous = agent._plugin_system_prompt_sections_snapshot
-        del agent._plugin_system_prompt_sections_snapshot
+    _snapshot_attr = "_plugin_system_prompt_sections_snapshot"
+    if hasattr(agent, _snapshot_attr):
+        agent._plugin_system_prompt_sections_previous = getattr(agent, _snapshot_attr)
+        delattr(agent, _snapshot_attr)
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 

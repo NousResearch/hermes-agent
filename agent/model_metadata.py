@@ -365,6 +365,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
     "qwen3.8-max": 1_000_000,     # 1M context (OpenRouter & Nous portal, verified 2026-08-03)
+    "qwen3.8-flash": 1_000_000,   # 1M context (OpenRouter & Nous portal, verified 2026-08-28)
     "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
     "qwen3.7-plus": 1048576,      # 1M context (DashScope/Alibaba)
     "qwen3-coder-plus": 1000000,  # 1M context
@@ -433,6 +434,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "solar-pro3": 131072,
     "solar-pro2": 65536,
     "solar-mini": 32768,
+    # Tencent — Hy4 Preview (Hunyuan), 1M context window per OpenRouter
+    # live metadata (2026-08-28). Longest-key-first so this wins over any
+    # future shorter hy* catch-all.
+    "hy4-preview": 1_048_576,
     # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
     # OpenRouter live metadata reports 262144 (256 × 1024); align the
     # static fallback so cache and offline both agree (issue #22268).
@@ -523,10 +528,16 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "inference-api.nousresearch.com": "nous", "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot", ".githubcopilot.com": "copilot", "models.github.ai": "copilot",
     "models.inference.ai.azure.com": "copilot",
-    "api.fireworks.ai": "fireworks", "opencode.ai": "opencode-go", "api.x.ai": "xai",
-    "integrate.api.nvidia.com": "nvidia", "api.xiaomimimo.com": "xiaomi", "xiaomimimo.com": "xiaomi",
-    "api.gmi-serving.com": "gmi", "api.novita.ai": "novita",
-    "tokenhub.tencentmaas.com": "tencent-tokenhub", "api.lkeap.cloud.tencent.com": "tencent-tokenplan",
+    "api.fireworks.ai": "fireworks",
+    "opencode.ai": "opencode-go",
+    "api.x.ai": "xai",
+    "integrate.api.nvidia.com": "nvidia",
+    "api.xiaomimimo.com": "xiaomi",
+    "xiaomimimo.com": "xiaomi",
+    "api.gmi-serving.com": "gmi",
+    "api.novita.ai": "novita",
+    "tokenhub.tencentmaas.com": "tencent-tokenhub",
+    "api.lkeap.cloud.tencent.com": "tencent-tokenplan",
     "ollama.com": "ollama-cloud",
 }
 
@@ -2593,54 +2604,104 @@ def estimate_tokens_rough(text: str) -> int:
     return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // CHARS_PER_TOKEN)
 
 
-def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:
-    """Rough token estimate for a message list (pre-flight only). Images cost the per-image price
-    learned from provider usage (``agent.image_token_cost``; flat default before calibration)
-    rather than their base64 length. ``charge_stale_thinking=False`` mirrors the tail-budget
-    walk (``context_compressor._estimate_msg_budget_tokens``): on non-echo routes stale reasoning
-    rides the wire only for the NEWEST assistant turn, so excluding it keeps the compaction TRIGGER
-    in the same size class as the walk — otherwise reasoning-heavy sessions fire preflight forever."""
-    from agent.image_token_cost import current_image_token_cost
+def estimate_messages_tokens_rough(
+    messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True,
+) -> int:
+    """Rough token estimate for a message list (pre-flight only).
 
-    image_cost = current_image_token_cost()
+    Image parts (base64 PNG/JPEG) are counted as a flat ~1500 tokens per
+    image — the Anthropic pricing model — instead of counting raw base64
+    character length. Without this, a single ~1MB screenshot would be
+    estimated at ~250K tokens and trigger premature context compression.
+
+    ``charge_stale_thinking`` mirrors the tail-budget walk's policy
+    (``context_compressor._estimate_msg_budget_tokens``, #73624): generic
+    thinking text (``reasoning`` / ``reasoning_content``) rides the wire for
+    at most the NEWEST assistant turn on routes that do not echo stale
+    reasoning back (Codex Responses ships encrypted ``codex_reasoning_items``
+    instead of the text keys; strict chat-completions providers strip or
+    one-space-pad the field). Passing ``False`` excludes those keys on every
+    assistant turn but the newest, so the compaction TRIGGER sees the same
+    size class as the tail-protection walk — the disagreement made
+    reasoning-heavy codex_responses sessions fire preflight forever while the
+    walk found nothing to compact (#84371 dead loop). Default ``True``
+    preserves the conservative full charge for callers without route context.
+
+    Per-message results are memoized (see ``_estimate_message_tokens_cached``)
+    keyed on a deep *identity fingerprint* of the message, so re-walking a
+    long history every iteration only pays for messages whose object graph
+    actually changed. The memo is exact: equal fingerprints imply identical
+    leaf objects and structure, hence an identical estimate.
+    """
+    _IMAGE_TOKEN_COST = 1500
     if not charge_stale_thinking:
         messages = _strip_stale_thinking_for_estimate(messages)
-    return sum(_estimate_message_tokens_cached(msg, image_cost) for msg in messages)
+    total = 0
+    for msg in messages:
+        total += _estimate_message_tokens_cached(msg, _IMAGE_TOKEN_COST)
+    return total
 
 
-# Thinking-text keys replayed for at most the newest assistant turn on non-echo routes — must stay
-# in lockstep with ``context_compressor._NEWEST_TURN_ONLY_BUDGET_KEYS``.
+# Generic thinking-text keys replayed for at most the newest assistant turn
+# on non-echo routes — must stay in lockstep with
+# ``context_compressor._NEWEST_TURN_ONLY_BUDGET_KEYS``.
 _STALE_THINKING_ESTIMATE_KEYS = ("reasoning", "reasoning_content")
 
 
-def _strip_stale_thinking_for_estimate(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Copy of ``messages`` with stale thinking keys removed (newest kept). Shallow stripped copies
-    share the original value objects, so the per-message memo still hits for the stripped shape."""
-    def _is_assistant(m: Any) -> bool:
-        return isinstance(m, dict) and m.get("role") == "assistant"
-    newest = next((i for i in range(len(messages) - 1, -1, -1) if _is_assistant(messages[i])), -1)
-    return [
-        {k: v for k, v in m.items() if k not in _STALE_THINKING_ESTIMATE_KEYS}
-        if i != newest and _is_assistant(m) and any(m.get(k) for k in _STALE_THINKING_ESTIMATE_KEYS) else m
-        for i, m in enumerate(messages)
-    ]
+def _strip_stale_thinking_for_estimate(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Copy of ``messages`` with stale thinking keys removed (newest kept).
+
+    Shallow stripped copies share the original value objects, so the
+    per-message memo still hits for the stripped shape on subsequent walks.
+    """
+    newest = -1
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            newest = i
+            break
+    out: List[Dict[str, Any]] = []
+    for i, m in enumerate(messages):
+        if (
+            i != newest
+            and isinstance(m, dict)
+            and m.get("role") == "assistant"
+            and any(m.get(k) for k in _STALE_THINKING_ESTIMATE_KEYS)
+        ):
+            m = {
+                k: v for k, v in m.items()
+                if k not in _STALE_THINKING_ESTIMATE_KEYS
+            }
+        out.append(m)
+    return out
 
 
-# Per-message token-estimate memo keyed by an exact value fingerprint: strings by ``id()`` AND
-# pinned (strong ref in the entry, so the id can't be reused and immutability makes id-equality
-# value-equality); numbers/bools/None by value; dicts/lists structurally in key order (``str(shadow)``
-# depends on it); any other type aborts the memo. api_messages shallow-copies dicts but shares the strings.
-# ``estimate_messages_tokens_rough`` is called on the full history every loop iteration (conversation_loop
-# preflight), repeatedly during compaction telemetry, and inside an O(n^2) shrink loop in moa_loop. The
-# per-message helpers are pure functions of the message's value, so a memo keyed on a fingerprint that
-# uniquely determines the value is exactly equivalent. Fingerprint design (soundness argument): While the
-# entry lives, that id cannot be reused by another object, so id-equality implies object-equality — strings
-# are immutable, so value-equality too (no #50372-style aliasing). Equal fingerprints therefore imply
-# deep-equal messages built from identical immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical
-# estimate. Because the api_messages build shallow-copies history dicts each iteration, the copies share the
-# same content strings — so unchanged history messages hit the memo even though the outer dicts are fresh
-# objects every turn.
-_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int, int]] = {}  # pins, text tokens, image count
+# --- Per-message token-estimate memo -------------------------------------
+#
+# ``estimate_messages_tokens_rough`` is called on the full history every
+# loop iteration (conversation_loop preflight), repeatedly during compaction
+# telemetry, and inside an O(n^2) shrink loop in moa_loop. The per-message
+# helpers are pure functions of the message's value, so a memo keyed on a
+# fingerprint that uniquely determines the value is exactly equivalent.
+#
+# Fingerprint design (soundness argument):
+#   * strings are fingerprinted by ``id()`` AND pinned (a strong reference is
+#     stored in the cache entry). While the entry lives, that id cannot be
+#     reused by another object, so id-equality implies object-equality —
+#     strings are immutable, so value-equality too (no #50372-style aliasing).
+#   * ints/floats/bools/None are fingerprinted by value.
+#   * dicts/lists recurse structurally, preserving key order — ``str(shadow)``
+#     depends on insertion order, so order is part of the key.
+#   * any other type aborts the memo and falls through to a direct compute.
+# Equal fingerprints therefore imply deep-equal messages built from identical
+# immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical estimate.
+#
+# Because the api_messages build shallow-copies history dicts each iteration,
+# the copies share the same content strings — so unchanged history messages
+# hit the memo even though the outer dicts are fresh objects every turn.
+_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int]] = {}
 _MSG_TOKENS_CACHE_MAX = 4096
 
 
@@ -2728,12 +2789,28 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
       checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
       prices them, and the usage anchor carries that price forward."""
     sidecar = msg.get("api_content")
-    sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
+    sidecar_wins = (
+        isinstance(sidecar, str)
+        and bool(sidecar)
+        and msg.get("role") in ("user", "assistant")
+    )
+    # The internal ``reasoning`` key never ships: every request build pops it
+    # after (optionally) promoting it into ``reasoning_content`` (see
+    # ``apply_reasoning_content_policy`` / conversation_loop's api_messages
+    # build). When a message carries BOTH keys — the normal shape on
+    # reasoning-echo providers, which pin ``reasoning_content`` at creation
+    # time while ``reasoning`` holds the same text for trajectory storage —
+    # counting both charged the same thinking twice and inflated the rough
+    # estimate by up to +53% against provider-reported prompt_tokens
+    # (#84371 comment data, llama.cpp/Qwen). Keep ``reasoning`` only as the
+    # promotion proxy when no ``reasoning_content`` exists to displace it.
     _rc = msg.get("reasoning_content")
     drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
         if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
+            continue
+        if k == "reasoning" and drop_reasoning_dup:
             continue
         if k == "api_content":
             if sidecar_wins:
@@ -2763,22 +2840,135 @@ def _estimate_message_tokens_without_images(msg: Dict[str, Any]) -> int:
 
 
 def estimate_request_tokens_rough(
-    messages: List[Dict[str, Any]], *, system_prompt: str = "", tools: Optional[List[Dict[str, Any]]] = None, charge_stale_thinking: bool = True,
+    messages: List[Dict[str, Any]],
+    *,
+    system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+    charge_stale_thinking: bool = True,
 ) -> int:
-    """Rough token estimate for a full request: system prompt + messages + tool schemas (50+ tools
-    add 20-30K on their own). ``charge_stale_thinking`` is forwarded — pass False when the route
-    provably strips stale thinking (``message_sanitization.stale_thinking_reaches_wire``)."""
-    total = estimate_tokens_rough(system_prompt) if system_prompt else 0
+    """Rough token estimate for a full chat-completions request.
+
+    Includes the major payload buckets Hermes sends to providers:
+    system prompt, conversation messages, and tool schemas.  With 50+
+    tools enabled, schemas alone can add 20-30K tokens — a significant
+    blind spot when only counting messages. Image content is counted
+    at a flat per-image cost (see estimate_messages_tokens_rough).
+
+    ``charge_stale_thinking`` is forwarded to
+    ``estimate_messages_tokens_rough`` — pass ``False`` when the active
+    route provably strips stale assistant thinking at send time (see
+    ``message_sanitization.stale_thinking_reaches_wire``, #84371).
+    """
+    total = 0
+    if system_prompt:
+        total += estimate_tokens_rough(system_prompt)
     if messages:
-        # Positional call: test seams and plugin engines monkeypatch estimate_messages_tokens_rough with (messages)-only signatures.
-        total += estimate_messages_tokens_rough(messages) if charge_stale_thinking else estimate_messages_tokens_rough(messages, charge_stale_thinking=False)
+        if charge_stale_thinking:
+            # Positional-compatible call: test seams and plugin engines
+            # monkeypatch estimate_messages_tokens_rough with (messages)-only
+            # signatures; only the route-aware False path needs the kwarg.
+            total += estimate_messages_tokens_rough(messages)
+        else:
+            total += estimate_messages_tokens_rough(
+                messages, charge_stale_thinking=False
+            )
     if tools:
         total += _estimate_tools_tokens_rough(tools)
     return total
 
 
-# Keyed by ``id(tools)``; bounded, oldest-first eviction. Repeated ``str(tools)`` on
-# large schemas stalls GUI event loops under GIL pressure.
+# --- Usage-anchored context accounting ------------------------------------
+#
+# Provider responses carry ``usage.prompt_tokens`` — EXACT ground truth for
+# everything sent on that request (system prompt + tool schemas + full
+# history). Re-estimating the whole conversation with chars/4 heuristics on
+# every context-size check compounds error over the entire transcript (flat
+# 1500-token images, CJK density, provider replay blobs). Anchoring on the
+# last real usage shrinks the estimation window to the messages appended
+# since that response; the error self-corrects at every new response.
+#
+# The anchor is a plain dict so callers can store it anywhere:
+#   prompt_tokens / completion_tokens — provider-reported usage at capture.
+#   base_count — len(messages) at capture time (the assistant reply for the
+#       captured response is NOT yet appended at the capture site; when it
+#       appears at index base_count its cost is covered by completion_tokens,
+#       so the delta walk skips it).
+#   base_last_id / base_last_role — identity fingerprint of the last message
+#       at capture time. Compaction, splices, and history rewrites shift or
+#       replace that element, failing the check and falling back to full
+#       estimation. Belt-and-braces on top of explicit invalidation.
+
+
+def capture_usage_anchor(
+    prompt_tokens: Any,
+    completion_tokens: Any,
+    messages: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Build a usage anchor from provider-reported usage, or None."""
+    try:
+        pt = int(prompt_tokens or 0)
+        ct = int(completion_tokens or 0)
+    except (TypeError, ValueError):
+        return None
+    if pt <= 0 or not isinstance(messages, list):
+        # No usable usage (some OpenAI-compatible endpoints omit it) — the
+        # caller keeps whatever anchor it had, or stays on pure estimation.
+        return None
+    base_count = len(messages)
+    last = messages[-1] if base_count else None
+    return {
+        "prompt_tokens": pt,
+        "completion_tokens": max(0, ct),
+        "base_count": base_count,
+        "base_last_id": id(last) if last is not None else None,
+        "base_last_role": last.get("role") if isinstance(last, dict) else None,
+    }
+
+
+def anchored_context_tokens(
+    messages: List[Dict[str, Any]],
+    anchor: Optional[Dict[str, Any]],
+) -> Optional[int]:
+    """Context size anchored on the last provider-reported usage.
+
+    Returns ``prompt_tokens + completion_tokens`` of the anchored response
+    plus a rough estimate of ONLY the messages appended since — or ``None``
+    when the anchor is missing or stale (caller falls back to full
+    estimation). The assistant reply produced by the anchored response
+    (first appended message after the base) is skipped: its cost is already
+    counted exactly by ``completion_tokens``.
+    """
+    if not isinstance(anchor, dict) or not isinstance(messages, list):
+        return None
+    base_count = anchor.get("base_count") or 0
+    if base_count <= 0 or len(messages) < base_count:
+        return None
+    base_msg = messages[base_count - 1]
+    if id(base_msg) != anchor.get("base_last_id"):
+        return None
+    base_role = base_msg.get("role") if isinstance(base_msg, dict) else None
+    if base_role != anchor.get("base_last_role"):
+        return None
+    total = int(anchor["prompt_tokens"]) + int(anchor.get("completion_tokens") or 0)
+    delta = messages[base_count:]
+    if delta:
+        first = delta[0]
+        if isinstance(first, dict) and first.get("role") == "assistant":
+            # The anchored response's own reply — already counted exactly by
+            # completion_tokens above.
+            delta = delta[1:]
+    if delta:
+        total += estimate_messages_tokens_rough(delta)
+    return total
+
+
+# NOTE: tool schemas can be large. Avoid repeated `str(tools)` conversions,
+# which are CPU-heavy and can stall GUI event loops under GIL pressure.
+#
+# Keyed by ``id(tools)``. A long-lived gateway/desktop backend builds many
+# transient tool lists over its lifetime, so the cache is bounded and evicts
+# oldest-first (insertion-ordered dict) once it exceeds the cap. The cap is
+# generous relative to how rarely toolsets are rebuilt within a process.
 _TOOLS_TOKENS_CACHE: dict[int, Tuple[int, str, str, int]] = {}
 _TOOLS_TOKENS_CACHE_MAX = 256
 

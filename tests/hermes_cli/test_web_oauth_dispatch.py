@@ -267,6 +267,48 @@ def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
         _web_server_oauth._oauth_sessions.pop(session_id, None)
 
 
+def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
+    tmp_path, monkeypatch
+):
+    """A named-profile OAuth session must reject default-profile retargeting."""
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "profiles" / "worker").mkdir(parents=True)
+    session_id, _session = ws._new_oauth_session(
+        "xai-oauth", "device_code", profile="worker"
+    )
+    try:
+        poll_resp = client.get(
+            f"/api/providers/oauth/xai-oauth/poll/{session_id}",
+            headers=HEADERS,
+        )
+        assert poll_resp.status_code == 400, poll_resp.text
+        assert "profile" in poll_resp.text.lower()
+
+        cancel_resp = client.delete(
+            f"/api/providers/oauth/sessions/{session_id}",
+            headers=HEADERS,
+        )
+        assert cancel_resp.status_code == 400, cancel_resp.text
+        assert "profile" in cancel_resp.text.lower()
+        assert session_id in ws._oauth_sessions
+
+        correct_poll = client.get(
+            f"/api/providers/oauth/xai-oauth/poll/{session_id}?profile=worker",
+            headers=HEADERS,
+        )
+        assert correct_poll.status_code == 200, correct_poll.text
+
+        correct_cancel = client.delete(
+            f"/api/providers/oauth/sessions/{session_id}?profile=worker",
+            headers=HEADERS,
+        )
+        assert correct_cancel.status_code == 200, correct_cancel.text
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
 
 
 def test_codex_dashboard_start_rewords_device_authorization_error(monkeypatch):
@@ -603,7 +645,7 @@ def test_anthropic_dashboard_oauth_is_removed_and_external():
     assert providers["anthropic"]["flow"] == "external"
     assert providers["anthropic"]["cli_command"] == "hermes auth add anthropic"
 
-    before_sessions = set(_web_server_oauth._oauth_sessions)
+    before_sessions = set(ws._oauth_sessions)
     start_resp = client.post(
         "/api/providers/oauth/anthropic/start",
         headers=HEADERS,
@@ -619,7 +661,7 @@ def test_anthropic_dashboard_oauth_is_removed_and_external():
     )
     assert submit_resp.status_code == 400, submit_resp.text
     assert "not supported" in submit_resp.text
-    assert set(_web_server_oauth._oauth_sessions) == before_sessions
+    assert set(ws._oauth_sessions) == before_sessions
 
 
 def test_accounts_offers_every_oauth_provider_from_catalog():

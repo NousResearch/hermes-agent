@@ -117,8 +117,8 @@ export const en: Translations = {
     revealExplorer: 'Reveal in File Explorer',
     revealFileManager: 'Open containing folder',
     revealInSidebar: 'Reveal in filetree',
-    copyPath: 'Copy Path',
-    copyRelativePath: 'Copy Relative Path',
+    copyPath: 'Copy path',
+    copyRelativePath: 'Copy relative path',
     download: 'Download',
     downloadSaved: 'Saved',
     downloadFailed: 'Download failed',
@@ -788,11 +788,10 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'Occasional hints from the app and Hermes. Each tip appears once. Turns off automatically after your first 30 days; you can turn it back on.',
-      tipsReset: (count: number) => `Show ${count} ${count === 1 ? 'tip' : 'tips'} again`,
+        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Closing one retires it for good.',
+      tipsReset: (count: number) => `Bring back ${count} closed ${count === 1 ? 'tip' : 'tips'}`,
       toursTitle: 'Guided Tours',
-      toursDesc:
-        'Let Hermes spotlight each step as it guides you through the app. Turns off automatically after your first 30 days; you can turn it back on.',
+      toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
       vibeHeartsTitle: 'Vibe Hearts',
@@ -1617,13 +1616,7 @@ export const en: Translations = {
         selectedTitle: 'Backend selected',
         selectedMessage: backend => `Terminal commands now run via ${backend}. Applies to new sessions.`,
         failedSelect: backend => `Failed to select ${backend}`,
-        needsSetupHint: 'You can select this option now — commands will fail until setup is complete.',
-        unavailableTitle: 'Terminal commands are unavailable',
-        unavailableMessage: backend =>
-          `Hermes can't run shell commands right now: ${backend} isn't ready. Switch to Local, or finish setting up ${backend} and try again.`,
-        openBackendSettings: 'Open terminal settings',
-        useLocal: 'Use Local',
-        switchedToLocal: 'Terminal commands now run locally. Applies to new sessions.'
+        needsSetupHint: 'You can select this backend now — commands will fail until setup is complete.'
       },
       browserRealProfile: {
         label: 'Use My Real Browser Profile',
@@ -1633,17 +1626,7 @@ export const en: Translations = {
         enabledMessage: 'New sessions will browse with a snapshot of your default browser profile.',
         disabledTitle: 'Real-profile browsing off',
         disabledMessage: 'The profile snapshot will be deleted; new sessions use a clean browser.',
-        failedSave: 'Could not save the real-profile setting',
-        prompt: {
-          title: 'Stay signed in to your sites',
-          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in.',
-          bulletSnapshot: 'Cookies and logins are copied into a managed snapshot.',
-          bulletLiveProfile: 'Your live browser profile is never opened directly.',
-          bulletLocal: 'Nothing leaves this computer.',
-          dontShowAgain: "Don't show again",
-          notNow: 'Not now',
-          enable: 'Use my profile'
-        }
+        failedSave: 'Could not save the real-profile setting'
       }
     }
   },
@@ -4271,6 +4254,52 @@ export const en: Translations = {
         title: 'This machine can run models locally',
         text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',
         action: 'Set it up'
+      },
+      'right-pane': {
+        title: 'The working pane',
+        text: 'Files, terminal, review and the in-app browser share the right side.'
+      }
+    }
+  },
+
+  tips: {
+    close: "Don't show this tip again",
+    items: {
+      'new-session': {
+        title: 'Start fresh',
+        text: 'A new chat gets its own context, terminal and working directory.'
+      },
+      skills: {
+        title: 'Teach it once',
+        text: 'Skills are folders of instructions Hermes loads when the work calls for them.'
+      },
+      messaging: {
+        title: 'Hermes away from your desk',
+        text: 'Connect Telegram, Discord, Slack and more — same agent, same memory.'
+      },
+      artifacts: {
+        title: 'Everything Hermes made',
+        text: 'Images, files and links from every session, indexed in one place.'
+      },
+      cron: {
+        title: 'Work that runs itself',
+        text: 'Schedule a prompt hourly, nightly, or on a cron expression.'
+      },
+      'command-palette': {
+        title: 'One box for everything',
+        text: 'Sessions, settings, skills and commands all answer to the palette.'
+      },
+      profiles: {
+        title: 'Profiles are separate',
+        text: 'Each one is its own Hermes — own keys, own memory, own sessions.'
+      },
+      'composer-mentions': {
+        title: 'Attach and command',
+        text: 'Type @ to bring a file into the conversation, / to run a command.'
+      },
+      'model-switch': {
+        title: 'Switch models mid-thread',
+        text: 'The model name is a button. Change it whenever the work changes shape.'
       },
       'right-pane': {
         title: 'The working pane',

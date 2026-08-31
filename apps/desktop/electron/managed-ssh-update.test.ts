@@ -30,7 +30,6 @@ import { createBootstrapCoordinator } from './ssh-bootstrap-coordinator'
 
 const CORRELATION = '12345678-1234-4678-9234-567812345678'
 const exec = promisify(execCallback)
-const posixTest = process.platform === 'win32' ? test.skip : test
 
 function observation(over: Record<string, unknown> = {}) {
   return JSON.stringify({
@@ -281,7 +280,7 @@ test('POSIX managed launcher is detached, correlation-scoped, and never publishe
   assert.match(command, /while \[ ! -e/)
 })
 
-posixTest('POSIX managed launcher executes the updater command and atomically publishes its status', async () => {
+test('POSIX managed launcher executes the updater command and atomically publishes its status', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
 
   try {
@@ -360,7 +359,7 @@ test('remote observation rejects a receipt for another correlation', () => {
   )
 })
 
-posixTest('POSIX observer reads the exact correlation receipt and terminal marker from disk', async () => {
+test('POSIX observer reads the exact correlation receipt and terminal marker from disk', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-update-'))
 
   try {
@@ -402,7 +401,7 @@ posixTest('POSIX observer reads the exact correlation receipt and terminal marke
   }
 })
 
-posixTest('managed observer unwraps a named profile home for the install-wide marker', async () => {
+test('managed observer unwraps a named profile home for the install-wide marker', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))
   const profileHome = path.join(root, 'profiles', 'research')
 

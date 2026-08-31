@@ -167,11 +167,9 @@ function Start-UiServer([string]$HtmlPath) {
 
         $rs = [runspacefactory]::CreateRunspace()
         $rs.Open()
-        $ready = [System.Threading.ManualResetEventSlim]::new($false)
         $rs.SessionStateProxy.SetVariable("Listener", $listener)
         $rs.SessionStateProxy.SetVariable("State", $script:UiState)
         $rs.SessionStateProxy.SetVariable("HtmlBytes", [System.IO.File]::ReadAllBytes($HtmlPath))
-        $rs.SessionStateProxy.SetVariable("Ready", $ready)
 
         $ps = [powershell]::Create()
         $ps.Runspace = $rs
@@ -183,11 +181,6 @@ function Start-UiServer([string]$HtmlPath) {
                 $Stream.Write($Body, 0, $Body.Length)
                 $Stream.Flush()
             }
-            # Signal only after this dedicated runspace is executing. Without
-            # the handshake the caller can publish the URL while BeginInvoke
-            # is still queued on a loaded Windows runner, leaving /progress
-            # connected but unanswered for several seconds.
-            $Ready.Set()
             while ($true) {
                 try { $client = $Listener.AcceptTcpClient() } catch { break }  # Stop() ends the loop
                 try {
@@ -229,16 +222,9 @@ function Start-UiServer([string]$HtmlPath) {
         })
         [void]$ps.BeginInvoke()
 
-        if (-not $ready.Wait([TimeSpan]::FromSeconds(30))) {
-            throw "Timed out starting the desktop update progress server."
-        }
-
-        return @{ Listener = $listener; Runspace = $rs; PowerShell = $ps; Ready = $ready; Port = $port; BrowserProc = $null; Profile = $null }
+        return @{ Listener = $listener; Runspace = $rs; PowerShell = $ps; Port = $port; BrowserProc = $null; Profile = $null }
     } catch {
         try { if ($listener) { $listener.Stop() } } catch {}
-        try { if ($ps) { $ps.Stop(); $ps.Dispose() } } catch {}
-        try { if ($rs) { $rs.Close(); $rs.Dispose() } } catch {}
-        try { if ($ready) { $ready.Dispose() } } catch {}
         return $null
     }
 }
@@ -248,7 +234,6 @@ function Stop-UiServer([switch]$LeaveWindow) {
     try { $script:UiServer.Listener.Stop() } catch {}
     try { $script:UiServer.PowerShell.Stop() } catch {}
     try { $script:UiServer.Runspace.Close() } catch {}
-    try { if ($script:UiServer.Ready) { $script:UiServer.Ready.Dispose() } } catch {}
     # On success the window closes itself out from under the user (the whole
     # point); on error we LEAVE it — the page holds the failure state and the
     # user closes it when they've read it.
@@ -1250,12 +1235,6 @@ if ($SelfTestPipeDrain) {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     $hold = 60
     if ($env:HERMES_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:HERMES_SELFTEST_HOLD_SECONDS }
-    # The production idle ceiling is intentionally long (10 minutes), while
-    # this fixture must outlive the watchdog to prove cancellation. Keep the
-    # self-test self-contained instead of relying on an undocumented caller
-    # environment override.
-    if ($hold -lt 3) { $hold = 3 }
-    $script:StepIdleTimeoutSeconds = [Math]::Min(5, $hold - 1)
     $floodKb = 8192
     if ($env:HERMES_SELFTEST_FLOOD_KB) { $floodKb = [int]$env:HERMES_SELFTEST_FLOOD_KB }
     # $PSHOME is this interpreter's own directory -- no hardcoded system path.

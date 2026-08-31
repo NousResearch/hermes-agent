@@ -109,16 +109,36 @@ try:
     except ImportError:
         LinkPreviewOptions = None
     from telegram.ext import (
-        Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler as TelegramMessageHandler,
-        ContextTypes, TypeHandler, filters)
+        Application,
+        CommandHandler,
+        CallbackQueryHandler,
+        InlineQueryHandler,
+        MessageHandler as TelegramMessageHandler,
+        ContextTypes,
+        TypeHandler,
+        filters,
+    )
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
-    Update = Bot = Message = InlineKeyboardButton = InlineKeyboardMarkup = Application = Any
-    CommandHandler = CallbackQueryHandler = InlineQueryHandler = TypeHandler = TelegramMessageHandler = HTTPXRequest = Any
-    LinkPreviewOptions = filters = ParseMode = ChatType = None
+    Update = Any
+    Bot = Any
+    Message = Any
+    InlineKeyboardButton = Any
+    InlineKeyboardMarkup = Any
+    LinkPreviewOptions = None
+    Application = Any
+    CommandHandler = Any
+    CallbackQueryHandler = Any
+    InlineQueryHandler = Any
+    TypeHandler = Any
+    TelegramMessageHandler = Any
+    HTTPXRequest = Any
+    filters = None
+    ParseMode = None
+    ChatType = None
 
     # Mock so ContextTypes.DEFAULT_TYPE annotations don't crash class definition without the lib.
     class _MockContextTypes:
@@ -252,19 +272,41 @@ def check_telegram_requirements() -> bool:
     except Exception:
         return False
     try:
-        import importlib
-        _tg, _ext, _const, _req = (
-            importlib.import_module(m) for m in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"))
-        Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup = (
-            getattr(_tg, n) for n in ("Update", "Bot", "Message", "InlineKeyboardButton", "InlineKeyboardMarkup"))
-        LinkPreviewOptions = getattr(_tg, "LinkPreviewOptions", None)
-        Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler = (
-            getattr(_ext, n) for n in ("Application", "CommandHandler", "CallbackQueryHandler", "InlineQueryHandler", "MessageHandler"))
-        ContextTypes, filters, TypeHandler = _ext.ContextTypes, _ext.filters, _ext.TypeHandler
-        ParseMode, ChatType = _const.ParseMode, _const.ChatType
-        HTTPXRequest = _req.HTTPXRequest
-    except (ImportError, AttributeError):
+        from telegram import Update as _Update, Bot as _Bot, Message as _Message
+        from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
+        try:
+            from telegram import LinkPreviewOptions as _LPO
+        except ImportError:
+            _LPO = None
+        from telegram.ext import (
+            Application as _App, CommandHandler as _CH,
+            CallbackQueryHandler as _CQH,
+            InlineQueryHandler as _IQH,
+            MessageHandler as _MH,
+            ContextTypes as _CT, filters as _filters,
+            TypeHandler as _TH,
+        )
+        from telegram.constants import ParseMode as _PM, ChatType as _CtT
+        from telegram.request import HTTPXRequest as _HR
+    except ImportError:
         return False
+    Update = _Update
+    Bot = _Bot
+    Message = _Message
+    InlineKeyboardButton = _IKB
+    InlineKeyboardMarkup = _IKM
+    LinkPreviewOptions = _LPO
+    Application = _App
+    CommandHandler = _CH
+    CallbackQueryHandler = _CQH
+    InlineQueryHandler = _IQH
+    TelegramMessageHandler = _MH
+    ContextTypes = _CT
+    filters = _filters
+    ParseMode = _PM
+    ChatType = _CtT
+    HTTPXRequest = _HR
+    TypeHandler = _TH
     TELEGRAM_AVAILABLE = True
     return True
 
@@ -1894,11 +1936,30 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             return
         async with self._get_general_request_drain_lock():
-            await self._bounded_request_step(
-                general_req.shutdown(), "General request shutdown failed/timed out after pool timeout (non-fatal)")
-            if await self._bounded_request_step(
-                general_req.initialize(), "General request re-initialize failed/timed out after pool timeout (non-fatal)"):
-                logger.warning("[%s] General request pool drained after Telegram pool timeout", self.name)
+            try:
+                await _await_with_thread_deadline(
+                    general_req.shutdown(), timeout=_DRAIN_TIMEOUT
+                )
+            except Exception:
+                logger.debug(
+                    "[%s] General request shutdown failed/timed out after pool "
+                    "timeout (non-fatal)",
+                    self.name, exc_info=True,
+                )
+            try:
+                await _await_with_thread_deadline(
+                    general_req.initialize(), timeout=_DRAIN_TIMEOUT
+                )
+                logger.warning(
+                    "[%s] General request pool drained after Telegram pool timeout",
+                    self.name,
+                )
+            except Exception:
+                logger.debug(
+                    "[%s] General request re-initialize failed/timed out after "
+                    "pool timeout (non-fatal)",
+                    self.name, exc_info=True,
+                )
 
     def _spawn_polling_recovery(self, loop, coro) -> None:
         """Start ``coro`` as the tracked in-flight recovery task (reentrancy guard)."""
@@ -2129,6 +2190,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._looks_like_pool_timeout(error):
             await self._drain_general_connections_after_pool_timeout()
         if self._teardown_started:
+            return
+        # start_polling() performs Bot API bootstrap calls through PTB's
+        # general request pool before it starts getUpdates. If that pool is
+        # exhausted by stale proxy sockets, draining only the polling request
+        # below cannot recover: every retry fails in bootstrap before polling
+        # begins. A confirmed pool timeout means the request was not sent, so
+        # it is safe to rebuild the general pool before retrying. Keep generic
+        # network-error recovery polling-only so in-flight sends are untouched.
+        if self._looks_like_pool_timeout(error):
+            await self._drain_general_connections_after_pool_timeout()
+
+        if getattr(self, "_polling_teardown_started", False):
             return
         await self._drain_polling_connections()
         if self._teardown_started:
@@ -2996,9 +3069,14 @@ class TelegramAdapter(BasePlatformAdapter):
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-        # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
+        # Inline command picker (@botname <query>) — searchable, uncapped
+        # access to every command/skill. Inert until the bot owner enables
+        # inline mode via BotFather /setinline (Telegram never delivers
+        # inline_query updates otherwise), so registering unconditionally
+        # is safe.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
-        # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
+        # gateway_platform_event observer (see _on_platform_update); group 99 so
+        # it observes alongside, never displaces, the core handlers.
         app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
 
     async def _build_ptb_requests(self) -> tuple:
@@ -4727,80 +4805,97 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._edit_html_quiet(
             query, f"❓ {_html.escape(query.message.text or '')}\n\n<i>⚠️ This question expired or the session reset — please /retry.</i>")
 
-    @staticmethod
-    async def _edit_html_quiet(query, text: str) -> None:
-        """HTML edit with the keyboard removed; failures ignored (non-fatal)."""
-        with contextlib.suppress(Exception):
-            await query.edit_message_text(text=text, parse_mode=ParseMode.HTML, reply_markup=None)
+    async def _handle_inline_query(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """Answer ``@botname <query>`` with a searchable command/skill picker.
 
-    async def _edit_md_quiet(self, query, text_md: str) -> None:
-        """MarkdownV2 edit with the keyboard removed; failures ignored (non-fatal)."""
-        with contextlib.suppress(Exception):
-            await query.edit_message_text(text=self.format_message(text_md), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=None)
+        The BotCommand menu is capped (100/scope, ~4KB payload; 60-slot
+        Hermes default), so most skill commands can never appear in the
+        ``/`` menu. Inline mode is uncapped: results are computed live per
+        keystroke and paginated 50 at a time (Telegram's per-answer max) —
+        the Telegram analog of Discord's dynamic ``/skill`` autocomplete.
 
-    async def _handle_inline_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
-        """Answer ``@botname <query>`` with a searchable command/skill picker (the ``/`` menu is capped at
-        60 slots). Results are computed per keystroke, 50 per page; tapping sends ``/cmd`` text as the
-        user, so dispatch flows through the normal command path. Inline queries arrive from ANY chat, so
-        unauthorized users get an empty list (the skill catalog is not leaked)."""
+        Tapping a result sends the command text (``/plan <args>``) into the
+        chat as the user. Command-prefixed messages reach the bot even under
+        default privacy mode, and dispatch flows through the existing
+        command path — this handler only ever *offers* text, so it is
+        read-only by construction.
+
+        Authorization: results are only served to users who pass the same
+        auth path as inline-button callbacks (allowlists, pairing,
+        multiplex profiles). Unauthorized queries get an empty result list
+        — the catalog of installed skills is not leaked to arbitrary users
+        who can type ``@botname`` from any chat (inline queries arrive from
+        ANY chat, including ones the bot is not a member of).
+        """
         inline_query = getattr(update, "inline_query", None)
         if inline_query is None:
             return
+
         from_user = getattr(inline_query, "from_user", None)
         user_id = str(getattr(from_user, "id", "") or "").strip()
         try:
-            # No chat context on inline queries — authorize on user identity alone, DM-shaped.
             authorized = bool(user_id) and self._is_callback_user_authorized(
-                user_id, chat_id=user_id, chat_type="private", user_name=getattr(from_user, "username", None))
+                user_id,
+                # Inline queries carry no chat context — authorize on the
+                # user identity alone, as a DM-shaped source.
+                chat_id=user_id,
+                chat_type="private",
+                user_name=getattr(from_user, "username", None),
+            )
         except Exception:
             logger.debug("[%s] inline picker auth check failed", self.name, exc_info=True)
             authorized = False
+
         if not authorized:
             try:
-                from plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _deny_cache
+                from plugins.platforms.telegram.inline_picker import (
+                    CACHE_TIME_SECONDS as _deny_cache,
+                )
+
                 await inline_query.answer([], cache_time=_deny_cache, is_personal=True)
             except Exception:
                 logger.debug("[%s] inline picker empty answer failed", self.name, exc_info=True)
             return
+
         try:
             from telegram import InlineQueryResultArticle, InputTextMessageContent
-            from plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _CACHE, build_inline_results
-            # Per-keystroke catalog build resolves every skill path; keep it off the loop (#110707).
-            results, next_offset = await asyncio.to_thread(
+
+            from plugins.platforms.telegram.inline_picker import (
+                CACHE_TIME_SECONDS as _CACHE,
                 build_inline_results,
-                getattr(inline_query, "query", "") or "", offset=getattr(inline_query, "offset", "") or "")
+            )
+
+            results, next_offset = build_inline_results(
+                getattr(inline_query, "query", "") or "",
+                offset=getattr(inline_query, "offset", "") or "",
+            )
             articles = [
                 InlineQueryResultArticle(
-                    id=r["id"], title=r["title"], description=r["description"],
-                    input_message_content=InputTextMessageContent(r["message_text"]))
+                    id=r["id"],
+                    title=r["title"],
+                    description=r["description"],
+                    input_message_content=InputTextMessageContent(r["message_text"]),
+                )
                 for r in results
-           ]
-            # is_personal: catalogs differ per user (auth, disabled skills) — never share cached pages.
-            await inline_query.answer(articles, cache_time=_CACHE, is_personal=True, next_offset=next_offset)
+            ]
+            await inline_query.answer(
+                articles,
+                cache_time=_CACHE,
+                # Catalogs differ per user (auth, per-platform disabled
+                # skills) — never let Telegram share cached pages across
+                # users.
+                is_personal=True,
+                next_offset=next_offset,
+            )
         except Exception:
             logger.debug("[%s] inline picker answer failed", self.name, exc_info=True)
 
-    @staticmethod
-    def _callback_ctx(query) -> Dict[str, Any]:
-        """Chat/thread/user context of a button tap, for the callback auth gate."""
-        query_message = getattr(query, "message", None)
-        query_chat = getattr(query_message, "chat", None)
-        return {
-            "chat_id": getattr(query_message, "chat_id", None), "chat_type": getattr(query_chat, "type", None),
-            "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None)}
-
-    async def _callback_authorized(self, query, cb: Dict[str, Any], denial_text: str) -> bool:
-        """Gate a button tap on the callback allowlist; answers ``denial_text`` when refused."""
-        if self._is_callback_user_authorized(
-            str(getattr(query.from_user, "id", "")), chat_id=cb["chat_id"],
-            chat_type=str(cb["chat_type"]) if cb["chat_type"] is not None else None,
-            thread_id=str(cb["thread_id"]) if cb["thread_id"] is not None else None, user_name=cb["user_name"]):
-            return True
-        await query.answer(text=denial_text)
-        return False
-
-    async def _handle_callback_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
-        """Dispatch inline keyboard button clicks on the callback_data prefix."""
+    async def _handle_callback_query(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """Handle inline keyboard button clicks."""
         query = update.callback_query
         if not query or not query.data:
             return
@@ -5285,23 +5380,64 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
         _transcoded_voice_path: Optional[str] = None
         try:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
-            # sendVoice only accepts Ogg/Opus: an explicit voice-bubble request (is_voice) transcodes via
-            # ffmpeg; otherwise route by extension (.mp3/.m4a → sendAudio, others → document).
-            if kwargs.get("is_voice") and os.path.splitext(audio_path)[1].lower() not in (".ogg", ".opus"):
+
+            # Telegram sendVoice only accepts Ogg/Opus. When the caller
+            # explicitly asked for a voice bubble ([[audio_as_voice]] →
+            # is_voice=True in kwargs), transcode any other audio format
+            # (mp3/wav/flac/...) to Ogg/Opus on the fly via the shared
+            # ffmpeg engine — previously that intent dead-ended into
+            # document delivery. Without the explicit intent, extension
+            # behavior is unchanged (.mp3/.m4a → sendAudio; .ogg → here
+            # only when flagged; others → document fallback below).
+            _voice_ext = os.path.splitext(audio_path)[1].lower()
+            if kwargs.get("is_voice") and _voice_ext not in (".ogg", ".opus"):
                 from gateway.platforms.base import transcode_to_ogg_opus
-                _transcoded_voice_path = await asyncio.to_thread(transcode_to_ogg_opus, audio_path)
+                _transcoded_voice_path = await asyncio.to_thread(
+                    transcode_to_ogg_opus, audio_path
+                )
                 if _transcoded_voice_path:
                     audio_path = _transcoded_voice_path
                 else:
                     logger.warning(
-                        "[%s] voice transcode unavailable for %s — sending original format (install ffmpeg for voice bubbles)",
-                        self.name, os.path.basename(audio_path))
-            # Telegram drops duration for long clips (~5 min+, shows 0:00).
-            _duration_secs = await asyncio.to_thread(_probe_voice_duration_seconds, audio_path)
+                        "[%s] voice transcode unavailable for %s — sending "
+                        "original format (install ffmpeg for voice bubbles)",
+                        self.name, os.path.basename(audio_path),
+                    )
+            
+            # Compute duration locally — Telegram drops it for long clips
+            # (~5 min+), which then show 0:00 in the player.
+            _duration_secs = await asyncio.to_thread(
+                _probe_voice_duration_seconds, audio_path
+            )
+
+            # Render caption markdown (#32029): auto-TTS captions carry the
+            # agent's markdown reply, which showed literal *asterisks* and
+            # [links](...) without a parse_mode. Format to MarkdownV2 when it
+            # fits the 1024-char caption cap; fall back to the raw text
+            # (previous behaviour) when formatting would overflow or the
+            # Bot API rejects the entities.
+            _caption_variants: List[tuple] = []
+            if caption:
+                try:
+                    _formatted_caption = self.format_message(caption)
+                    if utf16_len(_formatted_caption) <= 1024:
+                        _caption_variants.append(
+                            (_formatted_caption, ParseMode.MARKDOWN_V2)
+                        )
+                except Exception:
+                    logger.debug(
+                        "[%s] voice caption MarkdownV2 formatting failed; "
+                        "sending plain caption", self.name, exc_info=True,
+                    )
+                _caption_variants.append((caption[:1024], None))
+            else:
+                _caption_variants.append((None, None))
+
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
                 if ext in {".ogg", ".opus"}:  # round playable voice bubble
@@ -5321,8 +5457,10 @@ class TelegramAdapter(BasePlatformAdapter):
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
         finally:
             if _transcoded_voice_path:
-                with contextlib.suppress(OSError):
+                try:
                     os.unlink(_transcoded_voice_path)
+                except OSError:
+                    pass
 
     async def send_multiple_images(
         self, chat_id: str, images: List[tuple], metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:

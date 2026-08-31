@@ -44,15 +44,6 @@ def _fresh_kernel_registry():
     shutdown_all_kernels()
 
 
-from tools.code_execution_env import (
-    _is_usable_python,
-    _python_environment_prefix,
-    _python_prefix_cache,
-    _resolve_child_cwd,
-    _resolve_child_python,
-    _usable_python_cache,
-    _uses_hermes_python_environment,
-)
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     DEFAULT_EXECUTION_MODE,

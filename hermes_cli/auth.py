@@ -345,6 +345,14 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
         api_key_env_vars=("TOKENHUB_API_KEY",),
         base_url_env_var="TOKENHUB_BASE_URL",
     ),
+    "tencent-tokenplan": ProviderConfig(
+        id="tencent-tokenplan",
+        name="Tencent TokenPlan",
+        auth_type="api_key",
+        inference_base_url="https://api.lkeap.cloud.tencent.com/plan/anthropic",
+        api_key_env_vars=("TOKENPLAN_API_KEY",),
+        base_url_env_var="TOKENPLAN_BASE_URL",
+    ),
     "ollama-cloud": ProviderConfig(
         id="ollama-cloud",
         name="Ollama Cloud",
@@ -945,14 +953,53 @@ def _file_lock(
         return
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with ExitStack() as stack:
-        lock_file = None
-        if fcntl is not None or msvcrt is not None:
-            # msvcrt.locking needs a non-empty file with the pointer at 0. This convenience write can
-            # race another holder's byte-range lock and raise PermissionError (reproduced with 20
-            # concurrent processes on Windows); losing the race just means the file already has
-            # content, so swallow it.
-            if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+
+    if fcntl is None and msvcrt is None:
+        holder.depth = 1
+        try:
+            yield
+        finally:
+            holder.depth = 0
+        return
+
+    # On Windows, msvcrt.locking needs the file to have content and the
+    # file pointer at position 0. Ensure the lock file has at least 1 byte.
+    # Under real concurrency (many threads/processes racing this same
+    # ensure-content check) this write can collide with another holder's
+    # msvcrt byte-range lock on the same file and raise PermissionError --
+    # uncaught, since it happens before the retry loop below even starts.
+    # A stress test with 20 concurrent Hermes processes reproduced this
+    # deterministically on Windows. It's a best-effort convenience write
+    # (whoever gets there first wins); losing the race here just means the
+    # lock file already has content, so swallow the failure and proceed
+    # straight to the acquire-with-retry loop.
+    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        try:
+            lock_path.write_text(" ", encoding="utf-8")
+        except (OSError, PermissionError):
+            pass
+
+    with lock_path.open("r+" if msvcrt else "a+", encoding="utf-8") as lock_file:
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while True:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except (BlockingIOError, OSError, PermissionError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(timeout_message)
+                time.sleep(0.05)
+
+        holder.depth = 1
+        try:
+            yield
+        finally:
+            holder.depth = 0
+            if fcntl:
                 try:
                     lock_path.write_text(" ", encoding="utf-8")
                 except (OSError, PermissionError):
@@ -1698,6 +1745,7 @@ def resolve_provider(
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
         "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
+        "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",

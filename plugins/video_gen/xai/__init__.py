@@ -157,9 +157,18 @@ class XAIVideoGenProvider(VideoGenProvider):
         return {"name": "xAI Grok Imagine", "badge": "paid", "tag": tag, "env_vars": [], "post_setup": "xai_grok"}
 
     def capabilities(self) -> Dict[str, Any]:
-        return {"modalities": ["text", "image"], "aspect_ratios": sorted(VALID_ASPECT_RATIOS), "resolutions": sorted(VALID_RESOLUTIONS),
-                "max_duration": 15, "min_duration": 1, "supports_audio": False, "supports_negative_prompt": False, "supports_seed": True,
-                "supports_upscale": False, "max_reference_images": MAX_REFERENCE_IMAGES}
+        return {
+            "modalities": ["text", "image"],
+            "aspect_ratios": sorted(VALID_ASPECT_RATIOS),
+            "resolutions": sorted(VALID_RESOLUTIONS),
+            "max_duration": 15,
+            "min_duration": 1,
+            "supports_audio": False,
+            "supports_negative_prompt": False,
+            "supports_seed": True,
+            "supports_upscale": False,
+            "max_reference_images": MAX_REFERENCE_IMAGES,
+        }
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None,

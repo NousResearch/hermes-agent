@@ -1506,76 +1506,75 @@ def _spawn_side_agent(
     return _ok(rid, {"task_id": task_id})
 
 
-def _side_agent_args(rid, params, prefix):
-    """Shared admission for the side-agent RPCs: ``(session, text, parent, task_id, err)``."""
-    session, err = _sess(params, rid)
-    if err:
-        return None, None, None, None, err
-    text, parent = params.get("text", ""), params.get("session_id", "")
-    if not text:
-        return None, None, None, None, _err(rid, 4012, "text required")
-    return session, text, parent, f"{prefix}_{uuid.uuid4().hex[:6]}", None
-
-
-@method("prompt.background")
-def _(rid, params: dict) -> dict:
-    session, text, parent, task_id, err = _side_agent_args(rid, params, "bg")
-    if err:
-        return err
-
-    def body():
-        from run_agent import AIAgent
-        kwargs = _background_agent_kwargs(session["agent"], task_id)
-        with _side_agent_session_db(kwargs.get("session_db")) as session_db:
-            result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
-                user_message=text, task_id=task_id)
-        return _final_response_text(result)
-
-    return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
-
-
 @method("prompt.btw")
 def _(rid, params: dict) -> dict:
-    """Side question over a snapshot of the live conversation (``agent/side_question.py``);
-    history, alternation and prompt cache stay untouched.  Answer: ``btw.complete``."""
-    session, text, parent, task_id, err = _side_agent_args(rid, params, "btw")
+    """Answer a side question about the session without touching its history.
+
+    Snapshots the live conversation (in-flight ``_session_messages`` when a
+    turn is running, else the persisted ``session["history"]``) and runs a
+    one-shot auxiliary LLM call against it (``agent/side_question.py``). The
+    session's history, role alternation, and prompt cache are untouched; the
+    answer arrives as a ``btw.complete`` event.
+    """
+    session, err = _sess(params, rid)
     if err:
         return err
+    text, parent = params.get("text", ""), params.get("session_id", "")
+    if not text:
+        return _err(rid, 4012, "text required")
+    task_id = f"btw_{uuid.uuid4().hex[:6]}"
+
     agent = session.get("agent")
-    snapshot = list(getattr(agent, "_session_messages", None) or session.get("history") or [])
+    snapshot = list(
+        getattr(agent, "_session_messages", None)
+        or session.get("history")
+        or []
+    )
     main_runtime = {
-        k: getattr(agent, k, None)
-        for k in ("model", "provider", "base_url", "api_key", "api_mode")}
+        "model": getattr(agent, "model", None),
+        "provider": getattr(agent, "provider", None),
+        "base_url": getattr(agent, "base_url", None),
+        "api_key": getattr(agent, "api_key", None),
+        "api_mode": getattr(agent, "api_mode", None),
+    }
 
-    def body():
-        from agent.side_question import answer_side_question
-        return answer_side_question(
-            text, snapshot, parent_agent=agent, main_runtime=main_runtime) or ""
+    def run():
+        session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
+        try:
+            from agent.side_question import answer_side_question
 
-    return _spawn_side_agent(
-        rid, session, task_id, parent, "btw.complete", body, extra={"question": text})
+            _profile_home_str = session.get("profile_home")
+            home_token = (
+                set_hermes_home_override(_profile_home_str)
+                if _profile_home_str
+                else None
+            )
+            try:
+                answer = answer_side_question(
+                    text,
+                    snapshot,
+                    parent_agent=agent,
+                    main_runtime=main_runtime,
+                )
+            finally:
+                if home_token is not None:
+                    reset_hermes_home_override(home_token)
+            _emit(
+                "btw.complete",
+                parent,
+                {"task_id": task_id, "question": text, "text": answer or ""},
+            )
+        except Exception as e:
+            _emit(
+                "btw.complete",
+                parent,
+                {"task_id": task_id, "question": text, "text": f"error: {e}"},
+            )
+        finally:
+            _clear_session_context(session_tokens)
 
-
-_PREVIEW_RESTART_RULES = (
-    "Restart exactly the app intended for the Preview URL, not Hermes Desktop itself.",
-    "The Preview URL and port are the target. Preserve that target unless you conclude it is impossible.",
-    "If the prior conversation shows a specific command that bound this URL/port, prefer re-running THAT exact command (in the same cwd) over guessing a new one.",
-    "First inspect what process, if any, owns the Preview URL port. If a stale server exists, inspect its cwd and prefer that cwd over the Hermes/Desktop process cwd.",
-    "The Current working directory is only a hint. Do not assume it is the preview app root when the port owner or files indicate another root.",
-    "If the console shows a module-script MIME error for src/main.tsx or similar, a static server is serving source files. Do not restart python -m http.server or any dumb static server for that app.",
-    "For module-script MIME failures, inspect package.json/vite config in the candidate app root and start the real dev server/bundler (for example npm/pnpm/yarn dev) so module transforms happen.",
-    "Before declaring success, verify the Preview URL responds with the intended app, not Hermes Desktop. If it serves Hermes/Desktop UI or another unrelated app, stop that process and report failure.",
-    "Do not modify files. Do not ask the user unless blocked.",
-    "Prefer existing project scripts or commands when they are clear.",
-    "If a stale process owns the needed port, handle it safely.",
-    "Start long-running servers detached/in the background, then return immediately.",
-    "Do not run a foreground dev server command that blocks this background task.",
-    "Keep the final response short: what command/server was started, or why it could not be restarted.",
-)
-
-_PREVIEW_RESTART_HISTORY_NOTE = (
-    "The conversation history above is from the user's main session — including the commands you (the assistant) previously ran to start servers, edit files, or check ports. Use it to figure out exactly which server should be running at this Preview URL. The user did not start a brand new task; recover what they had working."
-)
+    threading.Thread(target=run, daemon=True).start()
+    return _ok(rid, {"task_id": task_id})
 
 
 @method("preview.restart")

@@ -4,12 +4,12 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import bounded_probe_run
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # rich and prompt_toolkit are imported lazily: this module sits on the TUI gateway's critical
@@ -169,12 +169,22 @@ def _is_official_ssh_remote(url: str | None) -> bool:
 
 
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
-    result = bounded_probe_run(
-        ["git", *args],
-        timeout=timeout,
-        cwd=str(cwd),
-    )
-    if result is None or result.returncode != 0:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            # git output is UTF-8; on Windows text=True defaults to the ANSI
+            # code page and bytes like 0x90 (3rd byte of 🐛 in a commit
+            # subject) crash the stdlib reader thread (#52649).
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            cwd=str(cwd),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
         return None
     return (result.stdout or "").strip()
 
@@ -199,11 +209,15 @@ def _is_full_sha(value: Optional[str]) -> bool:
 
 def _upstream_main_sha() -> Optional[str]:
     """Tip SHA of upstream main via HTTPS ls-remote (no auth, no prompts)."""
-    result = bounded_probe_run(
-        ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
-        timeout=10,
-    )
-    if result is None or result.returncode != 0 or not result.stdout:
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0 or not result.stdout:
         return None
     upstream_rev = result.stdout.split()[0]
     return upstream_rev or None
@@ -345,12 +359,11 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         # Local-ahead: the remote tip is an ancestor of HEAD. Checked against
         # the FRESH upstream SHA (not the possibly stale origin/main tracking
         # ref) so a stale ref can't fake an up-to-date report.
-        ancestor = bounded_probe_run(
+        ancestor = subprocess.run(
             ["git", "merge-base", "--is-ancestor", upstream_rev, "HEAD"],
-            timeout=5,
-            cwd=str(repo_dir),
+            capture_output=True, timeout=5, cwd=str(repo_dir),
         )
-        if ancestor is not None and ancestor.returncode == 0:
+        if ancestor.returncode == 0:
             return 0
         # Genuinely behind (or diverged). Recover the exact count via the
         # GitHub compare API; a local-only HEAD 404s there, which safely
@@ -395,12 +408,12 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
-        fetch_proc = bounded_probe_run(
+        fetch_proc = subprocess.run(
             fetch_args,
-            timeout=10,
+            capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
-        fetch_ok = fetch_proc is not None and fetch_proc.returncode == 0
+        fetch_ok = fetch_proc.returncode == 0
     except Exception:
         fetch_ok = False  # Offline or timeout — don't use stale refs
 
@@ -413,12 +426,13 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     if not fetch_ok:
         if not is_shallow:
             try:
-                result = bounded_probe_run(
+                result = subprocess.run(
                     ["git", "rev-list", "--count", "HEAD..origin/main"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
                     timeout=5,
                     cwd=str(repo_dir),
                 )
-                if result is not None and result.returncode == 0:
+                if result.returncode == 0:
                     behind = int(result.stdout.strip())
                     if behind > 0:
                         return behind
@@ -439,16 +453,6 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             return None
         if head_rev == target_rev:
             return 0
-        # A shallow checkout can still carry local commits on top of the
-        # fetched tip.  Prefer the local ancestry proof before asking GitHub
-        # to compare a revision that may not be published there.
-        local_ahead = bounded_probe_run(
-            ["git", "merge-base", "--is-ancestor", target_rev, head_rev],
-            timeout=5,
-            cwd=str(repo_dir),
-        )
-        if local_ahead is not None and local_ahead.returncode == 0:
-            return 0
         # Tips differ but the shallow boundary hides the history between them.
         # Recover the exact count from the GitHub compare API when possible
         # (ahead_by == 0 means local-ahead ⇒ up to date); otherwise report the
@@ -457,12 +461,13 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
     try:
-        result = bounded_probe_run(
+        result = subprocess.run(
             ["git", "rev-list", "--count", "HEAD..origin/main"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=5,
             cwd=str(repo_dir),
         )
-        if result is not None and result.returncode == 0:
+        if result.returncode == 0:
             return int(result.stdout.strip())
     except Exception:
         pass
@@ -490,10 +495,6 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
 
     cache_file = get_hermes_home() / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
-    repo_dir = None if embedded_rev else _resolve_repo_dir()
-    cache_rev = embedded_rev
-    if repo_dir is not None:
-        cache_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
 
     # Docker images have no working tree to count commits against — the
     # published image excludes `.git` (see .dockerignore) and sets no
@@ -517,7 +518,7 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == cache_rev
+                and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
             ):
                 return cached.get("behind")
@@ -527,7 +528,13 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        if repo_dir is None:
+        # Prefer the running code's location over the profile-scoped path.
+        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
+        # Path(__file__) always resolves to the actual installed checkout.
+        repo_dir = Path(__file__).parent.parent.resolve()
+        if not (repo_dir / ".git").exists():
+            repo_dir = hermes_home / "hermes-agent"
+        if not (repo_dir / ".git").exists():
             # No git checkout and no embedded revision — can't determine
             # update status. This is the Docker path (already short-circuited
             # above) or an unsupported install without a source tree.
@@ -543,7 +550,7 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
         # connectivity is restored (#82166).
         if behind is not None:
             cache_file.write_text(
-                json.dumps({"ts": now, "behind": behind, "rev": cache_rev, "ver": VERSION}),
+                json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
                 encoding="utf-8",
             )
     except Exception:
@@ -566,12 +573,19 @@ def _resolve_repo_dir() -> Optional[Path]:
 
 def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
     """Resolve a git revision to an 8-character short hash."""
-    result = bounded_probe_run(
-        ["git", "rev-parse", "--short=8", rev],
-        timeout=5,
-        cwd=str(repo_dir),
-    )
-    if result is None or result.returncode != 0:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=8", rev],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
         return None
     value = (result.stdout or "").strip()
     return value or None
@@ -619,12 +633,16 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
 
     ahead = 0
     try:
-        result = bounded_probe_run(
+        result = subprocess.run(
             ["git", "rev-list", "--count", "origin/main..HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             cwd=str(repo_dir),
         )
-        if result is not None and result.returncode == 0:
+        if result.returncode == 0:
             ahead = int((result.stdout or "0").strip() or "0")
     except Exception:
         ahead = 0
@@ -650,8 +668,12 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
         return None
 
     try:
-        result = bounded_probe_run(
+        result = subprocess.run(
             ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3,
             cwd=str(repo_dir),
         )
@@ -659,7 +681,7 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
         _latest_release_cache = ()
         return None
 
-    if result is None or result.returncode != 0:
+    if result.returncode != 0:
         _latest_release_cache = ()
         return None
 

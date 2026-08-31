@@ -55,31 +55,6 @@ describe('useMessageStream compaction lifecycle', () => {
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
   })
 
-  // #97948: a manual /compress whose RPC answered `pending` (the compute host
-  // outlived the gateway's wait) has no turn-end hydrate — the `compacted`
-  // edge is the only signal the transcript changed.
-  it('rehydrates the idle active session on the compacted edge', () => {
-    const hydrateFromStoredSession = vi.fn(async () => undefined)
-    const states = new Map([[SID, { ...createClientSessionState(), storedSessionId: 'stored-1' }]])
-
-    stream = renderMessageStream(SID, { hydrateFromStoredSession, states })
-
-    emit('status.update', { kind: 'compacted' })
-
-    expect(hydrateFromStoredSession).toHaveBeenCalledWith(3, 'stored-1', SID)
-  })
-
-  it('leaves the transcript to the turn settle path when compaction ends mid-turn', () => {
-    const hydrateFromStoredSession = vi.fn(async () => undefined)
-    const states = new Map([[SID, { ...createClientSessionState(), busy: true, storedSessionId: 'stored-1' }]])
-
-    stream = renderMessageStream(SID, { hydrateFromStoredSession, states })
-
-    emit('status.update', { kind: 'compacted' })
-
-    expect(hydrateFromStoredSession).not.toHaveBeenCalled()
-  })
-
   it('reconciles a reconnecting compaction only from trusted terminal server state', () => {
     mountStream()
     emit('status.update', { kind: 'compacting' })

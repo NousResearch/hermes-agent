@@ -5,17 +5,9 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
-
-/** One error-card entry: a short title and one plain sentence. Either may
- *  take the failing provider's display name (falls back to "the AI service"). */
-export interface ErrorCardCopy {
-  title: string | ((provider: string) => string)
-  body: string | ((provider: string) => string)
-}
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -1480,6 +1472,15 @@ export interface Translations {
           notNow: string
           enable: string
         }
+      }
+      browserRealProfile: {
+        label: string
+        description: string
+        enabledTitle: string
+        enabledMessage: string
+        disabledTitle: string
+        disabledMessage: string
+        failedSave: string
       }
     }
   }
@@ -3739,6 +3740,12 @@ export interface Translations {
       'local-runtime-update': { title: string; text: string; action: string }
       'local-setup': { title: string; text: string; action: string }
     }
+  }
+
+  tips: {
+    close: string
+    /** Keyed by `TipId`, so a new tip without copy is a type error. */
+    items: Record<TipId, { title: string; text: string }>
   }
 
   errors: {

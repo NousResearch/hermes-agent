@@ -18,14 +18,6 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
             "configured tool backend (Firecrawl/FAL/browser/MCP/TTS/STT) "
             "after the static checks. Makes real network calls.")
     doctor_parser.add_argument(
-        "--offline",
-        action="store_true",
-        help=(
-            "Skip provider connectivity probes. Keeps file, configuration, "
-            "and dependency checks local without provider network calls."
-        ),
-    )
-    doctor_parser.add_argument(
         "--ack",
         metavar="ADVISORY_ID",
         default=None,

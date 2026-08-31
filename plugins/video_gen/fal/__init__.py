@@ -71,18 +71,53 @@ _H3_MAX_TURBO_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p":
 
 FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     # ─── Cheap / fast tier ─────────────────────────────────────────────
-    "ltx-2.3": _family("LTX 2.3 (22B)", "~30-60s", "cheap", "22B model with native audio generation. Affordable.",  # docs expose no enums
-                       "fal-ai/ltx-2.3-22b/text-to-video", "fal-ai/ltx-2.3-22b/image-to-video", audio=True, negative=True, seed=True),
-    # Fast endpoints: duration is an integer enum (6..20 even) — snapped, sent as JSON int; i2v ladders 720p→2160p; no `seed` key.
-    "ltx-2.5": _family("LTX 2.5", "~30-90s", "cheap", "Lightricks open-source audio-video model. Native audio, up to 20s / 4K (i2v), camera-motion presets.",
-                       "lightricks/ltx-2.5/text-to-video/fast", "lightricks/ltx-2.5/image-to-video/fast", duration_int=True, aspect_ratios=("16:9", "9:16"),
-                       resolutions=("720p", "1080p", "1440p", "2160p"), resolution_aliases={"2k": "1440p", "4k": "2160p"},
-                       durations=(6, 20), duration_enum=tuple(range(6, 21, 2)), duration_cap_by_resolution={"1440p": 10, "2160p": 10}, audio=True),
-    "pixverse-v6": _family("Pixverse v6", "~30-90s", "cheap", "Affordable. Negative prompts. 1-15s durations.", "fal-ai/pixverse/v6/text-to-video",
-                           "fal-ai/pixverse/v6/image-to-video", resolutions=("360p", "540p", "720p", "1080p"), durations=(1, 15), audio=True, negative=True, seed=True),
-    "seedance-2.0-mini": _family("Seedance 2.0 Mini", "~30-90s", "cheap", "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
-                                 "bytedance/seedance-2.0/mini/text-to-video", "bytedance/seedance-2.0/mini/image-to-video", aspect_ratios=_SIX_ASPECTS,
-                                 resolutions=("480p", "720p"), durations=(4, 15), audio=True),
+    "ltx-2.3": {
+        "display": "LTX 2.3 (22B)",
+        "speed": "~30-60s",
+        "price": "cheap",
+        "strengths": "22B model with native audio generation. Affordable.",
+        "tier": "cheap",
+        "text_endpoint": "fal-ai/ltx-2.3-22b/text-to-video",
+        "image_endpoint": "fal-ai/ltx-2.3-22b/image-to-video",
+        # LTX docs don't expose duration/aspect/resolution enums — leave
+        # blank so we don't send unrecognized payload keys.
+        "aspect_ratios": None,
+        "resolutions": None,
+        "durations": None,
+        "audio": True,
+        "negative": True,
+        "seed": True,
+    },
+    "pixverse-v6": {
+        "display": "Pixverse v6",
+        "speed": "~30-90s",
+        "price": "cheap",
+        "strengths": "Affordable. Negative prompts. 1-15s durations.",
+        "tier": "cheap",
+        "text_endpoint": "fal-ai/pixverse/v6/text-to-video",
+        "image_endpoint": "fal-ai/pixverse/v6/image-to-video",
+        "aspect_ratios": None,
+        "resolutions": ("360p", "540p", "720p", "1080p"),
+        "durations": (1, 15),
+        "audio": True,
+        "negative": True,
+        "seed": True,
+    },
+    "seedance-2.0-mini": {
+        "display": "Seedance 2.0 Mini",
+        "speed": "~30-90s",
+        "price": "cheap",
+        "strengths": "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
+        "tier": "cheap",
+        "text_endpoint": "bytedance/seedance-2.0/mini/text-to-video",
+        "image_endpoint": "bytedance/seedance-2.0/mini/image-to-video",
+        "aspect_ratios": ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16"),
+        "resolutions": ("480p", "720p"),
+        "durations": (4, 15),
+        "audio": True,
+        "negative": False,
+        "seed": False,
+    },
     # ─── Expensive / premium tier ──────────────────────────────────────
     "veo3.1": {
         "display": "Veo 3.1",
@@ -98,6 +133,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "duration_suffix": "s",  # FAL veo3.1 wants "4s" not "4"
         "audio": True,
         "negative": True,
+        "seed": True,
     },
     "seedance-2.0": {
         "display": "Seedance 2.0",
@@ -159,7 +195,8 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
             "1080p": "2K", "2k": "2K", "4k": "4K", "2160p": "4K",
         },
         "durations": (5, 15),
-        "audio": False,  # audio is native/always-on; no generate_audio key
+        "audio": False,  # no generate_audio TOGGLE — audio is always on
+        "audio_native": True,  # native audio in every generation (fal docs)  # audio is native/always-on; no generate_audio key
         "negative": False,
         "seed": False,
     },
@@ -189,8 +226,10 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         # `prompt_expansion_mode` is in the schema's required array (with a
         # "balanced" default) — always send it.
         "static_payload": {"prompt_expansion_mode": "balanced"},
-        "audio": False,  # audio is native/always-on; no generate_audio key
+        "audio": False,  # no generate_audio TOGGLE — audio is always on
+        "audio_native": True,  # native audio in every generation (fal docs)  # audio is native/always-on; no generate_audio key
         "negative": False,
+        "seed": True,
         # Unlike base H3, Max declares `seed` on both endpoints.
     },
     "flux-3": {
@@ -224,7 +263,8 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "aspect_ratios": ("16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"),
         "resolutions": ("480p", "720p", "1080p"),
         "durations": (1, 15),
-        "audio": False,  # audio is native; no generate_audio key
+        "audio": False,  # no generate_audio TOGGLE — audio is always on
+        "audio_native": True,  # native audio in every generation (fal docs)  # audio is native; no generate_audio key
         "negative": False,
         "seed": False,
     },
@@ -241,7 +281,8 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "aspect_ratios": ("16:9", "9:16"),
         "resolutions": None,
         "durations": (3, 10),
-        "audio": False,  # audio is native; no generate_audio key
+        "audio": False,  # no generate_audio TOGGLE — audio is always on
+        "audio_native": True,  # native audio in every generation (fal docs)  # audio is native; no generate_audio key
         "negative": False,
         "seed": False,
     },
@@ -261,6 +302,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (3, 15),
         "audio": True,
         "negative": True,
+        "seed": True,
     },
     "happy-horse": {
         "display": "Happy Horse 1.0",
@@ -275,8 +317,10 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "aspect_ratios": None,
         "resolutions": None,
         "durations": None,
-        "audio": False,
+        "audio": False,  # no generate_audio TOGGLE — audio is always on
+        "audio_native": True,  # native audio in every generation (fal docs)
         "negative": False,
+        "seed": True,
     },
 }
 
@@ -615,23 +659,71 @@ class FALVideoGenProvider(VideoGenProvider):
                        "Gemini Omni — text-to-video & image-to-video"}
 
     def capabilities(self) -> Dict[str, Any]:
-        # RESOLVED family's surface so the dynamic tool schema gates params on what the selected model honors; union fallback (never raises).
+        # Active-model-aware (mirrors the image_gen fal plugin, #97057):
+        # report the RESOLVED family's actual surface so the dynamic tool
+        # schema gates params on what the selected model honors, not a
+        # union that overstates every axis. Falls back to the cross-family
+        # union if resolution fails (never raises).
         try:
-            # Falls back to the cross-family union if resolution fails (never raises). See #97057.
             _family_id, family = _resolve_family(None)
         except Exception:  # noqa: BLE001
             family = None
         if family:
-            durations = family["durations"] or (1, 1)
-            return {"modalities": _modalities(family) or ["text"], "aspect_ratios": list(family["aspect_ratios"] or []),
-                    "resolutions": list(family["resolutions"] or []), "max_duration": max(durations), "min_duration": min(durations),
-                    "supports_audio": bool(family["audio"]), "audio_always_on": bool(family.get("audio_native")),  # no toggle: description only
-                    "supports_negative_prompt": bool(family["negative"]), "supports_seed": bool(family["seed"]),
-                    "supports_upscale": True, "max_reference_images": 0}  # SeedVR chains for any family
-        spans = [m["durations"] for m in FAL_FAMILIES.values() if m["durations"]]
-        return {"modalities": ["text", "image"], "aspect_ratios": ["16:9", "9:16", "1:1"], "resolutions": ["360p", "540p", "720p", "1080p"],
-                "max_duration": max([1] + [max(d) for d in spans]), "min_duration": min([min(d) for d in spans], default=1),
-                "supports_audio": True, "supports_negative_prompt": True, "supports_seed": True, "supports_upscale": True, "max_reference_images": 0}
+            modalities = []
+            if family.get("text_endpoint"):
+                modalities.append("text")
+            if family.get("image_endpoint"):
+                modalities.append("image")
+            durs = family.get("durations") or (1, 1)
+            if _is_duration_range(durs):
+                lo, hi = durs
+            else:
+                lo, hi = min(durs), max(durs)
+            return {
+                "modalities": modalities or ["text"],
+                "aspect_ratios": list(family.get("aspect_ratios") or []),
+                "resolutions": list(family.get("resolutions") or []),
+                "max_duration": hi,
+                "min_duration": lo,
+                "supports_audio": bool(family.get("audio")),
+                # Always-on native audio (no toggle): surfaces as a
+                # description line, not a param. Verified per-family
+                # against fal model pages (H3, Grok 1.5, Happy Horse,
+                # Gemini Omni Flash all return native audio every run).
+                "audio_always_on": bool(family.get("audio_native")),
+                "supports_negative_prompt": bool(family.get("negative")),
+                # Explicit per-family key (contract-tested); absent would
+                # mean a catalog bug, so fail closed here.
+                "supports_seed": bool(family.get("seed", False)),
+                # SeedVR upscaler chains for any FAL video family.
+                "supports_upscale": True,
+                "max_reference_images": 0,
+            }
+        # Fallback: union across families (legacy shape).
+        max_dur = 1
+        min_dur: Optional[int] = None
+        for meta in FAL_FAMILIES.values():
+            durs = meta.get("durations")
+            if not durs:
+                continue
+            if _is_duration_range(durs):
+                lo, hi = durs
+            else:
+                lo, hi = min(durs), max(durs)
+            max_dur = max(max_dur, hi)
+            min_dur = lo if min_dur is None else min(min_dur, lo)
+        return {
+            "modalities": ["text", "image"],
+            "aspect_ratios": ["16:9", "9:16", "1:1"],
+            "resolutions": ["360p", "540p", "720p", "1080p"],
+            "max_duration": max_dur,
+            "min_duration": min_dur if min_dur is not None else 1,
+            "supports_audio": True,
+            "supports_negative_prompt": True,
+            "supports_seed": True,
+            "supports_upscale": True,
+            "max_reference_images": 0,
+        }
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,

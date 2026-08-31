@@ -34,22 +34,30 @@ logger = logging.getLogger(__name__)
 DEFAULT_BROWSER_CDP_PORT = 9222
 DEFAULT_BROWSER_CDP_URL = f"http://127.0.0.1:{DEFAULT_BROWSER_CDP_PORT}"
 
+_DARWIN_APPS = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Brave Origin.app/Contents/MacOS/Brave Origin",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+)
 
-@dataclass(frozen=True)
-class _Browser:
-    """Per-browser install/profile locations for one Chromium-family product."""
-    key: str
-    mac_app: str
-    mac_support: tuple[str, ...]          # under ~/Library/Application Support
-    win_bins: tuple[str, ...]             # shutil.which names on Windows
-    win_install: tuple[tuple[str, ...], ...]  # under Program Files / LOCALAPPDATA
-    win_profile: tuple[str, ...]          # under LOCALAPPDATA
-    linux_bins: tuple[str, ...]           # shutil.which names on Linux
-    linux_paths: tuple[str, ...]          # known absolute install paths
-    linux_config: str                     # under $XDG_CONFIG_HOME
-    # PATH names tried by chromium_executable() when they differ from linux_bins
-    # (channel/alias binaries are launch candidates only).
-    linux_exec: tuple[str, ...] | None = None
+_WINDOWS_BROWSER_GROUPS = (
+    (("chrome.exe", "chrome"), (("Google", "Chrome", "Application", "chrome.exe"),)),
+    (
+        ("chromium.exe", "chromium"),
+        (("Chromium", "Application", "chrome.exe"), ("Chromium", "Application", "chromium.exe")),
+    ),
+    (("brave.exe", "brave"), (("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),)),
+    (
+        ("brave-origin.exe", "brave-origin"),
+        (
+            ("BraveSoftware", "Brave-Origin", "Application", "brave.exe"),
+            ("BraveSoftware", "Brave-Origin", "Application", "brave-origin.exe"),
+        ),
+    ),
+    (("msedge.exe", "msedge"), (("Microsoft", "Edge", "Application", "msedge.exe"),)),
+)
 
 
 # Launch-candidate order (chrome, chromium, brave, brave-origin, edge) is the tuple
@@ -83,25 +91,30 @@ _BROWSERS = (
         (("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),),
         ("BraveSoftware", "Brave-Browser", "User Data"),
         ("brave-browser", "brave-browser-stable", "brave"),
-        ("/usr/bin/brave-browser", "/usr/bin/brave-browser-stable", "/usr/bin/brave",
-         "/snap/bin/brave", "/opt/brave.com/brave/brave-browser", "/opt/brave.com/brave/brave",
-         "/opt/brave-bin/brave"),
-        "BraveSoftware/Brave-Browser"),
-    _Browser(
-        "brave-origin", "/Applications/Brave Origin.app/Contents/MacOS/Brave Origin",
-        ("BraveSoftware", "Brave-Origin"), ("brave-origin.exe", "brave-origin"),
-        (("BraveSoftware", "Brave-Origin", "Application", "brave.exe"),
-         ("BraveSoftware", "Brave-Origin", "Application", "brave-origin.exe")),
-        ("BraveSoftware", "Brave-Origin", "User Data"),
+        (
+            "/usr/bin/brave-browser",
+            "/usr/bin/brave-browser-stable",
+            "/usr/bin/brave",
+            "/snap/bin/brave",
+            "/opt/brave.com/brave/brave-browser",
+            "/opt/brave.com/brave/brave",
+            "/opt/brave-bin/brave",
+        ),
+    ),
+    # Brave Origin is a SEPARATE product identity (side-by-side installable
+    # with Brave), so it gets its own group: the executable fallback in
+    # chromium_executable() matches by group, and mixing Origin binaries into
+    # the brave group would let a "brave" lookup resolve to the Origin binary
+    # (or vice versa) — driving the wrong browser's profile.
+    (
         ("brave-origin", "brave-origin-nightly"),
-        ("/usr/bin/brave-origin", "/opt/brave.com/brave-origin/brave-origin",
-         "/opt/brave.com/brave-origin-nightly/brave-origin"),
-        "BraveSoftware/Brave-Origin", linux_exec=("brave-origin",)),
-    _Browser(
-        "edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ("Microsoft Edge",), ("msedge.exe", "msedge"),
-        (("Microsoft", "Edge", "Application", "msedge.exe"),),
-        ("Microsoft", "Edge", "User Data"),
+        (
+            "/usr/bin/brave-origin",
+            "/opt/brave.com/brave-origin/brave-origin",
+            "/opt/brave.com/brave-origin-nightly/brave-origin",
+        ),
+    ),
+    (
         ("microsoft-edge", "microsoft-edge-stable", "msedge"),
         ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
          "/opt/microsoft/msedge/microsoft-edge", "/opt/microsoft/msedge/msedge"),
@@ -725,7 +738,12 @@ def _debug_candidate_paths(system: str):
 # ---------------------------------------------------------------------------
 
 # Canonical Chromium browser keys we support for real-profile driving.
-_CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium")
+# ``brave-origin`` is Brave's standalone paid build: same Chromium core, but a
+# fully distinct install identity (BraveSoftware/Brave-Origin product path,
+# ``BraveOHTML`` ProgId, ``com.brave.Browser.origin`` bundle id) so it
+# side-by-side installs with regular Brave — its profile is NOT under
+# Brave-Browser and must never be conflated with the ``brave`` key.
+_CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium", "brave-origin")
 
 # Windows UserChoice ProgId prefixes → canonical browser key. Matched
 # case-insensitively by prefix so version suffixes (e.g. ``ChromeHTML.X``)
@@ -736,6 +754,9 @@ _CHROMIUM_BROWSERS = ("chrome", "edge", "brave", "chromium")
 _WINDOWS_PROGID_MAP = (
     ("chromehtml", "chrome"),
     ("msedgehtm", "edge"),
+    # Brave Origin stable is ``BraveOHTML`` (brave-core install_static). Listed
+    # before ``bravehtml`` for clarity; the prefixes don't collide either way.
+    ("braveohtml", "brave-origin"),
     ("bravehtml", "brave"),
     ("chromiumhtm", "chromium"),
 )
@@ -749,6 +770,9 @@ _WINDOWS_CHANNEL_PROGIDS = (
     "chromebhtml", "chromedhtml", "chromesshtml", "chromecanaryhtml",
     "msedgebhtml", "msedgedhtml", "msedgechtml",
     "bravebetahtml", "bravenightlyhtml",
+    # Brave Origin channels (brave-core install_static): Beta=BraveOBHTML,
+    # Dev=BraveODHTML, Nightly/SxS=BraveOSHTM (no trailing L — 10-char cap).
+    "braveobhtml", "braveodhtml", "braveoshtm",
 )
 
 # Linux xdg default-web-browser .desktop name fragments → canonical STABLE key.
@@ -760,6 +784,11 @@ _LINUX_DESKTOP_MAP = (
     ("google-chrome", "chrome"),
     ("com.google.chrome", "chrome"),
     ("chromium", "chromium"),
+    # ORDER MATTERS: ``brave-origin.desktop`` contains the bare ``brave``
+    # fragment, so the substring scan must hit the Origin entry first —
+    # otherwise an Origin default resolves to stable Brave and real-profile
+    # mode drives a DIFFERENT browser's profile (wrong-principal, #95549).
+    ("brave-origin", "brave-origin"),
     ("brave", "brave"),
     ("microsoft-edge", "edge"),
     ("com.microsoft.edge", "edge"),
@@ -773,6 +802,7 @@ _LINUX_CHANNEL_FRAGMENTS = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
     "microsoft-edge-beta", "microsoft-edge-dev", "microsoft-edge-canary",
     "brave-browser-beta", "brave-browser-nightly", "brave-browser-dev",
+    "brave-origin-beta", "brave-origin-nightly", "brave-origin-dev",
 )
 
 # Where sandboxed Linux packages keep the profile instead of $XDG_CONFIG_HOME.
@@ -793,6 +823,10 @@ _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"),
     ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"),
+    # Brave Origin reuses the Brave bundle id with an ``.origin`` suffix
+    # (Homebrew cask: com.brave.Browser.origin). Exact matching keeps it from
+    # ever being read as plain ``com.brave.browser``.
+    ("com.brave.browser.origin", "brave-origin"),
     ("org.chromium.chromium", "chromium"),
 )
 
@@ -801,6 +835,8 @@ _DARWIN_CHANNEL_BUNDLES = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
     "com.microsoft.edgemac.beta", "com.microsoft.edgemac.dev", "com.microsoft.edgemac.canary",
     "com.brave.browser.beta", "com.brave.browser.nightly",
+    "com.brave.browser.origin.beta", "com.brave.browser.origin.dev",
+    "com.brave.browser.origin.nightly",
 )
 
 # Sentinel returned when the OS default is a recognized-but-unsupported
@@ -833,6 +869,11 @@ def _real_profile_relparts(browser: str) -> tuple:
             ("Chromium", "User Data"),
             "chromium",
         ),
+        "brave-origin": (
+            ("BraveSoftware", "Brave-Origin"),
+            ("BraveSoftware", "Brave-Origin", "User Data"),
+            "BraveSoftware/Brave-Origin",
+        ),
     }[browser]
 
 
@@ -850,11 +891,7 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
         return None
     system = system or platform.system()
     mac_parts, win_parts, linux_name = _real_profile_relparts(browser)
-    if system == "Windows":
-        home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    else:
-        home = os.environ.get("HOME") or os.path.expanduser("~")
-        home = home.replace("\\", "/")
+    home = os.path.expanduser("~")
     if system == "Darwin":
         return posixpath.join(home, "Library", "Application Support", *mac_parts)
     if system == "Windows":
@@ -894,6 +931,7 @@ def chromium_executable(browser: str, system: str | None = None) -> str | None:
             "chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "chromium": "/Applications/Chromium.app/Contents/MacOS/Chromium",
             "brave": "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "brave-origin": "/Applications/Brave Origin.app/Contents/MacOS/Brave Origin",
             "edge": "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         }[browser]
         return app if os.path.isfile(app) else None
@@ -902,6 +940,10 @@ def chromium_executable(browser: str, system: str | None = None) -> str | None:
             "chrome": (("Google", "Chrome", "Application", "chrome.exe"),),
             "chromium": (("Chromium", "Application", "chrome.exe"), ("Chromium", "Application", "chromium.exe")),
             "brave": (("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),),
+            "brave-origin": (
+                ("BraveSoftware", "Brave-Origin", "Application", "brave.exe"),
+                ("BraveSoftware", "Brave-Origin", "Application", "brave-origin.exe"),
+            ),
             "edge": (("Microsoft", "Edge", "Application", "msedge.exe"),),
         }[browser]
         bases = [
@@ -916,6 +958,7 @@ def chromium_executable(browser: str, system: str | None = None) -> str | None:
         "chrome": ("google-chrome", "google-chrome-stable"),
         "chromium": ("chromium-browser", "chromium"),
         "brave": ("brave-browser", "brave-browser-stable", "brave"),
+        "brave-origin": ("brave-origin",),
         "edge": ("microsoft-edge", "microsoft-edge-stable"),
     }[browser]
     for name in linux:
@@ -1193,6 +1236,33 @@ def _secure_snapshot_root(path: str) -> None:
         logger.debug("could not secure real-profile snapshot dir %s: %s", path, e)
 
 
+def _secure_snapshot_contents(dst: str) -> None:
+    """Owner-only modes for every file/dir INSIDE the snapshot (#96729).
+
+    ``_secure_snapshot_root`` covers the top-level dirs, but the copied files
+    inherit the umask: ``shutil.copy2`` preserves the source's mode (Chrome
+    keeps its own profile 0644 inside a 0700 dir) and ``sqlite3.connect`` on
+    the backup destination creates plain umask files — so Cookies / Login
+    Data / Web Data landed 0644 and any nested profile subdir 0755. The 0700
+    parents contain the damage by default, but the documented
+    ``HERMES_HOME_MODE`` hatch (nginx traversal) makes world-readable children
+    a real exposure — these are the user's live session cookies. Reconciled
+    through the house helpers (``_secure_dir`` / ``_secure_file``) on EVERY
+    snapshot pass, so older snapshots heal too; both helpers already carry the
+    managed-mode / container carve-outs. Best-effort: never blocks a launch.
+    """
+    try:
+        from hermes_cli.config import _secure_dir, _secure_file
+
+        for root, dirs, files in os.walk(dst):
+            for d in dirs:
+                _secure_dir(os.path.join(root, d))
+            for f in files:
+                _secure_file(os.path.join(root, f))
+    except Exception as e:  # best-effort, same policy as _secure_snapshot_root
+        logger.debug("could not secure real-profile snapshot contents %s: %s", dst, e)
+
+
 # Auth files that are SQLite databases: on Windows a running Chrome holds these
 # with an exclusive lock, so a raw file copy raises WinError 32 ("being used by
 # another process") and a naive best-effort skip leaves the copy signed-out.
@@ -1213,26 +1283,36 @@ def _copy_auth_file(src_file: str, dst_file: str) -> bool:
     """
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
     if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
-        try:
-            import sqlite3
-
-            # Read-only URI + immutable-free: we want a consistent committed
-            # snapshot, not to fight the writer. Short busy timeout so a truly
-            # wedged DB fails fast rather than hanging the launch.
-            source = sqlite3.connect(f"file:{src_file}?mode=ro", uri=True, timeout=5)
+        # On a live Chrome on macOS the profile holds
+        # its DBs in a state where mode=ro WITHOUT immutable=1 can hang the
+        # connect/backup indefinitely (the sqlite busy-timeout never fires
+        # because the block happens inside lock negotiation). immutable=1
+        # reads instantly and is correct here: we want a committed snapshot of
+        # a file another process owns, not coordinated writes. A torn read
+        # raises → falls through to the plain-copy fallback below.
+        for uri in (
+            f"file:{src_file}?mode=ro&immutable=1",
+            f"file:{src_file}?mode=ro",
+        ):
             try:
-                out = sqlite3.connect(dst_file)
+                import sqlite3
+
+                # Short busy timeout so a truly wedged DB fails fast rather
+                # than hanging the launch.
+                source = sqlite3.connect(uri, uri=True, timeout=5)
                 try:
-                    with out:
-                        source.backup(out)
+                    out = sqlite3.connect(dst_file)
+                    try:
+                        with out:
+                            source.backup(out)
+                    finally:
+                        out.close()
                 finally:
-                    out.close()
-            finally:
-                source.close()
-            return True
-        except Exception as e:
-            logger.debug("real-profile: sqlite-backup of %s failed (%s); trying raw copy",
-                         src_file, e)
+                    source.close()
+                return True
+            except Exception as e:
+                logger.debug("real-profile: sqlite-backup of %s failed (%s); trying next mode",
+                             src_file, e)
     # Non-DB file, or DB whose backup failed: raw copy.
     try:
         shutil.copy2(src_file, dst_file)
@@ -1305,6 +1385,52 @@ def _profile_is_locked(src: str, source_profile: str) -> bool:
         return False
 
 
+def _real_profile_pin() -> str | None:
+    """Pinned source profile dir name from ``browser.real_profile_pin``.
+
+    Natively the snapshot follows Chrome's
+    ``profile.last_used`` — whichever profile the user touched last. On a
+    machine with a work profile (HM) and a personal profile, that roulette
+    can silently give the agent the wrong identity. When set (e.g.
+    ``"Profile 2"``), the snapshot ALWAYS copies that profile regardless of
+    last_used. Unset → native last_used behavior, unchanged.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            pin = browser_cfg.get("real_profile_pin")
+            if isinstance(pin, str) and pin.strip():
+                return pin.strip()
+    except Exception as e:
+        logger.debug("could not read real_profile_pin: %s", e)
+    return None
+
+
+def _resolve_source_profile(src: str) -> tuple[str | None, str | None]:
+    """Resolve which source profile to copy: pin first, else last_used.
+
+    Returns ``(profile_dir_name, error)``. A configured pin that does not
+    exist under ``src`` FAILS CLOSED with a fixable message — falling back
+    to last_used would silently browse as the wrong identity, which is the
+    exact wrong-principal bug this pin exists to prevent.
+    """
+    pin = _real_profile_pin()
+    if pin:
+        if os.path.isdir(os.path.join(src, pin)):
+            return pin, None
+        return None, (
+            f"browser.real_profile_pin is set to '{pin}' but that profile "
+            f"directory does not exist under {src!r}. Profile directories are "
+            "named like 'Default' or 'Profile 2' — list them with: "
+            f"ls {src!r}. Fix the pin, or remove it to fall back to the "
+            "last-used profile."
+        )
+    return _last_used_profile(src), None
+
+
 def _real_profile_autoclose() -> bool:
     """Whether browser.real_profile_autoclose consent is on (config read).
 
@@ -1323,21 +1449,13 @@ def _real_profile_autoclose() -> bool:
     return False
 
 
-_BROWSER_PROCESS_NAMES = {
-    "chrome": ("chrome", "chrome.exe", "google chrome"),
-    "chromium": ("chromium", "chromium.exe", "chromium-browser"),
-    "brave": ("brave", "brave.exe", "brave-browser"),
-    "edge": ("msedge", "msedge.exe", "microsoft-edge"),
-}
-
-
-def _processes_holding_profile(src: str, browser: str | None = None):
+def _processes_holding_profile(src: str):
     """Yield (psutil.Process) instances holding the user-data-dir ``src`` open.
 
-    Identity discipline mirrors the daemon reaper: a process qualifies only
-    when it is the requested Chromium family and either references THIS
-    user-data-dir explicitly or uses that family's implicit default profile.
-    Any ambiguity (unknown family or unreadable cmdline) is skipped fail-closed.
+    Identity discipline mirrors the daemon reaper: a process qualifies only when
+    it's a Chromium-family binary AND its command line references THIS
+    user-data-dir — so we never terminate an unrelated same-PID process. Any
+    ambiguity (unreadable cmdline) is skipped, fail-closed.
     """
     try:
         import psutil
@@ -1352,46 +1470,24 @@ def _processes_holding_profile(src: str, browser: str | None = None):
         try:
             name = (proc.info.get("name") or "").lower()
             cmd = proc.info.get("cmdline") or []
+            joined = " ".join(cmd)
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
             continue
-        if not cmd:
-            continue
-        argv0 = os.path.basename(cmd[0]).lower() if cmd else ""
         if not any(b in name for b in browser_bins):
             # Some platforms report a generic name; also accept when the binary
             # in argv[0] looks like a browser.
+            argv0 = (cmd[0].lower() if cmd else "")
             if not any(b in argv0 for b in browser_bins):
                 continue
-
-        if browser:
-            expected_names = _BROWSER_PROCESS_NAMES.get(browser, ())
-            if not any(token in name or token in argv0 for token in expected_names):
-                continue
-
-        explicit_dirs: list[str] = []
-        for index, arg in enumerate(cmd):
-            lower = arg.lower()
-            if lower.startswith("--user-data-dir="):
-                explicit_dirs.append(arg.split("=", 1)[1].strip('"\''))
-            elif lower == "--user-data-dir" and index + 1 < len(cmd):
-                explicit_dirs.append(cmd[index + 1].strip('"\''))
-
-        if explicit_dirs:
-            if not any(
-                os.path.normcase(os.path.normpath(candidate)) == norm
-                for candidate in explicit_dirs
-            ):
-                continue
-        elif not browser:
-            # Without a known browser family, an implicit default-dir process
-            # cannot be bound safely to this profile.
+        # Binding: the exact user-data-dir must appear in the cmdline
+        # (--user-data-dir=<src>), normalized for case/separators.
+        if norm not in os.path.normcase(os.path.normpath(joined)) and \
+           f"--user-data-dir={src}".lower() not in joined.lower():
             continue
         yield proc
 
 
-def close_browser_holding_profile(
-    src: str, timeout: float = 15.0, *, browser: str | None = None
-) -> tuple[bool, str]:
+def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool, str]:
     """Terminate the browser process tree holding ``src`` and wait for release.
 
     CONSENTED, DESTRUCTIVE. Only call after the user has agreed to close their
@@ -1406,7 +1502,7 @@ def close_browser_holding_profile(
     except ImportError:
         return False, "psutil unavailable — cannot close the browser automatically."
 
-    procs = list(_processes_holding_profile(src, browser=browser))
+    procs = list(_processes_holding_profile(src))
     if not procs:
         # Nothing we can see holds it. Either already closed, or the holder is
         # a different user / unreadable — caller re-probes the lock.
@@ -1435,7 +1531,9 @@ def close_browser_holding_profile(
     psutil.wait_procs(alive, timeout=3.0)
 
     # The lock releases slightly after the process exits on Windows; poll.
-    source_profile = _last_used_profile(src)
+    source_profile, _resolve_err = _resolve_source_profile(src)
+    if not source_profile:
+        source_profile = _last_used_profile(src)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _profile_is_locked(src, source_profile):
@@ -1472,8 +1570,10 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             f"profile directory for '{browser}' was not found ({src!r}). "
             "Launch that browser at least once, or turn browser.use_real_profile off."
         )
+    source_profile, resolve_err = _resolve_source_profile(src)
+    if resolve_err or not source_profile:
+        return None, resolve_err
     dst = real_profile_copy_dir(browser)
-    source_profile = _last_used_profile(src)
     # Fast lock probe BEFORE any copy: a running browser holds the cookie DB
     # deny-all (Windows), and a blocking file op on it can hang the launch for
     # minutes. On POSIX this never trips (no mandatory locking) so
@@ -1508,14 +1608,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     # Only a copy that previously COMPLETED counts as populated. A half-written
     # tree (no marker) is treated as absent and rebuilt — otherwise a torn first
     # copy poisons freshness forever and only ever gets auth overlays.
-    marker_profile = None
-    if os.path.isfile(marker):
-        try:
-            with open(marker, encoding="utf-8") as fh:
-                marker_profile = fh.read().strip()
-        except OSError as e:
-            logger.debug("real-profile snapshot: could not read done marker: %s", e)
-    populated = marker_profile == source_profile
+    populated = os.path.isfile(marker)
     try:
         os.makedirs(dst, exist_ok=True)
         # Secure the snapshot dir AND its browser-profile parent on EVERY
@@ -1530,11 +1623,43 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         # Base user-data-dir file the browser reads at startup. Cheap; always
         # re-synced so last_used etc. stay current.
         ls_src = os.path.join(src, "Local State")
+        ls_dst = os.path.join(dst, "Local State")
         if os.path.isfile(ls_src):
             try:
-                shutil.copy2(ls_src, os.path.join(dst, "Local State"))
+                shutil.copy2(ls_src, ls_dst)
             except OSError as e:
                 logger.debug("real-profile snapshot: skipped Local State: %s", e)
+
+        # The copy contains ONLY the mirrored Default dir (that is where the
+        # pinned/active profile's auth was mirrored into), but a verbatim
+        # Local State still names the SOURCE profile (e.g. last_used="Profile
+        # 2", info_cache listing Profile 2/4/7). Chrome therefore opens a
+        # missing profile dir and starts SIGNED OUT. Rewrite Local State so
+        # the copy's only profile is Default and it is the last-used one.
+        # CRITICAL: Default's identity entry must be the SOURCE profile's
+        # entry (name + Google account), not the source's own "Default"
+        # entry — the Default DIR holds the source profile's cookies. A
+        # mismatch (cookies belong to profile B, info_cache names profile A) makes Chrome
+        # demand a "Continue as <name>" profile-sign-in reconciliation on
+        # every launch and treat the profile as mid-sign-in.
+        try:
+            import json as _json
+
+            with open(ls_dst, encoding="utf-8") as fh:
+                state = _json.load(fh)
+            prof = state.get("profile")
+            if isinstance(prof, dict):
+                cache = prof.get("info_cache")
+                if isinstance(cache, dict):
+                    src_entry = cache.get(source_profile) or cache.get("Default")
+                    if src_entry:
+                        prof["info_cache"] = {"Default": src_entry}
+                prof["last_used"] = "Default"
+                prof["last_active_profiles"] = ["Default"]
+            with open(ls_dst, "w", encoding="utf-8") as fh:
+                _json.dump(state, fh)
+        except (OSError, ValueError) as e:
+            logger.debug("real-profile snapshot: could not normalize Local State: %s", e)
 
         if not populated:
             # Fresh (or torn-and-rebuilding): drop any partial Default and copy
@@ -1545,10 +1670,6 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             # _mirror_profile_auth below (sqlite online-backup).
             dst_default = os.path.join(dst, "Default")
             try:
-                try:
-                    os.unlink(marker)
-                except OSError:
-                    pass
                 shutil.rmtree(dst_default, ignore_errors=True)
                 shutil.copytree(
                     os.path.join(src, source_profile),
@@ -1559,11 +1680,10 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
                     ignore_dangling_symlinks=True,
                 )
             except shutil.Error as multi:
-                failures = len(multi.args[0]) if multi.args else 0
-                return None, (
-                    f"real-profile snapshot is incomplete: {failures} file(s) "
-                    f"could not be copied from {src}/{source_profile}. Close "
-                    f"{browser} and retry."
+                # Per-file failures (browser mid-write) are non-fatal.
+                logger.info(
+                    "real-profile snapshot: %d file(s) skipped copying %s/%s",
+                    len(multi.args[0]) if multi.args else 0, src, source_profile,
                 )
 
         # Both paths: copy the active profile's auth DBs into Default,
@@ -1592,31 +1712,30 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
                 fh.write(source_profile)
         except OSError as e:
             logger.debug("real-profile snapshot: could not write done marker: %s", e)
+        # Owner-only modes for everything the copies above created — copy2
+        # preserves Chrome's 0644 and sqlite backup files land umask-wide;
+        # these are the user's session cookies (#96729). Runs AFTER the marker
+        # write so the marker itself is covered, and on every pass so
+        # snapshots from older builds heal on their next launch.
+        _secure_snapshot_contents(dst)
     except OSError as e:
         return None, f"could not snapshot the '{browser}' profile into {dst}: {e}"
     return dst, None
 
 
-def cleanup_real_profile_snapshots() -> str | None:
+def cleanup_real_profile_snapshots() -> None:
     """Delete the whole real-profile snapshot store (all copied credentials).
 
     Called when consent is OFF: the copied Cookies / Login Data must not
-    outlive the toggle. Returns an error string if verified removal fails.
+    outlive the toggle. Best-effort and idempotent — missing dir is fine.
     """
     root = str(get_hermes_home() / "browser-profile")
     try:
-        if os.path.lexists(root):
-            if os.path.isdir(root) and not os.path.islink(root):
-                shutil.rmtree(root)
-            else:
-                os.unlink(root)
-            if os.path.lexists(root):
-                return f"real-profile snapshot cleanup did not remove {root}"
+        if os.path.isdir(root):
+            shutil.rmtree(root, ignore_errors=True)
             logger.info("real-profile: removed snapshot store %s (consent off)", root)
     except OSError as e:
-        logger.warning("real-profile cleanup failed for %s: %s", root, e)
-        return f"could not remove real-profile snapshot store {root}: {e}"
-    return None
+        logger.debug("real-profile cleanup failed for %s: %s", root, e)
 
 
 def get_chrome_debug_candidates(system: str) -> list[str]:

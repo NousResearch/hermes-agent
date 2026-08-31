@@ -4236,24 +4236,47 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
-        job_id, err = self._cron_request_guard(request, need_job_id=True, check_draining=True)
-        if err:
-            return err
-        # Optional transient per-run context (standalone `hermes cron run` /
-        # cronjob(action='run', prompt=...)) — same cap + scan as a stored prompt.
-        extra_prompt = body = None
-        with suppress(Exception):
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
+        cron_err = self._check_jobs_available()
+        if cron_err:
+            return cron_err
+        job_id, id_err = self._check_job_id(request)
+        if id_err:
+            return id_err
+        # Optional transient per-run context forwarded from a standalone
+        # `hermes cron run` / cronjob(action='run', prompt=...) — same length
+        # cap and strict injection scan as a stored job prompt.
+        extra_prompt = None
+        try:
             body = await request.json()
+        except Exception:
+            body = None
         if isinstance(body, dict):
             raw_prompt = body.get("prompt")
             if raw_prompt is not None:
                 extra_prompt = str(raw_prompt)
-                prompt_err = self._validate_cron_prompt(extra_prompt)
-                if prompt_err:
-                    return prompt_err
+                if len(extra_prompt) > self._MAX_PROMPT_LENGTH:
+                    return web.json_response(
+                        {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"},
+                        status=400,
+                    )
+                if extra_prompt and _scan_cron_prompt is not None:
+                    scan_error = _scan_cron_prompt(extra_prompt)
+                    if scan_error:
+                        return web.json_response({"error": scan_error}, status=400)
                 extra_prompt = extra_prompt or None
-        return self._job_response(
-            lambda jid: _cron_trigger(jid, extra_prompt=extra_prompt), job_id, notify=False)
+        try:
+            job = _cron_trigger(job_id, extra_prompt=extra_prompt)
+            if not job:
+                return web.json_response({"error": "Job not found"}, status=404)
+            return web.json_response({"job": job})
+        except Exception as e:
+            return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
     async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a

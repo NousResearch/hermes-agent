@@ -38,10 +38,11 @@ __all__ = [
 #
 # CPython converts ``threading.Lock.acquire(timeout=...)`` /
 # ``Thread.join(timeout=...)`` deadlines to an absolute timestamp; very large
-# relative timeouts can overflow the platform wait primitive and raise
-# ``OverflowError`` (#83220). One year is semantically "unbounded" for every
-# wait in this codebase, but Windows exposes a lower CPython primitive limit.
-MAX_SAFE_TIMEOUT_S = min(31_536_000.0, threading.TIMEOUT_MAX)
+# relative timeouts overflow ``time_t`` on macOS and raise
+# ``OverflowError: timestamp out of range for platform time_t`` (#83220).
+# One year is semantically "unbounded" for every wait in this codebase while
+# staying far below any platform conversion limit.
+MAX_SAFE_TIMEOUT_S = 31_536_000.0  # 365 days
 
 # Grace after a deadline fires before concluding the loop thread is blocked and dumping stacks.
 _LOOP_BLOCKED_DUMP_GRACE_S = 5.0
@@ -127,8 +128,8 @@ def clamp_timeout(timeout: Optional[float]) -> Optional[float]:
     * Non-positive values become ``None`` (unbounded) — matching the existing
       ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` "0 disables the bound" convention.
     * Values above :data:`MAX_SAFE_TIMEOUT_S` are capped so they can never
-      overflow the platform primitive inside ``Lock.acquire`` /
-      ``Thread.join`` (#83220).
+      overflow ``time_t`` inside ``Lock.acquire`` / ``Thread.join`` on macOS
+      (#83220).
     * Non-numeric values are treated as unset (``None``) with a warning
       rather than crashing the call path they were meant to protect.
     """

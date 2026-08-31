@@ -829,7 +829,7 @@ class TestHydrateTodoStore:
             },
         ]
 
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("run_agent._set_interrupt"):
             agent._hydrate_todo_store(history)
 
         assert agent._todo_store.snapshot()["revision"] == 5
@@ -852,7 +852,7 @@ class TestHydrateTodoStore:
             },
         ]
 
-        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+        with patch("run_agent._set_interrupt"):
             agent._hydrate_todo_store(history)
 
         assert agent._todo_store.snapshot()["revision"] == 2
@@ -2550,7 +2550,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("memory", {"action": "view", "target": "memory"}),
         ("clarify", {"question": "Continue?"}),
         ("read_terminal", {}),
-        ("read_preview", {}),
+        ("desktop_preview", {"action": "read"}),
         ("drive_preview", {"action": "elements"}),
         ("annotate_preview", {"action": "clear"}),
         ("read_window_below", {}),

@@ -1,12 +1,40 @@
 """Routing helpers for inbound user-attached images.
 
-``native`` attaches images as OpenAI-style ``image_url`` parts; ``text`` runs
-``vision_analyze`` up-front and prepends the lossy description (right for
-non-vision models). :func:`decide_image_input_mode` picks once per turn from
-``agent.image_input_mode`` (``auto`` | ``native`` | ``text``): in ``auto`` an
-explicit ``auxiliary.vision`` backend forces ``text`` even for vision-capable
-main models (``native`` is the absolute override); else ``supports_vision``
-(config override or catalog) decides. ``vision_analyze`` stays a tool regardless.
+Two modes:
+
+  native  — attach images as OpenAI-style ``image_url`` content parts on the
+            user turn. Provider adapters (Anthropic, Gemini, Bedrock, Codex,
+            OpenAI chat.completions) already translate these into their
+            vendor-specific multimodal formats.
+
+  text    — run ``vision_analyze`` on each image up-front and prepend the
+            description to the user's text. The model never sees the pixels;
+            it only sees a lossy text summary. This is the pre-existing
+            behaviour and still the right choice for non-vision models.
+
+The decision is made once per message turn by :func:`decide_image_input_mode`.
+It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
+| ``text``, default ``auto``) and the active model's capability metadata.
+
+In ``auto`` mode:
+  - If the user has explicitly configured ``auxiliary.vision``
+    (provider/model/base_url not ``auto``/empty), images route through
+    that backend — the DE-FACTO choice: a user who named a dedicated
+    vision model wants it used, even when the main model has native
+    vision (maintainer decision 2026-08-28, reversing #29135's
+    fallback-only posture).
+  - Otherwise, if the active model reports ``supports_vision=True`` (via
+    config override or models.dev metadata), we attach natively.
+  - Otherwise (non-vision model, no aux backend), text via the default
+    vision_analyze flow.
+  ``agent.image_input_mode: native`` remains the absolute override for
+  users who want native attach despite a configured aux backend.
+
+This keeps ``vision_analyze`` surfaced as a tool in every session — skills
+and agent flows that chain it (browser screenshots, deeper inspection of
+URL-referenced images, style-gating loops) keep working. The routing only
+affects *how user-attached images on the current turn* are presented to the
+main model.
 """
 
 from __future__ import annotations
@@ -326,6 +354,20 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
         and not _clean_str(vision.get("base_url"))
     )
 
+    An explicit backend is the DE-FACTO image route in ``auto`` mode —
+    the user named a dedicated vision model, so images go through it even
+    when the main model could take them natively (maintainer decision,
+    reversing #29135). ``agent.image_input_mode: native`` still forces
+    native; unset/auto aux config leaves native as the default.
+    """
+    if not isinstance(cfg, dict):
+        return False
+    aux = cfg.get("auxiliary") or {}
+    if not isinstance(aux, dict):
+        return False
+    vision = aux.get("vision") or {}
+    if not isinstance(vision, dict):
+        return False
 
 def _probe_managed_runtime(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
     """Managed local runtime verdict: the server receiving the image is the authority
@@ -444,9 +486,31 @@ def decide_image_input_mode(
         return mode_cfg
     if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
         return "text"
-    # Keep the three-argument call contract for callers/tests that replace the lookup hook.
-    extra = {"requested_provider": requested_provider} if requested_provider else {}
-    return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
+
+    # auto: an explicitly configured auxiliary.vision backend is the
+    # DE-FACTO choice — the user named a dedicated vision model, so that's
+    # what they want images to go through, even when the main model has
+    # native vision (maintainer decision, 2026-08-28, reversing #29135's
+    # fallback-only posture: config that only takes effect when the main
+    # model gets worse is a trap, not a setting). Native vision remains
+    # the default for unconfigured installs, and the fallback when the
+    # aux backend is unset.
+    if _explicit_aux_vision_override(cfg):
+        return "text"
+    if requested_provider:
+        supports = _lookup_supports_vision(
+            provider,
+            model,
+            cfg,
+            requested_provider=requested_provider,
+        )
+    else:
+        # Keep the long-standing three-argument call contract for callers and
+        # tests that replace the capability lookup hook.
+        supports = _lookup_supports_vision(provider, model, cfg)
+    if supports is True:
+        return "native"
+    return "text"
 
 
 # Image size handling is REACTIVE: attach at full size and let

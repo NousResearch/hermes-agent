@@ -88,25 +88,44 @@ def _add_prompt_cache_key(
     agent/prompt_cache_scope.py) and takes precedence over the physical ``session_id`` so the key survives
     context-compression session rotation (#79017).
     """
-    # Stable prompt-cache routing for the Codex/Responses aux path, mirroring the main transport
-    # (agent/transports/codex.py::build_kwargs, which sets prompt_cache_key =
-    # _content_cache_key(instructions, tools)). Without this, MoA acting-aggregator and other auxiliary
-    # Responses calls stay cache-cold while the main Responses transport is warm (issue #53735). The key is
-    # content-addressed from the static prefix (instructions + tool schemas) so it stays warm across
-    # turns/fires. Guard the top-level field the same way the main transport does: xAI Responses takes the
-    # key in extra_body (not top-level) and GitHub/Copilot Responses opts out of cache-key routing entirely
-    # — for those hosts, skip it here.
-    from agent.transports.codex import (
-        _bound_prompt_cache_key_field, _cache_scope_from_session_id, _content_cache_key
-    )
+    # An explicit caller body field is authoritative — do not add a duplicate
+    # top-level field whose SDK merge precedence could overwrite it.  But it
+    # must still respect the wire constraint: OpenAI caps ``prompt_cache_key``
+    # at 64 chars (DeepSeek and Zai inherit the same limit via their
+    # OpenAI-compatible APIs) and rejects longer values with HTTP 400.  Bound
+    # caller keys in place with the same hash shape the Responses transport
+    # uses (``_bounded_prompt_cache_key`` in agent/transports/codex.py), so
+    # both transports behave identically for over-length keys.
+    from agent.transports.codex import _bounded_prompt_cache_key
 
-    containers = [c for c in (api_kwargs, api_kwargs.get("extra_body")) if isinstance(c, dict) and "prompt_cache_key" in c]
-    if containers:
-        for c in containers:
-            _bound_prompt_cache_key_field(c)
+    extra_body = api_kwargs.get("extra_body")
+    caller_supplied = "prompt_cache_key" in api_kwargs or (
+        isinstance(extra_body, dict) and "prompt_cache_key" in extra_body
+    )
+    if caller_supplied:
+        if "prompt_cache_key" in api_kwargs:
+            bounded = _bounded_prompt_cache_key(api_kwargs["prompt_cache_key"])
+            if bounded:
+                api_kwargs["prompt_cache_key"] = bounded
+            else:
+                api_kwargs.pop("prompt_cache_key", None)
+        if isinstance(extra_body, dict) and "prompt_cache_key" in extra_body:
+            bounded = _bounded_prompt_cache_key(extra_body["prompt_cache_key"])
+            if bounded:
+                extra_body["prompt_cache_key"] = bounded
+            else:
+                extra_body.pop("prompt_cache_key", None)
         return
+
     if not supports_prompt_cache_key:
         return
+
+    # Reuse the Responses transport's single authoritative hash algorithm and
+    # session-scope normalization so equivalent static prefixes route to the
+    # same cache bucket across modes, without concentrating unrelated
+    # sessions into one shared bucket (see #78941).
+    from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
+
     cache_key = _content_cache_key(
         _static_prompt_instructions(messages), tools, _cache_scope_from_session_id(cache_scope_id or session_id),
     )

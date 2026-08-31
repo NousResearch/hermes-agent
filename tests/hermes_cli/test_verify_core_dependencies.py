@@ -123,6 +123,59 @@ class TestVerifyCoreDependencies:
             assert not mock_resolve.called
             assert not mock_install.called
 
+    @pytest.mark.parametrize("per_package_fallback", [False, True])
+    def test_repair_installs_keep_patched_h2(
+        self,
+        temp_pyproject,
+        fake_venv_python,
+        per_package_fallback,
+    ):
+        """Both repair stages must retain the update-time security pin."""
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
+        probe_count = 0
+        quarantined: list[list[str]] = []
+        heartbeat: list[list[str]] = []
+
+        def fake_subprocess_run(cmd, **kwargs):
+            nonlocal probe_count
+            probe_count += 1
+            if probe_count == 1 or per_package_fallback:
+                return MagicMock(returncode=0, stdout="pathspec\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "hermes_cli.main._resolve_install_target_python", return_value=py
+        ), patch(
+            "hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run
+        ), patch(
+            "hermes_cli.main._run_quarantined_install",
+            side_effect=lambda cmd, **kwargs: quarantined.append(list(cmd)),
+        ), patch(
+            "hermes_cli.main._run_install_with_heartbeat",
+            side_effect=lambda cmd, **kwargs: heartbeat.append(list(cmd)),
+        ):
+            from hermes_cli.main import _verify_core_dependencies_installed
+
+            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+        assert quarantined == [
+            ["uv", "pip", "install", "--reinstall", "-e", ".", "h2==4.4.1"]
+        ]
+        if per_package_fallback:
+            assert heartbeat == [
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--reinstall",
+                    "pathspec==1.1.1",
+                    "h2==4.4.1",
+                ]
+            ]
+        else:
+            assert heartbeat == []
+
 
 
 class TestResolveInstallTargetPython:

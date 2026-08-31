@@ -150,19 +150,20 @@ class TestSessionHygieneThresholds:
         assert approx_tokens < huge_model_threshold
 
 
-@pytest.mark.parametrize("total_exhausted", [True, False])
-def test_hygiene_timeout_warning_names_chat_commands_not_config(total_exhausted):
-    """The chat user cannot edit model config or read second counts; the notice names the
-    slash commands they can run and keeps the timing detail in the log."""
+def test_hygiene_total_ceiling_warning_reports_elapsed_and_progress():
     from gateway.run import _hygiene_compression_timeout_message
 
     warning = _hygiene_compression_timeout_message(
-        total_exhausted=total_exhausted, elapsed=600.4, idle_timeout=30.0, progress_observed=True,
+        total_exhausted=True,
+        elapsed=600.4,
+        idle_timeout=30.0,
+        progress_observed=True,
     )
 
-    assert "/compress" in warning and "/new" in warning
-    assert "600.4" not in warning and "30.0" not in warning
-    assert "auxiliary" not in warning and "/reset" not in warning
+    assert "total ceiling after 600.4s" in warning
+    assert "summary output was observed" in warning
+    assert "30.0s" not in warning
+    assert "no output" not in warning
 
 
 class TestSessionHygieneWarnThreshold:
@@ -807,9 +808,8 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
     # Behavior witness 1: turn-hold expiry must NOT stamp the idle-timeout
     # provenance or send the "no output" user message.
     sent_contents = [m["content"] for m in adapter.sent]
-    # The idle-timeout copy is the only one that adds the `hermes doctor` pointer.
     assert not any(
-        "took too long" in c.lower() and "hermes doctor" in c.lower()
+        "timed out" in c.lower() and "no output" in c.lower()
         for c in sent_contents
     ), f"turn-hold must not send idle-timeout message, got: {sent_contents}"
     assert any(
@@ -843,7 +843,7 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
     # timeout, not a turn-hold deferral. The turn-hold path must use a
     # distinct provenance stamp.
     # (Verified indirectly: the idle-timeout path would have sent the
-    # idle-timeout message, which we already asserted absent above.)
+    # "no output" message, which we already asserted absent above.)
 
 
 @pytest.mark.asyncio
@@ -975,12 +975,12 @@ async def test_session_hygiene_idle_timeout_still_takes_failure_path(
     assert worker_started.is_set()
     assert runner._run_agent.await_count == 1
 
-    # Behavior witness: idle timeout MUST send the idle-timeout message (with the `hermes doctor` pointer).
+    # Behavior witness: idle timeout MUST send the "no output" message.
     sent_contents = [m["content"] for m in adapter.sent]
     assert any(
-        "took too long" in c.lower() and "hermes doctor" in c.lower()
+        "timed out" in c.lower() and "no output" in c.lower()
         for c in sent_contents
-    ), f"idle timeout must send the took-too-long + hermes doctor message, got: {sent_contents}"
+    ), f"idle timeout must send 'no output' message, got: {sent_contents}"
 
     # Behavior witness: idle timeout MUST advance the failure cooldown.
     # The gateway calls _hygiene_cooldown_for_failure + _record_hygiene_cooldown.

@@ -626,9 +626,30 @@ _CONDITION_KEYS = ("fallback_for_toolsets", "requires_toolsets", "fallback_for_t
 
 
 def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
-    """Extract conditional activation fields from parsed frontmatter (absent = ``[]``)."""
-    hermes = _hermes_metadata(frontmatter)
-    return {key: hermes.get(key, []) for key in _CONDITION_KEYS}
+    """Extract conditional activation fields from parsed frontmatter."""
+    metadata = frontmatter.get("metadata")
+    # Handle cases where metadata is not a dict (e.g., a string from malformed YAML)
+    if not isinstance(metadata, dict):
+        metadata = {}
+    hermes = metadata.get("hermes") or {}
+    if not isinstance(hermes, dict):
+        hermes = {}
+    return {
+        "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
+        "requires_toolsets": hermes.get("requires_toolsets", []),
+        "fallback_for_tools": hermes.get("fallback_for_tools", []),
+        "requires_tools": hermes.get("requires_tools", []),
+        # Gateway-channel gate (maintainer-directed, skills-index slim):
+        # list of session platforms (e.g. ["msteams"]) the skill is FOR.
+        # Unlike top-level ``platforms:`` (host OS), this hides the skill
+        # from the index on every other channel — the teams-meeting
+        # pipeline has no business in a desktop or telegram session's
+        # index. Empty/absent = visible everywhere (backward compat).
+        "session_platforms": hermes.get("session_platforms", []),
+    }
+
+
+# ── Skill config extraction ───────────────────────────────────────────────
 
 
 def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:

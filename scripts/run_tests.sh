@@ -127,12 +127,9 @@ done
 # The runner's own documented environment knobs must survive the hermetic
 # `env -i` below, or they are silent no-ops for anyone invoking this script:
 #
-#   * HERMES_TEST_WORKERS / PATHS / FILE_TIMEOUT / FILE_RETRIES are read by
-#     run_tests_parallel.py at argparse-default time — inside the stripped
-#     environment.
-#   * HERMES_TEST_SLICE is deliberately converted to a command-line argument
-#     below. It selects this top-level suite run, but must not leak into
-#     subprocesses started by tests that exercise the runner themselves.
+#   * HERMES_TEST_WORKERS / PATHS / FILE_TIMEOUT / FILE_RETRIES / SLICE are
+#     read by run_tests_parallel.py at argparse-default time — inside the
+#     stripped environment.
 #   * HERMES_TEST_IMAGE is read by tests/docker/conftest.py to skip its
 #     session-scoped `docker build`. CI's docker.yml sets it to the image
 #     the build step just loaded; stripping it made every per-file pytest
@@ -146,19 +143,11 @@ done
 # credential can leak" property stays auditable at a glance.
 TEST_ENV=()
 for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
-  HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES; do
+  HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")
   fi
 done
-
-# Consume the CI slice at this boundary rather than forwarding it as an
-# environment variable. The runner's per-file pytest subprocesses (and any
-# nested runner probes they create) must see the complete explicit test scope.
-TEST_SLICE_ARGS=()
-if [ -n "${HERMES_TEST_SLICE:-}" ]; then
-  TEST_SLICE_ARGS=(--slice "$HERMES_TEST_SLICE")
-fi
 
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
@@ -191,4 +180,4 @@ exec env -i \
   ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
-  "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "${TEST_SLICE_ARGS[@]}" "$@"
+  "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

@@ -1,7 +1,5 @@
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
-import desktopSlashRegistry from './desktop-slash-registry.json'
-
 export interface CommandsCatalogSection {
   name: string
   pairs: [string, string][]
@@ -249,15 +247,6 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('compress'),
     argumentMode: 'text'
   },
-  // /btw must be an action (prompt.btw RPC), not exec: the slash worker
-  // prints the answer after process_command returns, so Desktop only ever
-  // saw the acknowledgement (#99065). The answer arrives as btw.complete.
-  {
-    name: '/btw',
-    description: 'Ask a side question about this conversation without interrupting it',
-    surface: action('btw'),
-    argumentMode: 'text'
-  },
   {
     name: '/pet',
     description: 'Toggle or adopt a petdex mascot (/pet, /pet list, /pet boba)',
@@ -320,7 +309,17 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
   ],
   messaging: ['/approve', '/deny'],
   settings: ['/skills', '/pets'],
-  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning'],
+  advanced: [
+    '/curator',
+    '/fast',
+    '/insights',
+    '/kanban',
+    '/reasoning',
+    '/reload-mcp',
+    '/reload_mcp',
+    '/reload-skills',
+    '/reload_skills'
+  ],
   // /voice arms SERVER-side capture (voice.record → PortAudio on the backend
   // host) — meaningless on desktop, which has its own composer-native voice
   // conversation (mic menu / Ctrl+B) with client-side capture and playback.

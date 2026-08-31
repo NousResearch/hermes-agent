@@ -2434,7 +2434,8 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            row["worker_pid"], row["claim_lock"],
+            task_id=row["id"], signal_fn=signal_fn,
         )
         # A live worker of ours must keep its claim (else a duplicate spawns beside it).
         if _worker_survived_termination(termination):
@@ -2587,7 +2588,9 @@ def suspend_task_for_watchdog(
         return False
 
     terminate = termination_fn or (
-        lambda pid, lock: _terminate_reclaimed_worker(pid, lock)
+        lambda pid, lock: _terminate_reclaimed_worker(
+            pid, lock, task_id=task_id
+        )
     )
     termination = terminate(row["worker_pid"], row["claim_lock"])
     if not (
@@ -3711,7 +3714,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     termination: Optional[dict[str, Any]] = None
     if row["status"] == "running":
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"]
+            row["worker_pid"], row["claim_lock"], task_id=task_id
         )
         if not termination.get("terminated"):
             _defer_reclaim_for_live_worker(

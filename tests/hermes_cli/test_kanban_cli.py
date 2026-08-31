@@ -189,6 +189,26 @@ def test_operator_stop_fails_closed_when_worker_survives(
         assert any(event.kind == "reclaim_deferred" for event in events)
 
 
+def test_local_worker_pid_survives_hostname_alias_drift(monkeypatch):
+    monkeypatch.setattr(kb, "_claimer_id", lambda: "Mac:999")
+    monkeypatch.setattr(
+        kb,
+        "_pid_matches_task_worker",
+        lambda pid, task_id: (pid, task_id) == (92905, "t_exact"),
+    )
+
+    assert kb._claim_is_host_local(
+        "Mikes-Mac-mini.local:85622",
+        pid=92905,
+        task_id="t_exact",
+    )
+    assert not kb._claim_is_host_local(
+        "remote-host:85622",
+        pid=92905,
+        task_id="t_other",
+    )
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

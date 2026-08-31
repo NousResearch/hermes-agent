@@ -149,6 +149,23 @@ describe('OfficePreviewView', () => {
     expect(screen.getByRole('gridcell', { name: 'Ada' }).className).toMatch(/min-w-/)
   })
 
+  it('renders spreadsheet cells in a Calibri-like sans, not the Desktop mono stack', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'spreadsheet',
+          sheets: [{ name: 'Revenue', rows: cells([['Ada']])}]
+        }}
+        {...labels}
+      />
+    )
+
+    const table = screen.getByRole('grid')
+
+    expect(table.className).not.toMatch(/font-mono/)
+    expect(table.style.fontFamily).toMatch(/Calibri/i)
+  })
+
   it('renders document runs as React text, not HTML', () => {
     const { container } = render(
       <OfficePreviewView

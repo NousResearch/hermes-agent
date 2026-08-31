@@ -3,6 +3,8 @@ import { type ReactNode, useMemo, useState } from 'react'
 import type { OfficeBlock, OfficePreview, OfficeTextRun, SpreadsheetSheet } from '@/lib/ooxml-preview'
 import { cn } from '@/lib/utils'
 
+const SPREADSHEET_FONT = 'Calibri, Carlito, "Segoe UI", "Liberation Sans", Arial, sans-serif'
+
 function columnLabel(index: number) {
   let value = index
   let label = ''
@@ -97,7 +99,11 @@ function SpreadsheetGrid({ formulaBarLabel, sheets }: { formulaBarLabel: string;
         data-testid="office-sheet-scroll"
         style={{ backgroundColor: '#ffffff' }}
       >
-        <table className="w-max min-w-full border-collapse font-mono text-[0.7rem] leading-5" role="grid">
+        <table
+          className="w-max min-w-full border-collapse text-[11pt] leading-5"
+          role="grid"
+          style={{ fontFamily: SPREADSHEET_FONT }}
+        >
           <thead className="sticky top-0 z-10 bg-muted/80">
             <tr>
               <th className="sticky left-0 z-20 w-10 border-b border-r border-border/60 bg-muted/80 px-1 py-1 text-right font-medium text-muted-foreground" />

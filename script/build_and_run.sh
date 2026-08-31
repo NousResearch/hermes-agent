@@ -29,6 +29,8 @@ drain_running_app() {
 }
 
 build_app() {
+  local python_bin
+
   drain_running_app
   (
     cd "$DESKTOP_DIR"
@@ -37,6 +39,32 @@ build_app() {
 
   test -x "$APP_BINARY"
   test -f "$STAMP"
+
+  if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
+    python_bin="$ROOT_DIR/.venv/bin/python"
+  elif [ -x "$ROOT_DIR/venv/bin/python" ]; then
+    python_bin="$ROOT_DIR/venv/bin/python"
+  else
+    echo "No project Hermes Python runtime is available for macOS signing fixup." >&2
+    exit 1
+  fi
+
+  (
+    cd "$ROOT_DIR"
+    "$python_bin" - "$DESKTOP_DIR" <<'PYEOF'
+import sys
+from pathlib import Path
+
+from hermes_cli.main import _desktop_macos_relaunchable_fixup
+
+ok = _desktop_macos_relaunchable_fixup(
+    Path(sys.argv[1]),
+    publisher_signing_configured=False,
+)
+raise SystemExit(0 if ok else 1)
+PYEOF
+  )
+  codesign --verify --deep --strict "$APP_BUNDLE"
 }
 
 open_app() {

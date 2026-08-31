@@ -102,9 +102,49 @@ class TestInterruptAutoPause:
             cli._maybe_continue_goal_after_turn()
 
         rendered = "\n".join(str(item) for item in notices)
-        assert "failed" in rendered.lower()
+        assert "could not be confirmed" in rendered.lower()
+        assert "do not retry blindly" in rendered.lower()
         assert "Goal paused" not in rendered
         assert cli._pending_input.empty()
+
+
+class TestAuthoritativeContinuationAdmission:
+    @pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
+    def test_read_failure_is_visible_and_never_invokes_judge(
+        self, hermes_home, monkeypatch, failure
+    ):
+        from hermes_cli import goals
+
+        sid = f"sid-continuation-{failure}-{uuid.uuid4().hex}"
+        cli, _mgr = _make_cli_with_goal(sid)
+        cli._goal_manager = None
+        cli.conversation_history = [
+            {"role": "assistant", "content": "work remains"},
+        ]
+
+        class FailingDB:
+            def get_meta(self, _key):
+                if failure == "read":
+                    raise OSError("private continuation detail")
+                return "{invalid goal json"
+
+        monkeypatch.setattr(
+            goals,
+            "_get_session_db",
+            (lambda: None) if failure == "missing" else (lambda: FailingDB()),
+        )
+        notices = []
+        with patch("hermes_cli.goals.judge_goal") as judge, patch(
+            "cli._cprint", side_effect=notices.append
+        ):
+            cli._maybe_continue_goal_after_turn()
+
+        judge.assert_not_called()
+        assert cli._pending_input.empty()
+        rendered = "\n".join(str(item) for item in notices)
+        assert "Goal status unavailable" in rendered
+        assert "No active goal" not in rendered
+        assert "private continuation detail" not in rendered
 
 
 

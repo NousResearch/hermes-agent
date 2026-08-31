@@ -137,6 +137,10 @@ class CompressionSessionBusyError(RuntimeError):
     """A non-owner tried to write while compression owns the session."""
 
 
+class CompressionMetadataConflictError(RuntimeError):
+    """Transactional state metadata changed before compression publication."""
+
+
 class SessionCompressionInProgressError(CompressionSessionBusyError):
     """A concurrent writer collided with a *live* compression lock — transient
     (the compressor publishes in seconds; ``_execute_write`` waits), unlike the

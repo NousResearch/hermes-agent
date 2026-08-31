@@ -133,6 +133,99 @@ class TestGoalMigratesOnRotation:
                 assert migrated.goal == "finish the migration"
             goals._DB_CACHE.clear()
 
+    def test_goal_read_failure_blocks_rotation_and_surfaces_status(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_GOAL_READ_FAILURE"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+        notices: list[str] = []
+        agent._emit_warning = notices.append
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+            (tmp_path / ".hermes").mkdir(exist_ok=True)
+            import hermes_cli.goals as goals
+
+            goals._DB_CACHE.clear()
+            with patch.object(goals, "_get_session_db", return_value=db):
+                goals.save_goal(
+                    parent, goals.GoalState(goal="must remain on the live parent")
+                )
+                real_get_meta = db.get_meta
+
+                def fail_goal_read(key):
+                    if key == goals._meta_key(parent):
+                        raise OSError("private migration detail")
+                    return real_get_meta(key)
+
+                with patch.object(db, "get_meta", side_effect=fail_goal_read):
+                    returned, _ = agent._compress_context(
+                        _msgs(), "sys", approx_tokens=120_000
+                    )
+
+                assert returned
+                assert agent.session_id == parent
+                assert db.get_session(parent)["ended_at"] is None
+                assert db.find_live_compression_child(parent) is None
+                assert goals.GoalState.from_json(
+                    real_get_meta(goals._meta_key(parent))
+                ).status == "active"
+                assert any(
+                    "goal" in notice.lower()
+                    and "compression" in notice.lower()
+                    and "not" in notice.lower()
+                    for notice in notices
+                )
+                assert all("private migration detail" not in notice for notice in notices)
+            goals._DB_CACHE.clear()
+
+    def test_goal_cas_conflict_rolls_back_session_publication(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_GOAL_CAS_CONFLICT"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+        notices: list[str] = []
+        agent._emit_warning = notices.append
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+            (tmp_path / ".hermes").mkdir(exist_ok=True)
+            import hermes_cli.goals as goals
+
+            goals._DB_CACHE.clear()
+            with patch.object(goals, "_get_session_db", return_value=db):
+                goals.save_goal(parent, goals.GoalState(goal="preserve concurrent state"))
+                real_publish = db.publish_compression_child
+
+                def drift_goal_then_publish(**kwargs):
+                    state = goals.load_goal_authoritative(parent)
+                    state.paused_reason = "concurrent authoritative change"
+                    goals.save_goal(parent, state)
+                    return real_publish(**kwargs)
+
+                with patch.object(
+                    db,
+                    "publish_compression_child",
+                    side_effect=drift_goal_then_publish,
+                ):
+                    returned, _ = agent._compress_context(
+                        _msgs(), "sys", approx_tokens=120_000
+                    )
+
+                assert returned
+                assert agent.session_id == parent
+                assert db.get_session(parent)["ended_at"] is None
+                assert db.find_live_compression_child(parent) is None
+                state = goals.load_goal_authoritative(parent)
+                assert state.status == "active"
+                assert state.paused_reason == "concurrent authoritative change"
+                assert any(
+                    "goal changed" in notice.lower()
+                    and "compression was not committed" in notice.lower()
+                    for notice in notices
+                )
+            goals._DB_CACHE.clear()
+
 
 class TestOrphanRollbackOnCreateFailure:
     def test_rolls_back_to_parent_when_child_create_fails(self, tmp_path: Path):

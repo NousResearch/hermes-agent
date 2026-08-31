@@ -716,7 +716,12 @@ def _cmd_goal(rid, params, session, name, arg):
             max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
         except Exception:
             max_turns = 20
-        mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns)
+        try:
+            mgr = goals.GoalManager.load_authoritative(
+                session_id=sid_key, default_max_turns=max_turns
+            )
+        except goals.GoalPersistenceError:
+            return _err(rid, 5031, goals.goal_status_failure_message())
         from hermes_cli.goal_command import dispatch_goal_command
         result = dispatch_goal_command(
             mgr, arg, authorize_gate=lambda: None,

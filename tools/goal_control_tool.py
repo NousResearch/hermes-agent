@@ -105,6 +105,7 @@ def goal_control_tool(
         from hermes_cli.goals import (
             GoalConflictError,
             GoalManager,
+            GoalMutationOutcomeUnknownError,
             GoalPostconditionError,
             load_goal_snapshot_authoritative,
         )
@@ -227,6 +228,15 @@ def goal_control_tool(
         return _error(
             code,
             "persisted goal changed while applying the requested action",
+            session_id=caller_session_id,
+        )
+    except GoalMutationOutcomeUnknownError:
+        return _error(
+            "mutation_outcome_unknown",
+            (
+                "goal mutation may have committed, but persisted state could not be "
+                "verified; do not retry blindly without first reading authoritative status"
+            ),
             session_id=caller_session_id,
         )
     except GoalPostconditionError:

@@ -2912,18 +2912,19 @@ def _parent_deliberately_ended(session_db: Any, session_id: str) -> bool:
         return False
 
 
-def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: Any) -> None:
+def _carry_session_state_to_child(
+    agent: Any, old_session_id: str, old_title: Any, *, goal_migrated: bool = False
+) -> None:
     """Migrate /goal, /heartbeat, /loop state and the title from the parent to the child.
     Each lookup is a flat per-session read with no parent walk, so state would silently die at the boundary. The title
     is carried unchanged (renumbering per rotation made one session look like many); its provenance is read BEFORE the
     transfer clears the ancestor's row, then restored so an inherited auto-title stays upgradeable.
     """
-    with _swallow('Could not migrate goal on compression: %s'):
-        # Carry a persistent /goal onto the continuation session. Compression mints a fresh child id;
-        # load_goal does a flat per-session lookup with no parent walk, so without this an active goal
-        # silently dies at the boundary (#33618).
-        from hermes_cli.goals import migrate_goal_to_session
-        migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
+    if not goal_migrated:
+        with _swallow('Could not migrate goal on compression: %s'):
+            # Legacy callers that publish outside the atomic rotation path still need the move.
+            from hermes_cli.goals import migrate_goal_to_session
+            migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
     with _swallow('Could not migrate heartbeat on compression: %s'):
         from hermes_cli.heartbeat import migrate_heartbeat_to_session
         migrate_heartbeat_to_session(old_session_id, agent.session_id)
@@ -2981,17 +2982,36 @@ def _publish_rotated_compaction(
         _profile_for_child = None
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = mint_session_id()
+    try:
+        from hermes_cli.goals import prepare_goal_migration
+
+        goal_migration = prepare_goal_migration(old_session_id, new_session_id)
+    except Exception:
+        agent._emit_warning(
+            "Goal status unavailable during context compression. Compression was not committed; "
+            "the current session remains active and any persisted goal stays bound to it."
+        )
+        raise
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    agent._session_db.publish_compression_child(
-        parent_session_id=old_session_id, child_session_id=new_session_id,
-        source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=agent.model,
-        model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
-        cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
-        compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
-        require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
-        watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
-        watermark_ceiling=_foreign_tail_ceiling,
-    )
+    from hermes_state_errors import CompressionMetadataConflictError
+    try:
+        agent._session_db.publish_compression_child(
+            parent_session_id=old_session_id, child_session_id=new_session_id,
+            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=agent.model,
+            model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
+            cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
+            compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
+            require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
+            watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
+            watermark_ceiling=_foreign_tail_ceiling,
+            state_meta_changes=(list(goal_migration.changes) if goal_migration is not None else None),
+        )
+    except CompressionMetadataConflictError:
+        agent._emit_warning(
+            "Goal changed during context compression. Compression was not committed; "
+            "check /goal status before retrying compression."
+        )
+        raise
     # `already_present` stamping is done by run_agent's _sync_persisted_markers;
     # this branch covers inserted/merged only; direct callers must use that wrapper.
     if compressed_user_turn_outcome in {"inserted", "merged"}:
@@ -3013,7 +3033,9 @@ def _publish_rotated_compaction(
     agent._db_flush_scan_prefix = None
     _rebind_session_context(agent.session_id)
     agent._session_db_created = True
-    _carry_session_state_to_child(agent, old_session_id, old_title)
+    _carry_session_state_to_child(
+        agent, old_session_id, old_title, goal_migrated=True
+    )
 
 
 def _warn_summary_or_aux_fallback(agent: Any) -> None:

@@ -2249,9 +2249,17 @@ class CLICommandsMixin:
     # ---- /goal, /loop, /subgoal -----------------------------------------------------------
     def _handle_goal_command(self, cmd: str) -> None:
         from hermes_cli.goal_command import dispatch_goal_command
-        from hermes_cli.goals import last_user_message_content
+        from hermes_cli.goals import (
+            GoalPersistenceError,
+            goal_status_failure_message,
+            last_user_message_content,
+        )
 
-        mgr = self._session_manager(self._get_goal_manager, "Goals")
+        try:
+            mgr = self._session_manager(self._get_goal_manager, "Goals")
+        except GoalPersistenceError:
+            _cp(f"  {goal_status_failure_message()}")
+            return
         if mgr is None:
             return
         result = dispatch_goal_command(
@@ -2296,16 +2304,29 @@ class CLICommandsMixin:
     def _handle_subgoal_command(self, cmd: str) -> None:
         """Dispatch /subgoal: bare → show, ``<text>`` → append, ``remove <n>`` (1-based), ``clear``.
         Subgoals join the judge + continuation prompts at the next turn boundary (no kick)."""
+        from hermes_cli.goals import (
+            GoalPersistenceError,
+            goal_mutation_failure_message,
+            goal_status_failure_message,
+        )
+
         parts = (cmd or "").strip().split(None, 2)
         arg = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
-        mgr = self._session_manager(self._get_goal_manager, "Goals")
+        try:
+            mgr = self._session_manager(self._get_goal_manager, "Goals")
+        except GoalPersistenceError:
+            _cp(f"  {goal_status_failure_message()}")
+            return
         if mgr is None:
             return
-        if not mgr.has_goal():
-            return _cp(_dim_line('No active goal. Set one with /goal <text>.'))
-        if not arg:  # list current subgoals
-            _cp(f"  {mgr.status_line()}")
-            return _cp(f"  {mgr.render_subgoals()}")
+        try:
+            if not mgr.has_goal():
+                return _cp(_dim_line('No active goal. Set one with /goal <text>.'))
+            if not arg:  # list current subgoals
+                _cp(f"  {mgr.status_line()}")
+                return _cp(f"  {mgr.render_subgoals()}")
+        except GoalPersistenceError:
+            return _cp(f"  {goal_status_failure_message()}")
         tokens = arg.split(None, 1)
         verb = tokens[0].lower()
         rest = tokens[1].strip() if len(tokens) > 1 else ""
@@ -2316,19 +2337,31 @@ class CLICommandsMixin:
                 idx = int(rest.split()[0])
             except ValueError:
                 return _cp("  /subgoal remove: <n> must be an integer (1-based index).")
-            removed = _attempt("/subgoal remove", (IndexError, RuntimeError), mgr.remove_subgoal, idx)
-            if removed is not _FAILED:
-                _cp(f"  ✓ Removed subgoal {idx}: {removed}")
+            try:
+                removed = mgr.remove_subgoal(idx)
+            except GoalPersistenceError as exc:
+                return _cp(f"  {goal_mutation_failure_message(exc)}")
+            except (IndexError, RuntimeError) as exc:
+                return _cp(f"  /subgoal remove: {exc}")
+            _cp(f"  ✓ Removed subgoal {idx}: {removed}")
         elif verb == "clear":
-            prev = _attempt("/subgoal clear", RuntimeError, mgr.clear_subgoals)
-            if prev is not _FAILED:
-                _cp(f"  ✓ Cleared {_plural(prev, 'subgoal')}." if prev
-                    else _dim_line('No subgoals to clear.'))
+            try:
+                prev = mgr.clear_subgoals()
+            except GoalPersistenceError as exc:
+                return _cp(f"  {goal_mutation_failure_message(exc)}")
+            except RuntimeError as exc:
+                return _cp(f"  /subgoal clear: {exc}")
+            _cp(f"  ✓ Cleared {_plural(prev, 'subgoal')}." if prev
+                else _dim_line('No subgoals to clear.'))
         else:  # append the whole arg as a new subgoal
-            text = _attempt("/subgoal", (ValueError, RuntimeError), mgr.add_subgoal, arg)
-            if text is not _FAILED:
-                idx = len(mgr.state.subgoals) if mgr.state else 0
-                _cp(f"  ✓ Added subgoal {idx}: {text}")
+            try:
+                text = mgr.add_subgoal(arg)
+            except GoalPersistenceError as exc:
+                return _cp(f"  {goal_mutation_failure_message(exc)}")
+            except (ValueError, RuntimeError) as exc:
+                return _cp(f"  /subgoal: {exc}")
+            idx = len(mgr.state.subgoals) if mgr.state else 0
+            _cp(f"  ✓ Added subgoal {idx}: {text}")
 
     # ---- /skin, /prompt -------------------------------------------------------------------
     def _handle_skin_command(self, cmd: str):

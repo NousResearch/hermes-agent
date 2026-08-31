@@ -149,7 +149,10 @@ export default defineConfig(({ command }) => ({
             // is invisible to the other copy, and useQuery throws "No
             // QueryClient set, use QueryClientProvider to set one" on the
             // launch path (#95560). Grouping it forces one shared instance.
-            { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|scheduler|react-router|@tanstack[\\/]react-query)[\\/]/ },
+            {
+              name: 'vendor-react',
+              test: /node_modules[\\/](react|react-dom|scheduler|react-router|@tanstack[\\/]react-query)[\\/]/
+            },
             {
               name: 'vendor-md',
               test: /node_modules[\\/](property-information|hast-util-[^\\/]+|mdast-util-[^\\/]+|micromark[^\\/]*|unist-util-[^\\/]+|vfile[^\\/]*|unified|stringify-entities|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|devlop|style-to-js|style-to-object|clsx)[\\/]/

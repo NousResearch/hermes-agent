@@ -141,15 +141,13 @@ class GatewayBusySessionMixin:
         return removed
 
     def _goal_still_active_for_session(self, session_id: str) -> bool:
-        """Best-effort fresh DB check before running a queued continuation."""
+        """Authoritatively recheck goal state before running a queued continuation."""
         if not session_id:
             return False
-        try:
-            from hermes_cli.goals import GoalManager
-            return GoalManager(session_id=session_id).is_active()
-        except Exception as exc:
-            logger.debug("goal continuation: active-state recheck failed: %s", exc)
-            return False
+        from hermes_cli.goals import load_goal_authoritative
+
+        state = load_goal_authoritative(session_id)
+        return state is not None and state.status == "active"
 
     def _get_max_concurrent_sessions(self) -> Optional[int]:
         """Return the configured active chat session cap, if enabled."""

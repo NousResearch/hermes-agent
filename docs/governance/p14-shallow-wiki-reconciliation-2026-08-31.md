@@ -53,6 +53,7 @@ Every current wiki consumer and writer found in the candidate worktree `scripts/
 | `skills/research/llm-wiki/SKILL.md` (bundled active contract) | was `~/wiki`, now `$HOME/docs/wiki` (WIKI_PATH override kept) | authority contract steering agents/crons | **changed** (controller scope correction) |
 | `skills/research/research-paper-synthesis/SKILL.md` | was `~/wiki`, now `~/docs/wiki` | active synthesis contract steering paper and mashup writes | **changed** (controller completion correction) |
 | `idea_box/flow.py` wiki fallback | was `~/wiki`, now `~/docs/wiki` (WIKI_PATH override kept) | writer (idea provenance fallback) | **changed** (controller scope correction) |
+| `content_engine/kb_retrieve.py` | was `~/wiki`, now `~/docs/wiki` (WIKI_PATH override kept) | reader (personal-content knowledge retrieval) | **changed** (controller completion correction) |
 | `scripts/ceecee_approval_handler.py`, `scripts/proposal_approval_handler.py` | n/a — no wiki references | not wiki consumers | none |
 
 Live cron prompts that reference a wiki tree (LLM-driven, no script): `gitradar` repo-ingest prompt **still instructs writing new entries to `~/wiki/repos/`** — this is the remaining shallow-tree writer producing new shallow-only files; `kensei-mashup-review` reads `/home/kensei/wiki/_meta/paper-mashups.md`; `MrHermagi Daily Lesson` and `kensei-librarian-daily` read `~/wiki`; `research-paper-synthesis-daily` reads `~/wiki` via its prompt text but its preprocess script now defaults to the canonical tree; `knowledge-weekly-digest` already reads `~/docs/wiki`. These prompt/config-only live consumers are documented for the P1.6 live-runtime phase — live cron state was deliberately NOT edited during P1.4 (candidate repo change only; deployment is separate).
@@ -181,6 +182,7 @@ When the archive/symlink phase eventually runs, the safe minimum is: for each of
 ## Test evidence
 
 - RED (witnessed, before any source change): `scripts/run_tests.sh tests/scripts/test_wiki_authority_defaults.py -q` → **4 failed** (all four scripts resolved the shallow default).
-- GREEN (final authority contract): `scripts/run_tests.sh tests/scripts/test_wiki_authority_defaults.py tests/idea_box/test_flow.py -q` → **46 passed, 0 failed**. The authority file itself contains 13 tests: 5 canonical-default behaviours, 5 explicit-override behaviours, 1 alternate-HOME guard and 2 bundled-skill contract cases.
-- Override contracts preserved: `WIKI_DIR` (three scripts), `WIKI_PATH` (research preprocessor and Idea Box), and `KENSEI_WIKI_ROOT` (kensei_review_daily.py) still take precedence over the default; no new environment variable introduced.
+- GREEN (final authority contract): `scripts/run_tests.sh content_engine/tests/test_kb_retrieve.py tests/scripts/test_wiki_authority_defaults.py tests/idea_box/test_flow.py -q` → **50 passed, 0 failed**. The authority file itself contains 13 tests: 5 canonical-default behaviours, 5 explicit-override behaviours, 1 alternate-HOME guard and 2 bundled-skill contract cases.
+- Wider P1.4 regression: nine directly affected test files → **125 passed, 0 failed** using the canonical runner.
+- Override contracts preserved: `WIKI_DIR` (three scripts), `WIKI_PATH` (research preprocessor, Idea Box and content knowledge retrieval), and `KENSEI_WIKI_ROOT` (kensei_review_daily.py) still take precedence over the default; no new environment variable introduced.
 - Tests use disposable `HOME`/`HERMES_HOME` (`monkeypatch.setenv`) only; no live tree or live `HERMES_HOME` is touched by the test suite.

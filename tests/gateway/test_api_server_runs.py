@@ -1672,6 +1672,57 @@ class TestHostedRoomRuns:
         assert denied_body["error"]["code"] == "invalid_room_grant"
 
     @pytest.mark.asyncio
+    async def test_scoped_grant_refresh_refuses_execution_policy_drift(
+        self, auth_adapter, monkeypatch
+    ):
+        """Renewal must pause for reauthorization when the target's execution
+        policy changed since the grant was issued — never silently mint a
+        grant against the drifted policy (blocker 2, #97681 review)."""
+        from gateway import hosted_rooms
+        from gateway.hosted_room_peer import issue_room_grant, decode_room_grant
+        from gateway.hosted_rooms import local_authority_gateway_id
+
+        stale_digest = "c" * 64
+        drifted = issue_room_grant(
+            auth_adapter._room_grant_secret(),
+            grant_id="grant-drifted",
+            room_id="room-1",
+            home_install_id="install-home",
+            authority_gateway_id="install-home",
+            authority_epoch=1,
+            member_id="member-peer",
+            target_install_id=local_authority_gateway_id(),
+            target_profile="default",
+            execution_policy_digest=stale_digest,
+            issued_at=100,
+            ttl_seconds=300,
+            status_expires_at=1000,
+        )
+        drifted_claims = decode_room_grant(
+            auth_adapter._room_grant_secret(),
+            drifted,
+            permission="status",
+            now=100,
+        )
+        hosted_rooms.reserve_peer_room(
+            hosted_rooms.default_db_path(),
+            claims=drifted_claims,
+            expires_at=1000,
+            now=100,
+        )
+        monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            refused = await cli.post(
+                "/v1/room-members/grants/refresh",
+                json={"ttl_seconds": 300},
+                headers={"Authorization": f"HermesRoom {drifted}"},
+            )
+            refused_body = await refused.json()
+        assert refused.status == 403
+        assert refused_body["error"]["code"] == "room_reauthorization_required"
+
+    @pytest.mark.asyncio
     async def test_scoped_grant_refresh_fails_after_secret_rotation(
         self, auth_adapter, monkeypatch
     ):

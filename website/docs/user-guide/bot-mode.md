@@ -152,6 +152,15 @@ Once a peer is registered, the messaging protocol taught to every Bot Chat (`age
 
 Requirements: the peer machine runs the `api_server` gateway platform with a strong `API_SERVER_KEY`; reachability is your network's business (LAN, Tailscale, VPN). The key is a credential and lives in `~/.hermes/.env` as `HERMES_PEER_<NAME>_KEY`; peer names/URLs live in `config.yaml` under `bot_peers`.
 
+:::note One-way reachability (NAT)
+Cross-gateway links are direct gateway-to-gateway connections — Desktop is a
+viewer, not a relay. A gateway behind home NAT can dial out to a public peer
+(laptop → VPS works), but the reverse direction has no inbound route
+(VPS → home fails) unless your network provides one. If your Group Chat spans
+a NAT boundary, put the room's authority on the host every participant can
+reach (typically the public VPS), or bridge the network with Tailscale/VPN.
+:::
+
 ## Bots across machines
 
 When you register several backends in **Settings → Connections** — the local runtime, remote gateways, SSH hosts, Hermes Cloud instances — the roster shows the Bots from **every** connected source, persistently: SSH sources are inventoried without spawning anything on the remote box, and machines that are momentarily unreachable keep their last-known rows instead of vanishing. When the same profile name exists on several sources, handles disambiguate as `@name-device` (for example `@research-homelab`). A Bot's chats, sessions, memory, and routines live on the machine that owns the profile.

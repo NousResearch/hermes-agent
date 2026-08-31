@@ -48,6 +48,11 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   // flushes into a settled segment.
   const blocks: LiveBlock[] = groupedSegments(streamSegments).map((msg, i) => ({ key: `seg:${i}`, msg }))
 
+  // In-flight tool calls are their OWN block, not part of any message — so
+  // `display.tool_trail_position` (which only orders a message's trail
+  // against that message's own text) never moves them. Live tool feedback
+  // therefore keeps streaming in place above the answer in both positions;
+  // `below` re-orders the settled turn, it does not blind the live one.
   if (activeTools.length) {
     blocks.push({ key: 'active-tools', msg: { kind: 'trail', role: 'system', text: '' }, tools: activeTools })
   }
@@ -82,6 +87,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             reasoningActive={block.msg.isLiveReasoning === true}
             sections={sections}
             t={ui.theme}
+            toolTrailPosition={ui.toolTrailPosition}
             {...(block.tools ? { tools: block.tools } : {})}
           />
         )

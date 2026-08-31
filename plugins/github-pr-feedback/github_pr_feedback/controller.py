@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import shlex
-import shutil
 import subprocess
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -642,20 +641,23 @@ class PooledLocalGitRepository:
 
     def _prepare_slot(self, path: Path, slot_id: int, receipt: FeedbackReceipt) -> Path:
         self._worktree_root.mkdir(parents=True, exist_ok=True)
-        workspace = self._worktree_root / f"slot-{slot_id}"
+        repository_key = sha256(
+            receipt.repository.casefold().encode("utf-8")
+        ).hexdigest()[:16]
+        repository_pool = self._worktree_root / f"repo-{repository_key}"
+        repository_pool.mkdir(parents=True, exist_ok=True)
+        workspace = repository_pool / f"slot-{slot_id}"
         if workspace.is_symlink():
             raise RuntimeError("worktree pool slot path must not be a symlink")
         if workspace.exists() and not self._slot_belongs_to(path, workspace):
-            # Slot IDs are reused across whichever configured repository last
-            # claimed them (the pool has no per-repository slot space), so an
-            # existing slot directory can still be linked to a DIFFERENT
-            # repository's object database from its previous occupant. A
-            # commit that only exists in the current repository can never
-            # resolve there no matter how many times it is re-fetched --
-            # discard the stale link and re-register it against this repo.
-            # The old repository's now-dangling worktree entry self-heals via
-            # its own `git worktree prune` and is otherwise harmless.
-            shutil.rmtree(workspace)
+            # Repository namespaces prevent ordinary cross-repository slot
+            # reuse. A mismatch here therefore indicates corruption or a
+            # manually moved worktree. Preserve it for recovery rather than
+            # recursively deleting potentially owned or uncommitted work.
+            raise RuntimeError(
+                "worktree pool slot belongs to a different repository: "
+                f"{workspace}"
+            )
         if not workspace.exists():
             self._run(
                 [

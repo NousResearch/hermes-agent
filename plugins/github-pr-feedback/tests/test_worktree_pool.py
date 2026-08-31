@@ -38,8 +38,10 @@ def commit(path: Path, filename: str, content: str) -> str:
     ).stdout.strip()
 
 
-def receipt(sha: str, *, pr_number: int = 17) -> FeedbackReceipt:
-    return FeedbackReceipt("acme/widgets", pr_number, "pr_local_ci", "local-ci-audit-v2", sha)
+def receipt(
+    sha: str, *, pr_number: int = 17, repository: str = "acme/widgets"
+) -> FeedbackReceipt:
+    return FeedbackReceipt(repository, pr_number, "pr_local_ci", "local-ci-audit-v2", sha)
 
 
 class MutableClock:
@@ -81,6 +83,56 @@ def test_pool_reuses_the_same_slot_directory_after_release(tmp_path: Path) -> No
     assert prepared_b.path == prepared_a.path  # same physical slot-0 directory reused
     assert (prepared_b.path / "a.txt").is_file()  # still tracked at the new head
     assert (prepared_b.path / "b.txt").is_file()
+    ledger.close()
+
+
+def test_pool_uses_distinct_slot_directories_for_distinct_repositories(
+    tmp_path: Path,
+) -> None:
+    repo_a = initialized_repository(tmp_path / "repo-a")
+    sha_a = commit(repo_a, "a.txt", "a")
+    repo_b = initialized_repository(tmp_path / "repo-b")
+    sha_b = commit(repo_b, "other.txt", "other")
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    pool = PooledLocalGitRepository(
+        ledger, tmp_path / "pool", slot_count=1, owner_pid=lambda: 4242
+    )
+
+    first = pool.prepare_receipt_worktree(repo_a, receipt(sha_a, pr_number=1))
+    lease_row = ledger._connection.execute(
+        "SELECT slot_id, lease_version, owner_pid FROM worktree_pool_slots"
+    ).fetchone()
+    from github_pr_feedback.ledger import WorktreeSlotLease
+
+    pool.release(WorktreeSlotLease(*lease_row))
+    second = pool.prepare_receipt_worktree(
+        repo_b, receipt(sha_b, pr_number=2, repository="acme/other")
+    )
+
+    assert second.path != first.path
+    assert first.path.is_dir()
+    assert (first.path / "a.txt").is_file()
+    assert (second.path / "other.txt").is_file()
+    ledger.close()
+
+
+def test_pool_preserves_legacy_global_slot_directory(tmp_path: Path) -> None:
+    repo = initialized_repository(tmp_path / "repo")
+    sha = commit(repo, "a.txt", "a")
+    pool_root = tmp_path / "pool"
+    legacy_slot = pool_root / "slot-0"
+    legacy_slot.mkdir(parents=True)
+    legacy_marker = legacy_slot / "owned-wip.txt"
+    legacy_marker.write_text("preserve me", encoding="utf-8")
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    pool = PooledLocalGitRepository(
+        ledger, pool_root, slot_count=1, owner_pid=lambda: 4242
+    )
+
+    prepared = pool.prepare_receipt_worktree(repo, receipt(sha))
+
+    assert prepared.path != legacy_slot
+    assert legacy_marker.read_text(encoding="utf-8") == "preserve me"
     ledger.close()
 
 

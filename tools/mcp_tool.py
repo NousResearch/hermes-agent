@@ -5234,6 +5234,83 @@ def _handle_session_expired_and_retry(
     return None
 
 
+def _handle_generic_reconnect_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+):
+    """Last-resort reconnect + retry for HTTP transports whose server-side
+    session became invalid under an error message not covered by the
+    string-match markers in :func:`_handle_session_expired_and_retry`.
+
+    Streamable HTTP MCP servers garbage-collect server-side session state on
+    restart, idle TTL, pod rotation, etc.  Each server (and SDK version)
+    phrases the rejection differently — ``"Server not initialized"``,
+    ``"Bad Request"``, ``"Session state lost"`` — so the marker list can
+    never be exhaustive.  Instead of playing whack-a-mole with error
+    strings, this catch-all attempts one transport reconnect and retries
+    the call exactly once.  If the error is genuinely permanent (bad
+    params, method-not-found), the retry produces the same error and
+    falls through to the caller's generic error path.
+
+    Only applies to HTTP transports: stdio sessions live in-process and
+    cannot lose server-side state, so a generic reconnect there would
+    mask real errors (dead subprocess, bad command) that need the normal
+    failure classification.
+
+    Returns ``None`` when the retry produced an error or the reconnect
+    did not ready in time, so the caller's generic error path runs.
+    """
+    with _lock:
+        srv = _servers.get(server_name)
+    if srv is None or not hasattr(srv, "_reconnect_event"):
+        return None
+    # Only for HTTP transports — stdio can't lose server-side session state.
+    if not srv._is_http():
+        return None
+
+    loop = _mcp_loop
+    if loop is None or not loop.is_running():
+        return None
+
+    logger.info(
+        "MCP server '%s': %s failed with unhandled error (%s: %s); "
+        "attempting generic transport reconnect and retry once.",
+        server_name, op_description, type(exc).__name__, exc,
+    )
+
+    if not _signal_reconnect_and_wait(
+        server_name,
+        srv,
+        op_description=op_description,
+        timeout=15,
+    ):
+        logger.warning(
+            "MCP server '%s': reconnect did not ready within 15s after "
+            "unhandled error; falling through to error response.",
+            server_name,
+        )
+        return None
+
+    try:
+        result = retry_call()
+        try:
+            parsed = json.loads(result)
+            if "error" not in parsed:
+                _reset_server_error(server_name)
+                return result
+        except (json.JSONDecodeError, TypeError):
+            _reset_server_error(server_name)
+            return result
+    except Exception as retry_exc:
+        logger.warning(
+            "MCP %s/%s retry after generic reconnect failed: %s",
+            server_name, op_description, retry_exc,
+        )
+    return None
+
+
 # Exact raw server names whose ``supports_parallel_tool_calls`` config is True.
 # Raw identity matters: distinct names such as ``foo-bar`` and ``foo_bar`` both
 # sanitize to ``foo_bar`` but must not share policy.
@@ -6379,6 +6456,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # but skips OAuth recovery because the access token is
             # still valid — only the server-side session is stale.
             recovered = _handle_session_expired_and_retry(
+                server_name, exc, _call_once,
+                f"tools/call {tool_name}",
+            )
+            if recovered is not None:
+                return recovered
+
+            # Generic reconnect+retry for HTTP transports: server-side
+            # session can become invalid under error messages not covered
+            # by the string-match markers above (e.g. "Server not
+            # initialized" from Tabby after restart).  Attempts one
+            # transport reconnect and retries once; falls through to the
+            # normal error path if the retry also fails.
+            recovered = _handle_generic_reconnect_and_retry(
                 server_name, exc, _call_once,
                 f"tools/call {tool_name}",
             )

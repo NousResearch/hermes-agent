@@ -8719,6 +8719,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
                 print("  Restart each of them to pick up the repaired runtime.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            # Git is current, but a prior pull may still owe the fleet a
+            # restart (#95294). Catch up even on the "Already up to date"
+            # path — that early return is what left the gateway on stale
+            # code for two days. Runs BEFORE the runtime-verification exit
+            # gate below: a vulnerable SQLite runtime demotes the outcome to
+            # partial, but must not strand the fleet on stale code (#91277
+            # fleet contract — the pending-restart check always executes).
+            _apply_pending_fleet_restart_catchup()
             if not current_checkout_complete:
                 if gateway_mode:
                     _write_gateway_update_exit_code(False)
@@ -8732,11 +8740,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         _receipt_exc,
                     )
                 sys.exit(1)
-            # Git is current, but a prior pull may still owe the fleet a
-            # restart (#95294). Catch up even on the "Already up to date"
-            # path — that early return is what left the gateway on stale
-            # code for two days.
-            _apply_pending_fleet_restart_catchup()
             return
 
         if commit_count > 0:

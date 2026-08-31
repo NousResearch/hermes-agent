@@ -271,7 +271,9 @@ class TestProducerHook:
         ]
 
     @pytest.mark.asyncio
-    async def test_restart_redelivery_replays_raw_result_without_agent_execution(self):
+    async def test_restart_redelivery_keeps_unavailable_raw_attachment_incomplete_without_agent(
+        self,
+    ):
         import json
 
         from gateway.run import GatewayRunner
@@ -319,14 +321,18 @@ class TestProducerHook:
 
         delivered = await runner._redeliver_claimed_obligations(claimed)
 
-        assert delivered == 1
+        assert delivered == 0
         adapter._message_handler.assert_not_awaited()
         assert adapter.sent == ["recovered answer"]
         assert _rows() == [
             (
                 obligation_id,
-                "delivered",
+                "failed",
                 "recovered answer",
                 "default",
             )
         ]
+        assert [
+            (row["kind"], row["state"])
+            for row in dl.get_claimed_result_parts(obligation_id)
+        ] == [("text", "delivered"), ("image", "failed")]

@@ -405,6 +405,262 @@ async def test_queued_bare_local_file_is_manifested_without_path_disclosure(
     assert str(document) not in adapter.calls[0][1]
 
 
+@pytest.mark.asyncio
+async def test_queued_attachment_snapshot_survives_file_disappearing_after_extraction(
+    _isolated_ledger_and_media,
+):
+    document = _media_file(
+        _isolated_ledger_and_media,
+        "queued-disappearing.pdf",
+    )
+    response = f"queued text\n{document}"
+    source = _source("queued-disappearing-local")
+    oid = _record_owned(
+        source,
+        response,
+        content="queued text",
+        suffix="queued-disappearing",
+    )
+    adapter = _OwnedMediaAdapter()
+    extraction_calls = {"media": 0, "images": 0, "local": 0}
+    extract_media = adapter.extract_media
+    extract_images = adapter.extract_images
+    extract_local_files = adapter.extract_local_files
+
+    def _extract_media_once(content):
+        extraction_calls["media"] += 1
+        return extract_media(content)
+
+    def _extract_images_once(content):
+        extraction_calls["images"] += 1
+        return extract_images(content)
+
+    def _extract_local_files_once(content, **kwargs):
+        extraction_calls["local"] += 1
+        paths, cleaned = extract_local_files(content, **kwargs)
+        if extraction_calls["local"] == 1:
+            document.unlink()
+        return paths, cleaned
+
+    adapter.extract_media = _extract_media_once
+    adapter.extract_images = _extract_images_once
+    adapter.extract_local_files = _extract_local_files_once
+    runner = object.__new__(GatewayRunner)
+    runner._session_key_for_source = lambda _source: (
+        f"agent:main:slack:channel:{source.chat_id}"
+    )
+    runner._thread_metadata_for_source = lambda *_args: {}
+    runner._reply_anchor_for_event = lambda *_args: None
+
+    with pytest.raises(
+        Exception,
+        match="claimed continuation attachment delivery failed",
+    ):
+        await runner._deliver_queued_first_response(
+            response,
+            source=source,
+            adapter=adapter,
+            metadata={},
+            delivery_obligation_id=oid,
+        )
+
+    assert extraction_calls == {"media": 1, "images": 1, "local": 1}
+    assert adapter.calls == [("text", "queued text")]
+    assert _state(oid) == "failed"
+    assert [
+        (row["kind"], row["state"])
+        for row in dl.get_claimed_result_parts(oid)
+    ] == [("text", "delivered"), ("document", "failed")]
+    with dl._connect() as conn:
+        durable_content = conn.execute(
+            "SELECT content FROM delivery_obligations WHERE obligation_id=?",
+            (oid,),
+        ).fetchone()[0]
+        durable_parts = repr(
+            conn.execute(
+                "SELECT part_id, part_ordinal, kind, state, last_error, remote_receipt "
+                "FROM delivery_obligation_parts WHERE obligation_id=?",
+                (oid,),
+            ).fetchall()
+        )
+    assert durable_content == "queued text"
+    assert str(document) not in durable_content
+    assert str(document) not in durable_parts
+    assert "claimed-media" not in durable_parts
+
+
+@pytest.mark.asyncio
+async def test_unavailable_queued_attachment_recovery_retries_the_same_durable_part(
+    _isolated_ledger_and_media,
+):
+    document = _media_file(
+        _isolated_ledger_and_media,
+        "queued-recovery.pdf",
+    )
+    response = f"queued text\n{document}"
+    source = _source("queued-unavailable-recovery")
+    oid = _record_owned(
+        source,
+        response,
+        content="queued text",
+        suffix="queued-unavailable-recovery",
+    )
+    first_adapter = _OwnedMediaAdapter()
+    extract_local_files = first_adapter.extract_local_files
+
+    def _extract_then_remove(content, **kwargs):
+        paths, cleaned = extract_local_files(content, **kwargs)
+        document.unlink(missing_ok=True)
+        return paths, cleaned
+
+    first_adapter.extract_local_files = _extract_then_remove
+    runner = object.__new__(GatewayRunner)
+    runner._session_key_for_source = lambda _source: (
+        f"agent:main:slack:channel:{source.chat_id}"
+    )
+    runner._thread_metadata_for_source = lambda *_args: {}
+    runner._reply_anchor_for_event = lambda *_args: None
+
+    with pytest.raises(
+        Exception,
+        match="claimed continuation attachment delivery failed",
+    ):
+        await runner._deliver_queued_first_response(
+            response,
+            source=source,
+            adapter=first_adapter,
+            metadata={},
+            delivery_obligation_id=oid,
+        )
+
+    original_parts = dl.get_claimed_result_parts(oid)
+    assert [(row["kind"], row["state"]) for row in original_parts] == [
+        ("text", "delivered"),
+        ("document", "failed"),
+    ]
+
+    def _claim_after_owner_exit():
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET owner_pid=999999999, "
+                "owner_started_at=1 WHERE obligation_id=?",
+                (oid,),
+            )
+        claimed = dl.sweep_recoverable()
+        assert len(claimed) == 1
+        return GatewayRunner._claimed_result_replay_event(claimed[0])
+
+    missing_replay = _claim_after_owner_exit()
+    missing_adapter = _OwnedMediaAdapter()
+    missing_adapter._message_handler = AsyncMock(
+        side_effect=AssertionError("recovery must not invoke the agent")
+    )
+    session_key = f"agent:main:slack:channel:{source.chat_id}"
+    missing_adapter._active_sessions[session_key] = asyncio.Event()
+    await missing_adapter._process_message_background(missing_replay, session_key)
+
+    retry_parts = dl.get_claimed_result_parts(oid)
+    assert [row["part_id"] for row in retry_parts] == [
+        row["part_id"] for row in original_parts
+    ]
+    assert [(row["kind"], row["state"]) for row in retry_parts] == [
+        ("text", "delivered"),
+        ("document", "failed"),
+    ]
+    assert missing_adapter.calls == []
+    with dl._connect() as conn:
+        durable_content = conn.execute(
+            "SELECT content FROM delivery_obligations WHERE obligation_id=?",
+            (oid,),
+        ).fetchone()[0]
+    assert durable_content == "queued text"
+    assert str(document) not in durable_content
+
+    document.write_bytes(b"claimed-media")
+    available_replay = _claim_after_owner_exit()
+    available_adapter = _OwnedMediaAdapter()
+    available_adapter._message_handler = AsyncMock(
+        side_effect=AssertionError("recovery must not invoke the agent")
+    )
+    available_adapter._active_sessions[session_key] = asyncio.Event()
+    await available_adapter._process_message_background(available_replay, session_key)
+
+    assert available_adapter.calls == [("document", str(document))]
+    assert _state(oid) == "delivered"
+    assert [row["part_id"] for row in dl.get_claimed_result_parts(oid)] == [
+        row["part_id"] for row in original_parts
+    ]
+    assert {row["state"] for row in dl.get_claimed_result_parts(oid)} == {"delivered"}
+
+
+@pytest.mark.asyncio
+async def test_queued_unsafe_attachment_is_manifested_failed_not_false_terminal(
+    _isolated_ledger_and_media,
+    monkeypatch,
+):
+    from gateway.platforms import base as base_module
+
+    unsafe = _isolated_ledger_and_media.parent / "PRIVATE_BLOCKED_BYTES.pdf"
+    unsafe.write_bytes(b"PRIVATE_BLOCKED_BYTES")
+    unsafe = unsafe.resolve()
+    original_denied = base_module._path_under_denied_prefix
+    monkeypatch.setattr(
+        base_module,
+        "_path_under_denied_prefix",
+        lambda path: Path(path) == unsafe or original_denied(path),
+    )
+    response = f"queued text\n{unsafe}"
+    source = _source("queued-unsafe-local")
+    oid = _record_owned(
+        source,
+        response,
+        content="queued text",
+        suffix="queued-unsafe",
+    )
+    adapter = _OwnedMediaAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner._session_key_for_source = lambda _source: (
+        f"agent:main:slack:channel:{source.chat_id}"
+    )
+    runner._thread_metadata_for_source = lambda *_args: {}
+    runner._reply_anchor_for_event = lambda *_args: None
+
+    with pytest.raises(
+        Exception,
+        match="claimed continuation attachment delivery failed",
+    ):
+        await runner._deliver_queued_first_response(
+            response,
+            source=source,
+            adapter=adapter,
+            metadata={},
+            delivery_obligation_id=oid,
+        )
+
+    assert adapter.calls == [("text", "queued text")]
+    assert _state(oid) == "failed"
+    assert [
+        (row["kind"], row["state"])
+        for row in dl.get_claimed_result_parts(oid)
+    ] == [("text", "delivered"), ("document", "failed")]
+    with dl._connect() as conn:
+        durable_content = conn.execute(
+            "SELECT content FROM delivery_obligations WHERE obligation_id=?",
+            (oid,),
+        ).fetchone()[0]
+        durable_parts = repr(
+            conn.execute(
+                "SELECT part_id, part_ordinal, kind, state, last_error, remote_receipt "
+                "FROM delivery_obligation_parts WHERE obligation_id=?",
+                (oid,),
+            ).fetchall()
+        )
+    assert durable_content == "queued text"
+    assert str(unsafe) not in durable_content
+    assert str(unsafe) not in durable_parts
+    assert "PRIVATE_BLOCKED_BYTES" not in durable_parts
+
+
 def test_claimed_part_manifest_is_bounded_private_and_pruned(
     _isolated_ledger_and_media,
     monkeypatch,

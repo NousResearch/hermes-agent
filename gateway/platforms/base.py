@@ -3108,11 +3108,20 @@ class BasePlatformAdapter(ABC):
         return re.sub(r'\n{3,}', '\n\n', _strip_media_tag_directives(text)).rstrip()
 
     @staticmethod
-    def extract_local_files(content: str) -> Tuple[List[str], str]:
+    def extract_local_files(
+        content: str,
+        *,
+        include_unavailable: bool = False,
+    ) -> Tuple[List[str], str]:
         """Bare local file paths (absolute, ``~/`` or drive-letter) with deliverable extensions ->
         ``(expanded_paths, cleaned_text)``. Candidates must exist on disk (URLs / hallucinated paths
         ignored); paths inside fenced or inline code are skipped so code samples are never
-        mutilated. Dispatch by type lives in ``gateway/run.py``."""
+        mutilated. Dispatch by type lives in ``gateway/run.py``.
+
+        ``include_unavailable`` is reserved for durable claimed-result planning. It snapshots
+        intended attachments even when they are currently missing or unsafe, so the durable part
+        fails and remains retryable instead of disappearing after text cleanup.
+        """
         ext_part = '|'.join(e.lstrip('.') for e in MEDIA_DELIVERY_EXTS)
         # Lookbehind rejects URL/relative matches (https://…/img.png, ./foo.png).
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png) and relative paths (./foo.png)
@@ -3128,7 +3137,7 @@ class BasePlatformAdapter(ABC):
                 continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)
-            if os.path.isfile(expanded):
+            if include_unavailable or os.path.isfile(expanded):
                 unique.setdefault(expanded, raw)
             else:
                 # Most common reason a promised file never arrives — log the gap.
@@ -4147,8 +4156,15 @@ class BasePlatformAdapter(ABC):
             kwargs["stop_event"] = interrupt_event
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
-    async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,
-                                        *, is_ephemeral_response: bool) -> "_ExtractedResponse":
+    async def _extract_response_content(
+        self,
+        response: str,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        is_ephemeral_response: bool,
+        include_unavailable_attachments: bool = False,
+    ) -> "_ExtractedResponse":
         """Split a handler response into deliverable text + attachments. Order matters: MEDIA tags →
         image URLs → residual directives → bare local paths (skipped for ephemeral notices so config
         paths stay text; unknown-extension MEDIA tags survive for the bare-path detector). History
@@ -4156,11 +4172,15 @@ class BasePlatformAdapter(ABC):
         # Captured before extract_media strips it: images then go via send_document (no recompression).
         force_document = "[[as_document]]" in response
         pre_extract = response
-        # The handler's routed profile scope is gone by now; Docker MEDIA translation and the
-        # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
+        # The handler's routed profile scope is gone by now; resolve attachment policy in the
+        # active source profile while retaining unavailable claimed-result intents.
         with self._media_delivery_scope(event.source):
             media_files, response = self.extract_media(response)
-            media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
+            if not include_unavailable_attachments:
+                media_files = self.filter_media_delivery_paths(
+                    media_files,
+                    session_key=session_key,
+                )
             images, text_content = self.extract_images(response)
             # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
             # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in
@@ -4170,18 +4190,37 @@ class BasePlatformAdapter(ABC):
                 logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
             local_files = []
             if not is_ephemeral_response:
-                local_files, text_content = self.extract_local_files(text_content)
-                local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
-        history = (await self._bounded_history_media_paths_for_session(session_key)
-                   if local_files else None)
-        if history:
-            suppressed = [p for p in local_files if p in history]
-            if suppressed:
-                logger.info("[%s] Suppressing %d bare local file path(s) already delivered in "
-                            "this session: %s", self.name, len(suppressed), suppressed)
-                local_files = [p for p in local_files if p not in history]
-        if local_files:
-            logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+                local_files, text_content = self.extract_local_files(
+                    text_content,
+                    include_unavailable=include_unavailable_attachments,
+                )
+                if not include_unavailable_attachments:
+                    local_files = self.filter_local_delivery_paths(
+                        local_files,
+                        session_key=session_key,
+                    )
+                    history = (
+                        await self._bounded_history_media_paths_for_session(session_key)
+                        if local_files
+                        else None
+                    )
+                    if history:
+                        suppressed = [p for p in local_files if p in history]
+                        if suppressed:
+                            logger.info(
+                                "[%s] Suppressing %d bare local file path(s) already delivered in "
+                                "this session: %s",
+                                self.name,
+                                len(suppressed),
+                                suppressed,
+                            )
+                            local_files = [p for p in local_files if p not in history]
+                if local_files:
+                    logger.info(
+                        "[%s] extract_local_files found %d file(s) in response",
+                        self.name,
+                        len(local_files),
+                    )
         # A2 (#29346): extraction can reduce a non-empty response to empty text with no attachment, and the
         # `if text_content` guard below then drops it silently. Recover on every platform (#33842 was
         # Discord-only); the guard avoids duplicating an attachment.
@@ -4247,6 +4286,7 @@ class BasePlatformAdapter(ABC):
         reply_to: Optional[str],
         recovery_marker: str = "",
         text_already_delivered: bool = False,
+        attachment_session_key: Optional[str] = None,
     ) -> None:
         """Publish one complete claim-owned response through durable parts."""
         from gateway.claimed_result_publication import (
@@ -4290,7 +4330,8 @@ class BasePlatformAdapter(ABC):
                     {
                         "kind": "image",
                         "identity": media_path,
-                        "payload": Path(media_path).resolve().as_uri(),
+                        "payload": media_path,
+                        "local_path": media_path,
                         "alt_text": "",
                     }
                 )
@@ -4302,12 +4343,18 @@ class BasePlatformAdapter(ABC):
                         "kind": "voice",
                         "identity": f"{media_path}\0{int(is_voice)}",
                         "payload": media_path,
+                        "local_path": media_path,
                         "is_voice": is_voice,
                     }
                 )
             elif ext in video_exts:
                 descriptors.append(
-                    {"kind": "video", "identity": media_path, "payload": media_path}
+                    {
+                        "kind": "video",
+                        "identity": media_path,
+                        "payload": media_path,
+                        "local_path": media_path,
+                    }
                 )
             else:
                 descriptors.append(
@@ -4315,6 +4362,7 @@ class BasePlatformAdapter(ABC):
                         "kind": "document",
                         "identity": media_path,
                         "payload": media_path,
+                        "local_path": media_path,
                     }
                 )
 
@@ -4325,13 +4373,19 @@ class BasePlatformAdapter(ABC):
                     {
                         "kind": "image",
                         "identity": file_path,
-                        "payload": Path(file_path).resolve().as_uri(),
+                        "payload": file_path,
+                        "local_path": file_path,
                         "alt_text": "",
                     }
                 )
             elif ext in video_exts:
                 descriptors.append(
-                    {"kind": "video", "identity": file_path, "payload": file_path}
+                    {
+                        "kind": "video",
+                        "identity": file_path,
+                        "payload": file_path,
+                        "local_path": file_path,
+                    }
                 )
             else:
                 descriptors.append(
@@ -4339,6 +4393,7 @@ class BasePlatformAdapter(ABC):
                         "kind": "document",
                         "identity": file_path,
                         "payload": file_path,
+                        "local_path": file_path,
                     }
                 )
 
@@ -4393,6 +4448,21 @@ class BasePlatformAdapter(ABC):
             async def _send_part(item=descriptor):
                 kind = item["kind"]
                 payload = item["payload"]
+                local_path = item.get("local_path")
+                if local_path is not None and attachment_session_key is not None:
+                    safe_path = self.validate_media_delivery_path(
+                        local_path,
+                        session_key=attachment_session_key,
+                    )
+                    if safe_path is None:
+                        raise FileNotFoundError(
+                            "claimed continuation attachment is unavailable"
+                        )
+                    payload = (
+                        Path(safe_path).resolve().as_uri()
+                        if kind == "image"
+                        else safe_path
+                    )
                 if kind == "text":
                     return await self._send_with_retry(
                         chat_id=chat_id,
@@ -4469,7 +4539,14 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             else:
                 extracted = await self._extract_response_content(
-                    response, event, session_key, is_ephemeral_response=is_ephemeral_response)
+                    response,
+                    event,
+                    session_key,
+                    is_ephemeral_response=is_ephemeral_response,
+                    include_unavailable_attachments=bool(
+                        _delivery_owned_obligation_id
+                    ),
+                )
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
@@ -4513,6 +4590,7 @@ class BasePlatformAdapter(ABC):
                         recovery_marker=str(
                             getattr(event, "_hermes_recovery_marker", "") or ""
                         ),
+                        attachment_session_key=session_key,
                     )
                     delivery_attempted = True
                     delivery_succeeded = True

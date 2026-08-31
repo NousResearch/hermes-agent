@@ -23,6 +23,40 @@ class ClaimedResultPart:
     kind: str
 
 
+@dataclass(frozen=True)
+class ClaimedResponsePartsSnapshot:
+    """One bounded parse of every claimed-result publication part."""
+
+    visible_text: str
+    images: tuple[tuple[str, str], ...]
+    media_files: tuple[tuple[str, bool], ...]
+    local_files: tuple[str, ...]
+    force_document_attachments: bool
+
+
+def snapshot_claimed_response_parts(
+    response: str,
+    adapter: Any,
+) -> ClaimedResponsePartsSnapshot:
+    """Derive visible text and attachment intents from one parse snapshot."""
+    from gateway.platforms.base import _strip_media_directives
+
+    media_files, cleaned = adapter.extract_media(response)
+    images, text_content = adapter.extract_images(cleaned)
+    text_content = _strip_media_directives(text_content).strip()
+    local_files, text_content = adapter.extract_local_files(
+        text_content,
+        include_unavailable=True,
+    )
+    return ClaimedResponsePartsSnapshot(
+        visible_text=text_content.strip(),
+        images=tuple(images),
+        media_files=tuple(media_files),
+        local_files=tuple(local_files),
+        force_document_attachments="[[as_document]]" in response,
+    )
+
+
 def plan_claimed_result_parts(
     obligation_id: str,
     entries: Iterable[tuple[str, str]],

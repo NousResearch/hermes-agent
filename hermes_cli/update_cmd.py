@@ -1812,17 +1812,22 @@ def _print_verified_update_completion(message: str) -> bool:
         _print_update_completion(message)
         return False
     sqlite_runtime_ok, sqlite_info = _post_update_sqlite_runtime_status()
+    if sqlite_info is None:
+        # Grace path: an unprobeable interpreter (no venv in a dev checkout,
+        # probe subprocess unavailable) must not fail an otherwise-successful
+        # update — only a POSITIVE vulnerable probe withholds success
+        # (same contract as _venv_core_imports_healthy's unknown states).
+        logger.debug("Post-update SQLite runtime probe unavailable; not blocking")
+        _print_update_completion(message)
+        return True
     if sqlite_runtime_ok:
         _print_update_completion(message)
         return True
     print()
-    if sqlite_info is None:
-        detail = "the post-update SQLite runtime could not be verified"
-    else:
-        detail = (
-            f"SQLite {sqlite_info.sqlite_version_string} still has the "
-            "WAL-reset corruption bug"
-        )
+    detail = (
+        f"SQLite {sqlite_info.sqlite_version_string} still has the "
+        "WAL-reset corruption bug"
+    )
     print(f"⚠ Update partially complete — {detail}.")
     print(
         "  Rebuild the Hermes venv with a uv-managed Python, restart Hermes, "
@@ -1861,6 +1866,10 @@ def _print_update_summary(
     """Final update banner. A failed Desktop rebuild is non-fatal for the
     Python side, but must not print ``✓ Update complete!`` (#88251)."""
     sqlite_runtime_ok, sqlite_info = _post_update_sqlite_runtime_status()
+    if sqlite_info is None:
+        # Grace path: an unprobeable interpreter must not fail the update —
+        # only a POSITIVE vulnerable probe demotes success to partial.
+        sqlite_runtime_ok = True
     print()
     if node_failures or not desktop_build_ok or not sqlite_runtime_ok:
         parts = []
@@ -1872,14 +1881,11 @@ def _print_update_summary(
             parts.append(
                 "the desktop app was not rebuilt and is still on the previous build"
             )
-        if not sqlite_runtime_ok:
-            if sqlite_info is None:
-                parts.append("the post-update SQLite runtime could not be verified")
-            else:
-                parts.append(
-                    f"SQLite {sqlite_info.sqlite_version_string} still has the "
-                    "WAL-reset corruption bug"
-                )
+        if not sqlite_runtime_ok and sqlite_info is not None:
+            parts.append(
+                f"SQLite {sqlite_info.sqlite_version_string} still has the "
+                "WAL-reset corruption bug"
+            )
         print("⚠ Update partially complete — " + "; ".join(parts) + ".")
         if node_failures:
             print("  Code and Python deps are updated, but the dashboard/TUI may")

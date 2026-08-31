@@ -3218,11 +3218,13 @@ def _(rid, params: dict) -> dict:
                 cwd=_session_cwd(session),
                 # The branch stays on its parent's profile. Explicit stamp (not
                 # just the parent-backfill) so it holds even when the parent row
-                # predates the profile_name column.
+                # predates the profile_name column. Launch-profile branches are
+                # stamped explicitly too — NULL rows drop out of profile-keyed
+                # sidebar matching and deep-link resolution (#99222).
                 profile_name=(
                     Path(session["profile_home"]).name
                     if session.get("profile_home")
-                    else None
+                    else _current_profile_name()
                 ),
             )
             # Copy the whole parent history in bounded-chunk transactions —

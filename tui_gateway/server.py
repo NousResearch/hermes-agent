@@ -3916,9 +3916,15 @@ def _ensure_session_db_row(session: dict) -> None:
             parent_session_id=parent_session_id,
             cwd=_persisted_session_cwd(session),
             # Self-describing rows: aggregators that merge multiple profile DBs
-            # into one list can't rely on which file a row came from alone. NULL
-            # means the launch/default profile (matches run_agent's convention).
-            profile_name=Path(profile_home).name if profile_home else None,
+            # into one list can't rely on which file a row came from alone.
+            # Stamp the launch profile explicitly instead of leaving NULL —
+            # NULL is exactly what the #94724 legacy-owner backfill exists to
+            # repair, and rows minted AFTER that one-shot backfill ran stayed
+            # NULL forever: profile-keyed matching then drops them from the
+            # sidebar and deep links can't resolve them (#99222).
+            profile_name=(
+                Path(profile_home).name if profile_home else _current_profile_name()
+            ),
         )
         # A session can be born hidden (session.create hidden=true, or a
         # session.set_hidden that arrived before the row existed): apply the

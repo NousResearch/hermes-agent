@@ -16,10 +16,12 @@ function columnLabel(index: number) {
 }
 
 export function OfficePreviewView({
+  formulaBarLabel,
   preview,
   slideLabel,
   truncatedLabel
 }: {
+  formulaBarLabel: string
   preview: OfficePreview
   slideLabel: (index: number) => string
   truncatedLabel: string
@@ -32,7 +34,7 @@ export function OfficePreviewView({
         </div>
       )}
       {preview.kind === 'spreadsheet' ? (
-        <SpreadsheetGrid sheets={preview.sheets} />
+        <SpreadsheetGrid formulaBarLabel={formulaBarLabel} sheets={preview.sheets} />
       ) : preview.kind === 'document' ? (
         <DocumentBlocks blocks={preview.blocks} />
       ) : (
@@ -42,10 +44,14 @@ export function OfficePreviewView({
   )
 }
 
-function SpreadsheetGrid({ sheets }: { sheets: SpreadsheetSheet[] }) {
+function SpreadsheetGrid({ formulaBarLabel, sheets }: { formulaBarLabel: string; sheets: SpreadsheetSheet[] }) {
   const [active, setActive] = useState(0)
+  const [selected, setSelected] = useState<{ col: number; row: number } | null>(null)
   const sheet = sheets[Math.min(active, Math.max(0, sheets.length - 1))]
   const colCount = useMemo(() => Math.max(1, ...(sheet?.rows.map(row => row.length) || [1])), [sheet])
+  const selectedCell = selected ? sheet?.rows[selected.row]?.[selected.col] : undefined
+  const address = selected ? `${columnLabel(selected.col)}${selected.row + 1}` : ''
+  const barValue = selectedCell?.formula ? `=${selectedCell.formula}` : (selectedCell?.value ?? '')
 
   if (!sheet) {
     return null
@@ -53,6 +59,15 @@ function SpreadsheetGrid({ sheets }: { sheets: SpreadsheetSheet[] }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-2 py-1.5">
+        <span className="w-10 shrink-0 text-center font-mono text-[0.7rem] text-muted-foreground">{address || '—'}</span>
+        <input
+          aria-label={formulaBarLabel}
+          className="h-7 min-w-0 flex-1 rounded-md border border-border/60 bg-background px-2 font-mono text-[0.75rem] text-foreground outline-none"
+          readOnly
+          value={barValue}
+        />
+      </div>
       {sheets.length > 1 && (
         <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-border/60 px-2 py-1.5" role="tablist">
           {sheets.map((item, index) => (
@@ -65,7 +80,10 @@ function SpreadsheetGrid({ sheets }: { sheets: SpreadsheetSheet[] }) {
                   : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
               )}
               key={`${item.name}-${index}`}
-              onClick={() => setActive(index)}
+              onClick={() => {
+                setActive(index)
+                setSelected(null)
+              }}
               role="tab"
               type="button"
             >
@@ -75,7 +93,7 @@ function SpreadsheetGrid({ sheets }: { sheets: SpreadsheetSheet[] }) {
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className="min-w-full border-collapse font-mono text-[0.7rem] leading-5">
+        <table className="min-w-full border-collapse font-mono text-[0.7rem] leading-5" role="grid">
           <thead className="sticky top-0 z-10 bg-muted/80">
             <tr>
               <th className="sticky left-0 z-20 w-10 border-b border-r border-border/60 bg-muted/80 px-1 py-1 text-right font-medium text-muted-foreground" />
@@ -95,14 +113,32 @@ function SpreadsheetGrid({ sheets }: { sheets: SpreadsheetSheet[] }) {
                 <th className="sticky left-0 z-10 border-b border-r border-border/60 bg-muted/40 px-1 py-1 text-right font-medium text-muted-foreground">
                   {rowIndex + 1}
                 </th>
-                {Array.from({ length: colCount }, (_, col) => (
-                  <td
-                    className="max-w-64 truncate border-b border-r border-border/50 px-2 py-1 text-foreground"
-                    key={col}
-                  >
-                    {row[col] || ''}
-                  </td>
-                ))}
+                {Array.from({ length: colCount }, (_, col) => {
+                  const cell = row[col]
+                  const isSelected = selected?.row === rowIndex && selected?.col === col
+
+                  return (
+                    <td
+                      aria-selected={isSelected}
+                      className={cn(
+                        'max-w-64 cursor-default truncate border-b border-r border-border/50 px-2 py-1',
+                        isSelected ? 'outline outline-2 outline-offset-[-2px] outline-ring' : undefined
+                      )}
+                      key={col}
+                      onClick={() => setSelected({ col, row: rowIndex })}
+                      role="gridcell"
+                      style={{
+                        backgroundColor: cell?.fill,
+                        color: cell?.color,
+                        fontStyle: cell?.italic ? 'italic' : undefined,
+                        fontWeight: cell?.bold ? 700 : undefined,
+                        textAlign: cell?.align
+                      }}
+                    >
+                      {cell?.value || ''}
+                    </td>
+                  )
+                })}
               </tr>
             ))}
           </tbody>

@@ -1,8 +1,18 @@
 export type OfficePreviewKind = 'document' | 'slides' | 'spreadsheet'
 
+export type SpreadsheetCell = {
+  align?: 'center' | 'left' | 'right'
+  bold?: boolean
+  color?: string
+  fill?: string
+  formula?: string
+  italic?: boolean
+  value: string
+}
+
 export type SpreadsheetSheet = {
   name: string
-  rows: string[][]
+  rows: SpreadsheetCell[][]
 }
 
 export type SpreadsheetPreview = {
@@ -445,6 +455,8 @@ function slideLines(xml: string): string[] {
 
 function parseXlsx(zip: Map<string, Uint8Array>): SpreadsheetPreview | null {
   const shared = parseSharedStrings(zipText(zip, 'xl/sharedStrings.xml'))
+  const styles = parseStyles(zipText(zip, 'xl/styles.xml'))
+  const date1904 = workbookUses1904Dates(zip)
   const sheets = listWorkbookSheets(zip)
   const truncated = sheets.length > MAX_SHEETS
   const selected = sheets.slice(0, MAX_SHEETS)
@@ -457,11 +469,11 @@ function parseXlsx(zip: Map<string, Uint8Array>): SpreadsheetPreview | null {
         return null
       }
 
-      const grid = parseSheetGrid(xml, shared)
+      const grid = parseSheetGrid(xml, shared, styles, date1904)
 
       return grid ? { name: sheet.name, rows: grid.rows, truncated: grid.truncated } : null
     })
-    .filter((sheet): sheet is { name: string; rows: string[][]; truncated: boolean } => Boolean(sheet))
+    .filter((sheet): sheet is { name: string; rows: SpreadsheetCell[][]; truncated: boolean } => Boolean(sheet))
 
   if (!parsed.length) {
     return null
@@ -561,18 +573,23 @@ function parseSharedStrings(xml: string | null): string[] {
   )
 }
 
-function parseSheetGrid(xml: string, shared: string[]): { rows: string[][]; truncated: boolean } | null {
+function parseSheetGrid(
+  xml: string,
+  shared: string[],
+  styles: CellStyle[],
+  date1904: boolean
+): { rows: SpreadsheetCell[][]; truncated: boolean } | null {
   const doc = parseXml(xml)
 
   if (!doc) {
     return null
   }
 
-  const cells: { col: number; row: number; value: string }[] = []
+  const cells: { col: number; row: number; cell: SpreadsheetCell }[] = []
   let truncated = false
 
-  for (const cell of localElements(doc, 'c')) {
-    const ref = parseCellRef(cell.getAttribute('r') || '')
+  for (const node of localElements(doc, 'c')) {
+    const ref = parseCellRef(node.getAttribute('r') || '')
 
     if (!ref) {
       continue
@@ -584,7 +601,7 @@ function parseSheetGrid(xml: string, shared: string[]): { rows: string[][]; trun
       continue
     }
 
-    cells.push({ ...ref, value: cellValue(cell, shared) })
+    cells.push({ ...ref, cell: buildSheetCell(node, shared, styles, date1904) })
   }
 
   if (!cells.length) {
@@ -593,11 +610,11 @@ function parseSheetGrid(xml: string, shared: string[]): { rows: string[][]; trun
 
   const rowCount = Math.min(MAX_ROWS, Math.max(...cells.map(cell => cell.row)) + 1)
   const colCount = Math.min(MAX_COLS, Math.max(...cells.map(cell => cell.col)) + 1)
-  const rows = Array.from({ length: rowCount }, () => Array.from({ length: colCount }, () => ''))
+  const rows = Array.from({ length: rowCount }, () => Array.from({ length: colCount }, (): SpreadsheetCell => ({ value: '' })))
 
-  for (const cell of cells) {
-    if (cell.row < rowCount && cell.col < colCount) {
-      rows[cell.row][cell.col] = cell.value
+  for (const item of cells) {
+    if (item.row < rowCount && item.col < colCount) {
+      rows[item.row][item.col] = item.cell
     }
   }
 
@@ -646,4 +663,274 @@ function directValue(cell: Element): string {
   const value = Array.from(cell.children).find(child => child.localName === 'v')
 
   return (value?.textContent || '').trim()
+}
+
+type CellStyle = {
+  align?: SpreadsheetCell['align']
+  bold?: boolean
+  color?: string
+  fill?: string
+  italic?: boolean
+  numFmt?: string
+}
+
+const BUILTIN_NUM_FMTS: Record<number, string> = {
+  0: 'General',
+  1: '0',
+  2: '0.00',
+  3: '#,##0',
+  4: '#,##0.00',
+  9: '0%',
+  10: '0.00%',
+  14: 'm/d/yyyy',
+  15: 'd-mmm-yy',
+  16: 'd-mmm',
+  17: 'mmm-yy',
+  18: 'h:mm AM/PM',
+  20: 'h:mm',
+  21: 'h:mm:ss',
+  22: 'm/d/yyyy h:mm',
+  49: '@'
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+function workbookUses1904Dates(zip: Map<string, Uint8Array>): boolean {
+  const workbook = parseXml(zipText(zip, 'xl/workbook.xml') || '')
+  const pr = workbook ? localElements(workbook, 'workbookPr')[0] : undefined
+  const flag = pr?.getAttribute('date1904') || pr?.getAttribute('date1904') || ''
+
+  return flag === '1' || flag === 'true'
+}
+
+function buildSheetCell(node: Element, shared: string[], styles: CellStyle[], date1904: boolean): SpreadsheetCell {
+  const type = node.getAttribute('t') || ''
+  const raw = cellValue(node, shared)
+
+  const formula = Array.from(node.children)
+    .find(child => child.localName === 'f')
+    ?.textContent?.trim()
+
+  const style = styles[Number(node.getAttribute('s') || '')] || {}
+  const numeric = type === '' || type === 'n'
+  const value = numeric ? formatExcelValue(raw, style.numFmt, date1904) : raw
+  const cell: SpreadsheetCell = { value }
+
+  if (formula) {
+    cell.formula = formula.replace(/^\s*=/, '')
+  }
+
+  if (style.bold) {
+    cell.bold = true
+  }
+
+  if (style.italic) {
+    cell.italic = true
+  }
+
+  if (style.color) {
+    cell.color = style.color
+  }
+
+  if (style.fill) {
+    cell.fill = style.fill
+  }
+
+  if (style.align) {
+    cell.align = style.align
+  } else if (numeric && raw !== '' && !Number.isNaN(Number(raw))) {
+    cell.align = 'right'
+  }
+
+  return cell
+}
+
+function parseStyles(xml: string | null): CellStyle[] {
+  if (!xml) {
+    return []
+  }
+
+  const doc = parseXml(xml)
+
+  if (!doc) {
+    return []
+  }
+
+  const numFmts = new Map<number, string>(Object.entries(BUILTIN_NUM_FMTS).map(([id, code]) => [Number(id), code]))
+
+  for (const fmt of localElements(doc, 'numFmt')) {
+    const id = Number(fmt.getAttribute('numFmtId'))
+    const code = fmt.getAttribute('formatCode') || ''
+
+    if (Number.isInteger(id) && code) {
+      numFmts.set(id, code)
+    }
+  }
+
+  const fonts = localElements(doc, 'font').map(font => ({
+    bold: localElements(font, 'b').length > 0,
+    italic: localElements(font, 'i').length > 0,
+    color: rgbColor(localElements(font, 'color')[0])
+  }))
+
+  const fills = localElements(doc, 'fill').map(fill => {
+    const pattern = localElements(fill, 'patternFill')[0]
+    const type = pattern?.getAttribute('patternType') || ''
+
+    if (type !== 'solid') {
+      return undefined
+    }
+
+    return rgbColor(localElements(pattern, 'fgColor')[0])
+  })
+
+  return localElements(doc, 'xf')
+    .filter(xf => xf.parentElement?.localName === 'cellXfs')
+    .map(xf => {
+      const style: CellStyle = {}
+      const numFmtId = Number(xf.getAttribute('numFmtId') || '0')
+
+      if (xf.getAttribute('applyNumberFormat') === '1') {
+        style.numFmt = numFmts.get(numFmtId) || BUILTIN_NUM_FMTS[numFmtId]
+      }
+
+      if (xf.getAttribute('applyFont') === '1') {
+        const font = fonts[Number(xf.getAttribute('fontId') || '0')]
+
+        if (font?.bold) {
+          style.bold = true
+        }
+
+        if (font?.italic) {
+          style.italic = true
+        }
+
+        if (font?.color) {
+          style.color = font.color
+        }
+      }
+
+      if (xf.getAttribute('applyFill') === '1') {
+        const fill = fills[Number(xf.getAttribute('fillId') || '0')]
+
+        if (fill) {
+          style.fill = fill
+        }
+      }
+
+      if (xf.getAttribute('applyAlignment') === '1') {
+        const alignment = localElements(xf, 'alignment')[0]?.getAttribute('horizontal')
+
+        if (alignment === 'left' || alignment === 'center' || alignment === 'right') {
+          style.align = alignment
+        }
+      }
+
+      return style
+    })
+}
+
+function rgbColor(node: Element | undefined): string | undefined {
+  const rgb = node?.getAttribute('rgb') || ''
+  const hex = rgb.replace(/^#/, '').slice(-6)
+
+  return /^[0-9A-Fa-f]{6}$/.test(hex) ? `#${hex.toUpperCase()}` : undefined
+}
+
+function formatExcelValue(raw: string, numFmt: string | undefined, date1904: boolean): string {
+  if (!raw || numFmt === undefined || numFmt === 'General' || numFmt === '@') {
+    return raw
+  }
+
+  const number = Number(raw)
+
+  if (!Number.isFinite(number)) {
+    return raw
+  }
+
+  if (isDateFormat(numFmt)) {
+    return formatExcelDate(number, numFmt, date1904)
+  }
+
+  if (numFmt.includes('%')) {
+    const decimals = numFmt.includes('0.00') ? 2 : 0
+
+    return `${(number * 100).toFixed(decimals)}%`
+  }
+
+  if (numFmt === '0') {
+    return String(Math.round(number))
+  }
+
+  if (numFmt === '0.00' || numFmt === '#,##0.00') {
+    const formatted = number.toFixed(2)
+
+    return numFmt.includes('#,##') ? number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : formatted
+  }
+
+  if (numFmt === '#,##0') {
+    return Math.round(number).toLocaleString('en-US')
+  }
+
+  return raw
+}
+
+function isDateFormat(numFmt: string): boolean {
+  const stripped = numFmt.replace(/"[^"]*"/g, '').replace(/\[[^\]]*]/g, '')
+
+  return /[ymdhs]/i.test(stripped) && !stripped.includes('%')
+}
+
+function formatExcelDate(serial: number, numFmt: string, date1904: boolean): string {
+  const whole = Math.floor(serial)
+  const fraction = serial - whole
+  const epoch = Date.UTC(date1904 ? 1904 : 1899, date1904 ? 0 : 11, date1904 ? 1 : 30)
+  const date = new Date(epoch + whole * 86_400_000)
+  const year = date.getUTCFullYear()
+  const month = date.getUTCMonth() + 1
+  const day = date.getUTCDate()
+  const hours = Math.floor(fraction * 24)
+  const minutes = Math.floor(fraction * 24 * 60) % 60
+  const yy = String(year).slice(-2)
+  const mon = MONTHS[month - 1] || ''
+  const pad = (value: number) => String(value).padStart(2, '0')
+
+  switch (numFmt) {
+    case 'd-mmm-yy':
+      return `${day}-${mon}-${yy}`
+
+    case 'd-mmm':
+      return `${day}-${mon}`
+
+    case 'mmm-yy':
+      return `${mon}-${yy}`
+
+    case 'h:mm AM/PM':
+      return formatClock(hours, minutes, true)
+
+    case 'h:mm':
+      return `${hours}:${pad(minutes)}`
+
+    case 'h:mm:ss':
+      return `${hours}:${pad(minutes)}:00`
+
+    case 'm/d/yyyy h:mm':
+      return `${month}/${day}/${year} ${hours}:${pad(minutes)}`
+
+    default:
+      return `${month}/${day}/${year}`
+  }
+}
+
+function formatClock(hours: number, minutes: number, ampm: boolean): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+
+  if (!ampm) {
+    return `${hours}:${pad(minutes)}`
+  }
+
+  const suffix = hours >= 12 ? 'PM' : 'AM'
+  const hour12 = hours % 12 || 12
+
+  return `${hour12}:${pad(minutes)} ${suffix}`
 }

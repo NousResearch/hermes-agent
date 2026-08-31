@@ -1,7 +1,19 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { SpreadsheetCell } from '@/lib/ooxml-preview'
+
 import { OfficePreviewView } from './preview-office'
+
+function cells(rows: Array<Array<string | SpreadsheetCell>>): SpreadsheetCell[][] {
+  return rows.map(row => row.map(cell => (typeof cell === 'string' ? { value: cell } : cell)))
+}
+
+const labels = {
+  formulaBarLabel: 'Formula',
+  slideLabel: (index: number) => `Slide ${index}`,
+  truncatedLabel: 'truncated'
+}
 
 describe('OfficePreviewView', () => {
   afterEach(() => {
@@ -16,16 +28,15 @@ describe('OfficePreviewView', () => {
           sheets: [
             {
               name: 'Revenue',
-              rows: [
+              rows: cells([
                 ['Name', '42'],
                 ['Ada', 'TRUE']
-              ]
+              ])
             },
-            { name: 'Notes', rows: [['hello']] }
+            { name: 'Notes', rows: cells([['hello']]) }
           ]
         }}
-        slideLabel={index => `Slide ${index}`}
-        truncatedLabel="truncated"
+        {...labels}
       />
     )
 
@@ -40,6 +51,68 @@ describe('OfficePreviewView', () => {
     expect(screen.getByRole('tab', { name: 'Notes' }).getAttribute('aria-selected')).toBe('true')
   })
 
+  it('shows the stored formula in a read-only bar when a cell is selected', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'spreadsheet',
+          sheets: [
+            {
+              name: 'Revenue',
+              rows: cells([['Name', { formula: 'B1+1', value: '43' }]])
+            }
+          ]
+        }}
+        {...labels}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('gridcell', { name: '43' }))
+
+    expect((screen.getByLabelText('Formula') as HTMLInputElement).value).toBe('=B1+1')
+    expect(screen.getByText('B1')).toBeTruthy()
+  })
+
+  it('shows the cell value in the formula bar when there is no formula', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'spreadsheet',
+          sheets: [{ name: 'Revenue', rows: cells([['Ada']]) }]
+        }}
+        {...labels}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('gridcell', { name: 'Ada' }))
+
+    expect((screen.getByLabelText('Formula') as HTMLInputElement).value).toBe('Ada')
+    expect(screen.getByText('A1')).toBeTruthy()
+  })
+
+  it('paints fill, color, and bold from cell formatting', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'spreadsheet',
+          sheets: [
+            {
+              name: 'Revenue',
+              rows: cells([[{ bold: true, color: '#FF0000', fill: '#C6EFCE', value: 'Ada' }]])
+            }
+          ]
+        }}
+        {...labels}
+      />
+    )
+
+    const cell = screen.getByRole('gridcell', { name: 'Ada' })
+
+    expect(cell.style.backgroundColor).toBe('rgb(198, 239, 206)')
+    expect(cell.style.color).toBe('rgb(255, 0, 0)')
+    expect(cell.style.fontWeight).toBe('700')
+  })
+
   it('renders document runs as React text, not HTML', () => {
     const { container } = render(
       <OfficePreviewView
@@ -51,8 +124,7 @@ describe('OfficePreviewView', () => {
           ],
           kind: 'document'
         }}
-        slideLabel={index => `Slide ${index}`}
-        truncatedLabel="truncated"
+        {...labels}
       />
     )
 
@@ -69,8 +141,7 @@ describe('OfficePreviewView', () => {
           blocks: [{ runs: [{ text: '<img src=x onerror=alert(1)>' }], type: 'paragraph' }],
           kind: 'document'
         }}
-        slideLabel={index => `Slide ${index}`}
-        truncatedLabel="truncated"
+        {...labels}
       />
     )
 
@@ -85,8 +156,7 @@ describe('OfficePreviewView', () => {
           kind: 'slides',
           slides: [{ lines: ['First'] }, { lines: ['Second'] }]
         }}
-        slideLabel={index => `Slide ${index}`}
-        truncatedLabel="truncated"
+        {...labels}
       />
     )
 
@@ -98,7 +168,8 @@ describe('OfficePreviewView', () => {
   it('shows a truncation banner when the parser capped the document', () => {
     render(
       <OfficePreviewView
-        preview={{ kind: 'spreadsheet', sheets: [{ name: 'A', rows: [['x']] }], truncated: true }}
+        formulaBarLabel="Formula"
+        preview={{ kind: 'spreadsheet', sheets: [{ name: 'A', rows: cells([['x']]) }], truncated: true }}
         slideLabel={index => `Slide ${index}`}
         truncatedLabel="Showing a preview of the first sheets, rows, or slides."
       />

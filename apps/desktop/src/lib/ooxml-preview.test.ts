@@ -231,13 +231,14 @@ describe('parseOfficePreview xlsx', () => {
     }
 
     expect(preview.sheets.map(sheet => sheet.name)).toEqual(['Revenue', 'Notes'])
-    expect(preview.sheets[0]?.rows).toEqual([
+    expect(preview.sheets[0]?.rows.map(row => row.map(cell => cell.value))).toEqual([
       ['Name', '42', '43'],
       ['Ada', 'TRUE', '#DIV/0!'],
       ['ok', '', ''],
       ['Q1 total', '', '']
     ])
-    expect(preview.sheets[1]?.rows).toEqual([['hello']])
+    expect(preview.sheets[0]?.rows[0]?.[2]).toMatchObject({ formula: 'B1+1', value: '43' })
+    expect(preview.sheets[1]?.rows.map(row => row.map(cell => cell.value))).toEqual([['hello']])
   })
 
   it('inflates DEFLATE-compressed OOXML parts', async () => {
@@ -246,8 +247,57 @@ describe('parseOfficePreview xlsx', () => {
     expect(preview?.kind).toBe('spreadsheet')
 
     if (preview?.kind === 'spreadsheet') {
-      expect(preview.sheets[0]?.rows[0]).toEqual(['Name', '42', '43'])
+      expect(preview.sheets[0]?.rows[0]?.map(cell => cell.value)).toEqual(['Name', '42', '43'])
     }
+  })
+
+  it('formats dates, fills, and font styles from styles.xml', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        ...xlsxFiles({
+          'xl/worksheets/sheet1.xml': `<?xml version="1.0"?>
+<worksheet xmlns="${NS_MAIN}">
+  <sheetData>
+    <row r="1">
+      <c r="A1" s="1"><v>44927</v></c>
+      <c r="B1" s="2"><v>0.15</v></c>
+      <c r="C1" s="3" t="s"><v>1</v></c>
+    </row>
+  </sheetData>
+</worksheet>`
+        }),
+        'xl/styles.xml': `<?xml version="1.0"?>
+<styleSheet xmlns="${NS_MAIN}">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="0%"/></numFmts>
+  <fonts count="2">
+    <font/>
+    <font><b/><color rgb="FFFF0000"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/></patternFill></fill>
+  </fills>
+  <cellXfs count="4">
+    <xf numFmtId="0" fontId="0" fillId="0"/>
+    <xf numFmtId="14" fontId="0" fillId="0" applyNumberFormat="1"/>
+    <xf numFmtId="164" fontId="0" fillId="2" applyNumberFormat="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="1" fillId="0" applyFont="1"/>
+  </cellXfs>
+</styleSheet>`
+      }),
+      '.xlsx'
+    )
+
+    expect(preview?.kind).toBe('spreadsheet')
+
+    if (preview?.kind !== 'spreadsheet') {
+      return
+    }
+
+    expect(preview.sheets[0]?.rows[0]?.[0]).toMatchObject({ value: '1/1/2023' })
+    expect(preview.sheets[0]?.rows[0]?.[1]).toMatchObject({ fill: '#C6EFCE', value: '15%' })
+    expect(preview.sheets[0]?.rows[0]?.[2]).toMatchObject({ bold: true, color: '#FF0000', value: 'Ada' })
   })
 })
 

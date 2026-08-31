@@ -3871,6 +3871,7 @@ export const en: Translations = {
     officeTruncated: 'Showing a preview of the first sheets, rows, or slides.',
     officeParseError: 'Could not parse this Office document.',
     slideLabel: index => `Slide ${index}`,
+    formulaBarLabel: 'Formula',
     noInlineTitle: 'No inline preview',
     noInlineBody: mimeType => `${mimeType || 'This file type'} can still be attached as context.`,
     edit: 'Edit',

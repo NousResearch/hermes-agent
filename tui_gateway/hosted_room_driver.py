@@ -29,6 +29,8 @@ from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
 
+_CANCEL_ROUTE_RETRIES = 8
+
 
 ROOM_SESSION_SOURCE = "bot_room"
 MAX_TERMINAL_TEXT_BYTES = 64 * 1024
@@ -252,41 +254,73 @@ class HostedRoomRuntime:
         *,
         cancel_id: str,
     ) -> dict[str, Any]:
-        """Persist a stop intent, then commit cancellation after acknowledgement."""
-        before = state.get_task(self.db_path, identity)
-        if before["status"] in {"queued", "deferred"}:
-            cancelled = state.cancel_task(
-                self.db_path,
-                identity,
-                cancel_id=cancel_id,
-                expected_cancel_generation=before["cancel_generation"],
-                clock=self.clock,
-            )
-            self.wakeup()
-            return cancelled
+        """Persist a stop intent, then commit cancellation after acknowledgement.
 
-        stopping = state.begin_task_cancel(
-            self.db_path,
-            identity,
-            cancel_id=cancel_id,
-            expected_cancel_generation=before["cancel_generation"],
-            clock=self.clock,
-        )
-        binding = self._binding_for_room(identity.room_id)
-        try:
-            if binding is not None and self._interrupt_stopping_task(binding, stopping):
-                stopping = state.complete_task_cancel(
+        The worker thread transitions tasks concurrently with cancellation
+        (queued -> running -> terminal), so the status read below is only a
+        routing hint. Every fast-path failure caused by a concurrent
+        transition re-reads and re-routes instead of surfacing a transient
+        `InvalidTaskTransitionError`/`StaleTaskError` to the caller.
+        """
+        for _ in range(_CANCEL_ROUTE_RETRIES):
+            before = state.get_task(self.db_path, identity)
+            if before["status"] == "cancelled":
+                return before
+            if before["status"] in state.TERMINAL_STATUSES:
+                raise state.InvalidTaskTransitionError(
+                    f"cannot cancel task in state '{before['status']}'"
+                )
+            if before["status"] in {"queued", "deferred"}:
+                try:
+                    cancelled = state.cancel_task(
+                        self.db_path,
+                        identity,
+                        cancel_id=cancel_id,
+                        expected_cancel_generation=before["cancel_generation"],
+                        clock=self.clock,
+                    )
+                except (state.InvalidTaskTransitionError, state.StaleTaskError):
+                    # Lost the race with the worker; re-read and re-route.
+                    continue
+                self.wakeup()
+                return cancelled
+            try:
+                stopping = state.begin_task_cancel(
                     self.db_path,
                     identity,
                     cancel_id=cancel_id,
-                    expected_cancel_generation=stopping["cancel_generation"],
+                    expected_cancel_generation=before["cancel_generation"],
                     clock=self.clock,
                 )
-        except Exception as exc:
-            self._record_error(f"stop remains pending: {exc}")
-        stopping = state.get_task(self.db_path, identity)
-        self.wakeup()
-        return stopping
+            except (state.InvalidTaskTransitionError, state.StaleTaskError):
+                # Task settled or re-queued mid-flight; re-read and re-route.
+                continue
+            binding = self._binding_for_room(identity.room_id)
+            try:
+                if binding is not None and self._interrupt_stopping_task(
+                    binding, stopping
+                ):
+                    stopping = state.complete_task_cancel(
+                        self.db_path,
+                        identity,
+                        cancel_id=cancel_id,
+                        expected_cancel_generation=stopping["cancel_generation"],
+                        clock=self.clock,
+                    )
+            except Exception as exc:
+                self._record_error(f"stop remains pending: {exc}")
+            stopping = state.get_task(self.db_path, identity)
+            self.wakeup()
+            return stopping
+        # Exhausted routing retries under sustained contention: surface the
+        # live status honestly rather than a transient transition error.
+        final = state.get_task(self.db_path, identity)
+        if final["status"] == "cancelled":
+            return final
+        raise state.InvalidTaskTransitionError(
+            f"cancel kept losing races with task transitions "
+            f"(last observed state '{final['status']}')"
+        )
 
     def retry_indeterminate(self, identity: state.TaskIdentity) -> dict[str, Any]:
         """Explicitly retry one uncertain attempt under the current room lease."""

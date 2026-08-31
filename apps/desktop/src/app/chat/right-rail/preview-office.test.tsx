@@ -332,6 +332,29 @@ describe('OfficePreviewView', () => {
     expect(box.style.height).toBe('20%')
   })
 
+  it('renders slide images and chart titles', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'slides',
+          slides: [
+            {
+              blocks: [
+                { src: 'data:image/png;base64,aaa', type: 'image' },
+                { series: [{ name: 'East', values: [10, 20] }], title: 'Revenue', type: 'chart' }
+              ]
+            }
+          ]
+        }}
+        {...labels}
+      />
+    )
+
+    expect((screen.getByRole('img') as HTMLImageElement).src).toContain('data:image/png;base64,aaa')
+    expect(screen.getByText('Revenue')).toBeTruthy()
+    expect(screen.getByText('East')).toBeTruthy()
+  })
+
   it('shows a truncation banner when the parser capped the document', () => {
     render(
       <OfficePreviewView

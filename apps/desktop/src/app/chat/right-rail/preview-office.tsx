@@ -410,6 +410,22 @@ function SlideBlockView({ block }: { block: SlideBlock }) {
       }
     : undefined
 
+  if (block.type === 'image') {
+    return (
+      <div data-testid={block.box ? 'office-slide-box' : undefined} style={positioned}>
+        <img alt="Image" src={block.src} style={{ height: '100%', objectFit: 'contain', width: '100%' }} />
+      </div>
+    )
+  }
+
+  if (block.type === 'chart') {
+    return (
+      <div data-testid={block.box ? 'office-slide-box' : undefined} style={positioned}>
+        <SlideChart block={block} />
+      </div>
+    )
+  }
+
   if (block.type === 'table') {
     return (
       <div data-testid={block.box ? 'office-slide-box' : undefined} style={positioned}>
@@ -459,5 +475,48 @@ function SlideBlockView({ block }: { block: SlideBlock }) {
         </p>
       ))}
     </Tag>
+  )
+}
+
+const CHART_COLORS = ['#4F81BD', '#C0504D', '#9BBB59', '#8064A2', '#4BACC6', '#F79646']
+
+function SlideChart({ block }: { block: Extract<SlideBlock, { type: 'chart' }> }) {
+  const categories = Math.max(1, ...block.series.map(series => series.values.length), 0)
+  const peak = Math.max(1, ...block.series.flatMap(series => series.values))
+  const groupWidth = 80 / categories
+  const barWidth = groupWidth / Math.max(1, block.series.length + 0.4)
+  const hasValues = block.series.some(series => series.values.length)
+
+  return (
+    <div className="flex h-full flex-col gap-1 p-2 text-[11px]">
+      {block.title ? <div className="font-semibold">{block.title}</div> : null}
+      {hasValues ? (
+        <svg className="min-h-0 w-full flex-1" viewBox="0 0 100 70">
+          {block.series.map((series, seriesIndex) =>
+            series.values.map((value, category) => (
+              <rect
+                fill={CHART_COLORS[seriesIndex % CHART_COLORS.length]}
+                height={(value / peak) * 52}
+                key={`${seriesIndex}-${category}`}
+                width={barWidth * 0.85}
+                x={10 + category * groupWidth + seriesIndex * barWidth}
+                y={58 - (value / peak) * 52}
+              />
+            ))
+          )}
+        </svg>
+      ) : null}
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {block.series.map((series, index) => (
+          <span key={series.name}>
+            <span
+              className="mr-1 inline-block h-2 w-2 align-middle"
+              style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }}
+            />
+            {series.name}
+          </span>
+        ))}
+      </div>
+    </div>
   )
 }

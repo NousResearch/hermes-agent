@@ -45,7 +45,7 @@ function concat(parts: Uint8Array[]) {
   return out
 }
 
-function zipFiles(files: Record<string, string>, method: 'store' | 'deflate' = 'store') {
+function zipFiles(files: Record<string, string | Uint8Array>, method: 'store' | 'deflate' = 'store') {
   const encoder = new TextEncoder()
   const locals: Uint8Array[] = []
   const centrals: Uint8Array[] = []
@@ -53,7 +53,7 @@ function zipFiles(files: Record<string, string>, method: 'store' | 'deflate' = '
 
   for (const [name, text] of Object.entries(files)) {
     const nameBytes = encoder.encode(name)
-    const raw = encoder.encode(text)
+    const raw = typeof text === 'string' ? encoder.encode(text) : text
     const payload = method === 'deflate' ? new Uint8Array(deflateRawSync(raw)) : raw
     const crc = crc32(raw)
     const zipMethod = method === 'deflate' ? 8 : 0
@@ -666,6 +666,82 @@ describe('parseOfficePreview pptx', () => {
       left: (914400 / cx) * 100,
       top: (1828800 / cy) * 100,
       width: (5486400 / cx) * 100
+    })
+  })
+
+  it('extracts pictures as data URLs and charts as series placeholders', async () => {
+    const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='), ch =>
+      ch.charCodeAt(0)
+    )
+
+    const preview = await parseOfficePreview(
+      zipFiles({
+        'ppt/presentation.xml': `<?xml version="1.0"?>
+<p:presentation xmlns:p="${NS_P}"><p:sldSz cx="12192000" cy="6858000"/></p:presentation>`,
+        'ppt/slides/_rels/slide1.xml.rels': `<?xml version="1.0"?>
+<Relationships xmlns="${NS_PKG_REL}">
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>
+</Relationships>`,
+        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
+<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}" xmlns:r="${NS_REL}"><p:cSld><p:spTree>
+  <p:pic>
+    <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+    <p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="2743200" cy="1828800"/></a:xfrm></p:spPr>
+  </p:pic>
+  <p:graphicFrame>
+    <p:xfrm><a:off x="4572000" y="914400"/><a:ext cx="5486400" cy="3657600"/></p:xfrm>
+    <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+      <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rId3"/>
+    </a:graphicData></a:graphic>
+  </p:graphicFrame>
+</p:spTree></p:cSld></p:sld>`,
+        'ppt/media/image1.png': png,
+        'ppt/charts/chart1.xml': `<?xml version="1.0"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="${NS_A}">
+  <c:chart>
+    <c:title><c:tx><c:rich><a:p><a:r><a:t>Revenue</a:t></a:r></a:p></c:rich></c:tx></c:title>
+    <c:plotArea>
+      <c:barChart>
+        <c:ser>
+          <c:tx><c:v>East</c:v></c:tx>
+          <c:val><c:numRef><c:numCache>
+            <c:pt idx="0"><c:v>10</c:v></c:pt>
+            <c:pt idx="1"><c:v>20</c:v></c:pt>
+          </c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:ser>
+          <c:tx><c:v>West</c:v></c:tx>
+          <c:val><c:numRef><c:numCache>
+            <c:pt idx="0"><c:v>5</c:v></c:pt>
+            <c:pt idx="1"><c:v>15</c:v></c:pt>
+          </c:numCache></c:numRef></c:val>
+        </c:ser>
+      </c:barChart>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>`
+      }),
+      '.pptx'
+    )
+
+    expect(preview?.kind).toBe('slides')
+
+    if (preview?.kind !== 'slides') {
+      return
+    }
+
+    expect(preview.slides[0]?.blocks[0]).toMatchObject({
+      src: expect.stringMatching(/^data:image\/png;base64,/),
+      type: 'image'
+    })
+    expect(preview.slides[0]?.blocks[1]).toMatchObject({
+      series: [
+        { name: 'East', values: [10, 20] },
+        { name: 'West', values: [5, 15] }
+      ],
+      title: 'Revenue',
+      type: 'chart'
     })
   })
 })

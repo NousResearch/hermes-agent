@@ -84,6 +84,22 @@ export type SlideBlock =
       rows: string[][]
       type: 'table'
     }
+  | {
+      box?: SlideBox
+      src: string
+      type: 'image'
+    }
+  | {
+      box?: SlideBox
+      series: SlideChartSeries[]
+      title?: string
+      type: 'chart'
+    }
+
+export type SlideChartSeries = {
+  name: string
+  values: number[]
+}
 
 export type SlideParagraph = {
   bullet?: boolean
@@ -540,7 +556,16 @@ function parsePptx(zip: Map<string, Uint8Array>): SlidesPreview | null {
   const slides = names.slice(0, MAX_SLIDES).map(name => {
     const layoutXml = zipText(zip, slideLayoutPath(zip, name))
 
-    return parseSlide(zipText(zip, name) || '', theme, masterBackground, size, placeholderBoxes(layoutXml, size), masterBoxes)
+    return parseSlide(
+      zipText(zip, name) || '',
+      theme,
+      masterBackground,
+      size,
+      placeholderBoxes(layoutXml, size),
+      masterBoxes,
+      zip,
+      name
+    )
   })
 
   return { kind: 'slides', slides, truncated }
@@ -621,7 +646,9 @@ function parseSlide(
   fallbackFill: string | undefined,
   size: { cx: number; cy: number },
   layoutBoxes: Map<string, SlideBox>,
-  masterBoxes: Map<string, SlideBox>
+  masterBoxes: Map<string, SlideBox>,
+  zip: Map<string, Uint8Array>,
+  slideName: string
 ): OfficeSlide {
   const doc = parseXml(xml)
 
@@ -631,15 +658,29 @@ function parseSlide(
 
   const background = slideFill(xml, theme) || fallbackFill
   const tree = localElements(doc, 'spTree')[0]
+  const rels = slideRelationships(zip, slideName)
   const blocks: SlideBlock[] = []
 
   for (const child of tree ? Array.from(tree.children) : []) {
-    if (child.localName === 'graphicFrame') {
-      const table = slideTable(child)
-      const boxed = withSlideBox(table, shapeBox(child, size, layoutBoxes, masterBoxes))
+    const box = shapeBox(child, size, layoutBoxes, masterBoxes)
 
-      if (boxed) {
-        blocks.push(boxed)
+    if (child.localName === 'pic') {
+      const picture = withSlideBox(slidePicture(child, zip, rels), box)
+
+      if (picture) {
+        blocks.push(picture)
+      }
+
+      continue
+    }
+
+    if (child.localName === 'graphicFrame') {
+      const chart = withSlideBox(slideChart(child, zip, rels), box)
+      const table = chart ? null : withSlideBox(slideTable(child), box)
+      const framed = chart || table
+
+      if (framed) {
+        blocks.push(framed)
       }
 
       continue
@@ -649,7 +690,7 @@ function parseSlide(
       continue
     }
 
-    const text = withSlideBox(slideText(child, theme), shapeBox(child, size, layoutBoxes, masterBoxes))
+    const text = withSlideBox(slideText(child, theme), box)
 
     if (text) {
       blocks.push(text)
@@ -818,6 +859,115 @@ function withSlideBox<T extends SlideBlock>(block: T | null, box: SlideBox | und
   }
 
   return box ? { ...block, box } : block
+}
+
+function slideRelationships(zip: Map<string, Uint8Array>, slideName: string): Map<string, string> {
+  const relsName = slideName.replace(/([^/]+)$/, '_rels/$1.rels')
+  const doc = parseXml(zipText(zip, relsName) || '')
+  const rels = new Map<string, string>()
+
+  for (const rel of doc ? localElements(doc, 'Relationship') : []) {
+    const id = rel.getAttribute('Id')
+    const target = rel.getAttribute('Target')
+
+    if (id && target) {
+      rels.set(id, joinZipPath(slideName, target))
+    }
+  }
+
+  return rels
+}
+
+function slidePicture(
+  picture: Element,
+  zip: Map<string, Uint8Array>,
+  rels: Map<string, string>
+): Extract<SlideBlock, { type: 'image' }> | null {
+  const blip = localElements(picture, 'blip')[0]
+  const embed = blip ? attr(blip, 'embed') : ''
+  const path = embed ? rels.get(embed) : undefined
+  const bytes = path ? zip.get(path) : undefined
+  const src = path && bytes ? mediaDataUrl(bytes, path) : undefined
+
+  return src ? { src, type: 'image' } : null
+}
+
+function slideChart(
+  frame: Element,
+  zip: Map<string, Uint8Array>,
+  rels: Map<string, string>
+): Extract<SlideBlock, { type: 'chart' }> | null {
+  const data = localElements(frame, 'graphicData')[0]
+  const uri = data?.getAttribute('uri') || ''
+
+  if (!uri.includes('/chart')) {
+    return null
+  }
+
+  const chartNode = data ? localElements(data, 'chart')[0] : undefined
+  const id = chartNode ? attr(chartNode, 'id') : ''
+  const path = id ? rels.get(id) : undefined
+  const doc = path ? parseXml(zipText(zip, path) || '') : null
+
+  if (!doc) {
+    return null
+  }
+
+  const titleNode = localElements(doc, 'title')[0]
+
+  const title = titleNode
+    ? localElements(titleNode, 't')
+        .map(node => node.textContent || '')
+        .join('')
+        .trim()
+    : ''
+
+  const series = localElements(doc, 'ser').map((ser, index) => {
+    const tx = localElements(ser, 'tx')[0]
+
+    const name =
+      (tx && (localElements(tx, 'v')[0]?.textContent || localElements(tx, 't').map(node => node.textContent || '').join(''))) ||
+      `Series ${index + 1}`
+
+    const val = localElements(ser, 'val')[0]
+
+    const values = val
+      ? localElements(val, 'v')
+          .map(node => Number(node.textContent))
+          .filter(value => Number.isFinite(value))
+      : []
+
+    return { name: name.trim() || `Series ${index + 1}`, values }
+  })
+
+  return { series, ...(title ? { title } : {}), type: 'chart' }
+}
+
+function mediaDataUrl(bytes: Uint8Array, path: string): string | undefined {
+  const ext = path.split('.').pop()?.toLowerCase()
+
+  const mime =
+    ext === 'png'
+      ? 'image/png'
+      : ext === 'jpg' || ext === 'jpeg'
+        ? 'image/jpeg'
+        : ext === 'gif'
+          ? 'image/gif'
+          : ext === 'webp'
+            ? 'image/webp'
+            : undefined
+
+  if (!mime) {
+    return undefined
+  }
+
+  let binary = ''
+
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  }
+
+  return `data:${mime};base64,${btoa(binary)}`
 }
 
 function slideText(shape: Element, theme: Map<string, string>): Extract<SlideBlock, { type: 'text' }> | null {

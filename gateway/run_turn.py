@@ -3705,6 +3705,11 @@ class GatewayTurnMixin:
                     # the raw inbound id (the anchor above is only the reply target).
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
                     delivery_obligation_id=_owned_delivery_id,
+                    attachment_snapshot=getattr(
+                        claimed_event,
+                        "_hermes_claimed_response_parts_snapshot",
+                        None,
+                    ),
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)

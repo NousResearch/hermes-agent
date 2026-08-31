@@ -2720,17 +2720,6 @@ def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     return cleaned.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "").strip()
 
 
-def _durable_delivery_text_for_response(response: str, adapter: Any) -> str:
-    """Project final text without exposing attachment directives or paths."""
-    from gateway.platforms.base import _strip_media_directives
-
-    _media_files, cleaned = adapter.extract_media(response)
-    _images, text_content = adapter.extract_images(cleaned)
-    text_content = _strip_media_directives(text_content).strip()
-    _local_files, text_content = adapter.extract_local_files(text_content)
-    return text_content.strip()
-
-
 def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None]:
     """Derive ``(slug, declared_name)`` from a SKILL.md; ``(None, None)`` if unreadable or no ``name:``.
     Matches ``scan_skill_commands``: the slug comes from frontmatter ``name:``, NOT the directory."""

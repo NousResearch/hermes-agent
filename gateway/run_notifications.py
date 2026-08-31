@@ -340,6 +340,7 @@ class GatewayNotificationsMixin:
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
         delivery_obligation_id: Optional[str] = None,
+        attachment_snapshot: Optional[Any] = None,
     ) -> None:
         """Deliver a queued response using the normal text+attachment split.
 
@@ -362,9 +363,12 @@ class GatewayNotificationsMixin:
                 or getattr(source, "session_key", "")
                 or self._session_key_for_source(source)
             )
+            snapshot = attachment_snapshot or snapshot_claimed_response_parts(
+                response,
+                adapter,
+            )
+            visible_text = snapshot.visible_text
             if deliver_media:
-                snapshot = snapshot_claimed_response_parts(response, adapter)
-                visible_text = snapshot.visible_text
                 media_files = snapshot.media_files
                 images = snapshot.images
                 local_files = snapshot.local_files

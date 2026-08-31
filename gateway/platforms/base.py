@@ -1260,7 +1260,12 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     re.IGNORECASE)
 
 
-def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tuple[str, int]]:
+def _match_extensionless_path(
+    scan_text: str,
+    match: "re.Match",
+    *,
+    include_unavailable: bool = False,
+) -> Optional[Tuple[str, int]]:
     """Extensionless MEDIA tag match -> validated on-disk ``(safe_path, end_offset)`` or None: the
     captured path first, then extended across single spaces (max 8 tokens, never past a newline
     or the next ``MEDIA:``).
@@ -1269,11 +1274,14 @@ def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tup
     (validation-gated, bounded at 8 tokens, never past a newline or a subsequent ``MEDIA:`` keyword) so
     unknown-extension paths containing spaces deliver (#24032). Returns ``(safe_path, end_offset)`` where
     ``end_offset`` is the index in ``scan_text`` just past the matched path, or ``None`` when nothing
-    validates.
+    validates. Claimed-result planning may set ``include_unavailable`` to return the bounded
+    explicit token before availability and policy checks; the send path validates it later.
     """
     path = _normalize_media_tag_path(match.group("path"))
     if not path:
         return None
+    if include_unavailable:
+        return path, match.end("path")
     safe = validate_media_delivery_path(path)
     if safe:
         return safe, match.end("path")
@@ -1347,32 +1355,57 @@ def _mask_media_scan_text(text: str) -> str:
     return masked
 
 
-def _deliverable_tag_spans(text: str) -> list:
+def _deliverable_tag_spans(
+    text: str,
+    *,
+    include_unavailable: bool = False,
+) -> list:
     """Spans to delete from ``text``: its deliverable MEDIA tags (located on the masked copy)
     plus a terminal ``<|eos|>`` sentinel, which is a control token and never user content."""
-    spans = _real_media_tag_spans(_mask_media_scan_text(text))
+    spans = _real_media_tag_spans(
+        _mask_media_scan_text(text),
+        include_unavailable=include_unavailable,
+    )
     start = _terminal_sentinel_start(text)
     if spans and start >= 0:
         spans.append((start, len(text.rstrip())))
     return spans
 
 
-def _extensionless_media_matches(masked: str):
+def _extensionless_media_matches(
+    masked: str,
+    *,
+    include_unavailable: bool = False,
+):
     """Yield ``(match, safe_path, end_offset)`` for every extension-less / unknown-extension
     MEDIA tag in ``masked`` that ``validate_media_delivery_path`` accepts."""
     for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
         path = _normalize_media_tag_path(match.group("path"))
         if path and _path_lacks_deliverable_extension(path):
-            resolved = _match_extensionless_path(masked, match)
+            resolved = _match_extensionless_path(
+                masked,
+                match,
+                include_unavailable=include_unavailable,
+            )
             if resolved is not None:
                 yield match, resolved[0], resolved[1]
 
 
-def _real_media_tag_spans(masked: str) -> list:
+def _real_media_tag_spans(
+    masked: str,
+    *,
+    include_unavailable: bool = False,
+) -> list:
     """(start, end) spans of deliverable MEDIA tags on a masked copy: known-extension tags
     unconditionally, extension-less / unknown ones only if validate_media_delivery_path accepts."""
     spans: list = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
-    spans.extend((match.start(), end) for match, _, end in _extensionless_media_matches(masked))
+    spans.extend(
+        (match.start(), end)
+        for match, _, end in _extensionless_media_matches(
+            masked,
+            include_unavailable=include_unavailable,
+        )
+    )
     return spans
 
 
@@ -3058,11 +3091,18 @@ class BasePlatformAdapter(ABC):
         return _blank_spans(content, spans)
 
     @staticmethod
-    def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
+    def extract_media(
+        content: str,
+        *,
+        include_unavailable: bool = False,
+    ) -> Tuple[List[Tuple[str, bool]], str]:
         """Extract ``MEDIA:<path>`` tags and strip ``[[audio_as_voice]]`` / ``[[as_document]]`` ->
         ``([(path, is_voice), ...], cleaned)``. Both directives are message-global;
         ``[[as_document]]`` (unmodified sendDocument for large images) is detected by dispatch sites
-        on the ORIGINAL response and only stripped here."""
+        on the ORIGINAL response and only stripped here. Claimed-result planning may set
+        ``include_unavailable`` to retain bounded explicit attachment intents until send-time
+        validation.
+        """
         media = []
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = content.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
@@ -3088,12 +3128,18 @@ class BasePlatformAdapter(ABC):
                     _add(os.path.expanduser(path))
                 except (OSError, RuntimeError, ValueError):
                     continue  # crafted ~\x00 path: skip it, keep the rest
-        for _, safe_path, _ in _extensionless_media_matches(scan_content):
+        for _, safe_path, _ in _extensionless_media_matches(
+            scan_content,
+            include_unavailable=include_unavailable,
+        ):
             _add(safe_path)
         # Locate tag spans on a masked copy, delete them from the unmasked text (protected spans
         # survive).
         if media:
-            spans = _deliverable_tag_spans(cleaned)
+            spans = _deliverable_tag_spans(
+                cleaned,
+                include_unavailable=include_unavailable,
+            )
             if spans:
                 cleaned = re.sub(r'\n{3,}', '\n\n', _delete_spans(cleaned, spans)).strip()
         return media, cleaned
@@ -4164,18 +4210,36 @@ class BasePlatformAdapter(ABC):
         *,
         is_ephemeral_response: bool,
         include_unavailable_attachments: bool = False,
+        claimed_parts_snapshot: Any = None,
     ) -> "_ExtractedResponse":
         """Split a handler response into deliverable text + attachments. Order matters: MEDIA tags →
         image URLs → residual directives → bare local paths (skipped for ephemeral notices so config
         paths stay text; unknown-extension MEDIA tags survive for the bare-path detector). History
         dedup is bare-path only, off-loop, fail-open. An emptied non-empty response is recovered."""
+        if claimed_parts_snapshot is not None:
+            return _ExtractedResponse(
+                text_content=claimed_parts_snapshot.visible_text,
+                images=list(claimed_parts_snapshot.images),
+                media_files=list(claimed_parts_snapshot.media_files),
+                local_files=list(claimed_parts_snapshot.local_files),
+                force_document_attachments=bool(
+                    claimed_parts_snapshot.force_document_attachments
+                ),
+                pre_extract=response,
+            )
         # Captured before extract_media strips it: images then go via send_document (no recompression).
         force_document = "[[as_document]]" in response
         pre_extract = response
         # The handler's routed profile scope is gone by now; resolve attachment policy in the
         # active source profile while retaining unavailable claimed-result intents.
         with self._media_delivery_scope(event.source):
-            media_files, response = self.extract_media(response)
+            if include_unavailable_attachments:
+                media_files, response = BasePlatformAdapter.extract_media(
+                    response,
+                    include_unavailable=True,
+                )
+            else:
+                media_files, response = self.extract_media(response)
             if not include_unavailable_attachments:
                 media_files = self.filter_media_delivery_paths(
                     media_files,
@@ -4545,6 +4609,15 @@ class BasePlatformAdapter(ABC):
                     is_ephemeral_response=is_ephemeral_response,
                     include_unavailable_attachments=bool(
                         _delivery_owned_obligation_id
+                    ),
+                    claimed_parts_snapshot=(
+                        getattr(
+                            event,
+                            "_hermes_claimed_response_parts_snapshot",
+                            None,
+                        )
+                        if _delivery_owned_obligation_id
+                        else None
                     ),
                 )
                 text_content, media_files = extracted.text_content, extracted.media_files

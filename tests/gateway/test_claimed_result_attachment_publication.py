@@ -427,9 +427,9 @@ async def test_queued_attachment_snapshot_survives_file_disappearing_after_extra
     extract_images = adapter.extract_images
     extract_local_files = adapter.extract_local_files
 
-    def _extract_media_once(content):
+    def _extract_media_once(content, **kwargs):
         extraction_calls["media"] += 1
-        return extract_media(content)
+        return extract_media(content, **kwargs)
 
     def _extract_images_once(content):
         extraction_calls["images"] += 1
@@ -659,6 +659,224 @@ async def test_queued_unsafe_attachment_is_manifested_failed_not_false_terminal(
     assert str(unsafe) not in durable_content
     assert str(unsafe) not in durable_parts
     assert "PRIVATE_BLOCKED_BYTES" not in durable_parts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["Caddyfile", "payload.unsupported"])
+async def test_unavailable_explicit_media_without_supported_extension_is_retryable(
+    _isolated_ledger_and_media,
+    name,
+):
+    intended = (_isolated_ledger_and_media / name).resolve()
+    assert not intended.exists()
+    response = f"queued text\nMEDIA:{intended}"
+    source = _source(f"missing-explicit-{name}")
+    oid = _record_owned(
+        source,
+        response,
+        content="queued text",
+        suffix=f"missing-explicit-{name}",
+    )
+    adapter = _OwnedMediaAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner._session_key_for_source = lambda _source: (
+        f"agent:main:slack:channel:{source.chat_id}"
+    )
+
+    with pytest.raises(
+        Exception,
+        match="claimed continuation attachment delivery failed",
+    ):
+        await runner._deliver_queued_first_response(
+            response,
+            source=source,
+            adapter=adapter,
+            metadata={},
+            delivery_obligation_id=oid,
+        )
+
+    assert adapter.calls == [("text", "queued text")]
+    assert _state(oid) == "failed"
+    assert [
+        (row["kind"], row["state"])
+        for row in dl.get_claimed_result_parts(oid)
+    ] == [("text", "delivered"), ("document", "failed")]
+    with dl._connect() as conn:
+        provider_facing = repr(
+            conn.execute(
+                "SELECT content, last_error FROM delivery_obligations "
+                "WHERE obligation_id=?",
+                (oid,),
+            ).fetchone()
+        )
+        part_metadata = repr(
+            conn.execute(
+                "SELECT part_id, part_ordinal, kind, state, last_error, "
+                "remote_receipt FROM delivery_obligation_parts "
+                "WHERE obligation_id=?",
+                (oid,),
+            ).fetchall()
+        )
+    assert str(intended) not in provider_facing
+    assert str(intended) not in part_metadata
+
+
+@pytest.mark.asyncio
+async def test_denied_extensionless_media_is_manifested_before_validation(
+    _isolated_ledger_and_media,
+    monkeypatch,
+):
+    from gateway.platforms import base as base_module
+
+    denied = _media_file(
+        _isolated_ledger_and_media.parent,
+        "PRIVATE_DENIED_EXTENSIONLESS",
+    )
+    original_denied = base_module._path_under_denied_prefix
+    monkeypatch.setattr(
+        base_module,
+        "_path_under_denied_prefix",
+        lambda path: Path(path) == denied or original_denied(path),
+    )
+    validation_calls = []
+    original_validation = base_module.validate_media_delivery_path
+
+    def _track_delivery_validation(path, session_key=""):
+        validation_calls.append((str(path), session_key))
+        return original_validation(path, session_key=session_key)
+
+    monkeypatch.setattr(
+        base_module,
+        "validate_media_delivery_path",
+        _track_delivery_validation,
+    )
+    response = f"queued text\nMEDIA:{denied}"
+    source = _source("denied-explicit-extensionless")
+    oid = _record_owned(
+        source,
+        response,
+        content="queued text",
+        suffix="denied-explicit-extensionless",
+    )
+    adapter = _OwnedMediaAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner._session_key_for_source = lambda _source: (
+        f"agent:main:slack:channel:{source.chat_id}"
+    )
+
+    with pytest.raises(
+        Exception,
+        match="claimed continuation attachment delivery failed",
+    ):
+        await runner._deliver_queued_first_response(
+            response,
+            source=source,
+            adapter=adapter,
+            metadata={},
+            delivery_obligation_id=oid,
+        )
+
+    assert adapter.calls == [("text", "queued text")]
+    assert _state(oid) == "failed"
+    assert [
+        (row["kind"], row["state"])
+        for row in dl.get_claimed_result_parts(oid)
+    ] == [("text", "delivered"), ("document", "failed")]
+    assert validation_calls == [
+        (
+            str(denied),
+            f"agent:main:slack:channel:{source.chat_id}",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_extensionless_media_disappearing_after_snapshot_remains_incomplete(
+    _isolated_ledger_and_media,
+):
+    intended = _media_file(_isolated_ledger_and_media, "DISAPPEARING_EXTENSIONLESS")
+    response = f"queued text\nMEDIA:{intended}"
+    source = _source("disappearing-explicit-extensionless")
+    oid = _record_owned(
+        source,
+        response,
+        content="queued text",
+        suffix="disappearing-explicit-extensionless",
+    )
+    adapter = _OwnedMediaAdapter()
+    extract_media = adapter.extract_media
+
+    def _extract_then_remove(content, **kwargs):
+        media, cleaned = extract_media(content, **kwargs)
+        intended.unlink()
+        return media, cleaned
+
+    adapter.extract_media = _extract_then_remove
+    runner = object.__new__(GatewayRunner)
+    runner._session_key_for_source = lambda _source: (
+        f"agent:main:slack:channel:{source.chat_id}"
+    )
+
+    with pytest.raises(
+        Exception,
+        match="claimed continuation attachment delivery failed",
+    ):
+        await runner._deliver_queued_first_response(
+            response,
+            source=source,
+            adapter=adapter,
+            metadata={},
+            delivery_obligation_id=oid,
+        )
+
+    assert adapter.calls == [("text", "queued text")]
+    assert [
+        (row["kind"], row["state"])
+        for row in dl.get_claimed_result_parts(oid)
+    ] == [("text", "delivered"), ("document", "failed")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "protected",
+    [
+        "Use `MEDIA:{path}` as an example.",
+        "```text\nMEDIA:{path}\n```",
+        "> MEDIA:{path}",
+        '{{"result":"MEDIA:{path}"}}',
+    ],
+)
+async def test_protected_unavailable_extensionless_media_remains_text(
+    _isolated_ledger_and_media,
+    protected,
+):
+    intended = (_isolated_ledger_and_media / "PROTECTED_EXTENSIONLESS").resolve()
+    response = protected.format(path=intended)
+    source = _source("protected-explicit-extensionless")
+    oid = _record_owned(
+        source,
+        response,
+        content=response,
+        suffix="protected-explicit-extensionless",
+    )
+    adapter = _OwnedMediaAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner._session_key_for_source = lambda _source: (
+        f"agent:main:slack:channel:{source.chat_id}"
+    )
+
+    await runner._deliver_queued_first_response(
+        response,
+        source=source,
+        adapter=adapter,
+        metadata={},
+        delivery_obligation_id=oid,
+    )
+
+    assert adapter.calls == [("text", response)]
+    assert [(row["kind"], row["state"]) for row in dl.get_claimed_result_parts(oid)] == [
+        ("text", "delivered")
+    ]
 
 
 def test_claimed_part_manifest_is_bounded_private_and_pruned(

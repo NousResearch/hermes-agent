@@ -24,12 +24,10 @@ class _FakeTodoStore:
         self,
         *,
         has_items=True,
-        has_restored_state=False,
         needs_history_reconciliation=False,
         notice="",
     ):
         self._has_items = has_items
-        self.has_restored_state = has_restored_state
         self.needs_history_reconciliation = needs_history_reconciliation
         self.notice = notice
 
@@ -232,7 +230,6 @@ def test_durable_empty_todo_state_wins_over_older_history():
     agent = _FakeAgent()
     agent._todo_store = _FakeTodoStore(
         has_items=False,
-        has_restored_state=True,
         needs_history_reconciliation=False,
     )
     agent._hydrate_todo_store = MagicMock()

@@ -64,7 +64,10 @@ class TodoStore:
         # Keep the task list atomic so a Ctrl+T action cannot race a model merge.
         self._lock = threading.RLock()
         self._revision = 0
-        self._has_restored_state = False
+        # Durable-state generation advances for every persisted mutation,
+        # including notice consumption that deliberately does not invalidate a
+        # UI expected_revision token. Persistence uses it to reject stale writes.
+        self._generation = 0
         self._history_reconciled = False
         self._pending_user_notices: List[str] = []
         self._on_change: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -78,12 +81,6 @@ class TodoStore:
         """Monotonic in-memory revision for UI conflict detection."""
         with self._lock:
             return self._revision
-
-    @property
-    def has_restored_state(self) -> bool:
-        """Whether a durable sidecar existed, including an empty snapshot."""
-        with self._lock:
-            return self._has_restored_state
 
     @property
     def needs_history_reconciliation(self) -> bool:
@@ -105,6 +102,7 @@ class TodoStore:
         """Return the durable task state, including user authority markers."""
         with self._lock:
             return {
+                "generation": self._generation,
                 "revision": self._revision,
                 "todos": [item.copy() for item in self._items],
                 "user_status_overrides": dict(self._user_status_overrides),
@@ -145,7 +143,12 @@ class TodoStore:
             )
             raw_revision = payload.get("revision", 0)
             self._revision = max(0, raw_revision) if isinstance(raw_revision, int) else 0
-            self._has_restored_state = True
+            raw_generation = payload.get("generation", self._revision)
+            self._generation = (
+                max(0, raw_generation)
+                if isinstance(raw_generation, int) and not isinstance(raw_generation, bool)
+                else self._revision
+            )
             # A durable (or explicitly seeded branch) snapshot is the canonical
             # state. History hydration is only a legacy fallback when no
             # sidecar exists; replaying older tool output here can resurrect an
@@ -172,6 +175,7 @@ class TodoStore:
                 f"- {line}" for line in self._pending_user_notices
             )
             self._pending_user_notices = []
+            self._generation += 1
             self._notify_change()
             return notice
 
@@ -255,6 +259,7 @@ class TodoStore:
             self._apply_bounds()
             if self._items != before:
                 self._revision += 1
+                self._generation += 1
                 self._notify_change()
             return self.read()
 
@@ -308,6 +313,7 @@ class TodoStore:
                 )
                 self._pending_user_notices = self._pending_user_notices[-20:]
             self._revision += 1
+            self._generation += 1
             self._notify_change()
             return True
 

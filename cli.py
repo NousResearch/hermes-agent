@@ -7597,6 +7597,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._todo_panel_state.close()
         return visible
 
+    def _todo_panel_open(self) -> bool:
+        return bool(self._todo_panel_state.expanded and self._todo_panel_visible())
+
+    def _stash_panel_open(self) -> bool:
+        stash = getattr(self, "_prompt_stash", None)
+        return bool(stash is not None and stash.panel_open and len(stash))
+
     def _todo_panel_max_rows(self) -> int:
         try:
             rows = shutil.get_terminal_size((80, 24)).lines
@@ -17014,10 +17021,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             or self._secret_state
             or self._model_picker_state
             or getattr(self, "_command_palette_state", None)
-            or (
-                getattr(getattr(self, "_todo_panel_state", None), "expanded", False)
-                and bool(self._todo_items())
-            )
+            or self._todo_panel_open()
             or self._auq_state  # KENSEI CUSTOM
         )
 
@@ -18407,7 +18411,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Register the focused Ctrl+T task inspector bindings."""
         todo_toggle_filter = Condition(
             lambda: (
-                self._todo_panel_state.expanded or self._todo_panel_visible()
+                self._todo_panel_visible() and not self._stash_panel_open()
             )
             and not self._clarify_state
             and not self._auq_state
@@ -18419,7 +18423,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             and not self._command_palette_state
         )
         todo_panel_filter = Condition(
-            lambda: self._todo_panel_state.expanded and self._todo_panel_visible()
+            lambda: self._todo_panel_open()
         )
 
         @kb.add('c-t', filter=todo_toggle_filter, eager=True)
@@ -19284,9 +19288,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             and not cli_ref._secret_state
             and not cli_ref._slash_confirm_state
             and not cli_ref._model_picker_state
+            and not cli_ref._todo_panel_open()
         )
         _stash_panel_filter = Condition(
-            lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))
+            lambda: cli_ref._stash_panel_open() and not cli_ref._todo_panel_open()
         )
 
         def _restore_stash_payload(event, payload) -> None:
@@ -20352,10 +20357,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             wrap_lines=True,
             read_only=Condition(
                 lambda: bool(cli_ref._command_blocks_input)
-                or (
-                    getattr(cli_ref._todo_panel_state, "expanded", False)
-                    and cli_ref._todo_panel_visible()
-                )
+                or cli_ref._todo_panel_open()
             ),
             history=FileHistory(str(self._history_file)),
             # complete_while_typing fires the completer on every keystroke. The

@@ -159,6 +159,7 @@ class TestHumanStatusUpdates:
         store.set_on_change(snapshots.append)
         store.write([{"id": "1", "content": "Build tray", "status": "in_progress"}])
         store.update_status("1", "completed", actor="user")
+        before_consume = store.snapshot_state()
 
         notice = store.consume_user_change_notice()
 
@@ -166,6 +167,8 @@ class TestHumanStatusUpdates:
         assert "completed" in notice
         assert store.consume_user_change_notice() == ""
         assert snapshots[-1]["pending_user_notices"] == []
+        assert snapshots[-1]["revision"] == before_consume["revision"]
+        assert snapshots[-1]["generation"] == before_consume["generation"] + 1
 
     def test_user_change_notice_quotes_control_characters_in_agent_ids(self):
         store = TodoStore()

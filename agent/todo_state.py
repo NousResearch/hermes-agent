@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import weakref
 
 from tools.todo_tool import TodoStore
 
 logger = logging.getLogger(__name__)
+_LOCK_INIT = threading.Lock()
 
 
 def _persistence_key(session_id: str, state) -> tuple[str, str]:
@@ -16,6 +18,27 @@ def _persistence_key(session_id: str, state) -> tuple[str, str]:
         session_id,
         json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
     )
+
+
+def _state_generation(state) -> int:
+    if not isinstance(state, dict):
+        return 0
+    raw = state.get("generation", state.get("revision", 0))
+    return max(0, raw) if isinstance(raw, int) and not isinstance(raw, bool) else 0
+
+
+def _persistence_lock(agent):
+    lock = getattr(agent, "_todo_state_persist_lock", None)
+    if lock is not None:
+        return lock
+    # Lightweight embedding/test hosts do not pass through init_agent. Make
+    # lazy creation safe when their first two callbacks arrive concurrently.
+    with _LOCK_INIT:
+        lock = getattr(agent, "_todo_state_persist_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            agent._todo_state_persist_lock = lock
+    return lock
 
 
 def persist_todo_store(agent, state=None) -> bool:
@@ -32,18 +55,35 @@ def persist_todo_store(agent, state=None) -> bool:
             return False
         payload = store.snapshot_state()
     else:
+        if not isinstance(state, dict):
+            return False
         payload = state
     persistence_key = _persistence_key(session_id, payload)
-    if getattr(agent, "_todo_state_persist_key", None) == persistence_key:
-        return True
-    try:
-        persisted = bool(session_db.update_session_todo_state(session_id, payload))
-        if persisted:
-            agent._todo_state_persist_key = persistence_key
-        return persisted
-    except Exception as exc:
-        logger.debug("Could not persist todo state for %s: %s", session_id, exc)
-        return False
+    generation_key = (session_id, _state_generation(payload))
+    with _persistence_lock(agent):
+        if getattr(agent, "_todo_state_persist_key", None) == persistence_key:
+            return True
+        previous_generation = getattr(
+            agent, "_todo_state_persist_generation", None
+        )
+        if (
+            isinstance(previous_generation, tuple)
+            and len(previous_generation) == 2
+            and previous_generation[0] == session_id
+            and generation_key[1] <= previous_generation[1]
+        ):
+            # Every durable TodoStore change advances generation. A same/older
+            # snapshot arriving after a completed write is therefore stale.
+            return True
+        try:
+            persisted = bool(session_db.update_session_todo_state(session_id, payload))
+            if persisted:
+                agent._todo_state_persist_key = persistence_key
+                agent._todo_state_persist_generation = generation_key
+            return persisted
+        except Exception as exc:
+            logger.debug("Could not persist todo state for %s: %s", session_id, exc)
+            return False
 
 
 def build_todo_store(agent, *, fallback_state=None) -> TodoStore:
@@ -64,8 +104,11 @@ def build_todo_store(agent, *, fallback_state=None) -> TodoStore:
             persisted = session_db.get_session_todo_state(session_id)
             loaded_persisted = persisted is not None and store.load_state(persisted)
             if loaded_persisted:
-                agent._todo_state_persist_key = _persistence_key(
-                    session_id, store.snapshot_state()
+                snapshot = store.snapshot_state()
+                agent._todo_state_persist_key = _persistence_key(session_id, snapshot)
+                agent._todo_state_persist_generation = (
+                    session_id,
+                    _state_generation(snapshot),
                 )
         except Exception as exc:
             logger.debug("Could not restore todo state for %s: %s", session_id, exc)

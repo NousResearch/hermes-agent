@@ -32,7 +32,13 @@ class _FakeKeyBindings:
 
     def add(self, *keys, **_kwargs):
         def decorator(handler):
-            self.bindings.append(SimpleNamespace(keys=keys, handler=handler))
+            self.bindings.append(
+                SimpleNamespace(
+                    keys=keys,
+                    handler=handler,
+                    filter=_kwargs.get("filter"),
+                )
+            )
             return handler
 
         return decorator
@@ -220,6 +226,24 @@ class TestCLIIntegrationSeams:
         binding.handler(event)
         cli._toggle_todo_panel.assert_called_once_with()
         event.app.invalidate.assert_called_once_with()
+
+    def test_stash_and_todo_panels_are_mutually_exclusive(self):
+        from hermes_cli.prompt_stash import PromptStash
+
+        cli = self._bare_cli()
+        cli._prompt_stash = PromptStash()
+        cli._prompt_stash.stash("parked draft")
+        cli._prompt_stash.panel_open = True
+        bindings = _FakeKeyBindings()
+        cli._register_todo_tui_keybindings(bindings)
+        toggle = next(row for row in bindings.bindings if row.keys == ('c-t',))
+
+        assert cli._stash_panel_open() is True
+        assert toggle.filter() is False
+
+        cli._prompt_stash.panel_open = False
+        cli._todo_panel_state.expanded = True
+        assert cli._todo_panel_open() is True
 
     def test_layout_places_todo_tray_immediately_above_status_bar(self):
         cli = self._bare_cli()

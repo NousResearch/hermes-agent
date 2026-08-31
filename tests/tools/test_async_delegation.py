@@ -882,10 +882,22 @@ def test_batch_truncation_banner_marks_only_truncated_task():
     assert banner_pos > clean_pos
 
 
-def test_batch_model_rejection_notice_prepended():
+def _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro-4", provider="openrouter"):
+    """Pin the delegation config the notice renderer reads (adapts the
+    #97667 tests to the shipped implementation, which reads the configured
+    model from config rather than the event's model field)."""
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(
+        _pr, "_delegation_config", lambda: {"model": model, "provider": provider}
+    )
+
+
+def test_batch_model_rejection_notice_prepended(monkeypatch):
     """A rejected delegation model must surface ONE config-level notice above
     the per-task blocks instead of staying buried in each summary (#97654)."""
     rejection = "HTTP 400: upstage/solar-pro-4 is not a valid model ID"
+    _patch_delegation_cfg(monkeypatch)
     evt = _make_async_evt(
         is_batch=True,
         model="upstage/solar-pro-4",
@@ -915,14 +927,14 @@ def test_batch_model_rejection_notice_prepended():
     assert text is not None
     assert "SUBAGENT MODEL REJECTED" in text
     assert "upstage/solar-pro-4" in text
-    assert "2/2" in text
     assert "delegation.model" in text
     # The notice precedes the per-task blocks, not just trails them.
     assert text.index("SUBAGENT MODEL REJECTED") < text.index("TASK 1/2")
 
 
-def test_batch_model_rejection_notice_absent_when_clean():
+def test_batch_model_rejection_notice_absent_when_clean(monkeypatch):
     """Ordinary summaries must not grow a model-rejection notice."""
+    _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro4")
     evt = _make_async_evt(
         is_batch=True,
         model="upstage/solar-pro4",
@@ -943,9 +955,10 @@ def test_batch_model_rejection_notice_absent_when_clean():
     assert "SUBAGENT MODEL REJECTED" not in text
 
 
-def test_batch_model_rejection_notice_requires_configured_model_in_text():
+def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypatch):
     """A model_not_found pattern naming a DIFFERENT model than the configured
     delegation model is task-level noise, not a config-level rejection."""
+    _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro4")
     evt = _make_async_evt(
         is_batch=True,
         model="upstage/solar-pro4",

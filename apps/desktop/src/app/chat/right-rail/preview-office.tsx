@@ -447,12 +447,8 @@ function SlideBlockView({ block }: { block: SlideBlock }) {
   }
 
   const Tag = block.role === 'title' ? 'h1' : block.role === 'subtitle' ? 'h2' : 'div'
-  const clipPath =
-    block.geometry === 'diamond'
-      ? 'polygon(50% 0, 100% 50%, 50% 100%, 0 50%)'
-      : block.geometry === 'chevron'
-        ? 'polygon(0 0, 78% 0, 100% 50%, 78% 100%, 0 100%, 22% 50%)'
-        : undefined
+  const path = shapePolygon(block.geometry)
+  const radius = roundRectRadius(block)
 
   return (
     <Tag
@@ -460,9 +456,9 @@ function SlideBlockView({ block }: { block: SlideBlock }) {
       data-testid={block.box ? 'office-slide-box' : undefined}
       style={{
         alignItems: 'center',
-        backgroundColor: block.fill,
-        borderRadius: block.geometry === 'ellipse' ? '50%' : block.geometry === 'roundRect' ? '12%' : undefined,
-        clipPath,
+        backgroundColor: path ? undefined : block.fill,
+        border: path || !block.stroke ? undefined : `${block.strokeWidth || 1}px solid ${block.stroke}`,
+        borderRadius: path ? undefined : radius,
         display: 'flex',
         flexDirection: 'column',
         fontSize: block.role === 'title' ? '28pt' : '16pt',
@@ -470,18 +466,35 @@ function SlideBlockView({ block }: { block: SlideBlock }) {
         justifyContent: 'center',
         lineHeight: 1.25,
         margin: 0,
-        overflow: 'hidden',
+        overflow: path ? 'visible' : 'hidden',
         textAlign: 'center',
         ...positioned
       }}
     >
+      {path ? (
+        <svg
+          preserveAspectRatio="none"
+          style={{ height: '100%', inset: 0, pointerEvents: 'none', position: 'absolute', width: '100%' }}
+          viewBox="0 0 100 100"
+        >
+          <polygon
+            fill={block.fill || 'transparent'}
+            points={path}
+            stroke={block.stroke}
+            strokeWidth={block.strokeWidth || 0}
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+      ) : null}
       {block.paragraphs.map((paragraph, index) => (
         <p
           key={index}
           style={{
             margin: '0 0 0.35em',
             paddingLeft: paragraph.bullet ? '1.1em' : undefined,
-            textIndent: paragraph.bullet ? '-0.85em' : undefined
+            position: 'relative',
+            textIndent: paragraph.bullet ? '-0.85em' : undefined,
+            zIndex: 1
           }}
         >
           {paragraph.bullet ? '• ' : null}
@@ -535,4 +548,41 @@ function SlideChart({ block }: { block: Extract<SlideBlock, { type: 'chart' }> }
       </div>
     </div>
   )
+}
+
+function shapePolygon(geometry: Extract<SlideBlock, { type: 'text' }>['geometry']): string | undefined {
+  if (geometry === 'diamond') {
+    return '50,0 100,50 50,100 0,50'
+  }
+
+  if (geometry === 'chevron') {
+    return '0,0 75,0 100,50 75,100 0,100 25,50'
+  }
+
+  if (geometry === 'rightArrow') {
+    return '0,25 68,25 68,0 100,50 68,100 68,75 0,75'
+  }
+
+  return undefined
+}
+
+function roundRectRadius(block: Extract<SlideBlock, { type: 'text' }>): string | undefined {
+  if (block.geometry === 'ellipse') {
+    return '50%'
+  }
+
+  if (block.geometry !== 'roundRect') {
+    return undefined
+  }
+
+  const adj = block.roundAdj ?? 0.16667
+  const box = block.box
+
+  if (!box?.width || !box.height) {
+    return `${adj * 100}% / ${adj * 100}%`
+  }
+
+  const min = Math.min(box.width, box.height)
+
+  return `${((adj * min) / box.width) * 100}% / ${((adj * min) / box.height) * 100}%`
 }

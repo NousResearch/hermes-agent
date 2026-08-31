@@ -802,6 +802,66 @@ describe('parseOfficePreview pptx', () => {
       type: 'chart'
     })
   })
+
+  it('keeps rightArrow geometry, roundRect adj, and theme line strokes', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        'ppt/theme/theme1.xml': `<?xml version="1.0"?>
+<a:theme xmlns:a="${NS_A}"><a:themeElements>
+  <a:clrScheme name="Office">
+    <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+    <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+    <a:accent1><a:srgbClr val="4F81BD"/></a:accent1>
+  </a:clrScheme>
+  <a:fmtScheme name="Office"><a:lnStyleLst>
+    <a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln>
+  </a:lnStyleLst></a:fmtScheme>
+</a:themeElements></a:theme>`,
+        'ppt/presentation.xml': `<?xml version="1.0"?>
+<p:presentation xmlns:p="${NS_P}"><p:sldSz cx="10000000" cy="5000000"/></p:presentation>`,
+        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
+<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
+  <p:sp>
+    <p:spPr>
+      <a:xfrm><a:off x="0" y="0"/><a:ext cx="4000000" cy="1000000"/></a:xfrm>
+      <a:prstGeom prst="rightArrow"><a:avLst/></a:prstGeom>
+      <a:solidFill><a:srgbClr val="2E8BFF"/></a:solidFill>
+    </p:spPr>
+    <p:style><a:lnRef idx="1"><a:schemeClr val="accent1"/></a:lnRef></p:style>
+    <p:txBody><a:p><a:r><a:t>Collect</a:t></a:r></a:p></p:txBody>
+  </p:sp>
+  <p:sp>
+    <p:spPr>
+      <a:xfrm><a:off x="0" y="2000000"/><a:ext cx="8000000" cy="1000000"/></a:xfrm>
+      <a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>
+      <a:solidFill><a:srgbClr val="1F2937"/></a:solidFill>
+    </p:spPr>
+    <p:txBody><a:p><a:r><a:t>KPI</a:t></a:r></a:p></p:txBody>
+  </p:sp>
+</p:spTree></p:cSld></p:sld>`
+      }),
+      '.pptx'
+    )
+
+    expect(preview?.kind).toBe('slides')
+
+    if (preview?.kind !== 'slides') {
+      return
+    }
+
+    expect(preview.slides[0]?.blocks[0]).toMatchObject({
+      fill: '#2E8BFF',
+      geometry: 'rightArrow',
+      stroke: '#4F81BD',
+      strokeWidth: 1,
+      type: 'text'
+    })
+    expect(preview.slides[0]?.blocks[1]).toMatchObject({
+      geometry: 'roundRect',
+      roundAdj: 16667 / 100000,
+      type: 'text'
+    })
+  })
 })
 
 describe('parseOfficePreview guards', () => {

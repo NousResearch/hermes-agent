@@ -76,9 +76,12 @@ export type SlideBlock =
   | {
       box?: SlideBox
       fill?: string
-      geometry?: 'chevron' | 'diamond' | 'ellipse' | 'rect' | 'roundRect'
+      geometry?: 'chevron' | 'diamond' | 'ellipse' | 'rect' | 'rightArrow' | 'roundRect'
       paragraphs: SlideParagraph[]
       role?: 'body' | 'subtitle' | 'title'
+      roundAdj?: number
+      stroke?: string
+      strokeWidth?: number
       type: 'text'
     }
   | {
@@ -549,6 +552,7 @@ function parsePptx(zip: Map<string, Uint8Array>): SlidesPreview | null {
   }
 
   const theme = parseThemeColors(zipText(zip, 'ppt/theme/theme1.xml'))
+  const lineWidths = parseThemeLineWidths(zipText(zip, 'ppt/theme/theme1.xml'))
   const masterXml = zipText(zip, 'ppt/slideMasters/slideMaster1.xml')
   const size = presentationSize(zip)
   const masterBoxes = placeholderBoxes(masterXml, size)
@@ -566,7 +570,8 @@ function parsePptx(zip: Map<string, Uint8Array>): SlidesPreview | null {
       placeholderBoxes(layoutXml, size),
       masterBoxes,
       zip,
-      name
+      name,
+      lineWidths
     )
   })
 
@@ -613,6 +618,19 @@ function parseThemeColors(xml: string | null): Map<string, string> {
   return colors
 }
 
+function parseThemeLineWidths(xml: string | null): number[] {
+  const doc = xml ? parseXml(xml) : null
+  const list = doc ? localElements(doc, 'lnStyleLst')[0] : undefined
+
+  if (!list) {
+    return [1]
+  }
+
+  return Array.from(list.children)
+    .filter(child => child.localName === 'ln')
+    .map(line => Math.max(1, Number(line.getAttribute('w') || 9525) / 9525))
+}
+
 function drawingColor(node: Element | undefined, theme: Map<string, string>): string | undefined {
   if (!node) {
     return undefined
@@ -650,7 +668,8 @@ function parseSlide(
   layoutBoxes: Map<string, SlideBox>,
   masterBoxes: Map<string, SlideBox>,
   zip: Map<string, Uint8Array>,
-  slideName: string
+  slideName: string,
+  lineWidths: number[]
 ): OfficeSlide {
   const doc = parseXml(xml)
 
@@ -692,7 +711,7 @@ function parseSlide(
       continue
     }
 
-    const text = withSlideBox(slideText(child, theme), box)
+    const text = withSlideBox(slideText(child, theme, lineWidths), box)
 
     if (text) {
       blocks.push(text)
@@ -972,7 +991,7 @@ function mediaDataUrl(bytes: Uint8Array, path: string): string | undefined {
   return `data:${mime};base64,${btoa(binary)}`
 }
 
-function slideText(shape: Element, theme: Map<string, string>): Extract<SlideBlock, { type: 'text' }> | null {
+function slideText(shape: Element, theme: Map<string, string>, lineWidths: number[]): Extract<SlideBlock, { type: 'text' }> | null {
   const role = slideRole(shape)
 
   if (role === null) {
@@ -982,7 +1001,10 @@ function slideText(shape: Element, theme: Map<string, string>): Extract<SlideBlo
   const spPr = Array.from(shape.children).find(child => child.localName === 'spPr')
   const fill = drawingColor(spPr, theme)
   const geometry = shapeGeometry(spPr)
+  const roundAdj = geometry === 'roundRect' ? shapeAdj(spPr, 16667) : undefined
+  const stroke = shapeStroke(shape, theme, lineWidths)
   const body = localElements(shape, 'txBody')[0]
+
   const paragraphs = body
     ? Array.from(body.children)
         .filter(child => child.localName === 'p')
@@ -1016,6 +1038,8 @@ function slideText(shape: Element, theme: Map<string, string>): Extract<SlideBlo
     type: 'text',
     ...(fill ? { fill } : {}),
     ...(geometry ? { geometry } : {}),
+    ...(roundAdj !== undefined ? { roundAdj } : {}),
+    ...(stroke?.color ? { stroke: stroke.color, strokeWidth: stroke.width } : {}),
     ...(role ? { role } : {})
   }
 }
@@ -1023,11 +1047,52 @@ function slideText(shape: Element, theme: Map<string, string>): Extract<SlideBlo
 function shapeGeometry(spPr: Element | undefined): Extract<SlideBlock, { type: 'text' }>['geometry'] | undefined {
   const preset = spPr ? localElements(spPr, 'prstGeom')[0]?.getAttribute('prst') : undefined
 
-  if (preset === 'chevron' || preset === 'diamond' || preset === 'ellipse' || preset === 'rect' || preset === 'roundRect') {
+  if (preset === 'chevron' || preset === 'diamond' || preset === 'ellipse' || preset === 'rect' || preset === 'rightArrow' || preset === 'roundRect') {
     return preset
   }
 
   return undefined
+}
+
+function shapeAdj(spPr: Element | undefined, fallback: number): number {
+  const geom = spPr ? localElements(spPr, 'prstGeom')[0] : undefined
+  const guides = geom ? localElements(geom, 'gd') : []
+  const adj = guides.find(guide => guide.getAttribute('name') === 'adj')?.getAttribute('fmla') || ''
+  const match = /^val\s+(\d+)$/.exec(adj)
+
+  return (match ? Number(match[1]) : fallback) / 100000
+}
+
+function shapeStroke(
+  shape: Element,
+  theme: Map<string, string>,
+  lineWidths: number[]
+): { color: string; width: number } | undefined {
+  const spPr = Array.from(shape.children).find(child => child.localName === 'spPr')
+  const line = spPr ? Array.from(spPr.children).find(child => child.localName === 'ln') : undefined
+
+  if (line) {
+    if (localElements(line, 'noFill').length) {
+      return undefined
+    }
+
+    const color = drawingColor(line, theme)
+    const width = Math.max(1, Number(line.getAttribute('w') || 9525) / 9525)
+
+    return color ? { color, width } : undefined
+  }
+
+  const style = Array.from(shape.children).find(child => child.localName === 'style')
+  const lnRef = style ? localElements(style, 'lnRef')[0] : undefined
+  const color = drawingColor(lnRef, theme)
+
+  if (!color) {
+    return undefined
+  }
+
+  const idx = Number(lnRef?.getAttribute('idx') || 1)
+
+  return { color, width: lineWidths[idx - 1] || 1 }
 }
 
 function slideRole(shape: Element): 'body' | 'subtitle' | 'title' | undefined | null {

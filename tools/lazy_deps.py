@@ -200,7 +200,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ensure() call at the import site, the SDK never installs on a hosted
     # instance and the provider silently reports itself unavailable.
     "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai==2.0.10",),
+    "memory.mem0": ("mem0ai>=2.0.10,<3",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),

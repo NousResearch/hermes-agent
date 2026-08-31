@@ -35,6 +35,23 @@ describe('isLikelyProseCodeBlock', () => {
   it('keeps an .env-style dump fenced', () => {
     expect(isLikelyProseCodeBlock('', ['API_KEY=abc123', 'PORT=8080', 'DEBUG=true'].join('\n'))).toBe(false)
   })
+
+  it('keeps a Markdown note with YAML frontmatter and list fields fenced', () => {
+    const note = [
+      '---',
+      'type: inventory',
+      'date_created: 2026-08-31T14:40:19Z',
+      'tags:',
+      '  - inventory',
+      '  - purchases',
+      'vendor: "Example Shop"',
+      'order_reference: "ABC123"',
+      '---',
+      '[[2026-08-31-example-shop-order]]'
+    ].join('\n')
+
+    expect(isLikelyProseCodeBlock('text', note)).toBe(false)
+  })
 })
 
 describe('isLikelyStructuredText', () => {

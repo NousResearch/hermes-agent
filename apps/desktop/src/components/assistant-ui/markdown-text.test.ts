@@ -70,6 +70,25 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('const value = 1;')
   })
 
+  it('keeps a text-fenced Markdown note with YAML frontmatter intact', () => {
+    const fence = '```'
+
+    const note = [
+      '---',
+      'type: inventory',
+      'tags:',
+      '  - inventory',
+      '  - purchases',
+      'vendor: "Example Shop"',
+      '---',
+      '[[2026-08-31-example-shop-order]]'
+    ]
+
+    const input = [`${fence}text`, ...note, fence].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
   it('keeps dangling real code fences during streaming', () => {
     const input = ['```ts', 'const value = 1;'].join('\n')
     const output = preprocessMarkdown(input)

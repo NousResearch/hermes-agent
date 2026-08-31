@@ -67,6 +67,7 @@ Refresh-token handling:
 from __future__ import annotations
 
 from typing import Literal, Optional, Tuple
+from urllib.parse import quote, unquote
 
 from fastapi import Request
 from fastapi.responses import Response
@@ -306,9 +307,30 @@ def set_pkce_cookie(
     # sidesteps the bug — these cookies are explicitly designed for cross-site
     # delivery and Chromium processes them reliably during redirects.
     # Loopback HTTP degrades to Lax (SameSite=None requires Secure).
+    #
+    # Value encoding: the PKCE payload is a flat ``key=value;key=value``
+    # string (``provider=…;state=…;verifier=…;next=…``). A raw ``;`` is a
+    # cookie-attribute terminator, so Python's http.cookies wraps the value
+    # in double quotes and escapes each ``;`` as the backslash-octal
+    # ``\073``. Mainstream browsers store and echo that quoted form
+    # verbatim, and Python parsers decode it — but the quoted form is NOT
+    # made of plain RFC 6265 cookie-octets (``"`` and ``\`` are outside the
+    # set), and stricter cookie-aware hops that parse and re-emit the
+    # Cookie header drop the cookie entirely (verified for Go's net/http,
+    # which rejects any cookie value containing a backslash — the parser
+    # underlying much Go-based proxy/IDP middleware). The callback then
+    # fails with "Missing PKCE state cookie" even though the browser sent
+    # it (field case: a Traefik + Authentik + VPN chain, support thread
+    # "Still unable to use Authentik for signin with traefik" — devtools
+    # showed the browser sending the intact quoted cookie while Hermes
+    # logged missing_pkce_cookie). URL-encoding the whole payload
+    # (``;`` → ``%3B``)
+    # keeps the wire value inside the unquoted cookie-octet set so every
+    # RFC 6265 parser passes it through untouched. The readers in
+    # routes.py decode via parse_pkce_payload() before the ``;`` split.
     response.set_cookie(
         _resolved_name(PKCE_COOKIE, use_https=use_https, prefix=prefix),
-        payload,
+        quote(payload, safe=""),
         max_age=_PKCE_MAX_AGE,
         **_pkce_attrs(use_https=use_https, prefix=prefix),
     )
@@ -367,6 +389,39 @@ def read_session_provider(request: Request) -> Optional[str]:
 
 def read_pkce_cookie(request: Request) -> Optional[str]:
     return _read_with_fallback(request, PKCE_COOKIE)
+
+
+def parse_pkce_payload(raw: str) -> dict[str, str]:
+    """Decode + parse a PKCE cookie value into its segment dict.
+
+    Single inverse of :func:`set_pkce_cookie`'s encoding: URL-decode the
+    wire value back to the flat ``provider=...;state=...;verifier=...``
+    shape, then split on ``;``. EVERY reader of the PKCE cookie must go
+    through this helper — a reader that splits the raw wire value sees
+    the fully URL-encoded string (even ``=`` is ``%3D``), parses zero
+    segments, and silently disables whatever check it was feeding
+    (provider dispatch, CSRF state, native-flow broker binding).
+
+    Mixed-version compatibility (10-minute PKCE TTL during a rolling
+    upgrade): a cookie minted by a pre-encoding server arrives here —
+    after starlette's cookie-header unquoting — as the flat form with
+    RAW ``;`` between segments, and its ``next`` segment still carries
+    its own single URL-encoding (``next=%2F...``). The new encoded form
+    can never contain a raw ``;`` (it is ``%3B``). So a raw ``;`` is an
+    exact old-format discriminator: split it as-is WITHOUT the payload
+    decode, exactly like the old reader did, so an old ``next`` value
+    containing ``%3B`` is not decoded into a bogus delimiter. (The
+    reverse direction — a new encoded cookie hitting an old server —
+    fails the state check and the user retries; nothing to do here.)
+    """
+    if ";" in raw:
+        # Old-format (pre-encoding) cookie: already flat, split as-is.
+        return dict(
+            seg.split("=", 1) for seg in raw.split(";") if "=" in seg
+        )
+    return dict(
+        seg.split("=", 1) for seg in unquote(raw).split(";") if "=" in seg
+    )
 
 
 def set_sso_attempt_cookie(

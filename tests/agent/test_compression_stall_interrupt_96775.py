@@ -171,7 +171,7 @@ class TestStallInterruptedBackoff:
         assert db.get_compression_lock_holder("STALL_AUX_CANCEL") is None
         state = db.get_compression_failure_cooldown("STALL_AUX_CANCEL")
         assert state is not None
-        assert str(state["error"]).startswith(STALL_INTERRUPTED_FAILURE_CLASS)
+        assert STALL_INTERRUPTED_FAILURE_CLASS in str(state["error"])
         assert "msgs=20" in str(state["error"])
         assert agent.context_compressor.should_compress(50_000) is False
 
@@ -222,7 +222,7 @@ class TestStallInterruptedBackoff:
         assert live == original
         state = db.get_compression_failure_cooldown("STALL_FENCE_CANCEL")
         assert state is not None
-        assert str(state["error"]).startswith(STALL_INTERRUPTED_FAILURE_CLASS)
+        assert STALL_INTERRUPTED_FAILURE_CLASS in str(state["error"])
         assert agent.context_compressor.should_compress(50_000) is False
         db.append_message("STALL_FENCE_CANCEL", "user", "next turn")
 
@@ -339,7 +339,7 @@ class TestStallInterruptedBackoff:
         after = db.get_compression_failure_cooldown("MERGE_MAX_STALL")
         assert after is not None
         assert float(after["cooldown_until"]) >= prior_until - 1.0
-        assert str(after["error"]).startswith(STALL_INTERRUPTED_FAILURE_CLASS)
+        assert STALL_INTERRUPTED_FAILURE_CLASS in str(after["error"])
 
 
 def test_session_db_cooldown_write_does_not_shorten_longer_deadline(

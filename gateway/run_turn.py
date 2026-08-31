@@ -3518,9 +3518,10 @@ class GatewayTurnMixin:
                 _mark_turn(turn_ctx.session_key, turn_ctx.run_generation)
 
     async def _run_agent_drain_pending(
-        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
-    ) -> Tuple[Any, Optional[str]]:
-        """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
+        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
+        session_id: Optional[str],
+    ) -> Tuple[Any, Optional[str], bool]:
+        """Claim/dequeue the next follow-up as ``(event, text, claim_blocked)``.
 
         Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
         from gateway.run import (
@@ -3528,11 +3529,18 @@ class GatewayTurnMixin:
         )
         pending_event = None
         pending = None
+        claim_blocked = False
         if result and adapter and session_key:
-            pending_event = _dequeue_pending_event(adapter, session_key)
-            # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
-            # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
-            pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+            pending_event, claim_blocked = self._claim_goal_continuation_before_dequeue(
+                session_key, adapter, session_id=session_id or ""
+            )
+            if claim_blocked:
+                return None, None, True
+            if pending_event is None:
+                pending_event = _dequeue_pending_event(adapter, session_key)
+                # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
+                # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
+                pending_event = self._promote_queued_event(session_key, adapter, pending_event)
             if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):
@@ -3582,7 +3590,7 @@ class GatewayTurnMixin:
             )
             pending_event = None
             pending = None
-        return pending_event, pending
+        return pending_event, pending, claim_blocked
 
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
@@ -3658,32 +3666,12 @@ class GatewayTurnMixin:
         )
         logger.debug("Processing pending message: '%s...'", pending[:40])
 
-        # Clear the interrupt event so the recursive _run_agent isn't re-interrupted (infinite loop).
-        _active = getattr(adapter, "_active_sessions", None) if adapter else None
-        if _active and session_key and session_key in _active:
-            _active[session_key].clear()
-
-        # Cap recursion depth (user keeps sending while the agent keeps failing).
-        # (#816)
-        if _interrupt_depth >= self._MAX_INTERRUPT_DEPTH:
-            logger.warning(
-                "Interrupt recursion depth %d reached for session %s — "
-                "queueing message instead of recursing.", _interrupt_depth, session_key,
-            )
-            adapter = self._adapter_for_source(source)
-            if adapter and pending_event:
-                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
-            elif adapter and hasattr(adapter, 'queue_message'):
-                adapter.queue_message(session_key, pending)
-            return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
-
-        # Interrupted: discard the response ("Operation interrupted." is noise).
-        if not result.get("interrupted"):
-            await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
-
-        updated_history = result.get("messages", history)
-        next_source, next_message, next_session_key = source, pending, session_key
-        goal_retry_handoff_event = None
+        preclaimed_retry = getattr(self, "_goal_continuation_retries", {}).get(session_key)
+        goal_retry_handoff_event = (
+            pending_event
+            if preclaimed_retry is not None and preclaimed_retry.event is pending_event
+            else None
+        )
 
         def _restore_goal_retry_handoff() -> None:
             nonlocal goal_retry_handoff_event
@@ -3699,6 +3687,41 @@ class GatewayTurnMixin:
                     )
                 self._finish_goal_continuation_retry(session_key, retry)
             goal_retry_handoff_event = None
+
+        # Clear the interrupt event so the recursive _run_agent isn't re-interrupted (infinite loop).
+        _active = getattr(adapter, "_active_sessions", None) if adapter else None
+        try:
+            if _active and session_key and session_key in _active:
+                _active[session_key].clear()
+        except BaseException:
+            _restore_goal_retry_handoff()
+            raise
+
+        # Cap recursion depth (user keeps sending while the agent keeps failing).
+        # (#816)
+        if _interrupt_depth >= self._MAX_INTERRUPT_DEPTH:
+            logger.warning(
+                "Interrupt recursion depth %d reached for session %s — "
+                "queueing message instead of recursing.", _interrupt_depth, session_key,
+            )
+            adapter = self._adapter_for_source(source)
+            if adapter and pending_event:
+                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+            elif adapter and hasattr(adapter, 'queue_message'):
+                adapter.queue_message(session_key, pending)
+            _restore_goal_retry_handoff()
+            return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
+
+        # Interrupted: discard the response ("Operation interrupted." is noise).
+        try:
+            if not result.get("interrupted"):
+                await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+        except BaseException:
+            _restore_goal_retry_handoff()
+            raise
+
+        updated_history = result.get("messages", history)
+        next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
         # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
@@ -4200,7 +4223,11 @@ class GatewayTurnMixin:
                     session_key, adapter, claimed_event
                 ):
                     return result
-            pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
+            pending_event, pending, claim_blocked = await self._run_agent_drain_pending(
+                result, adapter, source, session_key, session_id
+            )
+            if claim_blocked:
+                return result
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,

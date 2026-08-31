@@ -72,6 +72,149 @@ def _continuation(source=None, *, message_id="continuation-head"):
     )
 
 
+def _run_production_drain_failure(isolated_home, mode):
+    """Run the real queued-turn drain and fail at its first post-dequeue await."""
+    repo = Path(__file__).resolve().parents[2]
+    script = r'''
+import asyncio
+import os
+from pathlib import Path
+import sys
+
+repo = Path(os.environ["REPO_ROOT"])
+sys.path.insert(0, str(repo / "tests" / "gateway"))
+
+from gateway.config import Platform
+from gateway.platforms.base import MessageEvent
+from gateway.session import SessionSource
+from hermes_cli.goals import CONTINUATION_PROMPT_TEMPLATE
+from test_run_progress_topics import QueuedGoalDispatchAgent, _run_with_agent
+
+async def main():
+    from pytest import MonkeyPatch
+
+    monkeypatch = MonkeyPatch()
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    continuation = MessageEvent(
+        text=CONTINUATION_PROMPT_TEMPLATE.format(goal="finish production crash recovery"),
+        source=source,
+        message_id="production-continuation",
+        internal=False,
+        allow_gateway_control=False,
+        goal_continuation=True,
+    )
+    successors = [
+        MessageEvent(text="production successor 1", source=source, message_id="production-successor-1"),
+        MessageEvent(text="production successor 2", source=source, message_id="production-successor-2"),
+    ]
+    holder = {}
+
+    def before_run(runner, adapter, session_key, _source):
+        holder.update(runner=runner, adapter=adapter, session_key=session_key)
+        if os.environ["FAILURE_MODE"] == "hard-exit":
+            async def hard_exit_after_production_dequeue(*_args, **_kwargs):
+                os._exit(23)
+
+            runner._deliver_queued_first_response = hard_exit_after_production_dequeue
+        else:
+            class FailOnPostDequeueClear:
+                def is_set(self):
+                    return False
+
+                def clear(self):
+                    raise RuntimeError("injected production drain failure")
+
+            adapter._active_sessions[session_key] = FailOnPostDequeueClear()
+
+    QueuedGoalDispatchAgent.calls = 0
+    QueuedGoalDispatchAgent.messages = []
+    run_root = Path(os.environ["HERMES_HOME"]) / "run-root"
+    run_root.mkdir()
+    try:
+        await _run_with_agent(
+            monkeypatch,
+            run_root,
+            QueuedGoalDispatchAgent,
+            session_id="sid-production-drain",
+            pending_event=continuation,
+            overflow_events=successors,
+            before_run=before_run,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "injected production drain failure"
+        assert holder["adapter"]._pending_messages[holder["session_key"]] is continuation
+        from gateway.goal_continuation_claims import load_claims
+        claim = load_claims()[0]
+        assert [event.message_id for event in claim.events] == [
+            "production-continuation",
+            "production-successor-1",
+            "production-successor-2",
+        ]
+    else:
+        raise AssertionError("production drain failure did not fire")
+    finally:
+        monkeypatch.undo()
+
+asyncio.run(main())
+'''
+    env = dict(os.environ)
+    env.update(
+        HERMES_HOME=str(isolated_home),
+        PYTHONPATH=str(repo),
+        REPO_ROOT=str(repo),
+        FAILURE_MODE=mode,
+    )
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_production_drain_hard_exit_recovers_typed_head_and_fifo(isolated_home):
+    """The real drain must publish head and successors before its first await."""
+    proc = _run_production_drain_failure(isolated_home, "hard-exit")
+    assert proc.returncode == 23, proc.stderr
+
+    from gateway.goal_continuation_claims import load_claims
+
+    claim = load_claims(home=isolated_home)[0]
+    assert [event.message_id for event in claim.events] == [
+        "production-continuation",
+        "production-successor-1",
+        "production-successor-2",
+    ]
+    assert [event.goal_continuation for event in claim.events] == [True, False, False]
+
+    source = claim.events[0].source
+    runner, adapter = _partial_runner(source, claim.session_key, claim.session_id)
+    assert runner._recover_goal_continuation_claims(schedule=False) == 1
+    assert runner._goal_continuation_retries[claim.session_key].event.message_id == (
+        "production-continuation"
+    )
+    assert adapter._pending_messages[claim.session_key].message_id == (
+        "production-successor-1"
+    )
+    assert [event.message_id for event in runner._session_state(
+        claim.session_key
+    ).conversation.queued_events] == ["production-successor-2"]
+
+
+def test_production_drain_exception_restores_durable_head(isolated_home):
+    """A propagating ordinary exception must restore the claimed head in memory."""
+    proc = _run_production_drain_failure(isolated_home, "exception")
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_claim_is_durable_before_exclusive_removal_after_hard_exit(isolated_home):
     """The existing claim seam must publish recovery state before ownership moves."""
     repo = Path(__file__).resolve().parents[2]

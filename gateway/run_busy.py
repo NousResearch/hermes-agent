@@ -239,6 +239,42 @@ class GatewayBusySessionMixin:
         retries[session_key] = retry
         return retry
 
+    def _claim_goal_continuation_before_dequeue(
+        self,
+        session_key: str,
+        adapter: Any,
+        *,
+        session_id: str,
+    ) -> tuple[Optional["MessageEvent"], bool]:
+        """Claim a typed FIFO head before the drain removes volatile ownership.
+
+        Returns ``(event, False)`` after durable publication, ``(None, False)``
+        for a non-continuation head, and ``(None, True)`` when publication
+        failed and this drain pass must leave the restored head alone.
+        """
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        event = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+        event_was_pending = event is not None
+        state = self._peek_session_state(session_key)
+        queued_events = state.conversation.queued_events if state is not None else []
+        if event is None and queued_events:
+            event = queued_events[0]
+        if event is None or not self._is_goal_continuation_event(event):
+            return None, False
+
+        retry = self._claim_goal_continuation_retry(
+            session_key, adapter, event, session_id=session_id
+        )
+        if retry is None:
+            return None, True
+
+        if isinstance(pending_slot, dict) and pending_slot.get(session_key) is event:
+            pending_slot.pop(session_key, None)
+        queued_events[:] = [queued for queued in queued_events if queued is not event]
+        if event_was_pending:
+            self._promote_queued_event(session_key, adapter, event)
+        return event, False
+
     def _finish_goal_continuation_retry(
         self, session_key: str, retry: _GoalContinuationRetry,
     ) -> None:

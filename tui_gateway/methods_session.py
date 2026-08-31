@@ -482,6 +482,19 @@ class _Resume:
     def restore(self):
         """``(sanitized model history, display history, raw history)`` for a cold/eager resume."""
         raw, display = self.read_history()
+        # Durable lost-result repair: persist ONE synthetic result row per never-answered
+        # tool call so the transcript no longer shows an eternally in-flight call and the
+        # repair survives restarts. Idempotent (has_tool_result gate); failures never block
+        # resume (the in-memory sanitizer below still protects the model).
+        try:
+            backfilled = backfill_orphan_tool_results(self.target, raw, self.db)
+            if backfilled:
+                logger.info(
+                    "session.resume: backfilled %d orphan tool result(s) into %s",
+                    backfilled, self.target,
+                )
+        except Exception:
+            logger.exception("orphan tool-result backfill failed for %s", self.target)
         return sanitize_replay_history(raw), display, raw
 
     def info(self, cwd: str, overrides: dict) -> dict:

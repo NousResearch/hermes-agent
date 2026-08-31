@@ -2363,21 +2363,77 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         reaped = True
 
     # SIGTERM released the port in the field report but the orphan kept
-    # running until a follow-up SIGKILL — wait briefly, then force-kill
-    # any survivor so the replacement can bind the port cleanly.
-    deadline = time.monotonic() + 5.0
-    survivors = list(orphans)
-    while survivors and time.monotonic() < deadline:
-        survivors = [p for p in survivors if _pid_exists(p)]
-        if survivors:
-            time.sleep(0.2)
-    for pid in survivors:
-        try:
-            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+    # running until a follow-up SIGKILL — wait, then force-kill any survivor
+    # so the replacement can bind the port cleanly.
+    survivors = _await_gateway_exit(orphans, pid_exists=_pid_exists)
+    _force_kill_survivors(survivors)
 
     return reaped
+
+
+# A retiring gateway runs a PASSIVE WAL checkpoint in ``SessionDB.close()``.
+# On a large store with a WAL well past the 1000-page autocheckpoint threshold
+# that does not finish in the 5s this used to allow, and the SIGKILL then
+# landed mid-checkpoint — half-written b-tree pages, which is the 2026-08-31
+# ``state.db`` corruption. The outgoing gateway keeps serving while we wait,
+# so a longer grace delays only the replacement's port bind, never traffic.
+_ORPHAN_EXIT_GRACE_SECONDS = 30.0
+_ORPHAN_EXIT_POLL_SECONDS = 0.2
+
+
+def _await_gateway_exit(
+    pids,
+    *,
+    pid_exists,
+    sleep=None,
+    grace_s: float = _ORPHAN_EXIT_GRACE_SECONDS,
+    poll_s: float = _ORPHAN_EXIT_POLL_SECONDS,
+):
+    """Wait up to *grace_s* for *pids* to exit; return those still alive.
+
+    Polls rather than blocking so a process that exits early costs nothing.
+    ``pid_exists``/``sleep`` are injected so the wait is testable without
+    real processes.
+    """
+    if sleep is None:
+        sleep = time.sleep
+    survivors = [p for p in pids]
+    for _ in range(max(1, int(grace_s / poll_s))):
+        survivors = [p for p in survivors if pid_exists(p)]
+        if not survivors:
+            break
+        sleep(poll_s)
+    else:
+        # Re-check after the LAST sleep. Without this a process that exits in
+        # the final interval is reported as a survivor and gets SIGKILL —
+        # usually a harmless ProcessLookupError, but a recycled PID would put
+        # that signal on an unrelated process.
+        survivors = [p for p in survivors if pid_exists(p)]
+    return survivors
+
+
+def _force_kill_survivors(survivors, *, kill=None) -> None:
+    """SIGKILL processes that outlasted the grace period, loudly.
+
+    A force-kill is the event that can tear the store, so it must leave a
+    trace: the 2026-08-31 incident had no record of which restart did it.
+    """
+    if not survivors:
+        return
+    if kill is None:
+        kill = os.kill
+    for pid in survivors:
+        logger.warning(
+            "Gateway PID %s did not exit within %.0fs of SIGTERM — sending "
+            "SIGKILL. A kill during a WAL checkpoint can corrupt state.db; "
+            "the next start will run an integrity check.",
+            pid,
+            _ORPHAN_EXIT_GRACE_SECONDS,
+        )
+        try:
+            kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
 
 def stop_profile_gateway() -> bool:

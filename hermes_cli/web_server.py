@@ -454,12 +454,21 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
 def should_require_dashboard_auth(
     host: str,
     trusted_public_hosts: Optional[frozenset[str]] = None,
+    *,
+    desktop_local: bool = False,
 ) -> bool:
     """Gate required for a non-loopback bind OR a non-loopback ``dashboard.public_url``.
 
     Callers may pass the already-resolved host set so startup and request
     validation share one snapshot.
     """
+    # Desktop's owned backend is a headless, ephemeral loopback child. It is
+    # not the browser dashboard named by dashboard.public_url, even though it
+    # shares the same config file. Applying that public URL's gate here makes
+    # the child reject Desktop's per-spawn token and strands the app at boot.
+    # A non-loopback bind remains gated even if a caller mislabels it.
+    if desktop_local and host in _LOOPBACK_HOST_VALUES:
+        return False
     if trusted_public_hosts is None:
         trusted_public_hosts = _dashboard_public_hosts()
     return should_require_auth(host) or any(h not in _LOOPBACK_HOST_VALUES for h in trusted_public_hosts)
@@ -484,6 +493,16 @@ def _desktop_loopback_auth_exempt(
         host in _LOOPBACK_HOST_VALUES
         and os.environ.get("HERMES_DESKTOP") == "1"
         and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or ssh_session_token or ssh_owner_nonce)
+    )
+
+
+def is_desktop_local_backend(host: str, port: int, headless: bool) -> bool:
+    """True only for Desktop's owned ephemeral loopback ``serve`` child."""
+    return (
+        headless
+        and os.environ.get("HERMES_DESKTOP") == "1"
+        and host in _LOOPBACK_HOST_VALUES
+        and port == 0
     )
 
 

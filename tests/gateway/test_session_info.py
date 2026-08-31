@@ -3,7 +3,9 @@
 import pytest
 from unittest.mock import patch
 
+from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 
 
 @pytest.fixture()
@@ -154,3 +156,94 @@ class TestResetNoticeSessionInfo:
         assert "anthropic" in info
         assert "base-model" not in info
 
+    @pytest.mark.parametrize(
+        ("source", "override_key"),
+        [
+            (
+                SessionSource(
+                    platform=Platform.DISCORD,
+                    chat_id="thread-1",
+                    thread_id="thread-1",
+                    parent_chat_id="parent-1",
+                    user_id="u1",
+                ),
+                "thread-1",
+            ),
+            (
+                SessionSource(
+                    platform=Platform.DISCORD,
+                    chat_id="thread-1",
+                    thread_id="thread-1",
+                    parent_chat_id="parent-1",
+                    user_id="u1",
+                ),
+                "parent-1",
+            ),
+        ],
+        ids=("exact-thread-route", "parent-route-inheritance"),
+    )
+    def test_reset_notice_uses_one_effective_thread_route(
+        self, runner, tmp_path, source, override_key
+    ):
+        """Every banner field must come from the inherited channel/thread route."""
+        tmp_path.joinpath("config.yaml").write_text(
+            "model:\n"
+            "  default: global-model\n"
+            "  provider: anthropic\n"
+            "  base_url: https://api.anthropic.com\n"
+            "  context_length: 12345\n"
+        )
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        override_key: ChannelOverride(
+                            model="thread-model",
+                            provider="thread-provider",
+                        )
+                    },
+                )
+            }
+        )
+        runner._session_key_for_source = lambda _source: None
+        route_runtime = {
+            "provider": "thread-provider",
+            "requested_provider": "thread-provider",
+            "base_url": "http://localhost:9000/v1",
+            "api_key": "route-key",
+            "api_mode": "chat_completions",
+        }
+
+        with (
+            patch("gateway.run._hermes_home", tmp_path),
+            patch(
+                "gateway.run._resolve_runtime_agent_kwargs",
+                return_value={
+                    "provider": "anthropic",
+                    "base_url": "https://api.anthropic.com",
+                    "api_key": "global-key",
+                },
+            ),
+            patch(
+                "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                return_value=route_runtime,
+            ),
+            patch(
+                "agent.model_metadata.get_model_context_length",
+                side_effect=lambda *args, **kwargs: (
+                    65536
+                    if kwargs.get("provider") == "thread-provider"
+                    and kwargs.get("base_url") == "http://localhost:9000/v1"
+                    else 12345
+                ),
+            ),
+        ):
+            info = runner._reset_notice_session_info(source)
+
+        assert "thread-model" in info
+        assert "thread-provider" in info
+        assert "65K" in info
+        assert "http://localhost:9000/v1" in info
+        assert "global-model" not in info
+        assert "anthropic" not in info

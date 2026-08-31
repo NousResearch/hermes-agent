@@ -2964,7 +2964,10 @@ class _GatewayModelContext:
     context_source: str
 
 
-def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModelContext:
+def _resolve_gateway_model_context(
+    model: Optional[str] = None,
+    runtime_kwargs: Optional[dict] = None,
+) -> _GatewayModelContext:
     """Resolve the configured gateway route and its effective context window.
 
     This is the shared non-resident authority for status/session banners and
@@ -3009,7 +3012,11 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
         pass
 
     try:
-        runtime = _resolve_runtime_agent_kwargs()
+        runtime = (
+            runtime_kwargs
+            if runtime_kwargs is not None
+            else _resolve_runtime_agent_kwargs()
+        )
         provider = runtime.get("provider") or provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")
@@ -21931,28 +21938,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
 
-        When ``source`` is given, the model resolves through the channel
-        override chain (channel_overrides > global default) so the banner
-        advertises the model the session will actually run on (#79468).
+        When a session source is available, resolve the model and runtime as
+        one effective route. This keeps provider, endpoint, and context
+        metadata aligned with channel/thread model routing instead of mixing a
+        channel model with the global provider route (#79468).
         """
-        # Channel-override scoping (#79468): the banner must advertise the
-        # model the session actually runs on, so when a source is given we
-        # resolve the model through the channel override chain
-        # (channel_overrides > global default) and feed it to the shared
-        # gateway model/context helper, which stays the single authority for
-        # provider/base_url/context_length.
-        channel_model = None
+        model = None
+        runtime_kwargs = None
         if source is not None:
-            try:
-                channel_model = self._resolve_model_for_channel(
-                    source.platform,
-                    source.chat_id,
-                    thread_id=getattr(source, "thread_id", None),
-                    parent_id=getattr(source, "parent_chat_id", None),
-                ) or _resolve_gateway_model()
-            except Exception:
-                channel_model = _resolve_gateway_model()
-        resolved = _resolve_gateway_model_context(model=channel_model)
+            user_config = _load_gateway_runtime_config()
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                user_config=user_config,
+            )
+        resolved = _resolve_gateway_model_context(
+            model=model,
+            runtime_kwargs=runtime_kwargs,
+        )
         model = resolved.model
         provider = resolved.provider
         base_url = resolved.base_url

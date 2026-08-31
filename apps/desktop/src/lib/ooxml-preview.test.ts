@@ -299,6 +299,53 @@ describe('parseOfficePreview xlsx', () => {
     expect(preview.sheets[0]?.rows[0]?.[1]).toMatchObject({ fill: '#C6EFCE', value: '15%' })
     expect(preview.sheets[0]?.rows[0]?.[2]).toMatchObject({ bold: true, color: '#FF0000', value: 'Ada' })
   })
+
+  it('evaluates formulas when the cached value is empty', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        'xl/workbook.xml': `<?xml version="1.0"?>
+<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_REL}">
+  <sheets>
+    <sheet name="Transactions" sheetId="1" r:id="rId1"/>
+    <sheet name="Pivot" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`,
+        'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?>
+<Relationships xmlns="${NS_PKG_REL}">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+</Relationships>`,
+        'xl/worksheets/sheet1.xml': `<?xml version="1.0"?>
+<worksheet xmlns="${NS_MAIN}">
+  <sheetData>
+    <row r="1"><c r="A1"><v>2</v></c><c r="B1"><v>3</v></c><c r="C1"><f>A1+B1</f><v/></c></row>
+    <row r="2"><c r="D2"><f>IF(G2="",0,G2)-IF(F2="",0,F2)</f><v/></c><c r="F2"/><c r="G2" t="n"/><c r="H2"><v>10</v></c><c r="I2" t="inlineStr"><is><t>Cat</t></is></c><c r="K2" t="inlineStr"><is><t>Inflow</t></is></c></row>
+    <row r="3"><c r="H3"><v>4</v></c><c r="I3" t="inlineStr"><is><t>Cat</t></is></c><c r="K3" t="inlineStr"><is><t>Outflow</t></is></c></row>
+  </sheetData>
+</worksheet>`,
+        'xl/worksheets/sheet2.xml': `<?xml version="1.0"?>
+<worksheet xmlns="${NS_MAIN}">
+  <sheetData>
+    <row r="6"><c r="A6" t="inlineStr"><is><t>Cat</t></is></c><c r="B6"><f>SUMIFS(Transactions!$H$2:$H$3,Transactions!$I$2:$I$3,$A6,Transactions!$K$2:$K$3,"Inflow")</f><v/></c></row>
+  </sheetData>
+</worksheet>`
+      }),
+      '.xlsx'
+    )
+
+    expect(preview?.kind).toBe('spreadsheet')
+
+    if (preview?.kind !== 'spreadsheet') {
+      return
+    }
+
+    const transactions = preview.sheets.find(sheet => sheet.name === 'Transactions')
+    const pivot = preview.sheets.find(sheet => sheet.name === 'Pivot')
+
+    expect(transactions?.rows[0]?.[2]).toMatchObject({ formula: 'A1+B1', value: '5' })
+    expect(transactions?.rows[1]?.[3]).toMatchObject({ value: '0' })
+    expect(pivot?.rows[5]?.[1]).toMatchObject({ value: '10' })
+  })
 })
 
 describe('parseOfficePreview docx', () => {

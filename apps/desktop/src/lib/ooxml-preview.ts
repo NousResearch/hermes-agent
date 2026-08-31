@@ -1,3 +1,5 @@
+import { evaluateFormula, type FormulaValue, formulaValueToRaw } from '@/lib/ooxml-formula'
+
 export type OfficePreviewKind = 'document' | 'slides' | 'spreadsheet'
 
 export type SpreadsheetCell = {
@@ -461,7 +463,7 @@ function parseXlsx(zip: Map<string, Uint8Array>): SpreadsheetPreview | null {
   const truncated = sheets.length > MAX_SHEETS
   const selected = sheets.slice(0, MAX_SHEETS)
 
-  const parsed = selected
+  const drafts = selected
     .map(sheet => {
       const xml = zipText(zip, sheet.path)
 
@@ -469,20 +471,25 @@ function parseXlsx(zip: Map<string, Uint8Array>): SpreadsheetPreview | null {
         return null
       }
 
-      const grid = parseSheetGrid(xml, shared, styles, date1904)
+      const parsed = parseSheetDrafts(xml, shared, styles)
 
-      return grid ? { name: sheet.name, rows: grid.rows, truncated: grid.truncated } : null
+      return parsed ? { name: sheet.name, ...parsed } : null
     })
-    .filter((sheet): sheet is { name: string; rows: SpreadsheetCell[][]; truncated: boolean } => Boolean(sheet))
+    .filter((sheet): sheet is { name: string; cells: DraftCell[]; truncated: boolean } => Boolean(sheet))
 
-  if (!parsed.length) {
+  if (!drafts.length) {
     return null
   }
 
+  evaluateDrafts(drafts)
+
   return {
     kind: 'spreadsheet',
-    sheets: parsed.map(({ name, rows }) => ({ name, rows })),
-    truncated: truncated || parsed.some(sheet => sheet.truncated)
+    sheets: drafts.map(sheet => ({
+      name: sheet.name,
+      rows: draftsToRows(sheet.cells, date1904)
+    })),
+    truncated: truncated || drafts.some(sheet => sheet.truncated)
   }
 }
 
@@ -573,19 +580,27 @@ function parseSharedStrings(xml: string | null): string[] {
   )
 }
 
-function parseSheetGrid(
+type DraftCell = {
+  col: number
+  formula?: string
+  raw: string
+  row: number
+  style: CellStyle
+  type: string
+}
+
+function parseSheetDrafts(
   xml: string,
   shared: string[],
-  styles: CellStyle[],
-  date1904: boolean
-): { rows: SpreadsheetCell[][]; truncated: boolean } | null {
+  styles: CellStyle[]
+): { cells: DraftCell[]; truncated: boolean } | null {
   const doc = parseXml(xml)
 
   if (!doc) {
     return null
   }
 
-  const cells: { col: number; row: number; cell: SpreadsheetCell }[] = []
+  const cells: DraftCell[] = []
   let truncated = false
 
   for (const node of localElements(doc, 'c')) {
@@ -601,24 +616,150 @@ function parseSheetGrid(
       continue
     }
 
-    cells.push({ ...ref, cell: buildSheetCell(node, shared, styles, date1904) })
+    const type = node.getAttribute('t') || ''
+
+    const formula = Array.from(node.children)
+      .find(child => child.localName === 'f')
+      ?.textContent?.trim()
+
+    cells.push({
+      ...ref,
+      formula: formula || undefined,
+      raw: cellValue(node, shared),
+      style: styles[Number(node.getAttribute('s') || '')] || {},
+      type
+    })
   }
 
+  return { cells, truncated }
+}
+
+function evaluateDrafts(sheets: { cells: DraftCell[]; name: string }[]) {
+  const index = new Map<string, DraftCell>()
+
+  for (const sheet of sheets) {
+    for (const cell of sheet.cells) {
+      index.set(`${sheet.name}!${cell.col}:${cell.row}`, cell)
+    }
+  }
+
+  const visiting = new Set<string>()
+  const computed = new Map<string, FormulaValue>()
+
+  const get = (sheet: string, col: number, row: number): FormulaValue => {
+    const key = `${sheet}!${col}:${row}`
+
+    if (computed.has(key)) {
+      return computed.get(key) as FormulaValue
+    }
+
+    const cell = index.get(key)
+
+    if (!cell) {
+      return ''
+    }
+
+    if (cell.formula && cell.raw === '') {
+      if (visiting.has(key)) {
+        computed.set(key, '#REF!')
+
+        return '#REF!'
+      }
+
+      visiting.add(key)
+
+      try {
+        const value = evaluateFormula(cell.formula, { currentSheet: sheet, get })
+        computed.set(key, value)
+        cell.raw = formulaValueToRaw(value)
+
+        if (typeof value === 'number') {
+          cell.type = 'n'
+        }
+
+        return value
+      } catch {
+        computed.set(key, '#VALUE!')
+        cell.raw = '#VALUE!'
+
+        return '#VALUE!'
+      } finally {
+        visiting.delete(key)
+      }
+    }
+
+    const primitive = primitiveFromDraft(cell)
+    computed.set(key, primitive)
+
+    return primitive
+  }
+
+  for (const sheet of sheets) {
+    for (const cell of sheet.cells) {
+      if (cell.formula && cell.raw === '') {
+        get(sheet.name, cell.col, cell.row)
+      }
+    }
+  }
+}
+
+function primitiveFromDraft(cell: DraftCell): FormulaValue {
+  if (cell.type === 'b') {
+    return cell.raw === 'TRUE' || cell.raw === '1'
+  }
+
+  if (cell.raw === '') {
+    return ''
+  }
+
+  if (cell.type === '' || cell.type === 'n') {
+    const number = Number(cell.raw)
+
+    return Number.isFinite(number) ? number : cell.raw
+  }
+
+  return cell.raw
+}
+
+function draftsToRows(cells: DraftCell[], date1904: boolean): SpreadsheetCell[][] {
   if (!cells.length) {
-    return { rows: [], truncated }
+    return []
   }
 
   const rowCount = Math.min(MAX_ROWS, Math.max(...cells.map(cell => cell.row)) + 1)
   const colCount = Math.min(MAX_COLS, Math.max(...cells.map(cell => cell.col)) + 1)
   const rows = Array.from({ length: rowCount }, () => Array.from({ length: colCount }, (): SpreadsheetCell => ({ value: '' })))
 
-  for (const item of cells) {
-    if (item.row < rowCount && item.col < colCount) {
-      rows[item.row][item.col] = item.cell
+  for (const draft of cells) {
+    if (draft.row < rowCount && draft.col < colCount) {
+      rows[draft.row][draft.col] = displayCell(draft, date1904)
     }
   }
 
-  return { rows, truncated }
+  return rows
+}
+
+function displayCell(draft: DraftCell, date1904: boolean): SpreadsheetCell {
+  const numeric = draft.type === '' || draft.type === 'n'
+  const value = numeric ? formatExcelValue(draft.raw, draft.style.numFmt, date1904) : draft.raw
+  const cell: SpreadsheetCell = { value }
+
+  if (draft.formula) {
+    cell.formula = draft.formula.replace(/^\s*=/, '')
+  }
+
+  if (draft.style.bold) {cell.bold = true}
+
+  if (draft.style.italic) {cell.italic = true}
+
+  if (draft.style.color) {cell.color = draft.style.color}
+
+  if (draft.style.fill) {cell.fill = draft.style.fill}
+
+  if (draft.style.align) {cell.align = draft.style.align}
+  else if (numeric && draft.raw !== '' && !Number.isNaN(Number(draft.raw))) {cell.align = 'right'}
+
+  return cell
 }
 
 function parseCellRef(ref: string): { col: number; row: number } | null {
@@ -701,48 +842,6 @@ function workbookUses1904Dates(zip: Map<string, Uint8Array>): boolean {
   const flag = pr?.getAttribute('date1904') || pr?.getAttribute('date1904') || ''
 
   return flag === '1' || flag === 'true'
-}
-
-function buildSheetCell(node: Element, shared: string[], styles: CellStyle[], date1904: boolean): SpreadsheetCell {
-  const type = node.getAttribute('t') || ''
-  const raw = cellValue(node, shared)
-
-  const formula = Array.from(node.children)
-    .find(child => child.localName === 'f')
-    ?.textContent?.trim()
-
-  const style = styles[Number(node.getAttribute('s') || '')] || {}
-  const numeric = type === '' || type === 'n'
-  const value = numeric ? formatExcelValue(raw, style.numFmt, date1904) : raw
-  const cell: SpreadsheetCell = { value }
-
-  if (formula) {
-    cell.formula = formula.replace(/^\s*=/, '')
-  }
-
-  if (style.bold) {
-    cell.bold = true
-  }
-
-  if (style.italic) {
-    cell.italic = true
-  }
-
-  if (style.color) {
-    cell.color = style.color
-  }
-
-  if (style.fill) {
-    cell.fill = style.fill
-  }
-
-  if (style.align) {
-    cell.align = style.align
-  } else if (numeric && raw !== '' && !Number.isNaN(Number(raw))) {
-    cell.align = 'right'
-  }
-
-  return cell
 }
 
 function parseStyles(xml: string | null): CellStyle[] {

@@ -348,6 +348,8 @@ interface PendingClarifyLocation {
   partIndex: number
 }
 
+const isClarifyToolName = (name: string): boolean => name === 'clarify' || name === 'ask_user_questions'
+
 function findPendingClarifyLocation(
   messages: ChatMessage[],
   payload: GatewayEventPayload
@@ -363,7 +365,7 @@ function findPendingClarifyLocation(
     for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
       const part = message.parts[partIndex]
 
-      if (part.type !== 'tool-call' || part.toolName !== 'clarify' || part.result !== undefined) {
+      if (part.type !== 'tool-call' || !isClarifyToolName(part.toolName) || part.result !== undefined) {
         continue
       }
 
@@ -451,7 +453,7 @@ export function stripPendingClarifyProjectionForCache(messages: ChatMessage[], r
 
   for (const message of messages) {
     const hasOpenClarify = message.parts.some(
-      part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined
+      part => part.type === 'tool-call' && isClarifyToolName(part.toolName) && part.result === undefined
     )
 
     if (!hasOpenClarify) {
@@ -465,7 +467,7 @@ export function stripPendingClarifyProjectionForCache(messages: ChatMessage[], r
         !(
           requestId &&
           part.type === 'tool-call' &&
-          part.toolName === 'clarify' &&
+          isClarifyToolName(part.toolName) &&
           part.result === undefined &&
           part.toolCallId === requestId
         )

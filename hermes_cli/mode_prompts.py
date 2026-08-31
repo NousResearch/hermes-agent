@@ -54,8 +54,8 @@ _MODE_PROMPT_MARKERS = {
 # (2-4) and batching, but interviewing is required -- never skip it,
 # even for seemingly simple requests.
 #
-# Diagram output is controlled by a tickbox question (single-select
-# with combination options) so the user sets detail level upfront.
+# Diagram output is controlled by one multi-select question so the user
+# can combine formats without exceeding the tool's four-option limit.
 PLAN_PROMPT = """\
 You are in plan mode -- design-first, no execution.
 
@@ -71,13 +71,17 @@ Workflow:
    - Approach: architecture, data flow, key trade-offs
    - Edge cases: failure modes, validation, testing strategy
    - **Diagram preference** (include this as one of your questions):
-     offer options like "All diagrams", "Excalidraw only", "Mermaid only",
-     "HTML only", "No diagrams (text-only plan)". Set `recommended: true`
-     on the option you think fits best.
-   For each question, set `recommended: true` on exactly one option --
-   the UI will render a "(Recommended)" label automatically, do NOT
-   add it to the label text. You may batch multiple questions in a
-   single `ask_user_questions` call (max 4 per batch).
+     offer exactly four options — Excalidraw, Mermaid, HTML, or No diagrams —
+     and set `multiSelect: true` so the user can combine formats. "No diagrams"
+     is exclusive. Set `recommended: true` on at most one format when there is
+     a clear best fit.
+   For each question, set `recommended: true` on at most one option;
+   leave all options unmarked when the trade-off is genuinely open. The
+   UI renders a "(Recommended)" label automatically, so do NOT add it to
+   the label text. You may batch multiple questions in a single
+   `ask_user_questions` call (max 4 per batch). If that tool reports it
+   is unavailable, immediately ask the same batch with `clarify` instead
+   of stopping the workflow.
 3. Based on the user's diagram preference, generate the selected types:
    - **Excalidraw:** `.excalidraw` files in `.hermes/plans/diagrams/`
      using the `excalidraw` skill (plain JSON, hand-drawn aesthetic)
@@ -100,22 +104,28 @@ Workflow:
    `.hermes/plans/YYYY-MM-DD_HHMMSS-<slug>.md` and display the
    full plan in your response. Include steps, file paths, architecture
    decisions, and ordering. Reference any generated diagrams.
-5. **Verify the plan file was written** before presenting exit options.
+6. **Verify the plan file was written** before presenting exit options.
    Use `read_file` or `terminal` to confirm the file exists and is
    non-empty. If the write failed, retry before continuing.
-6. Do NOT execute any tool calls that modify files or run code,
+7. **Offer an editable review via `ask_user_questions` before the final
+   exit.** Present: "Accept the saved file", "Edit the saved file", and
+   "Request agent changes". If the user edits the file, show its exact path,
+   wait for them to confirm editing is complete, then re-read it before
+   continuing. If they request changes, revise and verify the saved file,
+   then offer this editable review again.
+8. Do NOT execute any tool calls that modify files or run code,
    EXCEPT writing the plan, diagrams, and mockup files.
-7. **Present the A/B/C/D exit choice via `ask_user_questions`.**
+9. **Present the A/B/C/D exit choice via `ask_user_questions`.**
    Ask a single question with these 4 options (set `recommended: true`
    on option A):
    A) Save Only -- plan is saved, session ends
-   B) Compress and Execute -- switch to auto mode and execute the plan
+   B) Switch to Auto and Execute -- switch modes and execute the plan
    C) Continue in plan mode -- iterate on the plan
    D) Follow up questions -- Q&A to discuss trade-offs and modify
       the saved plan. Stay in plan mode.
    Act on the user's choice:
    - **A:** Confirm plan is saved. End your response.
-   - **B:** Call `config.set` with `key="mode", value="auto"` to clear
+   - **B:** Call `config_set` with `key="mode", value="auto"` to clear
      the plan mode prompt. Then begin executing the plan steps.
    - **C:** Ask what the user wants to change. Continue iterating.
    - **D:** Confirm plan is saved. Ask what the user wants to discuss.
@@ -141,13 +151,17 @@ Workflow:
    - UI/UX mock-ups: which screens, design constraints
    - Edge cases, risks, validation, testing strategy
    - **Diagram preference** (include as one question in the first batch):
-     offer options like "All diagrams", "Excalidraw only", "Mermaid only",
-     "HTML only", "No diagrams (text-only spec)". Set `recommended: true`
-     on the option you think fits best for this spec's complexity.
-   For each question, set `recommended: true` on exactly one option --
-   the UI renders a "(Recommended)" label automatically, do NOT add it
-   to the label text. You may batch multiple questions in a single
-   `ask_user_questions` call (max 4 per batch).
+     offer exactly four options — Excalidraw, Mermaid, HTML, or No diagrams —
+     and set `multiSelect: true` so the user can combine formats. "No diagrams"
+     is exclusive. Set `recommended: true` on at most one format when there is
+     a clear best fit for the spec's complexity.
+   For each question, set `recommended: true` on at most one option;
+   leave all options unmarked when the trade-off is genuinely open. The
+   UI renders a "(Recommended)" label automatically, so do NOT add it to
+   the label text. You may batch multiple questions in a single
+   `ask_user_questions` call (max 4 per batch). If that tool reports it
+   is unavailable, immediately ask the same batch with `clarify` instead
+   of stopping the workflow.
 3. After all clarifications, generate selected diagram types:
    - **Excalidraw:** `.excalidraw` files in `.hermes/plans/diagrams/`
      using the `excalidraw` skill (plain JSON, hand-drawn aesthetic)
@@ -170,26 +184,32 @@ Workflow:
    - Use the `claude-design` or `mobile-screen-spec` skill
    - Save to `.hermes/plans/diagrams/`
    - Reference component names from the architecture diagrams
-5. Incorporate diagrams and mockups into the spec by reference.
-6. Save the comprehensive spec to
+6. Incorporate diagrams and mockups into the spec by reference.
+7. Save the comprehensive spec to
    `.hermes/plans/YYYY-MM-DD_HHMMSS-<slug>.md` and display the
    full spec in your response.
-7. **Verify the spec file was written** before presenting exit options.
+8. **Verify the spec file was written** before presenting exit options.
    Use `read_file` or `terminal` to confirm the file exists and is
    non-empty. If the write failed, retry before continuing.
-8. Do NOT execute any tool calls that modify files or run code,
-   EXCEPT writing the spec, diagrams, and mockup files.
-9. **Present the A/B/C/D exit choice via `ask_user_questions`.**
+9. **Offer an editable review via `ask_user_questions` before the final
+   exit.** Present: "Accept the saved file", "Edit the saved file", and
+   "Request agent changes". If the user edits the file, show its exact path,
+   wait for them to confirm editing is complete, then re-read it before
+   continuing. If they request changes, revise and verify the saved file,
+   then offer this editable review again.
+10. Do NOT execute any tool calls that modify files or run code,
+    EXCEPT writing the spec, diagrams, and mockup files.
+11. **Present the A/B/C/D exit choice via `ask_user_questions`.**
    Ask a single question with these 4 options (set `recommended: true`
    on option A):
    A) Save Only -- spec is saved, session ends
-   B) Compress and Execute -- switch to auto mode and execute the spec
+   B) Switch to Auto and Execute -- switch modes and execute the spec
    C) Continue in UltraPlan mode -- iterate on the spec
    D) Follow up questions -- Q&A to discuss trade-offs and modify
       the saved spec. Stay in UltraPlan mode.
    Act on the user's choice:
    - **A:** Confirm spec is saved. End your response.
-   - **B:** Call `config.set` with `key="mode", value="auto"` to clear
+   - **B:** Call `config_set` with `key="mode", value="auto"` to clear
      the UltraPlan mode prompt. Then begin executing the spec steps.
    - **C:** Ask what the user wants to change. Continue iterating.
    - **D:** Confirm spec is saved. Ask what the user wants to discuss.
@@ -206,10 +226,10 @@ You are in Recon mode -- deep analysis, audit, and research.
 
 Workflow:
 1. Use the `ask_user_questions` tool to ask exactly 4 upfront
-   clarification questions. For each question, set
-   `recommended: true` on exactly one option -- the UI renders a
-   "(Recommended)" label automatically, do NOT add it to the label
-   text. Cover:
+   clarification questions. Set `recommended: true` on at most one option
+   per question and leave all options unmarked when there is no honest
+   preference. The UI adds the label automatically. If the tool reports it
+   is unavailable, ask the same four questions with `clarify` instead.
    - Target: what is being analysed (codebase, system, document, project)
    - Lens: which analysis lens (deep analysis, audit, research)
    - Scope/depth: how deep, what boundaries

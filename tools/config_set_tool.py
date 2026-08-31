@@ -52,6 +52,26 @@ def config_set_tool(*, key: str, value: str, **kwargs: Any) -> str:
     if not value:
         return json.dumps({"error": "value is required"})
 
+    local_result: Dict[str, Any] | None = None
+    if key == "mode":
+        from hermes_cli.mode_prompts import get_mode_prompt, validate_mode
+
+        try:
+            mode = validate_mode(value)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        agent = kwargs.get("agent")
+        if agent is not None:
+            previous = getattr(agent, "agent_mode", "auto") or "auto"
+            agent.agent_mode = mode
+            agent.ephemeral_system_prompt = get_mode_prompt(mode)
+            local_result = {
+                "key": "mode",
+                "value": mode,
+                "prompt_cache_reset": previous != mode,
+            }
+        value = mode
+
     # Import here to avoid circular imports at module load time
     from tui_gateway.server import handle_request
 
@@ -60,6 +80,10 @@ def config_set_tool(*, key: str, value: str, **kwargs: Any) -> str:
         "method": "config.set",
         "params": {"key": key, "value": value, "session_id": session_id},
     })
+    if local_result is not None:
+        if not isinstance(result, dict):
+            result = {}
+        result.setdefault("result", {}).update(local_result)
     return json.dumps(result or {}, ensure_ascii=False)
 
 

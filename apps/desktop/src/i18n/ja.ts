@@ -2882,6 +2882,8 @@ export const ja = defineLocale({
       placeholder: '回答を入力…',
       skip: 'スキップ',
       skipped: 'スキップ済み',
+      timedOut: 'タイムアウト',
+      cancelled: 'キャンセル済み',
       continueLabel: '続行',
       confirmAndContinueLabel: '確定して続行',
       answeredBadge: '回答済み',

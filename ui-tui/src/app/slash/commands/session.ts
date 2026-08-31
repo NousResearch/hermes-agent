@@ -15,7 +15,13 @@ import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
-import { AGENT_MODES, type AgentMode, DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
+import {
+  AGENT_MODES,
+  type AgentMode,
+  DEFAULT_INDICATOR_STYLE,
+  INDICATOR_STYLES,
+  type IndicatorStyle
+} from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -664,13 +670,15 @@ export const sessionCommands: SlashCommand[] = [
 
       patchUiState({ agentMode: value as AgentMode })
 
-      return ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'mode', session_id: ctx.sid, value })
-        .then(
-          ctx.guarded<ConfigSetResponse>(r =>
-            ctx.transcript.sys(`mode → ${r.value || value}`)
-          )
-        )
+      return ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mode', session_id: ctx.sid, value }).then(
+        ctx.guarded<ConfigSetResponse>(r => {
+          ctx.transcript.sys(`mode → ${r.value || value}`)
+
+          if (r.prompt_cache_reset) {
+            ctx.transcript.sys('note: mode change resets the model prompt cache on the next request')
+          }
+        })
+      )
     }
   },
 

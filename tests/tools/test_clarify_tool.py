@@ -569,10 +569,26 @@ class TestClarifyBatchDispatch:
         ))
         assert result["timed_out"] is True
         assert result["responses"][0]["user_response"] == "kept"
+        assert result["responses"][0]["status"] == "answered"
         assert result["responses"][1]["user_response"] == ""
+        assert result["responses"][1]["status"] == "timed_out"
 
-    def test_batch_empty_response_is_skip_not_timeout(self):
-        """A cancel-all resolves every answer empty with no timed_out flag."""
+    def test_batch_cancelled_flag_passthrough_with_partials(self):
+        """Cancel is distinct from timeout and preserves answers staged so far."""
+        def cb(question, choices, multi_select=False, questions=None):
+            return {"answers": {"q0": "kept"}, "cancelled": True}
+
+        result = json.loads(clarify_tool(
+            "",
+            questions=[{"question": "One?"}, {"question": "Two?"}],
+            callback=cb,
+        ))
+        assert result["cancelled"] is True
+        assert result["responses"][0]["status"] == "answered"
+        assert result["responses"][1]["status"] == "cancelled"
+
+    def test_batch_empty_response_is_cancel_not_timeout(self):
+        """A cancel-all resolves every answer empty and is explicitly labelled."""
         def cb(question, choices, multi_select=False, questions=None):
             return ""
 
@@ -580,6 +596,8 @@ class TestClarifyBatchDispatch:
             "", questions=[{"question": "One?"}], callback=cb,
         ))
         assert result["responses"][0]["user_response"] == ""
+        assert result["responses"][0]["status"] == "cancelled"
+        assert result["cancelled"] is True
         assert "timed_out" not in result
 
     def test_legacy_callback_gets_sequential_calls_in_order(self):

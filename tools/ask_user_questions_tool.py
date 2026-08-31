@@ -1,26 +1,13 @@
 #!/usr/bin/env python3
-"""AskUserQuestionsTool — Batched multi-question clarification (Claude Code style).
+"""Rich mode questions adapted onto Hermes' shared clarification lane.
 
-Per spec (2026-06-04): the new mode system (plan / UltraPlan / recon) uses
-this instead of the single-question `clarify` tool.  Supports:
+Plan, UltraPlan and Recon keep the structured ``options`` schema (labels,
+descriptions and optional recommendations), while interaction is delegated to
+``clarify`` so every surface gets the same batch, multi-select, inline Other,
+timeout and cancellation behaviour. The original ``callback(questions)``
+contract remains as a compatibility fallback for third-party integrations.
 
-  * Batch: pass a list of questions in one tool call (UltraPlan: 3-4 Qs
-    per batch, Recon: 4 upfront Qs, Plan: 2-4 mandatory interview).
-  * Recommended: each question can mark one option as recommended; the
-    UI highlights it with a "(Recommended)" label.
-  * Boxed UI: platform layer renders each question in a bordered panel,
-    modelled after Claude Code's AskUserQuestion UX.
-  * "Other" handoff: when a user picks the synthetic "Other" option, the
-    TUI sends back the sentinel ``__other__``.  We translate that into
-    a structured ``needs_followup`` signal so the model knows to call
-    the legacy ``clarify`` tool (which has inline text capture) for
-    those questions.
-
-Behaviour mirrors ``clarify_tool`` but is structurally distinct — the
-``clarify`` tool is preserved untouched (item 4A of the spec) for all
-non-mode flows.
-
-Must survive upstream merges — see skill `agent-modes`.
+Must survive upstream merges — see skill ``agent-modes``.
 """
 from __future__ import annotations
 
@@ -39,14 +26,11 @@ from tools.registry import registry, tool_error
 MAX_QUESTIONS_PER_CALL = 4
 MAX_OPTIONS_PER_QUESTION = 4
 
-# Sentinel label the TUI sends for the synthetic "Other (free-form
-# follow-up)" option.  Distinct from any real option label because real
-# options are user-provided and this string is reserved.
+# Sentinels used only by the original callback compatibility lane.
+# Shared clarify-capable surfaces return inline text and explicit statuses.
 OTHER_SENTINEL = "__other__"
-
-# Sentinel label the TUI may send when a question is unanswered
-# (e.g. user pressed Esc mid-batch, or the question timed out).
 SKIPPED_SENTINEL = "__skipped__"
+ANSWER_STATUSES = frozenset({"answered", "skipped", "timed_out", "cancelled"})
 
 
 def _normalise_questions(raw_questions: Any) -> List[Dict[str, Any]]:
@@ -102,105 +86,192 @@ def _normalise_questions(raw_questions: Any) -> List[Dict[str, Any]]:
                 "description": str(opt.get("description", "")).strip() or None,
                 "recommended": is_rec,
             })
-        if recommended_count != 1:
+        if recommended_count > 1:
             raise ValueError(
                 f"question[{i}] has {recommended_count} recommended options "
-                "(exactly one is required)"
+                "(at most one is allowed)"
             )
+        header = str(q.get("header", "")).strip()
+        if len(header) > 12:
+            raise ValueError(f"question[{i}].header exceeds 12 characters")
         cleaned.append({
             "question": text,
-            "header": str(q.get("header", "")).strip()[:12] or None,
+            "header": header or None,
             "options": norm_opts,
             "multiSelect": bool(q.get("multiSelect", False)),
         })
     return cleaned
 
 
-def _coerce_answer(cleaned_q: Dict[str, Any], raw: Any) -> Dict[str, Any]:
-    """Translate the raw callback value for one question into a structured answer.
-
-    Returns a dict with keys:
-        ``answer``       — the chosen label, or "(skipped)" / "(awaiting text)"
-        ``needs_text``   — True if user picked "Other" and model should
-                           use the legacy ``clarify`` tool for free-form
-        ``original``     — the raw value (for debugging)
-    """
+def _coerce_answer(raw: Any) -> Dict[str, Any]:
+    """Translate one legacy callback value into an answer + status."""
+    if isinstance(raw, list):
+        values = [str(value).strip() for value in raw if str(value).strip()]
+        return {
+            "answer": values,
+            "needs_text": False,
+            "status": "answered" if values else "skipped",
+        }
     label = str(raw or "").strip()
     if not label or label == SKIPPED_SENTINEL:
-        return {"answer": "(skipped)", "needs_text": False, "original": raw}
+        return {"answer": "(skipped)", "needs_text": False, "status": "skipped"}
     if label == OTHER_SENTINEL:
-        return {"answer": "(awaiting text)", "needs_text": True, "original": raw}
-    return {"answer": label, "needs_text": False, "original": raw}
+        return {
+            "answer": "(awaiting text)",
+            "needs_text": True,
+            "status": "awaiting_text",
+        }
+    return {"answer": label, "needs_text": False, "status": "answered"}
+
+
+def _shared_questions(cleaned: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Translate the rich AUQ schema onto clarify's cross-platform batch lane."""
+    from tools.clarify_tool import RECOMMENDED_LABEL
+
+    shared = []
+    for index, question in enumerate(cleaned):
+        labels = [option["label"] for option in question["options"]]
+        choices = [
+            f"{option['label']} {RECOMMENDED_LABEL}"
+            if option["recommended"]
+            else option["label"]
+            for option in question["options"]
+        ]
+        shared.append({
+            "qid": f"q{index}",
+            "id": None,
+            "question": question["question"],
+            "choices": choices,
+            "choices_offered": labels,
+            "multi_select": question["multiSelect"],
+            # Rich-capable clients render these; legacy messaging callbacks
+            # continue to receive the portable string ``choices`` above.
+            "header": question["header"],
+            "options": question["options"],
+        })
+    return shared
+
+
+def _shared_result(
+    cleaned: List[Dict[str, Any]],
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Map clarify's shared result onto the AUQ compatibility result shape."""
+    responses = list(result.get("responses") or [])
+    timed_out = bool(result.get("timed_out"))
+    cancelled = bool(result.get("cancelled"))
+    answers = []
+    for index, question in enumerate(cleaned):
+        response = responses[index] if index < len(responses) else {}
+        value = response.get("user_response", "")
+        status = str(response.get("status") or "")
+        if status not in ANSWER_STATUSES:
+            if value not in ("", []):
+                status = "answered"
+            elif timed_out:
+                status = "timed_out"
+            elif cancelled:
+                status = "cancelled"
+            else:
+                status = "skipped"
+        display = value if value not in ("", []) else f"({status.replace('_', ' ')})"
+        answers.append({
+            "index": index,
+            "question": question["question"],
+            "answer": display,
+            "status": status,
+            "needs_text": False,
+        })
+
+    payload: Dict[str, Any] = {
+        "questions_asked": len(cleaned),
+        "answers": answers,
+        "responses": responses,
+        "needs_followup": [],
+    }
+    if timed_out:
+        payload["timed_out"] = True
+    if cancelled:
+        payload["cancelled"] = True
+    return payload
+
+
+def _legacy_result(
+    cleaned: List[Dict[str, Any]],
+    raw_answers: Dict[Any, Any],
+) -> Dict[str, Any]:
+    """Preserve the original callback contract for third-party callers."""
+    answer_rows = []
+    responses = []
+    needs_followup: List[int] = []
+    for index, question in enumerate(cleaned):
+        raw = raw_answers.get(index, raw_answers.get(str(index)))
+        coerced = _coerce_answer(raw)
+        if coerced["needs_text"]:
+            needs_followup.append(index)
+        answer_rows.append({
+            "index": index,
+            "question": question["question"],
+            "answer": coerced["answer"],
+            "status": coerced["status"],
+            "needs_text": coerced["needs_text"],
+        })
+        responses.append({
+            "question": question["question"],
+            "choices_offered": [option["label"] for option in question["options"]],
+            "user_response": "" if coerced["status"] != "answered" else coerced["answer"],
+            "status": coerced["status"],
+        })
+    return {
+        "questions_asked": len(cleaned),
+        "answers": answer_rows,
+        "responses": responses,
+        "needs_followup": needs_followup,
+    }
 
 
 def ask_user_questions_tool(
     questions: List[Dict[str, Any]],
     callback: Optional[Callable] = None,
+    clarify_callback: Optional[Callable] = None,
 ) -> str:
-    """Render a batch of boxed questions and return the user's answers.
+    """Ask rich batched questions through the shared clarify interaction lane.
 
-    Args:
-        questions: List of question objects, each with:
-            - question (str, required)
-            - options (list of {label, description?, recommended?}, required)
-            - header (str, optional, max 12 chars)
-            - multiSelect (bool, optional, default false)
-        callback: Platform-provided function. Signature:
-            callback(questions: list[dict]) -> dict[int, str]
-            Returns a map of question_index → chosen label.
-            Special values recognised:
-              * empty / missing key  → "(skipped)"
-              * "__other__"          → "(awaiting text)" + needs_text=True
-            Injected by cli.py / gateway at runtime.
-
-    Returns:
-        JSON string with:
-            questions_asked (int)
-            answers (list of {index, question, answer, needs_text})
-            needs_followup (list of question indices where user picked
-                            "Other" and the model should re-ask via the
-                            legacy `clarify` tool for free-form text)
+    ``clarify_callback`` is the primary route and supplies multi-select,
+    inline free text, desktop/TUI rendering, messaging fallback, timeout and
+    cancellation semantics. ``callback`` preserves the original
+    ``callback(questions) -> {index: answer}`` contract for integrations that
+    have not migrated yet.
     """
     try:
         cleaned = _normalise_questions(questions)
     except ValueError as exc:
         return tool_error(str(exc))
 
+    if clarify_callback is not None:
+        try:
+            from tools.clarify_tool import run_question_batch
+
+            raw_result = run_question_batch(
+                _shared_questions(cleaned), clarify_callback, "Requirements",
+            )
+            parsed = json.loads(raw_result)
+            return json.dumps(_shared_result(cleaned, parsed), ensure_ascii=False)
+        except Exception as exc:
+            return tool_error(f"Failed to collect user answers: {exc}")
+
     if callback is None:
-        return json.dumps(
-            {"error": "ask_user_questions tool is not available in this execution context."},
-            ensure_ascii=False,
+        return tool_error(
+            "ask_user_questions is unavailable here; use the clarify tool instead."
         )
 
     try:
         raw_answers = callback(cleaned)
     except Exception as exc:
-        return json.dumps(
-            {"error": f"Failed to collect user answers: {exc}"},
-            ensure_ascii=False,
-        )
-
+        return tool_error(f"Failed to collect user answers: {exc}")
     if not isinstance(raw_answers, dict):
-        return tool_error("callback must return a dict[int, str]")
-
-    response_payload = []
-    needs_followup: List[int] = []
-    for i, q in enumerate(cleaned):
-        coerced = _coerce_answer(q, raw_answers.get(i))
-        if coerced["needs_text"]:
-            needs_followup.append(i)
-        response_payload.append({
-            "index": i,
-            "question": q["question"],
-            "answer": coerced["answer"],
-            "needs_text": coerced["needs_text"],
-        })
-
-    return json.dumps({
-        "questions_asked": len(cleaned),
-        "answers": response_payload,
-        "needs_followup": needs_followup,  # empty list when no "Other" picks
-    }, ensure_ascii=False)
+        return tool_error("callback must return a dict[index, answer]")
+    return json.dumps(_legacy_result(cleaned, raw_answers), ensure_ascii=False)
 
 
 def check_ask_user_questions_requirements() -> bool:
@@ -219,13 +290,13 @@ ASK_USER_QUESTIONS_SCHEMA = {
         "options, modelled after Claude Code's AskUserQuestion tool. Use "
         "this in plan / UltraPlan / recon modes to gather requirements "
         "before producing a spec, design, or audit. Supports BATCHED "
-        "questions in a single call (up to 4 per batch). For each "
-        "question, set `recommended: true` on exactly one option — the "
-        "UI will highlight it with a '(Recommended)' label automatically "
-        "(do NOT add '(Recommended)' to the label text). If the user "
-        "selects the 'Other' option, the response includes those "
-        "question indices in `needs_followup` — call the legacy "
-        "`clarify` tool for those questions to collect free-form text."
+        "questions in a single call (up to 4 per batch). Mark at most one "
+        "option as `recommended: true`; leave every option unmarked when the "
+        "trade-off is genuinely open. The UI adds the '(Recommended)' label "
+        "automatically. Multi-select and the inline 'Other' free-text row use "
+        "the same cross-platform interaction lane as `clarify`, so no second "
+        "tool call is required. Results include an explicit status for each "
+        "question plus top-level `timed_out` or `cancelled` when applicable."
     ),
     "parameters": {
         "type": "object",
@@ -268,8 +339,9 @@ ASK_USER_QUESTIONS_SCHEMA = {
                                         "type": "boolean",
                                         "default": False,
                                         "description": (
-                                            "Mark this option as the recommended one. "
-                                            "Exactly one option per question should be recommended."
+                                            "Mark this option as the recommendation. "
+                                            "At most one option per question may be marked; "
+                                            "omit it when no option is clearly preferable."
                                         ),
                                     },
                                 },
@@ -281,8 +353,8 @@ ASK_USER_QUESTIONS_SCHEMA = {
                             "default": False,
                             "description": (
                                 "Allow the user to select multiple options. "
-                                "Defaults to single-select. Currently rendered "
-                                "as single-select in the TUI/CLI."
+                                "Supported by the shared CLI, TUI, desktop, "
+                                "and messaging clarification lane."
                             ),
                         },
                     },
@@ -310,6 +382,7 @@ registry.register(
     handler=lambda args, **kw: ask_user_questions_tool(
         questions=args.get("questions", []),
         callback=kw.get("callback"),
+        clarify_callback=kw.get("clarify_callback"),
     ),
     check_fn=check_ask_user_questions_requirements,
     emoji="❓",

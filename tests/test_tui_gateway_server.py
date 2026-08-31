@@ -19594,7 +19594,11 @@ def test_clarify_callback_uses_configured_timeout(monkeypatch):
     assert result == "answer"
     assert captured["event"] == "clarify.request"
     assert captured["timeout"] == 42
-    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+    payload = captured["payload"]
+    assert payload["question"] == "Pick one"
+    assert payload["choices"] == ["a", "b"]
+    # expires_at (countdown support) rides every payload; renderers may ignore it.
+    assert isinstance(payload["expires_at"], float)
 
 
 def test_clarify_callback_multi_select_hint(monkeypatch):
@@ -19611,14 +19615,18 @@ def test_clarify_callback_multi_select_hint(monkeypatch):
     cb = server._agent_cbs("sid-1")["clarify_callback"]
 
     cb("Pick many", ["a", "b"], multi_select=True)
-    assert captured["payload"] == {
-        "question": "Pick many",
-        "choices": ["a", "b"],
-        "multi_select": True,
-    }
+    payload = captured["payload"]
+    assert payload["question"] == "Pick many"
+    assert payload["choices"] == ["a", "b"]
+    assert payload["multi_select"] is True
+    assert isinstance(payload["expires_at"], float)
 
     cb("Pick one", ["a", "b"], multi_select=False)
-    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+    payload = captured["payload"]
+    assert payload["question"] == "Pick one"
+    assert payload["choices"] == ["a", "b"]
+    assert "multi_select" not in payload
+    assert isinstance(payload["expires_at"], float)
 
 
 @pytest.mark.parametrize(

@@ -580,6 +580,8 @@ export interface AppLayoutActions {
   answerApproval: (choice: string) => void
   answerAskUserQuestions: (answers: Record<number, string>, requestId: string) => void
   answerClarify: (answer: string) => void
+  answerClarifyBatchCancel: (answers: Record<string, string>) => Promise<void>
+  answerClarifyBatchSubmit: (answers: Record<string, string>) => Promise<void>
   answerPromptOptimization: (choice: string) => void
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
@@ -650,6 +652,8 @@ export interface AppOverlaysProps {
   onApprovalChoice: (choice: string) => void
   onAskUserQuestionsAnswer: (answers: Record<number, string>, requestId: string) => void
   onClarifyAnswer: (value: string) => void
+  onClarifyBatchCancel: (answers: Record<string, string>) => void
+  onClarifyBatchSubmit: (answers: Record<string, string>) => void
   onPromptOptimizationChoice: (choice: string) => void
   onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void

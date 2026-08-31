@@ -2364,6 +2364,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             function_result = _auq_tool(                                                # KENSEI CUSTOM
                 questions=function_args.get("questions", []),                          # KENSEI CUSTOM
                 callback=getattr(agent, "ask_user_questions_callback", None),          # KENSEI CUSTOM
+                clarify_callback=getattr(agent, "clarify_callback", None),             # KENSEI CUSTOM
             )                                                                          # KENSEI CUSTOM
             tool_duration = time.time() - tool_start_time                              # KENSEI CUSTOM
             if agent._should_emit_quiet_tool_messages():                               # KENSEI CUSTOM
@@ -2577,15 +2578,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # ── KENSEI CUSTOM: config_set tool (agent can switch modes via RPC bridge) ──
         elif function_name == "config_set":
             def _execute(next_args: dict) -> Any:
-                from tui_gateway.server import handle_request as _gw_handle
-                key = next_args.get("key", "")
-                value = next_args.get("value", "")
-                session_id = getattr(agent, "session_id", "") or ""
-                result = _gw_handle({
-                    "method": "config.set",
-                    "params": {"key": key, "value": value, "session_id": session_id},
-                })
-                return json.dumps(result or {}, ensure_ascii=False)
+                from tools.config_set_tool import config_set_tool
+
+                return config_set_tool(
+                    key=next_args.get("key", ""),
+                    value=next_args.get("value", ""),
+                    session_id=getattr(agent, "session_id", "") or "",
+                    agent=agent,
+                )
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,

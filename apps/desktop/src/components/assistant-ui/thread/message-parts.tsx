@@ -95,7 +95,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ImageGenerateTool {...props} />
   }
 
-  if (props.toolName === 'clarify') {
+  if (props.toolName === 'clarify' || props.toolName === 'ask_user_questions') {
     return (
       <>
         <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />

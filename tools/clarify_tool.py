@@ -252,12 +252,17 @@ def _clean_batch_answer(entry: dict, raw) -> object:
     return strip_recommended(raw)
 
 
-def _batch_result(normalized: List[dict], answers: dict, timed_out: bool) -> str:
-    """Assemble the batch result JSON from per-qid answers.
+def _batch_result(
+    normalized: List[dict],
+    answers: dict,
+    timed_out: bool,
+    cancelled: bool = False,
+) -> str:
+    """Assemble batch result JSON with an explicit status per question.
 
-    Unanswered questions surface as empty ``user_response`` — with the
-    top-level ``timed_out`` flag (present only when true) telling the agent
-    whether those blanks are deliberate skips or the user walking away.
+    Answers locked before a timeout or cancellation are preserved. Missing
+    answers are labelled ``timed_out`` or ``cancelled`` instead of being
+    conflated with a deliberate empty-answer skip.
     """
     responses = []
     for entry in normalized:
@@ -266,17 +271,28 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool) -> str
             row["id"] = entry["id"]
         row["question"] = entry["question"]
         row["choices_offered"] = entry["choices_offered"]
+        present = entry["qid"] in answers
         raw = answers.get(entry["qid"])
         row["user_response"] = _clean_batch_answer(entry, raw) if raw else ""
+        if present:
+            row["status"] = "answered" if raw else "skipped"
+        elif timed_out:
+            row["status"] = "timed_out"
+        elif cancelled:
+            row["status"] = "cancelled"
+        else:
+            row["status"] = "skipped"
         responses.append(row)
 
     result: Dict[str, object] = {"responses": responses}
     if timed_out:
         result["timed_out"] = True
+    if cancelled:
+        result["cancelled"] = True
     return json.dumps(result, ensure_ascii=False)
 
 
-def _run_batch(normalized: List[dict], callback, question: str) -> str:
+def run_question_batch(normalized: List[dict], callback, question: str = "") -> str:
     """Dispatch a validated batch to the platform callback.
 
     Batch-capable callbacks (a ``questions`` kwarg, detected by signature)
@@ -296,11 +312,13 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
 
         answers: dict = {}
         timed_out = False
+        cancelled = False
         if raw is None or (isinstance(raw, str) and raw.strip() == TIMEOUT_RESPONSE):
             timed_out = True
         elif isinstance(raw, dict):
             answers = dict(raw.get("answers") or {})
             timed_out = bool(raw.get("timed_out"))
+            cancelled = bool(raw.get("cancelled"))
         elif isinstance(raw, str) and raw.strip():
             try:
                 parsed = json.loads(raw)
@@ -309,9 +327,13 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
             if isinstance(parsed, dict):
                 answers = dict(parsed.get("answers") or {})
                 timed_out = bool(parsed.get("timed_out"))
-        # Any other falsy/unparseable reply is a cancel-all: every answer
-        # empty, no timeout flag (mirrors the single-question skip).
-        return _batch_result(normalized, answers, timed_out)
+                cancelled = bool(parsed.get("cancelled"))
+            else:
+                cancelled = True
+        else:
+            # A batch-capable surface uses an empty response for cancel-all.
+            cancelled = True
+        return _batch_result(normalized, answers, timed_out, cancelled)
 
     answers = {}
     timed_out = False
@@ -373,7 +395,7 @@ def clarify_tool(
                     "Clarify tool is not available in this execution context."
                 )
             try:
-                return _run_batch(normalized, callback, str(question or "").strip())
+                return run_question_batch(normalized, callback, str(question or "").strip())
             except Exception as exc:
                 return tool_error(f"Failed to get user input: {exc}")
         # Empty questions array → fall through to the single-question path.
@@ -453,8 +475,9 @@ CLARIFY_SCHEMA = {
         "open-ended (omit choices). Options go ONLY in `choices`, never "
         "enumerated inside the question text (choices render as pickable "
         "rows; options written into the question are dead prose the user "
-        "can't click). Result: {responses: [...]} in question order (plus "
-        "timed_out=true if the user stopped part-way). Prefer deciding "
+        "can't click). Each response includes a status (`answered`, `skipped`, "
+        "`timed_out`, or `cancelled`); top-level `timed_out`/`cancelled` flags "
+        "identify an interrupted batch. Prefer deciding "
         "low-stakes questions yourself; don't use this for dangerous-command "
         "confirmation (the terminal tool handles that)."
     ),

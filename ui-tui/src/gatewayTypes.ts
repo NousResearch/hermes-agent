@@ -159,6 +159,7 @@ export interface ConfigSetResponse {
   deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
+  prompt_cache_reset?: boolean
   value?: string
   warning?: string
 }
@@ -739,8 +740,16 @@ export type GatewayEvent =
       payload: {
         answers?: Record<string, string>
         choices?: string[] | null
+        expires_at?: number
         question?: string
-        questions?: { choices?: string[] | null; multi_select?: boolean; qid: string; question: string }[]
+        questions?: {
+          choices?: string[] | null
+          header?: string
+          multi_select?: boolean
+          options?: { description?: string | null; label: string; recommended?: boolean }[]
+          qid: string
+          question: string
+        }[]
         request_id: string
       }
       session_id?: string

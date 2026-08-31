@@ -483,17 +483,62 @@ def test_clarify_batch_timeout_keeps_locked_answers(capture):
     assert any(m["params"]["type"] == "clarify.expire" for m in messages)
 
 
-def test_clarify_batch_cancel_all_returns_empty(server):
-    """A respond without question_id cancels the whole batch (Esc path)."""
+def test_clarify_batch_cancel_preserves_staged_answers(server):
+    """A batch cancel carries staged answers and an explicit cancellation flag."""
     thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
 
-    server.handle_request({
+    response = server.handle_request({
         "id": "cancel", "method": "clarify.respond",
-        "params": {"request_id": rid, "answer": ""},
+        "params": {
+            "request_id": rid,
+            "answers": {"q0": "kept"},
+            "cancelled": True,
+        },
     })
 
+    assert response["result"] == {"status": "cancelled"}
     thread.join(timeout=5)
-    assert box["answer"] == ""
+    assert json.loads(box["answer"]) == {
+        "answers": {"q0": "kept"},
+        "cancelled": True,
+    }
+
+
+def test_clarify_batch_accepts_one_atomic_submit(server):
+    """All staged answers can be confirmed in one final RPC."""
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    response = server.handle_request({
+        "id": "submit", "method": "clarify.respond",
+        "params": {
+            "request_id": rid,
+            "answers": {"q0": "alpha", "q1": "beta"},
+        },
+    })
+
+    assert response["result"] == {"status": "ok", "remaining": []}
+    thread.join(timeout=5)
+    assert json.loads(box["answer"]) == {
+        "answers": {"q0": "alpha", "q1": "beta"},
+    }
+
+
+def test_clarify_batch_rejects_non_string_atomic_answers(server):
+    thread, box, rid = _drain_batch_block(server, ["q0"])
+
+    bad = server.handle_request({
+        "id": "bad", "method": "clarify.respond",
+        "params": {"request_id": rid, "answers": {"q0": {"nested": True}}},
+    })
+
+    assert bad["error"]["code"] == 4002
+    assert thread.is_alive()
+    server.handle_request({
+        "id": "ok", "method": "clarify.respond",
+        "params": {"request_id": rid, "answers": {"q0": "safe"}},
+    })
+    thread.join(timeout=5)
+    assert json.loads(box["answer"])["answers"] == {"q0": "safe"}
 
 
 def test_clarify_batch_late_question_respond_is_idempotent(server):
@@ -526,6 +571,11 @@ def test_clarify_block_helper_builds_batch_payload(capture):
             "qid": "q0", "id": "approach", "question": "Which?",
             "choices": ["a (Recommended)", "b"], "choices_offered": ["a", "b"],
             "multi_select": False,
+            "header": "Approach",
+            "options": [
+                {"label": "a", "description": "Fast", "recommended": True},
+                {"label": "b", "description": None, "recommended": False},
+            ],
         },
     ]
 
@@ -554,7 +604,11 @@ def test_clarify_block_helper_builds_batch_payload(capture):
     request = messages[0]["params"]
     assert request["type"] == "clarify.request"
     sent = request["payload"]["questions"][0]
-    assert set(sent) == {"qid", "question", "choices", "multi_select"}
+    assert set(sent) == {
+        "qid", "question", "choices", "multi_select", "header", "options",
+    }
+    assert sent["header"] == "Approach"
+    assert sent["options"][0]["description"] == "Fast"
     assert "id" not in sent and "choices_offered" not in sent
 
 

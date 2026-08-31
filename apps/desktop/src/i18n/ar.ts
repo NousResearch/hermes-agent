@@ -2580,6 +2580,8 @@ export const ar = defineLocale({
       other: 'غير ذلك',
       placeholder: 'اكتب إجابتك...',
       skip: 'تخطي',
+      timedOut: 'انتهت المهلة',
+      cancelled: 'تم الإلغاء',
       continueLabel: 'متابعة',
       confirmAndContinueLabel: 'تأكيد ومتابعة',
       answeredBadge: 'تمت الإجابة',

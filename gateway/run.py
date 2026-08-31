@@ -4374,6 +4374,30 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
     return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
 
 
+async def _send_gateway_clarify(
+    adapter,
+    *,
+    chat_id: str,
+    question: str,
+    choices,
+    clarify_id: str,
+    session_key: str,
+    metadata,
+    multi_select: bool,
+):
+    """Choose a render path that preserves the prompt's selection semantics."""
+    sender = adapter.send_clarify_text_fallback if multi_select else adapter.send_clarify
+
+    return await sender(
+        chat_id=chat_id,
+        question=question,
+        choices=choices,
+        clarify_id=clarify_id,
+        session_key=session_key,
+        metadata=metadata,
+    )
+
+
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
@@ -6190,13 +6214,15 @@ class TurnRunner:
                 )
 
             fut = safe_schedule_threadsafe(
-                ctx._status_adapter.send_clarify(
+                _send_gateway_clarify(
+                    ctx._status_adapter,
                     chat_id=ctx._status_chat_id,
                     question=question,
                     choices=list(choices) if choices else None,
                     clarify_id=clarify_id,
                     session_key=ctx.session_key or "",
                     metadata=ctx._status_thread_metadata,
+                    multi_select=bool(multi_select),
                 ),
                 ctx._loop_for_step,
                 logger=logger,

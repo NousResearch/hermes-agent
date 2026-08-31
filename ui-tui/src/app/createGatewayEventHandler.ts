@@ -1186,7 +1186,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // abandoned (backend _block timed out, empty answer). A real answer
         // clears the overlay in answerClarify() before this fires, so this
         // no-ops there. Persist the question + options so they don't vanish.
-        if (ev.payload.name === 'clarify') {
+        if (ev.payload.name === 'clarify' || ev.payload.name === 'ask_user_questions') {
           flushAbandonedClarify()
         }
 
@@ -1224,7 +1224,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           .filter(q => typeof q?.qid === 'string' && q.qid && typeof q?.question === 'string' && q.question.trim())
           .map(q => ({
             choices: q.choices && q.choices.length > 0 ? q.choices : null,
+            header: q.header,
             multiSelect: q.multi_select === true,
+            options: q.options?.map(option => ({
+              description: option.description ?? undefined,
+              label: option.label,
+              recommended: option.recommended
+            })),
             qid: q.qid,
             question: q.question.trim()
           }))
@@ -1234,12 +1240,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ? {
                 answers: ev.payload.answers ?? {},
                 choices: null,
+                expiresAt: typeof ev.payload.expires_at === 'number' ? ev.payload.expires_at : undefined,
                 question: '',
                 questions: batch,
                 requestId: ev.payload.request_id
               }
             : {
                 choices: ev.payload.choices ?? null,
+                expiresAt: typeof ev.payload.expires_at === 'number' ? ev.payload.expires_at : undefined,
                 question: ev.payload.question ?? '',
                 requestId: ev.payload.request_id
               }
@@ -1254,39 +1262,45 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       // sends a multi-question batched payload.  The TUI renders the
       // AskUserQuestionsTool overlay, user answers, we send
       // ask_user_questions.respond back.  See skill `agent-modes`.
-      case 'ask_user_questions.request': {                           // KENSEI CUSTOM
-        const raw = Array.isArray(ev.payload.questions)             // KENSEI CUSTOM
-          ? ev.payload.questions                                    // KENSEI CUSTOM
-          : []                                                      // KENSEI CUSTOM
+      case 'ask_user_questions.request': {
+        // KENSEI CUSTOM
+        const raw = Array.isArray(ev.payload.questions) // KENSEI CUSTOM
+          ? ev.payload.questions // KENSEI CUSTOM
+          : [] // KENSEI CUSTOM
 
         // Normalise: gateway may send raw {question,options,header,...}
         // or already-cleaned list.  Tolerate both to keep the wire
         // contract forgiving.                                            # KENSEI CUSTOM
-        const questions = raw.map((q: any) => ({                    // KENSEI CUSTOM
-          question: String(q.question ?? ''),                        // KENSEI CUSTOM
-          header: q.header != null ? String(q.header) : undefined,   // KENSEI CUSTOM
-          options: Array.isArray(q.options)                          // KENSEI CUSTOM
-            ? q.options.map((o: any) => ({                           // KENSEI CUSTOM
-                label: String(o.label ?? ''),                        // KENSEI CUSTOM
-                description: o.description != null                    // KENSEI CUSTOM
-                  ? String(o.description)                            // KENSEI CUSTOM
-                  : undefined,                                       // KENSEI CUSTOM
-                recommended: Boolean(o.recommended),                 // KENSEI CUSTOM
-              }))                                                    // KENSEI CUSTOM
-            : [],                                                    // KENSEI CUSTOM
-          multiSelect: Boolean(q.multiSelect),                       // KENSEI CUSTOM
-        }))                                                          // KENSEI CUSTOM
+        const questions = raw.map((q: any) => ({
+          // KENSEI CUSTOM
+          question: String(q.question ?? ''), // KENSEI CUSTOM
+          header: q.header != null ? String(q.header) : undefined, // KENSEI CUSTOM
+          options: Array.isArray(q.options) // KENSEI CUSTOM
+            ? q.options.map((o: any) => ({
+                // KENSEI CUSTOM
+                label: String(o.label ?? ''), // KENSEI CUSTOM
+                description:
+                  o.description != null // KENSEI CUSTOM
+                    ? String(o.description) // KENSEI CUSTOM
+                    : undefined, // KENSEI CUSTOM
+                recommended: Boolean(o.recommended) // KENSEI CUSTOM
+              })) // KENSEI CUSTOM
+            : [], // KENSEI CUSTOM
+          multiSelect: Boolean(q.multiSelect) // KENSEI CUSTOM
+        })) // KENSEI CUSTOM
 
-        patchOverlayState({                                         // KENSEI CUSTOM
-          askUserQuestions: {                                       // KENSEI CUSTOM
-            questions,                                               // KENSEI CUSTOM
-            requestId: String(ev.payload.request_id ?? ''),          // KENSEI CUSTOM
-          },                                                         // KENSEI CUSTOM
-        })                                                           // KENSEI CUSTOM
-        setStatus('waiting for input…')                              // KENSEI CUSTOM
+        patchOverlayState({
+          // KENSEI CUSTOM
+          askUserQuestions: {
+            // KENSEI CUSTOM
+            questions, // KENSEI CUSTOM
+            requestId: String(ev.payload.request_id ?? '') // KENSEI CUSTOM
+          } // KENSEI CUSTOM
+        }) // KENSEI CUSTOM
+        setStatus('waiting for input…') // KENSEI CUSTOM
 
-        return                                                       // KENSEI CUSTOM
-      }                                                             // KENSEI CUSTOM
+        return // KENSEI CUSTOM
+      } // KENSEI CUSTOM
 
       case 'approval.request': {
         const description = String(ev.payload.description ?? 'dangerous command')

@@ -4390,7 +4390,32 @@ class BasePlatformAdapter(ABC):
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a clarify prompt to the user.
+        """Send a clarify prompt using the universal text fallback.
+
+        Adapters may override this for native single-select controls.  The
+        separate fallback method remains callable by the gateway when a
+        multi-select prompt needs semantics those native controls cannot
+        represent.
+        """
+        return await self.send_clarify_text_fallback(
+            chat_id=chat_id,
+            question=question,
+            choices=choices,
+            clarify_id=clarify_id,
+            session_key=session_key,
+            metadata=metadata,
+        )
+
+    async def send_clarify_text_fallback(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a portable text clarify prompt to the user.
 
         Two render modes:
 

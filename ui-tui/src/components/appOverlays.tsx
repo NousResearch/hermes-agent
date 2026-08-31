@@ -61,6 +61,8 @@ export function PromptZone({
   onApprovalChoice,
   onAskUserQuestionsAnswer,
   onClarifyAnswer,
+  onClarifyBatchCancel,
+  onClarifyBatchSubmit,
   onPromptOptimizationChoice,
   onClarifyQuestionAnswer,
   onSecretSubmit,
@@ -71,6 +73,8 @@ export function PromptZone({
   | 'onApprovalChoice'
   | 'onAskUserQuestionsAnswer'
   | 'onClarifyAnswer'
+  | 'onClarifyBatchCancel'
+  | 'onClarifyBatchSubmit'
   | 'onPromptOptimizationChoice'
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
@@ -141,7 +145,10 @@ export function PromptZone({
       <PromptCell cols={cols} id="clarify">
         <ClarifyPrompt
           cols={cols}
+          key={overlay.clarify.requestId}
           onAnswer={onClarifyAnswer}
+          onBatchCancel={onClarifyBatchCancel}
+          onBatchSubmit={onClarifyBatchSubmit}
           onCancel={() => onClarifyAnswer('')}
           onQuestionAnswer={onClarifyQuestionAnswer}
           req={overlay.clarify}

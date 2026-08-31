@@ -3416,6 +3416,8 @@ export const zh: Translations = {
       placeholder: '输入你的答案…',
       skip: '跳过',
       skipped: '已跳过',
+      timedOut: '已超时',
+      cancelled: '已取消',
       continueLabel: '继续',
       confirmAndContinueLabel: '确认并继续',
       answeredBadge: '已回答',

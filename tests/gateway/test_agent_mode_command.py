@@ -506,6 +506,7 @@ class TestCliModeCommandUsesSharedValidation:
         cli = HermesCLI.__new__(HermesCLI)
 
         class _Agent:
+            agent_mode = "auto"
             ephemeral_system_prompt = ""
 
         cli.agent = _Agent()
@@ -521,12 +522,25 @@ class TestCliModeCommandUsesSharedValidation:
         cli._handle_mode_command("/mode status")
         assert any("mode: auto" in line for line in out)
 
+    def test_status_uses_authoritative_mode_not_prompt_substring(self, monkeypatch, capfd):
+        cli, out = self._make_cli(monkeypatch, capfd)
+        from hermes_cli.mode_prompts import PLAN_PROMPT
+
+        cli.agent.agent_mode = "recon"
+        cli.agent.ephemeral_system_prompt = PLAN_PROMPT
+        cli._handle_mode_command("/mode status")
+
+        assert any("mode: recon" in line for line in out)
+        assert not any("mode: plan" in line for line in out)
+
     def test_valid_plan_sets_prompt_and_reports(self, monkeypatch, capfd):
         cli, out = self._make_cli(monkeypatch, capfd)
         cli._handle_mode_command("/mode plan")
         from hermes_cli.mode_prompts import PLAN_PROMPT
         assert cli.agent.ephemeral_system_prompt == PLAN_PROMPT
+        assert cli.agent.agent_mode == "plan"
         assert any("mode → plan" in line for line in out)
+        assert any("prompt cache" in line.lower() for line in out)
         assert any("/mode auto to reset" in line for line in out)
 
     def test_valid_auto_clears_prompt(self, monkeypatch, capfd):
@@ -641,6 +655,26 @@ class TestTuiConfigSetModeUsesSharedValidation:
         })
         assert "result" in resp
         assert session["agent_mode"] == "plan"
+        assert resp["result"]["prompt_cache_reset"] is True
+
+    def test_valid_with_live_agent_updates_authoritative_state(self, monkeypatch):
+        from types import SimpleNamespace
+
+        server = self._setup(monkeypatch)
+        sid = "s-live"
+        agent = SimpleNamespace(agent_mode="auto", ephemeral_system_prompt=None)
+        session = {"session_key": "k-live", "agent": agent, "agent_mode": "auto"}
+        server._sessions[sid] = session
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "config.set",
+            "params": {"key": "mode", "value": "recon", "session_id": sid},
+        })
+
+        assert agent.agent_mode == "recon"
+        assert resp["result"]["prompt_cache_reset"] is True
 
     def test_invalid_with_session_does_not_store(self, monkeypatch):
         server = self._setup(monkeypatch)

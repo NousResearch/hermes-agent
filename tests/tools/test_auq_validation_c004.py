@@ -1,6 +1,7 @@
-"""C004-F4: Runtime validation must enforce 2-4 options and exactly one
-recommended option, consistent with the registered JSON schema (minItems: 2,
-"exactly one option per question should be recommended").
+"""Runtime validation for option counts and optional recommendations.
+
+Questions require 2-4 options. Zero or one option may be recommended; multiple
+recommendations are rejected as ambiguous.
 
 These tests call the live ``_normalise_questions`` function directly — no
 source-grep, no change-detector.  Each test constructs a question payload that
@@ -49,21 +50,21 @@ class TestF4OptionCountValidation:
 
 
 class TestF4RecommendedCountValidation:
-    """F4: _normalise_questions must require exactly one recommended option."""
+    """At most one option may be recommended; a neutral question is valid."""
 
-    def test_rejects_zero_recommended(self):
-        """Zero recommended contradicts the 'exactly one' contract."""
+    def test_accepts_zero_recommended(self):
+        """No recommendation is valid when the trade-off is genuinely open."""
         questions = [
             {
                 "question": "Pick one",
                 "options": [{"label": "A"}, {"label": "B"}],
             }
         ]
-        with pytest.raises(ValueError, match="exactly one"):
-            _normalise_questions(questions)
+        cleaned = _normalise_questions(questions)
+        assert not any(option["recommended"] for option in cleaned[0]["options"])
 
     def test_rejects_two_recommended(self):
-        """Two recommended is already rejected (existing behaviour)."""
+        """Multiple recommendations are ambiguous and remain invalid."""
         questions = [
             {
                 "question": "Pick one",
@@ -73,7 +74,7 @@ class TestF4RecommendedCountValidation:
                 ],
             }
         ]
-        with pytest.raises(ValueError, match="exactly one"):
+        with pytest.raises(ValueError, match="at most one"):
             _normalise_questions(questions)
 
     def test_accepts_exactly_one_recommended(self):
@@ -91,3 +92,14 @@ class TestF4RecommendedCountValidation:
         cleaned = _normalise_questions(questions)
         recs = [o for o in cleaned[0]["options"] if o["recommended"]]
         assert len(recs) == 1
+
+
+def test_rejects_header_instead_of_silently_truncating_it():
+    questions = [{
+        "header": "This header is too long",
+        "question": "Pick one",
+        "options": [{"label": "A"}, {"label": "B"}],
+    }]
+
+    with pytest.raises(ValueError, match="header exceeds 12"):
+        _normalise_questions(questions)

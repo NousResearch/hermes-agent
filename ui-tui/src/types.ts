@@ -109,13 +109,17 @@ export interface ConfirmReq {
 
 export interface ClarifyBatchQuestion {
   choices: string[] | null
+  header?: string
   multiSelect?: boolean
+  options?: AskUserQuestionOption[]
   qid: string
   question: string
 }
 
 export interface ClarifyReq {
   choices: string[] | null
+  /** Absolute Unix seconds when this prompt expires; absent means unlimited. */
+  expiresAt?: number
   question: string
   requestId: string
   /** Batch (multi-question) clarify: present instead of question/choices. */

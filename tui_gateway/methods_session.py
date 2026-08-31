@@ -1059,6 +1059,7 @@ def _(rid, params: dict) -> dict:
                         if db_session:
                             saved_mode = db_session.get("agent_mode", "auto") or "auto"
                             session["agent_mode"] = saved_mode
+                            agent.agent_mode = saved_mode
                             if saved_mode != "auto":
                                 agent.ephemeral_system_prompt = _mode_prompt(saved_mode)
                     except Exception:

@@ -10,7 +10,7 @@ import { $gateway } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { $activeSessionId, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 
-import { ClarifyTool, readClarifyBatchResult, readClarifyResult } from './clarify-tool'
+import { ClarifyTool, readClarifyArgs, readClarifyBatchResult, readClarifyResult } from './clarify-tool'
 
 // The OWNER-socket seam (`requestForOwnedSession` → `requestForSessionProfile`
 // → here). Mocked so the real owner ladder still runs against real fixtures and
@@ -594,13 +594,68 @@ describe('readClarifyBatchResult', () => {
     )
 
     expect(parsed.timedOut).toBe(true)
+    expect(parsed.cancelled).toBe(false)
     expect(parsed.responses).toHaveLength(3)
+    expect(parsed.responses[0]?.status).toBe('answered')
     expect(parsed.responses[1]?.answer).toEqual(['a', 'b'])
     expect(parsed.responses[2]?.answer).toBe('')
+    expect(parsed.responses[2]?.status).toBe('timed_out')
   })
 
   it('returns empty responses for single-question payloads', () => {
     expect(readClarifyBatchResult({ question: 'Q?', user_response: 'a' }).responses).toEqual([])
+  })
+
+  it('parses AskUserQuestions settled answers, including multi-select', () => {
+    const parsed = readClarifyBatchResult({
+      answers: [
+        { question: 'Approach?', answer: 'Fast', status: 'answered' },
+        { question: 'Checks?', answer: 'Lint, Tests', selected: ['Lint', 'Tests'], status: 'answered' }
+      ],
+      timed_out: false
+    })
+
+    expect(parsed.responses).toEqual([
+      { answer: 'Fast', question: 'Approach?', status: 'answered' },
+      { answer: ['Lint', 'Tests'], question: 'Checks?', status: 'answered' }
+    ])
+  })
+
+  it('preserves cancelled status for unanswered rows', () => {
+    const parsed = readClarifyBatchResult({
+      cancelled: true,
+      responses: [{ question: 'Keep going?', status: 'cancelled', user_response: '' }]
+    })
+
+    expect(parsed.cancelled).toBe(true)
+    expect(parsed.responses[0]?.status).toBe('cancelled')
+  })
+})
+
+describe('readClarifyArgs', () => {
+  it('normalises AskUserQuestions options and camelCase multiSelect for history', () => {
+    expect(
+      readClarifyArgs({
+        questions: [
+          {
+            header: 'Checks',
+            multiSelect: true,
+            options: [
+              { description: 'Static analysis', label: 'Lint', recommended: true },
+              { label: 'Tests' }
+            ],
+            question: 'Which checks?'
+          }
+        ]
+      }).questions
+    ).toEqual([
+      {
+        choices: ['Lint (Recommended)', 'Tests'],
+        header: 'Checks',
+        multiSelect: true,
+        question: 'Which checks?'
+      }
+    ])
   })
 })
 
@@ -631,7 +686,7 @@ describe('ClarifyTool batch card', () => {
     expect((confirm as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('confirm sends every per-question lock in order and completes the batch', async () => {
+  it('confirm sends one atomic batch payload', async () => {
     const request = renderLiveBatch()
 
     fireEvent.click(screen.getByRole('button', { name: /red/ }))
@@ -639,16 +694,10 @@ describe('ClarifyTool batch card', () => {
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledTimes(2)
+      expect(request).toHaveBeenCalledTimes(1)
     })
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
-      answer: 'red',
-      question_id: 'q0',
-      request_id: 'request-batch'
-    })
-    expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
-      answer: 'packet',
-      question_id: 'q1',
+    expect(request).toHaveBeenCalledWith('clarify.respond', {
+      answers: { q0: 'red', q1: 'packet' },
       request_id: 'request-batch'
     })
   })
@@ -662,12 +711,11 @@ describe('ClarifyTool batch card', () => {
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledTimes(2)
+      expect(request).toHaveBeenCalledTimes(1)
     })
     // The re-pick won: blue, not red.
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
-      answer: 'blue',
-      question_id: 'q0',
+    expect(request).toHaveBeenCalledWith('clarify.respond', {
+      answers: { q0: 'blue', q1: 'packet' },
       request_id: 'request-batch'
     })
   })
@@ -687,14 +735,16 @@ describe('ClarifyTool batch card', () => {
     expect(screen.getByText('1 of 2 answered')).toBeTruthy()
   })
 
-  it('Skip cancels the whole batch without a question_id', async () => {
+  it('Skip cancels the batch and preserves staged answers', async () => {
     const request = renderLiveBatch()
 
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
 
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('clarify.respond', {
-        answer: '',
+        answers: { q0: 'red' },
+        cancelled: true,
         request_id: 'request-batch'
       })
     })
@@ -720,6 +770,40 @@ describe('ClarifyTool batch card', () => {
     expect(screen.getByText('red')).toBeTruthy()
     expect(screen.getByText('Name?')).toBeTruthy()
     expect(screen.getByText('Skipped')).toBeTruthy()
+  })
+
+  it('renders timed-out batch rows distinctly from deliberate skips', () => {
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          batchArgs(),
+          JSON.stringify({
+            responses: [{ question: 'Name?', status: 'timed_out', user_response: '' }],
+            timed_out: true
+          }),
+          'clarify-batch-timeout'
+        )}
+      />
+    )
+
+    expect(screen.getByText('Timed out')).toBeTruthy()
+  })
+
+  it('renders cancelled batch rows distinctly from deliberate skips', () => {
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          batchArgs(),
+          JSON.stringify({
+            cancelled: true,
+            responses: [{ question: 'Name?', status: 'cancelled', user_response: '' }]
+          }),
+          'clarify-batch-cancelled'
+        )}
+      />
+    )
+
+    expect(screen.getByText('Cancelled')).toBeTruthy()
   })
 })
 
@@ -788,7 +872,7 @@ describe('ClarifyTool owner routing', () => {
     expect(ambient).not.toHaveBeenCalled()
   })
 
-  it('sends both sequential batch locks on the owner socket, in order', async () => {
+  it('sends one atomic batch payload on the owner socket', async () => {
     const ambient = armCrossProfileOwner()
 
     setClarifyRequest({
@@ -809,11 +893,12 @@ describe('ClarifyTool owner routing', () => {
     fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
 
     await waitFor(() => {
-      expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(2)
+      expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(1)
     })
-    // The LAST lock resolves the blocked tool, so order is load-bearing.
-    expectOwnerCall(1, { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
-    expectOwnerCall(2, { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
+    expectOwnerCall(1, {
+      answers: { q0: 'red', q1: 'packet' },
+      request_id: 'request-batch'
+    })
     expect(ambient).not.toHaveBeenCalled()
   })
 
@@ -838,7 +923,7 @@ describe('ClarifyTool owner routing', () => {
     await waitFor(() => {
       expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(1)
     })
-    expectOwnerCall(1, { answer: '', request_id: 'request-batch' })
+    expectOwnerCall(1, { answers: {}, cancelled: true, request_id: 'request-batch' })
     expect(ambient).not.toHaveBeenCalled()
   })
 })

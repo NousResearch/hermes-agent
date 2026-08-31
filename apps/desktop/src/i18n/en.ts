@@ -3259,6 +3259,8 @@ export const en: Translations = {
       placeholder: 'Type your answer…',
       skip: 'Skip',
       skipped: 'Skipped',
+      timedOut: 'Timed out',
+      cancelled: 'Cancelled',
       continueLabel: 'Continue',
       confirmAndContinueLabel: 'Confirm and continue',
       answeredBadge: 'Answered',

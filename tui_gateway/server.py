@@ -4660,20 +4660,28 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     The tool decodes the JSON reply via its batch answer parser.
     """
     if questions:
-        wire = [
-            {
+        wire = []
+        for entry in questions:
+            row = {
                 "qid": entry["qid"],
                 "question": entry["question"],
                 "choices": entry["choices"],
                 "multi_select": bool(entry["multi_select"]),
             }
-            for entry in questions
-        ]
+            if entry.get("header") is not None:
+                row["header"] = entry["header"]
+            if entry.get("options") is not None:
+                row["options"] = entry["options"]
+            wire.append(row)
+        wait_timeout = _clarify_timeout_seconds()
+        payload: dict[str, object] = {"questions": wire}
+        if wait_timeout is not None:
+            payload["expires_at"] = time.time() + wait_timeout
         return _block(
             "clarify.request",
             sid,
-            {"questions": wire},
-            timeout=_clarify_timeout_seconds(),
+            payload,
+            timeout=wait_timeout,
             batch_qids=[entry["qid"] for entry in questions],
         )
     # multi_select is a pass-through hint: renderers with checkbox
@@ -4681,15 +4689,19 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     # and stay single-select (a single answer still parses as a
     # one-element list on the tool side). Only emitted when True so
     # single-select payloads keep the exact pre-multi-select shape.
+    wait_timeout = _clarify_timeout_seconds()
+    payload = (
+        {"question": q, "choices": c, "multi_select": True}
+        if multi_select
+        else {"question": q, "choices": c}
+    )
+    if wait_timeout is not None:
+        payload["expires_at"] = time.time() + wait_timeout
     return _block(
         "clarify.request",
         sid,
-        (
-            {"question": q, "choices": c, "multi_select": True}
-            if multi_select
-            else {"question": q, "choices": c}
-        ),
-        timeout=_clarify_timeout_seconds(),
+        payload,
+        timeout=wait_timeout,
     )
 
 
@@ -8019,6 +8031,7 @@ def _agent_cbs(sid: str) -> dict:
             _block(                                                     # KENSEI CUSTOM
                 "ask_user_questions.request", sid,                      # KENSEI CUSTOM
                 {"questions": questions},                                # KENSEI CUSTOM
+                timeout=_clarify_timeout_seconds(),                       # compatibility timeout
             ),                                                          # KENSEI CUSTOM
         ),                                                              # KENSEI CUSTOM
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
@@ -13826,20 +13839,50 @@ def _respond(rid, params, key, *, allow_expired=False):
             return _err(rid, 4009, f"no pending {key} request")
         _, ev = entry
         batch = _batch_clarify.get(r)
-        if batch is not None and question_id:
-            # Per-question lock (multi-question clarify). Update-in-place is
-            # deliberate: a locked answer stays editable until the batch
-            # completes, and completion is exactly "every qid locked" — the
-            # final lock is the Confirm-and-continue click.
-            if question_id not in batch["qids"]:
-                return _err(rid, 4002, f"unknown question_id {question_id!r}")
-            batch["answers"][question_id] = params.get(key, "")
-            remaining = [
-                qid for qid in batch["qids"] if qid not in batch["answers"]
-            ]
-            if not remaining:
-                ev.set()
-            return _ok(rid, {"status": "ok", "remaining": remaining})
+        if batch is not None:
+            submitted = params.get("answers")
+            if isinstance(submitted, dict):
+                unknown = [qid for qid in submitted if qid not in batch["qids"]]
+                if unknown:
+                    return _err(rid, 4002, f"unknown question_id {unknown[0]!r}")
+                invalid = [qid for qid, answer in submitted.items() if not isinstance(answer, str)]
+                if invalid:
+                    return _err(rid, 4002, f"answer for {invalid[0]!r} must be a string")
+                batch["answers"].update(submitted)
+                if params.get("cancelled") is True:
+                    _answers[r] = json.dumps(
+                        {"answers": dict(batch["answers"]), "cancelled": True},
+                        ensure_ascii=False,
+                    )
+                    ev.set()
+                    return _ok(rid, {"status": "cancelled"})
+                remaining = [
+                    qid for qid in batch["qids"] if qid not in batch["answers"]
+                ]
+                if not remaining:
+                    ev.set()
+                return _ok(rid, {"status": "ok", "remaining": remaining})
+            if question_id:
+                # Per-question compatibility lane. Locked answers stay editable
+                # until completion; newer clients submit the whole staged form
+                # atomically through ``answers`` above.
+                if question_id not in batch["qids"]:
+                    return _err(rid, 4002, f"unknown question_id {question_id!r}")
+                batch["answers"][question_id] = params.get(key, "")
+                remaining = [
+                    qid for qid in batch["qids"] if qid not in batch["answers"]
+                ]
+                if not remaining:
+                    ev.set()
+                return _ok(rid, {"status": "ok", "remaining": remaining})
+            # Legacy cancel-all: preserve any answers already locked and label
+            # the outcome instead of returning an ambiguous empty string.
+            _answers[r] = json.dumps(
+                {"answers": dict(batch["answers"]), "cancelled": True},
+                ensure_ascii=False,
+            )
+            ev.set()
+            return _ok(rid, {"status": "cancelled"})
         _answers[r] = params.get(key, "")
         ev.set()
     return _ok(rid, {"status": "ok"})
@@ -14198,12 +14241,14 @@ def _(rid, params: dict) -> dict:
         except ValueError:
             return _err(rid, 4002, f"unknown mode: {raw} (valid: auto, plan, gods_plan, recon)")
 
+        previous_mode = (session or {}).get("agent_mode", "auto") or "auto"
         # Store on session so it's applied to future agent turns
         if session:
             session["agent_mode"] = nv
             # If agent exists, set ephemeral_system_prompt now
             agent = session.get("agent")
             if agent is not None:
+                agent.agent_mode = nv
                 agent.ephemeral_system_prompt = _mode_prompt(nv)
             # Persist to DB so mode survives gateway restarts.
             # Use the session's profile-scoped DB so remote/profile mode-set
@@ -14224,8 +14269,11 @@ def _(rid, params: dict) -> dict:
                     _session_info(agent, session),
                 )
 
-        return _ok(rid, {"key": key, "value": nv})
-
+        return _ok(rid, {
+            "key": key,
+            "value": nv,
+            "prompt_cache_reset": previous_mode != nv,
+        })
     # ── KENSEI CUSTOM: diagram.ready event emission ──
     # Agent calls config.set(key="diagram.ready", value=<filename>) after
     # writing a diagram.  We emit a diagram.ready event with the live URL

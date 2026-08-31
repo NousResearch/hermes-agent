@@ -3485,6 +3485,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 _auq_tool(
                     questions=next_args.get("questions", []),
                     callback=getattr(agent, "ask_user_questions_callback", None),
+                    clarify_callback=getattr(agent, "clarify_callback", None),
                 ),
                 next_args,
             )
@@ -3585,15 +3586,15 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     # ── KENSEI CUSTOM: config_set tool (agent can switch modes via RPC bridge) ──
     elif function_name == "config_set":
         def _execute(next_args: dict) -> Any:
-            from tui_gateway.server import handle_request as _gw_handle
-            key = next_args.get("key", "")
-            value = next_args.get("value", "")
-            session_id = getattr(agent, "session_id", "") or ""
-            result = _gw_handle({
-                "method": "config.set",
-                "params": {"key": key, "value": value, "session_id": session_id},
-            })
-            return _finish_agent_tool(json.dumps(result or {}, ensure_ascii=False), next_args)
+            from tools.config_set_tool import config_set_tool
+
+            result = config_set_tool(
+                key=next_args.get("key", ""),
+                value=next_args.get("value", ""),
+                session_id=getattr(agent, "session_id", "") or "",
+                agent=agent,
+            )
+            return _finish_agent_tool(result, next_args)
     # ── END KENSEI CUSTOM ──
     else:
         def _execute(next_args: dict) -> Any:

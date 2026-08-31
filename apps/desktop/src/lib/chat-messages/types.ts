@@ -94,6 +94,7 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  expires_at?: number
   multi_select?: boolean
   // clarify.request batch form: questions replaces question/choices, and
   // answers (qid → locked answer) rides along on reconnect replay only.

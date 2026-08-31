@@ -61,6 +61,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     if (requestId && questions.length > 0) {
       const request = {
         choices: null,
+        expiresAt: typeof payload?.expires_at === 'number' ? payload.expires_at : undefined,
         lockedAnswers,
         multiSelect: false,
         question: '',
@@ -113,6 +114,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         requestId,
         question,
         choices: choices.length > 0 ? choices : null,
+        expiresAt: typeof payload?.expires_at === 'number' ? payload.expires_at : undefined,
         multiSelect,
         receivedAt: Date.now() / 1000,
         sessionId: sessionId ?? null

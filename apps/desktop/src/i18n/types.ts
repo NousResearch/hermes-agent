@@ -2814,6 +2814,8 @@ export interface Translations {
       placeholder: string
       skip: string
       skipped: string
+      timedOut: string
+      cancelled: string
       continueLabel: string
       confirmAndContinueLabel: string
       answeredBadge: string

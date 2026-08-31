@@ -294,14 +294,14 @@ const ComposerPane = memo(function ComposerPane({
   // See skill `agent-modes` for full spec.  Must survive upstream merges.
   // NOTE: 'gods_plan' is the internal AgentMode value; user-facing label is "UltraPlan".
   const MODE_BADGE: Record<string, string> = {
-    plan:       '📋 Plan ',
-    gods_plan:  '👑 UltraPlan ',
-    recon:      '🔍 Recon ',
+    plan: '📋 Plan ',
+    gods_plan: '👑 UltraPlan ',
+    recon: '🔍 Recon '
   }
 
   const modeBadge = MODE_BADGE[ui.agentMode] || ''
   const displayPrompt = modeBadge + promptText
-  const promptWidth = composerPromptWidth(promptText) + (modeBadge ? 2 : 0)  // badge emoji ≈ 2 chars
+  const promptWidth = composerPromptWidth(promptText) + (modeBadge ? 2 : 0) // badge emoji ≈ 2 chars
   const promptBlank = ' '.repeat(promptWidth)
   // ── END KENSEI CUSTOM ──
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
@@ -486,13 +486,7 @@ const ControlRoomOverlayPane = memo(function ControlRoomOverlayPane() {
   const { gw } = useGateway()
   const ui = useStore($uiState)
 
-  return (
-    <ControlRoomOverlay
-      gw={gw}
-      onClose={() => patchOverlayState({ controlRoom: false })}
-      t={ui.theme}
-    />
-  )
+  return <ControlRoomOverlay gw={gw} onClose={() => patchOverlayState({ controlRoom: false })} t={ui.theme} />
 })
 
 const ControlRoomAttentionBadgePane = memo(function ControlRoomAttentionBadgePane() {
@@ -601,6 +595,8 @@ export const AppLayout = memo(function AppLayout({
                 onApprovalChoice={actions.answerApproval}
                 onAskUserQuestionsAnswer={actions.answerAskUserQuestions}
                 onClarifyAnswer={actions.answerClarify}
+                onClarifyBatchCancel={actions.answerClarifyBatchCancel}
+                onClarifyBatchSubmit={actions.answerClarifyBatchSubmit}
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onPromptOptimizationChoice={actions.answerPromptOptimization}
                 onSecretSubmit={actions.answerSecret}

@@ -13979,7 +13979,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         # ── KENSEI CUSTOM: shared mode prompts (plan/UltraPlan/recon/auto) ──
         from hermes_cli.mode_prompts import (                    # KENSEI CUSTOM
-            get_mode_prompt, detect_mode, mode_label,            # KENSEI CUSTOM
+            get_mode_prompt, mode_label,                         # KENSEI CUSTOM
             validate_mode,                                        # KENSEI CUSTOM
         )                                                        # KENSEI CUSTOM
         # ── END KENSEI CUSTOM ──
@@ -13988,8 +13988,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         arg = parts[1].strip().lower() if len(parts) > 1 else ""
 
         if not arg or arg == "status":
-            current = getattr(self.agent, "ephemeral_system_prompt", "") or ""
-            mode = detect_mode(current)
+            mode = getattr(self.agent, "agent_mode", "auto") or "auto"
             _cprint(f"  mode: {mode_label(mode)}")
             if mode != "auto":
                 _cprint(f"  {_DIM}/mode auto to reset{_RST}")
@@ -14007,20 +14006,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
 
         prompt = get_mode_prompt(mode)
+        previous_mode = "auto"
         if hasattr(self, "agent") and self.agent:
+            previous_mode = getattr(self.agent, "agent_mode", "auto") or "auto"
+            self.agent.agent_mode = mode
             self.agent.ephemeral_system_prompt = prompt
         _cprint(f"  mode → {mode_label(mode)}")
+        if previous_mode != mode:
+            _cprint(f"  {_DIM}Note: changing mode resets the model prompt cache on the next request.{_RST}")
         if mode != "auto":
             _cprint(f"  {_DIM}/mode auto to reset{_RST}")
 
     # ── KENSEI CUSTOM: detect current mode for status bar ──
     def _detect_current_mode(self) -> str:
-        """Return the current agent mode key (auto/plan/gods_plan/recon)."""
+        """Return the authoritative agent mode key for the status bar."""
         try:
-            from hermes_cli.mode_prompts import detect_mode
+            from hermes_cli.mode_prompts import validate_mode
+
             current = getattr(self, "agent", None)
-            prompt = getattr(current, "ephemeral_system_prompt", "") or ""
-            return detect_mode(prompt)
+            return validate_mode(getattr(current, "agent_mode", "auto") or "auto")
         except Exception:
             return "auto"
     # ── END KENSEI CUSTOM ──
@@ -16278,7 +16282,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         import time as _time
         import queue as _queue
 
-        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+        from tools.clarify_gateway import resolve_clarify_timeout
+
+        timeout = resolve_clarify_timeout(CLI_CONFIG)
         response_queue = _queue.Queue()
         total = len(questions)
 
@@ -16298,7 +16304,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "selections": selections,
             "response_queue": response_queue,
         }
-        self._auq_deadline = _time.monotonic() + timeout
+        self._auq_deadline = None if timeout <= 0 else _time.monotonic() + timeout
 
         # Capture current input draft, clear buffer for modal prompt
         self._capture_modal_input_snapshot()
@@ -16317,9 +16323,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._paint_now()
                 return answers
             except _queue.Empty:
-                remaining = self._auq_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
+                if self._auq_deadline is not None:
+                    remaining = self._auq_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
                 now = _time.monotonic()
                 if now - _last_countdown_refresh >= 1.0:
                     _last_countdown_refresh = now
@@ -16354,6 +16361,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         index = max(0, min(index, len(questions_list) - 1))
         entry = questions_list[index]
         state["active"] = index
+        state["reviewing"] = False
+        state["submitted"] = False
         state["question"] = entry["question"]
         state["choices"] = entry["choices"] or []
         state["selected"] = 0
@@ -16402,11 +16411,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if state["questions"][candidate]["qid"] not in state["answers"]:
                 self._clarify_batch_set_active(state, candidate)
                 return
-        # Every question answered — resolve the batch.
-        try:
-            state["response_queue"].put(dict(state["answers"]))
-        except Exception:
-            pass
+        # Every question is staged. Enter a review state and require one more
+        # explicit confirmation before the callback returns to the agent.
+        state["reviewing"] = True
+        self._clarify_freetext = False
+        self._clarify_multi_base = None
+
+    def _clarify_batch_submit(self, state) -> None:
+        """Submit every staged answer after the explicit review step."""
+        if state.get("submitted"):
+            return
+        state["submitted"] = True
+        state["response_queue"].put(dict(state["answers"]))
+        self._clarify_state = None
+        self._clarify_freetext = False
+        self._clarify_multi_base = None
+
+    def _clarify_batch_cancel(self, state) -> None:
+        """Cancel while preserving answers staged before the interruption."""
+        state["response_queue"].put({
+            "answers": dict(state.get("answers") or {}),
+            "cancelled": True,
+        })
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_multi_base = None
@@ -16475,6 +16501,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "answers": {},
             "answer_meta": {},
             "active": 0,
+            "reviewing": False,
+            "submitted": False,
             "response_queue": response_queue,
             # Flat keys mirroring the active question — filled by
             # _clarify_batch_set_active below.
@@ -16495,6 +16523,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 result = response_queue.get(timeout=1)
                 self._clarify_deadline = None
                 if isinstance(result, dict):
+                    if "answers" in result and (
+                        result.get("cancelled") is True or result.get("timed_out") is True
+                    ):
+                        return result
                     return {"answers": result}
                 # Cancel path (Ctrl+C teardown) posts a plain string — pass
                 # it through so the tool core resolves the batch empty.
@@ -16972,9 +17004,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._approval_state = None
         if self._clarify_state:
             try:
-                self._clarify_state["response_queue"].put(
-                    "The user cancelled. Use your best judgement to proceed."
-                )
+                if self._clarify_state.get("questions"):
+                    self._clarify_batch_cancel(self._clarify_state)
+                else:
+                    self._clarify_state["response_queue"].put(
+                        "The user cancelled. Use your best judgement to proceed."
+                    )
             except Exception:
                 pass
             self._clarify_state = None
@@ -18809,6 +18844,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Batch mode: Enter locks the active question's answer and
                 # advances to the next unanswered question.
                 if state.get("questions"):
+                    if state.get("reviewing"):
+                        self._clarify_batch_submit(state)
+                        event.app.invalidate()
+                        return
                     self._clarify_batch_enter(state)
                     # Editing an earlier "Other" answer: prefill the composer
                     # with the previously typed text.
@@ -19225,6 +19264,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # --- Clarify tool: arrow-key navigation for multiple-choice questions ---
 
+        @kb.add('escape', filter=Condition(lambda: bool(self._clarify_state)), eager=True)
+        def clarify_escape(event):
+            state = self._clarify_state
+            if not state:
+                return
+            if self._clarify_freetext:
+                self._clarify_freetext = False
+                event.app.current_buffer.reset()
+            elif state.get("reviewing") and state.get("questions"):
+                self._clarify_batch_set_active(state, len(state["questions"]) - 1)
+            elif state.get("questions"):
+                self._clarify_batch_cancel(state)
+            else:
+                state["response_queue"].put(
+                    "The user cancelled. Use your best judgement to proceed."
+                )
+                self._clarify_state = None
+            event.app.invalidate()
+
         @kb.add('up', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))
         def clarify_up(event):
             """Move selection up in clarify choices."""
@@ -19302,10 +19360,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # Original single-select: number keys submit directly
                     # Map index to choice (treating "Other" as the last option)
                     if idx < len(choices):
-                        # Batch mode: lock the numbered choice for the active
-                        # question instead of resolving the whole prompt.
+                        # Batch mode: quick keys move the cursor only. Enter
+                        # stages the selection, preventing accidental submits.
                         if self._clarify_state.get("questions"):
-                            self._clarify_batch_lock(self._clarify_state, choices[idx])
+                            self._clarify_state["selected"] = idx
                             event.app.invalidate()
                             return
                         # Select a numbered choice
@@ -19314,8 +19372,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self._clarify_freetext = False
                         event.app.invalidate()
                     elif idx == len(choices):
-                        # Select "Other" option
-                        self._clarify_freetext = True
+                        if self._clarify_state.get("questions"):
+                            self._clarify_state["selected"] = idx
+                        else:
+                            self._clarify_freetext = True
                         event.app.invalidate()
             return handler
 
@@ -20362,8 +20422,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         ('class:clarify-countdown', countdown),
                     ]
                 if cli_ref._clarify_state.get("questions"):
+                    if cli_ref._clarify_state.get("reviewing"):
+                        hint = '  review answers · Enter to submit all · Esc to edit'
+                    else:
+                        hint = '  ↑/↓ or 1-9 to select, Enter to stage, Tab next question'
                     return [
-                        ('class:hint', '  ↑/↓ to select, Enter to lock, Tab next question'),
+                        ('class:hint', hint),
                         ('class:clarify-countdown', countdown),
                     ]
                 return [
@@ -20373,8 +20437,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # ── KENSEI CUSTOM: auq hint ──
             if cli_ref._auq_state:
-                remaining = max(0, int(cli_ref._auq_deadline - time.monotonic()))
-                countdown = f'  ({remaining}s)' if cli_ref._auq_deadline else ''
+                if cli_ref._auq_deadline is None:
+                    countdown = ''
+                else:
+                    remaining = max(0, int(cli_ref._auq_deadline - time.monotonic()))
+                    countdown = f'  ({remaining}s)'
                 total = len(cli_ref._auq_state.get("questions", []))
                 return [
                     ('class:hint', f'  Q{cli_ref._auq_state["activeIdx"]+1}/{total} · ↑/↓/1-9 select · Enter/Tab next'),
@@ -20466,14 +20533,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """
             questions_list = state.get("questions") or []
             answers = state.get("answers") or {}
-            active = state.get("active", 0)
+            reviewing = bool(state.get("reviewing"))
+            active = -1 if reviewing else state.get("active", 0)
             choices = state.get("choices") or []
             selected = state.get("selected", 0)
             multi_select = state.get("multi_select", False)
             selected_indices = state.get("selected_indices", set()) if multi_select else set()
 
             title = "Hermes needs your input"
-            header = f"{len(questions_list)} questions"
+            header = "Review answers" if reviewing else f"{len(questions_list)} questions"
 
             def _status_rows(width):
                 """(style, text) rows for the status list + expanded active question."""
@@ -20487,7 +20555,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         marker = "▸"
                     else:
                         marker = "·"
-                    label = f"{marker} {entry['question']}"
+                    question_header = str(entry.get("header") or "").upper()
+                    prefix = f"{question_header} · " if question_header else ""
+                    label = f"{marker} {prefix}{entry['question']}"
                     row_style = 'class:clarify-selected' if idx == active else 'class:clarify-choice'
                     for wrapped in _wrap_panel_text(label, width, subsequent_indent="  "):
                         rows.append((row_style, wrapped))
@@ -20495,8 +20565,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         # The locked answer on its own line, in its own color,
                         # so the current answer stays readable while walking
                         # the list with Tab/Shift-Tab.
+                        raw_answer = answers[entry["qid"]]
+                        display_answer = str(raw_answer)
+                        if entry.get("multi_select"):
+                            try:
+                                parsed_answer = json.loads(raw_answer)
+                                if isinstance(parsed_answer, list):
+                                    display_answer = ", ".join(str(value) for value in parsed_answer)
+                            except (TypeError, json.JSONDecodeError):
+                                pass
                         for wrapped in _wrap_panel_text(
-                            f"    {answers[entry['qid']]}", width, subsequent_indent="    "
+                            f"    {display_answer}", width, subsequent_indent="    "
                         ):
                             rows.append(('class:clarify-answer', wrapped))
                     if idx != active:
@@ -20512,7 +20591,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             cursor = "❯" if i == selected and not cli_ref._clarify_freetext else " "
                             prefix = f"  {cursor} {num_prefix}. "
                         style = 'class:clarify-selected' if i == selected and not cli_ref._clarify_freetext else 'class:clarify-choice'
-                        for wrapped in _wrap_panel_text(f"{prefix}{choice}", width, subsequent_indent="      "):
+                        option_meta = (entry.get("options") or [])
+                        description = ""
+                        if i < len(option_meta) and isinstance(option_meta[i], dict):
+                            description = str(option_meta[i].get("description") or "")
+                        suffix = f" — {description}" if description else ""
+                        for wrapped in _wrap_panel_text(f"{prefix}{choice}{suffix}", width, subsequent_indent="      "):
                             rows.append((style, wrapped))
                     if choices:
                         other_idx = len(choices)

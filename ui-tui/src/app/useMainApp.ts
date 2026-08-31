@@ -37,6 +37,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import {
   buildToolTrailLine,
+  displayClarifyAnswer,
   formatAbandonedClarify,
   formatAbandonedClarifyBatch,
   sameToolTrailGroup,
@@ -757,9 +758,73 @@ export function useMainApp(gw: GatewayClient) {
     [appendMessage, overlay.clarify, rpc]
   )
 
-  // Lock one answer of a batch clarify (clarify.respond + question_id). The
-  // overlay stays up until the server reports no remaining questions — the
-  // final lock resolves the tool and the turn continues.
+  const resolveClarifyBatch = useCallback(
+    (answers: Record<string, string>, cancelled: boolean) => {
+      const clarify = overlay.clarify
+
+      if (!clarify?.questions?.length) {
+        return Promise.resolve()
+      }
+
+      const questions = clarify.questions
+
+      return rpc<ClarifyRespondResponse & { remaining?: string[]; status?: string }>('clarify.respond', {
+        answers,
+        ...(cancelled ? { cancelled: true } : {}),
+        request_id: clarify.requestId
+      })
+        .then(r => {
+          if (!r) {
+            return
+          }
+
+          if (cancelled) {
+            appendMessage({
+              role: 'system',
+              text: formatAbandonedClarifyBatch(questions, answers, 'cancelled')
+            })
+          } else {
+            const label = toolTrailLabel('clarify')
+
+            turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+            patchTurnState({ turnTrail: turnController.turnTools })
+            turnController.persistedToolLabels.add(label)
+            appendMessage({
+              kind: 'trail',
+              role: 'system',
+              text: '',
+              tools: [buildToolTrailLine('clarify', `${questions.length} questions`)]
+            })
+            appendMessage({
+              role: 'user',
+              text: questions
+                .map(q => `${q.question} → ${displayClarifyAnswer(answers[q.qid], q.multiSelect)}`)
+                .join('\n')
+            })
+            patchUiState({ status: 'running…' })
+          }
+
+          patchOverlayState({ clarify: null })
+        })
+        .catch(error => {
+          sys(`Clarify response failed: ${String(error)}`)
+          throw error
+        })
+    },
+    [appendMessage, overlay.clarify, rpc, sys]
+  )
+
+  const answerClarifyBatchSubmit = useCallback(
+    (answers: Record<string, string>) => resolveClarifyBatch(answers, false),
+    [resolveClarifyBatch]
+  )
+
+  const answerClarifyBatchCancel = useCallback(
+    (answers: Record<string, string>) => resolveClarifyBatch(answers, true),
+    [resolveClarifyBatch]
+  )
+
+  // Compatibility path for older renderers that lock one answer at a time.
   const answerClarifyQuestion = useCallback(
     (qid: string, answer: string) => {
       const clarify = overlay.clarify
@@ -833,20 +898,30 @@ export function useMainApp(gw: GatewayClient) {
       if (hasAnswers) {
         // Render each question/answer as a user-style trail so the transcript
         // shows what was selected, even before the agent sees the response.
-        const lines = req.questions.map((q, i) => {
-          const answer = answers[i]
+        const lines = req.questions
+          .map((q, i) => {
+            const answer = answers[i]
 
-          if (answer === undefined) {return null}
+            if (answer === undefined) {
+              return null
+            }
 
-          return `Q${i + 1}: ${q.question}\n   → ${answer}`
-        }).filter(Boolean).join('\n')
+            return `Q${i + 1}: ${q.question}\n   → ${answer}`
+          })
+          .filter(Boolean)
+          .join('\n')
 
         turnController.persistedToolLabels.add(label)
         appendMessage({
           kind: 'trail',
           role: 'system',
           text: '',
-          tools: [buildToolTrailLine('ask_user_questions', `${req.questions.length} question${req.questions.length === 1 ? '' : 's'}`)]
+          tools: [
+            buildToolTrailLine(
+              'ask_user_questions',
+              `${req.questions.length} question${req.questions.length === 1 ? '' : 's'}`
+            )
+          ]
         })
         appendMessage({ role: 'user', text: lines })
         patchUiState({ status: 'running…' })
@@ -1268,6 +1343,8 @@ export function useMainApp(gw: GatewayClient) {
       answerApproval,
       answerAskUserQuestions,
       answerClarify,
+      answerClarifyBatchCancel,
+      answerClarifyBatchSubmit,
       answerClarifyQuestion,
       answerPromptOptimization,
       answerSecret,
@@ -1293,6 +1370,8 @@ export function useMainApp(gw: GatewayClient) {
       answerApproval,
       answerAskUserQuestions,
       answerClarify,
+      answerClarifyBatchCancel,
+      answerClarifyBatchSubmit,
       answerClarifyQuestion,
       answerPromptOptimization,
       answerSecret,

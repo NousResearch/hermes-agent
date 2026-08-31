@@ -4714,6 +4714,8 @@ def compress_context(
                         profile_name=_profile_for_child,
                         compression_lock_holder=_lock_holder,
                         require_compression_lease=_lock_holder is not None,
+                        require_lease_refresh=_lock_holder is not None,
+                        lease_ttl_seconds=_lock_ttl,
                         watermark=(
                             _commit_watermark
                             if _foreign_tail_ceiling is not None
@@ -4992,6 +4994,9 @@ def compress_context(
                     )
                 else:
                     logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+                agent.context_compressor._record_compression_failure_cooldown(
+                    60, f"session_split_failed: {e}",
+                )
 
         # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
         # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`

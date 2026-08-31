@@ -2088,6 +2088,7 @@ def _typed_payload(
         )
         is_file_mutation_replay_call = (
             value.get("type") in {"function", "function_call"}
+            and isinstance(direct_name, str)
             and direct_name in _REMOTE_KANBAN_FILE_MUTATION_REPLAY_TOOL_NAMES
             and isinstance(output_call_id, str)
             and output_call_id in file_mutation_replay_tool_call_ids
@@ -2432,6 +2433,7 @@ def _typed_payload(
             if (
                 redact_readonly_tool_arguments
                 and key == "arguments"
+                and isinstance(direct_name, str)
                 and direct_name in _REMOTE_KANBAN_READONLY_REPLAY_TOOL_NAMES
                 and isinstance(item, str)
             ):

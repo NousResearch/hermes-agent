@@ -297,6 +297,39 @@ def test_codex_generated_tool_schema_preserves_encoded_property_names(tmp_path):
     }
 
 
+def test_protected_remote_nested_tool_schema_name_mapping_is_not_a_tool_name(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path)
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+    agent.api_mode = "chat_completions"
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "tool_catalog",
+            "description": "Invoke a named tool.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "arguments": {"type": "object"},
+                },
+                "required": ["name", "arguments"],
+            },
+        },
+    }]
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {"model": "fallback-model", "messages": [], "tools": tools},
+    )
+
+    assert receipt.allowed
+    assert authorized["tools"] == tools
+
+
 def test_codex_generated_context_still_hard_blocks_secrets(tmp_path):
     agent = _agent(tmp_path)
     agent.provider = "openai-codex"

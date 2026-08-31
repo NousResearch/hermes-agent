@@ -19,15 +19,32 @@ def isolated_kanban_home(monkeypatch):
     """Spin up a fresh HERMES_HOME with a clean kanban DB."""
     test_home = tempfile.mkdtemp(prefix="kanban_default_assignee_test_")
     monkeypatch.setenv("HERMES_HOME", test_home)
-    # Force-reimport so the fresh HERMES_HOME is picked up.
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    from hermes_cli import kanban_db
-    yield kanban_db, test_home
-    # Cleanup is best-effort; tempfile dir survives but pytest isolation
-    # gives each test its own monkeypatched HERMES_HOME so no cross-test
-    # contamination.
+    # Force-reimport so the fresh HERMES_HOME is picked up, then restore the
+    # collected suite's module identities. Leaving the reimported modules in
+    # sys.modules splits later tests between stale and current singletons.
+    def is_hermes_module(name):
+        return (
+            name.startswith("hermes_cli")
+            or name.startswith("hermes_state")
+            or name == "hermes_constants"
+        )
+
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if is_hermes_module(name)
+    }
+    for name in saved_modules:
+        del sys.modules[name]
+    try:
+        from hermes_cli import kanban_db
+
+        yield kanban_db, test_home
+    finally:
+        for name in list(sys.modules):
+            if is_hermes_module(name):
+                del sys.modules[name]
+        sys.modules.update(saved_modules)
 
 
 def _fake_spawn(*args, **kwargs):
@@ -141,4 +158,3 @@ def test_generated_task_with_removed_profile_uses_default_fallback(
     payload = json.loads(event["payload"])
     assert payload["source"] == "kanban.invalid_assignee_fallback"
     assert payload["previous_assignee"] == "removed-specialist"
-

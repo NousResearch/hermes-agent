@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from unittest.mock import patch
 
 import pytest
 
@@ -14,12 +15,29 @@ def kanban_with_profiles(monkeypatch):
     for profile in ("alpha", "beta", "default"):
         os.makedirs(os.path.join(test_home, "profiles", profile), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    from hermes_cli import kanban_db
+    def is_hermes_module(name):
+        return (
+            name.startswith("hermes_cli")
+            or name.startswith("hermes_state")
+            or name == "hermes_constants"
+        )
 
-    yield kanban_db
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if is_hermes_module(name)
+    }
+    for name in saved_modules:
+        del sys.modules[name]
+    try:
+        from hermes_cli import kanban_db
+
+        yield kanban_db
+    finally:
+        for name in list(sys.modules):
+            if is_hermes_module(name):
+                del sys.modules[name]
+        sys.modules.update(saved_modules)
 
 
 def _create_overridden(kb, conn, title, *, assignee="alpha", provider, model):
@@ -295,12 +313,22 @@ def test_terminal_or_reclaimed_task_releases_model_capacity(
         if release == "completed":
             assert kb.complete_task(conn, first, result="done")
         else:
-            assert kb.reclaim_task(
-                conn,
-                first,
-                reason="test release",
-                signal_fn=lambda _pid, _claim_lock: True,
-            )
+            alive = {os.getpid(): True}
+
+            def signal_worker(pid, _signal):
+                alive[int(pid)] = False
+
+            with patch.object(
+                kb,
+                "_pid_alive",
+                side_effect=lambda pid: alive.get(int(pid), False),
+            ):
+                assert kb.reclaim_task(
+                    conn,
+                    first,
+                    reason="test release",
+                    signal_fn=signal_worker,
+                )
             conn.execute("UPDATE tasks SET priority = 1 WHERE id = ?", (second,))
 
         following = kb.dispatch_once(

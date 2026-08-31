@@ -91,6 +91,7 @@ class CIAuditReceipt:
     completed_at: datetime
     actions_state: CheckState
     commands: tuple[CommandEvidence, ...]
+    failure_reason: str | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -124,6 +125,7 @@ class CIAuditReceipt:
                 }
                 for command in self.commands
             ],
+            "failure_reason": self.failure_reason,
         }
 
     @classmethod
@@ -166,6 +168,11 @@ class CIAuditReceipt:
                 )
                 for command in commands
                 if isinstance(command, Mapping)
+            ),
+            failure_reason=(
+                None
+                if payload.get("failure_reason") is None
+                else str(payload["failure_reason"])
             ),
         )
 
@@ -320,13 +327,23 @@ class LocalCIRunner:
         try:
             receipt = self._run_claimed(identity, resolved)
         except Exception as error:
+            completed_at = _aware_now(self._now())
+            receipt = _failed_receipt(
+                identity,
+                manifest_digest,
+                claimed_at,
+                completed_at,
+                error,
+            )
+            self._ledger.record_ci_receipt(receipt)
             self._ledger.finish_ci_run(
                 lease,
-                status="failed",
-                completed_at=_aware_now(self._now()),
+                status="completed",
+                completed_at=completed_at,
+                receipt_id=receipt.receipt_id,
                 error=type(error).__name__,
             )
-            raise
+            return receipt
         self._ledger.finish_ci_run(
             lease,
             status="completed",
@@ -567,6 +584,35 @@ def _receipt_id(
         "commands": [command.stdout_sha256 + command.stderr_sha256 for command in evidence],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _failed_receipt(
+    identity: CIAuditIdentity,
+    manifest_digest: str,
+    started_at: datetime,
+    completed_at: datetime,
+    error: Exception,
+) -> CIAuditReceipt:
+    """Persist typed failure evidence when validation aborts before lane output."""
+
+    reason = f"{type(error).__name__}: {error}"[:1000]
+    receipt_id = _receipt_id(identity, manifest_digest, "failed", completed_at, ())
+    return CIAuditReceipt(
+        receipt_id=receipt_id,
+        identity=identity,
+        manifest_digest=manifest_digest,
+        status="failed",
+        started_at=started_at,
+        completed_at=completed_at,
+        actions_state=CheckState(
+            actions_enabled=False,
+            all_green=False,
+            check_count=0,
+            billing_blocked=False,
+        ),
+        commands=(),
+        failure_reason=reason,
+    )
 
 
 def _aware_now(value: datetime) -> datetime:

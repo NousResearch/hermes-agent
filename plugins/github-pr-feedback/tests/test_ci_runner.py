@@ -379,7 +379,7 @@ pytest_args = []
 
 
 @pytest.mark.parametrize("failure", ["dirty_start", "wrong_head", "head_race", "actions_race"])
-def test_local_ci_runner_fails_closed_without_a_receipt_on_invalid_or_raced_state(
+def test_local_ci_runner_records_failed_receipt_on_invalid_or_raced_state(
     tmp_path: Path, failure: str
 ) -> None:
     worktree = tmp_path / "worktree"
@@ -396,14 +396,21 @@ def test_local_ci_runner_fails_closed_without_a_receipt_on_invalid_or_raced_stat
         github.checks[1] = CheckState(actions_enabled=True, all_green=True, check_count=1)
     runner, ledger, _commands = build_runner(tmp_path, github=github, inspector=inspector)
 
-    with pytest.raises(CIValidationError):
-        runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+    receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
 
+    assert receipt.status == "failed"
+    assert receipt.commands == ()
+    assert receipt.failure_reason
+    assert ledger.latest_ci_receipt_for_head(
+        "acme/widgets",
+        17,
+        HEAD_SHA,
+    ) == receipt
     assert ledger.latest_passing_ci_receipt(
         "acme/widgets",
         17,
         HEAD_SHA,
-        manifest_digest="0" * 64,
+        manifest_digest=receipt.manifest_digest,
         not_before=NOW - timedelta(days=1),
     ) is None
     ledger.close()

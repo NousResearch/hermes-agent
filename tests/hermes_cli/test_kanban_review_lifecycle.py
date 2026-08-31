@@ -462,6 +462,27 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         assert ready_id not in spawned_ids
         assert guarded.get(ready_id) == "active_pr"
 
+        # An operator can deliberately request another implementation pass
+        # after reviewing the PR.  That explicit block -> unblock transition
+        # must override the older PR guard; otherwise the task remains ready
+        # forever while every dispatcher tick reports ``active_pr``.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = created_at - 5 "
+                "WHERE task_id = ?",
+                (ready_id,),
+            )
+        assert kb.block_task(
+            conn,
+            ready_id,
+            reason="operator requested a fresh verifier pass",
+        )
+        assert kb.unblock_task(conn, ready_id)
+        assert kb.check_respawn_guard(conn, ready_id) is None
+
+        rerun = kb.dispatch_once(conn, dry_run=True)
+        assert ready_id in [s[0] for s in rerun.spawned]
+
         # Rate-limit cooldown still defers the review lane.
         _now = int(__import__("time").time())
         with kb.write_txn(conn):

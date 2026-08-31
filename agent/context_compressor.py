@@ -2535,6 +2535,7 @@ class ContextCompressor(ContextEngine):
                 api_key=self.api_key,
                 config_context_length=self._config_context_length,
                 provider=self.provider,
+                custom_providers=self._custom_providers,
             )
             # Small-context threshold floor: models under 512K trigger at
             # >=75% so compaction doesn't fire with half the window still
@@ -3477,6 +3478,7 @@ class ContextCompressor(ContextEngine):
         api_key: str = "",
         config_context_length: int | None = None,
         provider: str = "",
+        custom_providers: list | None = None,
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
@@ -3492,6 +3494,7 @@ class ContextCompressor(ContextEngine):
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
+        self._custom_providers = custom_providers
         self.api_mode = api_mode
         # Lean tail mode (#compaction-v2): "lean" = small clamped recency
         # tail + verbatim-user-message summary section + recovery pointers;

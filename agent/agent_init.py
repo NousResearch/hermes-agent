@@ -2861,6 +2861,7 @@ def init_agent(
             api_key=getattr(agent, "api_key", ""),
             config_context_length=_effective_context_length,
             provider=agent.provider,
+            custom_providers=_custom_providers,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=_compressor_max_tokens,

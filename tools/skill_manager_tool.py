@@ -215,12 +215,44 @@ def _iter_skill_dirs(root: Path):
             yield skill_md.parent
 
 
+def _read_frontmatter_name(skill_md: Path) -> Optional[str]:
+    """Read a SKILL.md's frontmatter ``name:`` — the name skills_list displays.
+
+    Fail-quiet on unreadable files: the fallback lookup in ``_find_skill``
+    must never break the directory-name match, and an unreadable SKILL.md
+    simply has no second name to offer. The value is truncated with the
+    same ``MAX_NAME_LENGTH`` budget skills_list applies when displaying it.
+    """
+    try:
+        from agent.skill_utils import parse_frontmatter
+
+        content = skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000]
+        frontmatter, _ = parse_frontmatter(content)
+    except OSError:
+        logger.debug("frontmatter read failed for %s", skill_md, exc_info=True)
+        return None
+    name = frontmatter.get("name")
+    if isinstance(name, str):
+        return name[:MAX_NAME_LENGTH]
+    return None
+
+
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """Find a skill (local skills dir, then skills.external_dirs) -> ``{"path": Path}`` | None.
 
     Accepts the bare dir name (``axolotl``; matches category-nested skills too) and the
     categorized relative path (``mlops/axolotl``) — the two forms skill_view resolves. The
-    categorized form matches RELATIVE to the local root only (relative_to raises for external dirs)."""
+    categorized form matches RELATIVE to the local root only (relative_to raises for external dirs).
+
+    As a last resort the frontmatter ``name:`` is matched too, so the name ``skills list``
+    and the dashboard display (frontmatter name wins over the directory name there)
+    resolves everywhere instead of failing with a misleading "not found in active
+    profile" error when the two names diverge. Directory-name matches keep priority —
+    a frontmatter match is only considered after the whole scan found no
+    directory/categorized match, so one skill's frontmatter cannot shadow another
+    skill's directory. A display name held by two or more distinct skills resolves to
+    nothing: like skill_view's same-tier collision refusal, refusing to guess beats
+    silently mutating the wrong skill; the directory name still resolves."""
     from agent.skill_utils import get_all_skills_dirs
     local_root = None
     if "/" in name or "\\" in name:
@@ -231,6 +263,8 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
                 "skills dir resolve failed; categorized lookups fall back to the unresolved path",
                 exc_info=True)
             local_root = _skills_dir()
+    display_matches: List[Path] = []
+    seen_display: set = set()
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
@@ -242,6 +276,20 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
                 if (resolved.is_relative_to(local_root)
                         and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
                     return {"path": skill_dir}
+            if _read_frontmatter_name(skill_dir / "SKILL.md") == name:
+                key = skill_dir / "SKILL.md"
+                with suppress(Exception):
+                    key = key.resolve()
+                if key not in seen_display:
+                    seen_display.add(key)
+                    display_matches.append(skill_dir)
+    if len(display_matches) == 1:
+        return {"path": display_matches[0]}
+    if display_matches:
+        logger.warning(
+            "Skill display name '%s' is ambiguous (%d skills claim it: %s) — refusing to guess; "
+            "resolve it by directory name instead",
+            name, len(display_matches), "; ".join(str(p) for p in display_matches))
     return None
 
 

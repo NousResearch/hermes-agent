@@ -2242,12 +2242,22 @@ def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
 
 
 def _cache_catalog(
-    cache_key: str, result: dict[str, dict[str, Any]]
+    cache_key: str,
+    result: dict[str, dict[str, Any]],
+    ttl_seconds: Optional[float] = None,
 ) -> dict[str, dict[str, Any]]:
-    """Cache a catalog result, giving an empty one an expiry."""
+    """Cache a catalog result, giving an empty one an expiry.
+
+    *ttl_seconds* expires a non-empty result too. Only a catalog whose contents
+    depend on server-side state the client cannot observe needs it — an org's
+    model policy can change while a long-lived process holds the entry.
+    """
     _pricing_cache[cache_key] = result
     if result:
-        _pricing_cache_retry_after.pop(cache_key, None)
+        if ttl_seconds:
+            _pricing_cache_retry_after[cache_key] = time.monotonic() + ttl_seconds
+        else:
+            _pricing_cache_retry_after.pop(cache_key, None)
     else:
         _pricing_cache_retry_after[cache_key] = (
             time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
@@ -2424,6 +2434,7 @@ def fetch_models_with_pricing(
     *,
     force_refresh: bool = False,
     include_sale_original: bool = False,
+    cache_ttl_seconds: Optional[float] = None,
 ) -> dict[str, dict[str, Any]]:
     """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion, ...}}``.
 
@@ -2497,7 +2508,7 @@ def fetch_models_with_pricing(
                         entry["original"] = orig_entry
             result[mid] = entry
 
-    return _cache_catalog(cache_key, result)
+    return _cache_catalog(cache_key, result, cache_ttl_seconds)
 
 
 def fetch_ai_gateway_pricing(
@@ -2638,6 +2649,7 @@ def nous_policy_allowed_ids(*, force_refresh: bool = False) -> Optional[set[str]
         base_url=base_url,
         force_refresh=force_refresh,
         include_sale_original=True,
+        cache_ttl_seconds=_NOUS_CATALOG_TTL_SECONDS,
     )
     return set(pricing) or None
 
@@ -2645,6 +2657,13 @@ def nous_policy_allowed_ids(*, force_refresh: bool = False) -> Optional[set[str]
 # Past this size an allowed set reads as a whole catalog rather than an
 # allowlist, and is not worth showing in place of an empty picker.
 _NOUS_POLICY_APPEND_MAX = 64
+
+# How long a Nous catalog stays trusted. Its contents depend on the org's
+# policy, which an admin can change at any time and the client cannot observe,
+# so a long-lived process must re-ask instead of holding the first answer for
+# its whole life. Other providers' catalogs carry no such state and keep the
+# default no-expiry caching.
+_NOUS_CATALOG_TTL_SECONDS = 300.0
 
 
 def restrict_to_nous_policy(
@@ -2705,6 +2724,7 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
                 force_refresh=force_refresh,
                 # Sale chrome (pricing.original) is Nous Portal-only.
                 include_sale_original=True,
+                cache_ttl_seconds=_NOUS_CATALOG_TTL_SECONDS,
             )
     return {}
 

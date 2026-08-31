@@ -18497,38 +18497,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if self._is_session_running(_quick_key):
             try:
                 _reap_store = getattr(self, "session_store", None)
-                # Guard against MagicMock in tests: only run on real SessionStore
-                # (which has a dict _entries and callable _is_session_ended_in_db).
-                _reap_entries = getattr(_reap_store, "_entries", None) if _reap_store else None
-                if not isinstance(_reap_entries, dict):
-                    raise TypeError("not a real SessionStore")
-                _reap_lock = getattr(_reap_store, "_lock", None)
+                # Use the public, lock-held accessors: peek_session_id resolves
+                # key -> session_id under the store lock, and returns a
+                # non-str on stubbed stores in bare test runners — both the
+                # isinstance() gate and the ``is True`` gate below keep this
+                # guard inert unless a real SessionStore answers.
+                _reap_peek = getattr(_reap_store, "peek_session_id", None)
                 _is_ended = getattr(_reap_store, "_is_session_ended_in_db", None)
-                if not callable(_is_ended):
-                    raise TypeError("missing _is_session_ended_in_db")
-                _reap_sid: str | None = None
-                if _reap_lock is not None:
-                    with _reap_lock:
-                        _reap_e = _reap_entries.get(_quick_key)
-                        _reap_sid = getattr(_reap_e, "session_id", None) if _reap_e else None
-                else:
-                    _reap_e = _reap_entries.get(_quick_key)
-                    _reap_sid = getattr(_reap_e, "session_id", None) if _reap_e else None
-                if isinstance(_reap_sid, str) and _reap_sid:
-                    _ended = _is_ended(_reap_sid)
-                    if _ended is True:
-                        logger.warning(
-                            "Evicting stale _running_agents entry for %s — "
-                            "durable session %s is ended (reaped) in state.db; "
-                            "healing routing on next message (#99106)",
-                            _quick_key,
-                            _reap_sid,
-                        )
-                        self._invalidate_session_run_generation(
-                            _quick_key,
-                            reason="reaped_session_eviction",
-                        )
-                        self._release_running_agent_state(_quick_key)
+                _reap_sid = _reap_peek(_quick_key) if callable(_reap_peek) else None
+                if (
+                    isinstance(_reap_sid, str)
+                    and _reap_sid
+                    and callable(_is_ended)
+                    and _is_ended(_reap_sid) is True
+                ):
+                    logger.warning(
+                        "Evicting stale _running_agents entry for %s — "
+                        "durable session %s is ended (reaped) in state.db; "
+                        "healing routing on next message (#99106)",
+                        _quick_key,
+                        _reap_sid,
+                    )
+                    self._invalidate_session_run_generation(
+                        _quick_key,
+                        reason="reaped_session_eviction",
+                    )
+                    self._release_running_agent_state(_quick_key)
             except Exception:
                 logger.debug("reaped-session staleness check failed", exc_info=True)
 

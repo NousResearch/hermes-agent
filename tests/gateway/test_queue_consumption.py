@@ -520,12 +520,14 @@ async def test_durable_busy_fifo_consumes_each_in_band_event(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_durable_busy_steer_is_queued_until_it_has_its_own_processing_lifecycle(
+async def test_durable_busy_steer_is_retained_until_active_turn_completes(
+    tmp_path,
     monkeypatch,
 ):
-    """A durable event must not be detached by an unreceipted steer accept."""
+    """A durable plain-text follow-up steers and stays leased until turn success."""
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
 
@@ -540,13 +542,18 @@ async def test_durable_busy_steer_is_queued_until_it_has_its_own_processing_life
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._queued_events = {}
     runner._draining = False
-    adapter = _StubAdapter()
+    adapter = object.__new__(TelegramAdapter)
+    BasePlatformAdapter.__init__(
+        adapter,
+        PlatformConfig(enabled=True, token="111:test-token", extra={}),
+        Platform.TELEGRAM,
+    )
     runner.adapters = {Platform.TELEGRAM: adapter}
 
-    session_key = "agent:main:telegram:dm:durable-steer-fence"
+    session_key = "agent:main:telegram:dm:durable-steer"
     source = SessionSource(
         platform=Platform.TELEGRAM,
-        chat_id="durable-steer-fence",
+        chat_id="durable-steer",
         chat_type="dm",
         user_id="7",
         user_name="tester",
@@ -556,7 +563,35 @@ async def test_durable_busy_steer_is_queued_until_it_has_its_own_processing_life
         conversation=SimpleNamespace(queued_events=[]),
         turn=SimpleNamespace(agent=agent, busy_ack_ts=0, started_ts=0),
     )
+    owner_release = asyncio.Event()
+
+    async def active_turn_owner():
+        await owner_release.wait()
+        owner = asyncio.current_task()
+        assert owner is not None
+        setattr(owner, "_telegram_processing_outcome", ProcessingOutcome.SUCCESS)
+
+    owner_task = asyncio.create_task(active_turn_owner())
     adapter._active_sessions = {session_key: asyncio.Event()}
+    adapter._session_tasks = {session_key: owner_task}
+
+    store = TelegramInboundStore(tmp_path / "telegram_inbound.db")
+    queue = DurableTelegramUpdateQueue(
+        store=store,
+        bot_account_id=111,
+        classifier=lambda item: CaptureDecision(
+            actionable=True,
+            update_kind="message",
+            chat_id="7",
+            message_id=str(item["update_id"]),
+            session_key=session_key,
+            payload=item,
+        ),
+        lease_owner="gateway:durable-steer",
+        active_limit=1,
+    )
+    adapter._inbound_store = store
+    adapter._inbound_queue = queue
 
     runner._adapter_for_source = lambda _source: adapter
     runner._peek_session_state = lambda _session_key: state
@@ -570,26 +605,57 @@ async def test_durable_busy_steer_is_queued_until_it_has_its_own_processing_life
         return False
 
     runner._session_has_compression_in_flight = no_compression
+    adapter._message_handler = runner._handle_message
+    adapter._busy_session_handler = runner._handle_active_session_busy_message
+
+    update_id = 9004
+    payload = {
+        "update_id": update_id,
+        "message": {"message_id": update_id, "chat": {"id": 7}},
+    }
+    await queue.put(payload)
+    await queue.get()
+    claim = queue.claim_for_update(update_id)
+    assert claim is not None
+    queue.task_done()
 
     event = MessageEvent(
         text="durable correction",
         message_type=MessageType.TEXT,
         source=source,
+        raw_message=claim,
         message_id="80",
-        platform_update_id=9004,
+        platform_update_id=update_id,
         metadata={
             "telegram_inbound_claimed": True,
-            "telegram_durable_update_ids": [9004],
+            "telegram_durable_update_ids": [update_id],
             "gateway_session_key": session_key,
         },
     )
 
-    handled = await runner._handle_active_session_busy_message(event, session_key)
+    try:
+        await adapter._dispatch_and_complete_durable_event(event)
 
-    assert handled is True
-    assert agent.steer_calls == []
-    assert runner._queue_depth(session_key, adapter=adapter) == 1
-    assert adapter._pending_messages[session_key] is event
+        assert agent.steer_calls == ["durable correction"]
+        assert runner._queue_depth(session_key, adapter=adapter) == 0
+        row = store.get(claim.event_id)
+        assert row is not None
+        assert row.work_state == "leased"
+        assert row.consumed_at is None
+
+        owner_release.set()
+        await asyncio.wait_for(owner_task, timeout=1.0)
+        await asyncio.wait_for(queue._wait_for_lifecycle_tasks(), timeout=1.0)
+    finally:
+        if not owner_task.done():
+            owner_release.set()
+            await owner_task
+        await queue.close()
+
+    row = store.get(claim.event_id)
+    assert row is not None
+    assert row.work_state == "consumed"
+    assert row.consumed_at is not None
 
 
 @pytest.mark.asyncio

@@ -3541,7 +3541,10 @@ class TelegramAdapter(BasePlatformAdapter):
             fifo_admitted = bool(
                 getattr(event, "_gateway_busy_fifo_admitted", False)
             )
-            if fifo_admitted or self._durable_event_in_gateway_fifo(
+            steer_admitted = bool(
+                getattr(event, "_gateway_busy_steer_admitted", False)
+            )
+            if fifo_admitted or steer_admitted or self._durable_event_in_gateway_fifo(
                 event, session_key
             ):
                 self._schedule_durable_fifo_completion(event, session_key)

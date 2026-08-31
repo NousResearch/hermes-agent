@@ -82,6 +82,57 @@ class TestClarifyPrimitive:
         assert pending is not None
         assert pending.clarify_id == "id3b"
 
+    def test_rejected_prose_on_native_choice_unblocks_waiter(self):
+        """Prose flung at a native multi-choice clarify ((awaiting_text=False))
+        must cancel the entry (CANCEL_SENTINEL) so the blocked agent thread
+        returns promptly instead of parking for the full timeout (#84608)."""
+        from tools import clarify_gateway as cm
+
+        cm.register("rp1", "sk-rp", "Pick one", ["A", "B"])
+        # awaiting_text is False for a native choice prompt.
+        entry = cm.get_pending_for_session("sk-rp", include_choice_prompts=True)
+        assert entry is not None and entry.awaiting_text is False
+
+        def waiter():
+            return cm.wait_for_response("rp1", timeout=10.0)
+
+        with ThreadPoolExecutor(1) as pool:
+            fut = pool.submit(waiter)
+            time.sleep(0.05)
+            result = cm.attempt_text_response_for_session("sk-rp", "omg")
+            assert result == cm.TEXT_REJECTED_PROSE
+            # The cancel sentinel unblocks the waiter with a falsy response.
+            assert fut.result(timeout=10.0) == cm.CANCEL_SENTINEL
+        # Entry was consumed (resolved/cancelled), no longer pending.
+        assert cm.get_pending_for_session("sk-rp", include_choice_prompts=True) is None
+
+    def test_prose_on_text_prompt_is_accepted(self):
+        """A prose reply to a text-prompt clarify (awaiting_text=True) is the
+        accepted answer — the 'Other'/open-ended path accepts custom text, so
+        it resolves the waiter rather than being treated as a rejected
+        selection (the branch behaviour the fix targets)."""
+        from tools import clarify_gateway as cm
+
+        cm.register("rp2", "sk-rp2", "Q?", ["A", "B"])
+        cm.mark_awaiting_text("rp2")
+        entry = cm.get_pending_for_session("sk-rp2", include_choice_prompts=True)
+        assert entry is not None and entry.awaiting_text is True
+
+        result = cm.attempt_text_response_for_session("sk-rp2", "free prose")
+        assert result == cm.TEXT_RESOLVED
+        # Entry resolved: the waiter sees the prose. It remains in the
+        # registry (first-writer-wins) but the event is set and the response
+        # is the prose, so a re-query that filters resolved entries sees it
+        # consumed rather than pending.
+        with cm._lock:
+            assert cm._entries["rp2"].response == "free prose"
+            assert cm._entries["rp2"].event.is_set()
+        pending = cm.get_pending_for_session("sk-rp2", include_choice_prompts=True)
+        # The entry is still resolvable through the session index but is
+        # resolved; a waiter/consumer sees the prose as its answer.
+        assert pending is not None
+        assert pending.response == "free prose"
+
 
     def test_clear_session_cancels_pending_entries(self):
         """clear_session unblocks blocked threads with empty response."""

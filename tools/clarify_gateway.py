@@ -128,6 +128,15 @@ def _split_tokens(text: str) -> Optional[List[str]]:
     parts = text.split()
     return parts if len(parts) > 1 and all(p.isdigit() for p in parts) else None
 
+# Sentinel passed to :func:`resolve_gateway_clarify` when a clarify is
+# cancelled without a real answer (cleared session, or prose flung against a
+# native multiple-choice prompt that the caller then continues as a normal
+# turn). The waiting agent observes this as "no response". Deliberately the
+# empty string, matching ``clear_session`` — but named so an empty *user*
+# response (a genuine blank) is distinguishable in intent from a cancel at
+# call sites that want to be explicit.
+CANCEL_SENTINEL = ""
+
 
 def _is_int(text: str) -> bool:
     try:
@@ -223,7 +232,7 @@ def attempt_text_response_for_session(session_key: str, response: str) -> str:
         # (#84608). The gateway also releases the wait explicitly on
         # TEXT_REJECTED_PROSE; resolving an already-set entry is a no-op.
         if not entry.awaiting_text:
-            resolve_gateway_clarify(entry.clarify_id, "")
+            resolve_gateway_clarify(entry.clarify_id, CANCEL_SENTINEL)
         return TEXT_REJECTED_PROSE
     if resolve_gateway_clarify(entry.clarify_id, coerced):
         return TEXT_RESOLVED
@@ -231,7 +240,21 @@ def attempt_text_response_for_session(session_key: str, response: str) -> str:
 
 
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:
-    """True only when the typed reply was accepted and the waiter unblocked."""
+    """Resolve the oldest pending clarify in ``session_key`` from typed text.
+
+    Returns True only when the reply was accepted and the waiter unblocked.
+    Rejected prose, rejected selections, and missing prompts all return False;
+    use :func:`attempt_text_response_for_session` when the caller must
+    distinguish those cases (gateway deadlock vs multi-select retry).
+
+    Note the return-value contract is intentionally coarse: ``False`` covers
+    both "rejected, entry still pending" and "entry was resolved/cancelled
+    with :data:`CANCEL_SENTINEL` (and is therefore gone from the pending
+    index)".  A caller that loops over the pending index will observe the
+    consumed-entry case correctly (the entry is simply no longer there on its
+    next check); callers that need the distinction should use
+    :func:`attempt_text_response_for_session`.
+    """
     return attempt_text_response_for_session(session_key, response) == TEXT_RESOLVED
 
 
@@ -263,7 +286,16 @@ def clear_session(session_key: str) -> int:
         for entry in (_entries.pop(cid, None) for cid in list(_session_index.pop(session_key, []) or [])):
             if entry is None or entry.event.is_set():
                 continue
-            entry.response = ""
+            # Entry is removed from the global registry regardless of its
+            # state — a cleared session must not be resurrected by late
+            # callbacks — but a resolved entry keeps its real response.
+            if entry.event.is_set():
+                continue
+            # Empty string sentinel — agent code can distinguish from a real
+            # response by inspecting the wait_for_response return value
+            # alongside its own timeout deadline.  Most callers just treat any
+            # falsy result as "user did not respond".
+            entry.response = CANCEL_SENTINEL
             entry.event.set()
             cancelled += 1
     return cancelled

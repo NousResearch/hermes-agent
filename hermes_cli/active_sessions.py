@@ -540,6 +540,17 @@ def try_acquire_active_session(
     lease_id = uuid.uuid4().hex
     key = str(session_id or "")
 
+    # A session with no stored id yet cannot collide with another writer, and
+    # the strict registry schema (rightly) refuses entries with empty session
+    # ids. Nothing to fence, nothing to record: hand back a no-op lease.
+    if not key and not track_liveness:
+        return ActiveSessionLease(
+            lease_id=lease_id,
+            session_id=key,
+            surface=str(surface),
+            enabled=False,
+        ), None
+
     entry = _lease_entry(
         lease_id=lease_id,
         session_id=key,

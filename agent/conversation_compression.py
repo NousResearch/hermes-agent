@@ -4462,6 +4462,21 @@ def compress_context(
                 # away regardless of whether the id rotates).
                 agent.commit_memory_session(messages)
 
+                # Pop the #86366 carried-forward-tail tags BEFORE the size
+                # estimate and BEFORE any non-in-place path can see them:
+                # the private `_compaction_tail` key must not inflate the
+                # anti-growth token estimate (it tipped break-even
+                # transcripts into a false "would grow" refusal) and must
+                # not ride rotation handoffs into the provider payload.
+                # Remember the tagged dicts by identity — the salvage pass
+                # below may swap `compressed` for a subset, and tail_count
+                # must describe the FINAL committed list.
+                _tail_tagged_ids = {
+                    id(m)
+                    for m in compressed
+                    if isinstance(m, dict) and m.pop("_compaction_tail", None)
+                }
+
                 # Anti-growth guard at the COMMIT SITE: never persist a
                 # compression that makes the transcript larger (observed:
                 # 379K -> 687K when the generated summary plus retained
@@ -4594,14 +4609,14 @@ def compress_context(
                         PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY,
                     )
 
-                    # Tail rows carry the _compaction_tail tag from compress()
-                    # (#86366): their originals must be archived as
+                    # Tail rows carried the _compaction_tail tag from
+                    # compress() (#86366; popped above, before the size
+                    # estimate): their originals must be archived as
                     # superseded duplicates (rewind-style), not compacted=1.
+                    # Count against the FINAL list — salvage may have
+                    # dropped rows.
                     _tail_count = sum(
-                        1
-                        for m in reversed(compressed)
-                        if isinstance(m, dict)
-                        and m.pop("_compaction_tail", None)
+                        1 for m in compressed if id(m) in _tail_tagged_ids
                     )
                     agent._session_db.archive_and_compact(
                         agent.session_id,

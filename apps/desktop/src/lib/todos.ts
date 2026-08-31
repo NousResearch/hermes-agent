@@ -37,6 +37,32 @@ function parseArray(value: unknown[]): TodoItem[] {
   })
 }
 
+function parseAuthoritativeArray(value: unknown[]): TodoItem[] | null {
+  const todos: TodoItem[] = []
+
+  for (const item of value) {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== 'string' ||
+      typeof item.content !== 'string' ||
+      !isStatus(item.status)
+    ) {
+      return null
+    }
+
+    const id = item.id.trim()
+    const content = item.content.trim()
+
+    if (!id || !content) {
+      return null
+    }
+
+    todos.push({ content, id, status: item.status })
+  }
+
+  return todos
+}
+
 function parse(value: unknown, depth: number): null | TodoItem[] {
   if (depth > 2) {
     return null
@@ -67,7 +93,7 @@ const asInt = (value: unknown): null | number => {
   // Strict: the gateway's JSON-RPC layer always sends real numbers, and a
   // sloppy string coercion would let a malformed payload mint authority.
   // Booleans are numbers in JS — reject explicitly.
-  if (typeof value === 'number' && Number.isInteger(value) && !Number.isNaN(value)) {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
     return value
   }
 
@@ -90,8 +116,14 @@ export const parseTodoSnapshot = (value: unknown): null | TodoSnapshot => {
   }
 
   // {todos: <snapshot>} wrapper (mirror of parseTodos' peek).
-  if (candidate && typeof candidate === 'object' && !Array.isArray(candidate) && Object.hasOwn(candidate as object, 'todos')) {
+  if (
+    candidate &&
+    typeof candidate === 'object' &&
+    !Array.isArray(candidate) &&
+    Object.hasOwn(candidate as object, 'todos')
+  ) {
     const inner = (candidate as Record<string, unknown>).todos
+
     if (inner && typeof inner === 'object' && !Array.isArray(inner) && Object.hasOwn(inner as object, 'todos')) {
       candidate = inner
     }
@@ -104,17 +136,22 @@ export const parseTodoSnapshot = (value: unknown): null | TodoSnapshot => {
   const record = candidate as Record<string, unknown>
   const revision = asInt(record.revision)
   const generation = asInt(record.generation)
+  const sessionId = String(record.session_id ?? '').trim()
 
-  if (revision === null || generation === null || !Array.isArray(record.todos)) {
+  if (revision === null || generation === null || !sessionId || !Array.isArray(record.todos)) {
     return null
   }
 
-  const todos = parseArray(record.todos)
+  const todos = parseAuthoritativeArray(record.todos)
+
+  if (!todos) {
+    return null
+  }
 
   return {
     generation,
     revision,
-    session_id: String(record.session_id ?? ''),
+    session_id: sessionId,
     todos
   }
 }

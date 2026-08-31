@@ -1,9 +1,11 @@
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { todoSnapshotFromGatewayPayload } from '@/lib/todo-events'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
+import { setSessionTodoSnapshot } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
@@ -16,6 +18,18 @@ import type { GatewayEventContext } from './types'
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
   const { flushQueuedDeltas, nativeSubagentSessionsRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
+
+  if (event.type === 'todo.updated') {
+    if (sessionId) {
+      const snapshot = todoSnapshotFromGatewayPayload(payload, sessionId)
+
+      if (snapshot) {
+        setSessionTodoSnapshot(snapshot)
+      }
+    }
+
+    return true
+  }
 
   if (event.type === 'tool.generating') {
     // Announced while the model is still emitting the call's JSON, so it

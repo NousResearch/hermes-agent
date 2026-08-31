@@ -23,12 +23,13 @@ import {
   generatedImageEchoSources,
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
+import { todoSnapshotFromGatewayPayload } from '@/lib/todo-events'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
-import { setSessionTodos } from '@/store/todos'
+import { setSessionTodos, setSessionTodoSnapshot } from '@/store/todos'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -462,9 +463,12 @@ export function useMessageStream({
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
       if (payload?.name === 'todo') {
+        const snapshot = todoSnapshotFromGatewayPayload(payload, sessionId)
         const todos = parseTodos(payload.todos) ?? parseTodos(payload.result) ?? parseTodos(payload.args)
 
-        if (todos) {
+        if (snapshot) {
+          setSessionTodoSnapshot(snapshot)
+        } else if (todos) {
           setSessionTodos(sessionId, todos)
         }
       }

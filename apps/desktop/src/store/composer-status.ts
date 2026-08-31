@@ -35,6 +35,8 @@ export interface ComposerStatusItem {
   title: string
   /** todo: the full four-state status driving the row's checkmark glyph. */
   todoStatus?: TodoStatus
+  /** todo: exact backend id used by human status RPCs (render id stays prefixed). */
+  todoItemId?: string
   type: StatusItemType
 }
 
@@ -150,6 +152,7 @@ const todoToItem = (t: TodoItem): ComposerStatusItem => ({
   id: `todo:${t.id}`,
   state: t.status === 'in_progress' ? 'running' : 'done',
   title: t.content,
+  todoItemId: t.id,
   todoStatus: t.status,
   type: 'todo'
 })
@@ -182,6 +185,7 @@ const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
   a.exitCode === b.exitCode &&
   a.currentTool === b.currentTool &&
   a.goalStatus === b.goalStatus &&
+  a.todoItemId === b.todoItemId &&
   a.todoStatus === b.todoStatus &&
   a.sessionId === b.sessionId
 

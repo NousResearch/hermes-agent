@@ -52,6 +52,12 @@ describe('parseTodoSnapshot', () => {
     expect(parsed!.generation).toBe(0)
   })
 
+  it('rejects negative versions and an empty session id', () => {
+    expect(parseTodoSnapshot({ ...snap(), generation: -1 })).toBeNull()
+    expect(parseTodoSnapshot({ ...snap(), revision: -1 })).toBeNull()
+    expect(parseTodoSnapshot({ ...snap(), session_id: '   ' })).toBeNull()
+  })
+
   it('is null when todos is missing or not an array', () => {
     expect(parseTodoSnapshot({ ...snap(), todos: undefined })).toBeNull()
     expect(parseTodoSnapshot({ ...snap(), todos: 'nope' })).toBeNull()
@@ -68,7 +74,7 @@ describe('parseTodoSnapshot', () => {
     expect(parseTodoSnapshot({ ...snap(), generation: '3', revision: '2' })).toBeNull()
   })
 
-  it('filters invalid items but keeps the snapshot parseable', () => {
+  it('rejects an authoritative snapshot when any item is malformed', () => {
     const parsed = parseTodoSnapshot({
       ...snap(),
       todos: [
@@ -80,7 +86,6 @@ describe('parseTodoSnapshot', () => {
       ]
     })
 
-    expect(parsed).not.toBeNull()
-    expect(parsed!.todos).toEqual([{ content: 'ok', id: 'a', status: 'completed' }])
+    expect(parsed).toBeNull()
   })
 })

@@ -48,3 +48,39 @@ describe('ConfirmDialog secondary action', () => {
     expect(onSecondary).not.toHaveBeenCalled()
   })
 })
+
+describe('ConfirmDialog async announcements', () => {
+  it('announces a rejected confirmation as an alert', async () => {
+    render(
+      <ConfirmDialog
+        onClose={vi.fn()}
+        onConfirm={() => Promise.reject(new Error('Task changed'))}
+        open
+        title="Update task?"
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Task changed')
+  })
+
+  it('announces pending and completed labels through the confirm action', async () => {
+    render(
+      <ConfirmDialog
+        busyLabel="Updating task"
+        doneLabel="Task updated"
+        onClose={vi.fn()}
+        onConfirm={() => Promise.resolve()}
+        open
+        title="Update task?"
+      />
+    )
+
+    const confirm = await screen.findByRole('button', { name: 'Confirm' })
+    expect(confirm.getAttribute('aria-live')).toBe('polite')
+    fireEvent.click(confirm)
+
+    await waitFor(() => expect(confirm.textContent).toContain('Task updated'))
+  })
+})

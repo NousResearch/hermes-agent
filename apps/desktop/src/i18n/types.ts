@@ -2127,6 +2127,30 @@ export interface Translations {
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
+    markDone: string
+    markDoneAria: (task: string) => string
+    reopen: string
+    reopenAria: (task: string) => string
+    retryTaskSync: string
+    syncingTask: string
+    markDoneTitle: string
+    markDoneDescription: string
+    markingDone: string
+    markedDone: string
+    reopenTitle: string
+    reopenDescription: string
+    reopening: string
+    reopened: string
+    taskChanged: string
+    taskMissing: string
+    taskSessionMissing: string
+    taskSyncFailed: string
+    taskUpdateFailed: string
+    taskUpdatesUnavailable: string
+    statusPending: string
+    statusInProgress: string
+    statusCompleted: string
+    statusCancelled: string
     running: string
     stop: string
     dismiss: string

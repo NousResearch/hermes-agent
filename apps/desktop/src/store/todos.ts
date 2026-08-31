@@ -1,5 +1,4 @@
-import { atom, computed } from 'nanostores'
-import { batch } from 'nanostores'
+import { atom, batch, computed } from 'nanostores'
 
 import { keyedTimeouts } from '@/lib/keyed-timeouts'
 import { stableRecord } from '@/lib/stable-array'
@@ -21,8 +20,8 @@ import { $sessionStates } from './session-states'
  */
 export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 
-/** Revision + generation authority per session, published in the same batch
- *  as the display list. A session in here has human mutation authority
+/** Full authoritative snapshot per session, published in the same batch as
+ *  the display list. A session in here has human mutation authority
  *  (Mark done/Reopen controls enabled); a session only in $todosBySession is
  *  display-only (controls disabled, "Syncing task status"). */
 export interface TodoMutationAuthority {
@@ -30,11 +29,21 @@ export interface TodoMutationAuthority {
   revision: number
 }
 
-export const $sessionTodoSnapshots = atom<Record<string, TodoMutationAuthority | null>>({})
+export const $sessionTodoSnapshots = atom<Record<string, TodoSnapshot | null>>({})
 
 /** Mutation authority for a session — null means display-only. */
-export const todoSnapshotAuthority = (sid: string): TodoMutationAuthority | null =>
-  $sessionTodoSnapshots.get()[sid] ?? null
+export const todoSnapshotAuthority = (sid: string): TodoMutationAuthority | null => {
+  const snapshot = $sessionTodoSnapshots.get()[sid]
+
+  return snapshot ? { generation: snapshot.generation, revision: snapshot.revision } : null
+}
+
+/** Return an isolated copy of the authoritative snapshot for a mutation. */
+export function currentSessionTodoSnapshot(sid: string): TodoSnapshot | null {
+  const snapshot = $sessionTodoSnapshots.get()[sid]
+
+  return snapshot ? { ...snapshot, todos: snapshot.todos.map(todo => ({ ...todo })) } : null
+}
 
 export const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
@@ -93,8 +102,8 @@ const publishTodos = (sid: string, todos: TodoItem[]) => {
   $todosBySession.set({ ...$todosBySession.get(), [sid]: todos })
 }
 
-const publishAuthority = (sid: string, authority: TodoMutationAuthority | null) => {
-  $sessionTodoSnapshots.set({ ...$sessionTodoSnapshots.get(), [sid]: authority })
+const publishSnapshot = (sid: string, snapshot: TodoSnapshot | null) => {
+  $sessionTodoSnapshots.set({ ...$sessionTodoSnapshots.get(), [sid]: snapshot })
 }
 
 export function setSessionTodos(sid: string, todos: TodoItem[]) {
@@ -110,7 +119,7 @@ export function setSessionTodos(sid: string, todos: TodoItem[]) {
   // see). batch() keeps subscribers from observing authority without list.
   batch(() => {
     publishTodos(sid, todos)
-    publishAuthority(sid, null)
+    publishSnapshot(sid, null)
   })
 
   if (!todoListActive(todos)) {
@@ -132,16 +141,55 @@ export function setSessionTodoSnapshot(snapshot: TodoSnapshot) {
   const sid = snapshot.session_id
   const current = $sessionTodoSnapshots.get()[sid]
 
-  if (current && snapshot.generation < current.generation) {
-    return
+  if (current) {
+    if (snapshot.generation < current.generation) {
+      return
+    }
+
+    if (snapshot.generation === current.generation) {
+      // Every durable mutation advances generation. Equal-generation input
+      // must be an exact replay of the same authoritative snapshot; accepting
+      // divergent todos here would let a late response rewrite current truth.
+      const sameTodos =
+        snapshot.todos.length === current.todos.length &&
+        snapshot.todos.every((todo, index) => {
+          const previous = current.todos[index]
+
+          return previous?.id === todo.id && previous.content === todo.content && previous.status === todo.status
+        })
+
+      if (snapshot.revision !== current.revision || !sameTodos) {
+        return
+      }
+    }
   }
 
   clearTimers.cancel(sid)
 
+  const authoritativeTodos = snapshot.todos.map(todo => ({ ...todo }))
+
   batch(() => {
-    publishTodos(sid, snapshot.todos)
-    publishAuthority(sid, { generation: snapshot.generation, revision: snapshot.revision })
+    publishTodos(sid, authoritativeTodos.map(todo => ({ ...todo })))
+    publishSnapshot(sid, { ...snapshot, todos: authoritativeTodos })
   })
+}
+
+/** Optimistically update only the display list. Authority and timers stay
+ * intact until a full RPC/event snapshot reconciles the mutation. */
+export function applyOptimisticTodoStatus(sid: string, itemId: string, status: TodoItem['status']): boolean {
+  const todos = $todosBySession.get()[sid]
+
+  if (!todos || !todos.some(todo => todo.id === itemId)) {
+    return false
+  }
+
+  clearTimers.cancel(sid)
+  publishTodos(
+    sid,
+    todos.map(todo => (todo.id === itemId ? { ...todo, status } : todo))
+  )
+
+  return true
 }
 
 export function clearSessionTodos(sid: string) {

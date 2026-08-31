@@ -152,7 +152,10 @@ export function ConfirmDialog({
         </DialogHeader>
 
         {error && (
-          <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div
+            className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            role="alert"
+          >
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
             <span>{error}</span>
           </div>
@@ -176,6 +179,7 @@ export function ConfirmDialog({
             </Button>
           )}
           <Button
+            aria-live="polite"
             disabled={busy}
             onClick={() => void run()}
             ref={confirmRef}

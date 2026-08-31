@@ -3,9 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { TodoSnapshot } from '@/lib/todos'
 
-// Isolate the feature store from the wide session-store graph (which drags in
-// @tabler/icons — missing from the canonical node_modules this worktree
-// borrows). todos.ts only needs $sessions/lineageAliases/$sessionStates.
+// Isolate this store unit from the wide session-store graph. todos.ts only
+// needs $sessions/lineageAliases/$sessionStates for these behaviours.
 vi.mock('@/store/session', () => ({
   $sessions: atom([]),
   lineageAliases: (id: string) => [id]
@@ -39,7 +38,8 @@ afterEach(async () => {
 
 describe('setSessionTodoSnapshot (authoritative cache)', () => {
   it('publishes display list and authority together in one batch', async () => {
-    const { $sessionTodoSnapshots, $todosBySession, setSessionTodoSnapshot, todoSnapshotAuthority } = await import('./todos')
+    const { $sessionTodoSnapshots, $todosBySession, setSessionTodoSnapshot, todoSnapshotAuthority } =
+      await import('./todos')
 
     setSessionTodoSnapshot(snap({ revision: 5 }))
 
@@ -58,6 +58,7 @@ describe('setSessionTodoSnapshot (authoritative cache)', () => {
 
   it('does not auto-clear an authoritative terminal snapshot (finished linger is display-only)', async () => {
     vi.useFakeTimers()
+
     try {
       const { $todosBySession, clearSessionTodos, setSessionTodoSnapshot } = await import('./todos')
 
@@ -78,15 +79,55 @@ describe('setSessionTodoSnapshot (authoritative cache)', () => {
 
     setSessionTodoSnapshot(snap({ generation: 10, revision: 9 }))
 
-    setSessionTodoSnapshot(snap({ generation: 5, revision: 99, todos: [{ content: 'Old', id: 'old', status: 'pending' }] }))
+    setSessionTodoSnapshot(
+      snap({ generation: 5, revision: 99, todos: [{ content: 'Old', id: 'old', status: 'pending' }] })
+    )
 
     expect(todoSnapshotAuthority('s1')!.generation).toBe(10)
     expect($todosBySession.get().s1!.some(t => t.id === 'old')).toBe(false)
 
-    setSessionTodoSnapshot(snap({ generation: 11, revision: 10, todos: [{ content: 'New', id: 'new', status: 'completed' }] }))
+    setSessionTodoSnapshot(
+      snap({ generation: 11, revision: 10, todos: [{ content: 'New', id: 'new', status: 'completed' }] })
+    )
 
     expect(todoSnapshotAuthority('s1')!.generation).toBe(11)
     expect($todosBySession.get().s1!.some(t => t.id === 'new')).toBe(true)
+  })
+
+  it('rejects a divergent revision at the same generation', async () => {
+    const { setSessionTodoSnapshot, $todosBySession, todoSnapshotAuthority } = await import('./todos')
+
+    setSessionTodoSnapshot(snap({ generation: 7, revision: 4 }))
+    setSessionTodoSnapshot(
+      snap({ generation: 7, revision: 5, todos: [{ content: 'Impossible', id: 'bad', status: 'pending' }] })
+    )
+
+    expect(todoSnapshotAuthority('s1')).toEqual({ generation: 7, revision: 4 })
+    expect($todosBySession.get().s1!.some(todo => todo.id === 'bad')).toBe(false)
+  })
+
+  it('rejects divergent todos at the same generation and revision', async () => {
+    const { setSessionTodoSnapshot, $todosBySession, todoSnapshotAuthority } = await import('./todos')
+    const original = [{ content: 'Original', id: 'original', status: 'pending' }] as TodoSnapshot['todos']
+
+    setSessionTodoSnapshot(snap({ generation: 7, revision: 4, todos: original }))
+    setSessionTodoSnapshot(
+      snap({ generation: 7, revision: 4, todos: [{ content: 'Divergent', id: 'bad', status: 'completed' }] })
+    )
+
+    expect(todoSnapshotAuthority('s1')).toEqual({ generation: 7, revision: 4 })
+    expect($todosBySession.get().s1).toEqual(original)
+  })
+
+  it('optimistic status changes display only and preserves authority', async () => {
+    const { $todosBySession, applyOptimisticTodoStatus, currentSessionTodoSnapshot, setSessionTodoSnapshot } =
+      await import('./todos')
+
+    setSessionTodoSnapshot(snap({ generation: 4, revision: 3 }))
+    expect(applyOptimisticTodoStatus('s1', 'a', 'completed')).toBe(true)
+    expect(currentSessionTodoSnapshot('s1')).toMatchObject({ generation: 4, revision: 3 })
+    expect(currentSessionTodoSnapshot('s1')!.todos.find(todo => todo.id === 'a')?.status).toBe('in_progress')
+    expect($todosBySession.get().s1?.find(todo => todo.id === 'a')?.status).toBe('completed')
   })
 
   it('equal generation republishes the authoritative plan (exact response for optimistic rollback)', async () => {
@@ -96,10 +137,9 @@ describe('setSessionTodoSnapshot (authoritative cache)', () => {
     setSessionTodoSnapshot(snap({ generation: 7, revision: 4, todos: plan }))
 
     // An equal-generation response is the same moment of truth (the store
-    // bumps generation on every mutation), so it may republish — this is
-    // what an optimistic update rolls back/forward onto. It is the response
-    // to OUR request, not an arbitrary divergent list, so identity of
-    // authority (generation 7, revision 4) is preserved.
+    // bumps generation on every mutation), so an exact replay may republish.
+    // This is what an optimistic update rolls back/forward onto without
+    // allowing a divergent list to reuse the same authority.
     setSessionTodoSnapshot(snap({ generation: 7, revision: 4, todos: plan }))
 
     expect(todoSnapshotAuthority('s1')!.revision).toBe(4)

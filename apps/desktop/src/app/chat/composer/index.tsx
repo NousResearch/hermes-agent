@@ -26,6 +26,7 @@ import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import type { TodoGatewayRequest } from '@/store/todo-mutation'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
@@ -178,6 +179,14 @@ export function ChatBar({
   // session id — gateway events and process.list both speak that id. Only the
   // queue uses the stored-session fallback key (prompts can queue pre-resume).
   const statusSessionId = sessionId ?? null
+
+  const statusRequestGateway = useMemo<TodoGatewayRequest | undefined>(
+    () =>
+      gateway
+        ? <T,>(method: string, params?: Record<string, unknown>): Promise<T> => gateway.request<T>(method, params)
+        : undefined,
+    [gateway]
+  )
 
   const composerTourMarker = useTourMarker('composer')
 
@@ -1221,6 +1230,7 @@ export function ChatBar({
                 />
               ) : null
             }
+            requestGateway={statusRequestGateway}
             sessionId={statusSessionId}
           />
           <ComposerPrimitive.Root

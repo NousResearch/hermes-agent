@@ -312,7 +312,14 @@ class TestCronStatusLockFirst:
 
     def test_lock_active_suppresses_not_running_false_alarm(self, hermes_env):
         text = self._run_status(pids=[], lock_active=True, lock_pid=4242)
-        assert "NOT fire" not in text
+        # The lock-first contract (#87033): an active runtime lock means the
+        # gateway process is alive, so the RED "Gateway is not running" alarm
+        # must never fire. Since #98790 a never-written heartbeat is no longer
+        # silently green — the YELLOW first-heartbeat notice (which also says
+        # "NOT fire") is expected here, so assert on the red alarm itself
+        # rather than the "NOT fire" substring both messages share.
+        assert "Gateway is not running" not in text
+        assert "has not reported a heartbeat" in text
         assert "Gateway is running" in text or "running" in text
 
     def test_no_lock_no_pids_still_warns(self, hermes_env):

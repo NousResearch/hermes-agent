@@ -31,7 +31,66 @@ class TestGisExtensions:
 
 
 class TestSpacedPaths:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            r"C:\Temp\My Documents\Caddyfile",
+            r"C:\Temp\My Documents\worker.log",
+        ],
+    )
+    def test_unavailable_spaced_path_uses_complete_bounded_intent(self, path):
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"MEDIA:{path}",
+            include_unavailable=True,
+        )
 
+        assert media == [(path, False)]
+        assert cleaned == ""
+
+    def test_unavailable_spaced_path_stops_at_next_media_tag(self):
+        first = r"C:\Temp\My Documents\Caddyfile"
+        second = r"C:\Temp\Dockerfile"
+
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"MEDIA:{first} MEDIA:{second}",
+            include_unavailable=True,
+        )
+
+        assert media == [(first, False), (second, False)]
+        assert cleaned == ""
+
+    def test_unavailable_spaced_path_stops_at_newline(self):
+        path = r"C:\Temp\My Documents\Caddyfile"
+
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"MEDIA:{path}\nremaining prose",
+            include_unavailable=True,
+        )
+
+        assert media == [(path, False)]
+        assert cleaned == "remaining prose"
+
+    def test_unavailable_single_token_path_preserves_trailing_prose(self):
+        path = r"C:\Temp\Caddyfile"
+
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"MEDIA:{path} is ready",
+            include_unavailable=True,
+        )
+
+        assert media == [(path, False)]
+        assert cleaned == "is ready"
+
+    def test_unavailable_spaced_path_preserves_trailing_prose(self):
+        path = r"C:\Temp\My Documents\Caddyfile"
+
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"MEDIA:{path} is ready",
+            include_unavailable=True,
+        )
+
+        assert media == [(path, False)]
+        assert cleaned == "is ready"
 
     def test_spaced_path_followed_by_prose_keeps_prose(self, tmp_path):
         p = tmp_path / "my server.log"
@@ -87,6 +146,7 @@ class TestHistoryMediaDedupe:
         monkeypatch,
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         history = [
             {
                 "role": "assistant",
@@ -96,7 +156,10 @@ class TestHistoryMediaDedupe:
 
         paths = _collect_history_media_paths(history)
 
-        assert str(tmp_path / "audio cache" / "old.ogg") in paths
+        normalized_paths = {os.path.normpath(path) for path in paths}
+        assert os.path.normpath(str(tmp_path / "audio cache" / "old.ogg")) in (
+            normalized_paths
+        )
 
     def test_empty_history_empty_set(self):
         assert _collect_history_media_paths([]) == set()

@@ -355,9 +355,13 @@ class TestProducerHook:
 
         missing = (tmp_path / "PRIVATE_STAGING_PATH.pdf").resolve()
         explicit = (tmp_path / "PRIVATE_EXPLICIT_EXTENSIONLESS").resolve()
+        spaced = (tmp_path / "My Documents" / "Caddyfile").resolve()
         assert not missing.exists()
         assert not explicit.exists()
-        response = f"recovered answer\n{missing}\nMEDIA:{explicit}"
+        assert not spaced.exists()
+        response = (
+            f"recovered answer\n{missing}\nMEDIA:{explicit}\nMEDIA:{spaced}"
+        )
         event = _event(
             text="[Continuing toward your standing goal]\nGoal: stage safely"
         )
@@ -398,11 +402,18 @@ class TestProducerHook:
             "_hermes_claimed_response_parts_snapshot",
         )
         assert attachment_snapshot.visible_text == "recovered answer"
-        assert attachment_snapshot.media_files == ((str(explicit), False),)
+        assert attachment_snapshot.media_files == (
+            (str(explicit), False),
+            (str(spaced), False),
+        )
         assert attachment_snapshot.local_files == (str(missing),)
         assert claims[0].completed_delivery_texts[event_id] == "recovered answer"
         assert str(missing) not in claims[0].completed_delivery_texts[event_id]
         assert str(explicit) not in claims[0].completed_delivery_texts[event_id]
+        assert str(spaced) not in claims[0].completed_delivery_texts[event_id]
+        assert str(Path("Documents") / "Caddyfile") not in (
+            claims[0].completed_delivery_texts[event_id]
+        )
         assert claims[0].completed_results[event_id] == response
 
         obligation_id = result["_delivery_obligation_id"]
@@ -416,6 +427,7 @@ class TestProducerHook:
         assert staged[1] == response
         assert str(missing) not in repr((staged[0], staged[2], staged[3], staged[4]))
         assert str(explicit) not in repr((staged[0], staged[2], staged[3], staged[4]))
+        assert str(spaced) not in repr((staged[0], staged[2], staged[3], staged[4]))
 
         restart = object.__new__(GatewayRunner)
         restart._goal_continuation_claim_home = _fresh_db
@@ -468,10 +480,13 @@ class TestProducerHook:
         )
         assert str(missing) not in provider_projection
         assert str(explicit) not in provider_projection
+        assert str(spaced) not in provider_projection
+        assert str(Path("Documents") / "Caddyfile") not in provider_projection
         assert "PRIVATE_STAGING_PATH" not in provider_projection
         assert "PRIVATE_EXPLICIT_EXTENSIONLESS" not in provider_projection
         assert [(row[2], row[3]) for row in part_rows] == [
             ("text", "delivered"),
             ("document", "failed"),
+            ("document", "pending"),
             ("document", "pending"),
         ]

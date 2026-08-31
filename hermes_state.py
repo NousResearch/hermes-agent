@@ -7072,8 +7072,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         rows in ``(watermark, watermark_ceiling]`` are foreign concurrent
         tail. ``None`` = unbounded (no internal flush happened).
 
-        When *require_lease_refresh* is True, the lease is refreshed inside
-        the same transaction before the expiry check. This gives a refresher
+        When *require_lease_refresh* is True and *compression_lock_holder* is
+        set, the lease is refreshed inside the same transaction before the
+        expiry check. This gives a refresher
         that stopped due to transient DB failures one final chance to extend
         the lease, preventing wasted compression work. The refresh uses the
         same ``conn`` as the publication, so there is no TOCTOU window.

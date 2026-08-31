@@ -2233,6 +2233,8 @@ def test_failed_split_arms_failure_cooldown(tmp_path: Path) -> None:
     """Regression #97948 symptom B: a failed split/archive must arm the
     compression failure cooldown so the next automatic turn cannot
     immediately re-run the identical doomed compression."""
+    from agent.conversation_compression import _SPLIT_FAILURE_COOLDOWN_SECONDS
+
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "SPLIT_FAIL_COOLDOWN_TEST"
     db.create_session(session_id, source="test")
@@ -2255,5 +2257,5 @@ def test_failed_split_arms_failure_cooldown(tmp_path: Path) -> None:
         "split failure must arm the failure cooldown (#97948 symptom B)"
     )
     seconds, error = cooldown_calls[0].args
-    assert seconds == 60
+    assert seconds == _SPLIT_FAILURE_COOLDOWN_SECONDS
     assert "session_split_failed" in str(error)

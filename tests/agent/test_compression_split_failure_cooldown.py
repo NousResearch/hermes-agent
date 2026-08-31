@@ -1,8 +1,10 @@
 """Regression tests: a failed compression split must arm the failure cooldown.
 
-Extracted verbatim from PR #98137's test file (author: vsd2807); the sibling
-timeout-reconciliation tests were not carried because that production path was
-not salvaged (blocking review on #98137).
+Extracted from PR #98137's test file (author: vsd2807); two sibling unit
+tests were dropped as duplicates of existing coverage in
+test_compression_rotation_state.py / test_context_compressor.py, and the
+timeout-reconciliation tests were not carried because that production path
+was not salvaged (blocking review on #98137).
 
 Issue #97948 symptom B: without the cooldown, the turn after a
 session_split_failed abort immediately re-runs the identical doomed
@@ -11,34 +13,6 @@ compression.
 
 import time
 from unittest.mock import MagicMock
-
-def test_split_failure_records_cooldown():
-    """After a session split failure, compression failure cooldown is recorded."""
-    from agent.context_compressor import ContextCompressor
-
-    compressor = ContextCompressor.__new__(ContextCompressor)
-    compressor._summary_failure_cooldown_until = 0.0
-    compressor._last_summary_error = None
-    compressor._cooldown_persist_failed = False
-    compressor._session_db = None
-    compressor._session_id = ""
-
-    compressor._record_compression_failure_cooldown(60, "session_split_failed: test")
-
-    assert compressor._summary_failure_cooldown_until > time.monotonic()
-    assert compressor._last_summary_error == "session_split_failed: test"
-
-
-def test_cooldown_blocks_automatic_compression():
-    from agent.context_compressor import ContextCompressor
-
-    compressor = ContextCompressor.__new__(ContextCompressor)
-    compressor._summary_failure_cooldown_until = time.monotonic() + 60.0
-    compressor._last_summary_error = "session_split_failed"
-    compressor._cooldown_persist_failed = False
-    compressor.quiet_mode = True
-
-    assert compressor._automatic_compression_blocked_locally() is True
 
 
 def test_manual_compress_bypasses_cooldown():

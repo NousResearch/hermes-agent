@@ -92,6 +92,13 @@ _TERMINAL_COMPRESSION_PROVENANCES = frozenset(
     }
 )
 
+# Cooldown armed when a compression SPLIT fails (session_split_failed /
+# rotation rollback, #97948 symptom B). Deliberately the FIRST rung of the
+# timeout ladder (60/300/900 in context_compressor.py), not the 600s
+# _SUMMARY_FAILURE_COOLDOWN_SECONDS: a split failure is usually a transient
+# lease/DB condition, unlike a persistent summary-provider fault.
+_SPLIT_FAILURE_COOLDOWN_SECONDS = 60
+
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
 # drivers like the desktop app can show an explicit "Summarizing…" indicator
@@ -5001,7 +5008,8 @@ def compress_context(
                 # a stub compressor must not mask the original error.
                 try:
                     agent.context_compressor._record_compression_failure_cooldown(
-                        60, f"session_split_failed: {e}",
+                        _SPLIT_FAILURE_COOLDOWN_SECONDS,
+                        f"session_split_failed: {e}",
                     )
                 except Exception:
                     logger.debug(

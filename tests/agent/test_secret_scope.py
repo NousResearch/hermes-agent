@@ -246,9 +246,121 @@ class TestEnvFileParsing:
         monkeypatch.setitem(
             env_loader._SECRET_SOURCE_VALUES_BY_HOME,
             str(other.resolve()),
-            {"XIAOMI_API_KEY": "sk-other-profile"},
+            {"XIAOMI_API_KEY": "«redacted:sk-…»"},
         )
 
+        assert ss.build_profile_secret_scope(profile) == {}
+
+
+class TestInheritRootCredentials:
+    """security.inherit_root_credentials opt-in root-dotenv underlay.
+
+    Default OFF: a fresh profile must not silently serve the root profile's
+    API keys. When enabled for a NAMED profile under the canonical
+    profiles/ root, root dotenv secrets fill gaps beneath profile-owned
+    values. The root profile itself never inherits (it already owns its
+    dotenv), and a named profile never inherits from a sibling named
+    profile.
+    """
+
+    @pytest.fixture()
+    def fake_root(self, tmp_path, monkeypatch):
+        """Set up a fake hermes root with a named profile and root .env."""
+        import hermes_constants
+
+        root = tmp_path / "ares-home"
+        profile = root / "profiles" / "worker"
+        profile.mkdir(parents=True)
+        (root / ".env").write_text(
+            "ROOT_API_KEY=sk-root\nROOT_ONLY_KEY=sk-root-only\n"
+        )
+        monkeypatch.setattr(
+            hermes_constants,
+            "get_default_hermes_root",
+            lambda: root,
+        )
+        return root, profile
+
+    def _enable(self, profile_home, enabled=True):
+        import json as _json
+
+        security = {"inherit_root_credentials": enabled}
+        (profile_home / "config.yaml").write_text(
+            _json.dumps({"security": security})
+        )
+
+    def test_default_off_does_not_inherit(self, fake_root):
+        _root, profile = fake_root
+        assert ss.build_profile_secret_scope(profile) == {}
+
+    def test_opt_in_inherits_missing_root_keys(self, fake_root):
+        _root, profile = fake_root
+        self._enable(profile)
+        scope = ss.build_profile_secret_scope(profile)
+        assert scope["ROOT_API_KEY"] == "sk-root"
+        assert scope["ROOT_ONLY_KEY"] == "sk-root-only"
+
+    def test_profile_owned_value_wins_over_inherited(self, fake_root):
+        _root, profile = fake_root
+        self._enable(profile)
+        (profile / ".env").write_text("ROOT_API_KEY=sk-profile-owned\n")
+        scope = ss.build_profile_secret_scope(profile)
+        assert scope["ROOT_API_KEY"] == "sk-profile-owned"
+        # The gap-filled key still comes through.
+        assert scope["ROOT_ONLY_KEY"] == "sk-root-only"
+
+    def test_root_profile_fallback_helper_short_circuits(self, fake_root):
+        root, _profile = fake_root
+        self._enable(root)
+        # The helper itself must refuse: the root profile already owns its
+        # dotenv files, so no fallback underlay is needed.
+        assert ss._root_profile_fallback_secrets(
+            root, fail_closed_external=False
+        ) == {}
+
+    def test_sibling_named_profile_never_inherits(self, fake_root):
+        root, profile = fake_root
+        sibling = root / "profiles" / "sibling"
+        sibling.mkdir()
+        (sibling / ".env").write_text("SIBLING_KEY=sk-sibling\n")
+        self._enable(profile)
+        scope = ss.build_profile_secret_scope(profile)
+        assert "SIBLING_KEY" not in scope
+        assert scope["ROOT_API_KEY"] == "sk-root"
+
+    def test_disabled_explicitly_does_not_inherit(self, fake_root):
+        _root, profile = fake_root
+        self._enable(profile, enabled=False)
+        assert ss.build_profile_secret_scope(profile) == {}
+
+    def test_outside_profiles_root_does_not_inherit(self, tmp_path, monkeypatch):
+        import hermes_constants
+
+        root = tmp_path / "ares-home"
+        root.mkdir(parents=True)
+        stray = tmp_path / "stray-profile"
+        stray.mkdir()
+        (root / ".env").write_text("ROOT_API_KEY=sk-root\n")
+        monkeypatch.setattr(
+            hermes_constants,
+            "get_default_hermes_root",
+            lambda: root,
+        )
+        self._enable(stray)
+        assert ss.build_profile_secret_scope(stray) == {}
+
+    def test_global_env_names_excluded_from_inheritance(self, fake_root):
+        root, profile = fake_root
+        (root / ".env").write_text("PATH=/usr/bin\nROOT_API_KEY=sk-root\n")
+        self._enable(profile)
+        scope = ss.build_profile_secret_scope(profile)
+        assert "PATH" not in scope
+        assert scope["ROOT_API_KEY"] == "sk-root"
+
+    def test_broken_profile_config_fails_open(self, fake_root):
+        _root, profile = fake_root
+        # Malformed YAML must not crash scope building; inheritance is off.
+        (profile / "config.yaml").write_text("\tbroken: [unclosed\n")
         assert ss.build_profile_secret_scope(profile) == {}
 
 

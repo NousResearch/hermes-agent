@@ -2583,6 +2583,15 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Opt-in credential inheritance for named profiles. When True and the
+        # profile's own .env/.op.env/external sources lack a key, resolution
+        # falls back to the ROOT profile's dotenv files (never another named
+        # profile's). Default False keeps the documented isolation invariant:
+        # a fresh profile must not silently serve the root profile's API keys
+        # or OAuth tokens. The fallback is injected at scope-build time as an
+        # underlay, so profile-owned values always win and multiplexing's
+        # fail-closed guarantee for other profiles is unchanged.
+        "inherit_root_credentials": False,
         # Persisted acknowledgement for unattended model overrides whose tier
         # lets the vendor train on prompts/completions. The startup guard still
         # prints the full warning on every run and never bypasses cost guards.

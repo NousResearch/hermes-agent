@@ -529,6 +529,77 @@ def _profile_external_secret_values(
     return dict(snapshot.data)
 
 
+def _root_profile_fallback_secrets(
+    profile_home: Path,
+    *,
+    fail_closed_external: bool,
+) -> dict[str, str]:
+    """Resolve the root profile's dotenv secrets for opt-in inheritance.
+
+    Returns an empty mapping unless the profile's config enables
+    ``security.inherit_root_credentials``. Values come from the ROOT profile
+    (``get_default_hermes_root()``), never another named profile, and only
+    for names the profile itself does not own — the caller layers this
+    underlay beneath the profile-owned values. Config read failures are
+    fail-open (returning {}), mirroring the external-secret startup
+    contract: a broken config must not block routing, it just disables
+    the opt-in fallback.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root()
+    except Exception:  # noqa: BLE001
+        return {}
+    config_path = Path(profile_home) / "config.yaml"
+    try:
+        from hermes_cli.config import read_user_config_raw
+
+        config = read_user_config_raw(config_path)
+    except Exception:  # noqa: BLE001 — fail-open, matches external sources
+        return {}
+    security = config.get("security") if isinstance(config, dict) else None
+    if not isinstance(security, dict) or security.get(
+        "inherit_root_credentials"
+    ) is not True:
+        return {}
+    try:
+        root = Path(root).resolve()
+    except Exception:  # noqa: BLE001
+        return {}
+    profile_resolved = profile_home.resolve()
+    if profile_resolved == root:
+        # The root profile already owns its dotenv files directly.
+        return {}
+    # Only the ROOT profile may serve as the fallback source; a named
+    # profile never inherits from a sibling named profile.
+    if profile_resolved.parent != (root / "profiles").resolve():
+        return {}
+    op_snapshot = load_env_file_snapshot(root / ".op.env")
+    env_snapshot = load_env_file_snapshot(root / ".env")
+    if fail_closed_external:
+        failed = [
+            snapshot
+            for snapshot in (op_snapshot, env_snapshot)
+            if snapshot.status == "failed"
+        ]
+        if failed:
+            details = ", ".join(
+                f"root:{snapshot.path.name}:{snapshot.error_kind or 'read'}"
+                for snapshot in failed
+            )
+            raise RuntimeError(
+                f"root credential inheritance unavailable ({details}); refusing boundary"
+            )
+    fallback: dict[str, str] = dict(op_snapshot.data)
+    fallback.update(env_snapshot.data)
+    return {
+        name: value
+        for name, value in fallback.items()
+        if not _is_global_env(name)
+    }
+
+
 def build_profile_secret_scope(
     hermes_home: Path,
     *,
@@ -541,6 +612,11 @@ def build_profile_secret_scope(
     from ``os.environ`` directly, so the scope holds only profile secrets.
     External-source failures preserve the historical fail-open behavior unless
     a subprocess security boundary explicitly requests fail-closed resolution.
+
+    When the profile enables ``security.inherit_root_credentials``, the ROOT
+    profile's dotenv secrets are layered beneath the profile-owned values as
+    a fail-closed-aware underlay: profile-owned names always win, and the
+    opt-in is the only path by which root credentials reach a named profile.
     """
     home = Path(hermes_home)
     # ``.env`` wins over the optional bootstrap file, matching env_loader's
@@ -563,6 +639,13 @@ def build_profile_secret_scope(
             )
     secrets = dict(op_snapshot.data)
     secrets.update(env_snapshot.data)
+    inherited = _root_profile_fallback_secrets(
+        home,
+        fail_closed_external=fail_closed_external,
+    )
+    for key, value in inherited.items():
+        # Profile-owned values always win over the inherited underlay.
+        secrets.setdefault(key, value)
     external_snapshot = _profile_external_secret_snapshot(
         home,
         fail_closed=fail_closed_external,

@@ -229,3 +229,58 @@ class TestPolicyNoticeIsShown:
         monkeypatch.setattr(account_mod, "nous_policy_present", lambda: False)
         TestLoginNous()._run(monkeypatch, tmp_path)
         assert "restricts which models" not in capsys.readouterr().out
+
+
+class TestAuxFallbackRespectsPolicy:
+    """Steps 2-4 of the aux ladder are policy-blind: `resolve_aux_model` queries
+    a public recommendation and the rest are hardcoded."""
+
+    def _patch(self, monkeypatch, *, allowed, recommended):
+        import agent.auxiliary_client as aux
+        import providers
+
+        monkeypatch.setattr(models_mod, "nous_policy_allowed_ids", lambda **_k: allowed)
+        monkeypatch.setattr(
+            models_mod, "_resolve_nous_pricing_credentials",
+            lambda: ("sk", "https://inference.example.com"),
+        )
+        # No fast-family match, so the catalog step yields nothing.
+        monkeypatch.setattr(
+            models_mod, "fetch_models_with_pricing",
+            lambda **_k: {"vendor/allowed-large": {}},
+        )
+
+        class _Profile:
+            default_aux_model = ""
+
+            def resolve_aux_model(self, **_k):
+                return recommended
+
+        monkeypatch.setattr(providers, "get_provider_profile", lambda _p: _Profile())
+        return aux
+
+    def test_blocked_recommendation_is_not_used(self, monkeypatch):
+        aux = self._patch(
+            monkeypatch, allowed={"vendor/allowed-large"},
+            recommended="vendor/blocked-haiku",
+        )
+        assert aux._get_aux_model_for_provider("nous", prefer_fast=True) == ""
+
+    def test_allowed_recommendation_still_used(self, monkeypatch):
+        aux = self._patch(
+            monkeypatch, allowed={"vendor/allowed-large", "vendor/ok-haiku"},
+            recommended="vendor/ok-haiku",
+        )
+        assert (
+            aux._get_aux_model_for_provider("nous", prefer_fast=True)
+            == "vendor/ok-haiku"
+        )
+
+    def test_ungoverned_org_is_unaffected(self, monkeypatch):
+        aux = self._patch(
+            monkeypatch, allowed=None, recommended="vendor/anything"
+        )
+        assert (
+            aux._get_aux_model_for_provider("nous", prefer_fast=True)
+            == "vendor/anything"
+        )

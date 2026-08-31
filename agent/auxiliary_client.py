@@ -931,6 +931,18 @@ def _fast_model_from_catalog(provider_id: str) -> str:
     return ""
 
 
+def _nous_policy_blocks(model_id: str) -> bool:
+    """True when the org's model policy does not admit *model_id*."""
+    try:
+        from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
+
+        allowed = nous_policy_allowed_ids()
+        return bool(allowed) and not restrict_to_nous_policy([model_id], allowed)
+    except Exception:
+        logger.debug("Nous policy check unavailable", exc_info=True)
+        return False
+
+
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) -> str:
     """Return the cheap auxiliary model for a provider.
@@ -958,21 +970,26 @@ def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) 
     except Exception:
         pass
 
+    picked = ""
     if prefer_fast:
-        catalog_pick = _fast_model_from_catalog(provider_id)
-        if catalog_pick:
-            return catalog_pick
-        if profile is not None:
+        picked = _fast_model_from_catalog(provider_id)
+        if not picked and profile is not None:
             try:
-                live = profile.resolve_aux_model()
-                if live:
-                    return live
+                picked = profile.resolve_aux_model() or ""
             except Exception:
                 logger.debug("resolve_aux_model failed for %s", provider_id, exc_info=True)
 
-    if profile is not None and profile.default_aux_model:
-        return profile.default_aux_model
-    return _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
+    if not picked and profile is not None and profile.default_aux_model:
+        picked = profile.default_aux_model
+    if not picked:
+        picked = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
+
+    # Steps 2-4 are policy-blind: resolve_aux_model queries a public
+    # recommendation and the rest are hardcoded. A blocked pick is refused at
+    # request time, so drop it and let the caller keep the main model.
+    if picked and provider_id.strip().lower() == "nous" and _nous_policy_blocks(picked):
+        return ""
+    return picked
 
 
 

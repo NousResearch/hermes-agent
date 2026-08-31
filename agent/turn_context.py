@@ -411,7 +411,9 @@ class PreflightCompressionTimedOut(RuntimeError):
 
 def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
     """Stop an oversized turn instead of sending its unchanged provider payload."""
-    if not getattr(agent, "_last_compression_timed_out", False):
+    from agent.conversation_compression import context_compression_timed_out
+
+    if not context_compression_timed_out(agent):
         return
     raise PreflightCompressionTimedOut(
         "Context compression timed out before it could commit while the request "

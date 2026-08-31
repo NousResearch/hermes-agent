@@ -1899,6 +1899,76 @@ def compression_skipped_due_to_lock(agent: Any) -> bool:
     return _sig is True or isinstance(_sig, str)
 
 
+def _get_context_compression_timeout_state(
+    agent: Any,
+    *,
+    create: bool,
+) -> Optional[Tuple[Any, Optional[threading.local]]]:
+    """Return the stable lock and thread-local timeout state for an agent."""
+    try:
+        attributes = vars(agent)
+    except TypeError:
+        return None
+
+    lock = attributes.setdefault(
+        "_context_compression_timeout_state_lock",
+        threading.Lock(),
+    )
+    with lock:
+        state = attributes.get("_context_compression_timeout_state")
+        if create and not isinstance(state, threading.local):
+            state = threading.local()
+            attributes["_context_compression_timeout_state"] = state
+        return lock, state if isinstance(state, threading.local) else None
+
+
+def reset_context_compression_timeout_outcome(agent: Any) -> None:
+    """Clear the current thread's owned-compression timeout outcome.
+
+    The compatibility mirror ``agent._last_compression_timed_out`` is the
+    simple per-attempt flag landed by #98424 (turn-start preflight fail-closed
+    boundary); it stays authoritative for minimal/older agent doubles that do
+    not support ``vars()``.
+    """
+    locked_state = _get_context_compression_timeout_state(agent, create=True)
+    if locked_state is None or locked_state[1] is None:
+        agent._last_compression_timed_out = False
+        return
+    lock, state = locked_state
+    with lock:
+        state.timed_out = False
+        agent._last_compression_timed_out = False
+
+
+def mark_context_compression_timed_out(agent: Any) -> None:
+    """Mark the current owned compression as host-timed-out."""
+    locked_state = _get_context_compression_timeout_state(agent, create=True)
+    if locked_state is None or locked_state[1] is None:
+        agent._last_compression_timed_out = True
+        return
+    lock, state = locked_state
+    with lock:
+        state.timed_out = True
+        agent._last_compression_timed_out = True
+
+
+def context_compression_timed_out(agent: Any) -> bool:
+    """Return whether this thread's owned compression hit its host timeout.
+
+    A single agent may receive overlapping automatic/manual entrypoints. The
+    thread-local outcome prevents one entrypoint's reset from hiding another's
+    timeout. The attribute fallback supports older/minimal agent doubles.
+    Every read is type-pinned to avoid MagicMock auto-attributes.
+    """
+    locked_state = _get_context_compression_timeout_state(agent, create=False)
+    if locked_state is not None:
+        lock, state = locked_state
+        with lock:
+            if isinstance(state, threading.local):
+                return getattr(state, "timed_out", None) is True
+    return getattr(agent, "_last_compression_timed_out", None) is True
+
+
 def compression_blocked_transiently(agent: Any) -> bool:
     """Type-pinned read of the transient-block signal (#97488).
 

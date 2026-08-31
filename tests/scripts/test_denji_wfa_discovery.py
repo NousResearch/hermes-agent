@@ -198,3 +198,270 @@ class TestNoStaticLabelReliance:
         """REQUIRED_BOARDS is kept as a back-compat alias."""
         mod = _load_wfa(fake_home, monkeypatch)
         assert mod.REQUIRED_BOARDS == mod.CANONICAL_BOARDS
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# P1.1 defect witnesses: shared-skill visibility, path normalisation,
+# and duplicate finding behaviour in analyse_db()/profile_skill_names().
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _make_full_board(home: Path, slug: str) -> Path:
+    """Board DB with the full tasks/task_runs/task_events schema WFA needs."""
+    d = home / "kanban" / "boards" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "board.json").write_text(
+        f'{{"slug":"{slug}","name":"{slug}","archived":false}}'
+    )
+    db = d / "kanban.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, title TEXT, body TEXT, assignee TEXT, status TEXT, created_at TEXT, updated_at TEXT, completed_at TEXT, result TEXT, skills TEXT, status_reason TEXT, last_failure_error TEXT, current_run_id TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS task_runs (id TEXT PRIMARY KEY, task_id TEXT, profile TEXT, status TEXT, outcome TEXT, summary TEXT, error TEXT, metadata TEXT, started_at TEXT, ended_at TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS task_events (task_id TEXT, kind TEXT, payload TEXT, created_at TEXT, id INTEGER PRIMARY KEY AUTOINCREMENT)")
+    conn.close()
+    return db
+
+
+def _insert_task(db: Path, task_id: str, assignee: str, skills: str) -> None:
+    """Insert a task with a forced-skill list into the board DB."""
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO tasks (id, title, assignee, status, skills) VALUES (?, ?, ?, ?, ?)",
+        (task_id, "P1.1 witness", assignee, "in_progress", skills),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _shared_skill_dir(home: Path, name: str) -> Path:
+    """Create a shared skill dir with a SKILL.md under home/shared-skills/."""
+    d = home / "shared-skills" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(f"---\nname: {name}\n---\nbody")
+    return d
+
+
+class TestSharedSkillVisibilityViaExternalDirs:
+    """profile_skill_names() must accept skills resolved via skills.external_dirs.
+
+    Defect witness: profiles that resolve shared skills through
+    skills.external_dirs in their config.yaml currently get
+    'forced_skill_not_visible_to_assignee_profile' findings even though the
+    forced skill is visible to the profile at runtime.
+    """
+
+    def test_profile_with_external_dirs_sees_shared_skill(
+        self, fake_home, monkeypatch
+    ):
+        # The shared skill lives under <home>/shared-skills, which the
+        # profile's config.yaml declares as an external_dir. The profile has
+        # NO local skills directory at all — external_dirs is the only source.
+        shared = _shared_skill_dir(fake_home, "governance")
+        assert shared.exists()
+        profile_dir = fake_home / "profiles" / "denji-reviewer"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "config.yaml").write_text(
+            "skills:\n"
+            "  external_dirs:\n"
+            f"    - {fake_home / 'shared-skills'}\n"
+        )
+
+        mod = _load_wfa(fake_home, monkeypatch)
+        visible = mod.profile_skill_names("denji-reviewer")
+        assert "governance" in visible, (
+            "profile_skill_names must count skills resolved via "
+            "skills.external_dirs as visible to the profile"
+        )
+
+    def test_profile_with_broken_external_dir_does_not_crash(
+        self, fake_home, monkeypatch
+    ):
+        """A dangling external_dir path in config.yaml must not break the scan."""
+        profile_dir = fake_home / "profiles" / "wesker"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "config.yaml").write_text(
+            "skills:\n"
+            "  external_dirs:\n"
+            f"    - {fake_home / 'does-not-exist'}\n"
+        )
+        mod = _load_wfa(fake_home, monkeypatch)
+        # Must not raise; local scan still works.
+        assert isinstance(mod.profile_skill_names("wesker"), set)
+
+    def test_profile_without_config_yaml_degrades_to_local_scan(
+        self, fake_home, monkeypatch
+    ):
+        """profiles/<name>/skills still counts even when no config.yaml exists."""
+        skill_dir = fake_home / "profiles" / "local-only" / "skills" / "cats"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: cats\n---\nbody")
+        mod = _load_wfa(fake_home, monkeypatch)
+        assert "cats" in mod.profile_skill_names("local-only")
+
+    def test_analyse_db_external_dirs_skill_not_flagged(
+        self, fake_home, monkeypatch
+    ):
+        """End to end: a task forcing an external_dirs-resolved skill on a
+        profile must NOT yield forced_skill_not_visible_to_assignee_profile."""
+        _make_full_board(fake_home, "core")
+        _shared_skill_dir(fake_home, "governance")
+        profile_dir = fake_home / "profiles" / "governance-lead"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "config.yaml").write_text(
+            "skills:\n"
+            "  external_dirs:\n"
+            f"    - {fake_home / 'shared-skills'}\n"
+        )
+        db = fake_home / "kanban" / "boards" / "core" / "kanban.db"
+        _insert_task(db, "t_ext_dirs", "governance-lead", '["governance"]')
+
+        mod = _load_wfa(fake_home, monkeypatch)
+        result = mod.analyse_db(
+            {"board": "core", "path": str(db)}, set(), {}
+        )
+        kinds = [f["kind"] for f in result["findings"]]
+        assert "forced_skill_not_visible_to_assignee_profile" not in kinds, (
+            "external_dirs-resolved skill must be treated as visible; "
+            f"got findings: {result['findings']}"
+        )
+
+
+class TestPathQualifiedSkillNames:
+    """Forced-skill entries recorded as category-qualified paths or absolute
+    paths must be normalised to their skill identity before comparison."""
+
+    def _wfa_with_forced_skill(self, monkeypatch, fake_home, raw_skill: str):
+        _make_full_board(fake_home, "core")
+        _shared_skill_dir(fake_home, "governance")
+        profile_dir = fake_home / "profiles" / "governance-lead"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "config.yaml").write_text(
+            "skills:\n"
+            "  external_dirs:\n"
+            f"    - {fake_home / 'shared-skills'}\n"
+        )
+        db = fake_home / "kanban" / "boards" / "core" / "kanban.db"
+        _insert_task(db, "t_pathqual", "governance-lead", f'["{raw_skill}"]')
+        mod = _load_wfa(fake_home, monkeypatch)
+        return mod.analyse_db({"board": "core", "path": str(db)}, set(), {})
+
+    def test_category_qualified_name_matches_bare_skill(
+        self, fake_home, monkeypatch
+    ):
+        """'devops/governance' under an external_dir whose layout includes a
+        devops/ category directory must match the bare skill identity."""
+        # give the shared dir a category layout: shared-skills/devops/governance/
+        cat = fake_home / "shared-skills" / "devops" / "governance"
+        cat.mkdir(parents=True, exist_ok=True)
+        (cat / "SKILL.md").write_text("---\nname: governance\n---\nbody")
+        result = self._wfa_with_forced_skill(monkeypatch, fake_home, "devops/governance")
+        kinds = [f["kind"] for f in result["findings"]]
+        assert "forced_skill_not_visible_to_assignee_profile" not in kinds
+
+    def test_absolute_path_skill_name_matches_bare_skill(
+        self, fake_home, monkeypatch
+    ):
+        """A task skill recorded as an absolute path to a visible skill must
+        not be flagged."""
+        result = self._wfa_with_forced_skill(
+            monkeypatch, fake_home,
+            str(fake_home / "shared-skills" / "governance" / "SKILL.md"),
+        )
+        kinds = [f["kind"] for f in result["findings"]]
+        assert "forced_skill_not_visible_to_assignee_profile" not in kinds
+
+    def test_absolute_dir_path_skill_name_matches_bare_skill(
+        self, fake_home, monkeypatch
+    ):
+        """A task skill recorded as an absolute dir path (no SKILL.md suffix)."""
+        result = self._wfa_with_forced_skill(
+            monkeypatch, fake_home,
+            str(fake_home / "shared-skills" / "governance"),
+        )
+        kinds = [f["kind"] for f in result["findings"]]
+        assert "forced_skill_not_visible_to_assignee_profile" not in kinds
+
+    def test_genuinely_unknown_skill_still_flagged(
+        self, fake_home, monkeypatch
+    ):
+        """Normalisation must not swallow real defects: a skill that exists
+        nowhere is still missing."""
+        result = self._wfa_with_forced_skill(
+            monkeypatch, fake_home, "totally-bogus-skill"
+        )
+        kinds = [f["kind"] for f in result["findings"]]
+        assert "forced_skill_not_visible_to_assignee_profile" in kinds
+        # The raw string is preserved in evidence for humans.
+        skill_findings = [
+            f for f in result["findings"]
+            if f["kind"] == "forced_skill_not_visible_to_assignee_profile"
+        ]
+        assert skill_findings, "expected at least one missing-skill finding"
+        all_reported = [s for f in skill_findings for s in f["evidence"]["missing_skills"]]
+        assert "totally-bogus-skill" in all_reported
+
+
+class TestDuplicateFindingDedup:
+    """The same board+task_id+kind must appear once per finding, with all
+    source evidence merged into that single finding."""
+
+    def _wfa_with_dup_sources(self, monkeypatch, fake_home):
+        _make_full_board(fake_home, "core")
+        profile_dir = fake_home / "profiles" / "solo"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        # No config.yaml, no skills dir: everything is invisible.
+        db = fake_home / "kanban" / "boards" / "core" / "kanban.db"
+        _insert_task(db, "t_dupsources", "solo", '["alpha-skill"]')
+        # Also seed a created event forcing the same skill.
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
+            (
+                "t_dupsources",
+                "created",
+                '{"skills": ["alpha-skill"]}',
+                "2026-08-31T00:00:00Z",
+            ),
+        )
+        conn.commit()
+        conn.close()
+        mod = _load_wfa(fake_home, monkeypatch)
+        return mod.analyse_db({"board": "core", "path": str(db)}, set(), {})
+
+    def test_same_kind_task_reported_once(self, fake_home, monkeypatch):
+        """task.skills and created_event.skills forcing the same skill must
+        produce ONE forced_skill_not_visible finding, not two."""
+        result = self._wfa_with_dup_sources(monkeypatch, fake_home)
+        dup_findings = [
+            f for f in result["findings"]
+            if f["kind"] == "forced_skill_not_visible_to_assignee_profile"
+        ]
+        assert len(dup_findings) == 1, (
+            f"expected exactly one deduplicated finding, got {len(dup_findings)}: "
+            f"{[f['evidence'].get('source') for f in dup_findings]}"
+        )
+
+    def test_merged_finding_preserves_all_source_evidence(
+        self, fake_home, monkeypatch
+    ):
+        """The surviving finding must name every source that requested the
+        skill, so deduplicate does not destroy evidence."""
+        result = self._wfa_with_dup_sources(monkeypatch, fake_home)
+        dup_findings = [
+            f for f in result["findings"]
+            if f["kind"] == "forced_skill_not_visible_to_assignee_profile"
+        ]
+        assert len(dup_findings) == 1
+        evidence = dup_findings[0]["evidence"]
+        sources = evidence.get("sources") or ([evidence["source"]] if evidence.get("source") else [])
+        assert set(sources) == {"task.skills", "created_event.skills"}, (
+            f"merged finding must name both sources; got {sources}"
+        )
+
+    def test_finding_preserves_missing_skills_list(self, fake_home, monkeypatch):
+        """missing_skills must still be present on the merged finding."""
+        result = self._wfa_with_dup_sources(monkeypatch, fake_home)
+        dup_findings = [
+            f for f in result["findings"]
+            if f["kind"] == "forced_skill_not_visible_to_assignee_profile"
+        ]
+        assert dup_findings[0]["evidence"]["missing_skills"] == ["alpha-skill"]

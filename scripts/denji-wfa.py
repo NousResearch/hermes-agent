@@ -222,14 +222,13 @@ def forced_skills_from_created_events(events: list[dict[str, Any]]) -> list[str]
     return list(dict.fromkeys(skills))
 
 
-def profile_skill_names(profile: str) -> set[str]:
-    if not profile:
-        return set()
-    skill_root = HERMES_HOME / "profiles" / profile / "skills"
+def _scan_skill_root(root: Path) -> set[str]:
+    """Collect skill identities under one root: directory names + SKILL.md
+    frontmatter names.  Best-effort — unreadable files are skipped."""
     names: set[str] = set()
-    if not skill_root.exists():
+    if not root.is_dir():
         return names
-    for skill_file in skill_root.rglob("SKILL.md"):
+    for skill_file in root.rglob("SKILL.md"):
         names.add(skill_file.parent.name)
         try:
             for line in skill_file.read_text(encoding="utf-8", errors="ignore").splitlines()[:20]:
@@ -238,6 +237,100 @@ def profile_skill_names(profile: str) -> set[str]:
                     break
         except Exception:
             pass
+    return names
+
+
+def profile_external_skill_dirs(profile: str) -> list[Path]:
+    """Resolve ``skills.external_dirs`` for a profile via the canonical helper.
+
+    Reuses :func:`agent.skill_utils.get_external_skills_dirs` (validated,
+    ``~``/env expanded, deduplicated, existence-checked) by scoping it to the
+    profile home with the context-local Hermes home override — the same
+    mechanism profiles use at runtime.  Falls back to a minimal direct parse
+    of ``profiles/<profile>/config.yaml`` only when the agent package is not
+    importable (e.g. a crippled cron environment), so the scan never crashes.
+    """
+    if not profile or profile in ("", "."):
+        return []
+    profile_home = HERMES_HOME / "profiles" / profile
+    config_path = profile_home / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            return list(get_external_skills_dirs())
+        finally:
+            reset_hermes_home_override(token)
+    except Exception:
+        # Minimal fallback parse — same semantics as the canonical helper
+        # (expand ~/$VARS, resolve relative to the profile home, must exist).
+        raw: list[str] = []
+        try:
+            text = config_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        in_external = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("external_dirs:"):
+                in_external = True
+                continue
+            if in_external:
+                if stripped.startswith("- "):
+                    raw.append(stripped[2:].strip().strip('"\''))
+                elif stripped:
+                    in_external = False
+        dirs: list[Path] = []
+        seen: set[Path] = set()
+        for entry in raw:
+            expanded = os.path.expanduser(os.path.expandvars(entry))
+            p = Path(expanded)
+            p = p.resolve() if p.is_absolute() else (profile_home / p).resolve()
+            if p not in seen and p.is_dir():
+                seen.add(p)
+                dirs.append(p)
+        return dirs
+
+
+def skill_identity(raw: str) -> str:
+    """Normalise a forced-skill entry to its identity for visibility checks.
+
+    Accepts bare names (``governance``), category-qualified names
+    (``devops/governance``, or ``category/skill/`` style paths recorded by
+    kanban), and filesystem references to a visible skill (the ``SKILL.md``
+    file or its directory, absolute or relative).  The last meaningful path
+    segment is the identity; bare names pass through untouched.
+    """
+    text = str(raw).strip().strip('"\'')
+    if not text:
+        return ""
+    if "/" in text or "\\" in text:
+        path = Path(text)
+        if path.name == "SKILL.md":
+            path = path.parent
+        return path.name.strip().strip('"\'')
+    return text
+
+
+def profile_skill_names(profile: str) -> set[str]:
+    """Skill identities visible to a profile: its local skills tree PLUS any
+    skills resolved through its ``skills.external_dirs`` config.
+
+    P1.1: profiles that share skills via external_dirs previously produced
+    false ``forced_skill_not_visible_to_assignee_profile`` findings because
+    only the profile-local ``skills/`` tree was scanned.
+    """
+    if not profile:
+        return set()
+    skill_root = HERMES_HOME / "profiles" / profile / "skills"
+    names: set[str] = _scan_skill_root(skill_root)
+    # Shared-skill visibility: scan configured external_dirs too.
+    for ext_dir in profile_external_skill_dirs(profile):
+        names |= _scan_skill_root(ext_dir)
     return names
 
 
@@ -410,23 +503,34 @@ def analyse_db(db: dict[str, Any], global_skills: set[str], profile_skill_cache:
                 if assignee not in profile_skill_cache:
                     profile_skill_cache[assignee] = profile_skill_names(assignee)
                 visible = profile_skill_cache[assignee]
+                # P1.1: collect missing skills across ALL sources first, then
+                # emit ONE finding per task with merged source evidence —
+                # task.skills and created_event.skills forcing the same skill
+                # previously produced two identical findings per task.
+                missing_by_skill: dict[str, list[str]] = {}
                 for source, skills in forced_sources.items():
-                    missing = [s for s in skills if s not in visible]
-                    if missing:
-                        add_finding(
-                            result["findings"],
-                            "forced_skill_not_visible_to_assignee_profile",
-                            "critical",
-                            task,
-                            board,
-                            f"Forced skills from {source} are not visible to assignee profile '{assignee}'.",
-                            {
-                                "source": source,
-                                "missing_skills": missing,
-                                "visible_in_global_default_skills": [s for s in missing if s in global_skills],
-                                "profile_skill_count": len(visible),
-                            },
-                        )
+                    for raw_skill in skills:
+                        if skill_identity(raw_skill) not in visible:
+                            missing_by_skill.setdefault(str(raw_skill), []).append(source)
+                if missing_by_skill:
+                    raw_skills = list(missing_by_skill)
+                    add_finding(
+                        result["findings"],
+                        "forced_skill_not_visible_to_assignee_profile",
+                        "critical",
+                        task,
+                        board,
+                        "Forced skills are not visible to assignee profile "
+                        f"'{assignee}'. Sources: "
+                        f"{sorted({s for srcs in missing_by_skill.values() for s in srcs})}.",
+                        {
+                            "sources": sorted({s for srcs in missing_by_skill.values() for s in srcs}),
+                            "source_to_skills": missing_by_skill,
+                            "missing_skills": raw_skills,
+                            "visible_in_global_default_skills": [s for s in raw_skills if skill_identity(s) in global_skills],
+                            "profile_skill_count": len(visible),
+                        },
+                    )
     except Exception as exc:
         result["integrity_check"] = "scan_failed"
         result["errors"].append(f"scan failed: {type(exc).__name__}: {exc}")

@@ -132,14 +132,15 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
 
 
 def test_system_instruction_omits_role_for_strict_proxies():
-    """Gemini's ``systemInstruction`` is a Content object, but its ``role``
-    field must be omitted. Public Google (generativelanguage / Vertex)
-    tolerates a stray ``role: system`` and ignores it, but strict
-    OpenAI-/Gemini-compatible proxy validators reject a systemInstruction
-    carrying ``role`` with an opaque HTTP 422 ``INVALID_ARGUMENT`` — and
-    since Hermes always sends a system prompt, that breaks *every* Gemini
-    request routed through such a gateway. Emit only ``parts`` so the
-    payload validates everywhere.
+    """Gemini's ``systemInstruction`` is a Content object, and sending
+    ``role: system`` there is the incompatible shape. Public Google
+    (generativelanguage / Vertex) tolerates that stray role and ignores it,
+    but strict OpenAI-/Gemini-compatible proxy validators reject a
+    systemInstruction carrying ``role`` with an opaque HTTP 422
+    ``INVALID_ARGUMENT`` — and since Hermes always sends a system prompt,
+    that breaks *every* Gemini request routed through such a gateway.
+    Omitting ``role`` and emitting only ``parts`` is the most compatible
+    payload for both strict and permissive Gemini surfaces.
     """
     from agent.gemini_native_adapter import _build_gemini_contents
 
@@ -154,7 +155,7 @@ def test_system_instruction_omits_role_for_strict_proxies():
 
 
 def test_system_instruction_joins_multiple_system_messages_without_role():
-    """Multiple system messages are joined, still with no ``role`` field."""
+    """Multiple system messages are joined in the role-less form."""
     from agent.gemini_native_adapter import _build_gemini_contents
 
     messages = [

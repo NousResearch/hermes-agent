@@ -718,6 +718,17 @@ class CompressionCommitFence:
         self._progress_observed = False
         self._deadline: float | None = None
         self._retain_cancelled_lock_until_worker_done = False
+        # #97963: set by the worker (mark_commit_watermark_fenced) once its
+        # commit path is watermark-fenced — i.e. it captured the session's
+        # active-row watermark at compression start, so any row appended
+        # AFTER that point survives a late commit verbatim as concurrent
+        # tail (archive_and_compact / publish_compression_child clone rows
+        # above the watermark instead of archiving them). Hosts read this
+        # at the turn-hold boundary to decide whether a detached worker may
+        # KEEP its commit admission (safe: newer turns cannot be clobbered)
+        # or must be cancelled as before (unfenced commit; discard is the
+        # only safe outcome). Plain bool store — atomic in CPython.
+        self._commit_watermark_fenced = False
         if total_ceiling_seconds is not None:
             self.set_total_ceiling_seconds(total_ceiling_seconds)
 
@@ -856,6 +867,24 @@ class CompressionCommitFence:
     def retain_compression_lock_until_worker_done(self) -> None:
         """Prevent a timed-out live worker from overlapping a retry."""
         self._retain_cancelled_lock_until_worker_done = True
+
+    def mark_commit_watermark_fenced(self) -> None:
+        """Record that this attempt's commit is bounded by a start watermark.
+
+        Called by the compression worker right after it captures
+        ``get_active_message_watermark()`` under the durable compression
+        lock (#75316/#87484). A watermark-fenced commit archives ONLY rows
+        at or below the watermark; rows appended later — e.g. the user turn
+        the host released at the turn-hold boundary (#97963) — are cloned
+        as live concurrent tail. That is exactly the property a host needs
+        before letting a detached worker keep its commit admission.
+        """
+        self._commit_watermark_fenced = True
+
+    @property
+    def commit_watermark_fenced(self) -> bool:
+        """Lock-free read: the worker's commit is watermark-bounded."""
+        return self._commit_watermark_fenced
 
     def allow_cancelled_lock_release(self) -> None:
         """Undo :meth:`retain_compression_lock_until_worker_done`.
@@ -3530,6 +3559,18 @@ def compress_context(
                         _commit_watermark = _lock_db.get_active_message_watermark(
                             _lock_sid
                         )
+                        # #97963: a captured watermark makes the eventual
+                        # commit safe against rows appended after this
+                        # point (they survive as cloned concurrent tail on
+                        # BOTH commit paths — archive_and_compact and
+                        # publish_compression_child). Tell the fence so a
+                        # host at the turn-hold boundary can keep this
+                        # attempt's commit admission instead of burning it.
+                        if commit_fence is not None:
+                            try:
+                                commit_fence.mark_commit_watermark_fenced()
+                            except AttributeError:
+                                pass  # test doubles without the method
                     except Exception as _wm_err:
                         # Watermark capture is safety-additive: without it the
                         # commit falls back to archive-everything (historical

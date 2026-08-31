@@ -957,6 +957,10 @@ DEFAULT_CONFIG = {
                                       # waiting. Kept well under chat-transport idle timeouts
                                       # (Telegram ~30s). On expiry the turn proceeds
                                       # uncompressed — an availability boundary, not a failure.
+                                      # The detached worker keeps its commit admission when its
+                                      # commit is watermark-fenced, so the finished summary is
+                                      # adopted at the next safe boundary instead of being
+                                      # discarded (#97963 — thinking summary models).
         "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
                                       # (conversation loop, /compress, preflight, etc.).
                                       # Same progress-aware semantics as hygiene_timeout_seconds:

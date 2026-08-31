@@ -699,6 +699,19 @@ compression:
   # summarization on a short idle thread. Example: 1800 = compact after 30 min idle.
   idle_compact_after_seconds: 0
 
+  # Gateway session-hygiene turn-hold budget (default: 10). Max seconds an
+  # arriving user turn is held while a still-streaming hygiene summary
+  # finishes. Distinct from hygiene_timeout_seconds (compressor inactivity
+  # budget): this bounds user-visible latency so chat transports (Telegram
+  # ~30s) do not drop a silent connection. On expiry the turn proceeds
+  # uncompressed; the detached worker keeps its commit admission (when the
+  # commit is watermark-fenced) and the summary is adopted at the next safe
+  # boundary. Thinking-model summarizers often need longer than 10s to emit
+  # the first content token — raise to 300 (or >= your summarizer's real
+  # time-to-first-content) only if you want THIS turn to wait for the
+  # compression instead of adopting it one turn late.
+  hygiene_max_turn_hold_seconds: 10
+
   # Proactive tool-result prune (default: 0 = disabled). Opt-in token trigger
   # for a deterministic, no-LLM prune of OLD tool-result payloads, run
   # independently of `threshold` above. On large-window models (512K/1M) the

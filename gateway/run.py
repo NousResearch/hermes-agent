@@ -21472,6 +21472,175 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         # uncompressed) but with distinct provenance,
                                         # user message, and NO failure-cooldown
                                         # increment.
+                                        #
+                                        # #97963: decouple the TURN from the
+                                        # COMPRESSION. When the worker's commit is
+                                        # watermark-fenced (it captured the session's
+                                        # active-row watermark at compression start,
+                                        # so rows appended after that point — this
+                                        # released turn included — survive its late
+                                        # commit verbatim as cloned concurrent tail),
+                                        # the already-running attempt KEEPS its commit
+                                        # admission: the user's turn proceeds on the
+                                        # uncompressed transcript NOW, and the summary
+                                        # is adopted when the detached worker reaches
+                                        # its own watermark-fenced commit transaction
+                                        # (archive_and_compact / the rotation publish
+                                        # path — the next safe boundary). Before this,
+                                        # the fence was ALWAYS cancelled here, burning
+                                        # the full summary attempt — for a thinking
+                                        # summary model whose reasoning prefix alone
+                                        # exceeds the 10s hold, that made hygiene
+                                        # auto-compression fail 100% of the time while
+                                        # paying the summary model per turn. The turn
+                                        # itself is still released at the same budget:
+                                        # only the fate of the detached worker's
+                                        # RESULT changes. If the commit is NOT
+                                        # watermark-fenced (no session_db, watermark
+                                        # capture failed, legacy lock API), a late
+                                        # commit could clobber newer turns, so cancel
+                                        # exactly as before — never worse than the
+                                        # status quo.
+                                        _hyg_keep_admission = bool(
+                                            getattr(
+                                                _hyg_commit_fence,
+                                                "commit_watermark_fenced",
+                                                False,
+                                            )
+                                        ) and not _hyg_commit_fence.is_cancelled
+                                        if _hyg_keep_admission:
+                                            self._defer_agent_cleanup_until_future_done(
+                                                _hyg_future,
+                                                _hyg_agent,
+                                                context="session hygiene turn-hold",
+                                            )
+                                            _hyg_cleanup_deferred = True
+                                            # NO retry-after here (#97963 (b)): the
+                                            # attempt is still running toward a real
+                                            # commit, and arming the flat 60s
+                                            # retry-after would ALSO block the
+                                            # agent-side preflight compressor from a
+                                            # fresh chance ("Skipping preflight
+                                            # compression: same-session cooldown
+                                            # active"). Re-attempt spacing is covered
+                                            # by the durable compression lock instead:
+                                            # the next turn's hygiene pre-check skips
+                                            # while this worker's lease is held
+                                            # (_session_has_compression_in_flight).
+                                            # The flat retry-after is recorded by the
+                                            # done-callback below ONLY if the worker
+                                            # ends without committing anything.
+                                            _hyg_deferred_sid = session_entry.session_id
+                                            _hyg_deferred_key = session_key
+                                            _hyg_deferred_agent = _hyg_agent
+
+                                            def _hyg_adopt_or_space_retry(
+                                                _fut,
+                                                _gw=self,
+                                                _sid=_hyg_deferred_sid,
+                                                _skey=_hyg_deferred_key,
+                                                _agent=_hyg_deferred_agent,
+                                            ):
+                                                try:
+                                                    _exc = _fut.exception()
+                                                except (
+                                                    asyncio.CancelledError,
+                                                    Exception,
+                                                ):
+                                                    _exc = None
+                                                    _committed = False
+                                                else:
+                                                    _committed = _exc is None and (
+                                                        bool(
+                                                            getattr(
+                                                                _agent,
+                                                                "_last_compaction_in_place",
+                                                                False,
+                                                            )
+                                                        )
+                                                        or getattr(
+                                                            _agent, "session_id", _sid
+                                                        )
+                                                        != _sid
+                                                    )
+                                                if _committed:
+                                                    logger.info(
+                                                        "Session hygiene compression for "
+                                                        "session %s finished after the "
+                                                        "turn-hold was released — summary "
+                                                        "adopted at the watermark-fenced "
+                                                        "commit boundary (#97963)",
+                                                        _sid,
+                                                    )
+                                                    try:
+                                                        _reset_hygiene_failure_streak(
+                                                            _gw, _skey
+                                                        )
+                                                    except Exception as _rs_err:
+                                                        logger.debug(
+                                                            "hygiene streak reset after "
+                                                            "deferred adoption failed: %s",
+                                                            _rs_err,
+                                                        )
+                                                else:
+                                                    # Nothing to adopt (summary failed,
+                                                    # fence refused the commit, or the
+                                                    # attempt was superseded). Restore
+                                                    # the pre-#97963 spacing so
+                                                    # sustained traffic does not spawn
+                                                    # and abandon a fresh compressor
+                                                    # every turn. Flat and
+                                                    # non-escalating: the streak must
+                                                    # not advance for a deferral.
+                                                    _record_hygiene_cooldown(
+                                                        _gw, _sid,
+                                                        _HYGIENE_TURNHOLD_RETRY_SECONDS,
+                                                        "hygiene compression deferred: "
+                                                        "turn-hold budget expired and the "
+                                                        "detached attempt did not commit",
+                                                    )
+
+                                            _hyg_future.add_done_callback(
+                                                _hyg_adopt_or_space_retry
+                                            )
+                                            from agent.session_activity import (
+                                                ActivityProvenance,
+                                            )
+                                            _stamp_hygiene_compression_provenance(
+                                                _hyg_agent,
+                                                "session hygiene compression turn-hold",
+                                                ActivityProvenance.AGENT_COMPRESSION_TURNHOLD,
+                                                "hygiene compression turn-hold "
+                                                "activity stamp failed",
+                                            )
+                                            logger.info(
+                                                "Session hygiene compression for session %s "
+                                                "exceeded turn-hold budget (%.1fs); "
+                                                "proceeding without compression this turn — "
+                                                "the watermark-fenced worker keeps its "
+                                                "commit admission and the summary will be "
+                                                "adopted when it finishes",
+                                                session_entry.session_id,
+                                                time.monotonic() - _hyg_wait_started,
+                                            )
+                                            _turnhold_msg = t(
+                                                "gateway.compress.turnhold_deferred"
+                                            )
+                                            try:
+                                                _adapter = self._adapter_for_source(source)
+                                                if _adapter and source.chat_id:
+                                                    await _adapter.send(
+                                                        source.chat_id,
+                                                        _turnhold_msg,
+                                                        metadata=_hyg_meta,
+                                                    )
+                                            except Exception as _werr:
+                                                logger.warning(
+                                                    "Failed to deliver compression-turnhold "
+                                                    "notice to user: %s",
+                                                    _werr,
+                                                )
+                                            raise
                                         _cancelled = None
                                         while _cancelled is None:
                                             if _hyg_commit_fence.commit_in_flight:
@@ -22038,6 +22207,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             _hyg_agent, context="session hygiene"
                                         )
 
+                    except HygieneTurnHoldExceeded:
+                        # Availability boundary, not a failure — already logged
+                        # at INFO by the turn-hold handler. Must not hit the
+                        # generic "auto-compress failed" warning below: that
+                        # log is how thinking-model deployments read as
+                        # permanently broken (#97963; surfaced by @686f6c61
+                        # in PR #99657).
+                        pass
                     except Exception as e:
                         logger.warning(
                             "Session hygiene auto-compress failed: %s", e

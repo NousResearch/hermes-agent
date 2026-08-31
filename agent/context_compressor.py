@@ -1744,6 +1744,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             self._resolved_context_length = get_model_context_length(
                 self.model, base_url=self.base_url, api_key=self.api_key,
                 config_context_length=self._config_context_length, provider=self.provider,
+                custom_providers=self._custom_providers,
             )
             # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
             self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)
@@ -2259,12 +2260,13 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         self, model: str, threshold_percent: float = 0.50, protect_first_n: int = 3, protect_last_n: int = 20,
         summary_target_ratio: float = 0.20, quiet_mode: bool = False, summary_model_override: str = None,
         base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "",
-        api_mode: str = "", abort_on_summary_failure: bool = False, max_tokens: int | None = None,
-        model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
+        custom_providers: list | None = None, api_mode: str = "", abort_on_summary_failure: bool = False,
+        max_tokens: int | None = None, model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        self._custom_providers = custom_providers
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model overrides (longest substring match wins); floor applied on top.

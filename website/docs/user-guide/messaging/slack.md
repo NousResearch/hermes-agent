@@ -666,6 +666,11 @@ slack:
   # Env: SLACK_REQUIRE_MENTION_CHANNELS.
   require_mention_channels: ""
 
+  # Read up to three Slack message links pasted into a message (the linked
+  # thread's root, the linked reply and its latest replies) with the
+  # workspace bot token, access-checked. Disabled by default.
+  resolve_permalinks: false
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -839,6 +844,12 @@ Failure buckets:
 - `routing_logic:` the Slack adapter regressed on one of the peer-agent invariants (human mention routing, peer-bot ignore, explicit peer mention admit, or passive ack/status/error suppression).
 
 If this target passes but a live workspace still misroutes messages, investigate Slack token/workspace connectivity and runtime deployment state outside the routing logic itself.
+
+### Pasted message links (`resolve_permalinks`)
+
+Set `slack.resolve_permalinks: true` to let Hermes read up to three Slack message links (`https://<workspace>.slack.com/archives/<channel>/p<ts>`) that an authorized user pastes into a message to the bot. Hermes attaches the linked message as quoted reference; with the default `false`, the agent only sees whatever preview Slack chose to unfurl.
+
+Reads use the event workspace's bot token (`conversations.history`, or `conversations.replies` for a thread reply) and need the matching history scope (`channels:history`, `groups:history`, `im:history`, or `mpim:history`); the bot must be a member of the linked conversation. `links:read` is not required. API reads require a non-empty requester ID and a positive gateway sender-authorization result; denials and authorization errors fail closed. Only links to the current conversation are read, and `allowed_channels` also restricts targets. Linked content is injected as quoted reference: authors that fail the sender authorization check, bots and webhooks are marked `[unverified]`, and ASCII square brackets in linked names, bodies and errors become full-width brackets so the content cannot forge the framing.
 
 ### Channel allowlist (`allowed_channels`)
 

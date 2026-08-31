@@ -1,10 +1,11 @@
 ---
 name: humanizer
-description: Use when humanizing, de-AIing, or editing text to remove LLM tells while preserving meaning, audience, and the writer's voice.
+description: Remove LLM tells from text while preserving voice.
 version: 2.5.2
 author: Siqi Chen (@blader), ported by Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
+tags: [writing, editing, humanize, anti-ai-slop, voice]
 metadata:
   author: Siqi Chen (@blader), ported by Hermes Agent
   tags: [writing, editing, humanize, anti-ai-slop, voice]

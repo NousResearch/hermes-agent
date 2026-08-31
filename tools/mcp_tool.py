@@ -6184,8 +6184,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         )
                     from tools.mcp_profile_scope import scope_tool_arguments
 
+                    # Only real server dicts carry a (possibly scoped)
+                    # profile_scope block.  Test doubles and half-built
+                    # objects may expose a non-dict _config; treating those
+                    # as unconfigured preserves production behavior without
+                    # weakening the fail-closed malformed-scope rule.
+                    server_config = getattr(server, "_config", None)
                     scoped_args, scope_error = scope_tool_arguments(
-                        server._config, tool_name, args
+                        server_config if isinstance(server_config, dict) else {},
+                        tool_name,
+                        args,
                     )
                     if scope_error is not None:
                         return tool_error(

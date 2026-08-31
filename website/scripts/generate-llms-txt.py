@@ -39,7 +39,7 @@ WEBSITE = SCRIPT_DIR.parent
 DOCS = WEBSITE / "docs"
 STATIC = WEBSITE / "static"
 
-SITE_BASE = "https://recursiveintell.github.io/hermes-agent/docs"
+SITE_BASE = "https://hermes-agent.nousresearch.com/docs"
 
 # The product story: which pages lead, and in what order. Everything not named
 # here is still indexed — ABSORB decides where it lands — so this list is safe
@@ -343,7 +343,7 @@ def emit_llms_full() -> str:
             "remaining pages retain their upstream-compatible reference role.\n"
         ),
         "Canonical repository: https://github.com/RecursiveIntell/hermes-agent\n",
-        "When published: https://recursiveintell.github.io/hermes-agent/docs/llms.txt\n",
+        "When published: https://hermes-agent.nousresearch.com/docs/llms.txt\n",
         "\n---\n\n",
     ]
 

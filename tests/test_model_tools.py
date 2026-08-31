@@ -90,7 +90,12 @@ class TestHandleFunctionCall:
             patch("hermes_cli.plugins.has_hook", return_value=False),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
-            result = handle_function_call("web_search", {"q": "test"}, task_id="t1")
+            # lifecycle.has_hook also consults first-party observability
+            # (stack_monitor defaults to enabled), which counts as a
+            # post_tool_call listener. Neutralize it so the test's premise —
+            # no listener of any kind — holds.
+            with patch("hermes_cli.observability.handles_hook", return_value=False):
+                result = handle_function_call("web_search", {"q": "test"}, task_id="t1")
 
         assert result == '{"ok":true}'
         fired = {c.args[0] for c in mock_invoke_hook.call_args_list}

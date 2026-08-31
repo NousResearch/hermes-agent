@@ -22,8 +22,8 @@ from tools.environments.base import (
     BaseEnvironment,
     EnvironmentConnectionError,
     _popen_bash,
-    sanitize_task_id_for_path,
 )
+from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
     _is_hermes_internal_secret,

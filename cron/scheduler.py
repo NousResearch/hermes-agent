@@ -7645,7 +7645,12 @@ def _run_one_job_body(
         # anything that isn't a plain Exception. Owner fencing still applies:
         # a stale worker must not record over a replacement claim owner.
         _err_text = str(e) or type(e).__name__
-        logger.error("Error processing job %s: %s", job['id'], _err_text)
+        logger.error(
+            "Error processing job %s: %s",
+            job["id"],
+            _err_text,
+            exc_info=(type(e), e, e.__traceback__),
+        )
         delivery_outcome = "suppressed"
         # Owner fencing: a stale worker whose fire claim was taken over (or a
         # transport-cancelled worker) must not send a failure alert on top of

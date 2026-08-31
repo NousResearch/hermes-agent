@@ -1594,7 +1594,7 @@ def _docker_sandbox_dir_candidates(session_key: str = "") -> List[str]:
     """
     candidates: List[str] = []
     try:
-        from tools.environments.base import sanitize_task_id_for_path
+        from tools.environments.path_utils import sanitize_task_id_for_path
     except Exception:
         return ["default"]
     # Explicit trusted-profiles opt-in: one shared container identity.

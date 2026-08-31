@@ -2842,9 +2842,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
 
     # All primary construction and recovery paths must identify Hermes to the
     # official Codex endpoint, including snapshots with custom header overrides.
-    from agent.auxiliary_client import _apply_required_codex_headers
+    from agent.codex_headers import apply_required_codex_headers
 
-    _apply_required_codex_headers(
+    apply_required_codex_headers(
         client_kwargs,
         access_token=client_kwargs.get("api_key", ""),
         base_url=str(client_kwargs.get("base_url", "")),

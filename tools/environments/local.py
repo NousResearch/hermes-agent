@@ -432,21 +432,15 @@ def _build_provider_env_blocklist() -> frozenset:
     # It arrives via the registry loop above (anthropic api_key_env_vars),
     # so remove it explicitly.
     blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
-    # Buzz-ACP managed agents (this process spawned by Buzz Desktop's buzz-acp
-    # harness) receive BUZZ_PRIVATE_KEY / BUZZ_RELAY_URL / BUZZ_AUTH_TAG in the
-    # process env ON PURPOSE: the platform's reply-delivery contract is the
-    # model driving the `buzz` CLI from the terminal (block/buzz#2698 — final
-    # session text is NOT delivered to the channel). The bundled buzz platform
-    # plugin registers these names as "messaging" credentials, which would
-    # strip them here and silently break every reply. Mirror the
-    # CLAUDE_CODE_OAUTH_TOKEN exception above: when this process is a
-    # Buzz-managed agent (BUZZ_MANAGED_AGENT is set by the harness), the vars
-    # are the harness's deliberate hand-off to the agent, not a Hermes-managed
-    # secret. Gateway/CLI/kanban processes never carry BUZZ_MANAGED_AGENT, so
-    # the platform-plugin secret (path ③, ~/.hermes/.env) stays stripped there.
-    if os.environ.get("BUZZ_MANAGED_AGENT"):
-        for _buzz_var in ("BUZZ_PRIVATE_KEY", "BUZZ_RELAY_URL", "BUZZ_AUTH_TAG"):
-            blocked.discard(_buzz_var)
+    # BUZZ_* is deliberately NOT discarded here, even for Buzz-managed agents
+    # (BUZZ_MANAGED_AGENT set by the buzz-acp harness).  This blocklist is
+    # shared by every scrub surface — the terminal paths, execute_code, and
+    # the :func:`hermes_subprocess_env` Tier-2 strip (browser / TUI host /
+    # copilot-executor spawns) — so an import-time discard would leak
+    # BUZZ_PRIVATE_KEY into non-terminal children too.  The Buzz carve-out is
+    # instead a TERMINAL-ONLY, context-gated scrub-path exemption: see
+    # ``_TERMINAL_FIRST_PARTY_ENV_PREFIXES`` / ``_is_terminal_first_party_env``
+    # below (issue #78026 / #76243, PRs #78065 + #78511).
     return frozenset(blocked)
 
 
@@ -458,6 +452,17 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # BUZZ_AUTH_TAG, BUZZ_RELAY_URL, and the other BUZZ_* names). These are the
 # agent's OWN credentials — a Buzz community agent is expected to operate the
 # ``buzz`` CLI — so they are carved out of the terminal scrub.
+#
+# CONTEXT-GATED: the carve-out applies ONLY when this process/session is
+# actually operating as a Buzz agent — either the process is a Buzz-ACP
+# managed agent (``BUZZ_MANAGED_AGENT`` is set, only by Buzz Desktop's
+# buzz-acp harness; see #76243 / #78511) or the current session's platform is
+# ``buzz`` (the gateway's ``HERMES_SESSION_PLATFORM`` ContextVar; concurrency
+# safe under a multi-session host). A Telegram/CLI/cron session on a host
+# that also runs a Buzz gateway does NOT get BUZZ_PRIVATE_KEY in its terminal
+# children — blanket passthrough of a signing key to every terminal child on
+# the host would be wrong (maintainer triage note on #76243: don't expose the
+# key to unrelated shell commands).
 #
 # Scope is TERMINAL ONLY: the foreground ``_make_run_env`` and background/PTY
 # ``_sanitize_subprocess_env`` paths pass them through. ``_sanitize_subprocess_env``
@@ -488,15 +493,52 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 # Hermes-managed first-party platform credentials, so they stay IN the
 # blocklist for every non-terminal surface.
 #
-# See issue #78026 (Buzz agents could not use ``buzz`` from the terminal tool).
+# See issue #78026 (Buzz agents could not use ``buzz`` from the terminal tool)
+# and #76243 (Buzz Desktop managed agent wakes but cannot reply).
 _TERMINAL_FIRST_PARTY_ENV_PREFIXES = ("BUZZ_",)
+
+
+def _matches_terminal_first_party_prefix(name: str) -> bool:
+    """Pure name check: ``name`` is one of the first-party platform
+    credential names (``BUZZ_*``), regardless of session context.  Used for
+    the snapshot exclusion, which must stay conservative even when the
+    carve-out itself is inactive."""
+    return name.startswith(_TERMINAL_FIRST_PARTY_ENV_PREFIXES)
+
+
+def _buzz_terminal_context_active() -> bool:
+    """True when this process/session is operating as a Buzz agent.
+
+    Two independent signals, either suffices:
+
+    * ``BUZZ_MANAGED_AGENT`` in the process env — set exclusively by Buzz
+      Desktop's buzz-acp harness when it spawns ``hermes acp`` (#76243).
+      Gateway / CLI / cron / kanban processes never carry it.
+    * The live session's platform is ``buzz`` — the gateway's
+      ``HERMES_SESSION_PLATFORM`` ContextVar via
+      :func:`gateway.session_context.get_session_env`, which is
+      ContextVar-authoritative under a concurrent multi-session host, so a
+      sibling Telegram/Discord session on the same gateway process resolves
+      its OWN platform, not buzz.
+    """
+    if os.environ.get("BUZZ_MANAGED_AGENT"):
+        return True
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower() == "buzz"
+    except Exception:
+        return False
 
 
 def _is_terminal_first_party_env(name: str) -> bool:
     """Return True if ``name`` is a first-party platform credential that must
-    reach terminal children (the ``BUZZ_*`` set; see
-    ``_TERMINAL_FIRST_PARTY_ENV_PREFIXES``)."""
-    return name.startswith(_TERMINAL_FIRST_PARTY_ENV_PREFIXES)
+    reach terminal children (the ``BUZZ_*`` set) AND the current
+    process/session context entitles it (Buzz-managed agent or a buzz-platform
+    session — see :func:`_buzz_terminal_context_active`)."""
+    if not _matches_terminal_first_party_prefix(name):
+        return False
+    return _buzz_terminal_context_active()
 
 
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
@@ -1953,7 +1995,11 @@ class LocalEnvironment(BaseEnvironment):
             sorted(
                 name
                 for name in merged
-                if isinstance(name, str) and _is_terminal_first_party_env(name)
+                # Prefix-only on purpose: the snapshot exclusion stays
+                # conservative even when the context-gated carve-out is
+                # inactive (the var then never reaches the child env anyway,
+                # but a monotonic exclusion is a cheap extra guard).
+                if isinstance(name, str) and _matches_terminal_first_party_prefix(name)
             )
         )
 

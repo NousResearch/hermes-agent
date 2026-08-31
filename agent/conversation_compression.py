@@ -5148,6 +5148,51 @@ def compress_context(
                                 "_proactive_prune_rearm_tokens"
                             ]
                         )
+                elif (
+                    in_place
+                    and split_status != "in_place_committed"
+                    and messages_before_compression is not None
+                ):
+                    # In-place sibling of the rotation rollback above (#99477).
+                    # archive_and_compact() is atomic, so a raise before it
+                    # returned means EVERY pre-compaction row is still
+                    # ``active = 1`` in state.db — nothing was archived and the
+                    # compacted set was never inserted. But ``compressed`` is
+                    # the marker-swept output of compress()
+                    # (_strip_persistence_markers, #57491) and the post-commit
+                    # ``stamp_db_persisted_markers`` never ran, so handing it
+                    # back makes the next append-only flush treat the whole
+                    # compacted transcript as new and INSERT it ON TOP of the
+                    # rows it was supposed to replace. The active set then holds
+                    # the summary AND the turns it summarized; the next resume
+                    # reloads both, the token count goes UP, preflight fires
+                    # again, and each failed attempt appends another copy of the
+                    # protected head + tail (#99477: ~15 real turns stored as
+                    # 3,814 rows, the first user message repeated 893 times).
+                    #
+                    # Gate on ``split_status`` rather than ``compacted_in_place``:
+                    # it is assigned on the statement immediately after the
+                    # atomic commit returns, so a committed compaction can never
+                    # be rolled back into a live/durable mismatch of the
+                    # opposite sign.
+                    #
+                    # The deepcopy carries each row's _DB_PERSISTED_MARKER from
+                    # the pre-compression snapshot, so the restored transcript is
+                    # correctly skipped by the flush, and replacing every dict
+                    # breaks _db_flush_scan_prefix identity (same reasoning as
+                    # the rotation branch — no explicit clear needed).
+                    messages[:] = copy.deepcopy(messages_before_compression)
+                    compressed = messages
+                    _compression_made_progress = False
+                    # Runway rolls back with the transcript, exactly as above:
+                    # compress() zeroed it in memory, and the durable clear only
+                    # rides the archive_and_compact that just failed.
+                    if "_proactive_prune_rearm_tokens" in _compressor_attempt_snapshot:
+                        agent.context_compressor._proactive_prune_rearm_tokens = (
+                            _compressor_attempt_snapshot[
+                                "_proactive_prune_rearm_tokens"
+                            ]
+                        )
                 split_status = (
                     "aborted"
                     if locals().get("old_session_id") is None and not in_place

@@ -136,8 +136,23 @@ export interface EnvVarInfo {
   // desktop-only env-var prefix guesses. Empty for non-provider env vars.
   provider?: string
   provider_label?: string
+  // A credential env var can be shared by multiple built-in routes. The
+  // singular fields above remain for compatibility; this list lets the Keys
+  // tab render every provider card without duplicating credential storage.
+  provider_profiles?: EnvProviderProfile[]
+  // Frontend-only hint copied from a provider profile while grouping a shared
+  // credential. It keeps the provider's first credential ahead of aliases.
+  provider_primary?: boolean
   redacted_value: null | string
   tools: string[]
+  url: null | string
+}
+
+export interface EnvProviderProfile {
+  description: string
+  primary: boolean
+  provider: string
+  provider_label: string
   url: null | string
 }
 

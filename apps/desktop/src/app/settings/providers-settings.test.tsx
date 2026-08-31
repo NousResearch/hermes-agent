@@ -180,6 +180,46 @@ describe('ProvidersSettings', () => {
     expect(await screen.findByText('WidgetAI')).toBeTruthy()
   })
 
+  it('renders separate provider cards that share one credential env var', async () => {
+    getEnvVars.mockResolvedValue({
+      DASHSCOPE_API_KEY: keyVar({
+        provider: 'alibaba',
+        provider_label: 'Qwen Cloud',
+        provider_profiles: [
+          {
+            description: 'International DashScope route',
+            primary: true,
+            provider: 'alibaba',
+            provider_label: 'Qwen Cloud',
+            url: 'https://modelstudio.console.alibabacloud.com/'
+          },
+          {
+            description: 'Mainland-China DashScope route',
+            primary: true,
+            provider: 'alibaba-cn',
+            provider_label: 'Alibaba Cloud DashScope (China)',
+            url: 'https://bailian.console.aliyun.com/'
+          }
+        ]
+      })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    expect(await screen.findByText('Qwen Cloud')).toBeTruthy()
+    expect(screen.getByText('Alibaba Cloud DashScope (China)')).toBeTruthy()
+    const inputs = screen.getAllByPlaceholderText(/Paste .* key/)
+    expect(inputs).toHaveLength(2)
+
+    fireEvent.focus(inputs[0])
+    fireEvent.change(inputs[0], { target: { value: 'shared-secret' } })
+
+    expect(screen.getAllByDisplayValue('shared-secret')).toHaveLength(1)
+    expect((inputs[1] as HTMLInputElement).value).toBe('')
+  })
+
   it('orders API-key providers by priority then name, and filters them via search', async () => {
     // These three providers have no curated PROVIDER_GROUPS priority, so they
     // share the default priority and fall back to alphabetical among themselves

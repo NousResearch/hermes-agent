@@ -48,8 +48,10 @@ export function KeyField({
   info,
   placeholder,
   rowProps,
-  varKey
+  varKey,
+  editKey = varKey
 }: {
+  editKey?: string
   expanded?: boolean
   info: EnvVarInfo
   placeholder?: string
@@ -58,21 +60,21 @@ export function KeyField({
 }) {
   const { t } = useI18n()
   const { edits, onClear, onSave, saving, setEdits } = rowProps
-  const editing = edits[varKey] !== undefined
+  const editing = edits[editKey] !== undefined
   // Bare (plain subtext) only while the group is collapsed and idle. Expanding
   // the card counts as "focused in", so it gets full input chrome too.
   const bare = !editing && !expanded
-  const draft = edits[varKey] ?? ''
+  const draft = edits[editKey] ?? ''
   const dirty = draft.trim().length > 0
   const busy = saving === varKey
   const masked = info.redacted_value ?? '••••••••'
-  const startEdit = () => setEdits(c => ({ ...c, [varKey]: '' }))
-  const cancel = () => setEdits(c => withoutKey(c, varKey))
-  const update = (e: ChangeEvent<HTMLInputElement>) => setEdits(c => ({ ...c, [varKey]: e.target.value }))
+  const startEdit = () => setEdits(c => ({ ...c, [editKey]: '' }))
+  const cancel = () => setEdits(c => withoutKey(c, editKey))
+  const update = (e: ChangeEvent<HTMLInputElement>) => setEdits(c => ({ ...c, [editKey]: e.target.value }))
 
   const keydown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && dirty) {
-      void onSave(varKey)
+      void onSave(varKey, editKey)
     } else if (e.key === 'Escape' && editing) {
       e.preventDefault()
       e.stopPropagation()
@@ -119,7 +121,7 @@ export function KeyField({
               aria-label={t.settings.credentials.remove}
               className="text-muted-foreground hover:text-destructive"
               disabled={busy}
-              onClick={() => void onClear(varKey)}
+              onClick={() => void onClear(varKey, editKey)}
               size="icon-xs"
               title={t.settings.credentials.remove}
               type="button"
@@ -129,7 +131,7 @@ export function KeyField({
             </Button>
           )}
           {dirty && (
-            <Button className="h-8" disabled={busy} onClick={() => void onSave(varKey)} size="sm">
+            <Button className="h-8" disabled={busy} onClick={() => void onSave(varKey, editKey)} size="sm">
               {busy ? <Loader2 className="animate-spin" /> : <Save />}
               {busy ? t.settings.credentials.saving : t.common.save}
             </Button>
@@ -323,6 +325,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
           }}
         >
           <KeyField
+            editKey={`${group.name}:${group.primary[0]}`}
             expanded={expanded}
             info={group.primary[1]}
             placeholder={t.settings.credentials.pasteLabelKey(group.name)}
@@ -348,6 +351,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
                 <ListRow
                   action={
                     <KeyField
+                      editKey={`${group.name}:${key}`}
                       expanded={expanded}
                       info={info}
                       placeholder={credentialPlaceholder(key, info, fieldLabel)}

@@ -330,7 +330,12 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
     # terminal_tool uses its per-backend default; an explicit path is kept.
     effective_backend = terminal_config.get("env_type", "local")
     if effective_backend == "local":
-        terminal_config["cwd"] = os.getcwd()
+        from agent.runtime_cwd import resolve_kanban_worker_cwd
+
+        terminal_config["cwd"] = (
+            resolve_kanban_worker_cwd(os.environ.get("TERMINAL_CWD"))
+            or os.getcwd()
+        )
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)

@@ -939,6 +939,8 @@ class DockerEnvironment(BaseEnvironment):
         self._container_name: str = ""
         self._image_uses_s6_init: bool = False
         self._all_run_args: list[str] = []
+        self._run_env_values: dict[str, str] = {}
+        self._init_env_values: dict[str, str] = {}
         logger.info("DockerEnvironment volumes: %s", volumes)
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -1308,9 +1310,16 @@ class DockerEnvironment(BaseEnvironment):
             if not merged_env["NODE_OPTIONS"]:
                 merged_env.pop("NODE_OPTIONS", None)
 
+        # Name-only -e flags: the docker CLI resolves a valueless `--env KEY`
+        # from its own process environment, so the secret values travel via
+        # the spawned client's env (owner-readable /proc/*/environ) instead of
+        # its argv (world-readable /proc/*/cmdline). See issue #96268.
         env_args = []
         for key in sorted(merged_env):
-            env_args.extend(["-e", f"{key}={merged_env[key]}"])
+            env_args.extend(["-e", key])
+        # Values injected into the docker-client subprocess env at run time
+        # (also reused verbatim by the container-recreation recovery path).
+        self._run_env_values = dict(merged_env)
 
         # Optional: run the container as the host user so files written into
         # bind-mounted dirs (/workspace, /root, docker_volumes entries) are
@@ -1529,6 +1538,7 @@ class DockerEnvironment(BaseEnvironment):
                     timeout=120,  # image pull may take a while
                     check=True,
                     stdin=subprocess.DEVNULL,
+                    env=self._docker_client_env(self._run_env_values),
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 # Docker may create the container object before `docker run`
@@ -1557,11 +1567,29 @@ class DockerEnvironment(BaseEnvironment):
         # Initialize session snapshot inside the container
         self.init_session()
 
+    def _docker_client_env(self, values: dict[str, str]) -> dict[str, str] | None:
+        """Env for a spawned docker-client subprocess carrying forwarded values.
+
+        Name-only ``-e KEY`` flags make the docker CLI read each value from
+        its own process environment, keeping secrets out of the client's
+        world-readable ``/proc/<pid>/cmdline`` (issue #96268). Values live in
+        ``/proc/<pid>/environ`` instead, which is owner/root-only.
+        Returns ``None`` (inherit as before) when there is nothing to add.
+        """
+        if not values:
+            return None
+        client_env = dict(os.environ)
+        client_env.update(values)
+        return client_env
+
     def _build_init_env_args(self) -> list[str]:
-        """Build -e KEY=VALUE args for injecting host env vars into init_session.
+        """Build name-only -e args for injecting host env vars into init_session.
 
         These are used during init_session() so that export -p captures the
         configured environment and the current profile's forwarded values.
+        The VALUES intentionally do not appear in the argv — they are passed
+        via the docker client subprocess env (see _docker_client_env and
+        issue #96268); the flags here are name-only ``-e KEY``.
         """
         passthrough_env, unset_names = self._resolve_passthrough_env()
         exec_env: dict[str, str] = dict(self._env)
@@ -1569,10 +1597,11 @@ class DockerEnvironment(BaseEnvironment):
         for name in unset_names:
             exec_env.pop(name, None)
         self._init_unset_passthrough_names = tuple(sorted(unset_names))
+        self._init_env_values = dict(exec_env)
 
         args = []
         for key in sorted(exec_env):
-            args.extend(["-e", f"{key}={exec_env[key]}"])
+            args.extend(["-e", key])
         return args
 
     def _build_passthrough_env(self) -> dict[str, str]:
@@ -1619,16 +1648,22 @@ class DockerEnvironment(BaseEnvironment):
                 unset_names.add(key)
         return exec_env, unset_names
 
-    def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...]]:
-        """Build runtime forwarding args plus names absent from the active scope."""
+    def _build_runtime_env_args_with_unsets(
+        self,
+    ) -> tuple[list[str], tuple[str, ...], dict[str, str]]:
+        """Build runtime forwarding args, names absent from scope, and values.
+
+        The returned args are name-only ``-e KEY`` flags (issue #96268); the
+        values dict must be injected into the docker client subprocess env.
+        """
         passthrough_env, unset_names = self._resolve_passthrough_env()
         args = []
         for key in sorted(passthrough_env):
-            args.extend(["-e", f"{key}={passthrough_env[key]}"])
-        return args, tuple(sorted(unset_names))
+            args.extend(["-e", key])
+        return args, tuple(sorted(unset_names)), dict(passthrough_env)
 
     def _build_runtime_env_args(self) -> list[str]:
-        """Build only dynamic forwarded values for a non-login command."""
+        """Build only dynamic forwarded names for a non-login command."""
         return self._build_runtime_env_args_with_unsets()[0]
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
@@ -1643,11 +1678,17 @@ class DockerEnvironment(BaseEnvironment):
         # Init seeds the snapshot. Profile-scoped passthrough values are also
         # injected on every later command because this container can be shared
         # by multiple routed profiles in one gateway process.
+        # Env flags are name-only; values travel via the client subprocess
+        # env so they never hit world-readable /proc/*/cmdline (#96268).
         unset_names: tuple[str, ...] = ()
+        env_values: dict[str, str] = {}
         if login:
             cmd.extend(self._init_env_args)
+            env_values = dict(getattr(self, "_init_env_values", {}))
         elif self._profile_scoped_passthrough:
-            runtime_args, unset_names = self._build_runtime_env_args_with_unsets()
+            runtime_args, unset_names, env_values = (
+                self._build_runtime_env_args_with_unsets()
+            )
             cmd.extend(runtime_args)
 
         if login:
@@ -1663,6 +1704,9 @@ class DockerEnvironment(BaseEnvironment):
         else:
             cmd.extend(["bash", "-c", cmd_string])
 
+        client_env = self._docker_client_env(env_values)
+        if client_env is not None:
+            return _popen_bash(cmd, stdin_data, env=client_env)
         return _popen_bash(cmd, stdin_data)
 
     # ------------------------------------------------------------------
@@ -1741,6 +1785,7 @@ class DockerEnvironment(BaseEnvironment):
                 result = subprocess.run(
                     run_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
+                    env=self._docker_client_env(self._run_env_values),
                 )
                 self._container_id = result.stdout.strip()
                 self._container_name = new_name

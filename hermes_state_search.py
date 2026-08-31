@@ -88,11 +88,13 @@ class SessionSearchMixin:
             self._merge_fts_incrementally(
                 max_pages=self._FTS_MERGE_MAX_PAGES_PER_INDEX
             )
-        except sqlite3.Error as exc:
-            # Routine maintenance is best effort, but unexpected SQLite errors
-            # must remain visible instead of being silently mistaken for an
-            # optional missing index.
-            logger.warning("FTS incremental merge failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - post-commit maintenance
+            # The canonical write is already committed before this cadence
+            # runs. No maintenance failure — including the bare SystemError
+            # the CPython sqlite3 layer can raise under cross-thread errmsg
+            # scrambling — may escape and make the caller replay an
+            # ambiguous, possibly-durable write (#90734, #85079).
+            logger.warning("FTS incremental merge failed after commit: %s", exc)
 
     def fts_rebuild_status(self) -> Optional[Dict[str, Any]]:
         """Return deferred-rebuild progress, or None when no rebuild pending.

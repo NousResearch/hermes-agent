@@ -13578,7 +13578,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
             if not exists:
                 return []
-            delegate_ids = _collect_delegate_child_ids(self._conn, [session_id])
+            # Use the borrowed read connection, never self._conn: handing the
+            # shared writer connection to a helper here executes on it without
+            # self._lock — the same unsynchronized-read class as #99349/#90734.
+            delegate_ids = _collect_delegate_child_ids(conn, [session_id])
         return [session_id, *sorted(delegate_ids)]
 
     def delete_session(

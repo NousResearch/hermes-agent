@@ -21,11 +21,8 @@ import hermes_time
 
 
 def _reset_hermes_time_cache():
-    """Reset the hermes_time module cache (replacement for removed reset_cache)."""
-    hermes_time._cached_tz = None
-    hermes_time._cached_tz_name = None
-    hermes_time._cache_resolved = False
-    hermes_time._cache_identity = None
+    """Reset the hermes_time module cache."""
+    hermes_time.reset_cache()
 
 
 # =========================================================================
@@ -105,6 +102,64 @@ class TestGetTimezone:
         # Multiplexed profile runtime scopes switch HERMES_HOME in one process.
         monkeypatch.setenv("HERMES_HOME", str(second_home))
         assert str(hermes_time.get_timezone()) == "America/New_York"
+
+        # Switching BACK must return the first profile's zone (per-identity
+        # entries stay hot; no single-slot ping-pong).
+        monkeypatch.setenv("HERMES_HOME", str(first_home))
+        assert str(hermes_time.get_timezone()) == "Asia/Tokyo"
+
+    def test_concurrent_profile_resolution_never_mixes_zones(
+        self, tmp_path, monkeypatch
+    ):
+        """Racing profile-scoped threads must never observe a foreign zone.
+
+        The multiplex cron ticker lets profile-A work (mark_job_run /
+        compute_next_run) overlap the ticker advancing to profile B. The
+        cache publication must be atomic per identity: identity A can never
+        be paired with profile B's ZoneInfo (#97905 review finding on
+        PR #92489).
+        """
+        import threading
+
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        zones = {"a": "Asia/Tokyo", "b": "America/New_York"}
+        homes = {}
+        for key, zone in zones.items():
+            home = tmp_path / key
+            home.mkdir()
+            (home / "config.yaml").write_text(
+                f"timezone: {zone}\n", encoding="utf-8"
+            )
+            homes[key] = home
+        monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+
+        errors = []
+        barrier = threading.Barrier(2)
+
+        def worker(key: str) -> None:
+            barrier.wait()
+            for _ in range(200):
+                token = set_hermes_home_override(str(homes[key]))
+                try:
+                    tz = hermes_time.get_timezone()
+                    if str(tz) != zones[key]:
+                        errors.append((key, str(tz)))
+                        return
+                finally:
+                    reset_hermes_home_override(token)
+
+        threads = [
+            threading.Thread(target=worker, args=(key,)) for key in zones
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, f"foreign timezone observed: {errors}"
 
 
 # =========================================================================

@@ -145,40 +145,23 @@ def _agent_source(
 
 
 def _conversation_generation(session_key: str, source: str, session_db: Any) -> str:
-    """Return the generation marker for *session_key*'s current conversation.
+    """Return the durable generation for *session_key*'s current conversation.
 
-    The declared key is a per-CHAT identifier and deliberately outlives any
-    single conversation on it — ``reset_session()`` mints a fresh physical id
-    on ``/new`` but keeps the key, and the idle/daily/suspended policy resets
-    do the same. Hashing the key alone would therefore map the conversation
-    before a reset and the one after it onto ONE affinity scope, violating the
-    #79017/#86733 contract (warm across compression rotation, cold across a
-    new conversation).
+    The declared key names a chat and deliberately survives `/new` and policy
+    resets. Hashing it alone would therefore reuse one affinity scope across
+    distinct conversations, violating the #79017/#86733 contract: warm across
+    compression, cold across a conversation boundary.
 
-    The generation that must rotate is already durable: every one of those
-    boundaries closes the outgoing row with an ``_RESET_END_REASONS``
-    end_reason, and ``SessionDB.latest_conversation_boundary`` reports the most
-    recent one. Qualifying the key with it gives a carrier that is
+    ``SessionDB.latest_conversation_boundary`` reads the monotonic
+    ``conversation_generations`` counter for ``(source, session_key)``. The
+    counter advances in the same transaction that records an
+    ``_RESET_END_REASONS`` boundary. It is independent of prunable session rows
+    and wall-clock time, so deletion, bulk pruning, and clock rollback cannot
+    reissue an old generation. Compression continues the current conversation
+    and does not advance it.
 
-    - stable across a host's per-response physical ids (no boundary is written
-      when nothing was reset, so every reply hashes the same value), and
-    - rotating on every conversation replacement, ``/new`` and the policy
-      auto-resets alike.
-
-    The marker is a durable counter kept outside prunable session history
-    (``conversation_generations``, advanced in the same transaction that writes
-    each boundary). Deriving it from the session rows instead — an aggregate
-    over ``_RESET_END_REASONS`` boundaries — cannot prove non-reuse: deleting or
-    pruning an ended row makes the aggregate return a pair it already emitted,
-    handing a new conversation a retired affinity identity. It is also
-    wall-clock-free, so a backwards NTP correction cannot reorder it.
-
-    No counter is introduced anywhere: the marker is read from state the
-    reset paths already write, and it is read on the memoized resolution path,
-    not per API call.
-
-    Returns ``""`` when the key has never been reset, when the DB does not
-    expose the lookup, or when it reports nothing.
+    This lookup runs on the memoized resolution path, not once per API call.
+    Return ``""`` when the key has never reset or the DB exposes no generation.
     """
     reader = getattr(session_db, "latest_conversation_boundary", None)
     if not callable(reader):

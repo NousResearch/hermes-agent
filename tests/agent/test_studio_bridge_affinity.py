@@ -19,9 +19,8 @@ The shape reproduced here:
 1. ``groupRuntimeSessionId(room, profile, name)`` mints
    ``gc_run_<room>_<profile>_<name>`` truncated to 96 characters plus a fresh
    UUID4 hex — a NEW physical id per reply;
-2. the bridge writes the row itself before the agent runs, so the row already
-   exists when the scope first resolves, and the row's ``source`` — not
-   ``agent.platform`` — is the identity the peer queries match on;
+2. the agent is constructed before the row exists (same as Studio's pool);
+   the bridge then writes the row, so the resolution reads a landed row;
 3. ``AIAgent(...)`` is constructed with ``platform`` / ``session_id`` /
    ``session_db`` and no routing identity of any kind.
 
@@ -112,15 +111,24 @@ def _reply_scope(
     name: str = "Reviewer",
     row_source: str = BRIDGE_ROW_SOURCE,
 ) -> str:
-    """One Studio reply, in the bridge's own order, returning its scope."""
+    """One Studio reply, in the bridge's own order, returning its scope.
+
+    Mirrors the real Studio construction order: ``AIAgent(...)`` is built
+    first with a fresh physical id, then the bridge persists the row, then
+    the scope is resolved against the now-landed row.  Constructing the
+    agent before persistence is the part the test exists to pin — the
+    resolution path must read the row at resolve time, not assume it was
+    already there when the agent was instantiated.
+    """
     session_id = _runtime_session_id(room=room, name=name)
-    # The bridge writes the row before the agent runs.
+    # AIAgent first — same order as the Studio bridge pool.
+    agent = _bridge_agent(session_db, session_id, declared_key=declared_key)
+    # Then the bridge writes the row, which is when the scope's row reads
+    # finally have something to find.
     session_db.create_session(
         session_id=session_id, source=row_source, model="test/model"
     )
-    return resolve_prompt_cache_scope(
-        _bridge_agent(session_db, session_id, declared_key=declared_key)
-    )
+    return resolve_prompt_cache_scope(agent)
 
 
 class TestStudioBridgeAffinity:
@@ -203,23 +211,21 @@ class TestStudioBridgeAffinity:
         conversation = _reply_scope(db, declared_key=key)
 
         child_id = _runtime_session_id()
+        child = _bridge_agent(db, child_id, declared_key=key)
         db.create_session(session_id=child_id, source="tool", model="test/model")
-        child = resolve_prompt_cache_scope(
-            _bridge_agent(db, child_id, declared_key=key)
-        )
 
-        assert child == child_id
-        assert child != conversation
+        assert resolve_prompt_cache_scope(child) == child_id
+        assert child_id != conversation
 
     def test_a_background_review_fork_never_borrows_the_declaration(self, db):
         """Background review clones the live runtime, declared key included."""
         key = _bridge_session_key()
         session_id = _runtime_session_id()
+        agent = _bridge_agent(db, session_id, declared_key=key)
+        agent._persist_disabled = True
         db.create_session(
             session_id=session_id, source=BRIDGE_ROW_SOURCE, model="test/model"
         )
-        agent = _bridge_agent(db, session_id, declared_key=key)
-        agent._persist_disabled = True
 
         assert resolve_prompt_cache_scope(agent) == session_id
 
@@ -229,11 +235,10 @@ class TestUndeclaredBridgeIsUnchanged:
 
     def test_the_undeclared_shape_resolves_to_the_physical_id(self, db):
         session_id = _runtime_session_id()
+        agent = _bridge_agent(db, session_id, declared_key=None)
         db.create_session(
             session_id=session_id, source=BRIDGE_ROW_SOURCE, model="test/model"
         )
-
-        agent = _bridge_agent(db, session_id, declared_key=None)
 
         assert resolve_prompt_cache_scope(agent) == session_id
 
@@ -248,7 +253,6 @@ class TestUndeclaredBridgeIsUnchanged:
             model="test/model",
             parent_session_id=root,
         )
-
         agent = _bridge_agent(db, rotated, declared_key=None)
 
         assert resolve_prompt_cache_scope(agent) == root

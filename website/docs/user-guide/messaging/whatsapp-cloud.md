@@ -313,7 +313,7 @@ Message-template support (the workaround for outside-window sends) is not yet im
 
 ### Group chats
 
-The Cloud API has limited group support (capability-tier gated by Meta).  Hermes's `whatsapp_cloud` adapter currently handles **direct messages only** in v1.  If you need group chats, use the Baileys bridge.
+The Cloud API has limited group support (capability-tier gated by Meta).  Hermes's `whatsapp_cloud` adapter currently handles **direct messages only** in v1.  If you need group chats, use the Baileys bridge and review its [group, Community, and filtered-traffic behavior](./whatsapp.md#groups-communities-and-filtered-traffic).
 
 ### Outbound rate limit
 
@@ -398,7 +398,7 @@ This uses your Nous Portal access token instead of needing a separate OpenAI key
 | Account ban risk | Yes (unofficial API) | No (officially supported) |
 | Inbound | Polling Node bridge | Webhook POST from Meta |
 | Outbound | Local bridge → Baileys | HTTPS to graph.facebook.com |
-| Groups | Full support | DMs only (v1) |
+| Groups | Full support ([groups and Communities](./whatsapp.md#groups-communities-and-filtered-traffic)) | DMs only (v1) |
 | 24h window | No restriction | Hard rule — templates required after |
 | Voice notes (out) | Native | Native with ffmpeg, MP3 fallback otherwise |
 | Read receipts | No | Yes (blue double-checkmarks) |

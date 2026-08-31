@@ -167,6 +167,19 @@ with reconnection logic.
 
 ---
 
+## Groups, Communities, and filtered traffic
+
+The Baileys bridge handles chats ending in `@g.us` as groups. This includes ordinary WhatsApp groups and Community subgroups. When Baileys reports a Community Announcements chat with an `@g.us` ID, that chat follows the same group access and mention rules. Classification uses the chat ID suffix: only `@newsletter` IDs are treated as Channels.
+
+Hermes ignores these inbound pseudo-chats before applying DM or group access rules:
+
+- Status updates and broadcast lists with IDs ending in `@broadcast`.
+- WhatsApp Channels, which Baileys identifies with IDs ending in `@newsletter`.
+
+Changing an allowlist or access policy does not enable these filtered chats. If you need group support through Hermes, use a regular group or Community subgroup. The [WhatsApp Cloud API adapter](./whatsapp-cloud.md#group-chats) currently handles direct messages only.
+
+---
+
 ## Voice Messages
 
 Hermes supports voice on WhatsApp:
@@ -256,6 +269,7 @@ Replying to (quoting) an earlier message gives the agent the quoted text as cont
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
 | **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
+| **Status, Channel, or broadcast-list posts do not trigger the agent** | This is expected. The Baileys adapter filters `@broadcast` and `@newsletter` chats before access checks. Community chats reported as `@g.us` use the normal group path instead, so check their group access and mention settings. |
 | **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
 
 ---

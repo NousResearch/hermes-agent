@@ -95,11 +95,17 @@ def _preflight_request_tokens(
             "using generic transcript estimate",
             exc_info=True,
         )
+    if _agent_stale_thinking_on_wire(agent):
+        return estimate_request_tokens_rough(
+            messages,
+            system_prompt=system_prompt or "",
+            tools=tools,
+        )
     return estimate_request_tokens_rough(
         messages,
         system_prompt=system_prompt or "",
         tools=tools,
-        charge_stale_thinking=_agent_stale_thinking_on_wire(agent),
+        charge_stale_thinking=False,
     )
 
 

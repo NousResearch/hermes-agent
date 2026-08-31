@@ -3836,9 +3836,15 @@ def estimate_request_tokens_rough(
     if system_prompt:
         total += estimate_tokens_rough(system_prompt)
     if messages:
-        total += estimate_messages_tokens_rough(
-            messages, charge_stale_thinking=charge_stale_thinking
-        )
+        if charge_stale_thinking:
+            # Positional-compatible call: test seams and plugin engines
+            # monkeypatch estimate_messages_tokens_rough with (messages)-only
+            # signatures; only the route-aware False path needs the kwarg.
+            total += estimate_messages_tokens_rough(messages)
+        else:
+            total += estimate_messages_tokens_rough(
+                messages, charge_stale_thinking=False
+            )
     if tools:
         total += _estimate_tools_tokens_rough(tools)
     return total

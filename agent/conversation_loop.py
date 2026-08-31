@@ -2679,10 +2679,12 @@ def run_conversation(
         # disagreement that dead-looped compaction.
         from agent.turn_context import _agent_stale_thinking_on_wire
 
-        approx_tokens = estimate_messages_tokens_rough(
-            api_messages,
-            charge_stale_thinking=_agent_stale_thinking_on_wire(agent),
-        )
+        if _agent_stale_thinking_on_wire(agent):
+            approx_tokens = estimate_messages_tokens_rough(api_messages)
+        else:
+            approx_tokens = estimate_messages_tokens_rough(
+                api_messages, charge_stale_thinking=False
+            )
         # Route-aware pressure: when the upcoming request is eligible for
         # native Responses compaction the transport will checkpoint-prune
         # the payload before sending — the generic durable-history figure

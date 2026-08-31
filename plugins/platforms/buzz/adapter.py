@@ -1464,6 +1464,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 caption=caption,
                 reply_to=reply_to,
                 metadata=metadata,
+                probe=False,
             )
         # Markdown renders in Buzz, so a URL arrives as a clickable image link.
         text = f"{caption}\n{image_url}" if caption else image_url
@@ -1477,10 +1478,16 @@ class BuzzAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        probe: bool = True,
     ) -> SendResult:
-        """Upload a local file and publish it as a native Buzz attachment."""
+        """Upload a local file and publish it as a native Buzz attachment.
+
+        ``probe=False`` skips the existence re-check when the caller already
+        verified the file — a second probe could race into a false
+        "not found" if the file disappears between checks (#74999).
+        """
         local = Path(file_path).expanduser()
-        if not local.is_file():
+        if probe and not local.is_file():
             return SendResult(success=False, error=f"File not found: {local}")
         args = [
             "messages", "send",
@@ -1535,6 +1542,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 caption=caption,
                 reply_to=reply_to,
                 metadata=metadata,
+                probe=False,
             )
         return await super().send_image_file(
             chat_id=chat_id,

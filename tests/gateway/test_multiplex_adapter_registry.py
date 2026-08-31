@@ -1,6 +1,8 @@
 """Phase 3: secondary-profile adapter registry + same-token conflict detection."""
 import logging
 import asyncio
+import threading
+import time
 import types
 from contextlib import contextmanager
 from pathlib import Path
@@ -227,11 +229,15 @@ def _secondary_recovery_runner(*, running=True):
     return runner
 
 
-def _install_secondary_reconnect_context(monkeypatch, runner, adapter, scoped_homes=None):
+def _install_secondary_reconnect_context(
+    monkeypatch, runner, adapter, scoped_homes=None, hydration_flags=None
+):
     @contextmanager
-    def fake_scope(profile_home):
+    def fake_scope(profile_home, *, hydrate_secrets=True):
         if scoped_homes is not None:
             scoped_homes.append(Path(profile_home))
+        if hydration_flags is not None:
+            hydration_flags.append(hydrate_secrets)
         yield
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
@@ -253,6 +259,61 @@ def _install_secondary_reconnect_context(monkeypatch, runner, adapter, scoped_ho
 
 
 class TestSecondaryProfileFatalRecovery:
+    @pytest.mark.asyncio
+    async def test_reconnect_hydrates_secrets_off_the_event_loop(self, monkeypatch):
+        runner = _secondary_recovery_runner()
+        replacement = _SecondaryRecoveryAdapter()
+        hydration_flags = []
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, replacement, hydration_flags=hydration_flags
+        )
+        loop_thread_id = threading.get_ident()
+        hydration_started = threading.Event()
+        hydration_finished = threading.Event()
+        hydration_thread_ids = []
+        stop_ticker = asyncio.Event()
+        ticks_during_hydration = 0
+
+        def slow_hydrate(profile_home):
+            hydration_thread_ids.append(threading.get_ident())
+            hydration_started.set()
+            time.sleep(0.05)
+            hydration_finished.set()
+
+        async def ticker():
+            nonlocal ticks_during_hydration
+            while not stop_ticker.is_set():
+                if hydration_started.is_set() and not hydration_finished.is_set():
+                    ticks_during_hydration += 1
+                await asyncio.sleep(0)
+
+        async def connect(adapter, platform, *, is_reconnect=False):
+            assert adapter is replacement
+            assert platform is Platform.DISCORD
+            assert is_reconnect is True
+            return True
+
+        monkeypatch.setattr(
+            "hermes_cli.env_loader.hydrate_profile_secret_sources", slow_hydrate
+        )
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        ticker_task = asyncio.create_task(ticker())
+        reconnect_task = asyncio.create_task(
+            runner._run_secondary_profile_reconnect("reviewer", Platform.DISCORD)
+        )
+        try:
+            assert await asyncio.to_thread(hydration_started.wait, 1.0)
+            await reconnect_task
+        finally:
+            stop_ticker.set()
+            await ticker_task
+
+        assert len(hydration_thread_ids) == 1
+        assert hydration_thread_ids[0] != loop_thread_id
+        assert ticks_during_hydration > 0
+        assert hydration_flags == [False]
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+
     @pytest.mark.asyncio
     async def test_retryable_secondary_fatal_reconnects_with_its_profile_scope(
         self, monkeypatch

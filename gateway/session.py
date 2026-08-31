@@ -1336,6 +1336,17 @@ class SessionStore:
             handles=self._db_handles,
             lock=self._db_handles_lock,
         )
+        # The routing index is one process-wide structure keyed by
+        # ``agent:<profile>:…``, not a per-profile one, so it needs exactly one
+        # home for its lifetime. The store is constructed at startup under the
+        # gateway's own home, before any profile scope exists, so capturing it
+        # here is what makes the index deterministic — see ``_routing_db``.
+        try:
+            from hermes_constants import get_hermes_home
+
+            self._routing_home: Optional[Path] = Path(get_hermes_home())
+        except Exception:
+            self._routing_home = None
         self._open_session_db_for_active_scope()
 
     def _open_session_db_for_active_scope(self, db_path: Optional[Path] = None):
@@ -1404,6 +1415,33 @@ class SessionStore:
     @_db.setter
     def _db(self, value) -> None:
         self._db_pinned = value
+
+    @property
+    def _routing_db(self):
+        """The one store that owns the routing index, whatever scope is active.
+
+        ``_entries`` is a single flat dict holding every profile's keys, so the
+        index it persists to has to be a single file too.  Reading it through
+        ``_db`` made that file whichever profile happened to be scoped at the
+        time: a whole-index rewrite during one profile's turn copied every
+        other profile's routing rows into that profile's store, and startup —
+        which runs unscoped — then loaded a different copy than the one the
+        last writer produced.  That is why a crash marker written while a
+        secondary profile was active is invisible to the startup recovery pass
+        (#66887).
+
+        A pinned handle still wins, so the suites that install a fake or
+        disable the DB keep working unchanged.
+        """
+        if self._db_pinned is not _DB_UNPINNED:
+            return self._db_pinned
+        home = getattr(self, "_routing_home", None)
+        if home is None:
+            return self._db
+        try:
+            return self._open_session_db_for_active_scope(db_path=home / "state.db")
+        except Exception:
+            return None
 
     def _named_profile_for_key(self, session_key: Optional[str]) -> Optional[str]:
         """The non-default profile that owns *session_key*, or None.
@@ -1618,7 +1656,7 @@ class SessionStore:
         # _prune_stale_sessions_locked).
         db_had_entries = False
         db_load_succeeded = False
-        _db = getattr(self, "_db", None)
+        _db = self._routing_db
         if _db:
             loader = getattr(_db, "load_gateway_routing_entries", None)
             if callable(loader):
@@ -1710,14 +1748,21 @@ class SessionStore:
         legacy) are left alone, and a ``None`` DB handle (SQLite unavailable) is
         a no-op. DB errors are non-fatal — startup must never fail here.
         """
-        db = getattr(self, "_db", None)
-        if not db or not self._entries:
+        if not self._entries:
             return
 
         stale_keys: list = []
         recovered_keys = 0
         try:
             for key, entry in self._entries.items():
+                # Whether a session ended is a per-session question, so ask the
+                # store that owns the key. A single ambient handle answered it
+                # for every profile at once, which is how a live secondary
+                # profile session could be pruned on the strength of the root
+                # store's copy of it.
+                db = self._db_for_key(key)
+                if db is None:
+                    continue
                 row = db.get_session(entry.session_id)
                 # row is None        -> not in DB (legacy / pre-SQLite) — keep
                 # end_reason is None  -> session alive — keep
@@ -1826,7 +1871,7 @@ class SessionStore:
         if getattr(self, "_routing_db_loaded", False) or baseline is None:
             return
 
-        db = getattr(self, "_db", None)
+        db = self._routing_db
         loader = getattr(db, "load_gateway_routing_entries", None) if db else None
         if not callable(loader):
             return
@@ -1891,7 +1936,7 @@ class SessionStore:
                     if revision > generation:
                         data[key] = json.loads(entry_json)
             db_saved = False
-            _db = getattr(self, "_db", None)
+            _db = self._routing_db
             if _db:
                 replacer = getattr(_db, "replace_gateway_routing_entries", None)
                 if callable(replacer):
@@ -2049,7 +2094,7 @@ class SessionStore:
         if captured is None:
             return
         entry_json, revision, candidate_entry = captured
-        _db = getattr(self, "_db", None)
+        _db = self._routing_db
         saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
         if callable(saver):
             save_lock = getattr(self, "_save_lock", None)

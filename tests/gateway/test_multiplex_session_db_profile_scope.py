@@ -738,3 +738,44 @@ def test_compression_child_write_stays_in_the_parents_profile_store(multiplex_ho
 
     # 4. root was never touched
     assert _session_ids(root / "state.db") == set()
+
+
+def _restarted_store(root: Path) -> SessionStore:
+    """A store that really loads its index — a restart, not a primed fixture."""
+    return SessionStore(
+        sessions_dir=root / "sessions",
+        config=GatewayConfig(multiplex_profiles=True),
+    )
+
+
+def test_crash_marker_from_a_secondary_profile_survives_restart(multiplex_homes):
+    """Startup recovery must see turn markers written under any profile.
+
+    ``mark_turn_active`` persists through the routing index's single-entry
+    fast path (state.db only, no sessions.json mirror), and
+    ``recover_interrupted_turns`` reads that index at startup with no profile
+    scope installed.  While the index followed the ambient store, a marker
+    written during a secondary profile's turn landed in that profile's
+    state.db and the unscoped startup pass never saw it, so the interrupted
+    turn was never promoted to ``resume_pending`` — the recovery half of
+    #66887, and the one this issue's title names.
+    """
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    scope = set_hermes_home_override(str(profile))
+    try:
+        entry = store.get_or_create_session(_profile_source())
+        assert store.mark_turn_active(entry.session_key) is not None
+    finally:
+        reset_hermes_home_override(scope)
+
+    # Restart: fresh store, fresh index, no profile scope anywhere.
+    restarted = _restarted_store(root)
+    promoted = restarted.recover_interrupted_turns(max_age_seconds=3600)
+
+    assert promoted == 1
+    recovered = restarted._entries[entry.session_key]
+    assert recovered.resume_pending is True
+    assert recovered.resume_reason == "restart_interrupted"
+    assert recovered.active_turn_token is None

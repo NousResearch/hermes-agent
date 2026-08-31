@@ -1556,7 +1556,10 @@ class BaseEnvironment(ABC):
         try:
             bound_s = float(effective_timeout) + _EXECUTE_WAIT_BOUND_GRACE_S
         except (TypeError, ValueError):
-            bound_s = None
+            # Defensive: a non-numeric timeout must not silently disable the
+            # backstop (that would recreate the unbounded wait this bound
+            # exists to prevent). Fall back to the module's 120s wait default.
+            bound_s = 120.0 + _EXECUTE_WAIT_BOUND_GRACE_S
 
         try:
             bounded = run_bounded_sync(

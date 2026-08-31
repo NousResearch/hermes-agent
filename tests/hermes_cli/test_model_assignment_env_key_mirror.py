@@ -46,7 +46,7 @@ def _raw_model_cfg(home):
     return (yaml.safe_load((home / "config.yaml").read_text()) or {}).get("model", {})
 
 
-def test_env_ref_key_not_copied_into_model_api_key(_hermes_home, monkeypatch):
+def test_env_ref_key_carries_template_not_plaintext(_hermes_home, monkeypatch):
     monkeypatch.setenv("MY_LOCAL_KEY", "sk-super-secret-value")
     _write_config(
         _hermes_home,
@@ -55,17 +55,21 @@ def test_env_ref_key_not_copied_into_model_api_key(_hermes_home, monkeypatch):
     _apply("mylocal")
     model_cfg = _raw_model_cfg(_hermes_home)
     assert "sk-super-secret-value" not in yaml.safe_dump(model_cfg)
-    assert not model_cfg.get("api_key")
+    # Pointer-carry: the raw ${VAR} template rides along so the model
+    # config still resolves the credential at runtime.
+    assert model_cfg.get("api_key") == "${MY_LOCAL_KEY}"
 
 
-def test_key_env_entry_not_copied(_hermes_home, monkeypatch):
+def test_key_env_entry_carries_pointer(_hermes_home, monkeypatch):
     monkeypatch.setenv("MYLOCAL_API_KEY", "sk-keyenv-secret")
     _write_config(
         _hermes_home,
         {"mylocal": {"base_url": "http://localhost:1234/v1", "key_env": "MYLOCAL_API_KEY"}},
     )
     _apply("mylocal")
-    assert "sk-keyenv-secret" not in (_hermes_home / "config.yaml").read_text()
+    raw = (_hermes_home / "config.yaml").read_text()
+    assert "sk-keyenv-secret" not in raw
+    assert _raw_model_cfg(_hermes_home).get("key_env") == "MYLOCAL_API_KEY"
 
 
 def test_literal_key_still_mirrored(_hermes_home):

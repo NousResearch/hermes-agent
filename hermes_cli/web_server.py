@@ -7746,27 +7746,38 @@ def _apply_model_assignment_sync(
         model_cfg = _apply_main_model_assignment(
             cfg.get("model", {}), provider, model, base_url, api_key
         )
-        if isinstance(provider_entry, dict) and provider_entry.get("api_key"):
+        _raw_assign_entry = None
+        try:
+            _stored, _raw_assign_entry = find_provider_entry(
+                read_raw_config().get("providers"), provider
+            )
+        except Exception:
+            _raw_assign_entry = None
+        _assign_key_env = (
+            str(_raw_assign_entry.get("key_env") or "").strip()
+            if isinstance(_raw_assign_entry, dict)
+            else ""
+        )
+        if _assign_key_env:
+            # #88990: carry the credential POINTER, never a resolved secret.
+            model_cfg["key_env"] = _assign_key_env
+            model_cfg.pop("api_key", None)
+        elif isinstance(provider_entry, dict) and provider_entry.get("api_key"):
             # #88990: provider_entry comes from load_config(), which expands
             # ${VAR} env refs to plaintext. Copying that resolved value into
             # model.api_key writes the SECRET into config.yaml (and recreates
             # it on every re-apply, even after the user deletes it by hand).
-            # Only mirror the key when the on-disk entry holds a literal
-            # value; env-ref and key_env entries already resolve at runtime
-            # via the provider entry itself.
-            _raw_entry = None
-            try:
-                _stored, _raw_entry = find_provider_entry(
-                    read_raw_config().get("providers"), provider
-                )
-            except Exception:
-                _raw_entry = None
-            _raw_key = _raw_entry.get("api_key") if isinstance(_raw_entry, dict) else None
-            _entry_uses_env = bool(
-                (isinstance(_raw_entry, dict) and str(_raw_entry.get("key_env") or "").strip())
-                or (isinstance(_raw_key, str) and re.search(r"\$\{[^}]+\}", _raw_key))
+            # Prefer the raw ${VAR} template; only fall back to the expanded
+            # value when the raw yaml itself stores the key as a literal (no
+            # new exposure in that case).
+            _raw_key = (
+                str(_raw_assign_entry.get("api_key") or "").strip()
+                if isinstance(_raw_assign_entry, dict)
+                else ""
             )
-            if not _entry_uses_env:
+            if _raw_key.startswith("${") and _raw_key.endswith("}"):
+                model_cfg["api_key"] = _raw_key
+            else:
                 model_cfg["api_key"] = provider_entry["api_key"]
         cfg["model"] = model_cfg
 
@@ -8685,7 +8696,25 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 model_cfg["key_env"] = entry["key_env"]
                 model_cfg.pop("api_key", None)
             elif entry.get("api_key"):
-                model_cfg["api_key"] = entry["api_key"]
+                # Same #88990 shape as /api/model/set: `cfg` is env-expanded,
+                # so a raw `${VAR}` api_key would land as plaintext. Copy the
+                # raw template when that's what's on disk.
+                _raw_entry = None
+                try:
+                    _stored_raw, _raw_entry = find_provider_entry(
+                        read_raw_config().get("providers"), provider_key
+                    )
+                except Exception:
+                    _raw_entry = None
+                _raw_key = (
+                    str(_raw_entry.get("api_key") or "").strip()
+                    if isinstance(_raw_entry, dict)
+                    else ""
+                )
+                if _raw_key.startswith("${") and _raw_key.endswith("}"):
+                    model_cfg["api_key"] = _raw_key
+                else:
+                    model_cfg["api_key"] = entry["api_key"]
             cfg["model"] = model_cfg
             save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}

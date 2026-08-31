@@ -72,6 +72,123 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_operator_block_terminates_running_worker_before_releasing_claim(
+    kanban_home, monkeypatch,
+):
+    terminations = []
+    monkeypatch.setattr(
+        kb,
+        "_terminate_reclaimed_worker",
+        lambda pid, lock, **_kwargs: terminations.append((pid, lock)) or {
+            "prev_pid": pid,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": True,
+            "sigkill": False,
+        },
+    )
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="unsafe worker", assignee="alice")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        kb._set_worker_pid(conn, task_id, 12345)
+
+    rc = kc._cmd_block(
+        argparse.Namespace(
+            task_id=task_id,
+            ids=[],
+            reason=["operator safety hold"],
+            kind="capability",
+        )
+    )
+
+    assert rc == 0
+    assert terminations == [(12345, claimed.claim_lock)]
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+
+
+def test_archive_terminates_running_worker_before_hiding_card(
+    kanban_home, monkeypatch,
+):
+    terminations = []
+    monkeypatch.setattr(
+        kb,
+        "_terminate_reclaimed_worker",
+        lambda pid, lock, **_kwargs: terminations.append((pid, lock)) or {
+            "prev_pid": pid,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": True,
+            "sigkill": False,
+        },
+    )
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="archive worker", assignee="alice")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        kb._set_worker_pid(conn, task_id, 23456)
+
+        assert kb.archive_task(conn, task_id)
+
+    assert terminations == [(23456, claimed.claim_lock)]
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "archived"
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+
+
+@pytest.mark.parametrize("operation", ["block", "archive"])
+def test_operator_stop_fails_closed_when_worker_survives(
+    kanban_home, monkeypatch, operation,
+):
+    monkeypatch.setattr(
+        kb,
+        "_terminate_reclaimed_worker",
+        lambda pid, lock, **_kwargs: {
+            "prev_pid": pid,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": False,
+            "sigkill": True,
+        },
+    )
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="surviving worker", assignee="alice")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        kb._set_worker_pid(conn, task_id, 34567)
+
+    if operation == "block":
+        rc = kc._cmd_block(
+            argparse.Namespace(
+                task_id=task_id,
+                ids=[],
+                reason=["operator safety hold"],
+                kind="capability",
+            )
+        )
+        assert rc == 1
+    else:
+        with kb.connect_closing() as conn:
+            assert not kb.archive_task(conn, task_id)
+
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "running"
+        assert task.claim_lock == claimed.claim_lock
+        assert task.worker_pid == 34567
+        events = kb.list_events(conn, task_id)
+        assert any(event.kind == "reclaim_deferred" for event in events)
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")
@@ -131,12 +248,24 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 # reclaim + reassign CLI smoke tests
 # ---------------------------------------------------------------------------
 
-def test_run_slash_reclaim_running_task(kanban_home):
+def test_run_slash_reclaim_running_task(kanban_home, monkeypatch):
     import re
     import time
     import secrets
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
+
+    monkeypatch.setattr(
+        kb,
+        "_terminate_reclaimed_worker",
+        lambda pid, lock, **_kwargs: {
+            "prev_pid": pid,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": True,
+            "sigkill": False,
+        },
+    )
 
     out1 = kc.run_slash("create 'stuck worker task' --assignee broken-model")
     m = re.search(r"(t_[a-f0-9]+)", out1)

@@ -3702,6 +3702,27 @@ def specify_triage_task(
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None or row["status"] == "archived":
+        return False
+    termination: Optional[dict[str, Any]] = None
+    if row["status"] == "running":
+        termination = _terminate_reclaimed_worker(
+            row["worker_pid"], row["claim_lock"]
+        )
+        if not termination.get("terminated"):
+            _defer_reclaim_for_live_worker(
+                conn,
+                task_id,
+                row["claim_lock"],
+                int(time.time()),
+                termination,
+                reason="archive_termination_unverified",
+            )
+            return False
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -3714,6 +3735,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         run_id = _end_run(
             conn, task_id, outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
+            metadata=termination,
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     # ``archived`` parents no longer block children; promote them now.

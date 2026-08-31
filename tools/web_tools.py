@@ -15,7 +15,7 @@ Backend compatibility:
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
-- Tavily: https://tavily.com (search, extract; keyed or opt-in keyless, not in the free-tier ring)
+- Tavily: https://tavily.com (search, extract; keyed or opt-in keyless)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction

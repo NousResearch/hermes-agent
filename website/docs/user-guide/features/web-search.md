@@ -24,7 +24,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
 | **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · 1 000 searches/mo with key |
 | **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
-| **Tavily** | `TAVILY_API_KEY` (optional) | ✔ | ✔ | ✔ Opt-in keyless when selected · not in the free-tier ring |
+| **Tavily** | `TAVILY_API_KEY` (optional) | ✔ | ✔ | ✔ Opt-in keyless when selected |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
@@ -276,7 +276,7 @@ With this config, Hermes uses SearXNG for all search queries and Firecrawl for U
 
 ### Tavily
 
-AI-optimised search and extract. Select Tavily in `hermes tools` (or set `web.backend: tavily`) to use it **keyless** with no account (rate-limited). Tavily is **not** in the zero-config free-tier ring — empty installs rotate across Exa / Parallel / Firecrawl / Keenable. Set an API key when you want higher limits.
+AI-optimised search and extract. Select Tavily in `hermes tools` (or set `web.backend: tavily`) to use it **keyless** with no account (rate-limited). Set an API key when you want higher limits.
 
 ```bash
 # optional — skip this for keyless access after selecting Tavily

@@ -2382,7 +2382,7 @@ web:
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — |
 | **Parallel** | `PARALLEL_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
-| **Tavily** | `TAVILY_API_KEY` (optional — keyless when selected; not in the free-tier ring) | ✔ | ✔ |
+| **Tavily** | `TAVILY_API_KEY` (optional — keyless when selected) | ✔ | ✔ |
 | **Exa** | `EXA_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 
 **Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.

@@ -300,7 +300,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
             "name": "Tavily",
             "badge": "free · key optional",
             "tag": (
-                "Search + extract. Opt-in keyless (not in the free-tier ring); "
+                "Search + extract. Opt-in keyless; "
                 "set TAVILY_API_KEY for higher limits."
             ),
             "env_vars": [

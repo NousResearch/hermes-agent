@@ -3711,8 +3711,15 @@ def _run_browser_command(
         # the current and legacy variables for Lightpanda commands; explicit
         # Chrome commands and fallback use the shared Chromium policy.
         if engine == "lightpanda":
-            browser_env.pop("AGENT_BROWSER_ARGS", None)
-            browser_env.pop("AGENT_BROWSER_CHROME_FLAGS", None)
+            _stripped_args = browser_env.pop("AGENT_BROWSER_ARGS", None)
+            _stripped_flags = browser_env.pop("AGENT_BROWSER_CHROME_FLAGS", None)
+            if _stripped_args is not None or _stripped_flags is not None:
+                logger.debug(
+                    "browser: stripped Chromium-only AGENT_BROWSER_ARGS/"
+                    "AGENT_BROWSER_CHROME_FLAGS for Lightpanda command %s "
+                    "(agent-browser rejects them with --engine lightpanda)",
+                    command,
+                )
         else:
             _apply_chromium_sandbox_args(browser_env)
 

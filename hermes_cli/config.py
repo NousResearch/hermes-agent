@@ -1090,6 +1090,50 @@ def _split_key_path(key: str) -> list[str]:
     return parts
 
 
+def _greedy_literal_match(container: dict, parts: list) -> Optional[Tuple[str, int]]:
+    """Return ``(literal_key, n_consumed)`` for the longest dotted literal match.
+
+    Dots in config key names are the norm, not the exception — model IDs
+    (``grok-4.6``, ``glm-5.3``), Matrix room IDs (``!room:chat.example.cc``),
+    and versioned provider names all embed dots. Users typing
+    ``providers.myprov.models.grok-4.6.context_length`` do not know the
+    escape syntax exists, so when navigating an EXISTING mapping we prefer an
+    existing literal key equal to the dot-join of the next N path segments
+    (longest match wins) over blindly splitting. See #84064 / #80006 /
+    #91095 / #91607 / #99124.
+
+    Backward compatible: when no multi-segment literal key exists, the single
+    segment ``parts[0]`` is the only candidate, which is exactly the historic
+    plain-split behavior. Returns ``None`` when nothing matches.
+    """
+    if not isinstance(container, dict) or not parts:
+        return None
+    for n in range(len(parts), 0, -1):
+        candidate = ".".join(parts[:n])
+        if candidate in container:
+            return candidate, n
+    return None
+
+
+def _phantom_sibling(container: dict, part: str) -> Optional[str]:
+    """Return an existing sibling key that ``part`` would shadow, if any.
+
+    Called when a write is about to CREATE a new intermediate mapping named
+    ``part``. If the mapping already holds a literal dotted key that starts
+    with ``part + "."`` (e.g. creating ``grok-4`` beside an existing
+    ``grok-4.5``), the split almost certainly chopped a dotted leaf name and
+    the write would produce a phantom sibling the runtime never reads.
+    Fail loudly instead of silently corrupting (#84064 discussion).
+    """
+    if not isinstance(container, dict):
+        return None
+    prefix = part + "."
+    for k in container:
+        if isinstance(k, str) and k.startswith(prefix):
+            return k
+    return None
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -1111,11 +1155,27 @@ def _set_nested(config, dotted_key: str, value):
     replaced any non-dict value (including lists) with ``{}``, silently
     destroying list-typed config like ``custom_providers`` whenever a
     caller used an indexed path.
+
+    Dotted key names (#84064 family): when navigating an existing mapping,
+    an existing literal key equal to the dot-join of the next N segments is
+    preferred over blind splitting (see ``_greedy_literal_match``), so
+    ``models.grok-4.6.supports_vision`` lands on the real ``grok-4.6`` entry.
+    And when a write WOULD create a new intermediate mapping that shadows an
+    existing dotted sibling (``grok-4`` beside ``grok-4.5``), it raises
+    ``ValueError`` instead of silently writing a phantom the runtime never
+    reads.
     """
     parts = _split_key_path(dotted_key)
     current = config
-    for part in parts[:-1]:
+    i = 0
+    while i < len(parts):
+        remaining = parts[i:]
+        at_leaf = len(remaining) == 1
         if isinstance(current, list):
+            part = remaining[0]
+            if at_leaf:
+                current[int(part)] = value
+                return
             try:
                 idx = int(part)
             except (TypeError, ValueError):
@@ -1124,21 +1184,43 @@ def _set_nested(config, dotted_key: str, value):
                     f"segment {part!r} is not a numeric index"
                 )
             current = current[idx]
+            i += 1
         elif isinstance(current, dict):
-            existing = current.get(part)
-            # Preserve dicts and lists; replace missing/scalar with a fresh dict.
-            if part not in current or not isinstance(existing, (dict, list)):
-                current[part] = {}
+            match = _greedy_literal_match(current, remaining)
+            if match is not None:
+                key, consumed = match
+                if i + consumed == len(parts):
+                    current[key] = value
+                    return
+                existing = current.get(key)
+                # Preserve dicts and lists; replace scalar with a fresh dict.
+                if not isinstance(existing, (dict, list)):
+                    current[key] = {}
+                current = current[key]
+                i += consumed
+                continue
+            part = remaining[0]
+            if at_leaf:
+                current[part] = value
+                return
+            # About to CREATE an intermediate mapping. Refuse when that would
+            # write a phantom sibling of an existing dotted literal key.
+            shadowed = _phantom_sibling(current, part)
+            if shadowed is not None:
+                escaped = shadowed.replace(".", "\\.")
+                raise ValueError(
+                    f"Refusing to create nested key {part!r} in {dotted_key!r}: "
+                    f"the mapping already contains a literal key {shadowed!r} "
+                    f"that contains a dot. If you meant that key, escape its "
+                    f"dots with a backslash (e.g. {escaped})."
+                )
+            current[part] = {}
             current = current[part]
+            i += 1
         else:
             raise TypeError(
                 f"Cannot navigate into {type(current).__name__} at key {dotted_key!r}"
             )
-    last = parts[-1]
-    if isinstance(current, list):
-        current[int(last)] = value
-    else:
-        current[last] = value
 
 
 def clear_model_endpoint_credentials(
@@ -1172,59 +1254,84 @@ _MISSING = object()
 
 
 def _get_nested(config, dotted_key: str):
-    """Return a dotted-path value from nested dict/list config data."""
+    """Return a dotted-path value from nested dict/list config data.
+
+    Mirrors ``_set_nested``'s navigation: honors backslash-escaped dots and
+    prefers an existing literal dotted key over blind splitting, so
+    ``config get providers.p.models.grok-4.6.context_length`` reads the real
+    ``grok-4.6`` entry instead of reporting the key unset (#84064).
+    """
+    parts = _split_key_path(dotted_key)
     current = config
-    for part in _split_key_path(dotted_key):
+    i = 0
+    while i < len(parts):
+        remaining = parts[i:]
         if isinstance(current, list):
             try:
-                current = current[int(part)]
+                current = current[int(remaining[0])]
             except (TypeError, ValueError, IndexError):
                 return _MISSING
+            i += 1
         elif isinstance(current, dict):
-            if part not in current:
+            match = _greedy_literal_match(current, remaining)
+            if match is None:
                 return _MISSING
-            current = current[part]
+            key, consumed = match
+            current = current[key]
+            i += consumed
         else:
             return _MISSING
     return current
 
 
 def _unset_nested(config, dotted_key: str) -> bool:
-    """Remove a dotted-path value from nested dict/list config data."""
+    """Remove a dotted-path value from nested dict/list config data.
+
+    Same escape-aware, greedy-literal navigation as ``_set_nested`` /
+    ``_get_nested`` (#84064): unsetting an unescaped dotted key removes the
+    real literal entry rather than a phantom sibling.
+    """
     parts = _split_key_path(dotted_key)
     if not parts:
         return False
 
     parents = []
     current = config
-    for part in parts[:-1]:
-        parents.append((current, part))
+    removed = False
+    i = 0
+    while i < len(parts):
+        remaining = parts[i:]
         if isinstance(current, list):
+            part = remaining[0]
+            if len(remaining) == 1:
+                try:
+                    current.pop(int(part))
+                    removed = True
+                    break
+                except (TypeError, ValueError, IndexError):
+                    return False
+            parents.append((current, part))
             try:
                 current = current[int(part)]
             except (TypeError, ValueError, IndexError):
                 return False
+            i += 1
         elif isinstance(current, dict):
-            if part not in current:
+            match = _greedy_literal_match(current, remaining)
+            if match is None:
                 return False
-            current = current[part]
+            key, consumed = match
+            if i + consumed == len(parts):
+                del current[key]
+                removed = True
+                break
+            parents.append((current, key))
+            current = current[key]
+            i += consumed
         else:
             return False
 
-    last = parts[-1]
-    removed = False
-    if isinstance(current, list):
-        try:
-            current.pop(int(last))
-            removed = True
-        except (TypeError, ValueError, IndexError):
-            return False
-    elif isinstance(current, dict):
-        if last not in current:
-            return False
-        del current[last]
-        removed = True
-    else:
+    if not removed:
         return False
 
     # Drop empty dict containers left behind by the deletion while preserving
@@ -5641,7 +5748,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         print(f"✗ Invalid config key: {key!r} (empty or surrounding whitespace).",
               file=sys.stderr)
         sys.exit(1)
-    if any(seg == "" for seg in key.split(".")):
+    if any(seg == "" for seg in _split_key_path(key)):
         print(
             f"✗ Invalid config key: {key!r} — contains an empty path segment "
             "(leading, trailing, or doubled '.').",
@@ -5821,7 +5928,11 @@ def set_config_value(key: str, value: str, force: bool = False):
                     file=sys.stderr,
                 )
                 sys.exit(1)
-    _set_nested(user_config, key, value)
+    try:
+        _set_nested(user_config, key, value)
+    except ValueError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        sys.exit(1)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
     # key the runtime resolver actually reads, instead of being silently

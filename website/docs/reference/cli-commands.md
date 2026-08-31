@@ -1158,6 +1158,27 @@ Subcommands:
 | `check` | Check for missing or stale config. |
 | `migrate` | Add newly introduced options interactively. |
 
+### Dots inside key names
+
+`hermes config set/get/unset` use `.` as the nesting separator, but many real
+key names contain literal dots — model IDs (`grok-4.6`, `glm-5.3-flash`),
+Matrix room IDs (`!room:example.org`), versioned provider names. Two rules
+make these addressable:
+
+- **Existing keys just work.** When navigating an existing mapping, an
+  existing literal key that matches the dotted remainder is preferred over
+  splitting. `hermes config set providers.p.models.grok-4.6.supports_vision true`
+  updates the real `grok-4.6` entry (and `get`/`unset` resolve the same way).
+- **Creating a new dotted key requires escaping.** Escape literal dots with a
+  backslash: `hermes config set 'providers.p.models.grok-4\.7.context_length' 128000`
+  creates the literal `grok-4.7` key. (Quote the key so your shell keeps the
+  backslash.)
+
+If an unescaped write would create a nested mapping that shadows an existing
+dotted sibling (e.g. creating `grok-4` next to an existing `grok-4.6`), the
+command fails with an error instead of silently writing a phantom entry the
+runtime would never read.
+
 ## `hermes pairing`
 
 ```bash

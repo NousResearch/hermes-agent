@@ -587,14 +587,30 @@ def atomic_roundtrip_yaml_update(
         config = CommentedMap(config)
 
     current = config
-    keys = key_path.split(".")
-    for key in keys[:-1]:
-        next_value = current.get(key)
+    # Honor escaped dots and prefer existing literal dotted keys (e.g. model
+    # IDs like ``glm-5.3``) over blind splitting — same navigation as
+    # ``hermes config set``'s ``_set_nested`` (#91607: /model + TUI
+    # persistence route through here and used to write ``glm-5: {'3': ...}``
+    # phantom siblings while the runtime kept reading the literal key).
+    from hermes_cli.config import _greedy_literal_match, _split_key_path
+
+    keys = _split_key_path(key_path)
+    i = 0
+    while True:
+        remaining = keys[i:]
+        seg, consumed = remaining[0], 1
+        match = _greedy_literal_match(dict(current), remaining)
+        if match is not None:
+            seg, consumed = match
+        if i + consumed == len(keys):
+            current[seg] = value
+            break
+        next_value = current.get(seg)
         if not isinstance(next_value, CommentedMap):
             next_value = CommentedMap()
-            current[key] = next_value
+            current[seg] = next_value
         current = next_value
-    current[keys[-1]] = value
+        i += consumed
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)

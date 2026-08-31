@@ -491,27 +491,8 @@ class TestSecretRedactionInDisplay:
 
 
 # ---------------------------------------------------------------------------
-# `config get` redacts resolved credentials (issue #84106)
+# #34067: Schema validation for unknown keys
 # ---------------------------------------------------------------------------
-
-_MCP_SECRETS_CONFIG = """\
-config_version: 34
-security:
-  redact_secrets: true
-mcp_servers:
-  demo_url:
-    url: "https://example.invalid/mcp?apikey=${FMP_API_KEY}"
-  demo_env:
-    command: demo
-    env:
-      COINGECKO_PRO_API_KEY: "${COINGECKO_PRO_API_KEY}"
-  demo_header:
-    url: "https://example.invalid/mcp"
-    headers:
-      Authorization: "Bearer ${TEST_BEARER_TOKEN}"
-"""
-
-
 
 class TestSchemaValidation:
     """#34067: ``hermes config set`` must not report bare success for
@@ -849,7 +830,9 @@ class TestLiteralDotKeyEscaping:
         assert "qwen3" not in providers
         target = providers["qwen3.5-397b-wafer-non-zdr"]
         assert target["api"] == "https://pass.wafer.ai/v1"
-        assert target["extra_headers"] == '{"Wafer-ZDR": "required"}'
+        # Current main coerces structured-looking values to real mappings
+        # (_looks_structured_value), so the JSON string lands as a dict.
+        assert target["extra_headers"] == {"Wafer-ZDR": "required"}
         # Sibling provider untouched.
         assert providers["openrouter"] == {"api_key": "or-keep"}
         # Escaped key is schema-known (providers.* is an open dict) — no warning.

@@ -6473,16 +6473,13 @@ def run_job(
             if _session_db_timeout > 0:
                 _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                 # The timeout worker is a second thread, so it does not inherit
-                # the multiplexed profile ContextVar automatically. Capture the
-                # active context before submitting SessionDB and pass the
-                # resolved database path explicitly so a profile cron run
-                # cannot fall back to the process-global default state.db.
+                # the multiplexed profile ContextVar automatically. Run the
+                # constructor inside a copy of the active context so a profile
+                # cron run resolves ITS OWN home (and state.db) instead of
+                # silently falling back to the process-global default.
                 _session_db_context = contextvars.copy_context()
-                _session_db_path = _get_hermes_home() / "state.db"
                 _session_db_future = _session_db_pool.submit(
-                    _session_db_context.run,
-                    SessionDB,
-                    db_path=_session_db_path,
+                    _session_db_context.run, SessionDB
                 )
                 try:
                     _session_db = _session_db_future.result(timeout=_session_db_timeout)

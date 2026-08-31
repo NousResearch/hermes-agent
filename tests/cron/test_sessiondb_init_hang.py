@@ -89,12 +89,10 @@ class TestSessionDbInitTimeout:
         profile_home = tmp_path / "profiles" / "jobsearch"
         monkeypatch.setenv("HERMES_HOME", str(default_home))
         observed_homes = []
-        observed_paths = []
         fake_db = MagicMock()
 
-        def make_session_db(*, db_path=None):
+        def make_session_db(*args, **kwargs):
             observed_homes.append(get_hermes_home())
-            observed_paths.append(db_path)
             return fake_db
 
         job = {"id": "profile-sessiondb", "name": "test", "prompt": "hello"}
@@ -122,7 +120,6 @@ class TestSessionDbInitTimeout:
         assert error is None
         assert final_response == "ok"
         assert observed_homes == [profile_home]
-        assert observed_paths == [profile_home / "state.db"]
 
     def test_run_job_does_not_hang_when_sessiondb_init_wedges(self, tmp_path, monkeypatch):
         """run_job proceeds without a session store when SessionDB init times out."""

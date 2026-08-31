@@ -729,8 +729,15 @@ def build_turn_context(
     # event time. Preserve either value and cover any legacy unstamped handoff.
     stamp_message_timestamp(user_msg, timestamp=persist_user_timestamp)
 
-    # Hydrate todo store from conversation history.
-    if conversation_history and not agent._todo_store.has_items():
+    # Reconcile the durable sidecar with the newest paired todo tool result once
+    # per agent. User terminal overrides survive this replacement inside the
+    # store; an explicit empty tool result still clears stale sidecar items.
+    needs_todo_reconciliation = getattr(
+        agent._todo_store,
+        "needs_history_reconciliation",
+        not agent._todo_store.has_items(),
+    )
+    if conversation_history and bool(needs_todo_reconciliation):
         agent._hydrate_todo_store(conversation_history)
 
     # Hydrate per-session nudge counters from persisted history (issue #22357).
@@ -863,6 +870,16 @@ def build_turn_context(
         # fresh staged input.
         if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
             agent._pending_cli_user_message = None
+
+    # Session identity can rotate during compression/branch recovery without a
+    # task mutation. Re-publish the current snapshot after the live row exists
+    # so the sidecar follows the same lineage as the conversation.
+    try:
+        from agent.todo_state import persist_todo_store
+
+        persist_todo_store(agent)
+    except Exception:
+        logger.debug("turn-start todo sidecar persistence skipped", exc_info=True)
 
     # ── Idle-triggered compaction (opt-in; ``idle_compact_after_seconds``) ──
     # When a session resumes after a long idle gap, compact the accumulated
@@ -1392,6 +1409,35 @@ def build_turn_context(
                 if plugin_user_context
                 else _gateway_notes
             )
+
+    # A terminal user may update the authoritative task list without sending a
+    # chat message. Deliver that change once through the existing API-only user
+    # context sidecar so the transcript stays clean and future prompt-cache
+    # replay remains byte-identical. Codex app-server and MoA bypass this exact
+    # sidecar path, so leave their notice pending instead of consuming it unseen.
+    if not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
+        _consume_todo_notice = getattr(
+            agent._todo_store, "consume_user_change_notice", None
+        )
+        _raw_todo_notes = (
+            _consume_todo_notice() if callable(_consume_todo_notice) else ""
+        )
+        _todo_notes = _raw_todo_notes if isinstance(_raw_todo_notes, str) else ""
+        if _todo_notes:
+            _todo_turn_content = (
+                messages[current_turn_user_idx].get("content")
+                if 0 <= current_turn_user_idx < len(messages)
+                and isinstance(messages[current_turn_user_idx], dict)
+                else None
+            )
+            if isinstance(_todo_turn_content, list):
+                append_notes_to_multimodal_content(_todo_turn_content, _todo_notes)
+            else:
+                plugin_user_context = (
+                    plugin_user_context + "\n\n" + _todo_notes
+                    if plugin_user_context
+                    else _todo_notes
+                )
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}

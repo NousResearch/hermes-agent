@@ -8335,6 +8335,45 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
     # ── END KENSEI CUSTOM ──
 
+    def update_session_todo_state(
+        self, session_id: str, state: Dict[str, Any]
+    ) -> bool:
+        """Persist one session's canonical in-progress task snapshot."""
+        if not session_id or not isinstance(state, dict):
+            return False
+        payload = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET todo_state = ? WHERE id = ?",
+                (payload, session_id),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._execute_write(_do))
+
+    def get_session_todo_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return a validated JSON object for the session task sidecar."""
+        if not session_id:
+            return None
+        with self._read_ctx() as conn:
+            if conn is None:
+                return None
+            row = conn.execute(
+                "SELECT todo_state FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        raw = row["todo_state"] if isinstance(row, sqlite3.Row) else row[0]
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
     def _merge_model_config_json(
         self,
         conn,

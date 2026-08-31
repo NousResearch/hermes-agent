@@ -895,6 +895,25 @@ class TestHydrateTodoStore:
             ],
         }
 
+    def test_empty_todo_result_clears_an_older_store(self, agent):
+        agent._todo_store.write([
+            {"id": "old", "content": "Old task", "status": "pending"}
+        ])
+        history = [
+            self._assistant_todo_call("clear-1"),
+            {
+                "role": "tool",
+                "tool_call_id": "clear-1",
+                "content": '{"todos": [], "summary": {"total": 0}}',
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == []
+        assert agent._todo_store.needs_history_reconciliation is False
+
     def test_no_todo_in_history(self, agent):
         history = [
             {"role": "user", "content": "hello"},

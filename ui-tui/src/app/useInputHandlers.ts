@@ -27,7 +27,7 @@ import {
 } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
-import { patchTurnState } from './turnStore.js'
+import { getTurnState, patchTurnState, toggleTodoCollapsed } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
@@ -60,6 +60,19 @@ export function handleIdleHotkeyExit(
   }
 
   return actions.die()
+}
+
+export function handleTodoToggleHotkey(
+  ch: string,
+  key: { ctrl: boolean },
+  hasTodos: boolean,
+  toggle: () => void
+): boolean {
+  if (!hasTodos || !isCtrl(key, ch, 't')) {
+    return false
+  }
+  toggle()
+  return true
 }
 
 export type CtrlCComposerAction = 'clear' | 'interrupt' | 'exit'
@@ -489,6 +502,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (!fallThroughForScroll) {
         return
       }
+    }
+
+    if (handleTodoToggleHotkey(ch, key, getTurnState().todos.length > 0, toggleTodoCollapsed)) {
+      return
     }
 
     if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {

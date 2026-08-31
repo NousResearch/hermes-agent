@@ -12,6 +12,7 @@ Verifies that:
 
 import os
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -87,6 +88,31 @@ class TestBranchCommandCLI:
         assert len(messages) == 4  # All 4 messages copied
 
 
+
+    def test_branch_carries_user_authoritative_todo_state(self, cli_instance, session_db):
+        from cli import HermesCLI
+        from tools.todo_tool import TodoStore
+
+        store = TodoStore()
+        store.write([{"id": "build", "content": "Build tray", "status": "in_progress"}])
+        store.update_status("build", "completed", actor="user")
+        cli_instance.agent = SimpleNamespace(
+            _invalidate_system_prompt=lambda: None,
+            _last_flushed_db_idx=0,
+            _memory_manager=None,
+            _persist_disabled=False,
+            _session_db=session_db,
+            _todo_store=store,
+            reset_session_state=lambda: None,
+            session_id=cli_instance.session_id,
+            session_start=cli_instance.session_start,
+        )
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch task-state")
+
+        state = session_db.get_session_todo_state(cli_instance.session_id)
+        assert state["todos"][0]["status"] == "completed"
+        assert state["user_status_overrides"] == {"build": "completed"}
 
     def test_branch_with_custom_name(self, cli_instance, session_db):
         """Custom branch name should be used as the title."""

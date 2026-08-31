@@ -72,6 +72,25 @@ class TestTodoCreate:
 class TestTodoUpdate:
     """get_cute_tool_message when merge=True (incremental update)."""
 
+    def test_plain_terminal_emits_pipe_safe_task_snapshot(self, monkeypatch):
+        monkeypatch.setenv("TERM", "dumb")
+        result = json.dumps({
+            "todos": [
+                {"id": "research", "content": "Research tools", "status": "completed"},
+                {"id": "build", "content": "Build CLI tray", "status": "in_progress"},
+            ],
+            "summary": {"total": 2, "pending": 0, "in_progress": 1, "completed": 1, "cancelled": 0},
+        })
+
+        msg = get_cute_tool_message("todo", {"todos": [], "merge": True}, 0.2, result=result)
+
+        assert msg.splitlines() == [
+            "TASK research COMPLETED Research tools",
+            "TASK build IN_PROGRESS Build CLI tray",
+            "SUMMARY completed=1 in_progress=1 pending=0 cancelled=0",
+        ]
+        assert "\x1b" not in msg and "\r" not in msg
+
     def test_update_no_result(self):
         """No result available — plain update N task(s)."""
         msg = get_cute_tool_message("todo",

@@ -15,7 +15,12 @@ Design:
 """
 
 import json
-from typing import Dict, Any, List, Optional
+import logging
+import threading
+from typing import Callable, Dict, Any, List, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 # Valid status values for todo items
@@ -55,65 +60,266 @@ class TodoStore:
 
     def __init__(self):
         self._items: List[Dict[str, str]] = []
+        # Human terminal actions and model tool calls run on different threads.
+        # Keep the task list atomic so a Ctrl+T action cannot race a model merge.
+        self._lock = threading.RLock()
+        self._revision = 0
+        self._has_restored_state = False
+        self._history_reconciled = False
+        self._pending_user_notices: List[str] = []
+        self._on_change: Optional[Callable[[Dict[str, Any]], None]] = None
+        # A user-completed/cancelled item is authoritative for the current plan.
+        # A stale model snapshot may not silently reopen it. Replacing the plan
+        # with different IDs drops the override; an explicit user reopen does too.
+        self._user_status_overrides: Dict[str, str] = {}
+
+    @property
+    def revision(self) -> int:
+        """Monotonic in-memory revision for UI conflict detection."""
+        with self._lock:
+            return self._revision
+
+    @property
+    def has_restored_state(self) -> bool:
+        """Whether a durable sidecar existed, including an empty snapshot."""
+        with self._lock:
+            return self._has_restored_state
+
+    @property
+    def needs_history_reconciliation(self) -> bool:
+        with self._lock:
+            return not self._history_reconciled
+
+    def mark_history_reconciled(self) -> None:
+        with self._lock:
+            self._history_reconciled = True
+
+    def set_on_change(
+        self, callback: Optional[Callable[[Dict[str, Any]], None]]
+    ) -> None:
+        """Attach a best-effort persistence/event callback."""
+        with self._lock:
+            self._on_change = callback
+
+    def snapshot_state(self) -> Dict[str, Any]:
+        """Return the durable task state, including user authority markers."""
+        with self._lock:
+            return {
+                "revision": self._revision,
+                "todos": [item.copy() for item in self._items],
+                "user_status_overrides": dict(self._user_status_overrides),
+                "pending_user_notices": list(self._pending_user_notices),
+            }
+
+    def load_state(self, payload: Any) -> bool:
+        """Restore a validated durable snapshot without firing callbacks."""
+        if not isinstance(payload, dict) or not isinstance(payload.get("todos"), list):
+            return False
+        with self._lock:
+            items = [self._validate(item) for item in self._dedupe_by_id(payload["todos"])]
+            if len(items) > MAX_TODO_ITEMS:
+                items = items[:MAX_TODO_ITEMS]
+            item_ids = {item["id"] for item in items}
+            raw_overrides = payload.get("user_status_overrides")
+            overrides = raw_overrides if isinstance(raw_overrides, dict) else {}
+            self._user_status_overrides = {
+                str(item_id): str(status)
+                for item_id, status in overrides.items()
+                if str(item_id) in item_ids
+                and str(status) in {"completed", "cancelled"}
+            }
+            for item in items:
+                override = self._user_status_overrides.get(item["id"])
+                if override is not None:
+                    item["status"] = override
+            self._items = self._normalize_order(items)
+            raw_notices = payload.get("pending_user_notices")
+            self._pending_user_notices = (
+                [
+                    self._cap_content(str(notice).strip())
+                    for notice in raw_notices[:20]
+                    if str(notice).strip()
+                ]
+                if isinstance(raw_notices, list)
+                else []
+            )
+            raw_revision = payload.get("revision", 0)
+            self._revision = max(0, raw_revision) if isinstance(raw_revision, int) else 0
+            self._has_restored_state = True
+            # A durable (or explicitly seeded branch) snapshot is the canonical
+            # state. History hydration is only a legacy fallback when no
+            # sidecar exists; replaying older tool output here can resurrect an
+            # intentionally cleared plan or overwrite a newer persisted one.
+            self._history_reconciled = True
+            return True
+
+    def _notify_change(self) -> None:
+        callback = self._on_change
+        if callback is None:
+            return
+        snapshot = self.snapshot_state()
+        try:
+            callback(snapshot)
+        except Exception as exc:
+            logger.debug("Todo state change callback failed: %s", exc)
+
+    def consume_user_change_notice(self) -> str:
+        """Return user-authored task changes once for next-turn API context."""
+        with self._lock:
+            if not self._pending_user_notices:
+                return ""
+            notice = "[Task list changes made by the user]\n" + "\n".join(
+                f"- {line}" for line in self._pending_user_notices
+            )
+            self._pending_user_notices = []
+            self._notify_change()
+            return notice
+
+    def _replace_items(self, todos: List[Dict[str, Any]]) -> None:
+        """Replace the plan while retaining overrides for unchanged task identity."""
+        previous_content = {item["id"]: item["content"] for item in self._items}
+        replacement = [self._validate(item) for item in self._dedupe_by_id(todos)]
+        replacement_content = {item["id"]: item["content"] for item in replacement}
+        self._user_status_overrides = {
+            item_id: status
+            for item_id, status in self._user_status_overrides.items()
+            if previous_content.get(item_id) == replacement_content.get(item_id)
+        }
+        for item in replacement:
+            override = self._user_status_overrides.get(item["id"])
+            if override is not None:
+                item["status"] = override
+        self._items = self._normalize_order(replacement)
+
+    def _merge_items(self, todos: List[Dict[str, Any]]) -> None:
+        """Apply partial model updates without overriding user terminal actions."""
+        existing = {item["id"]: item for item in self._items}
+        for update in self._dedupe_by_id(todos):
+            item_id = str(update.get("id", "")).strip()
+            if not item_id:
+                continue
+            if item_id not in existing:
+                validated = self._validate(update)
+                existing[validated["id"]] = validated
+                self._items.append(validated)
+                continue
+            dropped_override = False
+            if update.get("content"):
+                content = str(update["content"]).strip()
+                if content:
+                    content = self._cap_content(content)
+                    if content != existing[item_id]["content"]:
+                        dropped_override = self._user_status_overrides.pop(
+                            item_id, None
+                        ) is not None
+                        existing[item_id]["content"] = content
+            if update.get("status"):
+                status = str(update["status"]).strip().lower()
+                if status in VALID_STATUSES:
+                    existing[item_id]["status"] = self._user_status_overrides.get(
+                        item_id, status
+                    )
+            elif dropped_override:
+                # A reused id with different content is a new task identity.
+                # Do not let the prior task's user-completed state leak into it.
+                existing[item_id]["status"] = "pending"
+
+        seen = set()
+        rebuilt = []
+        for item in self._items:
+            current = existing.get(item["id"], item)
+            if current["id"] not in seen:
+                rebuilt.append(current)
+                seen.add(current["id"])
+        self._items = self._normalize_order(rebuilt)
+
+    def _apply_bounds(self) -> None:
+        if len(self._items) <= MAX_TODO_ITEMS:
+            return
+        self._items = self._items[:MAX_TODO_ITEMS]
+        retained_ids = {item["id"] for item in self._items}
+        self._user_status_overrides = {
+            item_id: status
+            for item_id, status in self._user_status_overrides.items()
+            if item_id in retained_ids
+        }
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
-        """
-        Write todos. Returns the full current list after writing.
+        """Write a full or partial task snapshot and return the canonical list."""
+        with self._lock:
+            before = [item.copy() for item in self._items]
+            if merge:
+                self._merge_items(todos)
+            else:
+                self._replace_items(todos)
+            self._apply_bounds()
+            if self._items != before:
+                self._revision += 1
+                self._notify_change()
+            return self.read()
 
-        Args:
-            todos: list of {id, content, status} dicts
-            merge: if False, replace the entire list. If True, update
-                   existing items by id and append new ones.
-        """
-        if not merge:
-            # Replace mode: new list entirely
-            self._items = self._normalize_order(
-                [self._validate(t) for t in self._dedupe_by_id(todos)]
-            )
-        else:
-            # Merge mode: update existing items by id, append new ones
-            existing = {item["id"]: item for item in self._items}
-            for t in self._dedupe_by_id(todos):
-                item_id = str(t.get("id", "")).strip()
-                if not item_id:
-                    continue  # Can't merge without an id
+    def update_status(
+        self,
+        item_id: str,
+        status: str,
+        *,
+        actor: str = "user",
+        expected_revision: Optional[int] = None,
+    ) -> bool:
+        """Update one item's status from a trusted UI action.
 
-                if item_id in existing:
-                    # Update only the fields the LLM actually provided
-                    if "content" in t and t["content"]:
-                        existing[item_id]["content"] = self._cap_content(str(t["content"]).strip())
-                    if "status" in t and t["status"]:
-                        status = str(t["status"]).strip().lower()
-                        if status in VALID_STATUSES:
-                            existing[item_id]["status"] = status
+        User completion/cancellation wins over stale model snapshots for the
+        lifetime of the current plan. Reopening an item releases that override
+        so the agent can progress it normally afterwards.
+        """
+        normalized_id = str(item_id or "").strip()
+        normalized_status = str(status or "").strip().lower()
+        if not normalized_id or normalized_status not in VALID_STATUSES:
+            return False
+
+        with self._lock:
+            if expected_revision is not None and expected_revision != self._revision:
+                return False
+            item = next((row for row in self._items if row["id"] == normalized_id), None)
+            if item is None:
+                return False
+
+            before_override = self._user_status_overrides.get(normalized_id)
+            if actor == "user":
+                if normalized_status in {"completed", "cancelled"}:
+                    self._user_status_overrides[normalized_id] = normalized_status
                 else:
-                    # New item -- validate fully and append to end
-                    validated = self._validate(t)
-                    existing[validated["id"]] = validated
-                    self._items.append(validated)
-            # Rebuild _items preserving order for existing items
-            seen = set()
-            rebuilt = []
-            for item in self._items:
-                current = existing.get(item["id"], item)
-                if current["id"] not in seen:
-                    rebuilt.append(current)
-                    seen.add(current["id"])
-            self._items = self._normalize_order(rebuilt)
-        # Bound total item count so a replayed/oversized list can't grow the
-        # re-injection block without limit. Keep the highest-priority head
-        # (list order is priority).
-        if len(self._items) > MAX_TODO_ITEMS:
-            self._items = self._items[:MAX_TODO_ITEMS]
-        return self.read()
+                    self._user_status_overrides.pop(normalized_id, None)
+            elif normalized_id in self._user_status_overrides:
+                normalized_status = self._user_status_overrides[normalized_id]
+
+            override_changed = before_override != self._user_status_overrides.get(normalized_id)
+            status_changed = item["status"] != normalized_status
+            if not status_changed and not override_changed:
+                return True
+            if status_changed:
+                item["status"] = normalized_status
+                self._items = self._normalize_order(self._items)
+            if actor == "user":
+                self._pending_user_notices.append(
+                    "task_id="
+                    + json.dumps(normalized_id, ensure_ascii=True)
+                    + f" status={normalized_status}"
+                )
+                self._pending_user_notices = self._pending_user_notices[-20:]
+            self._revision += 1
+            self._notify_change()
+            return True
 
     def read(self) -> List[Dict[str, str]]:
         """Return a copy of the current list."""
-        return [item.copy() for item in self._items]
+        with self._lock:
+            return [item.copy() for item in self._items]
 
     def has_items(self) -> bool:
         """Check if there are any items in the list."""
-        return bool(self._items)
+        with self._lock:
+            return bool(self._items)
 
     def format_for_injection(self) -> Optional[str]:
         """
@@ -122,7 +328,9 @@ class TodoStore:
         Returns a human-readable string to append to the compressed
         message history, or None if the list is empty.
         """
-        if not self._items:
+        with self._lock:
+            items = [item.copy() for item in self._items]
+        if not items:
             return None
 
         # Status markers for compact display
@@ -136,7 +344,7 @@ class TodoStore:
         # Only inject pending/in_progress items — completed/cancelled ones
         # cause the model to re-do finished work after compression.
         active_items = [
-            item for item in self._items
+            item for item in items
             if item["status"] in {"pending", "in_progress"}
         ]
         if not active_items:

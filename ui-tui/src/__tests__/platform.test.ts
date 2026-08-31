@@ -198,7 +198,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
     expect(parseVoiceRecordKey('escape')).toEqual(DEFAULT_VOICE_RECORD_KEY)
   })
 
-  it('rejects ctrl+c / ctrl+d / ctrl+l — reserved by the TUI input handler', async () => {
+  it('rejects ctrl+c / ctrl+d / ctrl+l / ctrl+t — reserved by the TUI input handler', async () => {
     const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('linux')
 
     // ``useInputHandlers()`` intercepts these before the voice check,
@@ -207,6 +207,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
     expect(parseVoiceRecordKey('ctrl+c')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+d')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+l')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    expect(parseVoiceRecordKey('ctrl+t')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     // Alt-modifier versions of those letters are NOT intercepted, so
     // they remain usable.
     expect(parseVoiceRecordKey('alt+c').mod).toBe('alt')

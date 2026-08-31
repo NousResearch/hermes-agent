@@ -95,6 +95,22 @@ class TestBranchRoutingColumns:
         parent_entry = store.get_or_create_session(source)
         store._db.append_message(parent_entry.session_id, role="user", content="hello")
         store._db.append_message(parent_entry.session_id, role="assistant", content="world")
+        parent_todo_state = {
+            "revision": 4,
+            "todos": [
+                {
+                    "id": "build",
+                    "content": "Build the task tray",
+                    "status": "completed",
+                }
+            ],
+            "user_status_overrides": {"build": "completed"},
+            "pending_user_notices": [],
+        }
+        assert store._db.update_session_todo_state(
+            parent_entry.session_id,
+            parent_todo_state,
+        )
 
         runner = _make_branch_runner(store)
 
@@ -150,6 +166,7 @@ class TestBranchRoutingColumns:
         origin = _json.loads(row["origin_json"])
         assert origin.get("chat_id") == "170829464"
         assert origin.get("thread_id") == "544520"
+        assert store._db.get_session_todo_state(new_session_id) == parent_todo_state
 
         _ = real_switch_session  # silence unused
 

@@ -141,8 +141,8 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
 
 /** ``useInputHandlers()`` intercepts these unconditionally before the
  * voice check runs, so a binding like ``ctrl+c`` (interrupt),
- * ``ctrl+d`` (quit), or ``ctrl+l`` (clear screen) would be advertised
- * in /voice status but never fire push-to-talk. Reject at parse time
+ * ``ctrl+d`` (quit), ``ctrl+l`` (clear screen), or ``ctrl+t`` (todo tray)
+ * would be advertised in /voice status but never fire push-to-talk. Reject at parse time
  * so the user gets the documented Ctrl+B instead of a dead shortcut
  * (Copilot round-4 review on #19835).
  *
@@ -150,7 +150,7 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
  * queue-edit (``queueEditIdx !== null``), so the voice binding works
  * for most of the session and matches CLI parity for ``ctrl+<letter>``
  * bindings (Copilot round-8 review on #19835). */
-const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
+const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l', 't'])
 
 /** On macOS the action-modifier intercepts these editor chords via
  * ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:

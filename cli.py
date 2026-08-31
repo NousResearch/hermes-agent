@@ -5632,6 +5632,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # drafts routinely contain secrets, so nothing is written to disk.
         from hermes_cli.prompt_stash import PromptStash as _PromptStash
         self._prompt_stash = _PromptStash()
+        from hermes_cli.todo_progress import TodoPanelState as _TodoPanelState
+        self._todo_panel_state = _TodoPanelState()
+        self._todo_panel_widget = None
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
         # Background --skills preload (started by cmd_chat; joined by
@@ -7579,6 +7582,54 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
         return frags
+
+    def _todo_items(self) -> list[dict[str, str]]:
+        """Return the live session task snapshot, or an empty list safely."""
+        try:
+            store = getattr(getattr(self, "agent", None), "_todo_store", None)
+            return store.read() if store is not None else []
+        except Exception:
+            return []
+
+    def _todo_panel_visible(self) -> bool:
+        visible = bool(self._todo_items())
+        if not visible and self._todo_panel_state.expanded:
+            self._todo_panel_state.close()
+        return visible
+
+    def _todo_panel_max_rows(self) -> int:
+        try:
+            rows = shutil.get_terminal_size((80, 24)).lines
+        except Exception:
+            rows = 24
+        return max(4, min(8, rows // 4))
+
+    def _render_todo_panel(self):
+        from hermes_cli.todo_progress import format_todo_panel_fragments
+
+        return format_todo_panel_fragments(
+            self._todo_items(),
+            self._todo_panel_state,
+            width=self._get_tui_terminal_width(),
+            max_rows=self._todo_panel_max_rows(),
+        )
+
+    def _todo_panel_height(self) -> int:
+        fragments = self._render_todo_panel()
+        if not fragments:
+            return 0
+        return "".join(text for _style, text in fragments).count("\n") + 1
+
+    def _toggle_todo_panel(self) -> bool:
+        items = self._todo_items()
+        if not self._todo_panel_state.toggle(items):
+            return False
+        self._invalidate(min_interval=0.0)
+        return True
+
+    def _close_todo_panel(self) -> None:
+        self._todo_panel_state.close()
+        self._invalidate(min_interval=0.0)
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -10221,8 +10272,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):
                 try:
-                    from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+                    from agent.todo_state import build_todo_store
+                    self.agent._todo_store = build_todo_store(self.agent)
+                    if hasattr(self, "_todo_panel_state"):
+                        self._todo_panel_state.close()
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
@@ -16961,6 +17014,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             or self._secret_state
             or self._model_picker_state
             or getattr(self, "_command_palette_state", None)
+            or (
+                getattr(getattr(self, "_todo_panel_state", None), "expanded", False)
+                and bool(self._todo_items())
+            )
             or self._auq_state  # KENSEI CUSTOM
         )
 
@@ -18346,6 +18403,91 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             manipulate user input from a keybinding handler.
         """
 
+    def _register_todo_tui_keybindings(self, kb) -> None:
+        """Register the focused Ctrl+T task inspector bindings."""
+        todo_toggle_filter = Condition(
+            lambda: (
+                self._todo_panel_state.expanded or self._todo_panel_visible()
+            )
+            and not self._clarify_state
+            and not self._auq_state
+            and not self._approval_state
+            and not self._sudo_state
+            and not self._secret_state
+            and not self._slash_confirm_state
+            and not self._model_picker_state
+            and not self._command_palette_state
+        )
+        todo_panel_filter = Condition(
+            lambda: self._todo_panel_state.expanded and self._todo_panel_visible()
+        )
+
+        @kb.add('c-t', filter=todo_toggle_filter, eager=True)
+        def handle_todo_toggle(event):
+            self._toggle_todo_panel()
+            event.app.invalidate()
+
+        @kb.add('up', filter=todo_panel_filter, eager=True)
+        @kb.add('k', filter=todo_panel_filter, eager=True)
+        def handle_todo_up(event):
+            self._todo_panel_state.move(self._todo_items(), -1)
+            event.app.invalidate()
+
+        @kb.add('down', filter=todo_panel_filter, eager=True)
+        @kb.add('j', filter=todo_panel_filter, eager=True)
+        def handle_todo_down(event):
+            self._todo_panel_state.move(self._todo_items(), 1)
+            event.app.invalidate()
+
+        @kb.add('m', filter=todo_panel_filter, eager=True)
+        def handle_todo_mark_done(event):
+            store = getattr(getattr(self, 'agent', None), '_todo_store', None)
+            if store is not None:
+                self._todo_panel_state.request_status(
+                    store.read(),
+                    'completed',
+                    expected_revision=store.revision,
+                )
+            event.app.invalidate()
+
+        @kb.add('u', filter=todo_panel_filter, eager=True)
+        def handle_todo_reopen(event):
+            store = getattr(getattr(self, 'agent', None), '_todo_store', None)
+            if store is not None:
+                self._todo_panel_state.request_status(
+                    store.read(),
+                    'pending',
+                    expected_revision=store.revision,
+                )
+            event.app.invalidate()
+
+        @kb.add('c', filter=todo_panel_filter, eager=True)
+        def handle_todo_completed_visibility(event):
+            self._todo_panel_state.toggle_completed(self._todo_items())
+            event.app.invalidate()
+
+        @kb.add('enter', filter=todo_panel_filter, eager=True)
+        def handle_todo_confirm(event):
+            store = getattr(getattr(self, 'agent', None), '_todo_store', None)
+            if store is not None:
+                self._todo_panel_state.confirm(store)
+            event.app.invalidate()
+
+        @kb.add('?', filter=todo_panel_filter, eager=True)
+        def handle_todo_help(event):
+            self._todo_panel_state.notice = (
+                '↑↓ select · m mark done · u reopen · c hide/show done · Esc close'
+            )
+            event.app.invalidate()
+
+        @kb.add('escape', filter=todo_panel_filter, eager=True)
+        def handle_todo_close(event):
+            if self._todo_panel_state.cancel_confirmation():
+                event.app.invalidate()
+                return
+            self._close_todo_panel()
+            event.app.invalidate()
+
     def _build_tui_layout_children(
         self,
         *,
@@ -18392,6 +18534,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 *self._get_extra_tui_widgets(),
                 getattr(self, "_pet_widget", None),
                 getattr(self, "_stash_panel_widget", None),
+                getattr(self, "_todo_panel_widget", None),
                 status_bar,
                 input_rule_top,
                 image_bar,
@@ -19228,6 +19371,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         def handle_stash_panel_close(event):
             cli_ref._prompt_stash.close_panel()
             event.app.invalidate()
+
+        # --- Ctrl+T todo progress inspector ---------------------------------
+        self._register_todo_tui_keybindings(kb)
 
         @kb.add('tab', eager=True)
         def handle_tab(event):
@@ -20204,7 +20350,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             style='class:input-area',
             multiline=True,
             wrap_lines=True,
-            read_only=Condition(lambda: bool(cli_ref._command_blocks_input)),
+            read_only=Condition(
+                lambda: bool(cli_ref._command_blocks_input)
+                or (
+                    getattr(cli_ref._todo_panel_state, "expanded", False)
+                    and cli_ref._todo_panel_visible()
+                )
+            ),
             history=FileHistory(str(self._history_file)),
             # complete_while_typing fires the completer on every keystroke. The
             # completer does blocking work — fuzzy @-file indexing shells out to
@@ -21331,6 +21483,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ),
         )
 
+        # Session task progress stays inline above the composer. Compact mode is
+        # a single current-task row; Ctrl+T expands the same canonical list.
+        self._todo_panel_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: cli_ref._render_todo_panel()),
+                height=lambda: cli_ref._todo_panel_height(),
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: cli_ref._todo_panel_visible()),
+        )
+
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
@@ -21393,6 +21556,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
             'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
             'status-bar-session-title': 'bg:#FFD700 #1a1a2e bold',
+            # Inline todo progress tray (colour supplements ASCII state tokens).
+            'todo-header': '#FFF8DC bold',
+            'todo-active': '#87CEEB bold',
+            'todo-pending': '#C0C0C0',
+            'todo-dim': '#777777',
+            'todo-selected': 'bg:#333355 #FFD700 bold',
+            'todo-hint': '#888888 italic',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges

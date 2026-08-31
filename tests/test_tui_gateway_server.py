@@ -14959,6 +14959,12 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
     seen: dict = {"msgs": []}
+    parent_todo_state = {
+        "revision": 3,
+        "todos": [{"id": "build", "content": "Build tray", "status": "completed"}],
+        "user_status_overrides": {"build": "completed"},
+        "pending_user_notices": [],
+    }
 
     class LaunchDB:
         def get_session_title(self, _key):
@@ -14990,6 +14996,13 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             seen["created"] = new_key
             seen["parent"] = kwargs.get("parent_session_id")
             seen["profile_name"] = kwargs.get("profile_name")
+
+        def get_session_todo_state(self, key):
+            return parent_todo_state if key == "parent-key" else None
+
+        def update_session_todo_state(self, key, state):
+            seen["todo_state"] = (key, state)
+            return True
 
         def append_message(self, **kwargs):
             seen["msgs"].append(kwargs)
@@ -15061,6 +15074,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # profile, not left NULL for aggregators to mis-tag as "default".
         assert seen.get("profile_name") == "mlperf"
         assert seen.get("title") == (seen["created"], "forked")
+        assert seen.get("todo_state") == (seen["created"], parent_todo_state)
         assert len(seen["msgs"]) == 1
         assert seen.get("launch") is None
         assert seen.get("launch_create") is None

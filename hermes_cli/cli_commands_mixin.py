@@ -1186,8 +1186,11 @@ class CLICommandsMixin:
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):
                 try:
-                    from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+                    from agent.todo_state import build_todo_store
+                    self.agent._todo_store = build_todo_store(self.agent)
+                    todo_panel_state = getattr(self, "_todo_panel_state", None)
+                    if todo_panel_state is not None:
+                        todo_panel_state.close()
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
@@ -1537,6 +1540,13 @@ class CLICommandsMixin:
 
         # Sync the agent
         if self.agent:
+            previous_todo_store = getattr(self.agent, "_todo_store", None)
+            previous_todo_state = (
+                previous_todo_store.snapshot_state()
+                if previous_todo_store is not None
+                and hasattr(previous_todo_store, "snapshot_state")
+                else None
+            )
             self.agent.session_id = new_session_id
             self.agent.session_start = now
             self.agent.reset_session_state()
@@ -1544,8 +1554,13 @@ class CLICommandsMixin:
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):
                 try:
-                    from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+                    from agent.todo_state import build_todo_store
+                    self.agent._todo_store = build_todo_store(
+                        self.agent, fallback_state=previous_todo_state
+                    )
+                    todo_panel_state = getattr(self, "_todo_panel_state", None)
+                    if todo_panel_state is not None:
+                        todo_panel_state.close()
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):

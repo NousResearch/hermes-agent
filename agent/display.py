@@ -1479,6 +1479,7 @@ def _get_cute_tool_message(
         # Parse result for completion progress
         total = 0
         done = 0
+        data = None
         if result:
             try:
                 data = safe_json_loads(result)
@@ -1488,6 +1489,12 @@ def _get_cute_tool_message(
                     done = s.get("completed", 0)
             except Exception:
                 pass
+        if os.environ.get("TERM", "").strip().lower() == "dumb" and isinstance(data, dict):
+            todos = data.get("todos")
+            if isinstance(todos, list):
+                from hermes_cli.todo_progress import format_todo_plain_snapshot
+
+                return "\n".join(format_todo_plain_snapshot(todos))
         if todos_arg is None:
             if total > 0:
                 return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")

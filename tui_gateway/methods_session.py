@@ -3218,6 +3218,15 @@ def _(rid, params: dict) -> dict:
                     else None
                 ),
             )
+            # Preserve the authoritative todo sidecar. A copied transcript does
+            # not encode human completion/cancellation overrides, so hydrating
+            # the child from history alone can reopen work the user closed.
+            get_todo_state = getattr(db, "get_session_todo_state", None)
+            set_todo_state = getattr(db, "update_session_todo_state", None)
+            if callable(get_todo_state) and callable(set_todo_state):
+                parent_todo_state = get_todo_state(old_key)
+                if parent_todo_state is not None:
+                    set_todo_state(new_key, parent_todo_state)
             # Copy the whole parent history in bounded-chunk transactions —
             # a branch seed can be hundreds of rows, and per-row transactions
             # were the write-amplification pattern removed in #23254.

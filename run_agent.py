@@ -4785,8 +4785,9 @@ class AIAgent:
         """
         from tools.todo_tool import MAX_TODO_RESULT_CHARS
 
-        # Walk history backwards to find the most recent todo tool response
-        last_todo_response = None
+        # Walk history backwards to find the most recent todo tool response.
+        last_todo_response: List[Dict[str, Any]] = []
+        found_todo_response = False
         for idx in range(len(history) - 1, -1, -1):
             msg = history[idx]
             if msg.get("role") != "tool":
@@ -4812,15 +4813,19 @@ class AIAgent:
                 data = json.loads(content)
                 if "todos" in data and isinstance(data["todos"], list):
                     last_todo_response = data["todos"]
+                    found_todo_response = True
                     break
             except (json.JSONDecodeError, TypeError):
                 continue
 
-        if last_todo_response:
-            # Replay the items into the store (replace mode)
+        if found_todo_response:
+            # Replay the authoritative full list, including an explicit clear.
             self._todo_store.write(last_todo_response, merge=False)
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+        mark_reconciled = getattr(self._todo_store, "mark_history_reconciled", None)
+        if callable(mark_reconciled):
+            mark_reconciled()
         _set_interrupt(False)
 
     @classmethod

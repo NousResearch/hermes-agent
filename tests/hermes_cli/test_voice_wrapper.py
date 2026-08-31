@@ -50,6 +50,11 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         assert normalize_voice_record_key_for_prompt_toolkit({}) == "c-b"
 
 
+    def test_todo_toggle_chord_is_reserved_in_classic_cli(self):
+        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+
+        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+t") == "c-b"
+
     def test_super_win_fall_back_to_default_in_cli(self):
         """prompt_toolkit has no super modifier, so ``super+b`` / ``win+o``
         would crash the classic CLI at startup if passed through. Fall

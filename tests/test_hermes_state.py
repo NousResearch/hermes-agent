@@ -302,6 +302,32 @@ class TestSessionLifecycle:
         assert session["ended_at"] is None
 
 
+    def test_todo_state_roundtrip_is_session_scoped(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        state = {
+            "revision": 3,
+            "todos": [{"id": "build", "content": "Build tray", "status": "completed"}],
+            "user_status_overrides": {"build": "completed"},
+        }
+
+        assert db.update_session_todo_state("s1", state) is True
+
+        assert db.get_session_todo_state("s1") == state
+        assert db.get_session_todo_state("s2") is None
+        assert db.update_session_todo_state("missing", state) is False
+
+    def test_todo_state_read_does_not_flush_unrelated_token_counters(self, db):
+        db.create_session(session_id="s1", source="cli")
+        state = {"revision": 1, "todos": []}
+        assert db.update_session_todo_state("s1", state) is True
+        db.flush_token_counts = mock.MagicMock(
+            side_effect=AssertionError("todo sidecar read must stay read-only")
+        )
+
+        assert db.get_session_todo_state("s1") == state
+        db.flush_token_counts.assert_not_called()
+
     def test_branch_resume_does_not_include_parent_messages_added_after_fork(self, db):
         """A branch owns its copied transcript, not the parent's later turns."""
         db.create_session("parent", source="tui")

@@ -5365,6 +5365,23 @@ class GatewaySlashCommandsMixin:
             logger.error("Failed to create branch session: %s", e)
             return t("gateway.branch.create_failed", error=e)
 
+        # Carry the canonical todo sidecar as well as the transcript. Human
+        # completion/cancellation authority is not encoded in historical tool
+        # responses, so history-only hydration would reopen work in a branch.
+        # Best-effort like the transcript copy, but close the crash gap before
+        # switch_session() makes the new branch live.
+        try:
+            _parent_todo_state = await self._session_db.get_session_todo_state(
+                parent_session_id
+            )
+            if _parent_todo_state is not None:
+                await self._session_db.update_session_todo_state(
+                    new_session_id,
+                    _parent_todo_state,
+                )
+        except Exception:
+            logger.debug("Could not copy todo state into branch", exc_info=True)
+
         # Copy conversation history to the new session in bounded-chunk
         # transactions (see #23254): one txn per row was the removed
         # write-amplification pattern, and a history can be hundreds of rows.

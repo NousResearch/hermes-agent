@@ -5,6 +5,7 @@ import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  handleTodoToggleHotkey,
   resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
@@ -57,6 +58,19 @@ describe('shouldAllowIdleHotkeyExit', () => {
 
   it('disables idle exit hotkeys in dashboard chat', () => {
     expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  })
+})
+
+describe('handleTodoToggleHotkey', () => {
+  it('toggles only for Ctrl+T when a task list exists', () => {
+    const toggle = vi.fn()
+
+    expect(handleTodoToggleHotkey('t', { ctrl: true }, true, toggle)).toBe(true)
+    expect(toggle).toHaveBeenCalledTimes(1)
+
+    expect(handleTodoToggleHotkey('t', { ctrl: false }, true, toggle)).toBe(false)
+    expect(handleTodoToggleHotkey('t', { ctrl: true }, false, toggle)).toBe(false)
+    expect(toggle).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -69,9 +69,9 @@ _VOICE_NAMED_KEYS = {
 
 # ``useInputHandlers()`` intercepts these before the voice check runs,
 # so a binding like ``ctrl+c`` (interrupt), ``ctrl+d`` (quit), or
-# ``ctrl+l`` (clear screen) would be advertised in /voice status but
-# never fire push-to-talk — the same blocklist the TUI parser uses.
-_VOICE_RESERVED_CTRL_CHARS = frozenset({"c", "d", "l"})
+# ``ctrl+l`` (clear screen), or ``ctrl+t`` (todo tray) would be advertised
+# in /voice status but never fire push-to-talk — the same blocklist the TUI parser uses.
+_VOICE_RESERVED_CTRL_CHARS = frozenset({"c", "d", "l", "t"})
 
 # On macOS the classic CLI's prompt_toolkit bindings for copy / exit /
 # clear also claim ``a-c`` / ``a-d`` / ``a-l`` via the action-modifier

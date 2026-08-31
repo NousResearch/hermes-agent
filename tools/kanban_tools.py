@@ -441,13 +441,21 @@ def _build_sanity_command(
     never resolves imports.  ``py_compile`` on a module that ``import``s an
     untracked/missing module exits 0, so the unbuildable-import class
     (2026-08-31 ce14358: a module importing from untracked files) would slip
-    through a compile-only gate.  This child script instead ``exec``s each
-    changed module by file path with the worktree root on ``sys.path``, so a
-    missing/untracked import, a syntax error, or an import-time ``NameError``
-    yields rc != 0.  One subprocess for all changed files (happy-path cheap).
+    through a compile-only gate.  This child script imports each changed
+    module by its dotted name (derived from the root-relative path, e.g.
+    ``gateway/delivery.py`` -> ``gateway.delivery``) with the worktree root on
+    ``sys.path``, so a missing/untracked import, a syntax error, or an
+    import-time error yields rc != 0.
+
+    Driving the real import machinery (rather than ``exec_module`` on a raw
+    file) matters for two reasons: relative imports (``from .config import
+    ...``) need the module's package context, and circular imports that the
+    standard import system resolves (``gateway/__init__.py`` pulling
+    ``.delivery``) must not be falsely bounced.  One subprocess for all
+    changed files (happy-path cheap).
     """
     check = (
-        "import importlib.util, pathlib, sys\n"
+        "import importlib, pathlib, sys\n"
         "root = pathlib.Path(sys.argv[1]).resolve()\n"
         "sys.path.insert(0, str(root))\n"
         "failures = 0\n"
@@ -457,16 +465,13 @@ def _build_sanity_command(
         "        print(f'import sanity: missing {rel}')\n"
         "        failures += 1\n"
         "        continue\n"
-        "    name = '_gate_' + path.stem.replace('-', '_')\n"
+        "    dotted = '.'.join(pathlib.Path(rel).with_suffix('').parts)\n"
+        "    if dotted == '__main__':\n"
+        "        # Cannot import __main__ by name; it is the running script.\n"
+        "        print(f'import sanity: skip {rel}')\n"
+        "        continue\n"
         "    try:\n"
-        "        spec = importlib.util.spec_from_file_location(name, path)\n"
-        "        if spec is None or spec.loader is None:\n"
-        "            print(f'import sanity: no loader for {rel}')\n"
-        "            failures += 1\n"
-        "            continue\n"
-        "        mod = importlib.util.module_from_spec(spec)\n"
-        "        sys.modules[name] = mod\n"
-        "        spec.loader.exec_module(mod)\n"
+        "        importlib.import_module(dotted)\n"
         "    except Exception as exc:\n"
         "        print(f'import sanity FAIL {rel}: {type(exc).__name__}: {exc}')\n"
         "        failures += 1\n"

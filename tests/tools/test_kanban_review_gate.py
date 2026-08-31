@@ -163,6 +163,43 @@ def test_gate_comment_carries_output_tail(
         assert "import/build sanity" in body or "focused tests" in body
 
 
+def test_gate_import_ok_for_relative_import_module(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed module using a relative import passes the sanity check.
+
+    Regression: loading a changed module under a synthetic flat name with no
+    package context raised ``ImportError: attempted relative import with no
+    known parent package`` and falsely bounced any module that does ``from
+    .sibling import ...`` (the majority of ``gateway/``, ``agent/``, and
+    ``hermes_cli/observability/``). Importing by dotted name via the real
+    import machinery preserves the package context, so relative imports
+    resolve.
+    """
+    ws = _add_worktree(repo, "relimport")
+    # A real package: pkg/__init__.py so dotted ``pkg.mod`` is importable.
+    _change_python_file(ws, "pkg/__init__.py", "")
+    _change_python_file(ws, "pkg/sibling.py", "VAL = 42\n")
+    _change_python_file(ws, "pkg/mod.py", "from .sibling import VAL\nresult = VAL + 1\n")
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    # The pure helper reports green on the relative-import module.
+    changed = tools._changed_python_files(str(ws))
+    assert "pkg/mod.py" in changed, changed
+    proc = subprocess.run(
+        tools._build_sanity_command("python", str(ws), changed),
+        capture_output=True, text=True, cwd=str(ws),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    resp = json.loads(tools._handle_request_review({"summary": "rel import ok"}))
+    assert resp.get("ok") is True, resp
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "review"
+
+
 def test_gate_missing_import_bounces_card(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

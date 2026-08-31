@@ -265,11 +265,35 @@ class TestMigrateGoalToSession:
 
 
     def test_does_not_clobber_existing_child_goal(self, hermes_home):
-        from hermes_cli.goals import save_goal, load_goal, migrate_goal_to_session, GoalState
+        from hermes_cli.goals import (
+            GoalConflictError,
+            GoalState,
+            load_goal,
+            migrate_goal_to_session,
+            save_goal,
+        )
         save_goal("p3", GoalState(goal="parent goal"))
         save_goal("c3", GoalState(goal="child already has one"))
-        assert migrate_goal_to_session("p3", "c3") is False
+        with pytest.raises(GoalConflictError):
+            migrate_goal_to_session("p3", "c3")
         assert load_goal("c3").goal == "child already has one"
+
+    def test_verified_no_goal_returns_false(self, hermes_home):
+        from hermes_cli.goals import migrate_goal_to_session
+
+        assert migrate_goal_to_session("empty-parent", "empty-child") is False
+
+    @pytest.mark.parametrize(
+        ("parent", "child"),
+        [("", "child"), ("parent", ""), ("same", "same")],
+    )
+    def test_invalid_identity_is_not_reported_as_no_goal(
+        self, hermes_home, parent, child
+    ):
+        from hermes_cli.goals import migrate_goal_to_session
+
+        with pytest.raises(ValueError):
+            migrate_goal_to_session(parent, child)
 
     def test_multi_key_migration_primitive_rolls_back_on_baseexception(
         self, hermes_home
@@ -324,14 +348,99 @@ class TestMigrateGoalToSession:
             db, "compare_and_set_meta_many", drift_child_after_commit
         )
 
-        migrated = goals.migrate_goal_to_session(
-            "readback-parent", "readback-child"
-        )
+        with pytest.raises(goals.GoalPostconditionError):
+            goals.migrate_goal_to_session("readback-parent", "readback-child")
         assert called is True
-        assert migrated is False
         assert goals.load_goal_authoritative("readback-child").last_reason == (
             "independent child change"
         )
+
+    def test_authoritative_read_failure_is_not_reported_as_no_goal(
+        self, hermes_home, monkeypatch
+    ):
+        from hermes_cli import goals
+
+        goals.save_goal(
+            "failed-read-parent", goals.GoalState(goal="must survive rotation")
+        )
+        db = goals._get_session_db()
+        real_get_meta = db.get_meta
+
+        def fail_parent_read(key):
+            if key == goals._meta_key("failed-read-parent"):
+                raise OSError("private storage detail")
+            return real_get_meta(key)
+
+        monkeypatch.setattr(db, "get_meta", fail_parent_read)
+
+        with pytest.raises(
+            goals.GoalPersistenceError, match="persisted goal read failed"
+        ):
+            goals.migrate_goal_to_session(
+                "failed-read-parent", "failed-read-child", reason="compression"
+            )
+
+        assert real_get_meta(goals._meta_key("failed-read-parent")) is not None
+        assert real_get_meta(goals._meta_key("failed-read-child")) is None
+
+
+def test_committed_mutation_with_failed_readback_is_postcondition_failure(
+    hermes_home, monkeypatch
+):
+    from hermes_cli import goals
+
+    db = goals._get_session_db()
+    real_get_meta = db.get_meta
+    read_count = 0
+
+    def fail_readback(key):
+        nonlocal read_count
+        if key == goals._meta_key("commit-readback"):
+            read_count += 1
+            if read_count == 2:
+                raise OSError("private readback detail")
+        return real_get_meta(key)
+
+    monkeypatch.setattr(db, "get_meta", fail_readback)
+
+    with pytest.raises(
+        goals.GoalPostconditionError, match="persisted goal read-back failed"
+    ):
+        goals.save_goal(
+            "commit-readback", goals.GoalState(goal="durably committed")
+        )
+
+    persisted = goals.GoalState.from_json(
+        real_get_meta(goals._meta_key("commit-readback"))
+    )
+    assert persisted.goal == "durably committed"
+
+
+def test_cas_exception_after_commit_has_unknown_mutation_outcome(
+    hermes_home, monkeypatch
+):
+    from hermes_cli import goals
+
+    db = goals._get_session_db()
+    real_cas = db.compare_and_set_meta
+
+    def commit_then_raise(key, expected, replacement):
+        assert real_cas(key, expected, replacement) is True
+        raise OSError("private commit acknowledgement detail")
+
+    monkeypatch.setattr(db, "compare_and_set_meta", commit_then_raise)
+
+    with pytest.raises(goals.GoalMutationOutcomeUnknownError):
+        goals.save_goal(
+            "cas-unknown-session",
+            goals.GoalState(goal="durable cas commit"),
+        )
+
+    persisted = goals.GoalState.from_json(
+        db.get_meta(goals._meta_key("cas-unknown-session"))
+    )
+    assert persisted is not None
+    assert persisted.goal == "durable cas commit"
 
 
 class TestSessionDbCacheAfterProfileDelete:

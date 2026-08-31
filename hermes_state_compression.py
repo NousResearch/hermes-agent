@@ -227,7 +227,8 @@ class SessionCompressionMixin:
         system_prompt: str = None, cwd: str = None, profile_name: str = None,
         compression_lock_holder: str = None, require_compression_lease: bool = True,
         require_lease_refresh: bool = False, lease_ttl_seconds: float = 300.0,
-        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
+        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None,
+        state_meta_changes: Optional[List[Tuple[str, Optional[str], str]]] = None) -> None:
         """Atomically close a parent and publish its durable compression child: closure, child row, and
         handoff commit in one transaction, so readers see the live parent or a complete child, never an
         ended parent with a missing/empty child. *watermark* (parent's ``get_active_message_watermark`` at compression start): parent rows with ``id
@@ -238,10 +239,14 @@ class SessionCompressionMixin:
         *compression_lock_holder* refreshes the lease on the same ``conn`` before the expiry check (no
         TOCTOU window), so a refresher that died on transient DB errors gets one last chance.
 
+        ``state_meta_changes`` joins exact metadata CAS replacements to the
+        same publication transaction, so a session split and its goal move
+        either become visible together or not at all.
+
         See #75316.
         ``None`` = unbounded (no internal flush happened). See #47202.
         """
-        from hermes_state_errors import CompressionSessionBusyError
+        from hermes_state_errors import CompressionMetadataConflictError, CompressionSessionBusyError
         def _do(conn):
             if require_lease_refresh and compression_lock_holder:
                 conn.execute(
@@ -276,6 +281,21 @@ class SessionCompressionMixin:
                     (parent_session_id,))
             if not messages:
                 raise RuntimeError("Compression child handoff must not be empty")
+            for key, expected, _replacement in state_meta_changes or []:
+                row = conn.execute(
+                    "SELECT value FROM state_meta WHERE key = ?", (key,)
+                ).fetchone()
+                current = None if row is None else row[0]
+                if current != expected:
+                    raise CompressionMetadataConflictError(
+                        "state metadata changed before compression publication"
+                    )
+            for key, _expected, replacement in state_meta_changes or []:
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, replacement),
+                )
             self._publish_child_session_row(
                 conn, parent, parent_session_id=parent_session_id, child_session_id=child_session_id,
                 source=source, model=model, model_config=model_config, system_prompt=system_prompt,

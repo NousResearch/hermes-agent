@@ -138,7 +138,8 @@ class TestCliResumeRestartsWork:
             cli._handle_goal_command("goal must persist")
 
         rendered = "\n".join(str(item) for item in notices)
-        assert "failed" in rendered.lower() or "unavailable" in rendered.lower()
+        assert "may have committed" in rendered.lower()
+        assert "do not retry blindly" in rendered.lower()
         assert "Goal set" not in rendered
         assert cli._pending_input.empty()
 
@@ -174,6 +175,58 @@ class TestCliResumeRestartsWork:
         with patch("cli._cprint", side_effect=notices.append):
             cli._handle_goal_command("goal status")
         assert "No active goal" in "\n".join(str(item) for item in notices)
+
+    @pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
+    @pytest.mark.parametrize("command", ["subgoal", "goal gate list"])
+    def test_human_goal_reads_never_report_persistence_failure_as_absence(
+        self, hermes_home, monkeypatch, failure, command
+    ):
+        cli = _make_cli(f"sid-cli-human-read-{failure}-{uuid.uuid4().hex}")
+
+        class StatusDB:
+            def get_meta(self, _key):
+                if failure == "read":
+                    raise OSError("private human-read detail")
+                return "{invalid goal json"
+
+        monkeypatch.setattr(
+            goals,
+            "_get_session_db",
+            (lambda: None) if failure == "missing" else (lambda: StatusDB()),
+        )
+        notices = []
+        with patch("cli._cprint", side_effect=notices.append):
+            if command == "subgoal":
+                cli._handle_subgoal_command(command)
+            else:
+                cli._handle_goal_command(command)
+
+        rendered = "\n".join(str(item) for item in notices)
+        assert "Goal status unavailable" in rendered
+        assert "No active goal" not in rendered
+        assert "(no active goal)" not in rendered
+        assert "private human-read detail" not in rendered
+
+    def test_indeterminate_cli_mutation_does_not_claim_state_is_unchanged(
+        self, hermes_home
+    ):
+        cli = _make_cli(f"sid-cli-indeterminate-{uuid.uuid4().hex}")
+
+        class IndeterminateManager:
+            def set(self, *_args, **_kwargs):
+                raise goals.GoalMutationOutcomeUnknownError(
+                    "persisted goal read-back failed"
+                )
+
+        cli._get_goal_manager = lambda: IndeterminateManager()
+        notices = []
+        with patch("cli._cprint", side_effect=notices.append):
+            cli._handle_goal_command("goal publish carefully")
+
+        rendered = "\n".join(str(item) for item in notices)
+        assert "may have committed" in rendered
+        assert "do not retry blindly" in rendered.lower()
+        assert "unchanged" not in rendered.lower()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -297,3 +350,58 @@ class TestGatewayResumeRestartsWork:
         event.text = "/goal status"
         response = await GatewayRunner._handle_goal_command(runner, event)
         assert "No active goal" in response
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
+    @pytest.mark.parametrize("command", ["subgoal", "goal gate list"])
+    async def test_human_goal_reads_never_report_persistence_failure_as_absence(
+        self, hermes_home, monkeypatch, failure, command
+    ):
+        runner, _adapter = _make_runner()
+
+        class StatusDB:
+            def get_meta(self, _key):
+                if failure == "read":
+                    raise OSError("private gateway human-read detail")
+                return "{invalid goal json"
+
+        monkeypatch.setattr(
+            goals,
+            "_get_session_db",
+            (lambda: None) if failure == "missing" else (lambda: StatusDB()),
+        )
+        event = _resume_event()
+        event.text = f"/{command}"
+        if command == "subgoal":
+            response = await GatewayRunner._handle_subgoal_command(runner, event)
+        else:
+            response = await GatewayRunner._handle_goal_command(runner, event)
+
+        assert "Goal status unavailable" in response
+        assert "No active goal" not in response
+        assert "(no active goal)" not in response
+        assert "private gateway human-read detail" not in response
+
+    @pytest.mark.asyncio
+    async def test_indeterminate_gateway_mutation_does_not_claim_state_is_unchanged(
+        self, hermes_home
+    ):
+        runner, _adapter = _make_runner()
+
+        class IndeterminateManager:
+            def set(self, *_args, **_kwargs):
+                raise goals.GoalMutationOutcomeUnknownError(
+                    "persisted goal read-back failed"
+                )
+
+        async def get_manager(_event):
+            return IndeterminateManager(), _FakeSessionEntry()
+
+        runner._get_goal_manager_for_event = get_manager
+        event = _resume_event()
+        event.text = "/goal publish carefully"
+        response = await GatewayRunner._handle_goal_command(runner, event)
+
+        assert "may have committed" in response
+        assert "do not retry blindly" in response.lower()
+        assert "unchanged" not in response.lower()

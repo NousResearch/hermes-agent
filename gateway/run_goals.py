@@ -87,7 +87,9 @@ class GatewayGoalsMixin:
         def _load():
             from hermes_cli.goals import GoalManager
             max_turns = self._goal_max_turns_from_config()
-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
+            return lambda sid: GoalManager.load_authoritative(
+                session_id=sid, default_max_turns=max_turns
+            )
         return await self._manager_for_event(event, "goal", _load)
 
     async def _get_heartbeat_manager_for_event(self, event: "MessageEvent"):

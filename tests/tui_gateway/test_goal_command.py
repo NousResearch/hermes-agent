@@ -440,6 +440,93 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
 
 
+@pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
+def test_compression_recovery_goal_read_failure_is_visible_and_preserves_retry_state(
+    server, turn_env, monkeypatch, failure
+):
+    from hermes_cli import goals
+
+    session_key = f"goal-compression-read-{failure}"
+    goals.GoalManager(session_key).set("finish the current task")
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=lambda *_args, **_kwargs: _compression_failure(),
+        clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+    retained_retry = {
+        "goal_created_at": 123.0,
+        "goal": "finish the current task",
+        "attempts": 1,
+    }
+    session[server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS] = dict(retained_retry)
+
+    class FailingDB:
+        def get_meta(self, _key):
+            if failure == "read":
+                raise OSError("private recovery detail")
+            return "{invalid goal json"
+
+    monkeypatch.setattr(
+        goals,
+        "_get_session_db",
+        (lambda: None) if failure == "missing" else (lambda: FailingDB()),
+    )
+    with patch.object(goals.GoalManager, "evaluate_after_turn") as judge:
+        server._run_prompt_submit("rid", "sid", session, "initial work")
+
+    judge.assert_not_called()
+    assert session[server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS] == retained_retry
+    notices = [
+        p["text"]
+        for event, _sid, p in turn_env
+        if event == "status.update" and p.get("kind") == "goal"
+    ]
+    assert any("Goal status unavailable" in text for text in notices)
+    assert all("private recovery detail" not in text for text in notices)
+
+
+@pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
+def test_normal_post_turn_goal_read_failure_is_visible_and_never_judged(
+    server, turn_env, monkeypatch, failure
+):
+    from hermes_cli import goals
+
+    session_key = f"goal-post-turn-read-{failure}"
+    goals.GoalManager(session_key).set("finish the current task")
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=lambda *_args, **_kwargs: {
+            "final_response": "work remains"
+        },
+        clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+
+    class FailingDB:
+        def get_meta(self, _key):
+            if failure == "read":
+                raise OSError("private post-turn detail")
+            return "{invalid goal json"
+
+    monkeypatch.setattr(
+        goals,
+        "_get_session_db",
+        (lambda: None) if failure == "missing" else (lambda: FailingDB()),
+    )
+    with patch.object(goals.GoalManager, "evaluate_after_turn") as judge:
+        server._run_prompt_submit("rid", "sid", session, "initial work")
+
+    judge.assert_not_called()
+    notices = [
+        p["text"]
+        for event, _sid, p in turn_env
+        if event == "status.update" and p.get("kind") == "goal"
+    ]
+    assert any("Goal status unavailable" in text for text in notices)
+    assert all("private post-turn detail" not in text for text in notices)
+
+
 def test_compression_deferred_is_not_treated_as_exhaustion(server):
     from hermes_cli.goals import GoalManager
 

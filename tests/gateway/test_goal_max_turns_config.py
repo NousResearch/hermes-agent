@@ -150,6 +150,7 @@ async def test_gateway_persistence_drop_reports_failure_without_success_notice(
 
     response = await GatewayRunner._handle_goal_command(runner, _make_goal_event())
 
-    assert "failed" in response.lower() or "unavailable" in response.lower()
+    assert "may have committed" in response.lower()
+    assert "do not retry blindly" in response.lower()
     assert "Goal set" not in response
     assert runner._queued_events == {}

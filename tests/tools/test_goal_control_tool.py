@@ -607,6 +607,78 @@ def test_acknowledged_mutation_requires_exact_persisted_readback(
     assert persisted.last_reason == "independent post-write drift"
 
 
+@pytest.mark.parametrize("action", ["set", "update", "pause", "resume", "clear"])
+def test_committed_mutation_with_unavailable_readback_is_retry_unsafe(
+    tmp_path, monkeypatch, action
+):
+    _home(tmp_path, monkeypatch)
+    session_id = "session-current"
+    if action in {"update", "pause", "clear", "resume"}:
+        _call("set", session_id=session_id, condition="Original", max_turns=9)
+    if action == "resume":
+        _call("pause", session_id=session_id)
+
+    db = goals._get_session_db()
+    real_cas = db.compare_and_set_meta
+    real_get_meta = db.get_meta
+    committed = False
+
+    def commit_then_hide_readback(key, expected, replacement):
+        nonlocal committed
+        committed = real_cas(key, expected, replacement)
+        return committed
+
+    def fail_only_after_commit(key):
+        if committed and key == goals._meta_key(session_id):
+            raise OSError("private post-commit detail")
+        return real_get_meta(key)
+
+    monkeypatch.setattr(db, "compare_and_set_meta", commit_then_hide_readback)
+    monkeypatch.setattr(db, "get_meta", fail_only_after_commit)
+    kwargs = (
+        {"condition": "Updated", "max_turns": 2}
+        if action in {"set", "update"}
+        else {}
+    )
+    result = _call(action, session_id=session_id, **kwargs)
+
+    assert committed is True
+    assert result["success"] is False
+    assert result["error"]["code"] == "mutation_outcome_unknown"
+    assert "may have committed" in result["error"]["message"]
+    assert "do not retry blindly" in result["error"]["message"].lower()
+    assert "private post-commit detail" not in str(result)
+    assert real_get_meta(goals._meta_key(session_id)) is not None
+
+
+def test_cas_exception_after_commit_is_reported_as_retry_unsafe(
+    tmp_path, monkeypatch
+):
+    _home(tmp_path, monkeypatch)
+    db = goals._get_session_db()
+    assert db is not None
+    real_cas = db.compare_and_set_meta
+
+    def commit_then_raise(key, expected, replacement):
+        assert real_cas(key, expected, replacement) is True
+        raise OSError("private commit acknowledgement detail")
+
+    monkeypatch.setattr(db, "compare_and_set_meta", commit_then_raise)
+
+    result = _call(
+        "set", session_id="session-current", condition="durable cas commit"
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "mutation_outcome_unknown"
+    assert "may have committed" in result["error"]["message"].lower()
+    assert "do not retry blindly" in result["error"]["message"].lower()
+    assert "private commit acknowledgement detail" not in str(result)
+    persisted = goals.GoalState.from_json(db.get_meta("goal:session-current"))
+    assert persisted is not None
+    assert persisted.goal == "durable cas commit"
+
+
 def test_update_cas_conflict_does_not_resurrect_concurrently_cleared_goal(
     tmp_path, monkeypatch
 ):

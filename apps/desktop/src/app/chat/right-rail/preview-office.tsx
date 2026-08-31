@@ -377,7 +377,10 @@ function SlideStack({
       )}
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
         <article
-          className="flex w-full max-w-3xl flex-col justify-center gap-4 overflow-hidden rounded-sm px-10 py-8 shadow-md"
+          className={cn(
+            'w-full max-w-3xl overflow-hidden rounded-sm shadow-md',
+            slide.blocks.some(block => block.box) ? 'relative' : 'flex flex-col justify-center gap-4 px-10 py-8'
+          )}
           data-testid="office-slide-canvas"
           style={{
             aspectRatio: '16 / 9',
@@ -396,21 +399,34 @@ function SlideStack({
 }
 
 function SlideBlockView({ block }: { block: SlideBlock }) {
+  const positioned = block.box
+    ? {
+        height: `${block.box.height}%`,
+        left: `${block.box.left}%`,
+        overflow: 'hidden',
+        position: 'absolute' as const,
+        top: `${block.box.top}%`,
+        width: `${block.box.width}%`
+      }
+    : undefined
+
   if (block.type === 'table') {
     return (
-      <table className="w-full border-collapse text-[11pt]">
-        <tbody>
-          {block.rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              {row.map((cell, cellIndex) => (
-                <td key={cellIndex} style={{ border: '1px solid currentColor', padding: '6px 10px' }}>
-                  {cell}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div data-testid={block.box ? 'office-slide-box' : undefined} style={positioned}>
+        <table className="h-full w-full border-collapse text-[11pt]">
+          <tbody>
+            {block.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {row.map((cell, cellIndex) => (
+                  <td key={cellIndex} style={{ border: '1px solid currentColor', padding: '6px 10px' }}>
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     )
   }
 
@@ -418,10 +434,13 @@ function SlideBlockView({ block }: { block: SlideBlock }) {
 
   return (
     <Tag
+      data-testid={block.box ? 'office-slide-box' : undefined}
       style={{
-        fontSize: block.role === 'title' ? '28pt' : block.role === 'subtitle' ? '16pt' : '16pt',
+        fontSize: block.role === 'title' ? '28pt' : '16pt',
         fontWeight: block.role === 'title' ? 700 : undefined,
-        lineHeight: 1.25
+        lineHeight: 1.25,
+        margin: 0,
+        ...positioned
       }}
     >
       {block.paragraphs.map((paragraph, index) => (

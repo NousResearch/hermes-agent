@@ -599,6 +599,75 @@ describe('parseOfficePreview pptx', () => {
     expect(preview.slides[1]?.blocks[0]).toEqual({ rows: [['Check']], type: 'table' })
     expect(preview.slides[1]?.background).toBe('#FFFFFF')
   })
+
+  it('places shapes from layout placeholders and slide xfrm', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        'ppt/presentation.xml': `<?xml version="1.0"?>
+<p:presentation xmlns:p="${NS_P}" xmlns:r="${NS_REL}"><p:sldSz cx="12191695" cy="6858000"/></p:presentation>`,
+        'ppt/slideMasters/slideMaster1.xml': `<?xml version="1.0"?>
+<p:sldMaster xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
+  <p:sp>
+    <p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+    <p:spPr><a:xfrm><a:off x="457200" y="274638"/><a:ext cx="8229600" cy="1143000"/></a:xfrm></p:spPr>
+    <p:txBody><a:p/></p:txBody>
+  </p:sp>
+</p:spTree></p:cSld></p:sldMaster>`,
+        'ppt/slideLayouts/slideLayout1.xml': `<?xml version="1.0"?>
+<p:sldLayout xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
+  <p:sp>
+    <p:nvSpPr><p:nvPr><p:ph type="ctrTitle"/></p:nvPr></p:nvSpPr>
+    <p:spPr><a:xfrm><a:off x="685800" y="2130425"/><a:ext cx="7772400" cy="1470025"/></a:xfrm></p:spPr>
+    <p:txBody><a:p/></p:txBody>
+  </p:sp>
+</p:spTree></p:cSld></p:sldLayout>`,
+        'ppt/slides/_rels/slide1.xml.rels': `<?xml version="1.0"?>
+<Relationships xmlns="${NS_PKG_REL}">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+</Relationships>`,
+        'ppt/slides/slide1.xml': `<?xml version="1.0"?>
+<p:sld xmlns:p="${NS_P}" xmlns:a="${NS_A}"><p:cSld><p:spTree>
+  <p:sp>
+    <p:nvSpPr><p:nvPr><p:ph type="ctrTitle"/></p:nvPr></p:nvSpPr>
+    <p:txBody><a:p><a:r><a:t>Title</a:t></a:r></a:p></p:txBody>
+  </p:sp>
+  <p:graphicFrame>
+    <p:xfrm><a:off x="914400" y="1828800"/><a:ext cx="5486400" cy="1828800"/></p:xfrm>
+    <a:graphic><a:graphicData><a:tbl>
+      <a:tr><a:tc><a:txBody><a:p><a:r><a:t>Cell</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+    </a:tbl></a:graphicData></a:graphic>
+  </p:graphicFrame>
+</p:spTree></p:cSld></p:sld>`
+      }),
+      '.pptx'
+    )
+
+    expect(preview?.kind).toBe('slides')
+
+    if (preview?.kind !== 'slides') {
+      return
+    }
+
+    const title = preview.slides[0]?.blocks[0]
+    const table = preview.slides[0]?.blocks[1]
+    const cx = 12191695
+    const cy = 6858000
+
+    expect(title?.type).toBe('text')
+    expect(title && 'box' in title ? title.box : undefined).toEqual({
+      height: (1470025 / cy) * 100,
+      left: (685800 / cx) * 100,
+      top: (2130425 / cy) * 100,
+      width: (7772400 / cx) * 100
+    })
+    expect(table?.type).toBe('table')
+    expect(table && 'box' in table ? table.box : undefined).toEqual({
+      height: (1828800 / cy) * 100,
+      left: (914400 / cx) * 100,
+      top: (1828800 / cy) * 100,
+      width: (5486400 / cx) * 100
+    })
+  })
 })
 
 describe('parseOfficePreview guards', () => {

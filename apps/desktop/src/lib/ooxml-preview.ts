@@ -65,13 +65,22 @@ export type OfficeSlide = {
   blocks: SlideBlock[]
 }
 
+export type SlideBox = {
+  height: number
+  left: number
+  top: number
+  width: number
+}
+
 export type SlideBlock =
   | {
+      box?: SlideBox
       paragraphs: SlideParagraph[]
       role: 'body' | 'subtitle' | 'title'
       type: 'text'
     }
   | {
+      box?: SlideBox
       rows: string[][]
       type: 'table'
     }
@@ -522,9 +531,17 @@ function parsePptx(zip: Map<string, Uint8Array>): SlidesPreview | null {
   }
 
   const theme = parseThemeColors(zipText(zip, 'ppt/theme/theme1.xml'))
-  const masterBackground = slideFill(zipText(zip, 'ppt/slideMasters/slideMaster1.xml'), theme)
+  const masterXml = zipText(zip, 'ppt/slideMasters/slideMaster1.xml')
+  const size = presentationSize(zip)
+  const masterBoxes = placeholderBoxes(masterXml, size)
+  const masterBackground = slideFill(masterXml, theme)
   const truncated = names.length > MAX_SLIDES
-  const slides = names.slice(0, MAX_SLIDES).map(name => parseSlide(zipText(zip, name) || '', theme, masterBackground))
+
+  const slides = names.slice(0, MAX_SLIDES).map(name => {
+    const layoutXml = zipText(zip, slideLayoutPath(zip, name))
+
+    return parseSlide(zipText(zip, name) || '', theme, masterBackground, size, placeholderBoxes(layoutXml, size), masterBoxes)
+  })
 
   return { kind: 'slides', slides, truncated }
 }
@@ -598,7 +615,14 @@ function slideFill(xml: string | null, theme: Map<string, string>): string | und
   return drawingColor(bg, theme)
 }
 
-function parseSlide(xml: string, theme: Map<string, string>, fallbackFill: string | undefined): OfficeSlide {
+function parseSlide(
+  xml: string,
+  theme: Map<string, string>,
+  fallbackFill: string | undefined,
+  size: { cx: number; cy: number },
+  layoutBoxes: Map<string, SlideBox>,
+  masterBoxes: Map<string, SlideBox>
+): OfficeSlide {
   const doc = parseXml(xml)
 
   if (!doc) {
@@ -612,9 +636,10 @@ function parseSlide(xml: string, theme: Map<string, string>, fallbackFill: strin
   for (const child of tree ? Array.from(tree.children) : []) {
     if (child.localName === 'graphicFrame') {
       const table = slideTable(child)
+      const boxed = withSlideBox(table, shapeBox(child, size, layoutBoxes, masterBoxes))
 
-      if (table) {
-        blocks.push(table)
+      if (boxed) {
+        blocks.push(boxed)
       }
 
       continue
@@ -624,7 +649,7 @@ function parseSlide(xml: string, theme: Map<string, string>, fallbackFill: strin
       continue
     }
 
-    const text = slideText(child, theme)
+    const text = withSlideBox(slideText(child, theme), shapeBox(child, size, layoutBoxes, masterBoxes))
 
     if (text) {
       blocks.push(text)
@@ -632,6 +657,167 @@ function parseSlide(xml: string, theme: Map<string, string>, fallbackFill: strin
   }
 
   return { blocks, ...(background ? { background } : {}) }
+}
+
+function presentationSize(zip: Map<string, Uint8Array>): { cx: number; cy: number } {
+  const doc = parseXml(zipText(zip, 'ppt/presentation.xml') || '')
+  const size = doc ? localElements(doc, 'sldSz')[0] : undefined
+  const cx = Number(size?.getAttribute('cx') || 0)
+  const cy = Number(size?.getAttribute('cy') || 0)
+
+  return { cx: cx || 12_192_000, cy: cy || 6_858_000 }
+}
+
+function slideLayoutPath(zip: Map<string, Uint8Array>, slideName: string): string {
+  const relsName = slideName.replace(/([^/]+)$/, '_rels/$1.rels')
+  const doc = parseXml(zipText(zip, relsName) || '')
+
+  for (const rel of doc ? localElements(doc, 'Relationship') : []) {
+    const type = rel.getAttribute('Type') || ''
+    const target = rel.getAttribute('Target') || ''
+
+    if (type.includes('/slideLayout') && target) {
+      return joinZipPath(slideName, target)
+    }
+  }
+
+  return ''
+}
+
+function joinZipPath(from: string, target: string): string {
+  if (target.startsWith('/')) {
+    return target.replace(/^\/+/, '')
+  }
+
+  const parts = from.split('/').slice(0, -1)
+
+  for (const part of target.split('/')) {
+    if (part === '..') {
+      parts.pop()
+    } else if (part && part !== '.') {
+      parts.push(part)
+    }
+  }
+
+  return parts.join('/')
+}
+
+function placeholderBoxes(xml: string | null, size: { cx: number; cy: number }): Map<string, SlideBox> {
+  const boxes = new Map<string, SlideBox>()
+  const doc = xml ? parseXml(xml) : null
+  const tree = doc ? localElements(doc, 'spTree')[0] : undefined
+
+  for (const child of tree ? Array.from(tree.children) : []) {
+    if (child.localName !== 'sp') {
+      continue
+    }
+
+    const placeholder = localElements(child, 'ph')[0]
+    const box = emuBox(shapeXfrm(child), size)
+
+    if (!placeholder || !box) {
+      continue
+    }
+
+    const type = placeholder.getAttribute('type') || ''
+    const idx = placeholder.getAttribute('idx') || '0'
+
+    boxes.set(`${type}:${idx}`, box)
+
+    if (type && !boxes.has(`${type}:`)) {
+      boxes.set(`${type}:`, box)
+    }
+  }
+
+  return boxes
+}
+
+function shapeBox(
+  shape: Element,
+  size: { cx: number; cy: number },
+  layoutBoxes: Map<string, SlideBox>,
+  masterBoxes: Map<string, SlideBox>
+): SlideBox | undefined {
+  return emuBox(shapeXfrm(shape), size) || lookupPlaceholderBox(shape, layoutBoxes, masterBoxes)
+}
+
+function lookupPlaceholderBox(
+  shape: Element,
+  layoutBoxes: Map<string, SlideBox>,
+  masterBoxes: Map<string, SlideBox>
+): SlideBox | undefined {
+  const placeholder = localElements(shape, 'ph')[0]
+
+  if (!placeholder) {
+    return undefined
+  }
+
+  const type = placeholder.getAttribute('type') || ''
+  const idx = placeholder.getAttribute('idx') || '0'
+  const aliases = type === 'ctrTitle' ? ['ctrTitle', 'title'] : type === 'title' ? ['title', 'ctrTitle'] : type ? [type] : ['', 'body']
+
+  for (const alias of aliases) {
+    const hit =
+      layoutBoxes.get(`${alias}:${idx}`) ||
+      layoutBoxes.get(`${alias}:`) ||
+      masterBoxes.get(`${alias}:${idx}`) ||
+      masterBoxes.get(`${alias}:`)
+
+    if (hit) {
+      return hit
+    }
+  }
+
+  return layoutBoxes.get(`:${idx}`) || masterBoxes.get(`:${idx}`) || masterBoxes.get(`body:${idx}`)
+}
+
+function shapeXfrm(shape: Element): { cx: number; cy: number; x: number; y: number } | undefined {
+  const spPr = Array.from(shape.children).find(child => child.localName === 'spPr')
+
+  const xfrm =
+    (spPr && Array.from(spPr.children).find(child => child.localName === 'xfrm')) ||
+    Array.from(shape.children).find(child => child.localName === 'xfrm')
+
+  if (!xfrm) {
+    return undefined
+  }
+
+  const off = localElements(xfrm, 'off')[0]
+  const ext = localElements(xfrm, 'ext')[0]
+  const cx = Number(ext?.getAttribute('cx') || 0)
+  const cy = Number(ext?.getAttribute('cy') || 0)
+
+  if (!cx && !cy) {
+    return undefined
+  }
+
+  return {
+    cx,
+    cy,
+    x: Number(off?.getAttribute('x') || 0),
+    y: Number(off?.getAttribute('y') || 0)
+  }
+}
+
+function emuBox(emu: { cx: number; cy: number; x: number; y: number } | undefined, size: { cx: number; cy: number }): SlideBox | undefined {
+  if (!emu || !size.cx || !size.cy) {
+    return undefined
+  }
+
+  return {
+    height: (emu.cy / size.cy) * 100,
+    left: (emu.x / size.cx) * 100,
+    top: (emu.y / size.cy) * 100,
+    width: (emu.cx / size.cx) * 100
+  }
+}
+
+function withSlideBox<T extends SlideBlock>(block: T | null, box: SlideBox | undefined): T | null {
+  if (!block) {
+    return null
+  }
+
+  return box ? { ...block, box } : block
 }
 
 function slideText(shape: Element, theme: Map<string, string>): Extract<SlideBlock, { type: 'text' }> | null {

@@ -301,6 +301,37 @@ describe('OfficePreviewView', () => {
     expect(screen.getByText('Navy').style.color).toBe('rgb(255, 255, 255)')
   })
 
+  it('places slide shapes with absolute coordinates', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'slides',
+          slides: [
+            {
+              blocks: [
+                {
+                  box: { height: 20, left: 5, top: 30, width: 60 },
+                  paragraphs: [{ runs: [{ text: 'Title' }] }],
+                  role: 'title',
+                  type: 'text'
+                }
+              ]
+            }
+          ]
+        }}
+        {...labels}
+      />
+    )
+
+    const box = screen.getByTestId('office-slide-box')
+
+    expect(box.style.position).toBe('absolute')
+    expect(box.style.left).toBe('5%')
+    expect(box.style.top).toBe('30%')
+    expect(box.style.width).toBe('60%')
+    expect(box.style.height).toBe('20%')
+  })
+
   it('shows a truncation banner when the parser capped the document', () => {
     render(
       <OfficePreviewView

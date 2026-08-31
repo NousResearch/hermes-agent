@@ -336,9 +336,12 @@ for a peer ID. For separate assistant context, set
 Existing non-empty peer settings keep their peer-scoped writes and recall.
 This includes `OPENVIKING_AGENT` and `actor_peer_id` or legacy `agent_id` in a
 linked OpenViking config. Existing memories are not moved or deleted.
-Installations that relied on the old implicit `hermes` peer can retain it by
-setting `memory.openviking.agent: hermes`. With no peer ID, default search can
-include all existing peer memories under the same OpenViking user.
+With no peer ID, default search covers user memory and existing peer memories
+under the same OpenViking user. Old peer memories remain searchable at their
+existing paths. Ranking and result limits determine which memories are returned.
+Set `memory.openviking.agent: hermes` to restore the old peer-scoped writes.
+Memories written at user scope before this change stay there and remain
+searchable. The setting changes future writes, not existing memory locations.
 
 Hermes sends `User-Agent: openviking-memory-hermes/<version>` on OpenViking
 requests. This standard harness identifier contains no per-user identifier and

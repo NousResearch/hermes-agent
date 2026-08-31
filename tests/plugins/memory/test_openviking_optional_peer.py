@@ -1,6 +1,7 @@
 """Optional peer identity must agree across setup, requests and memory writes."""
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -16,6 +17,8 @@ def isolated_config(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     for key in (*ov._OPENVIKING_ENV_KEYS, "OPENVIKING_CLI_CONFIG_FILE"):
+        # Track absent keys too, so setup's direct environment writes are undone.
+        monkeypatch.setenv(key, "")
         monkeypatch.delenv(key, raising=False)
 
 
@@ -61,6 +64,24 @@ def test_unconfigured_client_and_schema_do_not_supply_a_peer():
 
 
 @pytest.mark.parametrize("peer", ["", "hermes"])
+def test_linked_profile_status_only_shows_a_configured_peer(tmp_path, peer):
+    path = tmp_path / "ovcli.conf"
+    path.write_text(
+        json.dumps({"url": "http://localhost:1933", "actor_peer_id": peer}),
+        encoding="utf-8",
+    )
+    display = ov.OpenVikingMemoryProvider().get_status_config({
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(path),
+    })
+
+    if peer:
+        assert display["agent"] == peer
+    else:
+        assert "agent" not in display
+
+
+@pytest.mark.parametrize("peer", ["", "hermes"])
 def test_memory_uri_uses_captured_peer_even_when_empty(monkeypatch, peer):
     client = ov._VikingClient("http://localhost:1933", agent=peer)
     monkeypatch.setattr(client, "get", lambda *a, **kw: {"result": {"user": "alice"}})
@@ -76,11 +97,13 @@ def test_memory_uri_uses_captured_peer_even_when_empty(monkeypatch, peer):
 
 @pytest.mark.parametrize("save_to_store", [False, True])
 @pytest.mark.parametrize("credential", ["dev", "user", "root", "service"])
+@pytest.mark.parametrize("stale_env", [False, True])
 def test_new_setup_does_not_ask_for_or_save_peer(
     tmp_path,
     monkeypatch,
     save_to_store,
     credential,
+    stale_env,
 ):
     from hermes_cli import memory_setup
 
@@ -90,6 +113,12 @@ def test_new_setup_does_not_ask_for_or_save_peer(
         "OPENVIKING_AGENT=old-peer\nOTHER_KEY=keep\n", encoding="utf-8"
     )
     config = {"memory": {"openviking": {"agent": "old-peer", "recall_limit": 9}}}
+    if stale_env:
+        for key in ov._OPENVIKING_ENV_KEYS:
+            monkeypatch.setenv(
+                key, "old-peer" if key == "OPENVIKING_AGENT" else "old-value"
+            )
+    monkeypatch.setenv("OTHER_KEY", "keep")
     validations = []
 
     def validate(values, **kwargs):
@@ -140,13 +169,71 @@ def test_new_setup_does_not_ask_for_or_save_peer(
     assert "OTHER_KEY=keep" in (home / ".env").read_text(encoding="utf-8")
     saved_config = ov._load_hermes_openviking_config()
     assert saved_config["recall_limit"] == 9
-    assert ov._resolve_connection_settings(saved_config)["agent"] == ""
+    settings = ov._resolve_connection_settings(saved_config)
+    assert settings["agent"] == ""
+    assert settings == {
+        key: validations[-1][key]
+        for key in ("endpoint", "api_key", "account", "user", "agent")
+    }
+    assert "OPENVIKING_AGENT" not in os.environ
+    assert os.environ["OTHER_KEY"] == "keep"
     if save_to_store:
         saved = json.loads(
             Path(saved_config["ovcli_config_path"]).read_text(encoding="utf-8")
         )
         assert "actor_peer_id" not in saved
         assert "agent_id" not in saved
+
+
+@pytest.mark.parametrize("peer", ["", "work-assistant"])
+def test_hermes_only_save_uses_the_same_clean_values_in_file_and_process(
+    tmp_path, peer
+):
+    from dotenv import dotenv_values
+
+    env_path = tmp_path / ".env"
+    ov._save_hermes_only_config(
+        config={"memory": {}},
+        provider_config={},
+        env_path=env_path,
+        values={
+            "endpoint": "http://localhost:29333",
+            "api_key": "test\r\n-key\x00",
+            "agent": peer,
+        },
+    )
+
+    expected = {
+        "OPENVIKING_ENDPOINT": "http://localhost:29333",
+        "OPENVIKING_API_KEY": "test-key",
+    }
+    if peer:
+        expected["OPENVIKING_AGENT"] = peer
+    assert dict(dotenv_values(env_path)) == expected
+    assert {
+        key: os.environ[key] for key in ov._OPENVIKING_ENV_KEYS if key in os.environ
+    } == expected
+
+
+def test_hermes_only_save_failure_leaves_process_environment_unchanged(
+    tmp_path, monkeypatch
+):
+    for key in ov._OPENVIKING_ENV_KEYS:
+        monkeypatch.setenv(key, "old-value")
+
+    def fail_write(*args, **kwargs):
+        raise OSError("test write failure")
+
+    monkeypatch.setattr(ov, "_write_env_vars", fail_write)
+    with pytest.raises(OSError, match="test write failure"):
+        ov._save_hermes_only_config(
+            config={"memory": {}},
+            provider_config={},
+            env_path=tmp_path / ".env",
+            values={"endpoint": "http://localhost:29333", "api_key": "test-key"},
+        )
+
+    assert all(os.environ[key] == "old-value" for key in ov._OPENVIKING_ENV_KEYS)
 
 
 @pytest.mark.parametrize("peer", ["", "hermes"])

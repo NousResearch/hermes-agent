@@ -103,10 +103,15 @@ no peer, remove the peer value from each configured source and start a new
 Hermes session.
 
 Upgrades do not move or delete existing memories. Installations that relied
-on the old implicit `hermes` peer now use user memory for new writes. Set
-`agent: hermes` to retain that previous behavior. Without a peer ID, default
-OpenViking search can still find old peer memories, including other peers
-under the same OpenViking user. Keep a peer ID if you need the narrower view.
+on the old implicit `hermes` peer now use user memory for new writes. Without
+a peer ID, default OpenViking search covers user memory and existing peer
+memories under the same OpenViking user. Old peer memories stay at their
+existing paths and remain searchable. Ranking and result limits determine
+which memories are returned. Keep a peer ID if you need the narrower view.
+
+Set `agent: hermes` to restore peer-scoped writes. Memories written at user
+scope before this change stay there and remain searchable. This setting
+changes future writes, not the location of existing memories.
 
 ## Tools
 

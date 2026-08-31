@@ -2054,11 +2054,15 @@ def _save_hermes_only_config(
     # Non-empty peer values, if supplied, are saved with the connection below.
     provider_config.pop("agent", None)
     _set_openviking_provider(config, provider_config)
-    _write_env_vars(
-        env_path,
-        _env_writes_from_connection_values(values),
-        remove_keys=_OPENVIKING_ENV_KEYS,
-    )
+    # Use the file writer's cleaned values in the current process as well.
+    writes = {
+        key: _env_line_safe(value)
+        for key, value in _env_writes_from_connection_values(values).items()
+    }
+    _write_env_vars(env_path, writes, remove_keys=_OPENVIKING_ENV_KEYS)
+    os.environ.update(writes)
+    for key in set(_OPENVIKING_ENV_KEYS) - set(writes):
+        os.environ.pop(key, None)
 
 
 def _profile_display_name(profile: _OvcliProfile) -> str:
@@ -2504,8 +2508,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "use_ovcli_config": True,
                 "ovcli_config_path": str(ovcli_path),
                 "endpoint": settings.get("endpoint") or _DEFAULT_ENDPOINT,
-                "agent": settings.get("agent") or _DEFAULT_AGENT,
             }
+            if settings.get("agent"):
+                display["agent"] = settings["agent"]
             if settings.get("account"):
                 display["account"] = settings["account"]
             if settings.get("user"):

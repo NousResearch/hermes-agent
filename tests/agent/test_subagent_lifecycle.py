@@ -15,7 +15,16 @@ from agent.subagent_lifecycle import (
     bind_subagent_parent,
     get_active_subagent_parent,
 )
-from agent.worker_contract import JobContract, WorkerConstitution
+from agent.worker_contract import (
+    ContextProfile,
+    ExecutionEnvelope,
+    JobContract,
+    MemoryPolicy,
+    PrivacyPolicy,
+    RoleSeparation,
+    WorkforceGovernance,
+    WorkerConstitution,
+)
 
 
 class FakeChild:
@@ -64,6 +73,7 @@ def _active_workforce_contracts():
     )
     return constitution, contract
 
+
 @pytest.fixture
 def lifecycle(monkeypatch):
     parent = SimpleNamespace(session_id="parent-1", enabled_toolsets=["file"])
@@ -92,10 +102,6 @@ def lifecycle(monkeypatch):
     monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
     monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
     return SubagentLifecycleService(lambda: parent)
-
-
-
-
 
 
 def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
@@ -165,12 +171,10 @@ def test_workforce_context_preserves_existing_context_and_adds_rules():
 
 def test_launch_rejects_contract_profile_mismatch(lifecycle):
     constitution, contract = _active_workforce_contracts()
-    mismatched = JobContract(
-        **{
-            **contract.__dict__,
-            "worker_profile": "operator",
-        }
-    )
+    mismatched = JobContract(**{
+        **contract.__dict__,
+        "worker_profile": "operator",
+    })
 
     with pytest.raises(SubagentLifecycleError, match="worker_profile"):
         lifecycle.launch(
@@ -184,13 +188,11 @@ def test_launch_rejects_contract_profile_mismatch(lifecycle):
 
 def test_launch_rejects_expired_workforce_contract(lifecycle):
     constitution, contract = _active_workforce_contracts()
-    expired = JobContract(
-        **{
-            **contract.__dict__,
-            "granted_at": "2020-01-01T00:00:00Z",
-            "expires_at": "2020-01-01T00:01:00Z",
-        }
-    )
+    expired = JobContract(**{
+        **contract.__dict__,
+        "granted_at": "2020-01-01T00:00:00Z",
+        "expires_at": "2020-01-01T00:01:00Z",
+    })
 
     with pytest.raises(SubagentLifecycleError, match="active"):
         lifecycle.launch(
@@ -202,10 +204,42 @@ def test_launch_rejects_expired_workforce_contract(lifecycle):
         )
 
 
+def test_launch_propagates_governance_controls_and_roundtrips_handle(lifecycle):
+    governance = WorkforceGovernance(
+        memory=MemoryPolicy(purpose="task-local evidence"),
+        execution=ExecutionEnvelope(lane="simulation"),
+        roles=RoleSeparation(planner_id="planner", critic_id="critic"),
+        context=ContextProfile(
+            profile="researcher",
+            assumptions=("source is current",),
+            assumption_warnings=("verify source freshness",),
+        ),
+        privacy=PrivacyPolicy(allowed_scopes=("task",)),
+    )
+    handle = lifecycle.launch(
+        SubagentLaunchRequest(goal="governed research", governance=governance)
+    )
+    record = lifecycle._record(handle)
+
+    assert handle.governance == governance
+    assert record is not None
+    assert record.agent._workforce_governance == governance
+    assert "GOVERNED WORKFORCE ASSIGNMENT:" in lifecycle._workforce_context(
+        SubagentLaunchRequest(goal="governed research", governance=governance)
+    )
+    assert handle.from_dict(handle.to_dict()).governance == governance
+    lifecycle.wait(handle, timeout_seconds=1)
 
 
-
-
+def test_launch_rejects_unsafe_governance_before_child_creation(lifecycle):
+    governance = WorkforceGovernance(
+        execution=ExecutionEnvelope(lane="production"),
+        roles=RoleSeparation(planner_id="planner", executor_id="executor"),
+    )
+    with pytest.raises(SubagentLifecycleError, match="critic"):
+        lifecycle.launch(
+            SubagentLaunchRequest(goal="must be reviewed", governance=governance)
+        )
 
 
 def test_public_lifecycle_runs_host_aggregation(monkeypatch):
@@ -223,7 +257,9 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
     child.session_id = "child-session"
     hook = Mock()
 
-    monkeypatch.setattr("tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
+    monkeypatch.setattr(
+        "tools.delegate_tool._build_child_agent", lambda **_kwargs: child
+    )
     monkeypatch.setattr(
         "tools.delegate_tool._run_single_child",
         lambda *_args, **_kwargs: {
@@ -262,8 +298,6 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
     assert parent.session_estimated_cost_usd == 3.5
     assert parent.session_cost_source == "subagent"
     assert parent.session_cost_status == "estimated"
-
-
 
 
 def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):

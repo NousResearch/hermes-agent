@@ -59,3 +59,47 @@ parent-broadening toolsets are rejected, and per-tool blocks, working-directory
 overrides, and per-launch timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
+
+## Workforce governance
+
+For specialist workers, `governance` carries the reusable controls inspired by
+the fictional workforce patterns analyzed for Hermes. It is passive metadata
+and validation; the host's tool and authority boundaries remain authoritative.
+
+```python
+from agent.subagent_lifecycle import SubagentLaunchRequest
+from agent.worker_contract import (
+    ContextProfile,
+    ExecutionEnvelope,
+    MemoryPolicy,
+    PrivacyPolicy,
+    RoleSeparation,
+    WorkforceGovernance,
+)
+
+governance = WorkforceGovernance(
+    memory=MemoryPolicy(purpose="task-local evidence", retention="bounded"),
+    execution=ExecutionEnvelope(lane="simulation"),
+    roles=RoleSeparation(planner_id="planner", critic_id="critic"),
+    context=ContextProfile(
+        profile="reviewer",
+        assumptions=("the source revision is current",),
+        assumption_warnings=("verify source freshness",),
+    ),
+    privacy=PrivacyPolicy(allowed_scopes=("task",)),
+)
+handle = ctx.subagent_lifecycle.launch(SubagentLaunchRequest(
+    goal="Analyze the supplied evidence.",
+    governance=governance,
+))
+```
+
+The envelope provides bounded memory retention, dimensioned trust decay,
+lineage and quarantine state, explicit simulation/canary/production lanes,
+visible degraded capability states, planner/critic/executor separation,
+missing-context warnings, privacy disclosure decisions, hostile-input
+assessment, and probabilistic scenario ensembles. Production governance with
+an executor requires a distinct critic that has accepted the work and an
+explicit execution approval. Simulation and canary governance cannot permit
+side effects. These checks do not turn model-facing text into authority: the
+runtime still decides which tools and destinations are available.

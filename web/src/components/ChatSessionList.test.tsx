@@ -58,6 +58,11 @@ async function render(statuses?: Record<string, SessionActivityStatus>) {
 }
 
 describe("ChatSessionList activity status", () => {
+  it("does not add native title attributes to its action buttons", async () => {
+    await render();
+    expect(host.querySelectorAll("button[title]")).toHaveLength(0);
+  });
+
   it("renders the supported labels for each session status", async () => {
     await render({ one: "ready", two: "working" });
     expect(host.textContent).toContain("Ready");

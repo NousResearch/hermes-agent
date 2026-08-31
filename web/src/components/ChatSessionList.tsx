@@ -219,8 +219,8 @@ export function ChatSessionList({
                   "flex items-center gap-1 text-[0.6875rem]",
                   activityStatus === "error" ? "text-destructive" :
                     activityStatus === "working" ? "text-primary" :
-                      activityStatus === "waiting" ? "text-amber-600" :
-                        activityStatus === "ready" ? "text-emerald-600" : "text-text-tertiary",
+                      activityStatus === "waiting" ? "text-warning" :
+                        activityStatus === "ready" ? "text-success" : "text-text-tertiary",
                 )}
                 aria-label={`Session status: ${sessionActivityStatusLabel(activityStatus)}`}
               >
@@ -251,6 +251,7 @@ export function ChatSessionList({
 
   return (
     <aside
+      data-slot="chat-session-list"
       className={cn(
         "flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden",
         className,
@@ -265,7 +266,6 @@ export function ChatSessionList({
           size="icon"
           onClick={reload}
           aria-label={t.common.refresh}
-          title={t.common.refresh}
           className="text-text-secondary hover:text-foreground"
         >
           <RefreshCw className={cn(loading && "animate-spin")} />

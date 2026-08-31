@@ -392,6 +392,18 @@ describe("NativeChatPage", () => {
     expect(host.querySelector("[data-testid='session-list']")).toBeTruthy();
   });
 
+  it("exposes stable full-height workspace slots and responsive semantics", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    expect(host.querySelector("[data-slot='native-chat-shell']")).toBeTruthy();
+    expect(host.querySelector("[data-slot='chat-header']")).toBeTruthy();
+    expect(host.querySelector("[data-slot='chat-body']")).toBeTruthy();
+    expect(host.querySelector("[data-slot='session-navigator'][role='complementary']")).toBeTruthy();
+    expect(host.querySelector("[data-slot='transcript-pane'][role='region']")).toBeTruthy();
+    expect(host.querySelector("[data-testid='native-chat-transcript'][data-slot='transcript']")).toBeTruthy();
+    expect(host.querySelector("[data-slot='chat-status'][role='status']")).toBeTruthy();
+    expect(host.querySelector("[data-slot='chat-composer'][aria-label='Message composer']")).toBeTruthy();
+  });
+
   it("renders Adaptive, catalog models, and all native reasoning levels", async () => {
     await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });

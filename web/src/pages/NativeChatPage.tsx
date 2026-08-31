@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -15,6 +16,9 @@ import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { ToolActivity, type ToolActivityItem } from "@/components/chat/ToolActivity";
 import { ApprovalCard, type ApprovalRequest } from "@/components/chat/ApprovalCard";
 import { ClarificationCard, type ClarificationRequest } from "@/components/chat/ClarificationCard";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
 import { useSearchParams } from "react-router";
 import {
   nativeChatModelChoices,
@@ -525,6 +529,18 @@ export default function NativeChatPage() {
   ), [resumeParam, sessionActivityStatus]);
   const elapsedSeconds = turnStartedAt == null ? 0 : Math.max(0, Math.floor((clockNow - turnStartedAt) / 1000));
   const lastAssistantId = [...transcript].reverse().find((message) => message.role === "assistant")?.id;
+  const connectionTone = connectionState === "open"
+    ? "success"
+    : connectionState === "error"
+      ? "destructive"
+      : connectionState === "connecting"
+        ? "warning"
+        : "secondary";
+  const statusDotClass = connectionState !== "open"
+    ? "bg-muted-foreground"
+    : isWorking
+      ? "bg-primary"
+      : "bg-success";
   useEffect(() => {
     if (!isWorking) return;
     setClockNow(Date.now());
@@ -533,18 +549,29 @@ export default function NativeChatPage() {
   }, [isWorking]);
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-4 pb-4" aria-label="Native chat">
-      <header className="flex items-center justify-between border-b border-border pb-3">
-        <div>
+    <section
+      data-slot="native-chat-shell"
+      data-layout="desktop-like"
+      className="flex min-h-0 min-w-0 flex-1 flex-col pb-4"
+      aria-label="Native chat"
+    >
+      <header
+        data-slot="chat-header"
+        className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-current/15 py-3"
+      >
+        <div className="min-w-0">
           <h1 className="text-lg font-semibold">Chat</h1>
-          <p className="text-sm text-muted-foreground">Native gateway chat</p>
+          <p className="text-sm text-text-secondary">Native gateway chat</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div
+          data-slot="chat-routing-controls"
+          className="flex min-w-0 flex-wrap items-center justify-end gap-2"
+        >
           <label className="sr-only" htmlFor="native-chat-model">Chat model</label>
           <select
             id="native-chat-model"
             aria-label="Chat model"
-            className="max-w-44 rounded-md border border-input bg-background px-2 py-1 text-xs"
+            className="h-9 max-w-44 min-w-0 border border-midground/15 bg-background/40 px-2 py-1 font-courier text-xs text-midground focus-visible:border-midground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30"
             value={routingSelection.model ? `${routingSelection.model.provider}:${routingSelection.model.model}` : "adaptive"}
             onChange={(event) => {
               if (event.target.value === "adaptive") return void changeRouting("", "", routingSelection.reasoning);
@@ -559,89 +586,242 @@ export default function NativeChatPage() {
           <select
             id="native-chat-reasoning"
             aria-label="Reasoning level"
-            className="rounded-md border border-input bg-background px-2 py-1 text-xs"
+            className="h-9 min-w-0 border border-midground/15 bg-background/40 px-2 py-1 font-courier text-xs text-midground focus-visible:border-midground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30"
             value={routingSelection.reasoning}
             onChange={(event) => changeRouting(routingSelection.model?.model ?? "", routingSelection.model?.provider ?? "", event.target.value as NativeReasoningLevel)}
           >
             {NATIVE_REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
-          <span className={cn("rounded-full px-2 py-1 text-xs", connectionState === "open" ? "bg-emerald-500/15 text-emerald-600" : "bg-muted text-muted-foreground")}>
+          <Badge
+            data-slot="connection-badge"
+            tone={connectionTone}
+            className="shrink-0"
+          >
             {connectionLabel(connectionState)}
-          </span>
+          </Badge>
         </div>
       </header>
 
-      {error && <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error} {errorAction === "resend" ? <button type="button" aria-label="Retry send" className="ml-2 underline" onClick={resendFailedPrompt}>Retry send</button> : <button type="button" className="ml-2 underline" onClick={retry}>Retry</button>}</div>}
-      {approval && <ApprovalCard request={approval} onRespond={respondApproval} />}
-      {clarify && <ClarificationCard request={clarify} onRespond={respondClarify} />}
-
-      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[16rem_minmax(0,1fr)]">
-        <div className="min-h-0 rounded-lg border border-border bg-muted/20 p-2" role="complementary" aria-label="Chat sessions">
-          <ChatSessionList activeSessionId={resumeParam} profile={profile ?? undefined} onNewChat={startNewChat} sessionStatuses={sessionStatuses} />
-        </div>
-        <div
-          ref={transcriptRef}
-          onScroll={handleTranscriptScroll}
-          data-testid="native-chat-transcript"
-          className="min-h-0 space-y-3 overflow-y-auto rounded-lg border border-border bg-muted/20 p-4"
-          aria-live="polite"
-        >
-        {transcript.length === 0 && <p className="text-sm text-muted-foreground">Start a conversation.</p>}
-        {transcript.map((message) => (
-          <div key={message.id}>
-          {activityStatus && message.id === assistantIdRef.current && <div className="mb-1 w-fit max-w-[85%] rounded-lg border border-primary/30 bg-background px-3 py-2 text-sm text-primary" aria-label="Agent activity"><span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-primary" />{activityStatus}<span className="ml-2 font-mono text-xs text-muted-foreground">{elapsedSeconds}s</span></div>}
-          <article className={cn("w-fit max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm", message.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-background") }>
-            <div className="mb-1 text-[0.7rem] font-medium opacity-70">{message.role === "user" ? "You" : "Hermes"}</div>
-            {message.role === "assistant"
-              ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} />
-              : message.text}
-          </article>
-          {message.id === lastAssistantId && tools.length > 0 && (
-            <div data-testid="tool-timeline" className="mt-3 space-y-2" aria-label="Tool activity timeline">
-              {tools.map((tool) => <ToolActivity key={tool.id} item={tool} />)}
-            </div>
-          )}
-          </div>
-        ))}
-        {!lastAssistantId && tools.length > 0 && (
-          <div data-testid="tool-timeline" className="space-y-2" aria-label="Tool activity timeline">
-            {tools.map((tool) => <ToolActivity key={tool.id} item={tool} />)}
+      <div
+        data-slot="chat-notices"
+        className={cn("flex shrink-0 flex-col gap-2", error && "pt-3")}
+      >
+        {error && (
+          <div
+            data-slot="chat-error"
+            role="alert"
+            className="flex flex-wrap items-center gap-2 border-l-2 border-destructive px-3 py-2 text-sm text-destructive"
+          >
+            <span className="min-w-0 flex-1 wrap-break-word">{error}</span>
+            {errorAction === "resend" ? (
+              <Button
+                ghost
+                size="sm"
+                type="button"
+                aria-label="Retry send"
+                prefix={<RotateCcw />}
+                className="shrink-0"
+                onClick={resendFailedPrompt}
+              >
+                Retry send
+              </Button>
+            ) : (
+              <Button
+                ghost
+                size="sm"
+                type="button"
+                prefix={<RotateCcw />}
+                className="shrink-0"
+                onClick={retry}
+              >
+                Retry
+              </Button>
+            )}
           </div>
         )}
-        </div>
       </div>
 
-      <div role="status" aria-label="Chat status" className="flex items-center gap-2 border-y border-border px-2 py-2 text-xs text-muted-foreground">
-        <span className={cn("inline-block h-2 w-2 rounded-full", connectionState === "open" ? (isWorking ? "bg-primary" : "bg-emerald-500") : "bg-muted-foreground")} />
-        <span>{connectionState === "open" ? "Connected" : connectionLabel(connectionState)}</span>
-        <span>·</span>
-        <span>{pageStatus}</span>
+      <div
+        data-slot="chat-body"
+        className="grid min-h-0 flex-1 grid-rows-[minmax(9rem,12rem)_minmax(0,1fr)] lg:grid-cols-[16rem_minmax(0,1fr)] lg:grid-rows-1"
+      >
+        <aside
+          data-slot="session-navigator"
+          role="complementary"
+          aria-label="Chat sessions"
+          className="min-h-0 min-w-0 overflow-hidden border-b border-current/15 pt-3 pb-3 lg:border-r lg:border-b-0 lg:pt-4 lg:pr-4 lg:pb-0"
+        >
+          <ChatSessionList
+            activeSessionId={resumeParam}
+            profile={profile ?? undefined}
+            onNewChat={startNewChat}
+            sessionStatuses={sessionStatuses}
+          />
+        </aside>
+
+        <div
+          data-slot="transcript-pane"
+          role="region"
+          aria-label="Conversation transcript"
+          className="flex min-h-0 min-w-0 flex-col lg:pl-4"
+        >
+          <div
+            ref={transcriptRef}
+            onScroll={handleTranscriptScroll}
+            data-testid="native-chat-transcript"
+            data-slot="transcript"
+            className="min-h-0 flex-1 space-y-3 overflow-y-auto py-4 pr-1"
+            aria-live="polite"
+          >
+            {approval && <ApprovalCard request={approval} onRespond={respondApproval} />}
+            {clarify && <ClarificationCard request={clarify} onRespond={respondClarify} />}
+            {transcript.length === 0 && !approval && !clarify && (
+              <p data-slot="chat-empty-state" className="text-sm text-text-secondary">
+                Start a conversation.
+              </p>
+            )}
+            {transcript.map((message) => (
+              <Fragment key={message.id}>
+                {activityStatus && message.id === assistantIdRef.current && (
+                  <div
+                    data-slot="turn-activity"
+                    className="mb-1 flex w-fit max-w-[85%] items-center gap-2 border-l-2 border-primary px-2 py-1 text-sm text-primary"
+                    aria-label="Agent activity"
+                  >
+                    <span aria-hidden className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-primary" />
+                    <span>{activityStatus}</span>
+                    <span className="font-mono text-xs text-text-secondary">{elapsedSeconds}s</span>
+                  </div>
+                )}
+                <article
+                  data-slot="transcript-message"
+                  data-message-id={message.id}
+                  data-message-role={message.role}
+                  data-message-streaming={message.streaming ? "true" : "false"}
+                  className={cn(
+                    "w-fit max-w-[85%] whitespace-pre-wrap rounded-md px-3 py-2 text-sm",
+                    message.role === "user"
+                      ? "ml-auto bg-primary text-primary-foreground"
+                      : "bg-muted text-foreground",
+                  )}
+                >
+                  <div className="mb-1 text-[0.7rem] font-medium opacity-70">
+                    {message.role === "user" ? "You" : "Hermes"}
+                  </div>
+                  {message.role === "assistant"
+                    ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} />
+                    : message.text}
+                </article>
+                {message.id === lastAssistantId && tools.length > 0 && (
+                  <div
+                    data-testid="tool-timeline"
+                    data-slot="tool-timeline"
+                    className="mt-3 space-y-2"
+                    aria-label="Tool activity timeline"
+                  >
+                    {tools.map((tool) => <ToolActivity key={tool.id} item={tool} />)}
+                  </div>
+                )}
+              </Fragment>
+            ))}
+            {!lastAssistantId && tools.length > 0 && (
+              <div
+                data-testid="tool-timeline"
+                data-slot="tool-timeline"
+                className="space-y-2"
+                aria-label="Tool activity timeline"
+              >
+                {tools.map((tool) => <ToolActivity key={tool.id} item={tool} />)}
+              </div>
+            )}
+          </div>
+
+          <div
+            data-slot="chat-status"
+            role="status"
+            aria-label="Chat status"
+            className="flex shrink-0 items-center gap-2 border-t border-current/15 py-2 text-xs text-text-secondary"
+          >
+            <span aria-hidden className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", statusDotClass)} />
+            <span>{connectionState === "open" ? "Connected" : connectionLabel(connectionState)}</span>
+            <span aria-hidden>·</span>
+            <span>{pageStatus}</span>
+          </div>
+        </div>
       </div>
 
       <form
-        className="flex flex-col gap-2"
+        data-slot="chat-composer"
+        aria-label="Message composer"
+        className="flex shrink-0 flex-col gap-2 border-t border-current/15 pt-3"
         onSubmit={submit}
         onDragOver={(event) => { event.preventDefault(); }}
         onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}
       >
         {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2" aria-label="Pending attachments">
+          <div
+            data-slot="attachment-list"
+            className="flex flex-wrap gap-2"
+            aria-label="Pending attachments"
+          >
             {attachments.map((item) => (
-              <div key={item.id} className="flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-1 text-xs">
+              <div
+                key={item.id}
+                data-slot="attachment"
+                className="flex min-w-0 items-center gap-1 border border-midground/15 bg-background/40 px-2 py-1 text-xs"
+              >
                 <span className="max-w-48 truncate" title={item.file.name}>{item.file.name}</span>
-                <span className="text-muted-foreground">{item.state === "uploading" ? "Uploading…" : item.state === "error" ? item.error : item.state === "attached" ? "Ready" : "Queued"}</span>
-                {item.state === "error" && <button type="button" aria-label={`Retry ${item.file.name}`} className="underline" onClick={() => void stageAttachment(item)}>Retry</button>}
-                <button type="button" aria-label={`Remove ${item.file.name}`} className="ml-1 font-bold" onClick={() => updateAttachments((current) => current.filter((entry) => entry.id !== item.id))}>×</button>
+                <span className="text-text-secondary">
+                  {item.state === "uploading" ? "Uploading…" : item.state === "error" ? item.error : item.state === "attached" ? "Ready" : "Queued"}
+                </span>
+                {item.state === "error" && (
+                  <Button
+                    ghost
+                    size="sm"
+                    type="button"
+                    aria-label={`Retry ${item.file.name}`}
+                    prefix={<RotateCcw />}
+                    onClick={() => void stageAttachment(item)}
+                  >
+                    Retry
+                  </Button>
+                )}
+                <Button
+                  ghost
+                  size="icon"
+                  type="button"
+                  aria-label={`Remove ${item.file.name}`}
+                  className="shrink-0 text-text-secondary hover:text-destructive"
+                  onClick={() => updateAttachments((current) => current.filter((entry) => entry.id !== item.id))}
+                >
+                  <X />
+                </Button>
               </div>
             ))}
           </div>
         )}
-        <div className="flex gap-2">
-          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.currentTarget.value = ""; }} />
-          <button type="button" aria-label="Add attachment" className="self-end rounded-md border border-input px-3 py-2 text-sm" disabled={connectionState !== "open" || !sessionId} onClick={() => fileInputRef.current?.click()}>＋</button>
+        <div data-slot="composer-controls" className="flex min-w-0 items-end gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.currentTarget.value = ""; }}
+          />
+          <Button
+            ghost
+            size="icon"
+            type="button"
+            aria-label="Add attachment"
+            className="shrink-0"
+            disabled={connectionState !== "open" || !sessionId}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Paperclip />
+          </Button>
           <textarea
             aria-label="Message"
-            className="min-h-20 flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            className="min-h-20 min-w-0 flex-1 resize-y border border-midground/15 bg-background/40 px-3 py-2 font-courier text-sm text-midground outline-none placeholder:text-text-secondary focus-visible:border-midground/30 focus-visible:ring-1 focus-visible:ring-midground/30"
             value={draft}
             disabled={connectionState !== "open" || !sessionId}
             placeholder="Message Hermes… (drop or paste files)"
@@ -651,8 +831,30 @@ export default function NativeChatPage() {
             onCompositionEnd={() => { composingRef.current = false; }}
             onKeyDown={onComposerKeyDown}
           />
-          <button type="submit" disabled={submitting || (!draft.trim() && !attachments.some((item) => item.state === "attached")) || connectionState !== "open" || !sessionId} className="self-end rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{submitting ? "Sending…" : "Send"}</button>
-          {streaming && <button type="button" aria-label="Stop" disabled={stopping || connectionState !== "open"} className="self-end rounded-md border border-destructive px-4 py-2 text-sm text-destructive disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void stop()}>{stopping ? "Stopping…" : "Stop"}</button>}
+          <Button
+            type="submit"
+            size="sm"
+            prefix={<Send />}
+            className="shrink-0"
+            disabled={submitting || (!draft.trim() && !attachments.some((item) => item.state === "attached")) || connectionState !== "open" || !sessionId}
+          >
+            {submitting ? "Sending…" : "Send"}
+          </Button>
+          {streaming && (
+            <Button
+              destructive
+              outlined
+              type="button"
+              size="sm"
+              prefix={<Square />}
+              aria-label="Stop"
+              className="shrink-0"
+              disabled={stopping || connectionState !== "open"}
+              onClick={() => void stop()}
+            >
+              {stopping ? "Stopping…" : "Stop"}
+            </Button>
+          )}
         </div>
       </form>
     </section>

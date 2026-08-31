@@ -111,6 +111,7 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
+import { getDashboardSidebarMode } from "@/lib/dashboard-shell";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -396,6 +397,7 @@ export default function App() {
       return false;
     }
   });
+  const [chatSidebarExpanded, setChatSidebarExpanded] = useState(false);
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev;
@@ -406,12 +408,25 @@ export default function App() {
     });
   }, []);
   const isMobile = useBelowBreakpoint(1024);
-  const isDesktopCollapsed = collapsed && !isMobile;
   const tooltipWarmRef = useRef(0);
   const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  const sidebarMode = getDashboardSidebarMode(
+    pathname,
+    isMobile,
+    collapsed,
+    chatSidebarExpanded,
+  );
+  const isDesktopCollapsed = sidebarMode !== "expanded" && !isMobile;
+  const toggleSidebar = useCallback(() => {
+    if (isChatRoute && !isMobile) {
+      setChatSidebarExpanded((expanded) => !expanded);
+      return;
+    }
+    toggleCollapsed();
+  }, [isChatRoute, isMobile, toggleCollapsed]);
   // Explicit compatibility escape hatch while the native surface rolls out.
   const useLegacyChat = new URLSearchParams(window.location.search).get("chat_ui") === "pty";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
@@ -594,6 +609,8 @@ export default function App() {
           <aside
             id="app-sidebar"
             aria-label={t.app.navigation}
+            data-sidebar-mode={sidebarMode}
+            data-sidebar-route={isChatRoute ? "chat" : "page"}
             className={cn(
               "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
               "border-r border-current/20",
@@ -602,7 +619,7 @@ export default function App() {
               mobileOpen ? "translate-x-0" : "-translate-x-full",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
               "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
-              collapsed && "lg:w-14",
+              isDesktopCollapsed && "lg:w-14",
             )}
             style={{
               background: "var(--component-sidebar-background)",
@@ -614,13 +631,13 @@ export default function App() {
               className={cn(
                 "flex h-14 shrink-0 items-center gap-2",
                 "border-b border-current/20",
-                collapsed ? "lg:justify-center lg:px-0" : "px-4 justify-between",
+                isDesktopCollapsed ? "lg:justify-center lg:px-0" : "px-4 justify-between",
               )}
             >
               <div
                 className={cn(
                   "flex items-center gap-2",
-                  collapsed && "lg:hidden",
+                  isDesktopCollapsed && "lg:hidden",
                 )}
               >
                 <PluginSlot name="header-left" />
@@ -645,13 +662,13 @@ export default function App() {
               <Button
                 ghost
                 size="icon"
-                onClick={toggleCollapsed}
+                onClick={toggleSidebar}
                 aria-label={
-                  collapsed ? t.common.expand : t.common.collapse
+                  isDesktopCollapsed ? t.common.expand : t.common.collapse
                 }
                 className="hidden lg:flex text-text-secondary hover:text-midground"
               >
-                {collapsed ? (
+                {isDesktopCollapsed ? (
                   <PanelLeftOpen className="h-4 w-4" />
                 ) : (
                   <PanelLeftClose className="h-4 w-4" />

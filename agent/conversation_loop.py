@@ -2040,6 +2040,11 @@ def run_conversation(
         from agent.agent_runtime_helpers import note_turn_persisted
 
         note_turn_persisted(agent)
+        # Intentionally NOT _COMPRESSION_TIMEOUT_FINAL_RESPONSE: the boundary's
+        # exception text carries per-request context (token count, "provider
+        # call was not sent") that is the actionable guidance this handler
+        # exists to surface; the in-loop constant describes a different state
+        # (compression ran and could not reduce).
         _final_response = str(_preflight_timeout_exc)
         return {
             "final_response": _final_response,

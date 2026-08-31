@@ -866,67 +866,86 @@ function parseStyles(xml: string | null): CellStyle[] {
     }
   }
 
-  const fonts = localElements(doc, 'font').map(font => ({
-    bold: localElements(font, 'b').length > 0,
-    italic: localElements(font, 'i').length > 0,
-    color: rgbColor(localElements(font, 'color')[0])
-  }))
+  const fonts = localElements(doc, 'fonts')[0]
+    ? Array.from(localElements(doc, 'fonts')[0].children)
+        .filter(node => node.localName === 'font')
+        .map(font => ({
+          bold: isOn(localElements(font, 'b')[0]),
+          italic: isOn(localElements(font, 'i')[0]),
+          color: rgbColor(localElements(font, 'color')[0])
+        }))
+    : []
 
-  const fills = localElements(doc, 'fill').map(fill => {
-    const pattern = localElements(fill, 'patternFill')[0]
-    const type = pattern?.getAttribute('patternType') || ''
+  const fills = localElements(doc, 'fills')[0]
+    ? Array.from(localElements(doc, 'fills')[0].children)
+        .filter(node => node.localName === 'fill')
+        .map(fill => {
+          const pattern = localElements(fill, 'patternFill')[0]
+          const type = pattern?.getAttribute('patternType') || ''
 
-    if (type !== 'solid') {
-      return undefined
+          if (type !== 'solid') {
+            return undefined
+          }
+
+          return rgbColor(localElements(pattern, 'fgColor')[0])
+        })
+    : []
+
+  const cellXfs = localElements(doc, 'cellXfs')[0]
+  const xfs = cellXfs ? Array.from(cellXfs.children).filter(node => node.localName === 'xf') : []
+
+  return xfs.map(xf => {
+    const style: CellStyle = {}
+    const numFmtId = Number(xf.getAttribute('numFmtId') || '0')
+
+    if (xf.getAttribute('applyNumberFormat') !== '0') {
+      style.numFmt = numFmts.get(numFmtId) || BUILTIN_NUM_FMTS[numFmtId]
     }
 
-    return rgbColor(localElements(pattern, 'fgColor')[0])
+    if (xf.getAttribute('applyFont') !== '0') {
+      const font = fonts[Number(xf.getAttribute('fontId') || '0')]
+
+      if (font?.bold) {
+        style.bold = true
+      }
+
+      if (font?.italic) {
+        style.italic = true
+      }
+
+      if (font?.color) {
+        style.color = font.color
+      }
+    }
+
+    if (xf.getAttribute('applyFill') !== '0') {
+      const fill = fills[Number(xf.getAttribute('fillId') || '0')]
+
+      if (fill) {
+        style.fill = fill
+      }
+    }
+
+    if (xf.getAttribute('applyAlignment') !== '0') {
+      const alignment = localElements(xf, 'alignment')[0]?.getAttribute('horizontal')
+
+      if (alignment === 'left' || alignment === 'center' || alignment === 'right') {
+        style.align = alignment
+      }
+    }
+
+    return style
   })
+}
 
-  return localElements(doc, 'xf')
-    .filter(xf => xf.parentElement?.localName === 'cellXfs')
-    .map(xf => {
-      const style: CellStyle = {}
-      const numFmtId = Number(xf.getAttribute('numFmtId') || '0')
+function isOn(node: Element | undefined): boolean {
+  if (!node) {
+    return false
+  }
 
-      if (xf.getAttribute('applyNumberFormat') === '1') {
-        style.numFmt = numFmts.get(numFmtId) || BUILTIN_NUM_FMTS[numFmtId]
-      }
+  const value = (node.getAttribute('val') || '1').toLowerCase()
 
-      if (xf.getAttribute('applyFont') === '1') {
-        const font = fonts[Number(xf.getAttribute('fontId') || '0')]
-
-        if (font?.bold) {
-          style.bold = true
-        }
-
-        if (font?.italic) {
-          style.italic = true
-        }
-
-        if (font?.color) {
-          style.color = font.color
-        }
-      }
-
-      if (xf.getAttribute('applyFill') === '1') {
-        const fill = fills[Number(xf.getAttribute('fillId') || '0')]
-
-        if (fill) {
-          style.fill = fill
-        }
-      }
-
-      if (xf.getAttribute('applyAlignment') === '1') {
-        const alignment = localElements(xf, 'alignment')[0]?.getAttribute('horizontal')
-
-        if (alignment === 'left' || alignment === 'center' || alignment === 'right') {
-          style.align = alignment
-        }
-      }
-
-      return style
-    })
+  return value !== '0' && value !== 'false'
 }
 
 function rgbColor(node: Element | undefined): string | undefined {
@@ -947,27 +966,42 @@ function formatExcelValue(raw: string, numFmt: string | undefined, date1904: boo
     return raw
   }
 
-  if (isDateFormat(numFmt)) {
-    return formatExcelDate(number, numFmt, date1904)
+  const code = numFmt.split(';')[0] || numFmt
+
+  if (isDateFormat(code)) {
+    return formatExcelDate(number, code, date1904)
   }
 
-  if (numFmt.includes('%')) {
-    const decimals = numFmt.includes('0.00') ? 2 : 0
+  if (code.includes('%')) {
+    const decimals = /\.0+/.exec(code)?.[0].length - 1 || 0
 
     return `${(number * 100).toFixed(decimals)}%`
   }
 
-  if (numFmt === '0') {
+  if (code.includes('$') && /#,##0/.test(code)) {
+    const decimals = code.includes('0.00') ? 2 : 0
+
+    const formatted = Math.abs(number).toLocaleString('en-US', {
+      maximumFractionDigits: decimals,
+      minimumFractionDigits: decimals
+    })
+
+    return number < 0 ? `($${formatted})` : `$${formatted}`
+  }
+
+  if (code === '0') {
     return String(Math.round(number))
   }
 
-  if (numFmt === '0.00' || numFmt === '#,##0.00') {
+  if (code === '0.00' || code === '#,##0.00') {
     const formatted = number.toFixed(2)
 
-    return numFmt.includes('#,##') ? number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : formatted
+    return code.includes('#,##')
+      ? number.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 })
+      : formatted
   }
 
-  if (numFmt === '#,##0') {
+  if (code === '#,##0') {
     return Math.round(number).toLocaleString('en-US')
   }
 
@@ -1015,6 +1049,12 @@ function formatExcelDate(serial: number, numFmt: string, date1904: boolean): str
 
     case 'm/d/yyyy h:mm':
       return `${month}/${day}/${year} ${hours}:${pad(minutes)}`
+
+    case 'mm/dd/yyyy':
+      return `${pad(month)}/${pad(day)}/${year}`
+
+    case 'yyyy-mm-dd h:mm:ss':
+      return `${year}-${pad(month)}-${pad(day)} ${pad(hours)}:${pad(minutes)}:00`
 
     default:
       return `${month}/${day}/${year}`

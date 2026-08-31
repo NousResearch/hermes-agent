@@ -300,6 +300,64 @@ describe('parseOfficePreview xlsx', () => {
     expect(preview.sheets[0]?.rows[0]?.[2]).toMatchObject({ bold: true, color: '#FF0000', value: 'Ada' })
   })
 
+  it('applies font, fill, currency, and dates when apply* flags are omitted', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        ...xlsxFiles({
+          'xl/worksheets/sheet1.xml': `<?xml version="1.0"?>
+<worksheet xmlns="${NS_MAIN}">
+  <sheetData>
+    <row r="1">
+      <c r="A1" s="1" t="s"><v>1</v></c>
+      <c r="B1" s="2"><v>1234.5</v></c>
+      <c r="C1" s="3"><v>44927</v></c>
+    </row>
+  </sheetData>
+</worksheet>`
+        }),
+        'xl/styles.xml': `<?xml version="1.0"?>
+<styleSheet xmlns="${NS_MAIN}">
+  <numFmts count="2">
+    <numFmt numFmtId="166" formatCode="$#,##0.00;[Red]($#,##0.00)"/>
+    <numFmt numFmtId="165" formatCode="mm/dd/yyyy"/>
+  </numFmts>
+  <fonts count="2">
+    <font><color theme="1"/></font>
+    <font><b val="1"/><color rgb="00FFFFFF"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="001F3864"/></patternFill></fill>
+  </fills>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0"/></cellStyleXfs>
+  <cellXfs count="4">
+    <xf numFmtId="0" fontId="0" fillId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" xfId="0"/>
+    <xf numFmtId="166" fontId="0" fillId="0" xfId="0"/>
+    <xf numFmtId="165" fontId="0" fillId="0" xfId="0"/>
+  </cellXfs>
+</styleSheet>`
+      }),
+      '.xlsx'
+    )
+
+    expect(preview?.kind).toBe('spreadsheet')
+
+    if (preview?.kind !== 'spreadsheet') {
+      return
+    }
+
+    expect(preview.sheets[0]?.rows[0]?.[0]).toMatchObject({
+      bold: true,
+      color: '#FFFFFF',
+      fill: '#1F3864',
+      value: 'Ada'
+    })
+    expect(preview.sheets[0]?.rows[0]?.[1]).toMatchObject({ value: '$1,234.50' })
+    expect(preview.sheets[0]?.rows[0]?.[2]).toMatchObject({ value: '01/01/2023' })
+  })
+
   it('evaluates formulas when the cached value is empty', async () => {
     const preview = await parseOfficePreview(
       zipFiles({

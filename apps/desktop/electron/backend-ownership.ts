@@ -217,6 +217,125 @@ export function createBackendOwnership(deps: BackendOwnershipDeps) {
       }
     },
 
+    /**
+     * Kill any OLDER backend this same app instance spawned for the same
+     * profile as `current`.
+     *
+     * Within one Desktop instance a profile owns exactly one backend — the
+     * pool comment states the invariant outright ("two children never share
+     * one profile's HERMES_HOME") — but nothing enforced it across the
+     * primary/pool/registry spawn paths. When the app replaces an
+     * unresponsive backend (renderer respawn, superseded connection attempt),
+     * the old child survives: reapOrphans deliberately spares it (its parent
+     * is alive, #87295) and the socket-liveness policy defers its close while
+     * a turn runs (#95327). A backend stuck on never-ending work therefore
+     * becomes immortal, contending with its replacement for the profile's
+     * state.db and starving it — the "backend accepts sockets but serves
+     * nothing" wedge (#79353's supervision gap).
+     *
+     * Scope is strictly SAME parent instance: entries whose parent identity
+     * differs (another live Desktop, or unknown) are left for reapOrphans'
+     * parent-liveness check — this method must never create a cross-instance
+     * kill path. Identity is verified through the same start-marker probe as
+     * reapOrphans, so a reused PID is never killed by mistake.
+     */
+    /**
+     * Post-claim invariant sweep: retire any replaced sibling of `current`,
+     * report the outcome through `log`, and NEVER throw — a failed sweep must
+     * not take down the healthy new backend's boot it runs inside of. This
+     * wrapper keeps the whole replacement policy (and its logging) behind
+     * this module's boundary so the claim call site stays a single line.
+     */
+    async retireReplacedSiblings(current: BackendOwnershipEntry, log: (message: string) => void): Promise<void> {
+      try {
+        const replaced = await this.reapReplacedSiblings(current)
+
+        if (replaced.length) {
+          log(
+            `Killed replaced backend sibling PID(s) ${replaced.join(', ')} for profile "${current.profile}": ` +
+              'a profile owns exactly one desktop backend per app instance.'
+          )
+        }
+      } catch (error) {
+        log(
+          `WARNING: could not reap replaced backend siblings for profile "${current.profile}": ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      }
+    },
+
+    async reapReplacedSiblings(current: BackendOwnershipEntry): Promise<number[]> {
+      if (!isCompleteIdentity(current)) {
+        throw new Error('Cannot reap replaced siblings without a complete process identity.')
+      }
+
+      if (!Number.isInteger(current.parentPid) || Number(current.parentPid) <= 0) {
+        return []
+      }
+
+      const { corrupt, entries } = readDetailed()
+
+      if (corrupt) {
+        // Same posture as reapOrphans: never rewrite over evidence.
+        return []
+      }
+
+      const survivors: BackendOwnershipEntry[] = []
+      const reaped: number[] = []
+
+      for (const entry of entries) {
+        const sameParent =
+          entry.parentPid === current.parentPid &&
+          (entry.parentStartMarker ?? null) === (current.parentStartMarker ?? null)
+
+        const isReplacedSibling =
+          entry.profile === current.profile && entry.pid !== current.pid && !identitiesMatch(entry, current) && sameParent
+
+        if (!isReplacedSibling) {
+          survivors.push(entry)
+
+          continue
+        }
+
+        let matches: boolean | undefined
+
+        try {
+          matches = await deps.matchesIdentity(entry)
+        } catch {
+          survivors.push(entry)
+
+          continue
+        }
+
+        // Recorded process is already gone — drop the stale record silently.
+        if (matches === false) {
+          continue
+        }
+
+        // Unknown identity (probe unavailable): keep the record and do NOT
+        // kill — a reused PID must never die on a guess.
+        if (matches !== true) {
+          survivors.push(entry)
+
+          continue
+        }
+
+        try {
+          await deps.stop(entry)
+          reaped.push(entry.pid)
+        } catch {
+          survivors.push(entry)
+        }
+      }
+
+      if (reaped.length > 0 || survivors.length !== entries.length) {
+        write(survivors)
+      }
+
+      return reaped
+    },
+
     async reapOrphans(): Promise<number[]> {
       const { corrupt, entries } = readDetailed()
 

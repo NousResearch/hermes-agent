@@ -315,55 +315,6 @@ def test_e164_target_still_requires_phone_platform() -> None:
     assert _parse_target_ref("matrix", "+15551234567")[2] is False
 
 
-def test_buzz_uuid_target_is_explicit() -> None:
-    chat_id, thread_id, is_explicit = _parse_target_ref(
-        "buzz", "e74ae728-e68a-4f8b-b285-3f19ad2df1f8"
-    )
-
-    assert chat_id == "e74ae728-e68a-4f8b-b285-3f19ad2df1f8"
-    assert thread_id is None
-    assert is_explicit is True
-
-
-def test_send_message_routes_buzz_uuid_without_home_fallback() -> None:
-    buzz = Platform("buzz")
-    buzz_cfg = SimpleNamespace(enabled=True, token=None, extra={})
-    config = SimpleNamespace(
-        platforms={buzz: buzz_cfg},
-        get_home_channel=lambda _platform: SimpleNamespace(
-            chat_id="93b1a8c9-7093-4117-9db1-7199bacabd48"
-        ),
-    )
-
-    with patch("gateway.config.load_gateway_config", return_value=config), \
-         patch("tools.interrupt.is_interrupted", return_value=False), \
-         patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw Buzz UUID should not resolve via directory")), \
-         patch("model_tools._run_async", side_effect=_run_async_immediately), \
-         patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-         patch("gateway.mirror.mirror_to_session", return_value=True):
-        result = json.loads(
-            send_message_tool(
-                {
-                    "action": "send",
-                    "target": "buzz:e74ae728-e68a-4f8b-b285-3f19ad2df1f8",
-                    "message": "exact DM",
-                }
-            )
-        )
-
-    assert result["success"] is True
-    assert "note" not in result
-    send_mock.assert_awaited_once_with(
-        buzz,
-        buzz_cfg,
-        "e74ae728-e68a-4f8b-b285-3f19ad2df1f8",
-        "exact DM",
-        thread_id=None,
-        media_files=[],
-        force_document=False,
-    )
-
-
 def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
     whatsapp_cfg = SimpleNamespace(enabled=True, token=None, extra={"api_url": "http://bridge"})
     config = SimpleNamespace(

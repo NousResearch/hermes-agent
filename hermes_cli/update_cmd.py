@@ -5697,11 +5697,13 @@ def _orphaned_desktop_backend_pids(
             continue
         try:
             proc = psutil.Process(int(pid))
-            from gateway.status import get_process_start_time
-
-            process_start_time = get_process_start_time(int(pid))
-            if process_start_time is None:
-                return None
+            # Fingerprint from the SAME psutil handle used for classification
+            # below, quantized to centiseconds — the exact scheme
+            # gateway.status.get_process_start_time uses on Windows, so the
+            # value round-trips through pid_is_hermes at kill time. (Reading
+            # /proc/<pid>/stat here instead would consult the HOST process
+            # table and use different units.)
+            process_start_time = int(round(proc.create_time() * 100))
         except psutil.NoSuchProcess:
             # The candidate itself exited during classification; there is
             # nothing left to reap and no identity to pass to taskkill.

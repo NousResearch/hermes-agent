@@ -31,6 +31,8 @@ export interface GatewayEvent<P = unknown> {
   /** Registry connection whose socket delivered the event (renderer-side tag;
    * absent for the local/legacy primary path). */
   connectionId?: string
+  /** Monotonic per-session replay sequence emitted by tui_gateway. */
+  seq?: number
   session_id?: string
   type: GatewayEventName
 }

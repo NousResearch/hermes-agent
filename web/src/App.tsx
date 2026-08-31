@@ -23,6 +23,7 @@ import {
 import {
   Activity,
   BarChart3,
+  Gauge,
   BookOpen,
   Clock,
   Code,
@@ -84,6 +85,7 @@ const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
+const UsageQuotaPage = lazy(() => import("@/pages/UsageQuotaPage"));
 const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
 const CronPage = lazy(() => import("@/pages/CronPage"));
 const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
@@ -95,7 +97,11 @@ const PairingPage = lazy(() => import("@/pages/PairingPage"));
 const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
-const ChatPage = lazy(() => import("@/pages/ChatPage"));
+const NativeChatPage = lazy(() => import("@/pages/NativeChatPage"));
+// Keep the PTY implementation importable as a compatibility fallback. Do not
+// remove ChatPage: existing deep links/tests and an eventual feature flag rely
+// on the legacy surface remaining available.
+const LegacyChatPage = lazy(() => import("@/pages/ChatPage"));
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -158,6 +164,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/sessions": SessionsPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
+  "/usage-quota": UsageQuotaPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
@@ -196,6 +203,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "analytics",
     label: "Analytics",
     icon: BarChart3,
+  },
+  {
+    path: "/usage-quota",
+    label: "Usage & Quota",
+    icon: Gauge,
   },
   {
     path: "/models",
@@ -400,6 +412,8 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  // Explicit compatibility escape hatch while the native surface rolls out.
+  const useLegacyChat = new URLSearchParams(window.location.search).get("chat_ui") === "pty";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
@@ -810,7 +824,11 @@ export default function App() {
                           ) : null
                         }
                       >
-                        <ChatPage isActive={isChatRoute} />
+                        {useLegacyChat ? (
+                          <LegacyChatPage isActive={isChatRoute} />
+                        ) : (
+                          <NativeChatPage />
+                        )}
                       </Suspense>
                     </div>
                   ) : isChatRoute ? (

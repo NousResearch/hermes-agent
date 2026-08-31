@@ -45,6 +45,20 @@ interface ChatSessionListProps {
    * omitted, we fall back to clearing the resume param ourselves.
    */
   onNewChat?: () => void;
+  /** Runtime status keyed by durable session id. Unreported sessions stay offline/unknown. */
+  sessionStatuses?: Readonly<Record<string, SessionActivityStatus>>;
+}
+
+export type SessionActivityStatus = "ready" | "working" | "waiting" | "error" | "offline";
+
+export function sessionActivityStatusLabel(status: SessionActivityStatus): string {
+  switch (status) {
+    case "ready": return "Ready";
+    case "working": return "Working";
+    case "waiting": return "Waiting for input";
+    case "error": return "Error";
+    case "offline": return "Unknown/Offline";
+  }
 }
 
 function rowLabel(session: SessionInfo, untitled: string): string {
@@ -61,6 +75,7 @@ export function ChatSessionList({
   className,
   onPicked,
   onNewChat,
+  sessionStatuses,
 }: ChatSessionListProps) {
   const { t } = useI18n();
   const [, setSearchParams] = useSearchParams();
@@ -181,9 +196,11 @@ export function ChatSessionList({
       <div className="flex flex-col gap-0.5">
         {sessions.map((s) => {
           const isActive = s.id === activeSessionId;
+          const activityStatus = sessionStatuses?.[s.id] ?? "offline";
           return (
             <ListItem
               key={s.id}
+              data-session-id={s.id}
               onClick={() => pick(s.id)}
               aria-current={isActive ? "true" : undefined}
               className={cn(
@@ -196,6 +213,19 @@ export function ChatSessionList({
             >
               <span className="w-full truncate text-sm font-medium">
                 {rowLabel(s, t.sessions.untitledSession)}
+              </span>
+              <span
+                className={cn(
+                  "flex items-center gap-1 text-[0.6875rem]",
+                  activityStatus === "error" ? "text-destructive" :
+                    activityStatus === "working" ? "text-primary" :
+                      activityStatus === "waiting" ? "text-amber-600" :
+                        activityStatus === "ready" ? "text-emerald-600" : "text-text-tertiary",
+                )}
+                aria-label={`Session status: ${sessionActivityStatusLabel(activityStatus)}`}
+              >
+                <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+                {sessionActivityStatusLabel(activityStatus)}
               </span>
               <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
                 <span>{timeAgo(s.last_active)}</span>
@@ -217,7 +247,7 @@ export function ChatSessionList({
         })}
       </div>
     );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t]);
+  }, [activeSessionId, error, loading, pick, reload, sessionStatuses, sessions, t]);
 
   return (
     <aside

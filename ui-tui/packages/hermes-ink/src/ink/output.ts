@@ -659,9 +659,24 @@ function flushBuffer(buffer: string, styles: AnsiCode[], stylePool: StylePool, o
   const styleId = stylePool.intern(filteredStyles)
 
   for (const { segment: grapheme } of getGraphemeSegmenter().segment(buffer)) {
+    const width = stringWidth(grapheme)
+    const previous = out.at(-1)
+
+    // Some terminal/IME paths split a base character and its combining mark
+    // across style runs (for example Thai `ก` followed by `ั`). Grapheme
+    // segmentation is then performed separately for each run, leaving the
+    // mark as a zero-width cluster. writeLineToScreen intentionally skips
+    // zero-width clusters, so the mark — and sometimes the visible base cell
+    // during the next repaint — appears to disappear. Attach such marks to
+    // the preceding rendered grapheme, including across style-run boundaries.
+    if (width === 0 && previous && previous.width > 0) {
+      previous.value += grapheme
+      continue
+    }
+
     out.push({
       value: grapheme,
-      width: stringWidth(grapheme),
+      width,
       styleId,
       hyperlink
     })

@@ -121,4 +121,40 @@ describe('/usage slash command', () => {
     expect(body).toContain('free models only')
     expect(body).toContain('/subscription')
   })
+
+  it('renders provider account limits even before the first API call', async () => {
+    const { panel, run } = buildCtx({
+      'session.usage': baseUsage({
+        account_lines: ['📈 Account limits', 'Session: 96% remaining', 'Weekly: 99% remaining']
+      })
+    })
+
+    await run('')
+
+    const body = balancePanel(panel)
+    expect(body).toContain('Account limits')
+    expect(body).toContain('Session: 96% remaining')
+    expect(body).toContain('Weekly: 99% remaining')
+  })
+
+  it('renders provider account limits in the usage panel', async () => {
+    const { panel, run } = buildCtx({
+      'session.usage': baseUsage({
+        calls: 1,
+        input: 10,
+        output: 20,
+        total: 30,
+        account_lines: ['📈 Account limits', 'Session: 96% remaining', 'Weekly: 99% remaining']
+      })
+    })
+
+    await run('')
+
+    const body = (panel.mock.calls.find(c => c[0] === 'Usage')?.[1] as { text?: string }[] | undefined ?? [])
+      .map(s => s.text ?? '')
+      .join('\\n')
+    expect(body).toContain('Account limits')
+    expect(body).toContain('Session: 96% remaining')
+    expect(body).toContain('Weekly: 99% remaining')
+  })
 })

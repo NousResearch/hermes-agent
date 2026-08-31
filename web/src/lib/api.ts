@@ -519,6 +519,8 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
+  getUsageQuota: (profile = getManagementProfile()) =>
+    fetchJSON<UsageQuotaResponse>(appendProfileParam("/api/usage/quota", profile)),
   getConfig: (profile = getManagementProfile()) =>
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
@@ -2140,6 +2142,33 @@ export interface AnalyticsSkillsSummary {
   total_skill_edits: number;
   total_skill_actions: number;
   distinct_skills_used: number;
+}
+
+export interface UsageQuotaWindow {
+  label: string;
+  used_percent: number | null;
+  reset_at: string | null;
+  detail: string | null;
+}
+
+export interface UsageQuotaSnapshot {
+  provider: string;
+  source: string;
+  fetched_at: string;
+  title: string;
+  plan: string | null;
+  windows: UsageQuotaWindow[];
+  details: string[];
+  unavailable_reason: string | null;
+  available: boolean;
+  /** Optional provider metadata; absent means the backend did not supply it. */
+  scope?: string | null;
+  stale?: boolean;
+  partial?: boolean;
+}
+
+export interface UsageQuotaResponse {
+  providers: UsageQuotaSnapshot[];
 }
 
 export interface AnalyticsResponse {

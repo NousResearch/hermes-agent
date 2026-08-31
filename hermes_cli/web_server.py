@@ -15775,6 +15775,72 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         db.close()
 
 
+@app.get("/api/usage/quota")
+async def get_usage_quota(profile: Optional[str] = None):
+    """Return provider-reported account limits without exposing credentials."""
+    return await asyncio.to_thread(_get_usage_quota, profile)
+
+
+def _get_usage_quota(profile: Optional[str] = None) -> dict:
+    from agent.account_usage import AccountUsageSnapshot, fetch_account_usage
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    with _config_profile_scope(profile):
+        cfg = load_config() or {}
+        model_cfg = cfg.get("model") or {}
+        configured: list[str] = []
+        if isinstance(model_cfg, dict):
+            provider = str(model_cfg.get("provider") or "").strip().lower()
+            if provider and provider not in {"auto", "custom"}:
+                configured.append(provider)
+        providers_cfg = cfg.get("providers") or {}
+        if isinstance(providers_cfg, dict):
+            configured.extend(str(name).strip().lower() for name in providers_cfg if str(name).strip())
+        # Keep the response deterministic and avoid duplicate provider probes.
+        providers = list(dict.fromkeys(configured))
+        snapshots: list[dict] = []
+        for provider in providers:
+            snapshot: Optional[AccountUsageSnapshot] = None
+            if provider in {"openai-codex", "anthropic", "openrouter"}:
+                try:
+                    runtime = resolve_runtime_provider(requested=provider)
+                    snapshot = fetch_account_usage(
+                        provider,
+                        base_url=runtime.get("base_url"),
+                        api_key=runtime.get("api_key"),
+                    )
+                except Exception:
+                    snapshot = None
+            if snapshot is None:
+                snapshots.append({
+                    "provider": provider,
+                    "source": "unavailable",
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "title": "Account limits",
+                    "plan": None,
+                    "windows": [],
+                    "details": [],
+                    "unavailable_reason": "No quota data was returned. The provider may be unsupported, credentials may be unavailable, or the request may have failed.",
+                    "available": False,
+                })
+                continue
+            snapshots.append({
+                "provider": snapshot.provider,
+                "source": snapshot.source,
+                "fetched_at": snapshot.fetched_at.isoformat(),
+                "title": snapshot.title,
+                "plan": snapshot.plan,
+                "windows": [
+                    {"label": w.label, "used_percent": w.used_percent, "reset_at": w.reset_at.isoformat() if w.reset_at else None, "detail": w.detail}
+                    for w in snapshot.windows
+                ],
+                "details": list(snapshot.details),
+                "unavailable_reason": snapshot.unavailable_reason,
+                "available": snapshot.available,
+            })
+        return {"providers": snapshots}
+
+
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(
     days: int = Query(30, ge=1, le=365),

@@ -746,6 +746,10 @@ export const sessionCommands: SlashCommand[] = [
           sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
         }
 
+        if (r.account_lines?.length) {
+          sections.push({ text: r.account_lines.join('\\n') })
+        }
+
         if (r.compressions) {
           sections.push({ text: `Compressions: ${r.compressions}` })
         }

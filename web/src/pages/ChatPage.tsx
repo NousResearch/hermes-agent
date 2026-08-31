@@ -887,7 +887,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
     // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
     // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
+    // Keep the dashboard chat on xterm's DOM/canvas renderer. WebGL's texture
+    // atlas can fail to repaint Thai combining marks while an IME composition
+    // is in progress: the PTY still receives the complete text, but glyphs
+    // appear to disappear until the next redraw. The non-WebGL renderer keeps
+    // the composed Thai glyphs visible while preserving the same input path.
+    const useWebgl = false;
     if (useWebgl) {
       try {
         const webgl = new WebglAddon();

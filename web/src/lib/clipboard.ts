@@ -1,9 +1,9 @@
-export async function copyTextToClipboard(text: string): Promise<boolean> {
+export async function copyTextToClipboard(text: string, preferNative = false): Promise<boolean> {
   const clipboard =
     typeof navigator === "undefined" ? undefined : navigator.clipboard;
   const secureContext =
     typeof window === "undefined" ? true : window.isSecureContext;
-  if (secureContext && clipboard?.writeText) {
+  if ((preferNative || secureContext) && clipboard?.writeText) {
     try {
       await clipboard.writeText(text);
       return true;

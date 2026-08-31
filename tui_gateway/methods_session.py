@@ -1716,6 +1716,30 @@ def _(rid, params: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)
     if agent is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
+    # Provider account limits — fetched from the active provider when available.
+    # This is intentionally fail-open: quota APIs are advisory and a provider
+    # hiccup must never break the /usage command or the session surface.
+    try:
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        mirror = _metadata_mirror(session)
+        provider = getattr(agent, "provider", None) if agent is not None else None
+        provider = provider or mirror.get("provider")
+        if not provider:
+            try:
+                provider = ((_load_cfg().get("model") or {}).get("provider"))
+            except Exception:
+                provider = None
+        base_url = getattr(agent, "base_url", None) if agent is not None else None
+        api_key = getattr(agent, "api_key", None) if agent is not None else None
+        if provider:
+            account = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+            account_lines = render_account_usage_lines(account)
+            if account_lines:
+                usage["account_lines"] = account_lines
+    except Exception:
+        pass
+
     # Nous credits block — agent-independent (a portal fetch), so it shows even
     # with zero API calls or on a resumed session. The TUI /usage panel renders
     # these lines regardless of `calls`. Fail-open: [] when not logged into Nous

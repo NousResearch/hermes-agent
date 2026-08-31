@@ -546,6 +546,27 @@ describe('renderRpcResult', () => {
         'Resets: 2026-08-01'
       ])
     })
+
+    it('appends account_lines before credits_lines when present', () => {
+      const body = renderRpcResult(
+        {
+          calls: 1,
+          input: 10,
+          output: 20,
+          total: 30,
+          account_lines: ['Account limits', 'Session: 96% remaining'],
+          credits_lines: ['Nous credits: 8,420 remaining']
+        },
+        'usage'
+      )
+
+      expect(body.split('\n')).toEqual([
+        'Usage: 1 calls · 10 in / 20 out · 30 total',
+        'Account limits',
+        'Session: 96% remaining',
+        'Nous credits: 8,420 remaining'
+      ])
+    })
   })
 
   describe('agents.list', () => {

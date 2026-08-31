@@ -91,7 +91,7 @@ def test_exit_code_is_distinct_tempfail():
 # ---------------------------------------------------------------------------
 
 
-def _spawn_serve(port: int, tmp_path: Path) -> subprocess.Popen:
+def _spawn_serve(port: int, tmp_path: Path, merge_stderr: bool = True) -> subprocess.Popen:
     home = tmp_path / "hermes_home"
     home.mkdir(exist_ok=True)
     env = dict(os.environ)
@@ -114,7 +114,12 @@ def _spawn_serve(port: int, tmp_path: Path) -> subprocess.Popen:
         cwd=str(REPO_ROOT),
         env=env,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        # merge_stderr=False: the caller only asserts on stdout. Discard
+        # stderr instead of piping it — with the serve-path stdout redirect
+        # active ALL server logging lands on stderr, and an unread stderr
+        # pipe can fill (~64KB) and block the child before it ever emits
+        # the READY sentinel, turning the test into a timeout flake.
+        stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
         text=True,
     )
 
@@ -195,6 +200,42 @@ def test_ephemeral_port_zero_unaffected(tmp_path):
         announced = int(ready_line.strip().rsplit("port=", 1)[1])
         assert announced > 0
         assert "BACKEND_PORT_IN_USE" not in out
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def test_ready_sentinel_arrives_on_stdout_not_stderr(tmp_path):
+    """#96282 — the Desktop spawn watches child.stdout for the READY sentinel.
+
+    ``tui_gateway.server`` (imported on the serve startup path since 6d4e851d8
+    for the flush-on-SIGTERM handlers) redirects ``sys.stdout`` to
+    ``sys.stderr`` at import time. If the sentinel is printed through the
+    redirected ``sys.stdout``, it lands on stderr and the desktop times out
+    after 90s against a perfectly healthy backend. The sentinel must reach
+    the real stdout (fd 1).
+
+    The other E2E tests here merge stderr into stdout, which is exactly how
+    the regression slipped past CI — this test keeps the streams separate.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    proc = _spawn_serve(port, tmp_path, merge_stderr=False)
+    try:
+        # stdout only: the sentinel MUST arrive here (desktop watches this pipe)
+        ready, lines = _read_until(proc, "HERMES_BACKEND_READY")
+        out = "".join(lines)
+        assert ready, (
+            f"READY sentinel not on stdout (desktop boot would time out); "
+            f"stdout:\n{out}"
+        )
+        assert f"HERMES_BACKEND_READY port={port}" in out
     finally:
         proc.terminate()
         try:

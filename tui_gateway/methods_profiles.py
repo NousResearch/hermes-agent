@@ -884,14 +884,34 @@ def _(rid, params: dict) -> dict:
 
         model = str(params.get("model") or "").strip()
         provider = str(params.get("provider") or "").strip()
+        confirm_message = None
         if model and provider:
-            try:
-                from hermes_cli.web_routers.profiles import _write_profile_model
+            # #95293 remainder: this is the Bots editor's model-switch path,
+            # and it used to write guarded (data-policy / expensive) models
+            # silently — the ONE surface that bypassed the selection guard
+            # every other switch path enforces. Same handshake contract as
+            # ``config.set model``: without ``confirm_expensive_model`` a
+            # guarded pick answers ``confirm_required`` + ``confirm_message``
+            # and writes NOTHING; the client resends with
+            # ``confirm_expensive_model: true`` once the user confirms. A
+            # misbehaving guard must never break the save (treated as "no
+            # warning"), matching ``_apply_model_switch``.
+            if not is_truthy_value(params.get("confirm_expensive_model", False)):
+                try:
+                    from hermes_cli.model_selection_guards import combined_selection_warning
 
-                _write_profile_model(profile_dir, provider, model)
-                applied["model"] = True
-            except Exception:
-                applied["model"] = False
+                    warning = combined_selection_warning(model, provider=provider or None)
+                    confirm_message = warning.message if warning is not None else None
+                except Exception:
+                    confirm_message = None
+            if confirm_message is None:
+                try:
+                    from hermes_cli.web_routers.profiles import _write_profile_model
+
+                    _write_profile_model(profile_dir, provider, model)
+                    applied["model"] = True
+                except Exception:
+                    applied["model"] = False
 
         needs_cfg = (
             isinstance(params.get("disabled_skills"), list)
@@ -987,7 +1007,13 @@ def _(rid, params: dict) -> dict:
             finally:
                 reset_hermes_home_override(token)
 
-        return _ok(rid, {"ok": all(applied.values()) if applied else True, "applied": applied})
+        result = {"ok": all(applied.values()) if applied else True, "applied": applied}
+        if confirm_message is not None:
+            # Model write pending user confirmation — same shape config.set
+            # returns, so clients reuse one confirm handler for both surfaces.
+            result["confirm_required"] = True
+            result["confirm_message"] = confirm_message
+        return _ok(rid, result)
     except Exception as e:
         return _err(rid, 5064, str(e))
 

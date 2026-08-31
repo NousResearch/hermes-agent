@@ -68,6 +68,14 @@ def media_base_url(relay_dial_url: str) -> str:
     return raw
 
 
+# Discord's CDN (and other public hosts) reject urllib's default
+# ``Python-urllib/x.y`` User-Agent with HTTP 403 — which silently killed EVERY
+# Discord CDN pass-through download (voice notes, images, documents): the
+# localizer kept the raw URL and downstream consumers then tried to open a URL
+# as a file path. Always send a descriptive UA.
+_MEDIA_USER_AGENT = "HermesAgent-Relay/1.0 (+https://github.com/NousResearch/hermes-agent)"
+
+
 class RelayMediaClient:
     """Authenticated client for the connector's ``/relay/media`` routes."""
 
@@ -128,6 +136,7 @@ class RelayMediaClient:
             or "application/octet-stream"
         )
         headers = {
+            "User-Agent": _MEDIA_USER_AGENT,
             "Authorization": f"Bearer {self._bearer()}",
             "Content-Type": content_type,
             "X-Media-Filename": (filename or path.name)[:255],
@@ -164,7 +173,7 @@ class RelayMediaClient:
         needs_auth = self.is_relay_media_url(url)
         if needs_auth and not self.enabled:
             return None
-        headers = {}
+        headers = {"User-Agent": _MEDIA_USER_AGENT}
         if needs_auth:
             headers["Authorization"] = f"Bearer {self._bearer()}"
 

@@ -445,6 +445,8 @@ class A2AAdapter(BasePlatformAdapter):
             "A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)",
             self.host, self.port, exposure, self.agent_name, len(self._agents),
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

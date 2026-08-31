@@ -1180,6 +1180,30 @@ class TestStandaloneSendUserDmResolution:
         assert session.post.call_count == 1
         assert "chat.postMessage" in session.post.call_args.args[0]
 
+    @pytest.mark.asyncio
+    async def test_channel_delivery_honors_unfurl_config(self):
+        _slack_mod._slack_dm_cache.clear()
+        post_resp = self._mock_resp({"ok": True, "ts": "123.456"})
+        session = self._mock_session(post_resp)
+        config = PlatformConfig(
+            enabled=True,
+            token="«redacted:xox…»",
+            extra={"unfurl_links": False, "unfurl_media": False},
+        )
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(
+                config,
+                "C123",
+                "[Hermes](https://example.com/hermes)",
+            )
+
+        assert result["success"] is True
+        payload = session.post.call_args.kwargs["json"]
+        assert payload["text"] == "<https://example.com/hermes|Hermes>"
+        assert payload["unfurl_links"] is False
+        assert payload["unfurl_media"] is False
+
 
     @pytest.mark.asyncio
     async def test_user_id_media_delivery_resolves_dm_before_upload(self, tmp_path):
@@ -3472,6 +3496,71 @@ class TestMessageSplitting:
         assert sent_text.startswith("> quoted text")
         assert "normal text" in sent_text
 
+
+    @pytest.mark.asyncio
+    async def test_send_passes_explicit_unfurl_options(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_default_unfurl_behavior(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_coerces_string_unfurl_options(self, adapter):
+        """`hermes config set` / Railway persist YAML booleans as strings.
+
+        Relay-plane parity: string "false"/"true" must coerce instead of
+        being silently dropped (which would leave previews on with no error).
+        """
+        adapter.config.extra["unfurl_links"] = "false"
+        adapter.config.extra["unfurl_media"] = "true"
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_drops_junk_unfurl_values(self, adapter):
+        """Unrecognized values keep Slack's default rather than suppressing."""
+        adapter.config.extra["unfurl_links"] = "maybe"
+        adapter.config.extra["unfurl_media"] = 0
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_passes_unfurl_options_to_every_chunk(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "https://example.com/" + "x" * 45000)
+
+        assert adapter._app.client.chat_postMessage.call_count >= 2
+        for call in adapter._app.client.chat_postMessage.call_args_list:
+            assert call.kwargs["unfurl_links"] is False
+            assert call.kwargs["unfurl_media"] is False
 
     @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):

@@ -1350,6 +1350,16 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "boolean",
         "description": "Run the local browser in headed mode (visible window). Also keeps the window open between turns; idle sessions are still reaped after browser.inactivity_timeout.",
     },
+    "plugins.hook_callback_timeout": {
+        "type": "number",
+        "description": (
+            "Wall-clock cap (seconds) for timeout-bounded in-process Python "
+            "plugin hook callbacks (hot-path observers + pre_tool_call). "
+            "Timed-out pre_tool_call fails closed. 0 disables the cap; "
+            "values above 600 are clamped. Caller-thread hooks such as "
+            "subagent_stop are never moved onto a timeout worker."
+        ),
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
@@ -1394,6 +1404,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `telemetry.shared_metrics.enabled` is the only schema-surfaced telemetry
     # field — fold it into security alongside the other privacy-posture toggles.
     "telemetry": "security",
+    # `plugins.hook_callback_timeout` is the only schema-surfaced plugins field
+    # (`enabled`/`disabled` are list allow-lists omitted from DEFAULT_CONFIG) —
+    # fold it into the agent tab rather than spawning a one-field orphan category.
+    "plugins": "agent",
     # `doctor.live_probe_timeout` is the only schema-surfaced doctor field —
     # fold it into general rather than spawning a one-field orphan category.
     "doctor": "general",
@@ -2067,10 +2081,9 @@ def _count_status_active_sessions() -> int:
 
 
 async def _status_active_sessions() -> int:
-    loop = asyncio.get_running_loop()
     try:
         return await asyncio.wait_for(
-            loop.run_in_executor(None, _count_status_active_sessions),
+            run_in_threadpool(_count_status_active_sessions),
             timeout=_STATUS_ACTIVE_SESSIONS_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -3886,9 +3899,7 @@ async def get_status(profile: Optional[str] = None):
         # ``<profile>:<platform>`` grammar so fleet health sees them (OOF-3).
         # A ``?profile=`` request targets one profile's view and is left
         # unmerged.
-        topology = await asyncio.get_running_loop().run_in_executor(
-            None, _collect_profile_gateway_topology_cached
-        )
+        topology = await run_in_threadpool(_collect_profile_gateway_topology_cached)
         if not requested_profile:
             gateway_platforms = _merge_profile_gateway_platforms(
                 gateway_platforms, topology.get("profile_platforms") or {}
@@ -3917,11 +3928,9 @@ async def get_status(profile: Optional[str] = None):
         # Windows install the first import of hermes_cli.gateway blocks the
         # asyncio event loop for 15-30s (.pyc compilation + Defender scans),
         # exceeding the desktop handshake's 15s socket timeout.  After the
-        # first call the module is in sys.modules and run_in_executor returns
+        # first call the module is in sys.modules and the worker call returns
         # in microseconds.
-        restart_drain_timeout = await asyncio.get_running_loop().run_in_executor(
-            None, _resolve_restart_drain_timeout
-        )
+        restart_drain_timeout = await run_in_threadpool(_resolve_restart_drain_timeout)
 
         # Dashboard auth gate (Phase 7): surface whether the gate is engaged
         # and which providers are registered so ``hermes status`` and the
@@ -4000,9 +4009,7 @@ async def get_status(profile: Optional[str] = None):
         # may touch disk, so keep it off the event loop; afterwards it is a
         # process-global cache hit. Omitted (not null) when unpersistable so
         # older-client behavior and the no-identity fallback stay identical.
-        install_id = await asyncio.get_running_loop().run_in_executor(
-            None, get_install_id
-        )
+        install_id = await run_in_threadpool(get_install_id)
         if install_id:
             status["install_id"] = install_id
 
@@ -4021,9 +4028,7 @@ async def get_status(profile: Optional[str] = None):
         try:
             from gateway.readiness import _probe_state_db
 
-            storage_check = await asyncio.get_running_loop().run_in_executor(
-                None, functools.partial(_probe_state_db, get_hermes_home())
-            )
+            storage_check = await run_in_threadpool(_probe_state_db, get_hermes_home())
             components["storage"] = {"status": storage_check.get("status", "degraded")}
         except Exception:
             components["storage"] = {"status": "degraded"}
@@ -4061,12 +4066,9 @@ async def get_status(profile: Optional[str] = None):
         try:
             from gateway.memory_status import collect_memory_status
 
-            status["memory"] = await asyncio.get_running_loop().run_in_executor(
-                None,
-                functools.partial(
-                    collect_memory_status,
-                    profile_dir if profile_dir else get_hermes_home(),
-                ),
+            status["memory"] = await run_in_threadpool(
+                collect_memory_status,
+                profile_dir if profile_dir else get_hermes_home(),
             )
         except Exception:
             status["memory"] = {"pressure": "unknown"}
@@ -4079,12 +4081,9 @@ async def get_status(profile: Optional[str] = None):
         try:
             from gateway.disk_status import collect_disk_status
 
-            status["disk"] = await asyncio.get_running_loop().run_in_executor(
-                None,
-                functools.partial(
-                    collect_disk_status,
-                    profile_dir if profile_dir else get_hermes_home(),
-                ),
+            status["disk"] = await run_in_threadpool(
+                collect_disk_status,
+                profile_dir if profile_dir else get_hermes_home(),
             )
         except Exception:
             status["disk"] = {"pressure": "unknown"}
@@ -19522,9 +19521,36 @@ def _port_bind_conflict(host: str, port: int) -> bool:
     return False
 
 
+def _write_machine_sentinel_line(line: str) -> None:
+    """Write a machine-parsed sentinel line to the REAL stdout (fd 1).
+
+    The serve startup path imports ``tui_gateway.server`` (flush-on-SIGTERM
+    handlers, #94724) which redirects ``sys.stdout`` to ``sys.stderr`` at
+    import time to keep stray prints off the JSON-RPC protocol stream. Any
+    machine-readable sentinel printed after that import via ``print()`` lands
+    on stderr — invisible to consumers that parse the child's stdout pipe
+    (the Desktop spawn, scripts). fd 1 is untouched by the Python-level
+    redirect, so write there.
+
+    Best-effort by design: if fd 1 is unwritable (closed; invalid under
+    pythonw.exe), fall back to ``print()`` for human visibility only — the
+    redirected stream can't reach stdout-parsing consumers, and pythonw
+    Desktop spawns rely on ``_write_dashboard_ready_file()`` (the
+    HERMES_DESKTOP_READY_FILE channel) for port discovery instead. Never
+    raises: a sentinel-delivery failure must not kill a healthy serve.
+    """
+    try:
+        os.write(1, (line + "\n").encode())
+    except OSError:
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
+
+
 def _report_port_in_use(host: str, port: int) -> None:
     """Print the machine sentinel + a human hint naming likely holders."""
-    print(_PORT_IN_USE_SENTINEL.format(port=port), flush=True)
+    _write_machine_sentinel_line(_PORT_IN_USE_SENTINEL.format(port=port))
     print(
         f"  Port {port} on {host} is already in use — likely another "
         "'hermes serve' / 'hermes dashboard' backend or the Hermes gateway. "
@@ -19807,6 +19833,19 @@ def start_server(
         )
     server = uvicorn.Server(config)
 
+    # Flush-on-kill guard (#94724 item 2): install chaining SIGTERM/SIGINT
+    # handlers that first persist in-memory session transcripts to state.db
+    # (bounded, best-effort) before the normal shutdown story runs. Installed
+    # on the main thread BEFORE uvicorn's capture_signals() so uvicorn saves
+    # these as the "original" handlers and re-raises into them after its own
+    # graceful shutdown — kills outside the serve window are covered too.
+    try:
+        from tui_gateway.server import install_exit_flush_signal_handlers
+
+        install_exit_flush_signal_handlers()
+    except Exception as exc:
+        _log.debug("exit-flush signal handlers not installed: %s", exc)
+
     # ── #93608: machine-readable port-conflict detection ──────────────
     # uvicorn's own bind_socket() would catch the EADDRINUSE and exit 1
     # with a bare ERROR line — indistinguishable from "backend broken".
@@ -19844,6 +19883,19 @@ def start_server(
                     _reap_orphaned_desktop_local_serves()
                 except Exception as exc:
                     _log.debug("orphan desktop-local serve reap skipped: %s", exc)
+
+            # Same sweep for stdio MCP helper children (#61514): ledger-
+            # identified helpers whose recorded spawner is provably dead are
+            # corpses from a prior unclean exit — reap them before this
+            # backend stacks a fresh MCP tree on top. Positive identity only
+            # (spawn ledger + spawner_is_dead); a helper whose spawner is
+            # alive or unprovable is never touched.
+            try:
+                from hermes_cli.process_identity import reap_orphaned_mcp_helpers
+
+                reap_orphaned_mcp_helpers()
+            except Exception as exc:
+                _log.debug("orphan MCP helper reap skipped: %s", exc)
 
             # tui_gateway/slash_worker.py::_start_parent_death_watchdog. No-op
             # for standalone `hermes serve` (no HERMES_PARENT_PID env).
@@ -19883,7 +19935,14 @@ def start_server(
             # plain backend, not a dashboard, so it announces a neutral token;
             # `dashboard` keeps the legacy one. The desktop matches either.
             ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-            print(f"{ready_token} port={actual_port}", flush=True)
+            # tui_gateway.server (imported above for the flush-on-SIGTERM
+            # handlers, #94724) redirects sys.stdout→sys.stderr at import time
+            # to keep stray prints off the JSON-RPC protocol stream. fd 1 is
+            # still the real stdout — and the Desktop spawn watches
+            # child.stdout for this sentinel — so write to the fd, not to the
+            # (redirected) sys.stdout, or the desktop times out after 90s
+            # against a perfectly healthy backend (#96282).
+            _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.

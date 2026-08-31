@@ -134,7 +134,9 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
-    ("openrouter/elephant-alpha",              "free"),
+    ("thinkingmachines/inkling:free",          "free"),
+    ("thinkingmachines/inkling-small:free",    "free"),
+    ("minimax/minimax-m3:free",                "free"),
     ("z-ai/glm-5.2:free",                      "free"),
     ("poolside/laguna-s-2.1:free",             "free"),
     ("poolside/laguna-xs-2.1:free",            "free"),
@@ -370,6 +372,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "zai": [
         "glm-5.3",
+        "glm-5.3-flash",
         "glm-5.2",
         "glm-5.1",
         "glm-5",
@@ -541,6 +544,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimax-m2.7",
         "minimax-m2.5",
         "glm-5.3",
+        "glm-5.3-flash",
         "glm-5.2",
         "glm-5.1",
         "glm-5",
@@ -583,6 +587,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5.6-luna",
         "grok-4.5",
         "glm-5.3",
+        "glm-5.3-flash",
         "glm-5.2",
         "glm-5.1",
         "glm-5",

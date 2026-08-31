@@ -592,6 +592,54 @@ def _compute_tool_definitions(
         ]
         available_tool_names.discard("browser_exec")
 
+    # delegate_task's child-restrictions rule names sibling tools (clarify,
+    # memory, cronjob). Warning about tools this session doesn't even have
+    # teaches ghost vocabulary — filter the list to tools actually present
+    # and drop the line entirely when none apply. Two source variants exist
+    # (depth-derived): the depth-off line also names delegate_task itself;
+    # the depth-on line lists only the siblings. Pattern order matters —
+    # the sibling list is a substring of the full list.
+    # Same session-level seam as the browser_exec gate above.
+    if "delegate_task" in available_tool_names:
+        blocked_present = [
+            t for t in ("clarify", "memory", "cronjob") if t in available_tool_names
+        ]
+        if len(blocked_present) < 3:
+            full_offvariant = "delegate_task, clarify, memory, or cronjob"
+            full_onvariant = "clarify, memory, or cronjob"
+            for i, td in enumerate(filtered_tools):
+                fn = td.get("function", {})
+                desc = fn.get("description", "")
+                if fn.get("name") != "delegate_task":
+                    continue
+                if full_offvariant in desc:
+                    full, keep_self = full_offvariant, True
+                elif full_onvariant in desc:
+                    full, keep_self = full_onvariant, False
+                else:
+                    break
+                names = (["delegate_task"] if keep_self else []) + blocked_present
+                if blocked_present:
+                    if len(names) == 1:
+                        replacement = names[0]
+                    elif len(names) == 2:
+                        replacement = f"{names[0]} or {names[1]}"
+                    else:
+                        replacement = ", ".join(names[:-1]) + ", or " + names[-1]
+                    desc = desc.replace(full, replacement)
+                else:
+                    # No sibling tools here — drop the restriction line
+                    # (both variants end at the following "\n").
+                    start = desc.find("- Children cannot call " + full)
+                    if start != -1:
+                        end = desc.index("\n", start) + 1
+                        desc = desc[:start] + desc[end:]
+                filtered_tools[i] = {
+                    **td,
+                    "function": {**fn, "description": desc},
+                }
+                break
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -1234,10 +1282,12 @@ def handle_function_call(
     # calls must be exact or denied, never repaired into authority-bearing input.
     _ares_permit = None
     _ares_schema = None
+    _ares_canary_enabled = False
     _ares_mission_ref = task_id or os.getenv("ARES_MISSION_REF")
     try:
-        from ares_runtime.collaboration import dispatcher_boundary
-        if os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1":
+        from ares_runtime.collaboration import dispatcher_boundary, production_permit_canary_enabled
+        _ares_canary_enabled = production_permit_canary_enabled(session_id=session_id)
+        if os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1" or _ares_canary_enabled:
             for _ares_definition in get_tool_definitions(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
@@ -1250,6 +1300,7 @@ def handle_function_call(
             function_name,
             function_args,
             mission_ref=_ares_mission_ref,
+            session_id=session_id,
             schema=_ares_schema,
             # This pass validates strict shape and bridge availability before
             # legacy coercion; single-use consumption waits for final payload.
@@ -1259,7 +1310,7 @@ def handle_function_call(
         if not _ares_allowed:
             return tool_error(f"ARES_EFFECT_DENIED:{_ares_code}")
     except Exception as _ares_boundary_error:
-        if os.getenv("ARES_RUNTIME_PERMITS_V1", "0") == "1" or os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1":
+        if _ares_canary_enabled or os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1":
             return tool_error(f"ARES_EFFECT_BOUNDARY_ERROR:{type(_ares_boundary_error).__name__}")
 
     # Legacy coercion remains available only after the Ares boundary.
@@ -1525,12 +1576,13 @@ def handle_function_call(
             # Final admission is deliberately after middleware, plugin hooks,
             # and edit approval. The permit binds the exact payload that the
             # registry will execute, never an earlier model payload.
-            if os.getenv("ARES_RUNTIME_PERMITS_V1", "0") == "1":
+            if _ares_canary_enabled:
                 from ares_runtime.collaboration import dispatcher_boundary
                 _ares_allowed, _ares_code, _ares_permit = dispatcher_boundary(
                     function_name,
                     function_args,
                     mission_ref=_ares_mission_ref,
+                    session_id=session_id,
                     schema=_ares_schema,
                     authorize_permit=True,
                 )
@@ -1582,7 +1634,7 @@ def handle_function_call(
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
-        if os.getenv("ARES_RUNTIME_PERMITS_V1", "0") == "1" and _ares_permit is not None:
+        if _ares_canary_enabled and _ares_permit is not None:
             try:
                 from ares_runtime.collaboration import record_receipt, digest as _ares_digest
                 _status, _error_type, _error_message = _tool_result_observer_fields(function_name, result)
@@ -1590,6 +1642,7 @@ def handle_function_call(
                     "tool_name": function_name,
                     "mission_ref": _ares_mission_ref,
                     "permit_ref": _ares_permit.get("canonical_permit_ref") or _ares_permit.get("permit_ref"),
+                    "preflight_receipt": _ares_permit.get("receipt_artifact"),
                     "args_digest": _ares_digest(function_args),
                     "state": _status,
                     "error_type": _error_type,

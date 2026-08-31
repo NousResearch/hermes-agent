@@ -20,9 +20,9 @@ COLLAB_CONTRACTS_V1 = lambda: _flag("ARES_COLLAB_CONTRACTS_V1")
 TYPED_FINDINGS_V1 = lambda: _flag("ARES_TYPED_FINDINGS_V1")
 CONTEXT_COMPILER_V1 = lambda: _flag("ARES_CONTEXT_COMPILER_V1")
 
-# Phase 3: Strict effect args, runtime permits
+# Phase 3: strict effect argument validation. Production permit canary
+# admission is owned by ares.permit_daemon configuration in collaboration.py.
 STRICT_EFFECT_TOOL_ARGS_V1 = lambda: _flag("ARES_STRICT_EFFECT_TOOL_ARGS_V1")
-RUNTIME_PERMITS_V1 = lambda: _flag("ARES_RUNTIME_PERMITS_V1")
 
 # Phase 4: Witness, closure projection
 WITNESS_V1 = lambda: _flag("ARES_WITNESS_V1")

@@ -1374,9 +1374,8 @@ def _close_sessions_for_transport(
     transport, *, end_reason: str = "ws_disconnect"
 ) -> tuple[int, int]:
     """On transport disconnect, reap the sessions that opted into
-    close_on_disconnect (sidecar/dashboard) immediately via the unified
-    ``_close_session_by_id`` path, and re-point the rest back to stdio so later
-    emits don't hit a dead socket.
+    close_on_disconnect (sidecar/dashboard) immediately and re-point the rest
+    at the detached transport so later emits don't hit a dead socket.
 
     Non-flagged detached sessions are handed to the grace-windowed WS-orphan
     reaper (``_schedule_ws_orphan_reap``): a quick reconnect / session.resume
@@ -1391,47 +1390,57 @@ def _close_sessions_for_transport(
     reaped = 0
     detached = 0
     for sid, session in owned:
-        if session.get("close_on_disconnect"):
-            _close_session_by_id(sid, end_reason=end_reason)
-            reaped += 1
-        else:
-            # Point detached sessions at the drop sentinel (NOT real stdio) so
-            # _ws_session_is_orphaned recognizes them and the grace-reap can
-            # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            # UNLESS another window still shows the session: multi-window
-            # pop-outs all register as viewers, so on disconnect re-bind the
-            # session to the most recent surviving viewer instead of
-            # stranding the original window on the sentinel (#83716).
-            viewers = session.get("viewers")
-            if viewers:
-                viewers.pop(transport, None)
-            # Revalidate under the sessions lock before stomping (#77129):
-            # between the owned-sessions snapshot above and this write, a
-            # concurrent session.resume can rebind the session to a NEW live
-            # transport. Stomping it back onto the drop sentinel here would
-            # knock an attached client into detached state and arm an orphan
-            # reap against a session that has a live owner. If the transport
-            # already moved on to a different live transport, this disconnect
-            # has nothing left to tear down — skip the park AND the reap.
+        claimed_for_teardown = None
+        should_schedule_reap = False
+        # A session.resume fast-path rebinds its live session while holding
+        # _session_resume_lock. Take that lock before re-checking the snapshot
+        # so a reconnect cannot move the transport between this check and the
+        # close/detach ownership claim. Keep the slow teardown below both locks.
+        with _session_resume_lock:
             with _sessions_lock:
-                current = session.get("transport")
-                if (
-                    current is not transport
-                    and current is not None
-                    and not _transport_is_dead(current)
-                ):
+                current = _sessions.get(sid)
+                if current is not session:
                     continue
-                remaining = [
-                    (ts, v)
-                    for v, ts in (viewers or {}).items()
-                    if v is not transport and not _transport_is_dead(v)
-                ]
-                if remaining:
-                    remaining.sort(key=lambda kv: kv[0])
-                    session["transport"] = remaining[-1][1]
+                if current.get("transport") is not transport:
+                    # The reconnect owns this session now. Drop only the old
+                    # viewer registration; it must not affect the new owner.
+                    viewers = current.get("viewers")
+                    if viewers:
+                        viewers.pop(transport, None)
                     continue
-                session["transport"] = _detached_ws_transport
-                session.pop("_client_gone_interrupt_requested", None)
+                if current.get("close_on_disconnect"):
+                    claimed_for_teardown = _pop_session_by_id(sid)
+                else:
+                    # Point detached sessions at the drop sentinel (NOT real
+                    # stdio) so _ws_session_is_orphaned recognizes them and
+                    # the grace-reap can actually fire; a standalone
+                    # `hermes --tui` keeps real _stdio. UNLESS another window
+                    # still shows the session: multi-window pop-outs all
+                    # register as viewers, so on disconnect re-bind the
+                    # session to the most recent surviving viewer instead of
+                    # stranding the original window on the sentinel (#83716).
+                    viewers = current.get("viewers")
+                    if viewers:
+                        viewers.pop(transport, None)
+                    remaining = [
+                        (ts, viewer_transport)
+                        for viewer_transport, ts in (viewers or {}).items()
+                        if (
+                            viewer_transport is not transport
+                            and not _transport_is_dead(viewer_transport)
+                        )
+                    ]
+                    if remaining:
+                        remaining.sort(key=lambda item: item[0])
+                        current["transport"] = remaining[-1][1]
+                    else:
+                        current["transport"] = _detached_ws_transport
+                        current.pop("_client_gone_interrupt_requested", None)
+                        should_schedule_reap = True
+        if claimed_for_teardown is not None:
+            if _teardown_popped_session(claimed_for_teardown, end_reason=end_reason):
+                reaped += 1
+        elif should_schedule_reap:
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)
@@ -1441,6 +1450,15 @@ def _close_sessions_for_transport(
 
 
 def _shutdown_sessions() -> None:
+    # Durable-first (#94724 item 2): persist every session's un-flushed
+    # transcript within a bounded budget BEFORE the slow per-session
+    # teardown below (plugin hooks, memory commit, delegation interrupts,
+    # agent.close). A supervisor that SIGKILLs a slow shutdown mid-way can
+    # then no longer lose the transcripts — the flush already landed.
+    try:
+        _flush_sessions_before_exit()
+    except Exception:
+        pass
     try:
         _release_gateway_wake_owner()
     except Exception:
@@ -1460,6 +1478,176 @@ except (TypeError, ValueError):
     _SESSION_TTL_S = float(6 * 3600)
 _SESSION_TTL_S = max(0.0, _SESSION_TTL_S)
 _REAPER_SCAN_S = 300.0
+
+
+# ── Flush-on-kill + periodic incremental flush (#94724 item 2) ───────────
+# A `hermes serve` killed mid-update used to lose every un-flushed in-memory
+# session: the next RPC failed with "session-scoped RPC rejected: not in
+# memory (detached/reaped runtime)" and NO store held the transcript. #95576
+# made serves survive *future* updates; this closes the kill path itself:
+#   (a) SIGTERM/SIGINT run a bounded, best-effort flush of in-memory session
+#       transcripts to state.db BEFORE the normal shutdown path, chained to
+#       whatever handler was installed before (uvicorn's included);
+#   (b) the idle-reaper scan piggybacks a periodic incremental flush so even
+#       a SIGKILL loses at most one flush interval.
+try:
+    _EXIT_FLUSH_BUDGET_S = float(
+        os.environ.get("HERMES_TUI_EXIT_FLUSH_BUDGET_S") or 5.0
+    )
+except (TypeError, ValueError):
+    _EXIT_FLUSH_BUDGET_S = 5.0
+_EXIT_FLUSH_BUDGET_S = max(0.0, _EXIT_FLUSH_BUDGET_S)
+
+try:
+    _INCREMENTAL_FLUSH_INTERVAL_S = float(
+        os.environ.get("HERMES_TUI_SESSION_FLUSH_INTERVAL_S") or _REAPER_SCAN_S
+    )
+except (TypeError, ValueError):
+    _INCREMENTAL_FLUSH_INTERVAL_S = _REAPER_SCAN_S
+_INCREMENTAL_FLUSH_INTERVAL_S = max(0.0, _INCREMENTAL_FLUSH_INTERVAL_S)
+
+
+def _flush_session_messages(session: dict | None) -> bool:
+    """Best-effort durable flush of one session's in-memory transcript.
+
+    Rides ``agent._persist_session`` — the same marker-deduped persist
+    contract ``_finalize_session`` uses (#13121) — so repeated calls only
+    write genuinely-unflushed messages and never duplicate durable rows.
+    """
+    if not session:
+        return False
+    agent = session.get("agent")
+    if agent is None or not hasattr(agent, "_persist_session"):
+        return False
+    snapshot = getattr(agent, "_session_messages", None)
+    if not snapshot:
+        return False
+    try:
+        agent._persist_session(snapshot)
+        return True
+    except Exception:
+        logger.debug("incremental session flush failed", exc_info=True)
+        return False
+
+
+def _flush_dirty_sessions(now: float | None = None) -> int:
+    """Periodic incremental flush, driven by the idle-reaper scan.
+
+    Skips ``running`` sessions: the turn thread owns mid-turn persistence
+    (it already flushes at every persist point) and
+    ``_drop_trailing_empty_response_scaffolding`` mutates the live message
+    list, so racing an in-flight turn from the reaper thread is never safe.
+    Idle/detached sessions — precisely the ones a kill strands — are flushed
+    at most once per ``_INCREMENTAL_FLUSH_INTERVAL_S``. ``now`` is injectable
+    for tests (monotonic clock).
+    """
+    if _INCREMENTAL_FLUSH_INTERVAL_S <= 0:
+        return 0
+    if now is None:
+        now = time.monotonic()
+    with _sessions_lock:
+        sessions = list(_sessions.values())
+    flushed = 0
+    for session in sessions:
+        if not isinstance(session, dict) or session.get("running"):
+            continue
+        last = float(session.get("_last_incremental_flush") or 0.0)
+        if last and (now - last) < _INCREMENTAL_FLUSH_INTERVAL_S:
+            continue
+        if _flush_session_messages(session):
+            flushed += 1
+        session["_last_incremental_flush"] = now
+    return flushed
+
+
+def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
+    """Bounded flush of ALL in-memory sessions on the way out.
+
+    Runs on a daemon worker joined with the budget so a hung SQLite write
+    can never block exit longer than ``HERMES_TUI_EXIT_FLUSH_BUDGET_S``
+    (default 5s). Running sessions are included — the process is dying, so
+    a best-effort partial transcript beats guaranteed loss.
+    """
+    budget = _EXIT_FLUSH_BUDGET_S if budget_s is None else max(0.0, budget_s)
+    if budget <= 0:
+        return 0
+    result = {"flushed": 0}
+
+    def _run() -> None:
+        deadline = time.monotonic() + budget
+        with _sessions_lock:
+            sessions = list(_sessions.values())
+        for session in sessions:
+            if time.monotonic() >= deadline:
+                break
+            if _flush_session_messages(session):
+                result["flushed"] += 1
+
+    worker = threading.Thread(target=_run, daemon=True, name="hermes-exit-flush")
+    worker.start()
+    worker.join(budget)
+    return result["flushed"]
+
+
+_exit_flush_prev_handlers: dict[int, Any] = {}
+_exit_flush_handlers_installed = False
+
+
+def _handle_exit_flush_signal(signum, frame) -> None:
+    """Flush in-memory sessions, then hand off to the prior handler.
+
+    Chaining preserves the pre-existing signal story (uvicorn's graceful
+    shutdown, a supervisor's handler, or the default terminate disposition)
+    — this handler only *prepends* a bounded durable flush.
+    """
+    try:
+        _flush_sessions_before_exit()
+    except Exception:
+        pass
+    import signal as _signal
+
+    prev = _exit_flush_prev_handlers.get(signum)
+    if callable(prev):
+        prev(signum, frame)
+        return
+    if prev is _signal.SIG_IGN:
+        return
+    # Default disposition: restore it and re-raise so the process still dies
+    # with the correct signal (exit status visible to supervisors).
+    try:
+        _signal.signal(signum, _signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    except Exception:
+        raise SystemExit(128 + int(signum)) from None
+
+
+def install_exit_flush_signal_handlers() -> bool:
+    """Install chaining SIGTERM/SIGINT flush handlers (main thread only).
+
+    Called by ``hermes serve`` / dashboard startup before uvicorn takes over
+    signals: uvicorn's ``capture_signals()`` saves these as the "original"
+    handlers and restores + re-raises into them after its graceful shutdown,
+    so the flush also covers terminations outside uvicorn's serve window.
+    Idempotent; returns False off the main thread or when installation fails.
+    """
+    global _exit_flush_handlers_installed
+    if _exit_flush_handlers_installed:
+        return True
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    import signal as _signal
+
+    installed = False
+    for signum in (_signal.SIGTERM, _signal.SIGINT):
+        try:
+            prev = _signal.getsignal(signum)
+            _signal.signal(signum, _handle_exit_flush_signal)
+            _exit_flush_prev_handlers[signum] = prev
+            installed = True
+        except (ValueError, OSError, RuntimeError):
+            continue
+    _exit_flush_handlers_installed = installed
+    return installed
 
 
 def _transport_is_dead(transport) -> bool:
@@ -1491,6 +1679,13 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
 
 def _reap_idle_sessions() -> None:
     now = time.time()
+    # Piggyback the periodic incremental flush on the existing reaper tick
+    # (#94724 item 2) — no new timer subsystem. Even a SIGKILL then loses at
+    # most one flush interval of un-persisted messages.
+    try:
+        _flush_dirty_sessions()
+    except Exception:
+        logger.debug("periodic incremental session flush failed", exc_info=True)
     with _sessions_lock:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:
@@ -1830,6 +2025,29 @@ def _transfer_db_to_agent(agent, db) -> bool:
         return True
     except Exception:
         return False
+
+
+def _open_profile_session_db(profile_home):
+    """Open a DEDICATED handle on ``profile_home``'s ``state.db`` — FAIL CLOSED.
+
+    A named-profile agent whose profile store cannot be opened must surface a
+    clear error and never get built against the launch ``state.db``: a silent
+    fallback bleeds the session's rows and messages into the wrong profile's
+    store exactly when the profile store is briefly unopenable (locked,
+    unreadable, mid-restore), and the named profile then looks blank. Callers
+    let the raised error abort the agent build (deferred builds route it to
+    the build's ``agent_error`` path) instead of swallowing it back onto the
+    launch handle.
+    """
+    from hermes_state import SessionDB
+
+    db_path = Path(profile_home) / "state.db"
+    try:
+        return SessionDB(db_path=db_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"profile session store unavailable: {db_path}: {exc}"
+        ) from exc
 
 
 @contextlib.contextmanager
@@ -2720,17 +2938,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 except Exception:
                     pass
-                try:
-                    from hermes_state import SessionDB
-
-                    # DEDICATED handle — ours until _transfer_db_to_agent hands
-                    # it to the built agent in the finally below. Every path
-                    # that leaves this build without that transfer (the except
-                    # below, and a session reaped mid-build) must close it.
-                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
-                    owns_db = True
-                except Exception:
-                    session_db = None
+                # DEDICATED handle — ours until _transfer_db_to_agent hands
+                # it to the built agent in the finally below. Every path
+                # that leaves this build without that transfer (the except
+                # below, and a session reaped mid-build) must close it.
+                # FAIL CLOSED on open failure: the raise routes to the
+                # ``except`` below (clear agent_error, no agent turn) instead
+                # of silently binding _make_agent's launch-DB default and
+                # bleeding this session into the wrong profile's state.db.
+                session_db = _open_profile_session_db(profile_home)
+                owns_db = True
 
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
@@ -5863,6 +6080,310 @@ def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
     return warning.message if warning is not None else None
 
 
+def _tui_compression_config_signature(cfg: dict | None) -> tuple:
+    """Stable snapshot of compression/context keys that must apply next turn.
+
+    Reuses the messaging-gateway cache-busting extract so Desktop/TUI and
+    messaging stay on the same key set. Adds ``idle_compact_after_seconds``
+    and ``tail_mode``, which affect live TUI sessions but are not in the
+    gateway tuple today.
+    """
+    from gateway.run import GatewayRunner
+
+    keys = GatewayRunner._extract_cache_busting_config(cfg)
+    picked = {
+        key: value
+        for key, value in keys.items()
+        if key.startswith("compression.") or key == "model.context_length"
+    }
+    compression = cfg.get("compression") if isinstance(cfg, dict) and isinstance(cfg.get("compression"), dict) else {}
+    for extra in ("idle_compact_after_seconds", "tail_mode"):
+        picked[f"compression.{extra}"] = compression.get(extra)
+    return tuple(sorted(picked.items()))
+
+
+def _compressor_ctor_default(name: str, fallback: Any) -> Any:
+    """Read a normalized default from ContextCompressor's REAL signature.
+
+    Unset restoration must go through the same derivation the construction
+    path uses (#94724 review finding on #95980) — pulling the default off
+    ``ContextCompressor.__init__`` itself instead of hardcoding copies keeps
+    the two from drifting.
+    """
+    try:
+        import inspect
+
+        from agent.context_compressor import ContextCompressor
+
+        default = inspect.signature(ContextCompressor.__init__).parameters[
+            name
+        ].default
+        if default is inspect.Parameter.empty:
+            return fallback
+        return default
+    except Exception:
+        return fallback
+
+
+def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:
+    """Default compaction threshold when ``compression.threshold`` is unset.
+
+    Mirrors agent_init exactly: the ctor's global default, then the per-model
+    resolution (Codex gpt-5.4/5.5 + spark autoraise, Arcee Trinity, etc.)
+    via the SAME ``_resolve_compression_threshold`` helper — so removing the
+    key restores the model-derived value, not a bare constant.
+    """
+    try:
+        pct = float(_compressor_ctor_default("threshold_percent", 0.50))
+    except (TypeError, ValueError):
+        pct = 0.50
+    try:
+        from agent.agent_init import _resolve_compression_threshold
+        from agent.auxiliary_client import (
+            _compression_threshold_for_model,
+            _is_codex_gpt54_or_gpt55,
+            _is_codex_spark,
+        )
+
+        model = getattr(agent, "model", "") or ""
+        provider = getattr(agent, "provider", "") or ""
+        autoraise_enabled = str(
+            compression.get("codex_gpt55_autoraise", True)
+        ).lower() in {"true", "1", "yes"}
+        model_cthresh = _compression_threshold_for_model(
+            model,
+            provider,
+            allow_codex_gpt55_autoraise=autoraise_enabled,
+        )
+        pct, _notice = _resolve_compression_threshold(
+            pct,
+            model_cthresh,
+            model=model,
+            is_codex_autoraise=(
+                _is_codex_gpt54_or_gpt55(model, provider)
+                or _is_codex_spark(model, provider)
+            ),
+        )
+    except Exception:
+        pass
+    return pct
+
+
+def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
+    """Update a live session's compressor from current config.yaml.
+
+    Preserves the agent object, session identity, history, and callbacks.
+    Recomputes the trigger from the ratio-based threshold and then applies
+    ``compression.threshold_tokens`` so raising, lowering, or clearing the
+    cap all take effect on the next preflight.
+
+    Every adopted key has UNSET semantics (#94724 review finding on the
+    merged #95980): removing a key from config.yaml restores the normalized
+    default — or the model-derived value — on the next turn, through the
+    same derivation the construction path uses (ContextCompressor ctor
+    defaults read off its real signature, the Codex threshold autoraise via
+    ``_resolve_compression_threshold``, context-length re-inference via the
+    deferred ``get_model_context_length`` resolution). The old behavior
+    acted only on PRESENT keys, leaving stale values active forever.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+
+    enabled_raw = compression.get("enabled", True)
+    if isinstance(enabled_raw, bool):
+        agent.compression_enabled = enabled_raw
+    else:
+        agent.compression_enabled = str(enabled_raw).lower() in {"true", "1", "yes"}
+
+    # Absence restores the agent_init/config default (0 = disabled).
+    idle_raw = compression.get("idle_compact_after_seconds", 0)
+    try:
+        agent.compression_idle_compact_after_seconds = max(0, int(idle_raw or 0))
+    except (TypeError, ValueError):
+        pass
+
+    cc = getattr(agent, "context_compressor", None)
+    if cc is None:
+        return
+
+    # tail_mode: ctor normalization — unknown/absent values land on "lean",
+    # matching agent_init's default and the compressor's own fallback.
+    default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
+    mode = str(compression.get("tail_mode", default_tail) or default_tail)
+    mode = mode.strip().lower()
+    cc.tail_mode = mode if mode in ("legacy", "lean") else default_tail
+
+    def _assign_int(key: str, attr: str, default: int, min_value: int = 0) -> None:
+        raw = compression.get(key, default)
+        try:
+            value = default if raw is None else int(raw)
+        except (TypeError, ValueError):
+            return
+        setattr(cc, attr, max(min_value, value))
+
+    _assign_int(
+        "proactive_prune_tokens",
+        "proactive_prune_tokens",
+        int(_compressor_ctor_default("proactive_prune_tokens", 0)),
+    )
+    _assign_int(
+        "proactive_prune_min_result_chars",
+        "proactive_prune_min_result_chars",
+        int(_compressor_ctor_default("proactive_prune_min_result_chars", 8000)),
+    )
+    _assign_int(
+        "proactive_prune_min_reclaim_tokens",
+        "proactive_prune_min_reclaim_tokens",
+        int(_compressor_ctor_default("proactive_prune_min_reclaim_tokens", 4096)),
+    )
+    _assign_int(
+        "protect_last_n",
+        "protect_last_n",
+        int(_compressor_ctor_default("protect_last_n", 20)),
+    )
+    _assign_int(
+        "min_tail_user_messages",
+        "min_tail_user_messages",
+        int(_compressor_ctor_default("min_tail_user_messages", 1)),
+        min_value=1,
+    )
+
+    try:
+        ratio_raw = compression.get(
+            "target_ratio", _compressor_ctor_default("summary_target_ratio", 0.20)
+        )
+        cc.summary_target_ratio = max(0.10, min(float(ratio_raw), 0.80))
+    except (TypeError, ValueError):
+        pass
+
+    raw_thresholds = compression.get("model_thresholds")
+    if isinstance(raw_thresholds, dict):
+        cc.model_thresholds = {
+            str(k): float(v)
+            for k, v in raw_thresholds.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+    else:
+        # Absent (or invalid shape — agent_init treats both as empty):
+        # stale per-model overrides must stop steering the live threshold.
+        cc.model_thresholds = {}
+
+    # threshold: present value wins; absence derives the default through
+    # the same agent_init resolution (global default + per-model autoraise).
+    pct: float | None = None
+    if "threshold" in compression:
+        try:
+            pct = float(compression["threshold"])
+        except (TypeError, ValueError):
+            pct = None
+    if pct is None:
+        pct = _derived_default_threshold_percent(agent, compression)
+    try:
+        cc._config_threshold_percent = pct
+        cc._configured_threshold_percent = pct
+        base = pct
+        model_thresholds = getattr(cc, "model_thresholds", None) or {}
+        if model_thresholds:
+            from agent.context_compressor import resolve_model_threshold
+
+            base = resolve_model_threshold(
+                getattr(agent, "model", "") or "",
+                model_thresholds,
+                pct,
+            )
+        cc._base_threshold_percent = base
+        if hasattr(cc, "_effective_threshold_percent"):
+            try:
+                cc.threshold_percent = cc._effective_threshold_percent(
+                    cc.context_length, base
+                )
+            except Exception:
+                cc.threshold_percent = pct
+        else:
+            cc.threshold_percent = pct
+    except (TypeError, ValueError):
+        pass
+
+    raw_ctx = model_cfg.get("context_length")
+    if raw_ctx is not None:
+        try:
+            new_ctx = int(raw_ctx)
+        except (TypeError, ValueError):
+            new_ctx = 0
+        if new_ctx > 0:
+            cc._config_context_length = new_ctx
+            try:
+                cc.context_length = new_ctx
+            except Exception:
+                pass
+    elif getattr(cc, "_config_context_length", None) is not None:
+        # model.context_length removed: drop the config override and force
+        # re-inference from model metadata on next access — the same
+        # deferred get_model_context_length resolution agent construction
+        # uses (#32221). The re-resolve also re-applies the small-context
+        # threshold floor for the genuinely re-inferred window.
+        cc._config_context_length = None
+        cc._resolved_context_length = None
+
+    coerce_cap = getattr(cc, "_coerce_threshold_tokens_cap", None)
+    if callable(coerce_cap):
+        cc.threshold_tokens_cap = coerce_cap(compression.get("threshold_tokens"))
+    elif "threshold_tokens" in compression:
+        try:
+            cap = int(compression.get("threshold_tokens"))
+            cc.threshold_tokens_cap = cap if cap > 0 else None
+        except (TypeError, ValueError):
+            cc.threshold_tokens_cap = None
+    else:
+        cc.threshold_tokens_cap = None
+
+    # Invalidate cached trigger so the next preflight re-derives from the
+    # current percent/window and then applies the (possibly new) cap.
+    if hasattr(cc, "_threshold_tokens"):
+        cc._threshold_tokens = None
+        if hasattr(cc, "_tail_token_budget"):
+            cc._tail_token_budget = None
+    elif hasattr(cc, "_apply_threshold_tokens_cap"):
+        compute = getattr(cc, "_compute_threshold_tokens", None)
+        if callable(compute):
+            cc.threshold_tokens = compute(
+                getattr(cc, "context_length", 0) or 0,
+                getattr(cc, "threshold_percent", 0.5),
+                getattr(cc, "max_tokens", None),
+            )
+        cc._apply_threshold_tokens_cap()
+    else:
+        cap = getattr(cc, "threshold_tokens_cap", None)
+        current = getattr(cc, "threshold_tokens", None)
+        if cap and current:
+            cc.threshold_tokens = min(int(current), int(cap))
+
+
+def _sync_agent_compression_with_config(sid: str, session: dict) -> None:
+    """Adopt compression.* / model.context_length edits at turn start.
+
+    Messaging gateways already rebuild a cached agent when these keys change.
+    Desktop/TUI only synced the model; the live compressor kept the threshold
+    captured at agent creation (#95151).
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return
+    cfg = _load_cfg() or {}
+    signature = _tui_compression_config_signature(cfg)
+    seen = session.get("config_compression_seen")
+    session["config_compression_seen"] = signature
+    if signature == seen:
+        return
+    try:
+        _apply_live_compression_config(agent, cfg)
+    except Exception as e:
+        logger.warning(
+            "Could not apply live compression config for %s: %s", sid, e
+        )
+
+
 def _apply_pending_model_switch(sid: str, session: dict) -> None:
     """Apply a model switch queued while a turn was running.
 
@@ -7905,12 +8426,21 @@ def _init_session(
         db = session_db
     elif profile_home:
         try:
-            from hermes_state import SessionDB
-
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            db = _open_profile_session_db(profile_home)
             _init_owns_db = True
         except Exception:
-            db = _get_db()
+            # FAIL CLOSED — same class as the deferred-build bind: a
+            # named-profile session must never read/write the launch
+            # ``state.db``. Skip the cwd hydration/persist (the row lands on
+            # the agent's own lazy-create once the store recovers) rather
+            # than writing this session's row into the wrong profile's store.
+            logger.warning(
+                "profile session store unavailable for %s — skipping cwd "
+                "hydration instead of touching the launch state.db",
+                profile_home,
+                exc_info=True,
+            )
+            db = None
     else:
         db = _get_db()
     try:
@@ -11544,6 +12074,7 @@ def _run_prompt_submit(
                 # config sync so an explicit pick wins over a config.yaml change.
                 _apply_pending_model_switch(sid, session)
                 _sync_agent_model_with_config(sid, session)
+                _sync_agent_compression_with_config(sid, session)
             # Bot Chat capability sync — adopt Settings→Capabilities edits
             # (skills/toolsets/MCP/SOUL) into the eternal bot session before
             # the turn runs. No-op for every other session shape.

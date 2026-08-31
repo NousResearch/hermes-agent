@@ -2,6 +2,27 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
+/**
+ * User-friendly step label from browser_exec code's leading `# …` comment.
+ * Mirrors agent/display.py:_browser_exec_step_label (CLI/TUI) so every
+ * surface derives the same label from the same convention.
+ */
+export function browserExecStepLabel(code: string, maxChars = 80): null | string {
+  const first = code.trim().split('\n', 1)[0]?.trim() ?? ''
+
+  if (!first.startsWith('#')) {
+    return null
+  }
+
+  const label = first.replace(/^#+/, '').trim()
+
+  if (!label) {
+    return null
+  }
+
+  return label.length > maxChars ? `${label.slice(0, maxChars - 1)}…` : label
+}
+
 export function compactPreview(value: unknown, max = 72): string {
   let raw: unknown
 

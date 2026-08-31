@@ -148,6 +148,26 @@ class TestMessageProjection:
 
         assert _is_compressed_summary_message(message) is False
 
+    def test_typed_legacy_tool_carrier_is_hidden_without_prefix_heuristic(self):
+        leaked = '[Tool result call_legacy]: {"output":"SYNTHETIC_PRIVATE"}'
+        message = _row(
+            "assistant",
+            leaked,
+            display_kind="hidden",
+            display_metadata={
+                "legacy_tool_carrier_quarantine": {
+                    "schema": "LegacyToolCarrierQuarantineV1",
+                    "original_content_sha256": "a" * 64,
+                }
+            },
+        )
+
+        assert project_compaction_message_for_display(message) is None
+
+        # Text alone is never authority to hide a user-facing message.
+        lookalike = _row("assistant", leaked)
+        assert project_compaction_message_for_display(lookalike) == lookalike
+
 
 class TestSummaryRecognizer:
     @pytest.mark.parametrize(

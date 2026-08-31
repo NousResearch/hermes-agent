@@ -38,6 +38,7 @@ from agent.skill_utils import is_excluded_skill_path
 logger = logging.getLogger(__name__)
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_SPECIALIST_DESCRIPTOR_REF_RE = re.compile(r"^specialist-descriptor:[0-9a-f]{64}$")
 _WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile
@@ -992,6 +993,84 @@ def get_role_contract_ref(profile_name: str, role_id: str) -> Optional[str]:
         return None
 
 
+def _strict_profile_metadata_for_binding(profile_name: str) -> tuple[str, Path, Path, dict, dict]:
+    """Load the one profile metadata object a descriptor binding may mutate."""
+    canon = normalize_profile_name(profile_name)
+    profile_dir = get_profile_dir(canon)
+    if not profile_exists(canon):
+        raise FileNotFoundError(f"Profile '{canon}' does not exist.")
+    path = _profile_yaml_path(profile_dir)
+    try:
+        import yaml
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except Exception as exc:
+        raise ValueError("PROFILE_METADATA_UNREADABLE") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError("PROFILE_METADATA_INVALID")
+    raw_refs = loaded.get("role_contract_refs", {})
+    if not isinstance(raw_refs, dict):
+        raise ValueError("PROFILE_METADATA_INVALID")
+    return canon, profile_dir, path, loaded, dict(raw_refs)
+
+
+def _validate_specialist_descriptor_ref(descriptor_ref: str) -> str:
+    cleaned = str(descriptor_ref or "").strip()
+    if not _SPECIALIST_DESCRIPTOR_REF_RE.fullmatch(cleaned):
+        raise ValueError("INVALID_SPECIALIST_DESCRIPTOR_REF")
+    return cleaned
+
+
+def set_specialist_descriptor_ref(
+    profile_name: str,
+    descriptor_ref: str,
+    *,
+    expected_current: Optional[str] = None,
+) -> str:
+    """Atomically attach a new disabled-specialist descriptor pointer.
+
+    This is a compare-and-swap update over exactly
+    ``role_contract_refs.specialist-v1``. It never reads descriptor bytes,
+    profile config, or credentials, and it refuses to silently replace an
+    existing pointer.
+    """
+    descriptor_ref = _validate_specialist_descriptor_ref(descriptor_ref)
+    expected = (
+        _validate_specialist_descriptor_ref(expected_current)
+        if expected_current is not None
+        else None
+    )
+    _canon, _profile_dir, path, metadata, refs = _strict_profile_metadata_for_binding(profile_name)
+    current = refs.get("specialist-v1")
+    if current != expected:
+        raise ValueError("SPECIALIST_DESCRIPTOR_BINDING_CONFLICT")
+    refs["specialist-v1"] = descriptor_ref
+    metadata["role_contract_refs"] = dict(sorted(refs.items()))
+    from utils import atomic_yaml_write
+    atomic_yaml_write(path, metadata, sort_keys=False)
+    return descriptor_ref
+
+
+def get_specialist_descriptor_ref(profile_name: str) -> Optional[str]:
+    """Return the valid profile-owned specialist descriptor pointer, if present."""
+    ref = get_role_contract_ref(profile_name, "specialist-v1")
+    return ref if isinstance(ref, str) and _SPECIALIST_DESCRIPTOR_REF_RE.fullmatch(ref) else None
+
+
+def clear_specialist_descriptor_ref(profile_name: str, expected_current: str) -> None:
+    """Atomically remove only an exactly matched specialist descriptor pointer."""
+    expected = _validate_specialist_descriptor_ref(expected_current)
+    _canon, _profile_dir, path, metadata, refs = _strict_profile_metadata_for_binding(profile_name)
+    if refs.get("specialist-v1") != expected:
+        raise ValueError("SPECIALIST_DESCRIPTOR_BINDING_CONFLICT")
+    refs.pop("specialist-v1")
+    if refs:
+        metadata["role_contract_refs"] = dict(sorted(refs.items()))
+    else:
+        metadata.pop("role_contract_refs", None)
+    from utils import atomic_yaml_write
+    atomic_yaml_write(path, metadata, sort_keys=False)
+
+
 def format_profile_label(name: str, display_name: Optional[str]) -> str:
     """Render a profile for display: ``display_name (canonical_id)``.
 
@@ -1308,10 +1387,11 @@ def create_profile(
         except OSError:
             pass  # best-effort — save_env_value creates the file on demand
 
-    # Seed a default SOUL.md so the user has a file to customize immediately.
-    # Skipped when the profile already has one (from --clone / --clone-all).
+    # Seed the Ares default SOUL.md so every freshly-created profile/bot has
+    # the same custom baseline identity. Skipped when the profile already has
+    # user-authored content (from --clone / --clone-all).
     soul_path = profile_dir / "SOUL.md"
-    if not soul_path.exists() and os.environ.get("ARES_MANAGED_RUNTIME") != "1":
+    if not soul_path.exists():
         try:
             from hermes_cli.default_soul import DEFAULT_SOUL_MD
             soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")

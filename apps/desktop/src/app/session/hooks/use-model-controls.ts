@@ -5,8 +5,9 @@ import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
+import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { manualPickRemoved, modelOptionsQueryKey } from '@/lib/model-options'
-import { dismissNotification, notify, notifyError } from '@/store/notifications'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -282,63 +283,37 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         }
       }
 
-      let confirmNotificationId: string | null = null
-
-      const applyConfirmedSwitch = async () => {
-        // Staleness guard — the warning can linger while the user picks a
-        // different model or switches sessions. Clicking Confirm must not
-        // clobber the newer choice: bail and dismiss if the live state no
-        // longer matches the snapshot this notification was created for.
-        const isStale = touchesPrimary
-          ? $activeSessionId.get() !== liveSessionId ||
-            $currentModel.get() !== prevModel ||
-            $currentProvider.get() !== prevProvider
-          : !liveSessionId ||
-            $sessionStates.get()[liveSessionId]?.model !== prevModel ||
-            $sessionStates.get()[liveSessionId]?.provider !== prevProvider
-
-        if (isStale) {
-          if (confirmNotificationId) {
-            dismissNotification(confirmNotificationId)
-          }
-
-          return
-        }
-
-        if (confirmNotificationId) {
-          dismissNotification(confirmNotificationId)
-        }
-
-        paintSelection()
-        cacheSelection(selection.provider, selection.model)
-
-        try {
-          const result = await requestSwitch(true)
-
-          if (result?.confirm_required) {
-            throw new Error(result.confirm_message?.trim() || copy.modelSwitchFailed)
-          }
-
-          finishSwitch(result)
-        } catch (err) {
-          rollbackSelection()
-          notifyError(err, copy.modelSwitchFailed)
-        }
-      }
-
       try {
         const result = await requestSwitch()
 
         if (result?.confirm_required) {
           rollbackSelection()
-          confirmNotificationId = notify({
-            action: {
-              label: t.common.confirm,
-              onClick: applyConfirmedSwitch
+          // ONE shared applier for guarded switches (#95293): the same
+          // confirm flow the Bots editor routes through — never fork this
+          // logic per surface.
+          surfaceModelSwitchConfirm({
+            confirmLabel: t.common.confirm,
+            confirmMessage: result.confirm_message,
+            failureMessage: copy.modelSwitchFailed,
+            finish: finishSwitch,
+            // Staleness guard — the warning can linger while the user picks
+            // a different model or switches sessions. Clicking Confirm must
+            // not clobber the newer choice: bail if the live state no longer
+            // matches the snapshot this notification was created for.
+            isStale: () =>
+              touchesPrimary
+                ? $activeSessionId.get() !== liveSessionId ||
+                  $currentModel.get() !== prevModel ||
+                  $currentProvider.get() !== prevProvider
+                : !liveSessionId ||
+                  $sessionStates.get()[liveSessionId]?.model !== prevModel ||
+                  $sessionStates.get()[liveSessionId]?.provider !== prevProvider,
+            repaint: () => {
+              paintSelection()
+              cacheSelection(selection.provider, selection.model)
             },
-            kind: 'warning',
-            message: result.confirm_message?.trim() || 'Confirm this model switch?',
-            title: t.common.confirm
+            requestConfirmed: () => requestSwitch(true),
+            rollback: rollbackSelection
           })
 
           return false

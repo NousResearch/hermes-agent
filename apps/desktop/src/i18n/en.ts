@@ -813,6 +813,24 @@ export const en: Translations = {
       cancel: 'Cancel',
       empty: 'No connections registered yet.'
     },
+    managedUpdates: {
+      title: 'Managed updates',
+      intro:
+        'Update Desktop-managed SSH installs transactionally: sessions drain, the remote checkout updates, and every profile is restored with a correlated receipt.',
+      sshConnection: 'Desktop-managed SSH install',
+      update: 'Update',
+      updating: 'Updating…',
+      progress: 'Draining sessions, updating the remote install, and restoring profiles…',
+      updated: 'Updated',
+      partial: 'Updated — restore failed',
+      refused: 'Refused',
+      failed: 'Update failed',
+      alreadyRunning: 'Update already in progress',
+      receipt: (id: string, outcome: string) => `Receipt ${id} · ${outcome}`,
+      receiptVersions: (pre: string, post: string) => `${pre} → ${post}`,
+      scopesRestored: (profiles: string) => `Restored profiles: ${profiles}`,
+      scopeNotRestored: (profile: string, error: string) => `Profile “${profile}” not restored: ${error}`
+    },
     gateway: {
       loading: 'Loading gateway settings...',
       unavailableTitle: 'Gateway settings unavailable',
@@ -3390,6 +3408,10 @@ export const en: Translations = {
     editFailed: 'Edit failed',
     editTurnUnavailable: 'This turn is no longer in server history (it may have been compressed away).',
     resumeFailed: 'Resume failed',
+    readOnlyTranscriptTitle: 'Opened read-only',
+    readOnlyTranscriptBody:
+      'No connected backend claims this older chat yet, so it opened as a read-only transcript. Its history is intact; sending is disabled until a backend claims it.',
+    readOnlyTranscriptSendBlocked: 'This chat is open as a read-only transcript — sending is disabled.',
     resumeStrandedTitle: "Couldn't load this session",
     resumeStrandedBody:
       'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',

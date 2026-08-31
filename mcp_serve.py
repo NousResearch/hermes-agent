@@ -760,10 +760,15 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer"
             return json.dumps({"error": error})
 
         filtered = []
+        from agent.compaction_display import project_compaction_message_for_display
+
         for msg in all_messages:
-            role = msg.get("role", "")
+            projected = project_compaction_message_for_display(msg)
+            if projected is None or projected.get("display_kind") == "hidden":
+                continue
+            role = projected.get("role", "")
             if role in {"user", "assistant"}:
-                content = _extract_message_content(msg)
+                content = _extract_message_content(projected)
                 if content:
                     filtered.append({
                         "id": str(msg.get("id", "")),
@@ -820,7 +825,13 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer"
         if not target_msg:
             return json.dumps({"error": f"Message not found: {message_id}"})
 
-        attachments = _extract_attachments(target_msg)
+        from agent.compaction_display import project_compaction_message_for_display
+
+        projected = project_compaction_message_for_display(target_msg)
+        if projected is None or projected.get("display_kind") == "hidden":
+            return json.dumps({"error": f"Message not found: {message_id}"})
+
+        attachments = _extract_attachments(projected)
 
         return json.dumps({
             "message_id": message_id,

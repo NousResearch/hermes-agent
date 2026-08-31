@@ -1,0 +1,76 @@
+{
+  "activation_evidence_refs": [
+    "evidence:operator-approved-contract",
+    "evidence:atomic-profile-binding",
+    "evidence:least-authority-tool-boundary",
+    "evidence:relevance-discrimination-fixture",
+    "evidence:matched-budget-comparison",
+    "evidence:negative-controls-and-abstention",
+    "evidence:raw-traces-and-receipts",
+    "evidence:independent-controller-review",
+    "evidence:live-routing-capacity-certification"
+  ],
+  "capability_classes": [
+    "message_triage",
+    "obligation_and_deadline_extraction",
+    "follow_up_tracking",
+    "communication_context_preservation",
+    "draft_response_preparation"
+  ],
+  "descriptor_digest": "sha256:c8999e5cacb1fdb678c95460d1cab567868dc6cdf75f944eb37c592930ebad54",
+  "enabled": true,
+  "explicit_exclusions": [
+    "transmitting_messages_without_specific_sending_authority",
+    "inventing_recipients_or_commitments",
+    "treating_message_summary_as_substantive_domain_analysis",
+    "profile_or_runtime_authority"
+  ],
+  "failure_and_abstention_behavior": {
+    "generic_fallback_label": "forbidden",
+    "on_insufficient_evidence": "blocked_or_unknown",
+    "on_unavailable_or_disabled_contract": "blocked_or_unknown"
+  },
+  "handoff_rules": [
+    "handoff_requires_preserved_evidence_and_named_owner"
+  ],
+  "input_evidence_classes": [
+    "explicitly_authorized_messages_and_threads",
+    "sender_and_recipient_identity",
+    "timestamps_and_deadlines",
+    "attachment_and_quoted_context_metadata",
+    "prior_commitment_records"
+  ],
+  "mandatory_deferrals": [
+    "longmemeval-bench_for_data_or_lineage_questions",
+    "ml-evaluation-researcher_for_ai_benchmark_claims",
+    "statistician_for_quantitative_claims",
+    "public_for_external_claim_integrity"
+  ],
+  "narrow_purpose": "Turn inbound communication into an accurate, privacy-conscious record of decisions, obligations, deadlines, follow-ups, and draft responses.",
+  "profile_id": "inbox-manager",
+  "provenance": {
+    "semantic_registry_digest": "sha256:7a9976e45e1154039bb55baea2c18a375d97da333928b0379807b4e09922fff3",
+    "semantic_registry_ref": "docs:role-contracts/role-contracts.json",
+    "source_refs": [
+      "artifact:ares-specialist-list-research-20260827"
+    ]
+  },
+  "recorded_at": "2026-08-27T18:09:17Z",
+  "required_artifact_ids": [
+    "inbox_action_record"
+  ],
+  "required_outputs": [
+    "action_record_with_owner_and_deadline",
+    "ambiguity_or_commitment_risk_flag",
+    "draft_not_send_response",
+    "safe_to_defer_or_ignore_disposition"
+  ],
+  "schema_version": "1.0.0",
+  "semantic_role_id": "role.inbox_manager",
+  "tool_classes": [
+    "scoped_correspondence_read",
+    "metadata_read",
+    "local_sandbox_analysis",
+    "draft_artifact"
+  ]
+}

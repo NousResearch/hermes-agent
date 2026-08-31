@@ -76,6 +76,65 @@ def test_matching_next_run_still_fires(temp_home, monkeypatch):
     assert jid in [j["id"] for j in due]
 
 
+def test_manual_trigger_bypasses_stale_schedule_guard(temp_home, monkeypatch):
+    """An explicit run-now instant need not occur in the cron expression."""
+    from cron.jobs import create_job, get_due_jobs, get_job, mark_job_run, trigger_job
+
+    now = _SATURDAY_0700 + timedelta(seconds=30)
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    job = create_job(prompt="x", schedule="0 7 * * 1-5", name="manual")
+
+    triggered = trigger_job(job["id"])
+    due = get_due_jobs()
+
+    assert triggered is not None
+    assert job["id"] in [candidate["id"] for candidate in due]
+    assert triggered["manual_run_at"] == triggered["next_run_at"]
+
+    mark_job_run(job["id"], success=True)
+
+    assert "manual_run_at" not in get_job(job["id"])
+
+
+def test_delayed_manual_trigger_is_not_counted_as_catch_up(temp_home, monkeypatch):
+    """Run-now intent remains explicit even when the next scan is hours later."""
+    from cron.jobs import (
+        create_job,
+        get_catch_up_occurrence_count,
+        get_due_jobs,
+        trigger_job,
+    )
+
+    trigger_time = _SATURDAY_0700 + timedelta(seconds=30)
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: trigger_time)
+    job = create_job(prompt="x", schedule="0 7 * * 1-5", name="delayed")
+    trigger_job(job["id"])
+    monkeypatch.setattr(
+        "cron.jobs._hermes_now", lambda: trigger_time + timedelta(hours=5)
+    )
+
+    due = get_due_jobs()
+
+    assert job["id"] in [candidate["id"] for candidate in due]
+    assert get_catch_up_occurrence_count() == 0
+
+
+def test_manual_trigger_survives_timezone_change_before_tick(temp_home, monkeypatch):
+    """TZ migration repair must not replace an explicit run-now instant."""
+    from cron.jobs import create_job, get_due_jobs, trigger_job
+
+    trigger_time = datetime.fromisoformat("2026-08-22T21:00:00+10:00")
+    scan_time = datetime.fromisoformat("2026-08-22T13:00:00+02:00")
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: trigger_time)
+    job = create_job(prompt="x", schedule="0 7 * * 1-5", name="tz-manual")
+    trigger_job(job["id"])
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: scan_time)
+
+    due = get_due_jobs()
+
+    assert job["id"] in [candidate["id"] for candidate in due]
+
+
 def test_stale_next_run_skips_even_inside_catchup_window(temp_home, monkeypatch):
     """The catch-up 'run once now' policy must not resurrect a stale instant:
     hours after the stored time, the drifted job re-anchors without firing."""
@@ -112,3 +171,25 @@ def test_helper_reports_match_for_non_cron_and_unvalidatable(temp_home):
         )
         is False
     )
+
+
+def test_stale_edit_without_manual_marker_still_reanchors(temp_home, monkeypatch):
+    """#93049 protection intact after the #94010 fix: a hand-edited stale
+    next_run_at WITHOUT the manual_run_at marker still re-anchors without
+    firing (carried from #94034's suite)."""
+    from cron.jobs import get_due_jobs, get_job
+
+    monkeypatch.setattr(
+        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(minutes=5)
+    )
+    jid = _write_cron_job("0 7 * * 1-5", _SATURDAY_0700)
+
+    stored_before = get_job(jid)
+    assert "manual_run_at" not in stored_before
+
+    due = get_due_jobs()
+
+    assert [j["id"] for j in due if j["id"] == jid] == []
+    after = get_job(jid)
+    assert after["next_run_at"] != _SATURDAY_0700.isoformat()
+    assert "manual_run_at" not in after

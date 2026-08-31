@@ -1,6 +1,7 @@
 """Tests for hermes_cli configuration management."""
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +27,7 @@ from hermes_cli.config import (
     save_env_value_secure,
     sanitize_env_file,
     set_config_value,
+    unset_config_value,
     write_platform_config_field,
     _sanitize_env_lines,
 )
@@ -36,7 +38,18 @@ class TestGetHermesHome:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".ares"
+            if sys.platform == "win32":
+                # Ares owns its managed default under %LOCALAPPDATA%\ares.
+                # hermes_constants._get_platform_default_hermes_home.
+                local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+                base = (
+                    Path(local_appdata)
+                    if local_appdata
+                    else Path.home() / "AppData" / "Local"
+                )
+                assert home == base / "ares"
+            else:
+                assert home == Path.home() / ".ares"
 
 
 class TestEnsureHermesHome:
@@ -49,13 +62,15 @@ class TestEnsureHermesHome:
             assert soul_path.exists()
             assert soul_path.read_text(encoding="utf-8").strip() != ""
 
-    def test_managed_runtime_does_not_seed_default_soul_md(self, tmp_path):
+    def test_managed_runtime_seeds_ares_default_soul_md(self, tmp_path):
+        from hermes_cli.default_soul import ARES_DEFAULT_SOUL_MD
+
         with patch.dict(
             os.environ,
             {"HERMES_HOME": str(tmp_path), "ARES_MANAGED_RUNTIME": "1"},
         ):
             ensure_hermes_home()
-            assert not (tmp_path / "SOUL.md").exists()
+            assert (tmp_path / "SOUL.md").read_text(encoding="utf-8") == ARES_DEFAULT_SOUL_MD
 
 
     def test_upgrades_legacy_template_soul_md(self, tmp_path, monkeypatch):
@@ -71,18 +86,17 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
 
-    def test_managed_runtime_preserves_existing_legacy_soul_md(self, tmp_path):
-        from hermes_cli.default_soul import _LEGACY_TEMPLATE_SOULS
+    def test_managed_runtime_upgrades_existing_legacy_soul_md(self, tmp_path):
+        from hermes_cli.default_soul import ARES_DEFAULT_SOUL_MD, _LEGACY_TEMPLATE_SOULS
 
         with patch.dict(
             os.environ,
             {"HERMES_HOME": str(tmp_path), "ARES_MANAGED_RUNTIME": "1"},
         ):
             soul_path = tmp_path / "SOUL.md"
-            original = _LEGACY_TEMPLATE_SOULS[0] + "\n"
-            soul_path.write_text(original, encoding="utf-8")
+            soul_path.write_text(_LEGACY_TEMPLATE_SOULS[0] + "\n", encoding="utf-8")
             ensure_hermes_home()
-            assert soul_path.read_text(encoding="utf-8") == original
+            assert soul_path.read_text(encoding="utf-8") == ARES_DEFAULT_SOUL_MD
 
     def test_managed_runtime_preserves_existing_custom_soul_md(self, tmp_path):
         with patch.dict(
@@ -288,6 +302,106 @@ class TestSaveAndLoadRoundtrip:
 
 
 
+
+
+    def test_config_set_refuses_to_overwrite_unparseable_existing_config(self, tmp_path):
+        """Unparseable YAML must not be replaced with a single-key document.
+
+        Regression for the set/unset wipe class: a bare except around YAML
+        load used to treat parse failure as {}, then atomic-write only the
+        new key — destroying every prior override with no .corrupt backup.
+        """
+        config_path = tmp_path / "config.yaml"
+        original = (
+            "model:\n"
+            "  default: claude-opus\n"
+            "  provider: anthropic\n"
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "broken: [unterminated\n"
+        )
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="not valid YAML"):
+                set_config_value("model.default", "gpt-4o")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+            "parse-failure path should snapshot a corrupt backup before refusing"
+        )
+
+    def test_config_unset_refuses_to_overwrite_unparseable_existing_config(self, tmp_path):
+        """Unset must refuse the same way — env-sync paths used to write {}."""
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  default: keep-me\nbroken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+        (tmp_path / ".env").write_text("TERMINAL_TIMEOUT=30\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="not valid YAML"):
+                unset_config_value("terminal.timeout")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert (tmp_path / ".env").read_text(encoding="utf-8") == "TERMINAL_TIMEOUT=30\n"
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+            "unset parse-failure path should snapshot a corrupt backup before refusing"
+        )
+
+    def test_config_set_refuses_non_mapping_root(self, tmp_path):
+        """A list/scalar root parses without raising but would still wipe."""
+        config_path = tmp_path / "config.yaml"
+        original = "- just\n- a\n- list\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="must be a mapping"):
+                set_config_value("model.default", "gpt-4o")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+            "non-mapping root should snapshot a corrupt backup before refusing"
+        )
+
+    def test_config_unset_refuses_non_mapping_root(self, tmp_path):
+        """Unset shares the same non-mapping refuse path as set."""
+        config_path = tmp_path / "config.yaml"
+        original = "- just\n- a\n- list\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="must be a mapping"):
+                unset_config_value("model.default")
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+
+    def test_config_set_allows_valid_empty_mapping(self, tmp_path):
+        """A genuine empty {} config must still be writable (not a false refuse)."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("{}\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            set_config_value("model.default", "gpt-4o")
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved == {"model": {"default": "gpt-4o"}}
+
+    def test_atomic_config_write_refuses_unparseable_existing_config(self, tmp_path):
+        """Shared chokepoint must refuse unparseable YAML, not only unreadable."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        original = "broken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="not valid YAML"):
+            atomic_config_write(config_path, {"model": {"provider": "openai"}})
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
 class TestSaveEnvValueSecure:
 
@@ -1633,3 +1747,50 @@ def test_default_config_has_no_duplicate_top_level_keys():
             if "model" in keys and "kanban" in keys:  # the DEFAULT_CONFIG literal
                 dupes = {k for k in keys if keys.count(k) > 1}
                 assert not dupes, f"duplicate DEFAULT_CONFIG keys: {sorted(dupes)}"
+
+
+class TestConfigCommandFailClosedSurface:
+    """`hermes config set/unset` must exit cleanly (no traceback) when the
+    fail-closed write guard refuses an unparseable config.yaml."""
+
+    def _args(self, **kw):
+        import argparse
+
+        ns = argparse.Namespace()
+        for k, v in kw.items():
+            setattr(ns, k, v)
+        return ns
+
+    def test_config_command_set_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
+        from hermes_cli.config import config_command
+
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  default: keep\nbroken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(SystemExit) as excinfo:
+                config_command(
+                    self._args(config_command="set", key="model.default",
+                               value="gpt-4o", force=False)
+                )
+
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "not valid YAML" in err
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_config_command_unset_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
+        from hermes_cli.config import config_command
+
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  default: keep\nbroken: [unterminated\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(SystemExit) as excinfo:
+                config_command(self._args(config_command="unset", key="model.default"))
+
+        assert excinfo.value.code == 1
+        assert "not valid YAML" in capsys.readouterr().err
+        assert config_path.read_text(encoding="utf-8") == original

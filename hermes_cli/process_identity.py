@@ -53,7 +53,7 @@ LEDGER_FILENAME = "spawn-ledger.json"
 
 #: Purposes a reaper may treat as "safe to kill when the owner is gone".
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
-REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway"})
+REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway", "mcp-helper"})
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -298,6 +298,17 @@ def register_self(
     except Exception:
         pass
 
+    return _append_entry(entry)
+
+
+def _append_entry(entry: LedgerEntry) -> bool:
+    """Prune dead entries and append ``entry`` — the ONLY ledger write path.
+
+    Serialized under ``_LEDGER_LOCK`` with an atomic tmp+replace, exactly as
+    ``register_self`` has always written (kept single so #91660's lock-
+    serialization guarantees hold: no writer ever touches the file outside
+    this function).
+    """
     path = _ledger_path()
     with _LEDGER_LOCK:
         entries = _read_ledger(path)
@@ -323,6 +334,60 @@ def register_self(
         except OSError:
             logger.debug("spawn ledger write failed", exc_info=True)
             return False
+
+
+def register_child(
+    pid: int,
+    purpose: str,
+    *,
+    project_root: Optional[Path] = None,
+) -> bool:
+    """Record a CHILD process this process just spawned. Best-effort.
+
+    Mirror of :func:`register_self` for children that cannot register
+    themselves (stdio MCP helper subprocesses, #61514: arbitrary
+    ``npx``/binary servers never import Hermes code). The entry records the
+    child's ``(pid, create_time)`` with THIS process as the spawner, so
+    reapers get the same positive-identity contract:
+
+    - a live helper whose spawner is still alive is never reaped
+      (``spawner_is_dead`` → ``False``);
+    - a helper whose spawner ``(pid, create_time)`` is provably gone is a
+      reapable orphan.
+
+    Never raises; returns ``False`` when the child already exited (no
+    provable ``create_time`` means no forge-proof identity — don't record a
+    pid-only entry a reuse could impersonate) or the write failed.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        import psutil
+
+        child_create: Optional[float] = float(psutil.Process(pid).create_time())
+    except Exception:
+        return False
+    entry = LedgerEntry(
+        pid=pid,
+        create_time=child_create,
+        purpose=purpose,
+        install=install_id(project_root),
+        spawner_pid=os.getpid(),
+        spawner_create=_own_create_time(),
+        registered_at=time.time(),
+        argv="",
+    )
+    try:
+        import psutil
+
+        entry.argv = " ".join(psutil.Process(pid).cmdline()[:10])
+    except Exception:
+        pass
+    return _append_entry(entry)
 
 
 def ledger_entries(*, project_root: Optional[Path] = None) -> list[dict]:
@@ -367,6 +432,66 @@ def spawner_is_dead(entry: dict) -> Optional[bool]:
     if alive is None:
         return None
     return not alive
+
+
+def reap_orphaned_mcp_helpers(
+    *,
+    project_root: Optional[Path] = None,
+    kill_fn=None,
+) -> list[int]:
+    """Kill ledger-registered stdio MCP helpers whose spawner is provably dead.
+
+    Startup-sweep rung mirroring ``_reap_orphaned_desktop_local_serves``
+    (dashboard_procs.py), but ledger-driven instead of cmdline-heuristic:
+    a helper is reaped ONLY when
+
+    - it has a live ``(pid, create_time)`` ledger entry for THIS install with
+      purpose ``mcp-helper`` (``ledger_entries`` already excludes dead/
+      foreign entries), and
+    - its recorded spawner is **provably dead** (``spawner_is_dead`` is
+      ``True`` — never ``None``/unprovable, never a live spawner).
+
+    Best-effort, never raises; returns the PIDs it terminated. ``kill_fn``
+    is injectable for tests (defaults to psutil terminate→wait→kill).
+    """
+    reaped: list[int] = []
+    try:
+        entries = ledger_entries(project_root=project_root)
+    except Exception:
+        return reaped
+    own_pid = os.getpid()
+    for entry in entries:
+        try:
+            if entry.get("purpose") != "mcp-helper":
+                continue
+            pid = entry.get("pid")
+            if not isinstance(pid, int) or pid <= 0 or pid == own_pid:
+                continue
+            if spawner_is_dead(entry) is not True:
+                continue  # live or unprovable spawner → never touch
+            if kill_fn is not None:
+                kill_fn(pid)
+            else:
+                import psutil
+
+                proc = psutil.Process(pid)
+                # Re-verify identity at the moment of kill (PID-reuse guard).
+                create = entry.get("create_time")
+                if create is not None and abs(
+                    float(proc.create_time()) - float(create)
+                ) >= 2.0:
+                    continue
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2.0)
+                except psutil.TimeoutExpired:
+                    proc.kill()
+            reaped.append(pid)
+        except Exception:
+            logger.debug("mcp-helper orphan reap failed for %s", entry, exc_info=True)
+    if reaped:
+        logger.info("reaped %d orphaned stdio MCP helper(s): %s", len(reaped), reaped)
+    return reaped
 
 
 # ---------------------------------------------------------------------------

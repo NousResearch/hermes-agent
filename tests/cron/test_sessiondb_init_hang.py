@@ -345,3 +345,38 @@ class TestLateSessionDbClosedAfterTimeout:
             "The SessionDB that completed after the timeout must be closed by "
             "the done-callback — otherwise its SQLite FDs leak until process exit (#72782)"
         )
+
+
+# ===========================================================================
+# #96290: gated runs must not open the session store at all
+# ===========================================================================
+
+class TestSessionDbInitAfterEarlyReturns:
+    """SessionDB init moved AFTER the wake-gate / prompt-validation early
+    returns (#96290): a run that never reaches the agent must never open
+    state.db, so there is no handle for a gated return path to abandon."""
+
+    def test_wake_gate_false_never_opens_session_db(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_SESSION_DB_TIMEOUT", raising=False)
+        job = {
+            "id": "gated-no-db",
+            "name": "gated-no-db",
+            "prompt": "hello",
+            "script": "gate.py",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB") as mock_db_cls, \
+             patch(
+                 "cron.scheduler._run_job_script_with_claim_heartbeat",
+                 return_value=(True, '{"wakeAgent": false}'),
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        mock_db_cls.assert_not_called()
+        mock_agent_cls.assert_not_called()

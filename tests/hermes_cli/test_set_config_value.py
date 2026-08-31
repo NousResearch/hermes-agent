@@ -749,28 +749,30 @@ class TestMalformedYAMLConfigPreservation:
         (home / "config.yaml").write_text(self.BROKEN_CONFIG)
 
     def test_set_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
-        """set_config_value must exit with error, not overwrite the broken config."""
+        """set_config_value must raise, not overwrite the broken config."""
         self._write_broken_config(_isolated_hermes_home)
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(RuntimeError, match="not valid YAML"):
             set_config_value("agent.max_turns", "50")
 
         captured = capsys.readouterr()
-        assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
+        combined = captured.out + captured.err
+        assert "Failed to parse" in combined or "not valid YAML" in combined
         # Original config must remain intact
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG, f"Config was overwritten:\n{raw}"
 
     def test_unset_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
-        """unset_config_value must exit with error, not overwrite the broken config."""
+        """unset_config_value must raise, not overwrite the broken config."""
         from hermes_cli.config import unset_config_value
 
         self._write_broken_config(_isolated_hermes_home)
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(RuntimeError, match="not valid YAML"):
             unset_config_value("model")
 
         captured = capsys.readouterr()
-        assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
+        combined = captured.out + captured.err
+        assert "Failed to parse" in combined or "not valid YAML" in combined
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG

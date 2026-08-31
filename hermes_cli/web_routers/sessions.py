@@ -26,6 +26,7 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
     BulkDeleteSessions,
     SessionImport,
+    SessionOwnerBackfill,
     SessionPrune,
     SessionRename,
 )
@@ -491,11 +492,16 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
 
 @manage_router.delete("/api/sessions/empty")
 async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
-    """Delete every empty (``message_count == 0``), ended,
-    non-archived session in a single transaction.
+    """Delete every empty, ended, non-archived session in a single
+    transaction.
 
     Safety contract mirrors :meth:`SessionDB.delete_empty_sessions`:
 
+    * "Empty" means the session owns no rows in ``messages`` at all — not
+      merely ``message_count == 0``. A rewound or in-place-compacted chat
+      keeps its dropped turns as soft-archived (``active = 0``) rows while
+      the counter reads zero, and those rows are the only recoverable copy
+      of the transcript (#95868).
     * Active sessions are skipped (``ended_at IS NULL``) so a live
       agent isn't yanked mid-handshake.
     * Archived sessions are skipped — the user explicitly chose to
@@ -647,15 +653,24 @@ async def get_session_messages(
 
     projected_messages = []
     for message in messages:
-        if not is_compaction_summary_message(message):
-            projected_messages.append(message)
-            continue
         display_view = project_compaction_message_for_display(message)
         projected = message.copy()
         if display_view is None:
+            # Applies to both compaction handoffs and explicitly quarantined
+            # legacy tool carriers. The durable row remains available to an
+            # authorized export path; this endpoint is a display projection.
             if not projected.get("display_kind"):
                 projected["display_kind"] = "hidden"
-        else:
+            metadata = projected.get("display_metadata")
+            if isinstance(metadata, dict) and isinstance(
+                metadata.get("legacy_tool_carrier_quarantine"), dict
+            ):
+                # A legacy raw carrier has no displayable tail. Unlike ordinary
+                # compaction handoffs, returning its physical content here
+                # would still transmit tool bytes to the desktop before its
+                # renderer observes ``display_kind=hidden``.
+                projected["content"] = ""
+        elif is_compaction_summary_message(message):
             # Keep the physical content for inspection/export compatibility;
             # Desktop consumes this display-only projection. A legacy hidden
             # wrapper must not hide a successfully recovered live ask.
@@ -700,6 +715,51 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
             db.close()
 
     return await asyncio.to_thread(_delete)
+
+
+@manage_router.post("/api/sessions/owner-backfill")
+async def backfill_session_owner_profiles(body: SessionOwnerBackfill):
+    """Stamp legacy ``profile_name = NULL`` session rows with this store's own
+    serving-profile identity (#94724 legacy-session migration).
+
+    Pre-#95407 rows never recorded an owning profile. That was fine while one
+    backend served everything, but a Desktop with registry topology (≥2
+    registered connections) fails closed on unowned rows by design — leaving
+    every pre-campaign session unresumable with no migration path. Each
+    profile's ``state.db`` belongs to exactly one profile, so stamping that
+    store's own name is a single-match backfill, never a guess; the value
+    written is the SAME serving-profile identity the list endpoints already
+    stamp onto outgoing rows (``row_profile`` in ``get_sessions``). Idempotent
+    and one-shot-per-row: non-NULL owners are never overwritten and a second
+    call reports 0.
+    """
+    profile_name: Optional[str] = None
+    if body.profile:
+        profile_name, _ = _cron_profile_home(body.profile)
+    stamp = profile_name or _cron_default_profile()
+
+    def _backfill():
+        db = _open_session_db_for_profile(body.profile, read_only=False)
+        try:
+            return db.backfill_null_session_profiles(stamp)
+        finally:
+            db.close()
+
+    try:
+        stamped = await asyncio.to_thread(_backfill)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/sessions/owner-backfill failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    if stamped:
+        _log.info(
+            "owner-backfill: stamped %d legacy NULL-profile session row(s) with profile %r",
+            stamped,
+            stamp,
+        )
+    return {"ok": True, "stamped": stamped, "profile": stamp}
 
 
 @manage_router.patch("/api/sessions/{session_id}")

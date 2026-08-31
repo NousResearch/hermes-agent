@@ -545,6 +545,26 @@ class TestSequentialToolTimeoutResolver:
 # ---------------------------------------------------------------------------
 
 
+def test_suspectable_backend_name_is_not_shadowed():
+    """`agent.deadline.SuspectableBackend` must resolve to the Phase 3a
+    Protocol (sync `ensure_healthy(self) -> bool`), not a second, unrelated
+    `class SuspectableBackend` defined later in the module. A later Phase 3b
+    adopter independently redefined the same name as a concrete async class
+    (`ensure_healthy(self, timeout=5.0)`), which silently shadowed the
+    Protocol at module scope — nothing subclasses or imports either by name
+    today, so the collision caused no runtime breakage yet, but it would
+    hand the wrong (and differently-shaped) type to the next `from
+    agent.deadline import SuspectableBackend` consumer.
+    """
+    import inspect
+
+    from agent.deadline import SuspectableBackend
+
+    assert getattr(SuspectableBackend, "_is_protocol", False) is True
+    assert not inspect.iscoroutinefunction(SuspectableBackend.ensure_healthy)
+    assert "timeout" not in inspect.signature(SuspectableBackend.ensure_healthy).parameters
+
+
 class _RecordingBackend:
     """Minimal SuspectableBackend: records mark_suspect calls."""
 

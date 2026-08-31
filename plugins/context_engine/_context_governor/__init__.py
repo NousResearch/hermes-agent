@@ -24,6 +24,11 @@ from tempfile import TemporaryDirectory
 from typing import Any, Dict, List, Optional
 
 from agent.context_engine import ContextEngine
+from agent.message_sanitization import (
+    coalesce_tool_call_id,
+    tool_call_id_variants,
+    tool_result_id_variants,
+)
 from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 from plugins.context_engine._context_governor.key_state import (
@@ -1316,7 +1321,12 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
                     "compact-v2 returned multiple messages for one allocation-plan summary"
                 )
             compacted = self._ensure_latest_user_last(source_messages, compacted)
-            compacted = self._sanitize_dangling_tool_messages(compacted)
+            # A result whose companion call was compacted away is not valid
+            # provider input.  Do not convert that raw result into ordinary
+            # assistant prose: doing so promotes terminal/search/file payloads
+            # into durable user-visible transcript content.  The pair repair
+            # below drops orphan results and retains a bounded stub only for a
+            # surviving call that lacks its result.
             compacted = self._sanitize_tool_pairs(compacted)
             # Tool-pair repair may insert a synthetic result after the active
             # instruction. Reassert the host contract before finalization.
@@ -1972,108 +1982,86 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
             and metadata.get("compressed_summary") is True
         )
 
-    def _sanitize_dangling_tool_messages(
-        self, messages: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Convert dangling tool messages to assistant text to avoid provider rejections.
-
-        A dangling tool message is one without a preceding assistant message
-        containing tool_calls. Providers reject these.
-        """
-        result = []
-        prev_had_tool_call = False
-        for msg in messages:
-            if (
-                isinstance(msg, dict)
-                and msg.get("role") == "tool"
-                and not prev_had_tool_call
-            ):
-                # Dangling tool message — convert to assistant text
-                content = msg.get("content", "")
-                tool_call_id = msg.get("tool_call_id", "")
-                text = (
-                    f"[Tool result {tool_call_id}]: {content}"
-                    if tool_call_id
-                    else f"[Tool result]: {content}"
-                )
-                result.append({"role": "assistant", "content": text})
-            else:
-                result.append(msg)
-            # Track whether this message had tool_calls
-            prev_had_tool_call = bool(isinstance(msg, dict) and msg.get("tool_calls"))
-        return result
-
     def _sanitize_tool_pairs(
         self, messages: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Fix orphaned tool_call / tool_result pairs after compression.
+        """Repair provider tool-pair ordering without promoting raw results.
 
-        Two failure modes:
-        1. A tool result references a call_id whose assistant tool_call was
-           removed. The API rejects this.
-        2. An assistant message has tool_calls whose results were dropped.
-           The API rejects this because every tool_call must be followed by
-           a tool result with the matching call_id.
-
-        This method removes orphaned results and inserts stub results for
-        orphaned calls so the message list is always well-formed.
+        A retained result is valid only if it follows the assistant message that
+        declares its call and the call has not already received a result.  A
+        global ``call_id`` set is insufficient: it incorrectly legitimizes a
+        raw result that appeared *before* its later call (or a duplicate result)
+        and therefore lets that payload survive compaction.  This one-pass
+        repair accepts only the pending calls of the immediately open assistant
+        tool batch, drops all other results, and inserts a bounded stub for any
+        still-pending calls before the next non-tool message.
         """
-        # Collect surviving call IDs
-        surviving_call_ids: set = set()
-        for msg in messages:
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        cid = tc.get("id", "") or tc.get("call_id", "")
-                        if cid:
-                            surviving_call_ids.add(cid)
+        repaired: List[Dict[str, Any]] = []
+        pending_calls: List[tuple[frozenset[str], str]] = []
+        dropped_results = 0
+        inserted_stubs = 0
 
-        result_call_ids: set = set()
-        for msg in messages:
-            if isinstance(msg, dict) and msg.get("role") == "tool":
-                cid = msg.get("tool_call_id", "")
-                if cid:
-                    result_call_ids.add(cid)
+        def flush_missing_results() -> None:
+            nonlocal inserted_stubs, pending_calls
+            for variants, canonical_id in pending_calls:
+                repaired.append({
+                    "role": "tool",
+                    "content": "[Result from earlier conversation — see context summary]",
+                    "tool_call_id": canonical_id,
+                })
+                inserted_stubs += 1
+            pending_calls = []
 
-        # 1. Remove tool results whose call_id has no matching assistant tool_call
-        orphaned_results = result_call_ids - surviving_call_ids
-        if orphaned_results:
-            messages = [
-                m
-                for m in messages
-                if not (
-                    isinstance(m, dict)
-                    and m.get("role") == "tool"
-                    and m.get("tool_call_id") in orphaned_results
+        for message in messages:
+            if not isinstance(message, dict):
+                flush_missing_results()
+                repaired.append(message)
+                continue
+
+            role = message.get("role")
+            if role == "assistant":
+                flush_missing_results()
+                repaired.append(message)
+                pending_calls = []
+                for tool_call in message.get("tool_calls") or []:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    variants = frozenset(tool_call_id_variants(tool_call))
+                    if variants:
+                        pending_calls.append((variants, coalesce_tool_call_id(tool_call) or sorted(variants)[0]))
+                continue
+
+            if role == "tool":
+                result_variants = tool_result_id_variants(message.get("tool_call_id"))
+                match_index = next(
+                    (
+                        index
+                        for index, (call_variants, _canonical_id) in enumerate(pending_calls)
+                        if result_variants and result_variants & call_variants
+                    ),
+                    None,
                 )
-            ]
-            logger.debug(
-                "context-governor: removed %d orphaned tool result(s)",
-                len(orphaned_results),
-            )
+                if match_index is None:
+                    dropped_results += 1
+                else:
+                    repaired.append(message)
+                    pending_calls.pop(match_index)
+                continue
 
-        # 2. Add stub results for assistant tool_calls whose results were dropped
-        missing_results = surviving_call_ids - result_call_ids
-        if missing_results:
-            patched: List[Dict[str, Any]] = []
-            for msg in messages:
-                patched.append(msg)
-                if isinstance(msg, dict) and msg.get("role") == "assistant":
-                    for tc in msg.get("tool_calls") or []:
-                        if isinstance(tc, dict):
-                            cid = tc.get("id", "") or tc.get("call_id", "")
-                            if cid in missing_results:
-                                patched.append({
-                                    "role": "tool",
-                                    "content": "[Result from earlier conversation — see context summary]",
-                                    "tool_call_id": cid,
-                                })
-            messages = patched
-            logger.debug(
-                "context-governor: added %d stub tool result(s)", len(missing_results)
-            )
+            flush_missing_results()
+            repaired.append(message)
 
-        return messages
+        flush_missing_results()
+        if dropped_results:
+            logger.debug(
+                "context-governor: removed %d orphaned, duplicate, or out-of-order tool result(s)",
+                dropped_results,
+            )
+        if inserted_stubs:
+            logger.debug(
+                "context-governor: added %d stub tool result(s)", inserted_stubs
+            )
+        return repaired
 
     def _repair_for_host_alternation(
         self, messages: List[Dict[str, Any]]

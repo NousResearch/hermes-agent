@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -112,12 +113,19 @@ def _default_paths() -> AresLocalPaths:
     launcher_dir = Path(
         os.environ.get("ARES_BIN_DIR", str(home / ".local" / "bin"))
     ).expanduser()
+    default_unit_path = home / ".config" / "systemd" / "user" / "ares-gateway.service"
+    unit_override = os.environ.get("ARES_GATEWAY_UNIT_PATH")
+    unit_path = Path(unit_override or default_unit_path).expanduser()
+    if unit_override and unit_path != default_unit_path and unit_path.name == "ares-gateway.service":
+        raise AresLocalRuntimeError(
+            "custom ARES_GATEWAY_UNIT_PATH must use a distinct systemd unit name"
+        )
     return AresLocalPaths(
         state_root=agent_home / "runtime-state",
         data_root=agent_home / "runtime",
         agent_home=agent_home,
         launcher_path=launcher_dir / "ares",
-        unit_path=home / ".config" / "systemd" / "user" / "ares-gateway.service",
+        unit_path=unit_path,
     )
 
 
@@ -559,13 +567,40 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             candidate = source / "apps" / "desktop" / "release" / "linux-unpacked" / "Ares"
         return candidate if candidate.is_file() else None
 
+    def _quarantine_incomplete_release(self, revision: str, final_dir: Path) -> Path:
+        """Move one non-active incomplete release aside before a staged rebuild.
+
+        Release directories are immutable once published. An interrupted build
+        can nevertheless leave a revision-shaped directory without the required
+        runtime or Desktop artifact. Preserve those original bytes outside the
+        release namespace, then allow the caller to build a fresh staged release
+        at the canonical revision. The caller restores the original directory if
+        the replacement cannot be built.
+        """
+
+        current = self._release_from_link(self.paths.current_link, "current")
+        if current is not None and current[0] == revision:
+            raise AresLocalRuntimeError(
+                "installed active Ares release is incomplete; rollback before recovery"
+            )
+        quarantine_root = self.paths.data_root / "quarantine" / "incomplete-releases"
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        quarantine = quarantine_root / f"{revision}.{uuid.uuid4().hex}"
+        os.replace(final_dir, quarantine)
+        return quarantine
+
     def _materialize(self, source_spec: str, revision: str, *, desktop: bool) -> None:
         self._ensure_layout()
         final_dir = self._release_dir(revision)
+        quarantined: Path | None = None
         if final_dir.exists():
-            source = self._release_source(revision)
-            self._require_complete_release(source, desktop=desktop)
-            return
+            try:
+                source = self._release_source(revision)
+                self._require_complete_release(source, desktop=desktop)
+            except AresLocalRuntimeError:
+                quarantined = self._quarantine_incomplete_release(revision, final_dir)
+            else:
+                return
         staging = self.paths.staging_dir / f"{revision}.{uuid.uuid4().hex}"
         source = staging / "source"
         try:
@@ -582,8 +617,23 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             )
             os.replace(staging, final_dir)
         except Exception:
+            cleanup_failure: OSError | None = None
             if staging.exists():
-                shutil.rmtree(staging)
+                try:
+                    shutil.rmtree(staging)
+                except OSError as exc:
+                    cleanup_failure = exc
+            if quarantined is not None:
+                try:
+                    os.replace(quarantined, final_dir)
+                except OSError as restore_exc:
+                    raise AresLocalRuntimeError(
+                        "incomplete Ares release recovery failed and the original release could not be restored"
+                    ) from restore_exc
+            if cleanup_failure is not None:
+                raise AresLocalRuntimeError(
+                    "incomplete Ares release recovery restored the original release but staging cleanup failed"
+                ) from cleanup_failure
             raise
 
     @staticmethod
@@ -752,9 +802,10 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
         content = (
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            f"export ARES_HOME={str(self.paths.agent_home)!r}\n"
-            f"export ARES_BIN_DIR={str(self.paths.launcher_path.parent)!r}\n"
-            f"runtime_root={str(self.paths.current_link)!r}\n"
+            f"if [[ -z \"${{ARES_HOME:-}}\" ]]; then export ARES_HOME={shlex.quote(str(self.paths.agent_home))}; fi\n"
+            f"if [[ -z \"${{ARES_BIN_DIR:-}}\" ]]; then export ARES_BIN_DIR={shlex.quote(str(self.paths.launcher_path.parent))}; fi\n"
+            f"if [[ -z \"${{ARES_GATEWAY_UNIT_PATH:-}}\" ]]; then export ARES_GATEWAY_UNIT_PATH={shlex.quote(str(self.paths.unit_path))}; fi\n"
+            'runtime_root="$ARES_HOME/runtime/current"\n'
             "python=\"$runtime_root/.venv/bin/python\"\n"
             "if [[ ! -x \"$python\" ]]; then\n"
             "  printf '%s\\n' 'Ares runtime is not installed; run ares setup from the Ares checkout.' >&2\n"
@@ -807,6 +858,13 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
         return environment
 
     def _systemctl(self, *args: str, required: bool = True) -> bool:
+        # A test/isolated installation may use a different unit path. Never
+        # let its status probe or lifecycle operation address the live default
+        # unit merely because the controller was launched from another home.
+        args = tuple(
+            self.paths.unit_path.name if arg == "ares-gateway.service" else arg
+            for arg in args
+        )
         if shutil.which("systemctl") is None:
             if required:
                 raise AresLocalRuntimeError("systemd user services are unavailable on this host")
@@ -870,7 +928,12 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
         with self.locked():
             old_active = self._release_from_link(self.paths.current_link, "current")
             old_previous = self._release_from_link(self.paths.previous_link, "previous")
-            legacy_active = self._systemctl("is-active", "--quiet", "hermes-gateway.service", required=False)
+            legacy_active = False
+            default_unit_path = Path.home() / ".config" / "systemd" / "user" / "ares-gateway.service"
+            if self.paths.unit_path == default_unit_path:
+                legacy_active = self._systemctl(
+                    "is-active", "--quiet", "hermes-gateway.service", required=False
+                )
             self._materialize(str(source), revision, desktop=desktop)
             seeded = self._seed_agent_home(seed_from)
             self._provision_context_governor_key(self._release_source(revision))
@@ -1177,7 +1240,7 @@ print(json.dumps({'enabled': enabled, 'probed': sorted(probed), 'missing': missi
         """Delegate to hermes auth with Ares home environment."""
         # Build the hermes auth command line from args
         hermes_args = ["auth"]
-        
+
         # Handle the case where user runs: ares auth spotify status
         # This gets parsed as auth_action='spotify', provider='status'
         # But hermes expects: hermes auth spotify status
@@ -1210,7 +1273,7 @@ print(json.dumps({'enabled': enabled, 'probed': sorted(probed), 'missing': missi
                 hermes_args.append(args.auth_action)
             if args.provider:
                 hermes_args.append(args.provider)
-        
+
         if args.auth_type:
             hermes_args.extend(["--type", args.auth_type])
         if args.label:
@@ -1314,6 +1377,11 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("chat", help="Launch the selected Ares CLI")
     gateway = subparsers.add_parser("gateway", help="Manage the selected Ares gateway service")
     gateway.add_argument("action", choices=("start", "stop", "restart", "status", "foreground"))
+    specialist = subparsers.add_parser(
+        "specialist",
+        help="Submit an explicit bounded specialist run to the running Ares Desktop",
+    )
+    specialist.add_argument("specialist_args", nargs=argparse.REMAINDER)
     # Auth subcommand - delegates to hermes auth with Ares home
     auth = subparsers.add_parser("auth", help="Manage pooled provider credentials in Ares home")
     auth.add_argument("auth_action", nargs="?", default="", help="Auth action (add, list, remove, reset, status, logout, spotify)")
@@ -1381,6 +1449,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             runtime.chat(args.arguments)
         elif args.command == "gateway":
             runtime.gateway(args.action)
+        elif args.command == "specialist":
+            from .specialist_dispatch import client_main
+
+            raise SystemExit(client_main(args.specialist_args))
         elif args.command == "auth":
             runtime.auth(args, passthrough)
         else:

@@ -1,0 +1,82 @@
+{
+  "activation_evidence_refs": [
+    "evidence:operator-approved-contract",
+    "evidence:atomic-profile-binding",
+    "evidence:least-authority-tool-boundary",
+    "evidence:relevance-discrimination-fixture",
+    "evidence:matched-budget-comparison",
+    "evidence:negative-controls-and-abstention",
+    "evidence:raw-traces-and-receipts",
+    "evidence:independent-controller-review",
+    "evidence:live-routing-capacity-certification"
+  ],
+  "capability_classes": [
+    "opportunity_decomposition",
+    "competing_design_generation",
+    "cross_domain_synthesis",
+    "evidence_triage",
+    "falsification_design",
+    "portfolio_ranking"
+  ],
+  "descriptor_digest": "sha256:3de197cb9fe54b775abb8222a77c435a42e2936e97896d349d3f339425434bd0",
+  "enabled": true,
+  "explicit_exclusions": [
+    "activation_or_policy_authority",
+    "production_implementation_or_deployment_authority",
+    "security_privacy_statistical_or_measurement_signoff",
+    "swarm_or_runtime_role_creation",
+    "hidden_generic_fallback_labeled_as_specialist"
+  ],
+  "failure_and_abstention_behavior": {
+    "generic_fallback_label": "forbidden",
+    "on_insufficient_evidence": "blocked_or_unknown",
+    "on_unavailable_or_disabled_contract": "blocked_or_unknown"
+  },
+  "handoff_rules": [
+    "handoff_requires_preserved_evidence_and_named_owner"
+  ],
+  "input_evidence_classes": [
+    "operator_goal_and_constraints",
+    "pinned_source_or_runtime_snapshots",
+    "primary_external_sources",
+    "prior_research_labeled_by_evidence_state",
+    "peer_findings_as_advisory_evidence"
+  ],
+  "mandatory_deferrals": [
+    "statistician_for_quantitative_inference",
+    "psychometrician_for_measurement_interpretation",
+    "cognitive-scientist_for_mechanistic_claims",
+    "ml-evaluation-researcher_for_agent_evaluation",
+    "public_for_external_claim_wording"
+  ],
+  "narrow_purpose": "Generate competing opportunity hypotheses and the cheapest decisive experiment before implementation or policy commitment.",
+  "profile_id": "explorer",
+  "provenance": {
+    "semantic_registry_digest": "sha256:7a9976e45e1154039bb55baea2c18a375d97da333928b0379807b4e09922fff3",
+    "semantic_registry_ref": "docs:role-contracts/role-contracts.json",
+    "source_refs": [
+      "artifact:ares-specialist-list-research-20260827"
+    ]
+  },
+  "recorded_at": "2026-08-27T18:09:17Z",
+  "required_artifact_ids": [
+    "explorer_dissent"
+  ],
+  "required_outputs": [
+    "ranked_opportunity_record",
+    "competing_hypothesis",
+    "evidence_state_ledger",
+    "cheapest_falsifier",
+    "acceptance_signal_and_kill_criterion",
+    "named_owner_or_handoff"
+  ],
+  "schema_version": "1.0.0",
+  "semantic_role_id": "role.explorer",
+  "tool_classes": [
+    "source_read",
+    "web_read",
+    "local_sandbox_analysis",
+    "artifact_read",
+    "draft_artifact"
+  ]
+}

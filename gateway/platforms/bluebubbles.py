@@ -320,6 +320,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # This is required for the server to know where to send events
         await self._register_webhook()
 
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -519,7 +521,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = data.get("guid") or data.get("messageGuid") or "ok"
             return SendResult(success=True, message_id=str(msg_id), raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
     # ------------------------------------------------------------------
     # Text sending
@@ -582,7 +584,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     success=True, message_id=str(msg_id), raw_response=res
                 )
             except Exception as exc:
-                return SendResult(success=False, error=str(exc))
+                return SendResult(success=False, error=str(exc) or type(exc).__name__)
         return last
 
     # ------------------------------------------------------------------

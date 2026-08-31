@@ -239,6 +239,29 @@ export const releaseActiveComposer = (target: ComposerTarget) => {
  *  a keep-alive-mounted background composer. */
 export const getActiveComposer = (): ComposerTarget => resolveActive()
 
+/** Ambient runtime/session changes may replace a composer's runtime id and run
+ * its focus effect. That is not user intent: if any concrete control currently
+ * owns focus, keep it there. Initial paint (body/document focus) and an already
+ * focused composer are the only automatic-focus cases; explicit focus-bus
+ * requests continue to bypass this predicate. */
+export const shouldAutoFocusComposer = (
+  editor: HTMLElement | null,
+  activeElement: Element | null = typeof document === 'undefined' ? null : document.activeElement
+): boolean => {
+  if (!editor) {
+    return false
+  }
+
+  const ownerDocument = editor.ownerDocument
+
+  return Boolean(
+    !activeElement ||
+      activeElement === editor ||
+      activeElement === ownerDocument.body ||
+      activeElement === ownerDocument.documentElement
+  )
+}
+
 export const requestComposerFocus = (
   target: ComposerTarget | 'active' = 'active',
   { typeChar }: { typeChar?: string } = {}

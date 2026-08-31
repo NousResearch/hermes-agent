@@ -1078,6 +1078,11 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
+                # PTY mode is a real TTY, so pager-happy tools (git log/diff,
+                # man) WILL page and hang waiting for `q` — default them to
+                # cat, honoring any pager the user already exported.
+                pty_env.setdefault("GIT_PAGER", "cat")
+                pty_env.setdefault("PAGER", "cat")
                 pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
 
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):

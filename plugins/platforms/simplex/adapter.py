@@ -240,6 +240,8 @@ class SimplexAdapter(BasePlatformAdapter):
         if hasattr(self, "_mark_connected"):
             self._mark_connected()
         logger.info("SimpleX: connected to %s", self.ws_url)
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:

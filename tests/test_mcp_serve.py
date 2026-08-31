@@ -662,6 +662,37 @@ class TestE2EMessagesRead:
                            "limit": 2})
         assert result["count"] == 2
 
+    def test_read_messages_excludes_quarantined_legacy_tool_carriers(
+        self, fake_mcp_server, mock_session_db, monkeypatch, _event_loop
+    ):
+        server, _ = fake_mcp_server
+        original = mock_session_db.get_messages
+        secret = "SYNTHETIC_LEGACY_TOOL_PAYLOAD_MUST_NOT_REACH_MCP"
+
+        def with_quarantined_carrier(session_id):
+            return original(session_id) + [
+                {
+                    "id": 999,
+                    "role": "assistant",
+                    "content": f"[Tool result call_legacy]: {secret}",
+                    "display_kind": "hidden",
+                    "display_metadata": {
+                        "legacy_tool_carrier_quarantine": {
+                            "schema": "LegacyToolCarrierQuarantineV1",
+                            "original_content_sha256": "a" * 64,
+                        }
+                    },
+                }
+            ]
+
+        monkeypatch.setattr(mock_session_db, "get_messages", with_quarantined_carrier)
+        result = _run_tool(
+            server, "messages_read", {"session_key": "agent:main:telegram:dm:123456"}
+        )
+
+        assert secret not in json.dumps(result)
+        assert all(message["id"] != "999" for message in result["messages"])
+
     def test_read_nonexistent_session(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "messages_read",
@@ -690,6 +721,39 @@ class TestE2EAttachmentsFetch:
         assert result["count"] >= 1
         assert result["attachments"][0]["type"] == "media"
         assert result["attachments"][0]["path"] == "/tmp/screenshot.png"
+
+    def test_fetch_rejects_quarantined_legacy_tool_carrier(
+        self, fake_mcp_server, mock_session_db, monkeypatch, _event_loop
+    ):
+        server, _ = fake_mcp_server
+        original = mock_session_db.get_messages
+        secret = "SYNTHETIC_LEGACY_TOOL_ATTACHMENT_MUST_NOT_REACH_MCP"
+
+        def with_quarantined_carrier(session_id):
+            return original(session_id) + [
+                {
+                    "id": 999,
+                    "role": "assistant",
+                    "content": f"[Tool result call_legacy]: MEDIA: /tmp/{secret}.txt",
+                    "display_kind": "hidden",
+                    "display_metadata": {
+                        "legacy_tool_carrier_quarantine": {
+                            "schema": "LegacyToolCarrierQuarantineV1",
+                            "original_content_sha256": "a" * 64,
+                        }
+                    },
+                }
+            ]
+
+        monkeypatch.setattr(mock_session_db, "get_messages", with_quarantined_carrier)
+        result = _run_tool(
+            server,
+            "attachments_fetch",
+            {"session_key": "agent:main:telegram:dm:123456", "message_id": "999"},
+        )
+
+        assert "error" in result
+        assert secret not in json.dumps(result)
 
     def test_fetch_from_nonexistent_message(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e

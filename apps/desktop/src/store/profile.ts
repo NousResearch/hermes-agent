@@ -784,9 +784,11 @@ export function selectProfile(name: string): void {
   // preference.
   const onPrimary = activeGatewayConnectionId() == null
 
-  void activateOnCurrentSource(target)
-    .then(() => {
-      if (onPrimary) {
+  const shouldRememberStartupProfile = onPrimary ? isLocalDesktopProfile(target) : Promise.resolve(false)
+
+  void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
+    .then(([, shouldRemember]) => {
+      if (shouldRemember) {
         return window.hermesDesktop?.profile?.remember(target)
       }
 
@@ -797,6 +799,28 @@ export function selectProfile(name: string): void {
         notifyError(error, `Failed to switch to profile "${target}"`)
       }
     })
+}
+
+// Resolve persistence from the saved per-profile Desktop route, rather than the
+// live backend descriptor. A descriptor lookup is intentionally best-effort:
+// failure must not discard a successful local selection's startup preference.
+// Conversely, `ssh`, `remote`, and `cloud` here are per-profile overrides and
+// must never replace the local Desktop startup profile.
+async function isLocalDesktopProfile(target: string): Promise<boolean> {
+  const getConnectionConfig = window.hermesDesktop?.getConnectionConfig
+
+  if (!getConnectionConfig) {
+    return true
+  }
+
+  try {
+    return (await getConnectionConfig(target)).mode === 'local'
+  } catch {
+    // Preserve the pre-fix local-primary behavior when Electron's config bridge
+    // is temporarily unavailable. The next successful config read will still
+    // exclude any remote override.
+    return true
+  }
 }
 
 // Route a profile pick at the source the user is LOOKING at. $profiles is the

@@ -34,7 +34,6 @@ def _agent() -> SimpleNamespace:
 def _stable_with_soul(soul: str) -> str:
     with (
         patch("run_agent.load_soul_md", return_value=soul),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=""),
     ):

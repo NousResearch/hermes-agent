@@ -1527,6 +1527,40 @@ test('stranded harvest: a timed-out turn whose reply landed late posts into the 
   assert.equal(gc.$groupChats.get().Late.stranded.research, undefined, 'marker consumed')
 })
 
+test('stranded harvest: a rescued reply prefers the substantive answer over a trailing synthetic (pass)', async () => {
+  const gc = load(() => '(pass)')
+
+  // #94376 class bug at the second call site: the late-landing turn ends
+  // with a Codex intent-ack continuation nudge that gets a synthetic
+  // "(pass)" — the harvest must still surface the substantive answer that
+  // preceded it, not the trailing pass.
+  gc.updateGroupChat('Rescue', r => {
+    r.stranded = { research: 0 }
+    r.sessions = { research: 'sid-research' }
+    return r
+  })
+  gc.sessions.set('sid-research', {
+    stored: 'sid-research',
+    runtime: 'rt-research',
+    profile: 'research',
+    title: 'Group: Rescue',
+    messages: [
+      { role: 'user', content: 'the turn prompt' },
+      { role: 'assistant', content: 'Here is the full research result, delivered late.' },
+      { role: 'user', content: '[System: Continue now. Execute the required tool calls and only send your final answer after completing the task.]' },
+      { role: 'assistant', content: '(pass)' }
+    ]
+  })
+
+  await gc.harvestStrandedGroupReply('Rescue', { name: 'research', title: '' })
+
+  const log = roomLog(gc, 'Rescue')
+  assert.equal(log.length, 1)
+  assert.equal(log[0].from.name, 'research')
+  assert.match(log[0].text, /delivered late/)
+  assert.equal(gc.$groupChats.get().Rescue.stranded.research, undefined, 'marker consumed')
+})
+
 test('stranded + still busy: the round loop never re-submits into a member whose harvest just confirmed they are still running', async () => {
   // research is confirmed busy on exactly its first two session.resume
   // calls — the number of harvest-only touches the FIXED code makes across

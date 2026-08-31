@@ -19,6 +19,12 @@ export interface PoolEvictionEntry {
   process?: unknown
   /** True for a local backend reservation before its child process is attached. */
   countsTowardPoolCap?: boolean
+  /**
+   * Number of bounded local worker slots reserved by this entry. Omitted means
+   * one slot, preserving ordinary profile-backend behavior. Only Electron may
+   * create a weighted reservation.
+   */
+  capacityUnits?: number
 }
 
 export const POOL_CAPACITY_EXCEEDED = 'POOL_CAPACITY_EXCEEDED'
@@ -36,6 +42,16 @@ function isLocalBackendEntry(entry: PoolEvictionEntry): boolean {
   return Boolean(entry.process) || entry.countsTowardPoolCap === true
 }
 
+function capacityUnits(entry: PoolEvictionEntry): number {
+  if (!isLocalBackendEntry(entry)) {
+    return 0
+  }
+
+  return Number.isInteger(entry.capacityUnits) && (entry.capacityUnits as number) > 0
+    ? (entry.capacityUnits as number)
+    : 1
+}
+
 /**
  * Hard admission guard for local profile backends. Unlike LRU eviction this
  * counts in-flight reservations, so concurrent profile opens cannot all observe
@@ -43,9 +59,20 @@ function isLocalBackendEntry(entry: PoolEvictionEntry): boolean {
  */
 export function canAdmitLocalBackend(
   entries: Iterable<[unknown, PoolEvictionEntry]>,
-  max: number
+  max: number,
+  requestedCapacity = 1
 ): boolean {
-  return [...entries].filter(([, entry]) => isLocalBackendEntry(entry)).length < Math.max(1, max)
+  if (!Number.isInteger(requestedCapacity) || requestedCapacity < 1) {
+    return false
+  }
+
+  const maximum = Math.max(1, max)
+  if (requestedCapacity > maximum) {
+    return false
+  }
+
+  const used = [...entries].reduce((total, [, entry]) => total + capacityUnits(entry), 0)
+  return used + requestedCapacity <= maximum
 }
 
 /**
@@ -62,8 +89,9 @@ export function selectPoolEvictions<K>(
   freshMs: number
 ): K[] {
   const spawned = [...entries].filter(([, entry]) => isLocalBackendEntry(entry))
+  const usedCapacity = spawned.reduce((total, [, entry]) => total + capacityUnits(entry), 0)
 
-  if (spawned.length <= keep) {
+  if (usedCapacity <= keep) {
     return []
   }
 
@@ -71,16 +99,16 @@ export function selectPoolEvictions<K>(
     .filter(([, entry]) => now - (entry.lastActiveAt || 0) > freshMs)
     .sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0))
 
-  let removable = spawned.length - Math.max(0, keep)
+  let removableCapacity = usedCapacity - Math.max(0, keep)
   const evictions: K[] = []
 
-  for (const [key] of evictable) {
-    if (removable <= 0) {
+  for (const [key, entry] of evictable) {
+    if (removableCapacity <= 0) {
       break
     }
 
     evictions.push(key)
-    removable -= 1
+    removableCapacity -= capacityUnits(entry)
   }
 
   return evictions

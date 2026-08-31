@@ -493,6 +493,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek": 128000,
     # Meta
     "llama": 131072,
+    # Thinking Machines — Inkling family ships with a 1M context window
+    # (max output 256K).  Verified against OpenRouter live metadata
+    # (context_length 1,048,576 for inkling, inkling-small, and the
+    # :free SKUs, 2026-08-27).  Substring matching means "inkling"
+    # covers inkling-small and every :free/:batch variant; the :batch
+    # SKU's smaller live window (524,288) is served by the provider's
+    # live metadata when available.
+    "inkling": 1_048_576,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
     "qwen3.8-max": 1_000_000,     # 1M context (OpenRouter & Nous portal, verified 2026-08-03)

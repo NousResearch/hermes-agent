@@ -1693,6 +1693,47 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5004, str(e))
 
 
+@method("production_permit.respond")
+def _(rid, params: dict) -> dict:
+    """Resolve one exact Desktop production-permit approval.
+
+    This is intentionally separate from ``approval.respond``. A choice-only
+    approval can never become a daemon permit witness. The renderer supplies an
+    opaque signed witness only after Electron has displayed and signed the
+    exact production envelope; the approval queue remains the sole owner of
+    the blocked agent thread.
+    """
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    request_id = params.get("request_id")
+    session_id = params.get("session_id")
+    choice = params.get("choice")
+    witness = params.get("witness")
+    if not isinstance(request_id, str) or not request_id:
+        return _err(rid, 4006, "request_id required")
+    if session_id is not None and session_id != session.get("session_id"):
+        return _err(rid, 4001, "session_id does not match target session")
+    if choice not in {"once", "deny"}:
+        return _err(rid, 4006, "production permit choice must be once or deny")
+    if choice == "once" and (not isinstance(witness, dict) or not witness):
+        return _err(rid, 4006, "signed witness required for production permit approval")
+    if choice == "deny" and witness is not None:
+        return _err(rid, 4006, "denial must not carry a witness")
+    try:
+        from tools.approval import resolve_gateway_approval
+
+        resolved = resolve_gateway_approval(
+            session["session_key"],
+            choice,
+            request_id=request_id,
+            witness=witness if choice == "once" else None,
+        )
+        return _ok(rid, {"resolved": resolved})
+    except Exception as e:
+        return _err(rid, 5004, str(e))
+
+
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)

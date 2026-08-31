@@ -2994,16 +2994,20 @@ class MCPServerTask:
         pids = getattr(self, "_stdio_child_pids", None)
         if not pids or self._is_http():
             return False
-        for pid in pids:
-            # windows-footgun: ok — psutil.pid_exists handles Windows; the
-            # os.kill probe below only runs when psutil is unavailable.
+        try:
             import psutil
-
-            if not psutil.pid_exists(pid):
-                continue  # this one is dead
-            return True  # alive (signal permission irrelevant for liveness)
-            return False  # at least one child alive
-        return True
+        except ImportError:
+            return False  # unknown → don't fail fast
+        for pid in pids:
+            # pid_exists handles Windows without signal-permission noise; a
+            # probe failure is unknown, not proof that every child exited.
+            try:
+                alive = psutil.pid_exists(pid)
+            except Exception:
+                return False  # unknown → don't fail fast
+            if alive:
+                return False  # at least one child alive → not all dead
+        return True  # every tracked child has exited
 
     async def _watch_stdio_children(self) -> None:
         """Poll child liveness while a stdio RPC is in flight (#81995).
@@ -3314,6 +3318,23 @@ class MCPServerTask:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
                         _stdio_pgids.update(new_pgids)
+                    # Positive identity for the machine spawn ledger (#61514):
+                    # record each helper child as (pid, create_time,
+                    # 'mcp-helper', spawner=this process) so startup sweeps
+                    # can reap orphans left after an unclean parent exit.
+                    # Best-effort — never let ledger I/O break MCP startup.
+                    for _pid in new_pids:
+                        try:
+                            from hermes_cli.process_identity import register_child
+
+                            register_child(_pid, "mcp-helper")
+                        except Exception:
+                            logger.debug(
+                                "spawn-ledger register_child failed for MCP "
+                                "helper pid %s",
+                                _pid,
+                                exc_info=True,
+                            )
                 # Track the spawned children on the connection object for
                 # fast-fail of in-flight calls when the subprocess dies
                 # (#81995).
@@ -6144,6 +6165,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         and isinstance(_stdio_dead_result := _stdio_dead(), bool)
                         and _stdio_dead_result
                     ):
+                        # Dead children but stale server.session, so the
+                        # transport-down path above never fired — signal the
+                        # server task to respawn and return a clean
+                        # reconnecting error. No explicit _bump_server_error:
+                        # the error return flows through the handler's JSON
+                        # parse, which already bumps once.
+                        if _signal_reconnect(server):
+                            return tool_error(
+                                f"MCP server '{server_name}' stdio subprocess is "
+                                f"dead and reconnect was requested. Do NOT retry "
+                                f"immediately — give it a few seconds to respawn."
+                            )
                         raise TimeoutError(
                             f"MCP stdio subprocess for '{server_name}' has "
                             f"exited; failing the call fast instead of "
@@ -6180,11 +6213,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                             )
                             if watch_task in done and not rpc_task.done():
                                 rpc_task.cancel()
+                                # Same stale-session problem as the pre-call
+                                # gate above: the subprocess died mid-call but
+                                # nothing clears server.session, so without a
+                                # reconnect signal the server would stay dead
+                                # until the idle keepalive probe notices.
+                                _signal_reconnect(server)
                                 raise TimeoutError(
                                     f"MCP stdio subprocess for '{server_name}' "
                                     f"exited mid-call; failing the call fast "
                                     f"instead of waiting "
-                                    f"{float(tool_timeout):.0f}s"
+                                    f"{float(tool_timeout):.0f}s; reconnect "
+                                    f"requested — give it a few seconds to "
+                                    f"respawn before retrying"
                                 )
                             result = await rpc_task
                         finally:

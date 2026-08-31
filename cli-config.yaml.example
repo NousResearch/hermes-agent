@@ -17,6 +17,15 @@ database:
   # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints
   # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
+  #
+  # Durability level for every state.db connection: OFF, NORMAL, FULL, EXTRA
+  # (or 0-3). Unset leaves SQLite's default, which is baked in at compile time
+  # (SQLITE_DEFAULT_WAL_SYNCHRONOUS) and therefore differs between the bundled
+  # interpreter, a distro python3 and a Homebrew one. Set it if you need to
+  # know which one you are running rather than infer it. On macOS this is a
+  # floor, not a pin: values below FULL are refused because Darwin's fsync()
+  # does not guarantee write ordering, while EXTRA is honored normally.
+  # synchronous: FULL
 
 # =============================================================================
 # Runtime Limits
@@ -1214,6 +1223,10 @@ platform_toolsets:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
 #       # opt-in works even though Slack text tool_progress defaults to off.
 #       native_task_cards: false
+#       # Suppress automatic link-preview cards without removing clickable links.
+#       # Omit either key to preserve Slack's default for that preview type.
+#       unfurl_links: false
+#       unfurl_media: false
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

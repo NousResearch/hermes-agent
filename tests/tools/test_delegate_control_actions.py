@@ -274,7 +274,8 @@ def test_delegate_task_unknown_action_is_an_error():
 
 def test_delegate_task_spawn_action_still_validates_goal():
     out = delegate_task(action="spawn", parent_agent=_StubParent())
-    assert "Provide either 'goal'" in out
+    assert "No tasks provided" in out
+    assert "one-entry" in out  # teaching error carries the canonical shape
 
 
 def test_delegate_task_requires_parent_agent_for_control():
@@ -283,12 +284,11 @@ def test_delegate_task_requires_parent_agent_for_control():
 
 
 def test_empty_tasks_array_with_goal_is_single_task_not_batch_error():
-    """Small models emit tasks=[] alongside goal; that must not trip the
-    'Batch mode requires at least 2 tasks' gate (observed live with
-    gpt-5.4-mini on Nous Portal)."""
+    """Small models emit tasks=[] alongside goal; that must not trip a
+    batch-count gate (observed live with gpt-5.4-mini on Nous Portal) —
+    it falls through to the no-tasks teaching error."""
     out = delegate_task(tasks=[], goal="", parent_agent=_StubParent())
-    # Falls through to the single-goal validation, not the batch gate.
-    assert "Provide either 'goal'" in out
+    assert "No tasks provided" in out
     assert "at least 2 tasks" not in out
 
 

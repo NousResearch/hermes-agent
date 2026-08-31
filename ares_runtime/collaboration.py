@@ -9,6 +9,7 @@ import contextvars
 import hashlib
 import json
 import os
+import re
 import secrets
 import socket
 import struct
@@ -87,6 +88,7 @@ def _strict_payload(raw: Mapping[str, Any], required: set[str], allowed: set[str
 _SCHEMA_DIR = os.path.join(os.path.dirname(__file__), "schemas")
 _SCHEMA_FILES = {
     "role": "role_contract_v1.json",
+    "specialist_descriptor": "specialist_descriptor_v1.json",
     "mission": "mission_contract_v1.json",
     "finding": "finding_v1.json",
     "evidence": "evidence_item_v1.json",
@@ -146,6 +148,30 @@ class ImmutableArtifact:
 
 ROLE_REQUIRED = {"schema_version", "role_id", "role_kind", "durable_ownership", "objective", "unique_questions", "mandatory_triggers", "exclusions", "context_policy", "capability_profile", "mutation_authority", "output_schema_ref", "stop_conditions", "typed_failures", "handoff_rules", "model_eligibility", "evaluation", "recorded_at", "contract_digest"}
 ROLE_ALLOWED = ROLE_REQUIRED | {"profile_ref", "merge_prohibition", "supersedes_contract_ref"}
+SPECIALIST_DESCRIPTOR_REQUIRED = {
+    "schema_version",
+    "profile_id",
+    "semantic_role_id",
+    "enabled",
+    "narrow_purpose",
+    "capability_classes",
+    "tool_classes",
+    "required_artifact_ids",
+    "input_evidence_classes",
+    "required_outputs",
+    "explicit_exclusions",
+    "mandatory_deferrals",
+    "handoff_rules",
+    "failure_and_abstention_behavior",
+    "activation_evidence_refs",
+    "provenance",
+    "recorded_at",
+    "descriptor_digest",
+}
+SPECIALIST_DESCRIPTOR_ALLOWED = SPECIALIST_DESCRIPTOR_REQUIRED | {
+    "supersedes_descriptor_ref"
+}
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 MISSION_REQUIRED = {"schema_version", "mission_id", "kanban_root_task_ref", "objective", "source_freeze", "closure_profile", "risk_class", "effect_class", "boundaries", "required_evidence", "topology_policy", "stop_conditions", "recorded_at", "contract_digest"}
 MISSION_ALLOWED = MISSION_REQUIRED | {"session_ref", "goal_ref", "non_goals", "budget", "supersedes_contract_ref"}
 
@@ -170,6 +196,155 @@ class RoleContractV1(ImmutableArtifact):
         value = _strict_payload(raw, ROLE_REQUIRED, ROLE_ALLOWED, "contract_digest")
         _validate_schema("role", raw)
         return cls({**value, "contract_digest": raw["contract_digest"]}, "contract_digest")
+
+
+def _validate_specialist_descriptor_references(
+    value: Mapping[str, Any],
+    *,
+    profile_exists: Callable[[str], bool] | None = None,
+    semantic_role_artifacts: Mapping[str, Sequence[str]] | None = None,
+) -> None:
+    """Validate external identities without creating a second owner or router."""
+    profile_id = value.get("profile_id")
+    if not isinstance(profile_id, str) or not _PROFILE_ID_RE.fullmatch(profile_id):
+        raise ContractError("INVALID_PROFILE", "profile_id")
+    if profile_exists is not None and not profile_exists(profile_id):
+        raise ContractError("UNKNOWN_PROFILE", profile_id)
+
+    role_id = value.get("semantic_role_id")
+    if not isinstance(role_id, str) or not role_id.startswith("role."):
+        raise ContractError("INVALID_SEMANTIC_ROLE", "semantic_role_id")
+    if semantic_role_artifacts is None:
+        return
+    required = semantic_role_artifacts.get(role_id)
+    if required is None:
+        raise ContractError("UNKNOWN_SEMANTIC_ROLE", role_id)
+    actual = value.get("required_artifact_ids")
+    if (
+        not isinstance(actual, list)
+        or set(actual) != set(required)
+        or len(actual) != len(set(actual))
+    ):
+        raise ContractError("REQUIRED_ARTIFACT_MISMATCH", role_id)
+
+
+class SpecialistDescriptorV1(ImmutableArtifact):
+    """Static, content-addressed profile declaration; never a routing decision.
+
+    The descriptor is intentionally separate from ``RoleContractV1``. The
+    latter is a general collaboration artifact, while this type fixes a
+    profile-to-existing-semantic-role mapping and rejects runtime state such as
+    provider health, credentials, current capacity, reservations, cost, or
+    latency by strict field admission.
+    """
+
+    @classmethod
+    def create(
+        cls,
+        values: Mapping[str, Any],
+        *,
+        profile_exists: Callable[[str], bool] | None = None,
+        semantic_role_artifacts: Mapping[str, Sequence[str]] | None = None,
+    ) -> "SpecialistDescriptorV1":
+        value = dict(values)
+        value.setdefault("schema_version", SCHEMA_VERSION)
+        value.setdefault("recorded_at", EPOCH)
+        if value["schema_version"] != SCHEMA_VERSION:
+            raise ContractError("UNSUPPORTED_SCHEMA", "schema_version")
+        value.pop("descriptor_digest", None)
+        value = _finalize(value, "descriptor_digest")
+        _strict_payload(
+            value,
+            SPECIALIST_DESCRIPTOR_REQUIRED,
+            SPECIALIST_DESCRIPTOR_ALLOWED,
+            "descriptor_digest",
+        )
+        _validate_schema("specialist_descriptor", value)
+        _validate_specialist_descriptor_references(
+            value,
+            profile_exists=profile_exists,
+            semantic_role_artifacts=semantic_role_artifacts,
+        )
+        return cls(value, "descriptor_digest")
+
+    @classmethod
+    def parse(
+        cls,
+        raw: Mapping[str, Any],
+        *,
+        profile_exists: Callable[[str], bool] | None = None,
+        semantic_role_artifacts: Mapping[str, Sequence[str]] | None = None,
+    ) -> "SpecialistDescriptorV1":
+        value = _strict_payload(
+            raw,
+            SPECIALIST_DESCRIPTOR_REQUIRED,
+            SPECIALIST_DESCRIPTOR_ALLOWED,
+            "descriptor_digest",
+        )
+        _validate_schema("specialist_descriptor", raw)
+        _validate_specialist_descriptor_references(
+            raw,
+            profile_exists=profile_exists,
+            semantic_role_artifacts=semantic_role_artifacts,
+        )
+        return cls(
+            {**value, "descriptor_digest": raw["descriptor_digest"]},
+            "descriptor_digest",
+        )
+
+
+def specialist_descriptor_ref(descriptor: SpecialistDescriptorV1) -> str:
+    """Return an unambiguous reference without binding it to profile metadata."""
+    if not isinstance(descriptor, SpecialistDescriptorV1):
+        raise ContractError("INVALID_SPECIALIST_DESCRIPTOR")
+    return "specialist-descriptor:" + descriptor.artifact_digest.removeprefix("sha256:")
+
+
+def validate_specialist_descriptor_set(
+    raw_descriptors: Sequence[Mapping[str, Any]],
+    *,
+    profile_ids: Sequence[str],
+    semantic_role_artifacts: Mapping[str, Sequence[str]],
+    require_disabled: bool = True,
+) -> list[str]:
+    """Return stable errors for a static descriptor set, with no side effects.
+
+    This validates only profile and semantic-registry identity passed by the
+    caller. It deliberately does not look up provider/model state, live tools,
+    desktop capacity, reservations, credentials, or any router-owned evidence.
+    """
+    errors: list[str] = []
+    expected_profiles = set(profile_ids)
+    if len(expected_profiles) != len(profile_ids):
+        errors.append("profile roster contains duplicate profile_id")
+    seen_profiles: set[str] = set()
+    for index, raw in enumerate(raw_descriptors):
+        if not isinstance(raw, Mapping):
+            errors.append(f"descriptor[{index}] is not an object")
+            continue
+        try:
+            descriptor = SpecialistDescriptorV1.parse(
+                raw,
+                profile_exists=lambda profile_id: profile_id in expected_profiles,
+                semantic_role_artifacts=semantic_role_artifacts,
+            )
+        except ContractError as exc:
+            errors.append(f"descriptor[{index}] {exc}")
+            continue
+        payload = descriptor.to_dict()
+        profile_id = payload["profile_id"]
+        if profile_id in seen_profiles:
+            errors.append(f"duplicate descriptor profile_id: {profile_id}")
+        seen_profiles.add(profile_id)
+        if require_disabled and payload["enabled"] is not False:
+            errors.append(f"descriptor must remain disabled: {profile_id}")
+    missing = sorted(expected_profiles - seen_profiles)
+    unexpected = sorted(seen_profiles - expected_profiles)
+    if missing:
+        errors.append("missing descriptor profile_ids: " + ", ".join(missing))
+    if unexpected:
+        errors.append("unexpected descriptor profile_ids: " + ", ".join(unexpected))
+    return errors
 
 
 class MissionContractV1(ImmutableArtifact):
@@ -448,20 +623,226 @@ class PermitBridgeOutcome:
     facts: Mapping[str, Any] | None = None
 
 
+class OperatorApprovalWitnessProvider(Protocol):
+    """Surface-owned source for a durable approval witness.
+
+    Ares does not interpret, mint, cache, or upgrade an approval.  A UI or
+    gateway integration must supply the canonical durable witness for this
+    exact request; without one the effect is denied before daemon contact.
+    """
+
+    def issue_witness(
+        self,
+        *,
+        mission_ref: str,
+        target_ref: str,
+        call: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None: ...
+
+
+@dataclass(frozen=True)
+class DesktopProductionApprovalEnvelope:
+    """Exact, one-shot production approval request for the Desktop controller.
+
+    This is deliberately an unsigned request, not a permit, binding, digest, or
+    approval decision.  Electron owns the private signing key and must display
+    this exact payload before returning its daemon-verifiable witness.  Keeping
+    the request typed here lets the Ares-side provider fail closed without
+    treating the existing gateway ``approval.respond`` choice as evidence.
+    """
+
+    approval_id: str
+    schema: str
+    mission_ref: str
+    target_ref: str
+    tool_name: str
+    args: Mapping[str, Any]
+    worktree_root: str
+    validity_ms: int = 300_000
+    one_use: bool = True
+    retry_allowed: bool = False
+    network_allowed: bool = False
+    delegation_allowed: bool = False
+    ambiguous_outcome: str = "terminal_quarantine"
+
+    SCHEMA = "recursive-agent.desktop-production-approval-request/v1"
+
+    @classmethod
+    def for_call(
+        cls,
+        *,
+        mission_ref: str,
+        target_ref: str,
+        call: Mapping[str, Any],
+        worktree_root: str | Path,
+        approval_id: str | None = None,
+    ) -> "DesktopProductionApprovalEnvelope":
+        if not isinstance(call, Mapping) or set(call) != {"tool", "args", "frozen_clock"}:
+            raise ContractError("DESKTOP_APPROVAL_CALL_MALFORMED")
+        if call.get("tool") != "write_file" or call.get("frozen_clock") is not None:
+            raise ContractError("DESKTOP_APPROVAL_SCOPE_DENIED")
+        args = call.get("args")
+        if type(args) is not dict or set(args) != {"path", "content"}:
+            raise ContractError("DESKTOP_APPROVAL_SCOPE_DENIED")
+        if not isinstance(args["path"], str) or not isinstance(args["content"], str):
+            raise ContractError("DESKTOP_APPROVAL_SCOPE_DENIED")
+        _check_ref(mission_ref, "mission_ref")
+        _check_ref(target_ref, "target_ref")
+        selected_approval_id = approval_id or "approval:" + digest({"mission_ref": mission_ref, "target_ref": target_ref, "call": call})[7:]
+        _check_ref(selected_approval_id, "approval_id")
+        try:
+            root = Path(worktree_root).resolve(strict=True)
+            candidate = Path(args["path"]).resolve(strict=False)
+            candidate.relative_to(root)
+        except (OSError, ValueError):
+            raise ContractError("DESKTOP_APPROVAL_SCOPE_DENIED") from None
+        return cls(
+            approval_id=selected_approval_id,
+            schema=cls.SCHEMA,
+            mission_ref=mission_ref,
+            target_ref=target_ref,
+            tool_name="write_file",
+            # Preserve the original, un-normalized tool payload for display and
+            # eventual daemon binding; path resolution above is validation only.
+            args=_freeze(dict(args)),
+            worktree_root=str(root),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the exact payload Electron must display and sign over."""
+        return {
+            "approval_id": self.approval_id,
+            "schema": self.schema,
+            "mission_ref": self.mission_ref,
+            "target_ref": self.target_ref,
+            "call": {"tool": self.tool_name, "args": _thaw(self.args), "frozen_clock": None},
+            "constraints": {
+                "validity_ms": self.validity_ms,
+                "one_use": self.one_use,
+                "retry_allowed": self.retry_allowed,
+                "network_allowed": self.network_allowed,
+                "delegation_allowed": self.delegation_allowed,
+                "allowed_write_root": self.worktree_root,
+                "ambiguous_outcome": self.ambiguous_outcome,
+            },
+        }
+
+
+class DesktopProductionApprovalController(Protocol):
+    """Electron-owned signing boundary; no gateway choice is accepted here."""
+
+    def request_signed_witness(
+        self, *, envelope: DesktopProductionApprovalEnvelope
+    ) -> Mapping[str, Any] | None: ...
+
+
+class DesktopProductionApprovalWitnessProvider:
+    """Ask the Desktop controller for a witness for the one admitted call.
+
+    The provider stores neither approval choices nor witnesses.  In particular,
+    ``approval.respond`` is intentionally not an input: a controller must
+    display the typed envelope and have Electron sign it before a future daemon
+    protocol can consume the resulting opaque witness.
+    """
+
+    def __init__(self, *, controller: DesktopProductionApprovalController | None, worktree_root: str | Path) -> None:
+        self._controller = controller
+        self._worktree_root = Path(worktree_root)
+
+    def issue_witness(
+        self,
+        *,
+        mission_ref: str,
+        target_ref: str,
+        call: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        controller = self._controller
+        if controller is None:
+            return None
+        envelope = DesktopProductionApprovalEnvelope.for_call(
+            mission_ref=mission_ref,
+            target_ref=target_ref,
+            call=call,
+            worktree_root=self._worktree_root,
+        )
+        witness = controller.request_signed_witness(envelope=envelope)
+        # A bare choice (or any other non-witness scalar) is never evidence.
+        return dict(witness) if isinstance(witness, Mapping) else None
+
+
+class GatewayProductionApprovalWitnessProvider:
+    """Bridge the daemon witness wait through the canonical gateway queue.
+
+    The agent thread blocks here while the gateway owns the pending prompt. The
+    renderer receives the typed ``production_permit`` envelope, Electron signs
+    it, and the separate ``production_permit.respond`` method returns the opaque
+    witness to this exact queue entry. No choice-only approval is upgraded.
+    """
+
+    def __init__(self, *, worktree_root: str | Path) -> None:
+        self._worktree_root = Path(worktree_root)
+
+    def issue_witness(
+        self,
+        *,
+        mission_ref: str,
+        target_ref: str,
+        call: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        envelope = DesktopProductionApprovalEnvelope.for_call(
+            mission_ref=mission_ref,
+            target_ref=target_ref,
+            call=call,
+            worktree_root=self._worktree_root,
+        )
+        try:
+            import tools.approval as approval
+
+            session_key = approval.get_current_session_key(default="")
+            with approval._lock:
+                notify_cb = approval._gateway_notify_cbs.get(session_key)
+            if not session_key or notify_cb is None:
+                return None
+            result = approval._await_gateway_decision(
+                session_key,
+                notify_cb,
+                {
+                    "command": json.dumps(envelope.to_dict(), sort_keys=True, separators=(",", ":")),
+                    "description": "One-time approval for the exact bounded production write.",
+                    "pattern_key": "production_per_call_write_file",
+                    "pattern_keys": ["production_per_call_write_file"],
+                    "allow_permanent": False,
+                    "allow_session": False,
+                    "choices": ["once", "deny"],
+                    "production_permit": envelope.to_dict(),
+                },
+                surface="production_permit",
+            )
+        except Exception:
+            return None
+        if result.get("resolved") and result.get("choice") == "once":
+            witness = result.get("witness")
+            return dict(witness) if isinstance(witness, Mapping) and witness else None
+        return None
+
+
 class DaemonPermitReceiptAdapter:
     """Thin client for the canonical daemon-owned permit and receipt lanes.
 
-    Configuration is read-only from ``ares.permit_daemon`` in Hermes config:
-    ``socket_path``, ``permit_id``, and the complete daemon-issued ``binding``.
-    The binding is compared with Ares' exact tool/argument facts before it is
-    sent; this adapter never mints permits or persists receipts locally.
+    Configuration is read-only from ``ares.permit_daemon`` in Hermes config and
+    supplies only transport settings.  For every effect, a surface-owned
+    ``OperatorApprovalWitnessProvider`` must supply a durable witness for the
+    exact call.  The daemon alone then issues the permit and binding, consumes
+    that same call, and records the outcome.  This adapter never mints permits,
+    creates approval witnesses, or persists receipts locally.
     """
     REQUEST_SCHEMA = "recursive-agent.ipc/request/v1"
     PROTOCOL_VERSION = 1
     MAX_FRAME_BYTES = 1024 * 1024 + 64 * 1024
 
-    def __init__(self, config: Mapping[str, Any]) -> None:
+    def __init__(self, config: Mapping[str, Any], *, approval_witness_provider: OperatorApprovalWitnessProvider | None = None) -> None:
         self._config = dict(config)
+        self._approval_witness_provider = approval_witness_provider
 
     @classmethod
     def from_ares_config(cls, config: Mapping[str, Any]) -> "DaemonPermitReceiptAdapter | None":
@@ -469,25 +850,57 @@ class DaemonPermitReceiptAdapter:
         bridge = ares.get("permit_daemon") if isinstance(ares, Mapping) else None
         if not isinstance(bridge, Mapping):
             return None
-        return cls(bridge)
+        provider = None
+        if bridge.get("mode") == cls._PRODUCTION_MODE:
+            provider = GatewayProductionApprovalWitnessProvider(
+                worktree_root=bridge.get("worktree_root", "/home/sikmindz/work/ares-production-permit-20260830")
+            )
+        return cls(bridge, approval_witness_provider=provider)
 
-    def _request_binding(self, *, mission_ref: str, tool_name: str, args_digest: str, target_ref: str) -> tuple[str, dict[str, Any]]:
-        permit_id = self._config.get("permit_id")
-        binding = self._config.get("binding")
-        if not isinstance(permit_id, str) or not permit_id or not isinstance(binding, Mapping):
-            raise ContractError("PERMIT_BRIDGE_UNAVAILABLE")
-        normalized = dict(binding)
-        # These are daemon policy facts, not Ares-owned claims. Requiring exact
-        # agreement prevents configured stale/wrong bindings from being spent.
-        expected = {"tool": tool_name, "args_digest": args_digest}
-        if normalized.get("mission_ref") is not None:
-            expected["mission_ref"] = mission_ref
-        if normalized.get("target_ref") is not None:
-            expected["target_ref"] = target_ref
-        for key, value in expected.items():
-            if normalized.get(key) != value:
-                raise ContractError("PERMIT_DENIED", key)
-        return permit_id, normalized
+    _TEST_ONLY_MODE = "test_only_echo"
+    _TEST_ONLY_WITNESS_SCHEMA = "recursive-agent.operator-test-permit-issuance-approval/v1"
+    # This is the daemon's closed wire witness, not an Ares approval schema.
+    # The provider must obtain it from the trusted controller after displaying
+    # the exact call. Ares validates only shape and forwards it unchanged; the
+    # daemon recomputes and authenticates the canonical request binding.
+    _TEST_ONLY_WITNESS_FIELDS = frozenset({"operator_case", "request_digest", "authenticator"})
+
+    def _test_only_enabled(self) -> bool:
+        """Production/default configuration never enables this test fixture."""
+        return self._config.get("mode") == self._TEST_ONLY_MODE
+
+    def _validate_test_only_witness(self, witness: Mapping[str, Any]) -> dict[str, Any]:
+        if set(witness) != self._TEST_ONLY_WITNESS_FIELDS:
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_MALFORMED")
+        value = dict(witness)
+        if (
+            not isinstance(value["operator_case"], str)
+            or not value["operator_case"].startswith("approval:test:")
+            or not isinstance(value["request_digest"], str)
+            or len(value["request_digest"]) != 64
+            or any(char not in "0123456789abcdef" for char in value["request_digest"])
+            or not isinstance(value["authenticator"], str)
+            or len(value["authenticator"]) != 64
+            or any(char not in "0123456789abcdef" for char in value["authenticator"])
+        ):
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_MALFORMED")
+        return value
+
+    def _operator_approval_witness(self, *, mission_ref: str, target_ref: str, call: Mapping[str, Any]) -> dict[str, Any]:
+        provider = self._approval_witness_provider
+        if provider is None:
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_UNAVAILABLE")
+        try:
+            witness = provider.issue_witness(mission_ref=mission_ref, target_ref=target_ref, call=call)
+        except ContractError:
+            raise
+        except Exception:
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_UNAVAILABLE") from None
+        if witness is None:
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_MISSING")
+        if not isinstance(witness, Mapping):
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_MALFORMED")
+        return self._validate_test_only_witness(witness)
 
     def canonical_args_digest(self, args: Any) -> str:
         """Ask the daemon owner to canonically digest an exact tool payload."""
@@ -572,13 +985,98 @@ class DaemonPermitReceiptAdapter:
         except (OSError, ValueError):
             raise ContractError("PERMIT_BRIDGE_UNAVAILABLE") from None
 
-    def consume(self, *, mission_ref: str, tool_name: str, args_digest: str, target_ref: str) -> PermitBridgeOutcome:
+    _PRODUCTION_MODE = "production_per_call"
+
+    def _production_enabled(self) -> bool:
+        return self._config.get("mode") == self._PRODUCTION_MODE
+
+    def _production_approval_witness(
+        self, *, mission_ref: str, target_ref: str, call: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        provider = self._approval_witness_provider
+        if provider is None:
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_UNAVAILABLE")
         try:
-            permit_id, binding = self._request_binding(mission_ref=mission_ref, tool_name=tool_name, args_digest=args_digest, target_ref=target_ref)
+            witness = provider.issue_witness(
+                mission_ref=mission_ref, target_ref=target_ref, call=call
+            )
+        except ContractError:
+            raise
+        except Exception:
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_UNAVAILABLE") from None
+        if witness is None:
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_MISSING")
+        if not isinstance(witness, Mapping) or not witness:
+            raise ContractError("OPERATOR_APPROVAL_WITNESS_MALFORMED")
+        # Production witness fields and signature remain opaque here: only the
+        # daemon's injected public verifier owns their canonical validation.
+        return dict(witness)
+
+    def consume(self, *, mission_ref: str, tool_name: str, args: Mapping[str, Any], target_ref: str) -> PermitBridgeOutcome:
+        production = self._production_enabled()
+        if not self._test_only_enabled() and not production:
+            return PermitBridgeOutcome(PermitBridgeState.DENIED, "TEST_ONLY_ECHO_DISABLED")
+        if production:
+            if tool_name != "write_file" or type(args) is not dict or set(args) != {"path", "content"} or not all(isinstance(args.get(key), str) for key in ("path", "content")):
+                return PermitBridgeOutcome(PermitBridgeState.DENIED, "PRODUCTION_WRITE_FILE_REQUIRED")
+            call = {"tool": "write_file", "args": {"path": args["path"], "content": args["content"]}, "frozen_clock": None}
+            try:
+                witness = self._production_approval_witness(mission_ref=mission_ref, target_ref=target_ref, call=call)
+            except ContractError as exc:
+                state = PermitBridgeState.UNAVAILABLE if exc.code == "OPERATOR_APPROVAL_WITNESS_UNAVAILABLE" else PermitBridgeState.DENIED
+                return PermitBridgeOutcome(state, exc.code)
+            issuance_body = {"kind": "permit_issue_production", "witness": witness}
+        else:
+            if tool_name != "echo" or type(args) is not dict or set(args) != {"text"} or not isinstance(args.get("text"), str) or target_ref != "tool:echo":
+                return PermitBridgeOutcome(PermitBridgeState.DENIED, "TEST_ONLY_ECHO_REQUIRED")
+            call = {"tool": "echo", "args": {"text": args["text"]}, "frozen_clock": None}
+            try:
+                witness = self._operator_approval_witness(mission_ref=mission_ref, target_ref=target_ref, call=call)
+            except ContractError as exc:
+                state = PermitBridgeState.UNAVAILABLE if exc.code == "OPERATOR_APPROVAL_WITNESS_UNAVAILABLE" else PermitBridgeState.DENIED
+                return PermitBridgeOutcome(state, exc.code)
+            issuance_body = {"kind": "permit_issue", "request": {"call": call, "requested_validity_ms": 300000}, "approval": witness}
+        issuance_request_id = "ares:" + secrets.token_hex(16)
+        issuance_request = {
+            "schema": self.REQUEST_SCHEMA,
+            "protocol_version": self.PROTOCOL_VERSION,
+            "request_id": issuance_request_id,
+            "request": issuance_body,
+        }
+        try:
+            with self._connect() as stream:
+                self._send_frame(stream, issuance_request)
+                length = struct.unpack(">I", self._recv_exact(stream, 4))[0]
+                if length > self.MAX_FRAME_BYTES:
+                    return PermitBridgeOutcome(PermitBridgeState.MALFORMED, "PERMIT_BRIDGE_MALFORMED")
+                issuance_response = json.loads(self._recv_exact(stream, length).decode("utf-8"))
         except ContractError as exc:
-            return PermitBridgeOutcome(PermitBridgeState.DENIED if exc.code == "PERMIT_DENIED" else PermitBridgeState.UNAVAILABLE, exc.code)
+            return PermitBridgeOutcome(PermitBridgeState.UNAVAILABLE, exc.code)
+        except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            return PermitBridgeOutcome(PermitBridgeState.UNAVAILABLE, "PERMIT_BRIDGE_UNAVAILABLE")
+        if not isinstance(issuance_response, Mapping) or issuance_response.get("request_id") != issuance_request_id:
+            return PermitBridgeOutcome(PermitBridgeState.MALFORMED, "PERMIT_BRIDGE_MALFORMED")
+        error = issuance_response.get("error")
+        if error is not None:
+            if not isinstance(error, Mapping) or error.get("code") != "runtime_error" or not isinstance(error.get("message"), str):
+                return PermitBridgeOutcome(PermitBridgeState.MALFORMED, "PERMIT_BRIDGE_MALFORMED")
+            return PermitBridgeOutcome(PermitBridgeState.DENIED, "PERMIT_DENIED", dict(issuance_response))
+        permit_id = issuance_response.get("permit_id")
+        binding = issuance_response.get("binding")
+        if not isinstance(permit_id, str) or not permit_id or not isinstance(binding, Mapping) or not binding:
+            return PermitBridgeOutcome(PermitBridgeState.MALFORMED, "PERMIT_BRIDGE_MALFORMED")
         request_id = "ares:" + secrets.token_hex(16)
-        request = {"schema": self.REQUEST_SCHEMA, "protocol_version": self.PROTOCOL_VERSION, "request_id": request_id, "request": {"kind": "permit_consume", "permit_id": permit_id, "binding": binding}}
+        request = {
+            "schema": self.REQUEST_SCHEMA,
+            "protocol_version": self.PROTOCOL_VERSION,
+            "request_id": request_id,
+            "request": {
+                "kind": "permit_consume",
+                "permit_id": permit_id,
+                "binding": dict(binding),
+                "call": call,
+            },
+        }
         try:
             with self._connect() as stream:
                 self._send_frame(stream, request)
@@ -604,24 +1102,130 @@ class DaemonPermitReceiptAdapter:
         facts["canonical_permit_ref"] = permit_id
         return PermitBridgeOutcome(PermitBridgeState.CONSUMED, "PERMIT_CONSUMED", facts)
 
-    def validate_and_consume(self, *, mission_ref: str, tool_name: str, args_digest: str, target_ref: str) -> Mapping[str, Any]:
-        outcome = self.consume(mission_ref=mission_ref, tool_name=tool_name, args_digest=args_digest, target_ref=target_ref)
+    def validate_and_consume_call(self, *, mission_ref: str, tool_name: str, args: Mapping[str, Any], target_ref: str) -> Mapping[str, Any]:
+        outcome = self.consume(mission_ref=mission_ref, tool_name=tool_name, args=args, target_ref=target_ref)
         if outcome.state is not PermitBridgeState.CONSUMED or outcome.facts is None:
             raise ContractError(outcome.code)
         return outcome.facts
 
     def record_receipt(self, receipt: Mapping[str, Any]) -> None:
-        # The daemon owns canonical preflight/outcome receipts. There is no
-        # Python fallback store or invented completion receipt in this adapter.
-        return None
+        if not self._test_only_enabled() and not self._production_enabled():
+            raise ContractError("TEST_ONLY_ECHO_DISABLED")
+        permit_id = receipt.get("permit_ref")
+        preflight = receipt.get("preflight_receipt")
+        state = receipt.get("state")
+        duration_ms = receipt.get("duration_ms")
+        error_type = receipt.get("error_type")
+        if (
+            not isinstance(permit_id, str)
+            or not isinstance(preflight, Mapping)
+            or not isinstance(preflight.get("receipt_digest"), str)
+            or state not in {"ok", "error", "ambiguous"}
+            or not isinstance(duration_ms, int)
+            or duration_ms < 0
+            or error_type is not None and not isinstance(error_type, str)
+        ):
+            raise ContractError("PERMIT_BRIDGE_MALFORMED")
+        safe_error_type = (
+            error_type
+            if isinstance(error_type, str) and error_type and len(error_type) <= 256 and not any(character.isspace() and character != " " for character in error_type)
+            else "tool_error" if state == "error" else None
+        )
+        reported_state = "succeeded" if state == "ok" else "failed" if state == "error" else "outcome_ambiguous"
+        request_id = "ares:" + secrets.token_hex(16)
+        request = {
+            "schema": self.REQUEST_SCHEMA,
+            "protocol_version": self.PROTOCOL_VERSION,
+            "request_id": request_id,
+            "request": {
+                "kind": "permit_outcome_record",
+                "permit_id": permit_id,
+                "preflight_receipt_digest": preflight["receipt_digest"],
+                "reported": {
+                    "state": reported_state,
+                    "duration_ms": duration_ms,
+                    "error_type": safe_error_type,
+                },
+            },
+        }
+        try:
+            with self._connect() as stream:
+                self._send_frame(stream, request)
+                length = struct.unpack(">I", self._recv_exact(stream, 4))[0]
+                if length > self.MAX_FRAME_BYTES:
+                    raise ContractError("PERMIT_BRIDGE_MALFORMED")
+                response = json.loads(self._recv_exact(stream, length).decode("utf-8"))
+        except ContractError:
+            raise
+        except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            raise ContractError("PERMIT_BRIDGE_UNAVAILABLE") from None
+        if not isinstance(response, Mapping) or response.get("request_id") != request_id:
+            raise ContractError("PERMIT_BRIDGE_MALFORMED")
+        if response.get("error") is not None:
+            raise ContractError("PERMIT_OUTCOME_DENIED")
+        outcome_artifact = response.get("outcome_artifact")
+        if response.get("permit_id") != permit_id or not isinstance(outcome_artifact, Mapping):
+            raise ContractError("PERMIT_BRIDGE_MALFORMED")
+        if state == "ambiguous" and outcome_artifact.get("state") != "terminal_quarantine":
+            raise ContractError("PERMIT_BRIDGE_MALFORMED")
 
 
-def configured_permit_adapter() -> PermitReceiptAdapter | None:
+def _load_runtime_config() -> Mapping[str, Any]:
+    """Read the operator-owned configuration without treating failure as enablement."""
     try:
         from hermes_cli.config import load_config_readonly
-        return DaemonPermitReceiptAdapter.from_ares_config(load_config_readonly())
+
+        loaded = load_config_readonly()
+        return loaded if isinstance(loaded, Mapping) else {}
     except Exception:
+        return {}
+
+
+def _production_permit_canary_config(*, session_id: str | None) -> dict[str, Any] | None:
+    """Return the only production enablement shape, scoped to one session.
+
+    The daemon transport configuration remains non-authoritative: the selected
+    session, explicit operator enablement, and daemon verifier still decide
+    whether an effect is admitted. Ambient process environment never widens
+    this production boundary.
+    """
+    config = _load_runtime_config()
+    ares = config.get("ares") if isinstance(config, Mapping) else None
+    bridge = ares.get("permit_daemon") if isinstance(ares, Mapping) else None
+    if not isinstance(bridge, Mapping):
         return None
+    configured_session = bridge.get("canary_session_id")
+    socket_path = bridge.get("socket_path")
+    worktree_root = bridge.get("worktree_root")
+    timeout_seconds = bridge.get("timeout_seconds")
+    if (
+        bridge.get("mode") != DaemonPermitReceiptAdapter._PRODUCTION_MODE
+        or bridge.get("enabled") is not True
+        or not isinstance(configured_session, str)
+        or not configured_session.strip()
+        or session_id != configured_session
+        or not isinstance(socket_path, str)
+        or not socket_path
+        or not os.path.isabs(socket_path)
+        or not isinstance(worktree_root, str)
+        or not worktree_root
+        or not os.path.isabs(worktree_root)
+        or not isinstance(timeout_seconds, (int, float))
+        or isinstance(timeout_seconds, bool)
+        or not 0 < timeout_seconds <= 300
+    ):
+        return None
+    try:
+        if not Path(worktree_root).resolve(strict=True).is_dir():
+            return None
+    except OSError:
+        return None
+    return dict(bridge)
+
+
+def production_permit_canary_enabled(*, session_id: str | None) -> bool:
+    """Whether this exact live session is the explicit production V1 canary."""
+    return _production_permit_canary_config(session_id=session_id) is not None
 
 
 _ADAPTER: contextvars.ContextVar[PermitReceiptAdapter | None] = contextvars.ContextVar("ares_permit_adapter", default=None)
@@ -675,25 +1279,61 @@ def target_for(tool_name: str, args: Mapping[str, Any]) -> str:
     return "tool:" + tool_name
 
 
-def dispatcher_boundary(tool_name: str, args: Any, *, mission_ref: str | None, schema: Mapping[str, Any] | None = None, target_ref: str | None = None, authorize_permit: bool = True, consume_permit: bool = True) -> tuple[bool, str | None, Mapping[str, Any] | None]:
-    strict = os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1"
-    permits = os.getenv("ARES_RUNTIME_PERMITS_V1", "0") == "1"
+def dispatcher_boundary(
+    tool_name: str,
+    args: Any,
+    *,
+    mission_ref: str | None,
+    session_id: str | None = None,
+    schema: Mapping[str, Any] | None = None,
+    target_ref: str | None = None,
+    authorize_permit: bool = True,
+    consume_permit: bool = True,
+) -> tuple[bool, str | None, Mapping[str, Any] | None]:
+    bridge = _production_permit_canary_config(session_id=session_id)
+    permits = bridge is not None
+    # The pre-existing strict-argument flag stays independently available. An
+    # enabled production canary always adds strict validation before coercion.
+    strict = permits or os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1"
     if tool_name in _EFFECTFUL_TOOLS and strict:
         strict_schema = schema or _DEFAULT_EFFECT_SCHEMAS.get(tool_name)
-        if strict_schema is None: return False, "EFFECT_SCHEMA_MISSING", None
-        try: validate_effect_args(args, strict_schema)
-        except ContractError as exc: return False, exc.code, None
-    if not permits or tool_name not in _EFFECTFUL_TOOLS or not authorize_permit: return True, None, None
-    adapter = _ADAPTER.get() or configured_permit_adapter()
-    if adapter is None: return False, "PERMIT_BRIDGE_UNAVAILABLE", None
-    if not mission_ref: return False, "PERMIT_MISSING", None
-    if not consume_permit: return True, None, None
+        if strict_schema is None:
+            return False, "EFFECT_SCHEMA_MISSING", None
+        try:
+            validate_effect_args(args, strict_schema)
+        except ContractError as exc:
+            return False, exc.code, None
+    if not permits or tool_name not in _EFFECTFUL_TOOLS or not authorize_permit:
+        return True, None, None
+    adapter = _ADAPTER.get() or DaemonPermitReceiptAdapter.from_ares_config(
+        {"ares": {"permit_daemon": bridge}}
+    )
+    if adapter is None:
+        return False, "PERMIT_BRIDGE_UNAVAILABLE", None
+    if not mission_ref:
+        return False, "PERMIT_MISSING", None
+    if not consume_permit:
+        return True, None, None
     try:
         target = target_ref or target_for(tool_name, args)
-        args_digest = adapter.canonical_args_digest(args) if isinstance(adapter, DaemonPermitReceiptAdapter) else digest(args)
-        permit = adapter.validate_and_consume(mission_ref=mission_ref, tool_name=tool_name, args_digest=args_digest, target_ref=target)
-    except ContractError as exc: return False, exc.code, None
-    except Exception: return False, "PERMIT_DENIED", None
+        if isinstance(adapter, DaemonPermitReceiptAdapter):
+            permit = adapter.validate_and_consume_call(
+                mission_ref=mission_ref,
+                tool_name=tool_name,
+                args=args,
+                target_ref=target,
+            )
+        else:
+            permit = adapter.validate_and_consume(
+                mission_ref=mission_ref,
+                tool_name=tool_name,
+                args_digest=digest(args),
+                target_ref=target,
+            )
+    except ContractError as exc:
+        return False, exc.code, None
+    except Exception:
+        return False, "PERMIT_DENIED", None
     return True, None, permit
 
 

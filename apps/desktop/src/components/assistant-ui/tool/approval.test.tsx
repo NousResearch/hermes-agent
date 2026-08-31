@@ -96,6 +96,62 @@ describe('PendingToolApproval', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
+  it('sends the signed witness through production_permit.respond for a production envelope', async () => {
+    const request = mockGateway()
+    const witness = { approval_id: 'approval:test-1', key_id: 'desktop-key', signature: [1, 2, 3] }
+    const sign = vi.fn().mockResolvedValue(witness)
+    const desktop = window as unknown as {
+      hermesDesktop?: { productionPermit: { sign: (envelope: unknown) => Promise<unknown> } }
+    }
+    desktop.hermesDesktop ??= { productionPermit: { sign: vi.fn() } }
+    const previousSigner = desktop.hermesDesktop.productionPermit.sign
+    desktop.hermesDesktop.productionPermit.sign = sign
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({
+      allowPermanent: false,
+      choices: ['once', 'deny'],
+      command: 'write_file exact.txt',
+      description: 'bounded production write',
+      productionPermit: {
+        approval_id: 'approval:test-1',
+        schema: 'recursive-agent.desktop-production-approval-request/v1',
+        mission_ref: 'mission:test-1',
+        target_ref: 'path:test-result',
+        call: {
+          tool: 'write_file',
+          args: { path: '/tmp/ares-permit-test/exact.txt', content: 'exact' },
+          frozen_clock: null
+        },
+        constraints: {
+          validity_ms: 300000,
+          one_use: true,
+          retry_allowed: false,
+          network_allowed: false,
+          delegation_allowed: false,
+          allowed_write_root: '/tmp/ares-permit-test',
+          ambiguous_outcome: 'terminal_quarantine'
+        }
+      },
+      requestId: 'request:test-1',
+      sessionId: 'sess-1'
+    })
+    render(<PendingToolApproval part={part('write_file')} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+
+    await waitFor(() => {
+      expect(sign).toHaveBeenCalledOnce()
+      expect(request).toHaveBeenCalledWith('production_permit.respond', {
+        choice: 'once',
+        request_id: 'request:test-1',
+        session_id: 'sess-1',
+        witness
+      })
+    })
+    expect(request).not.toHaveBeenCalledWith('approval.respond', expect.anything())
+    desktop.hermesDesktop.productionPermit.sign = previousSigner
+  })
+
   it('reveals the full command inline when the Command toggle is clicked', () => {
     const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
     setRequest(longCommand)

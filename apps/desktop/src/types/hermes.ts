@@ -660,6 +660,7 @@ export interface SessionResumeResponse {
     command?: string
     description?: string
     request_id?: string
+    production_permit?: unknown
     smart_denied?: boolean
   }
   // The clarify question still blocking this session, if any. Same replay

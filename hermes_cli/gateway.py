@@ -39,9 +39,11 @@ from gateway.restart import (
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     is_gateway_supervisor_process,
+    parse_cron_drain_timeout,
     parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
     resolve_restart_exit_wait_budget,
+    resolve_systemd_timeout_stop_sec,
 )
 from hermes_cli.config import (
     get_env_value,
@@ -3684,12 +3686,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         "/sbin",
         "/bin",
     ]
-    # Preserve 30s for post-drain cleanup before systemd escalates, with a
-    # 60s minimum for installs that use the default immediate drain. Positive
-    # drain values extend the deadline directly instead of inheriting a second
-    # 60s floor, so a configured 45s drain yields 75s rather than 90s.
-    _drain_timeout = int(_get_restart_drain_timeout() or 0)
-    restart_timeout = max(60, _drain_timeout + 30)
+    # TimeoutStopSec must cover the full stop budget, not just
+    # restart_drain_timeout. Cron work can legally wait cron_drain_timeout
+    # plus cleanup reserve before interrupt/teardown, and systemd SIGKILLs
+    # if the unit's deadline is shorter (#94759). 30s of post-drain headroom
+    # is preserved on top, with a 60s floor.
+    restart_timeout = resolve_systemd_timeout_stop_sec(
+        _get_restart_drain_timeout(),
+        _get_cron_drain_timeout(),
+    )
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -4108,6 +4113,18 @@ def _get_restart_drain_timeout() -> float:
             )
         )
     return parse_restart_drain_timeout(raw)
+
+
+def _get_cron_drain_timeout() -> float:
+    """Return the configured cron-only drain floor in seconds (#82161)."""
+    env_raw = os.getenv("HERMES_CRON_DRAIN_TIMEOUT")
+    if env_raw is not None and str(env_raw).strip() != "":
+        return parse_cron_drain_timeout(env_raw)
+    cfg = read_raw_config()
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+    if isinstance(agent_cfg, dict) and "cron_drain_timeout" in agent_cfg:
+        return parse_cron_drain_timeout(agent_cfg.get("cron_drain_timeout"))
+    return parse_cron_drain_timeout(None)
 
 
 def _get_restart_after_turn_timeout() -> float:
@@ -4881,10 +4898,22 @@ def _timestamped_stderr_gateway_command(
     ``hermes update`` sees the flag on the live grandchild argv and hands
     the process back to launchd instead of starting a detached watcher
     (#86893 / #87005). The detached nohup fallback stays unmarked.
+
+    Supervised starts also drop ``--replace`` (issue #79048): a launchd
+    service is respawned by KeepAlive, so takeover authority would be
+    re-armed on every respawn — two profiles legitimately sharing one
+    platform token would each terminate the sibling, and launchd would
+    revive the victim forever. Bounded replacement is the lifecycle
+    commands' job (``launchctl kickstart -k``, drain in
+    ``launchd_restart()``, bootout+bootstrap in install/refresh), which
+    run before supervision resumes. Mirrors ``generate_systemd_unit``,
+    whose ExecStart also runs ``gateway run`` without ``--replace``.
     """
     inner = _gateway_run_command()
     if external_supervisor and "--external-supervisor" not in inner:
         inner = [*inner, "--external-supervisor"]
+    if external_supervisor and "--replace" in inner:
+        inner = [part for part in inner if part != "--replace"]
     return [
         get_python_path(),
         "-m",
@@ -5536,8 +5565,8 @@ def _wait_for_launchd_service_pid(
 
 def launchd_restart():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
-    drain_timeout = _get_restart_drain_timeout()
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
     from gateway.status import get_running_pid
 
     try:
@@ -5561,26 +5590,57 @@ def launchd_restart():
             _escalate_wedged_gateway(pid)
             pid = None
         if pid is not None:
-            # Announce the drain BEFORE waiting on it. This wait can run for
-            # the full drain budget (180s by default) while the old gateway
-            # finishes in-flight agent runs, and it streams into surfaces with
-            # no other feedback — the desktop updater's live output most of
-            # all, where a silent stop here reads as "update stuck" (#44515).
-            # Mirrors the systemd branch's "draining (up to Ns)..." line.
+            # Graceful in-band restart, mirroring the systemd branch.
+            #
+            # Previously this sent a bare SIGTERM and waited
+            # ``_get_restart_drain_timeout()`` — which defaults to 0, so the
+            # wait could never succeed and every restart fell through to
+            # ``kickstart -k``. A bare SIGTERM also leaves
+            # ``restart_requested`` False, so the gateway exits 1 instead of
+            # 75 and reports itself to chat as "shutting down" rather than
+            # "restarting", losing the resume_pending handoff.
+            #
+            # SIGUSR1 is the drain-aware path: refuse new turns, wait for
+            # in-flight work (``agent.restart_after_turn_timeout``), then
+            # stop() within ``agent.restart_drain_timeout``. The wait budget
+            # must cover BOTH phases plus headroom (#77184) — the raw drain
+            # timeout covers only the second.
+            #
+            # Announce the wait BEFORE it runs: it can last the full budget
+            # while the old gateway finishes in-flight agent runs, and it
+            # streams into surfaces with no other feedback — the desktop
+            # updater's live output most of all, where a silent stop here
+            # reads as "update stuck" (#44515).
+            wait_budget = _get_restart_exit_wait_budget()
             print(
                 f"→ Stopping gateway (PID {pid}) — draining in-flight runs "
-                f"(up to {drain_timeout:.0f}s)..."
+                f"(up to {wait_budget:.0f}s)..."
             )
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(
-                        f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
-                    )
+            if _graceful_restart_via_sigusr1(pid, wait_budget):
+                # The gateway exited with the planned-restart code. When
+                # launchd is actually supervising this label, KeepAlive
+                # revives it — do NOT kickstart (the replacement may already
+                # be up, and ``-k`` would kill it and restart a second time).
+                # But a graceful exit alone doesn't prove supervision:
+                # detached-fallback gateways and unloaded jobs also exit
+                # cleanly with nobody to revive them (and the SIGUSR1 helper
+                # returns True for an already-gone PID). Verify a replacement
+                # PID appears before trusting KeepAlive — mirrors the systemd
+                # branch's replacement observation.
+                if _wait_for_launchd_service_pid(
+                    label, pid, timeout=15.0, domain=domain
+                ):
+                    print("✓ Service restart requested")
+                    _clear_launchd_unsupported_marker()
+                    return
+                print(
+                    "⚠ launchd did not revive the gateway after its graceful "
+                    "exit — forcing restart"
+                )
+            else:
+                print(
+                    f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart"
+                )
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()

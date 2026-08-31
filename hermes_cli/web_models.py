@@ -345,6 +345,17 @@ class SessionRename(BaseModel):
     profile: Optional[str] = None
 
 
+class SessionOwnerBackfill(BaseModel):
+    """Body for POST /api/sessions/owner-backfill (#94724 legacy migration).
+
+    ``profile`` scopes WHICH profile's state.db is stamped (same semantics as
+    every other session route); the stamped value is always that store's own
+    serving-profile identity — the caller cannot inject an arbitrary owner.
+    """
+
+    profile: Optional[str] = None
+
+
 # --- from web_server.py (originally lines 12149-12174) ---
 
 class SessionPrune(BaseModel):

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { exec as execCallback, spawn } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -9,6 +9,7 @@ import { test } from 'vitest'
 
 import { profileSshOverride } from './connection-config'
 import {
+  assertRemoteInstallUpdateClear,
   buildSpawnCommand,
   classifySshReuseProof,
   cleanupStale,
@@ -35,6 +36,7 @@ import {
   spawnLogPath,
   spawnRemoteDashboard,
   spawnTokenPath,
+  terminateOwnedDashboardForUpdate,
   validateRemotePath,
   writeLockfile
 } from './remote-lifecycle'
@@ -74,6 +76,7 @@ function ownedLock(over: any = {}) {
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
     tokenFingerprint: fingerprintToken('stored-token'),
     startedAt: '2026-07-14T00:00:00.000Z',
+    creationTime: 'linux:123456',
     ...over
   }
 }
@@ -88,7 +91,28 @@ function fakeSsh(rules: any[] = []) {
     async exec(cmd) {
       calls.push(cmd)
 
-      for (const [matcher, resp] of rules) {
+      // Existing lifecycle fixtures predate the install-wide relaunch gate.
+      // Their default remote has no update marker; focused marker tests below
+      // use explicit SSH doubles to exercise live/uncertain transitions.
+      if (cmd.includes('.hermes-update-in-progress') && !cmd.includes('marker_clear()') && !/setsid|nohup/.test(cmd)) {
+        return 'CLEAR'
+      }
+
+      const mutexWrapped = cmd.includes('fcntl.flock(fd,fcntl.LOCK_EX)')
+
+      const applicableRules = rules.filter(([matcher]) => {
+        if (cmd.includes('marker_clear()') && matcher instanceof RegExp && /kill -0/.test(matcher.source)) {
+          return false
+        }
+
+        return !(mutexWrapped && matcher instanceof RegExp && /python3 -c/.test(matcher.source))
+      })
+
+      if ((cmd.includes('os.kill(pid') && !cmd.includes('pidfd_open')) || cmd.includes('printf TERMINATED')) {
+        return 'TERMINATED'
+      }
+
+      for (const [matcher, resp] of applicableRules) {
         const hit = typeof matcher === 'function' ? matcher(cmd) : matcher.test(cmd)
 
         if (hit) {
@@ -106,6 +130,111 @@ function fakeSsh(rules: any[] = []) {
     }
   }
 }
+
+test('POSIX relaunch gate refuses live and uncertain install markers without executing Hermes', async () => {
+  for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
+    const calls: string[] = []
+
+    const ssh = {
+      async exec(command) {
+        calls.push(command)
+
+        if (command === 'uname -s; uname -m') {
+          return 'Linux\nx86_64\n'
+        }
+
+        if (command.includes('HERMES_HOME')) {
+          return '/home/alice/.hermes\n'
+        }
+
+        if (command.includes('.hermes-update-in-progress')) {
+          return observation
+        }
+
+        throw new Error(`unexpected command after update gate: ${command}`)
+      }
+    }
+
+    await assert.rejects(
+      () => connect(connectDeps(ssh)),
+      (error: any) => error.kind === 'update-in-progress'
+    )
+    assert.equal(
+      calls.some(command => /\[ -x |--version|lock\.json|serve --help|setsid/.test(command)),
+      false
+    )
+  }
+})
+
+test('POSIX relaunch gate permits absent/dead markers and normalizes named-profile homes install-wide', async () => {
+  const commands: string[] = []
+
+  const ssh = {
+    async exec(command) {
+      commands.push(command)
+
+      return 'CLEAR'
+    }
+  }
+
+  await assertRemoteInstallUpdateClear(ssh, '/home/alice/.hermes/profiles/research')
+  assert.match(commands[0], /home\.parent\.name/)
+  assert.match(commands[0], /profiles/)
+  assert.match(commands[0], /\.hermes-update-in-progress/)
+})
+
+test('POSIX relaunch gate rechecks after token upload immediately before process creation', async () => {
+  const calls: string[] = []
+  let markerChecks = 0
+
+  const ssh = {
+    async exec(command) {
+      calls.push(command)
+
+      if (command === 'uname -s; uname -m') {
+        return 'Linux\nx86_64\n'
+      }
+
+      if (command.includes('HERMES_HOME')) {
+        return '/home/alice/.hermes\n'
+      }
+
+      if (command.includes('.hermes-update-in-progress')) {
+        markerChecks += 1
+
+        return markerChecks >= 3 ? 'LIVE:4242' : 'CLEAR'
+      }
+
+      if (/\[ -x /.test(command)) {
+        return 'OK'
+      }
+
+      if (command.includes('serve --help')) {
+        return 'YES\n'
+      }
+
+      if (command.includes('python3 -c')) {
+        return ''
+      }
+
+      if (command.includes('lock.json')) {
+        return ''
+      }
+
+      return ''
+    }
+  }
+
+  await assert.rejects(
+    () => connect(connectDeps(ssh)),
+    (error: any) => error.kind === 'update-in-progress'
+  )
+  assert.equal(markerChecks, 3)
+  assert.equal(
+    calls.some(command => /setsid|nohup/.test(command)),
+    false
+  )
+})
 
 test('listRemoteHermesProfiles inventories Mini-style profile dirs without spawning a dashboard', async () => {
   const ssh = fakeSsh([
@@ -614,10 +743,17 @@ test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', a
     hermesPath: '/x/hermes',
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
   })
-  assert.ok(!notOurs.calls.some(c => /kill 5\b/.test(c)), 'must not kill a pid that is not our dashboard')
+  assert.ok(
+    notOurs.calls.some(c => /print\("OWNED"/.test(c)),
+    'must perform an ownership preflight'
+  )
   assert.ok(notOurs.calls.some(c => /rm -f/.test(c)))
 
-  const ours = fakeSsh([[/print\("OWNED"/, 'OWNED\n']])
+  const ours = fakeSsh([
+    [/print\("OWNED"/, 'OWNED\n'],
+    [cmd => /printf TERMINATED/.test(cmd), 'TERMINATED\n']
+  ])
+
   await cleanupStale(ours, OWNERSHIP_ID, {
     pid: 9,
     spawnNonce: SPAWN_NONCE,
@@ -650,6 +786,94 @@ test('buildSpawnCommand always uses serve (legacy dashboard path removed)', () =
   assert.doesNotMatch(cmd, /dashboard/)
   assert.doesNotMatch(cmd, /--skip-build/)
   assert.match(cmd, /setsid/)
+})
+
+test('buildSpawnCommand atomically reserves the ownership slot through spawn and lock publication', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    reservationNonce: SPAWN_NONCE,
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
+    lockMetadata: {
+      ownershipId: OWNERSHIP_ID,
+      spawnNonce: SPAWN_NONCE,
+      port: 0,
+      profile: 'work',
+      hermesPath: '/x/hermes',
+      hermesHome: '~/.hermes',
+      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+      tokenFingerprint: fingerprintToken('stored-token'),
+      protocolVersion: PROTOCOL_VERSION,
+      startedAt: '2026-07-14T00:00:00.000Z'
+    }
+  })
+
+  assert.ok(cmd.includes('.connect.lock'))
+  assert.ok(cmd.includes('.hermes-update-in-progress.mutex'))
+  assert.match(cmd, /fcntl\.flock\(fd,fcntl\.LOCK_EX\)/)
+  assert.match(cmd, /os\.O_CLOEXEC/)
+  assert.match(
+    cmd,
+    /subprocess\.run\(\["sh","-c",payload,"hermes-update-mutex",str\(fd\)\],pass_fds=\(fd,\),check=False\)/
+  )
+  assert.doesNotMatch(cmd, /os\.set_inheritable\(fd,True\)/)
+  assert.match(cmd, /hermes-update-child "\$1"/)
+  assert.match(cmd, /eval "exec \$1>&-"/)
+  assert.ok(cmd.includes('backend.lock.json'))
+  assert.match(cmd, /lock_json/)
+  assert.match(cmd, /trap .*rm -rf/)
+  assert.ok(cmd.indexOf('lock_json') > cmd.indexOf('serve --isolated'))
+})
+
+test.skipIf(process.platform === 'win32')('detached backend does not inherit the update mutex descriptor', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-update-mutex-'))
+  const hermesPath = path.join(directory, 'hermes')
+  const reportPath = path.join(directory, 'descriptor-report')
+  const logPath = path.join(directory, 'spawn.log')
+
+  try {
+    await writeFile(
+      hermesPath,
+      `#!/bin/sh
+: > ${reportPath}
+for fd in /proc/$$/fd/*; do
+  target=$(readlink "$fd" 2>/dev/null || true)
+  case "$target" in
+    *hermes-update-in-progress.mutex) printf '%s\\n' "$target" >> ${reportPath} ;;
+  esac
+done
+`,
+      { mode: 0o700 }
+    )
+
+    const command = buildSpawnCommand(hermesPath, '', {
+      hermesHome: path.join(directory, 'home'),
+      logPath
+    })
+
+    await exec(command, { shell: '/bin/bash' })
+
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      try {
+        const report = await readFile(reportPath, 'utf8')
+        assert.equal(report, '', 'the backend process must not retain the update mutex descriptor')
+
+        return
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT') {
+          throw error
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+    }
+
+    assert.fail('the detached backend did not write its descriptor report')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('spawnRemoteDashboard returns exact ownership artifacts', async () => {
@@ -858,6 +1082,7 @@ test('connect() respawns when the requested remote profile differs from the lock
     [/cat .*lock\.json/, JSON.stringify(lock)],
     [/kill -0 333/, 'ALIVE'],
     [/print\("OWNED"/, 'OWNED\n'],
+    [cmd => /pidfd_open/.test(cmd), 'TERMINATED\n'],
     [/kill 333/, ''],
     [/--version/, 'Hermes Agent v0.18.2\n'],
     [/grep -q ssh-session-token-file/, 'YES\n'],
@@ -986,6 +1211,82 @@ test('connect() respawns when the lockfile pid is dead (killed dashboard)', asyn
     !ssh.calls.some(command => command.includes('pid=333') && command.includes('print("OWNED"')),
     'a dead pid has no process identity to verify'
   )
+})
+
+test('managed update drain preserves a live foreign POSIX owner and its lock bytes', async () => {
+  const lock = ownedLock()
+  const rawLock = JSON.stringify(lock)
+
+  const ssh = fakeSsh([
+    [/cat .*lock\.json/, rawLock],
+    [/kill -0 333/, 'ALIVE'],
+    [/value="linux:"/, 'linux:123456\n'],
+    [/print\("OWNED"/, 'FOREIGN\n']
+  ])
+
+  await assert.rejects(terminateOwnedDashboardForUpdate(ssh, lock), /ownership is unproven/)
+  assert.equal(
+    ssh.calls.some(command => /kill 333 &&/.test(command)),
+    false,
+    'foreign process is never signalled'
+  )
+  assert.equal(
+    ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)),
+    false,
+    'foreign ownership bytes remain untouched'
+  )
+})
+
+test('managed update drain rechecks the POSIX ownership record before signalling', async () => {
+  const lock = ownedLock()
+  const replacement = ownedLock({ pid: 334, spawnNonce: 'fedcba9876543210' })
+  let reads = 0
+
+  const ssh = fakeSsh([
+    [
+      /cat .*lock\.json/,
+      () => {
+        reads += 1
+
+        return JSON.stringify(reads === 1 ? lock : replacement)
+      }
+    ],
+    [/kill -0 333/, 'ALIVE'],
+    [/value="linux:"/, 'linux:123456\n'],
+    [/print\("OWNED"/, 'OWNED\n']
+  ])
+
+  await assert.rejects(terminateOwnedDashboardForUpdate(ssh, lock), /changed during process verification/)
+  assert.equal(
+    ssh.calls.some(command => /kill 333 &&/.test(command)),
+    false
+  )
+})
+
+test('managed update drain refuses Darwin termination because PID signals cannot be atomically bound', async () => {
+  const lock = ownedLock()
+  const rawLock = JSON.stringify(lock)
+
+  const ssh = fakeSsh([
+    [/cat .*lock\.json/, rawLock],
+    [/kill -0 333/, 'ALIVE'],
+    [/value="linux:"/, 'linux:123456\n'],
+    [/print\("OWNED"/, 'OWNED\n'],
+    [/pidfd_open/, 'REFUSED\n']
+  ])
+
+  await assert.rejects(terminateOwnedDashboardForUpdate(ssh, lock), /identity changed at the signal boundary/)
+  assert.equal(
+    ssh.calls.some(command => /^kill 333\b/.test(command.trim())),
+    false,
+    'the final signal must stay inside the identity-checking helper'
+  )
+  const termination = ssh.calls.find(command => command.includes('identity_before_signal'))
+  const darwinStart = termination.indexOf('if (sys.platform=="darwin"):')
+  const darwinEnd = termination.indexOf('\n try:', darwinStart)
+  const darwinGuard = termination.slice(darwinStart, darwinEnd)
+  assert.match(darwinGuard, /DARWIN_UNAVAILABLE/)
+  assert.doesNotMatch(darwinGuard, /os\.kill\(pid,signal\.SIGTERM\)/)
 })
 
 test('connect() respawns when the dashboard is wedged (alive pid, probe fails)', async () => {
@@ -1166,6 +1467,45 @@ test('buildSpawnCommand raises the SSH child file limit before execing Hermes', 
   assert.ok(cmd.indexOf('ulimit -n 65536') < cmd.indexOf('serve --isolated'))
 })
 
+test('buildSpawnCommand payload variables keep $HOME expandable (no double quoting)', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    reservationNonce: SPAWN_NONCE,
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
+    lockMetadata: { ownershipId: OWNERSHIP_ID, spawnNonce: SPAWN_NONCE }
+  })
+
+  // expandRemotePath() emits "$HOME"'/…' — a fragment the shell expands at
+  // assignment. Wrapping it in shq() again stores the quote characters in
+  // the variable, so mkdir "$reservation" creates (or fails on) a literal
+  // "$HOME" path and the reservation loop spins forever holding the mutex.
+  for (const name of ['reservation', 'lock', 'owner_file']) {
+    assert.match(cmd, new RegExp(`${name}="\\$HOME"`), `${name}= must start with an expandable "$HOME"`)
+    assert.doesNotMatch(cmd, new RegExp(`${name}='`), `${name}= must not be re-quoted`)
+  }
+})
+
+test('buildSpawnCommand lockfile publication is POSIX sh (no bash substitution)', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    reservationNonce: SPAWN_NONCE,
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
+    lockMetadata: { ownershipId: OWNERSHIP_ID, pid: '__PID__' }
+  })
+
+  // ${var//pat/rep} is bash-only; dash aborts the payload on it AFTER the
+  // serve was spawned, so the client sees an unknown failure, deletes the
+  // token file, and orphans the backend.
+  assert.doesNotMatch(cmd, /\$\{lock_json\/\//, 'must not use ${var//} substitution under sh')
+  assert.ok(cmd.includes('sed "s/__PID__/${child}/"'), 'pid substitution must use sed')
+})
+
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {
   const failure = new Error('channel closed')
 
@@ -1199,7 +1539,7 @@ test('spawnRemoteDashboard streams the token over stdin, not argv/env', async ()
         return 'YES\n'
       }
 
-      if (/python3 -c/.test(cmd)) {
+      if (/python3 -c/.test(cmd) && !/fcntl\.flock/.test(cmd)) {
         return ''
       }
 
@@ -1246,7 +1586,7 @@ test('spawnRemoteDashboard upload uses exclusive-create and O_NOFOLLOW', async (
         return 'YES\n'
       }
 
-      if (/python3 -c/.test(cmd)) {
+      if (/python3 -c/.test(cmd) && !/fcntl\.flock/.test(cmd)) {
         return ''
       }
 
@@ -1268,7 +1608,7 @@ test('spawnRemoteDashboard upload uses exclusive-create and O_NOFOLLOW', async (
     token: 'tk',
     ownershipId: OWNERSHIP_ID
   })
-  const uploadCmd = calls.find(c => /python3 -c/.test(c))
+  const uploadCmd = calls.find(c => /python3 -c/.test(c) && !/fcntl\.flock/.test(c))
   assert.ok(uploadCmd, 'must use python3 -c for token upload')
   assert.match(uploadCmd, /O_EXCL/, 'upload must use O_EXCL to reject existing files')
   assert.match(uploadCmd, /O_NOFOLLOW/, 'upload must use O_NOFOLLOW to reject symlinks')
@@ -1339,7 +1679,11 @@ test('readLockfile treats a log path outside the exact ownership and spawn path 
 })
 
 test('cleanupStale never deletes a lock-supplied unexpected log path', async () => {
-  const ssh = fakeSsh([[/print\("OWNED"/, 'OWNED\n']])
+  const ssh = fakeSsh([
+    [/print\("OWNED"/, 'OWNED\n'],
+    [cmd => /pidfd_open/.test(cmd), 'TERMINATED\n']
+  ])
+
   await cleanupStale(ssh, OWNERSHIP_ID, ownedLock({ logPath: '~/.hermes/unrelated.log' }))
   assert.ok(!ssh.calls.some(command => command.includes('unrelated.log')))
 })
@@ -1404,6 +1748,7 @@ test('connect replaces an exact-owned backend only after authenticated stale pro
     [/cat .*lock\.json/, JSON.stringify(lock)],
     [/kill -0 333/, 'ALIVE'],
     [/print\("OWNED"/, 'OWNED\n'],
+    [cmd => /pidfd_open/.test(cmd), 'TERMINATED\n'],
     [/grep -q ssh-session-token-file/, 'YES\n'],
     [/python3 -c/, ''],
     [/setsid/, '999\n'],
@@ -1425,7 +1770,13 @@ test('connect replaces an exact-owned backend only after authenticated stale pro
   )
 
   assert.equal(result.reused, false)
+  // The kill goes through main's cleanupStale (ownership-proved SIGTERM with
+  // SIGKILL escalation, #91668) — the PR's python re-proof command shape is
+  // used by the managed-update path (terminateOwnedDashboardForUpdate), not
+  // by connect's stale replacement. Assert the CONTRACT: the owned pid was
+  // signalled and the record reclaimed.
   assert.ok(ssh.calls.some(command => /kill 333\b/.test(command)))
+  assert.ok(ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
 })
 
 test('remote SSH ownership capability requires both secure bootstrap flags', async () => {

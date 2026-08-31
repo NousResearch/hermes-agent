@@ -34,6 +34,64 @@ export function manualPickRemoved(
   return !models.includes(model)
 }
 
+const MOA_PROVIDER_SLUG = 'moa'
+
+/** True when `model` appears in any provider's live list. Used after Refresh
+ *  Models so a group/catalog swap can tell "still offered" from "gone". */
+export function selectionInCatalog(providers: ModelOptionProvider[] | undefined, model: string): boolean {
+  if (!providers?.length || !model) {
+    return false
+  }
+
+  return providers.some(provider => (provider.models ?? []).includes(model))
+}
+
+/** First real (non-MoA) catalog row that still has models. */
+export function firstSelectableCatalogModel(
+  providers: ModelOptionProvider[] | undefined
+): { model: string; provider: string } | null {
+  if (!providers?.length) {
+    return null
+  }
+
+  for (const provider of providers) {
+    if (provider.slug === MOA_PROVIDER_SLUG) {
+      continue
+    }
+
+    const model = provider.models?.[0]
+
+    if (model) {
+      return { model, provider: provider.slug }
+    }
+  }
+
+  return null
+}
+
+/**
+ * After Refresh Models replaces the catalog: keep the current pick when it is
+ * still listed; otherwise switch to the first available model in the new
+ * catalog. Returns null when the catalog is empty/unloaded so we never wipe
+ * a selection on a failed or still-hydrating refresh.
+ */
+export function reconcileSelectionAfterCatalogRefresh(
+  currentModel: string,
+  providers: ModelOptionProvider[] | undefined
+): { model: string; provider: string } | null {
+  const next = firstSelectableCatalogModel(providers)
+
+  if (!next) {
+    return null
+  }
+
+  if (selectionInCatalog(providers, currentModel)) {
+    return null
+  }
+
+  return next
+}
+
 interface ModelOptionsRequest {
   /** When false, include ambient/unconfigured providers (onboarding/setup
    *  surfaces). Chat pickers default to true so only explicitly configured

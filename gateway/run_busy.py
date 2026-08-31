@@ -72,6 +72,31 @@ class GatewayBusySessionMixin:
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
 
+    def _restore_dequeued_event_front(
+        self,
+        session_key: str,
+        adapter: Any,
+        event: "MessageEvent",
+    ) -> None:
+        """Restore a claimed event ahead of every event that arrived after it.
+
+        The adapter slot stays empty so its post-handler drain does not hot-loop on
+        an unavailable authority. The next gateway turn owns the bounded retry:
+        its ordinary post-turn promotion claims this exact event again.
+        """
+        state = self._session_state(session_key)
+        queued_events = state.conversation.queued_events
+        current_slot = (
+            adapter._pending_messages.pop(session_key, None)
+            if adapter is not None and hasattr(adapter, "_pending_messages")
+            else None
+        )
+        queued_events[:] = [queued for queued in queued_events if queued is not event]
+        restored = [event]
+        if current_slot is not None and current_slot is not event:
+            restored.append(current_slot)
+        queued_events[:0] = restored
+
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         depth = len(self._overflow_queue(session_key) or ())

@@ -67,9 +67,73 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
   }
 }
 
-// Approval is session-keyed on the backend and correlated by `request_id` when
-// available (legacy ID-free responses remain FIFO-compatible). Resolved via
-// approval.respond {choice, request_id, session_id}.
+export interface ProductionPermitRequest {
+  approval_id: string
+  schema: 'recursive-agent.desktop-production-approval-request/v1'
+  mission_ref: string
+  target_ref: string
+  call: {
+    tool: 'write_file'
+    args: { path: string; content: string }
+    frozen_clock: null
+  }
+  constraints: {
+    validity_ms: number
+    one_use: true
+    retry_allowed: false
+    network_allowed: false
+    delegation_allowed: false
+    allowed_write_root: string
+    ambiguous_outcome: 'terminal_quarantine'
+  }
+}
+
+export function parseProductionPermitRequest(value: unknown): ProductionPermitRequest | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+
+  const raw = value as Record<string, unknown>
+  const call = raw.call
+  const constraints = raw.constraints
+  if (
+    raw.schema !== 'recursive-agent.desktop-production-approval-request/v1' ||
+    typeof raw.approval_id !== 'string' ||
+    typeof raw.mission_ref !== 'string' ||
+    typeof raw.target_ref !== 'string' ||
+    !call ||
+    typeof call !== 'object' ||
+    !constraints ||
+    typeof constraints !== 'object'
+  ) {
+    return undefined
+  }
+
+  const c = constraints as Record<string, unknown>
+  const typedCall = call as Record<string, unknown>
+  const args = typedCall.args
+  if (
+    typedCall.tool !== 'write_file' ||
+    typedCall.frozen_clock !== null ||
+    !args ||
+    typeof args !== 'object' ||
+    typeof (args as Record<string, unknown>).path !== 'string' ||
+    typeof (args as Record<string, unknown>).content !== 'string' ||
+    typeof c.validity_ms !== 'number' ||
+    c.validity_ms <= 0 ||
+    c.one_use !== true ||
+    c.retry_allowed !== false ||
+    c.network_allowed !== false ||
+    c.delegation_allowed !== false ||
+    typeof c.allowed_write_root !== 'string' ||
+    c.ambiguous_outcome !== 'terminal_quarantine'
+  ) {
+    return undefined
+  }
+
+  return value as ProductionPermitRequest
+}
+
 export interface ApprovalRequest extends KeyedPrompt {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
@@ -78,6 +142,7 @@ export interface ApprovalRequest extends KeyedPrompt {
   description: string
   requestId?: string
   smartDenied?: boolean
+  productionPermit?: ProductionPermitRequest
 }
 
 interface ApprovalGateway {
@@ -91,6 +156,7 @@ interface PendingApprovalPayload {
   description?: unknown
   request_id?: unknown
   smart_denied?: boolean
+  production_permit?: unknown
 }
 
 export interface SudoRequest extends KeyedPrompt {
@@ -151,7 +217,8 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
     requestId: pending.request_id,
     sessionId,
-    smartDenied: pending.smart_denied === true
+    smartDenied: pending.smart_denied === true,
+    productionPermit: parseProductionPermitRequest(pending.production_permit)
   })
 }
 

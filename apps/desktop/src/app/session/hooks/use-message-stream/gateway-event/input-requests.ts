@@ -12,7 +12,7 @@ import {
 import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
+import { parseProductionPermitRequest, receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
@@ -246,7 +246,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       description,
       requestId: typeof payload?.request_id === 'string' ? payload.request_id : undefined,
       sessionId: sessionId ?? null,
-      smartDenied: payload?.smart_denied === true
+      smartDenied: payload?.smart_denied === true,
+      productionPermit: parseProductionPermitRequest(payload?.production_permit)
     }).catch(() => undefined)
 
     if (sessionId) {

@@ -176,6 +176,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // see secret-storage-policy.ts). get never touches the OS keychain.
   getSecretStorageEncryption: () => ipcRenderer.invoke('hermes:secret-storage:get'),
   setSecretStorageEncryption: (on: boolean) => ipcRenderer.invoke('hermes:secret-storage:set', on),
+  // The production permit signer lives in Electron main. Only the exact typed
+  // approval envelope crosses into main; private key material never reaches the
+  // renderer or backend. Public-key export is for separately approved daemon
+  // enrollment only.
+  productionPermit: {
+    sign: envelope => ipcRenderer.invoke('hermes:production-permit:sign', envelope),
+    publicKey: () => ipcRenderer.invoke('hermes:production-permit:public-key')
+  },
   // v2 multi-connection registry: named agent sources (local / remote / cloud / ssh).
   connections: {
     list: () => ipcRenderer.invoke('hermes:connections:list'),

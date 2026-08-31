@@ -2783,7 +2783,7 @@ def _denial_breaker_addendum(session_key: str) -> str:
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged")
+    __slots__ = ("event", "data", "result", "reason", "witness", "acknowledged")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -2791,6 +2791,9 @@ class _ApprovalEntry:
         self.data.setdefault("request_id", uuid.uuid4().hex)
         self.acknowledged = False
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        # Opaque daemon-verifiable witness for the separate production-permit
+        # response path. Ordinary approval choices never populate this field.
+        self.witness: Optional[dict] = None
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
         # hearing "denied". Ported from qwibitai/nanoclaw#2832.
@@ -2829,7 +2832,8 @@ def unregister_gateway_notify(session_key: str) -> None:
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None,
+                             witness: Optional[dict] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2862,6 +2866,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     for entry in targets:
         entry.result = choice
+        if witness is not None:
+            entry.witness = dict(witness)
         if reason:
             entry.reason = reason
         entry.event.set()
@@ -4453,7 +4459,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     the execute_code guard (``check_execute_code_guard``) so the fiddly
     heartbeat-polling wait loop lives in one place.
 
-    Returns ``{"resolved": bool, "choice": str|None}`` on completion, or
+    Returns ``{"resolved": bool, "choice": str|None, "witness": dict|None}`` on completion, or
     ``{"resolved": False, "choice": None, "notify_failed": True}`` if the
     notify callback raised.  Persistence of an approved choice and building
     the final tool-facing result dict remain the caller's responsibility.
@@ -4621,7 +4627,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
         choice=_outcome,
     )
-    return {"resolved": resolved, "choice": choice, "reason": entry.reason}
+    return {
+        "resolved": resolved,
+        "choice": choice,
+        "reason": entry.reason,
+        "witness": dict(entry.witness) if entry.witness is not None else None,
+    }
 
 
 def check_all_command_guards(command: str, env_type: str,

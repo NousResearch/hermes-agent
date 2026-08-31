@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import ares_runtime.collaboration as collaboration
 from ares_runtime.collaboration import (
     BlindWitness,
     ContractBindings,
@@ -15,6 +16,9 @@ from ares_runtime.collaboration import (
     ContextPacketV1,
     ContractError,
     DaemonPermitReceiptAdapter,
+    DesktopProductionApprovalEnvelope,
+    DesktopProductionApprovalWitnessProvider,
+    GatewayProductionApprovalWitnessProvider,
     PermitBridgeState,
     MissionContractV1,
     RoleContractV1,
@@ -76,12 +80,94 @@ def test_context_is_byte_stable_and_sorted():
     assert a.canonical_bytes() == b.canonical_bytes()
 
 
-def test_strict_effect_schema_denies_coercion_and_missing_permit(monkeypatch):
-    monkeypatch.setenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "1")
+def _production_canary_config(session_id="session:canary"):
+    return {
+        "ares": {
+            "permit_daemon": {
+                "mode": "production_per_call",
+                "enabled": True,
+                "canary_session_id": session_id,
+                "socket_path": "/tmp/ares-production-permit-test.sock",
+                "worktree_root": "/tmp",
+                "timeout_seconds": 5,
+            }
+        }
+    }
+
+
+def test_strict_effect_schema_denies_coercion_and_missing_permit_for_configured_canary(monkeypatch):
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: _production_canary_config(), raising=False)
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["path", "content"],
+    }
+    assert dispatcher_boundary(
+        "write_file", {"path": 3, "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    )[1] == "COERCION_REQUIRED"
+    assert dispatcher_boundary(
+        "write_file", {"path": "/tmp/ares-permit-test.txt", "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    )[1] == "OPERATOR_APPROVAL_WITNESS_MISSING"
+
+
+def test_production_canary_is_config_only_and_exact_session_scoped(monkeypatch):
     monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
-    schema = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
-    assert dispatcher_boundary("write_file", {"path": 3}, mission_ref="mission:1", schema=schema)[1] == "COERCION_REQUIRED"
-    assert dispatcher_boundary("write_file", {"path": "x"}, mission_ref="mission:1", schema=schema)[1] == "PERMIT_BRIDGE_UNAVAILABLE"
+    config = _production_canary_config()
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: config, raising=False)
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["path", "content"],
+    }
+
+    # A legacy ambient environment flag must neither activate production mode nor
+    # pull another session into the canary boundary.
+    assert dispatcher_boundary(
+        "write_file", {"path": "x", "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:other"
+    ) == (True, None, None)
+
+    # The selected session gets strict validation before coercion and fails
+    # closed before daemon contact when the Desktop witness owner is unavailable.
+    assert dispatcher_boundary(
+        "write_file", {"path": 3, "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    )[1] == "COERCION_REQUIRED"
+    assert dispatcher_boundary(
+        "write_file", {"path": "/tmp/ares-permit-test.txt", "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    )[1] == "OPERATOR_APPROVAL_WITNESS_MISSING"
+
+    # Omitting the explicit session binding disables rather than broadens the
+    # production boundary.
+    config["ares"]["permit_daemon"].pop("canary_session_id")
+    assert dispatcher_boundary(
+        "write_file", {"path": "x", "content": "exact"}, mission_ref="mission:1", schema=schema, session_id="session:canary"
+    ) == (True, None, None)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("canary_session_id", "   "),
+        ("socket_path", "relative.sock"),
+        ("socket_path", 7),
+        ("worktree_root", "relative-root"),
+        ("worktree_root", "/path/that/does/not/exist"),
+        ("timeout_seconds", True),
+        ("timeout_seconds", 0),
+        ("timeout_seconds", 301),
+    ],
+)
+def test_production_canary_requires_complete_well_typed_transport_before_activation(monkeypatch, field, value):
+    config = _production_canary_config()
+    config["ares"]["permit_daemon"][field] = value
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: config, raising=False)
+
+    assert collaboration.production_permit_canary_enabled(session_id="session:canary") is False
+    assert dispatcher_boundary(
+        "write_file",
+        {"path": "/tmp/ares-permit-test.txt", "content": "exact"},
+        mission_ref="mission:1",
+        session_id="session:canary",
+    ) == (True, None, None)
 
 
 def event_exists(ref: str) -> bool:
@@ -211,6 +297,16 @@ class _WitnessProvider:
         return self.witness
 
 
+class _DesktopController:
+    def __init__(self, witness=None):
+        self.witness = witness
+        self.envelopes = []
+
+    def request_signed_witness(self, *, envelope):
+        self.envelopes.append(envelope)
+        return self.witness
+
+
 def _test_witness(_text="fixture"):
     return {
         "operator_case": "approval:test:one",
@@ -256,13 +352,18 @@ def test_daemon_permit_digest_command_rejects_malformed_output(tmp_path):
 
 
 def test_daemon_permit_argument_digest_is_daemon_owned(monkeypatch, tmp_path):
-    monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: _production_canary_config(), raising=False)
     adapter = DaemonPermitReceiptAdapter({
         "socket_path": str(tmp_path / "unneeded.sock"),
     })
     token = permit_adapter(adapter)
     try:
-        allowed, code, _permit = dispatcher_boundary("write_file", {"path": "x", "content": "payload"}, mission_ref="mission:1")
+        allowed, code, _permit = dispatcher_boundary(
+            "write_file",
+            {"path": "x", "content": "payload"},
+            mission_ref="mission:1",
+            session_id="session:canary",
+        )
     finally:
         reset_permit_adapter(token)
     assert (allowed, code) == (False, "TEST_ONLY_ECHO_DISABLED")
@@ -297,6 +398,168 @@ def test_daemon_permit_bridge_unavailable_denies_test_only_echo(tmp_path):
     adapter = _daemon_adapter(tmp_path / "missing.sock")
     outcome = adapter.consume(mission_ref="mission:1", tool_name="echo", args={"text": "fixture"}, target_ref="tool:echo")
     assert (outcome.state, outcome.code) == (PermitBridgeState.UNAVAILABLE, "PERMIT_BRIDGE_UNAVAILABLE")
+
+
+def test_desktop_production_provider_default_denies_without_controller(tmp_path):
+    provider = DesktopProductionApprovalWitnessProvider(controller=None, worktree_root=tmp_path)
+    assert provider.issue_witness(
+        mission_ref="mission:1",
+        target_ref="path:target",
+        call={"tool": "write_file", "args": {"path": str(tmp_path / "allowed.txt"), "content": "exact"}, "frozen_clock": None},
+    ) is None
+
+
+def test_desktop_production_provider_does_not_treat_existing_approval_choice_as_witness(tmp_path):
+    controller = _DesktopController("once")
+    provider = DesktopProductionApprovalWitnessProvider(controller=controller, worktree_root=tmp_path)
+    assert provider.issue_witness(
+        mission_ref="mission:1",
+        target_ref="path:target",
+        call={"tool": "write_file", "args": {"path": str(tmp_path / "allowed.txt"), "content": "exact"}, "frozen_clock": None},
+    ) is None
+    assert len(controller.envelopes) == 1
+
+
+def test_desktop_production_envelope_preserves_exact_write_file_display_and_constraints(tmp_path):
+    controller = _DesktopController({"opaque": "daemon-verifies-this-later"})
+    provider = DesktopProductionApprovalWitnessProvider(controller=controller, worktree_root=tmp_path)
+    source_path = str(tmp_path / "nested" / "../allowed.txt")
+    witness = provider.issue_witness(
+        mission_ref="mission:1",
+        target_ref="path:target",
+        call={"tool": "write_file", "args": {"path": source_path, "content": "exact\ncontent"}, "frozen_clock": None},
+    )
+    assert witness == {"opaque": "daemon-verifies-this-later"}
+    assert len(controller.envelopes) == 1
+    envelope = controller.envelopes[0].to_dict()
+    assert envelope["call"] == {"tool": "write_file", "args": {"path": source_path, "content": "exact\ncontent"}, "frozen_clock": None}
+    assert envelope["constraints"] == {
+        "validity_ms": 300000,
+        "one_use": True,
+        "retry_allowed": False,
+        "network_allowed": False,
+        "delegation_allowed": False,
+        "allowed_write_root": str(tmp_path.resolve()),
+        "ambiguous_outcome": "terminal_quarantine",
+    }
+
+
+def test_gateway_production_provider_requires_typed_witness(monkeypatch, tmp_path):
+    import tools.approval as approval
+
+    session_key = "gateway:production-test"
+    monkeypatch.setattr(approval, "get_current_session_key", lambda default="": session_key)
+    notified = []
+    approval.register_gateway_notify(session_key, notified.append)
+    provider = GatewayProductionApprovalWitnessProvider(worktree_root=tmp_path)
+    call = {
+        "tool": "write_file",
+        "args": {"path": str(tmp_path / "allowed.txt"), "content": "exact"},
+        "frozen_clock": None,
+    }
+    result = {}
+
+    def run():
+        result["witness"] = provider.issue_witness(
+            mission_ref="mission:1", target_ref="path:target", call=call
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    for _ in range(500):
+        if notified:
+            break
+        threading.Event().wait(0.01)
+    assert notified and notified[0]["production_permit"]["call"] == call
+    request_id = notified[0]["request_id"]
+    assert approval.resolve_gateway_approval(session_key, "once", request_id=request_id) == 1
+    thread.join(timeout=2)
+    assert result["witness"] is None
+
+    notified.clear()
+    thread = threading.Thread(target=run)
+    thread.start()
+    for _ in range(500):
+        if notified:
+            break
+        threading.Event().wait(0.01)
+    witness = {"signature": "opaque", "key_id": "desktop-key"}
+    assert approval.resolve_gateway_approval(
+        session_key, "once", request_id=notified[0]["request_id"], witness=witness
+    ) == 1
+    thread.join(timeout=2)
+    assert result["witness"] == witness
+    approval.unregister_gateway_notify(session_key)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        {"tool": "patch", "args": {"path": "x", "old_string": "a", "new_string": "b"}, "frozen_clock": None},
+        {"tool": "write_file", "args": {"path": "x", "content": "x", "extra": True}, "frozen_clock": None},
+        {"tool": "write_file", "args": {"path": "x", "content": "x"}, "frozen_clock": "retry"},
+    ],
+)
+def test_desktop_production_envelope_denies_out_of_scope_or_non_exact_calls(tmp_path, call):
+    with pytest.raises(ContractError, match="DESKTOP_APPROVAL_SCOPE_DENIED"):
+        DesktopProductionApprovalEnvelope.for_call(
+            mission_ref="mission:1", target_ref="path:target", call=call, worktree_root=tmp_path
+        )
+
+
+def test_desktop_production_envelope_denies_write_outside_worktree(tmp_path):
+    with pytest.raises(ContractError, match="DESKTOP_APPROVAL_SCOPE_DENIED"):
+        DesktopProductionApprovalEnvelope.for_call(
+            mission_ref="mission:1",
+            target_ref="path:target",
+            call={"tool": "write_file", "args": {"path": str(tmp_path.parent / "outside.txt"), "content": "x"}, "frozen_clock": None},
+            worktree_root=tmp_path,
+        )
+
+
+def test_daemon_production_per_call_adapter_forwards_opaque_witness_and_exact_write_file(tmp_path):
+    path = tmp_path / "daemon.sock"
+    witness = {"daemon_verifies": "opaque-signed-witness"}
+
+    def issued(request):
+        assert request["request"] == {
+            "kind": "permit_issue_production",
+            "witness": witness,
+        }
+        return {"request_id": request["request_id"], "permit_id": "permit:production", "binding": {"issued_binding": "opaque"}}
+
+    def consumed(request):
+        assert request["request"] == {
+            "kind": "permit_consume",
+            "permit_id": "permit:production",
+            "binding": {"issued_binding": "opaque"},
+            "call": {"tool": "write_file", "args": {"path": str(tmp_path / "allowed.txt"), "content": "exact"}, "frozen_clock": None},
+        }
+        return {"request_id": request["request_id"], "permit_id": "permit:production", "evidence": {}, "preflight_artifact": {}, "receipt_artifact": {"digest": "receipt"}}
+
+    _serve_permit_responses(path, issued, consumed)
+    adapter = DaemonPermitReceiptAdapter(
+        {"socket_path": str(path), "mode": "production_per_call"},
+        approval_witness_provider=_WitnessProvider(witness),
+    )
+    outcome = adapter.consume(
+        mission_ref="mission:1",
+        tool_name="write_file",
+        args={"path": str(tmp_path / "allowed.txt"), "content": "exact"},
+        target_ref="path:approved-result",
+    )
+    assert (outcome.state, outcome.code) == (PermitBridgeState.CONSUMED, "PERMIT_CONSUMED")
+
+
+def test_daemon_production_mode_defaults_deny_without_witness_provider(tmp_path):
+    adapter = DaemonPermitReceiptAdapter({"socket_path": str(tmp_path / "missing.sock"), "mode": "production_per_call"})
+    outcome = adapter.consume(
+        mission_ref="mission:1",
+        tool_name="write_file",
+        args={"path": str(tmp_path / "allowed.txt"), "content": "exact"},
+        target_ref="path:approved-result",
+    )
+    assert (outcome.state, outcome.code) == (PermitBridgeState.UNAVAILABLE, "OPERATOR_APPROVAL_WITNESS_UNAVAILABLE")
 
 
 def test_test_only_adapter_refuses_non_echo_and_default_config(tmp_path):

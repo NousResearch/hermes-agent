@@ -289,6 +289,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { createProductionPermitController } from './production-permit'
 import {
   assertLocalProfileCanStart,
   decideProfileDeleteAction,
@@ -16967,6 +16968,18 @@ registerFsIpc({
   directoryExists,
   resolveGitBinary
 })
+
+// Production per-call permits: Electron main owns the encrypted Ed25519
+// private key. The renderer can submit only an exact typed envelope and receives
+// a daemon-verifiable witness; private key bytes never cross this boundary.
+const productionPermitController = createProductionPermitController(app.getPath('userData'), safeStorage)
+ipcMain.handle('hermes:production-permit:sign', (event, envelope) => {
+  if (!event.sender || event.sender.isDestroyed()) {
+    throw new Error('production permit renderer unavailable')
+  }
+  return productionPermitController.requestSignedWitness(envelope)
+})
+ipcMain.handle('hermes:production-permit:public-key', () => productionPermitController.publicKeyForEnrollment())
 
 // Git-driven features (worktrees, review pane, repo scan) — see git-ipc.ts.
 registerGitIpc({ resolveGitBinary, resolveGhBinary })

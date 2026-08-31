@@ -155,6 +155,19 @@ declare global {
       // secrets and can throw when the keychain is unusable.
       getSecretStorageEncryption: () => Promise<{ on: boolean }>
       setSecretStorageEncryption: (on: boolean) => Promise<{ on: boolean }>
+      productionPermit: {
+        sign: (envelope: unknown) => Promise<unknown>
+        publicKey: () => Promise<{
+          key_id: string
+          public_key: string
+          public_key_sha256: string
+          verifier_enrollment: {
+            schema: 'recursive-agent.desktop-production-public-key/v1'
+            key_id: string
+            public_key: string
+          }
+        }>
+      }
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
       connections: {

@@ -378,6 +378,30 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
+    def test_rejects_approval_click_when_group_policy_open(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_allowed"}
+        adapter._group_policy = "open"
+        adapter._default_group_policy = "open"
+        adapter._approval_state[6] = {
+            "session_key": "sess-6",
+            "message_id": "msg-6",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 6},
+            open_id="ou_attacker",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
 
     def test_update_prompt_unauthorized_operator_returns_no_card(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -391,6 +415,30 @@ class TestCardActionCallbackResponse:
         adapter._allowed_group_users = {"ou_allowed"}
         data = _make_card_action_data(
             {"hermes_update_prompt_action": "y", "update_prompt_id": 1},
+            open_id="ou_intruder",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+    def test_update_prompt_unauthorized_click_rejected_when_group_policy_open(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_allowed"}
+        adapter._group_policy = "open"
+        adapter._default_group_policy = "open"
+        adapter._update_prompt_state[7] = {
+            "session_key": "sess-up-7",
+            "message_id": "msg_up_007",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 7},
             open_id="ou_intruder",
         )
 
@@ -441,9 +489,45 @@ class TestResolveUpdatePrompt:
             "chat_id": "oc_12345",
         }
 
-        await adapter._resolve_update_prompt(1, "y", "Alice")
+        await adapter._resolve_update_prompt(1, "y", "Alice", open_id="ou_user1", chat_id="oc_12345")
 
         assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
         assert 1 not in adapter._update_prompt_state
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_operator_does_not_write_response(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+        adapter._allowed_group_users = {"ou_allowed"}
+        adapter._group_policy = "open"
+        adapter._default_group_policy = "open"
+        adapter._update_prompt_state[2] = {
+            "session_key": "sess-up-2",
+            "message_id": "msg_up_004",
+            "chat_id": "oc_12345",
+        }
+
+        await adapter._resolve_update_prompt(2, "y", "Mallory", open_id="ou_intruder", chat_id="oc_12345")
+
+        assert not (tmp_path / ".hermes" / ".update_response").exists()
+        assert 2 in adapter._update_prompt_state
+
+    @pytest.mark.asyncio
+    async def test_missing_operator_identity_does_not_write_response(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+        adapter._allowed_group_users = {"ou_allowed"}
+        adapter._update_prompt_state[3] = {
+            "session_key": "sess-up-3",
+            "message_id": "msg_up_005",
+            "chat_id": "oc_12345",
+        }
+
+        await adapter._resolve_update_prompt(3, "y", "Anonymous", open_id="", chat_id="oc_12345")
+
+        assert not (tmp_path / ".hermes" / ".update_response").exists()
+        assert 3 in adapter._update_prompt_state
 
 

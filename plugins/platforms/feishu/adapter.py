@@ -2815,8 +2815,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        if not self._is_interactive_operator_authorized(open_id):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2875,8 +2874,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        if not self._is_interactive_operator_authorized(open_id):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2982,11 +2980,9 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return
-        if open_id:
-            sender_id = SimpleNamespace(open_id=open_id, user_id="")
-            if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
-                logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
-                return
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
+            return
         expected_chat_id = str(state.get("chat_id", "") or "")
         if expected_chat_id and chat_id and expected_chat_id != chat_id:
             logger.warning(

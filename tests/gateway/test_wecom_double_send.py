@@ -41,11 +41,16 @@ properties, it does not re-implement the delivery lifecycle.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer import (
+    GatewayStreamConsumer,
+    StreamConsumerConfig,
+    should_suppress_duplicate_final_send,
+)
 
 
 CHAT_ID = "chat-1"
@@ -532,3 +537,141 @@ class TestOrphanQueueAckRouting:
         )
 
         await _cleanup_adapter(adapter)
+
+# ---------------------------------------------------------------------------
+# Test group 3.5: delivery-boundary dedup (run.py DUPLICATE-RISK GATE)
+# ---------------------------------------------------------------------------
+
+
+def _gateway_dedup_load_gate(consumer, final_text: str) -> bool:
+    """Delivery-boundary dedup decision for the run.py DUPLICATE-RISK gate.
+
+    Thin alias over the REAL decision the gateway executes —
+    ``gateway.stream_consumer.should_suppress_duplicate_final_send`` — so this
+    test exercises the exact code run.py calls (no re-implementation mirror, per
+    review). When a stream consumer existed for a turn but the suppression flags
+    (final_response_sent / final_content_delivered) were NOT observed — the
+    ack-pending race where the gateway's flush cancelled the consumer
+    mid-finalize while WeCom already rendered the frame — run.py now dedupes on
+    CONTENT before emitting the normal final-send: if the consumer has already
+    delivered the exact final text (visible prefix / recorded segments match),
+    the redundant send is suppressed, so a slow WeCom final-frame ack can never
+    produce a second bubble.
+    """
+    return should_suppress_duplicate_final_send(consumer, final_text)
+
+
+class TestDeliveryBoundaryDedup:
+    """A slow WeCom final-frame ack must not produce a duplicate bubble even
+    when the consumer was cancelled before setting ``final_content_delivered``.
+
+    This is the exact window run.py's diagnostic flags: the final-frame ack is
+    in flight (``final_content_delivered`` not yet set) while the gateway's
+    normal final-send is about to race ahead. The fix suppresses the redundant
+    send on an exact content match — the legacy predicate (``final_response_sent``
+    OR ``final_content_delivered``) alone leaves a gap here because the flag was
+    never observed, and the delivery-boundary dedup is what closes it.
+    """
+
+    def test_ack_pending_content_on_wire_dedup_closes_legacy_gap(self):
+        """Deterministic ack-pending state: the stream consumer pushed the final
+        text to the wire (``_last_sent_text`` holds it) but the finalize ack was
+        never observed (``final_content_delivered`` left False — the exact race).
+        The legacy suppression predicate does NOT fire, yet the delivery-boundary
+        dedup gate suppresses → the user sees exactly one delivery.
+        """
+        adapter = _make_real_wecom_adapter(resolve_finalize_ack=True)
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, CHAT_ID, cfg)
+
+        final_text = "这是模型这一轮生成的最终回答，需要通过流式 finalize 帧发出。"
+        # The content reached the wire (consumer was mid-finalize), but the
+        # delivery flag was never set before the gateway's flush cancelled it.
+        consumer._final_content_delivered = False  # ack-pending: flag unset
+        consumer._final_response_sent = False
+        consumer._last_sent_text = final_text  # content already on screen
+        consumer._already_sent = True
+
+        # Legacy suppression predicate: FALSE — this is the gap.
+        legacy_suppresses = _gateway_suppresses_normal_send(consumer, final_text)
+        assert legacy_suppresses is False, (
+            "precondition: legacy predicate alone would NOT suppress (flag unset)"
+        )
+
+        # Delivery-boundary dedup: TRUE because the exact content is on screen.
+        dedup_suppresses = _gateway_dedup_load_gate(consumer, final_text)
+        assert dedup_suppresses is True, (
+            "BUG: delivery-boundary dedup did not fire — the normal final send "
+            "would duplicate the already-rendered streamed reply"
+        )
+
+        # Exactly one user-visible delivery (whatever WeCom already rendered).
+        assert dedup_suppresses is True
+
+    @pytest.mark.asyncio
+    async def test_distinct_content_not_deduped_normal_send_fires(self):
+        """Dedup must only suppress on an EXACT content match. When the
+        consumer streamed interim text but the final answer is distinct
+        content, the normal final-send must still go out (no semantics change
+        for genuinely distinct messages).
+        """
+        adapter = _make_real_wecom_adapter(resolve_finalize_ack=True)
+        adapter._REPLY_ACK_TIMEOUT = 5.0
+
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="", edit_interval=0.01, buffer_threshold=5,
+        )
+        consumer = GatewayStreamConsumer(adapter, CHAT_ID, cfg)
+
+        # Streaming showed only an interim partial line; the real final is
+        # different, longer content.
+        consumer.on_delta("让我先搜索一下相关资料。")
+        consumer.finish()
+        final_text = "这里是最终完整回答，与刚才的流式预览内容并不相同。"
+
+        task = asyncio.create_task(consumer.run())
+        try:
+            await task
+            # The consumer delivered only the interim text; the true final
+            # must NOT be treated as already delivered.
+            assert _gateway_dedup_load_gate(consumer, final_text) is False, (
+                "dedup must not suppress genuinely distinct content"
+            )
+            # And the full final must not match the streamed interim text.
+            assert consumer.has_delivered_text(final_text) is False
+        finally:
+            await _cleanup_adapter(adapter)
+
+
+class TestRunPyWiresRealDedupGate:
+    """The DUPLICATE-RISK branch in gateway/run.py must execute the *same*
+    importable decision this test suite exercises, not an inline re-implementation.
+
+    run.py is a ~32k-line script (not importable as a module), so rather than
+    re-implementing its branch here (which review flagged: a typo in the real
+    run.py branch would ship green under a mirror-only test), we parse the
+    actual run.py source and assert the gate body imports and calls
+    ``should_suppress_duplicate_final_send`` with the stream consumer and the
+    final text. This binds the live call site to the tested helper.
+    """
+
+    def test_duplicate_risk_gate_calls_the_imported_helper(self):
+        run_py_path = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
+        assert run_py_path.exists(), run_py_path
+        src = run_py_path.read_text(encoding="utf-8")
+
+        # The gate branch must import the shared helper.
+        assert "from gateway.stream_consumer import (" in src
+        # The import must name the exact decision function (not a local/renamed
+        # duplicate that could silently diverge from what the tests exercise).
+        assert "should_suppress_duplicate_final_send," in src
+        # The gate must call it with the stream consumer and the final text.
+        assert (
+            "_sc_has_final = bool(should_suppress_duplicate_final_send(_sc, _final))"
+            in src
+        )
+
+        # Compile check: the file must remain valid Python after the edits.
+        compile(src, run_py_path, "exec")

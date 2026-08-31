@@ -30755,8 +30755,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except asyncio.CancelledError:
                         pass
                 else:
+                    # The flush bound must cover a native-stream consumer's
+                    # finalize. WeCom's adapter awaits the final-frame ack up
+                    # to _REPLY_ACK_TIMEOUT, plus up to another window draining
+                    # a pending intermediate ack before the final, and on ack-
+                    # timeout synthesises delivery (returns success). A hard 5s
+                    # cap cancels the consumer mid-finalize. (B2 already
+                    # optimistically sets the delivery flags before the ack
+                    # await, which closes the pure ack-await duplicate; this
+                    # longer bound is defense-in-depth that prevents cancelling
+                    # a native consumer *before* it reaches B2's optimistic
+                    # mark at all — the residual `_abandon_native_stream` and
+                    # best-effort "DO NOT mark" paths B2 does not cover.)
+                    # Keep 5s for edit/draft consumers (their finalize is a
+                    # local API round-trip, fast); extend only for native
+                    # streaming where server ack is in the loop. The happy
+                    # path returns the moment the task completes, regardless
+                    # of this cap. Deliberate trade-off: a slow WeCom ack
+                    # holds the session "busy" (releasing _running_agent_state
+                    # below) up to the cap instead of 5s — correctness over
+                    # best-case latency, and only in the slow-ack case.
+                    _flush_sc = (
+                        stream_consumer_holder[0]
+                        if stream_consumer_holder
+                        else None
+                    )
+                    # Derive the bound from the adapter's own ack timeout
+                    # (default 15s) rather than hardcoding: finalize = drain
+                    # (1×) + ack (1×) + margin, so 2× + 4s ≈ 34s worst case.
+                    # Tracks adapter._REPLY_ACK_TIMEOUT automatically if it
+                    # changes.
+                    _ack_to = float(
+                        getattr(
+                            getattr(_flush_sc, "adapter", None),
+                            "_REPLY_ACK_TIMEOUT",
+                            15.0,
+                        )
+                    )
+                    _flush_timeout = (2.0 * _ack_to + 4.0) if (
+                        _flush_sc is not None
+                        and getattr(_flush_sc, "_use_native_streaming", False)
+                    ) else 5.0
                     try:
-                        await asyncio.wait_for(stream_task, timeout=5.0)
+                        await asyncio.wait_for(
+                            stream_task, timeout=_flush_timeout
+                        )
                     except (asyncio.TimeoutError, asyncio.CancelledError):
                         stream_task.cancel()
                         try:
@@ -30951,26 +30994,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key or "?", _edit_err,
                         )
             elif _sc is not None and not _is_empty_sentinel:
-                # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed for this
-                # turn but suppression did NOT fire, so the gateway's normal
-                # final-send is about to run. On WeCom this is the exact window
-                # that produced "回复了两条" — a final-frame ack still in flight
-                # (final_content_delivered not yet set) while this send races
-                # ahead. Log the decision inputs so a recurrence can be pinned to
-                # "signal never set" vs "ack-pending race".
+                # DUPLICATE-RISK GATE (delivery-boundary dedup): a stream
+                # consumer existed for this turn but the normal suppression
+                # flags (final_response_sent / final_content_delivered) were
+                # not observed — either because the native-stream finalize
+                # ack was still in flight (WeCom: up to 15s pending-drain +
+                # 15s ack, and the adapter synthesises delivery on ack-
+                # timeout) or because the signal was never set. Before
+                # running the normal final-send, dedupe on content: if the
+                # stream consumer has ALREADY delivered the exact final text
+                # to the platform (visible prefix / recorded segments match),
+                # suppress the redundant send — WeCom has it on screen and
+                # a second send would duplicate ("回复了两条"). This only
+                # suppresses on an exact content match, so genuinely distinct
+                # content is never dropped and delivery semantics for distinct
+                # messages are unchanged.
+                #
+                # Note: `has_delivered_text` also consults
+                # `_delivered_commentary_texts`, which include temporary
+                # progress bubbles that are deleted after the turn. If a final
+                # response ever exactly equals a deleted commentary string, the
+                # dedup would suppress a message the user never keeps. In
+                # practice commentary is "Searching…"-style and never equals a
+                # real final answer (and the exact-match check is the only
+                # suppress path), so this is accepted as vanishingly unlikely.
                 # See docs/rca-wecom-stream-final-ack-timeout-duplicate.md.
-                logger.warning(
-                    "Normal final-send NOT suppressed despite active stream "
-                    "consumer for session %s: streamed=%s previewed=%s "
-                    "content_delivered=%s transformed=%s final_len=%d — "
-                    "possible duplicate send (see wecom ack-timeout RCA).",
-                    session_key or "?",
-                    _streamed,
-                    _previewed,
-                    _content_delivered,
-                    _transformed,
-                    len(_final),
+                from gateway.stream_consumer import (
+                    should_suppress_duplicate_final_send,
                 )
+                _sc_has_final = bool(should_suppress_duplicate_final_send(_sc, _final))
+                if _sc_has_final:
+                    response["already_sent"] = True
+                    logger.info(
+                        "Suppressed duplicate normal final-send for session %s: "
+                        "stream consumer already delivered identical final "
+                        "content (streamed=%s previewed=%s content_delivered=%s "
+                        "transformed=%s final_len=%d).",
+                        session_key or "?",
+                        _streamed, _previewed, _content_delivered, _transformed,
+                        len(_final),
+                    )
+                else:
+                    logger.warning(
+                        "Normal final-send NOT suppressed despite active stream "
+                        "consumer for session %s: streamed=%s previewed=%s "
+                        "content_delivered=%s transformed=%s final_len=%d — "
+                        "possible duplicate send (see wecom ack-timeout RCA).",
+                        session_key or "?",
+                        _streamed,
+                        _previewed,
+                        _content_delivered,
+                        _transformed,
+                        len(_final),
+                    )
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as

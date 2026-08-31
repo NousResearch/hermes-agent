@@ -286,6 +286,34 @@ class TestSendRecovery:
         adapter = _make_adapter()
         cli = _wire(adapter, _ScriptedCli())
         cli.script("channels", "members", _members())  # nobody to resolve
+        unresolved = json.dumps({
+            "error": "user_error",
+            "message": "mention '@-mention' does not match a current channel member",
+        })
+        # Composed ladder (#82646 + #83414): the presentation-escape retry
+        # fires first; when the CLI still rejects, the self-mention downgrade
+        # is the last rung.
+        cli.script("messages", "send", "", code=1, stderr=unresolved)
+        cli.script("messages", "send", "", code=1, stderr=unresolved)
+        cli.script("messages", "send", {"accepted": True, "event_id": "e3"})
+
+        result = await adapter.send(CHANNEL, "just @-mention me")
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert len(sends) == 3
+        # Rung 3: escaped presentation token, no mention flags.
+        assert "--mention" not in sends[1][0]
+        assert "\u200b" in (sends[1][1] or "")
+        # Rung 4: self-mention downgrade with the original content.
+        assert ["--mention", SELF_PUBKEY] == sends[2][0][-2:]
+        assert sends[2][1] == "just @-mention me"
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_token_escape_retry_delivers(self):
+        adapter = _make_adapter()
+        cli = _wire(adapter, _ScriptedCli())
+        cli.script("channels", "members", _members())
         cli.script(
             "messages", "send", "",
             code=1,
@@ -294,11 +322,12 @@ class TestSendRecovery:
                 "message": "mention '@-mention' does not match a current channel member",
             }),
         )
-        cli.script("messages", "send", {"accepted": True, "event_id": "e3"})
+        cli.script("messages", "send", {"accepted": True, "event_id": "e4"})
 
         result = await adapter.send(CHANNEL, "just @-mention me")
 
         assert result.success
         sends = self._send_calls(cli)
         assert len(sends) == 2
-        assert ["--mention", SELF_PUBKEY] == sends[1][0][-2:]
+        assert "--mention" not in sends[1][0]
+        assert sends[1][1] == "just @\u200b-mention me"

@@ -1393,11 +1393,15 @@ class TestBuzzAdapterSend:
 
         assert result.success is True
         assert result.message_id == "evt124"
-        assert len(cli.calls) == 2
-        assert cli.calls[0][1] == (
+        # Composed with #83414 mention resolution: resolution probes
+        # (channels members / messages get) precede the sends; assert on the
+        # publish calls only.
+        sends = [c for c in cli.calls if tuple(c[0][:2]) == ("messages", "send")]
+        assert len(sends) == 2
+        assert sends[0][1] == (
             "Continue in @session:default/20260809_092321_24aa09."
         )
-        assert cli.calls[1][1] == (
+        assert sends[1][1] == (
             "Continue in @\u200bsession:default/20260809_092321_24aa09."
         )
 
@@ -1417,7 +1421,10 @@ class TestBuzzAdapterSend:
         result = await adapter.send(CHANNEL, "hello @session")
 
         assert result.success is False
-        assert len(cli.calls) == 1
+        # Unrelated failures never retry the publish (mention-resolution
+        # probes for "@" content are not sends).
+        sends = [c for c in cli.calls if tuple(c[0][:2]) == ("messages", "send")]
+        assert len(sends) == 1
 
     @pytest.mark.asyncio
     async def test_send_image_retries_unresolved_presentation_mention(self, tmp_path):
@@ -1814,6 +1821,7 @@ class TestStandaloneSend:
             *,
             relay_url,
             private_key,
+            auth_tag="",
             input_text=None,
             timeout=30.0,
         ):

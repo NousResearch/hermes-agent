@@ -39,6 +39,9 @@ def _goal_continuation_event(source, goal="finish the task"):
         text=CONTINUATION_PROMPT_TEMPLATE.format(goal=goal),
         message_type=MessageType.TEXT,
         source=source,
+        internal=False,
+        allow_gateway_control=False,
+        goal_continuation=True,
     )
 
 

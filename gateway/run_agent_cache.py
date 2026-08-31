@@ -350,6 +350,7 @@ class GatewayAgentCacheMixin:
         from gateway.run import _CONVERSATION_SCOPED_STATE
         if not session_key:
             return
+        self._drop_goal_continuation_retry(session_key)
         state = self._peek_session_state(session_key)
         if state is not None:
             state.conversation.clear()

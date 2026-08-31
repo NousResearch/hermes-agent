@@ -232,6 +232,12 @@ _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
 
+# Mention-resolution caches: member lists are cheap to refetch but hit on
+# every publish containing "@", so a short TTL amortizes the CLI round-trip;
+# display names change rarely, but must not survive a rename forever.
+_MEMBER_CACHE_TTL = 60.0
+_PROFILE_NAME_TTL = 300.0
+
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
 # kind 44100 is Buzz's channel-membership event — used for live DM discovery.
 _WS_AUTH_TIMEOUT = 20.0
@@ -894,18 +900,213 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Sending ───────────────────────────────────────────────────────────
 
-    async def _run_message_send(self, args: List[str], content: str):
-        """Run one send with a single unresolved-mention preflight retry."""
-        code, out, err = await self._run_cli(args, input_text=content)
+    async def _channel_member_pubkeys(self, chat_id: str) -> List[str]:
+        """Candidate pubkeys for mention resolution, membership-accurate.
+
+        Primary source is ``channels members`` — the relay's membership
+        contract — because a ``--mention`` for a non-member makes the CLI
+        reject the whole publish.  CLIs without that subcommand fall back
+        to harvesting recent channel traffic (authors plus prior mention
+        tags), which can over-approximate; ``send()`` recovers from any
+        resulting non-member mention by retrying without mention flags.
+
+        The member list is cached per channel for ``_MEMBER_CACHE_TTL``
+        seconds so a chatty agent doesn't pay a CLI round-trip on every
+        publish; membership drift inside the TTL window is covered by the
+        same ``send()`` recovery retry.
+        """
+        cache: Dict[str, Tuple[float, List[str]]] = getattr(
+            self, "_member_cache", {}
+        )
+        self._member_cache = cache
+        cached = cache.get(str(chat_id))
+        if cached is not None and (time.monotonic() - cached[0]) < _MEMBER_CACHE_TTL:
+            return list(cached[1])
+        code, out, _err = await self._run_cli(
+            ["channels", "members", "--channel", str(chat_id)]
+        )
+        if code == 0:
+            pks: List[str] = []
+            try:
+                rows = json.loads(out or "[]")
+            except ValueError:
+                rows = []
+            for row in rows:
+                pk = row.get("pubkey") if isinstance(row, dict) else row
+                pk = str(pk or "").lower()
+                if pk and pk not in pks:
+                    pks.append(pk)
+            if pks:
+                cache[str(chat_id)] = (time.monotonic(), list(pks))
+                return pks
+        candidates: List[str] = []
+        code, out, _err = await self._run_cli(
+            ["messages", "get", "--channel", str(chat_id), "--limit", "50"]
+        )
+        if code == 0:
+            try:
+                for msg in json.loads(out or "[]"):
+                    pk = str(msg.get("pubkey") or "").lower()
+                    if pk and pk not in candidates:
+                        candidates.append(pk)
+                    for t in msg.get("tags") or []:
+                        if isinstance(t, list) and len(t) > 1 and t[0] == "p":
+                            tpk = str(t[1]).lower()
+                            if tpk and tpk not in candidates:
+                                candidates.append(tpk)
+            except ValueError:
+                pass
+        if candidates:
+            cache[str(chat_id)] = (time.monotonic(), list(candidates))
+        return candidates
+
+    async def _profile_display_name(self, pubkey: str) -> str:
+        """Display name for *pubkey* via ``users get --pubkey``, cached.
+
+        Bare ``users get`` may return only our own profile
+        (relay-dependent), so lookups are per-pubkey.  Entries expire after
+        ``_PROFILE_NAME_TTL`` seconds so a renamed member resolves under
+        their new display name without a process restart.
+        """
+        cache: Dict[str, Tuple[float, str]] = getattr(
+            self, "_profile_name_cache", {}
+        )
+        self._profile_name_cache = cache
+        cached = cache.get(pubkey)
+        if cached is not None and (time.monotonic() - cached[0]) < _PROFILE_NAME_TTL:
+            return cached[1]
+        name = ""
+        code, out, _err = await self._run_cli(["users", "get", "--pubkey", pubkey])
+        if code == 0:
+            try:
+                profiles = json.loads(out or "[]")
+            except ValueError:
+                profiles = []
+            if profiles and isinstance(profiles[0], dict):
+                p0 = profiles[0]
+                name = str(p0.get("display_name") or p0.get("name") or "").strip()
+                if not name and p0.get("content"):
+                    try:
+                        prof = json.loads(p0["content"])
+                        name = str(
+                            prof.get("display_name") or prof.get("name") or ""
+                        ).strip()
+                    except ValueError:
+                        pass
+        cache[pubkey] = (time.monotonic(), name)
+        return name
+
+    async def _mention_pubkeys_for(self, chat_id: str, content: str) -> List[str]:
+        """Resolve ``@Name`` references in *content* to member pubkeys.
+
+        The CLI hard-fails a publish when any @token fails to resolve to a
+        current member, and LLM prose is full of @-shaped tokens — including
+        real mentions with trailing punctuation ("@Riley!!") the CLI's own
+        parser rejects.  Passing explicit ``--mention`` pubkeys for every
+        member name we find keeps genuine mentions notifying (p-tags intact)
+        while downgrading everything unresolvable to presentation-only text.
+
+        Matching is mention-token semantics, not substring, bounded on both
+        sides with Unicode-aware word classes: the ``@`` must start a token
+        ("email@Fizz", "x@Fizz", "@@Fizz", and "山田@Fizz" do NOT wake
+        Fizz) and the name must be followed by a non-word character or
+        end-of-text ("@Riley!!" tags Riley; "@FizzBuzz" does NOT tag a
+        member named Fizz).  Longer names match first and consume their
+        span, so "@Hermes Matt" prefers the member "Hermes Matt" over a
+        member "Hermes".
+
+        Duplicate display names are ambiguous: the span is consumed but no
+        one is tagged (presentation-only), mirroring how Buzz treats
+        ambiguous names — never pick an arbitrary member.
+        """
+        if "@" not in content:
+            return []
+        by_name: Dict[str, List[str]] = {}
+        display: Dict[str, str] = {}
+        self_pk = getattr(self, "_self_pubkey", None)
+        for pk in await self._channel_member_pubkeys(chat_id):
+            if pk == self_pk:
+                continue
+            name = await self._profile_display_name(pk)
+            if not name:
+                continue
+            key = name.lower()
+            by_name.setdefault(key, [])
+            if pk not in by_name[key]:
+                by_name[key].append(pk)
+            display.setdefault(key, name)
+        found: List[str] = []
+        text = content
+        for key in sorted(by_name, key=len, reverse=True):
+            pattern = re.compile(
+                r"(?<![\w@])@" + re.escape(display[key]) + r"(?!\w)",
+                re.IGNORECASE,
+            )
+            if pattern.search(text):
+                pks = by_name[key]
+                if len(pks) == 1 and pks[0] not in found:
+                    found.append(pks[0])
+                # Consume the span either way: a shorter member name that is
+                # a prefix of this one must not double-match, and an
+                # ambiguous name must stay presentation-only rather than
+                # falling through to a partial match.
+                text = pattern.sub("\x00", text)
+        return found
+
+    async def _run_message_send(
+        self,
+        args: List[str],
+        content: str,
+        mention_pubkeys: Optional[List[str]] = None,
+    ):
+        """Run one send with bounded mention-failure recovery.
+
+        Ladder (each rung fires at most once):
+
+        1. publish with explicit ``--mention`` pubkeys resolved from the
+           content (#83414) so genuine member mentions carry p-tags and
+           mention-subscribed agents actually wake;
+        2. if the CLI rejects because a resolved pubkey is no longer a
+           member (membership drift), retry without the explicit mentions —
+           deliver the message rather than lose it;
+        3. if the CLI's preflight rejects an unresolvable presentation
+           ``@token`` in prose, escape exactly that token with an invisible
+           separator and retry (#82646 / #78797);
+        4. if the error persists and we know our own pubkey, retry once with
+           ``--mention <self>`` — supplying any explicit identity downgrades
+           unresolvable @names to presentation-only text (#83414); the echo
+           de-dupe already suppresses self-notification.
+        """
+        mention_args: List[str] = []
+        for pk in mention_pubkeys or []:
+            mention_args += ["--mention", pk]
+        code, out, err = await self._run_cli(args + mention_args, input_text=content)
         if code == 0:
             return code, out, err
+        if mention_args and "not channel members" in (err or ""):
+            # Membership drifted between resolution and publish (or the
+            # fallback candidate source over-approximated): never let a
+            # stale mention kill the message.
+            code, out, err = await self._run_cli(args, input_text=content)
+            if code == 0:
+                return code, out, err
         escaped = _escape_unresolved_presentation_mention(content, err)
-        if escaped is None:
-            return code, out, err
-        logger.info(
-            "Buzz: retrying message after unresolved presentation-mention preflight"
-        )
-        return await self._run_cli(args, input_text=escaped)
+        if escaped is not None:
+            logger.info(
+                "Buzz: retrying message after unresolved presentation-mention preflight"
+            )
+            code, out, err = await self._run_cli(args, input_text=escaped)
+            if code == 0:
+                return code, out, err
+        if (
+            code != 0
+            and "does not match a current channel member" in (err or "")
+            and getattr(self, "_self_pubkey", None)
+        ):
+            code, out, err = await self._run_cli(
+                args + ["--mention", self._self_pubkey], input_text=content
+            )
+        return code, out, err
 
     async def send(
         self,
@@ -927,7 +1128,8 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_message_send(args, content)
+        mention_pubkeys = await self._mention_pubkeys_for(chat_id, content)
+        code, out, err = await self._run_message_send(args, content, mention_pubkeys)
         if code != 0:
             return SendResult(
                 success=False,

@@ -215,6 +215,49 @@ def test_checkpoint_provider_receives_false_in_best_effort_mode():
     assert durable.require_checkpoint_calls == [False]
 
 
+def test_v2_provider_with_bare_signature_still_works():
+    """v2 providers written against the original docs example
+    (``def on_pre_compress(self, messages)``) must not TypeError when the
+    host forwards the checkpoint requirement — they fall back to the legacy
+    call shape and simply never see the signal."""
+    manager = MemoryManager()
+
+    class _BareSignatureCheckpointProvider(_BaseStubProvider):
+        pre_compress_checkpoint_api_version = PRE_COMPRESS_CHECKPOINT_API_VERSION
+
+    bare = _BareSignatureCheckpointProvider("bare-v2")
+    manager.add_provider(bare)
+
+    combined = manager.on_pre_compress(
+        [{"role": "user", "content": "evidence"}],
+        require_checkpoint=True,
+    )
+
+    assert combined == "bare-v2 context"
+    assert bare.pre_compress_calls
+
+
+def test_v2_provider_with_kwargs_catchall_receives_signal():
+    manager = MemoryManager()
+    observed = {}
+
+    class _KwargsCheckpointProvider(_BaseStubProvider):
+        pre_compress_checkpoint_api_version = PRE_COMPRESS_CHECKPOINT_API_VERSION
+
+        def on_pre_compress(self, messages, **kwargs):
+            observed.update(kwargs)
+            return "kw context"
+
+    manager.add_provider(_KwargsCheckpointProvider("kw"))
+
+    manager.on_pre_compress(
+        [{"role": "user", "content": "evidence"}],
+        require_checkpoint=True,
+    )
+
+    assert observed == {"require_checkpoint": True}
+
+
 def test_manager_require_checkpoint_propagates_checkpoint_provider_failure():
     manager = MemoryManager()
     manager.add_provider(_FailingCheckpointProvider("durable"))

@@ -41,6 +41,36 @@ from tools.registry import tool_error
 # historical best-effort contract (API v1).
 _LEGACY_PRE_COMPRESS_API_VERSION = 1
 
+
+def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
+    """True if ``fn`` can receive the ``require_checkpoint`` keyword.
+
+    Checkpoint (v2) providers written against the original docs example use
+    the bare ``on_pre_compress(self, messages)`` signature; calling them with
+    the keyword would raise ``TypeError`` — which, under
+    ``require_checkpoint=True``, the host would re-raise as a checkpoint
+    failure even though the provider's durable write succeeded. Inspect the
+    signature and fall back to the legacy call shape when the keyword (or a
+    ``**kwargs`` catch-all) is absent. Unreadable signatures (C callables,
+    exotic proxies) conservatively report False.
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if (
+            param.name == "require_checkpoint"
+            and param.kind in (
+                inspect.Parameter.KEYWORD_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ):
+            return True
+    return False
+
 logger = logging.getLogger(__name__)
 
 # How long shutdown_all() waits for in-flight background sync/prefetch work
@@ -1122,12 +1152,19 @@ class MemoryManager:
             if is_checkpoint_provider and evidence_messages is not None:
                 provider_messages = evidence_messages
             try:
-                if is_checkpoint_provider:
+                if is_checkpoint_provider and _accepts_require_checkpoint(
+                    provider.on_pre_compress
+                ):
                     result = provider.on_pre_compress(
                         provider_messages,
                         require_checkpoint=require_checkpoint,
                     )
                 else:
+                    # Legacy (v1) providers keep the strict one-argument
+                    # contract. v2 providers written against the original
+                    # docs example (``def on_pre_compress(self, messages)``)
+                    # also land here instead of dying on an unexpected
+                    # kwarg — they simply never see the requirement signal.
                     result = provider.on_pre_compress(provider_messages)
                 if result and result.strip():
                     parts.append(result)

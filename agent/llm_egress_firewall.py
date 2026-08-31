@@ -245,7 +245,13 @@ _SAFE_DIAGNOSTIC_STATUS_WORDS = frozenset({
     "AVAILABILITY",
     "HANDLING",
     "VERIFICATION",
+    "ADVISORY",
 })
+_BOUNDED_SOURCE_CODE_ATOM = re.compile(
+    r"(?:[a-z][a-z0-9]{0,63}(?:_[a-z0-9]{1,64}){1,7}"
+    r"|[a-z][a-z0-9]{0,63}(?:-[a-z][a-z0-9]{0,63}){1,7}"
+    r"|[A-Z][0-9]{3,4})"
+)
 # Any-case letters + optional trailing slash: GitHub-style org/repo slugs
 # ("NousResearch/hermes") and vault/skill paths ("Memories/Shared/") use
 # mixed case; a lone directory reference ("scripts/") has nothing after
@@ -728,6 +734,25 @@ def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> b
         seen.add(identity)
         return any(_contains_canonical_base64(item, seen=seen) for item in value)
     return False
+
+
+def _source_text_for_base64_scan(text: str) -> str:
+    """Mask bounded code atoms only after exact source-grant validation.
+
+    Snake-case config keys, lowercase kebab-case rule names, and linter codes
+    can mathematically round-trip as unpadded Base64.  Their grammar is
+    low-entropy and ordinary in source files.  Actual encoded blobs remain
+    unchanged and are still rejected by the canonical scanner.
+    """
+
+    return _BASE64_CANDIDATE.sub(
+        lambda match: (
+            "<code>"
+            if _BOUNDED_SOURCE_CODE_ATOM.fullmatch(match.group(1))
+            else match.group(0)
+        ),
+        text,
+    )
 
 
 def _contains_secret(value: Any, *, seen: set[int] | None = None) -> bool:
@@ -1555,7 +1580,7 @@ class LLMEgressFirewall:
                 referenced_grants.add(segment.source_grant_digest)
                 source_segment_count += 1
                 scan_values.append(text)
-                base64_scan_values.append(text)
+                base64_scan_values.append(_source_text_for_base64_scan(text))
                 return text
             if isinstance(segment, SourcePresentationSegment):
                 grant_and_content = grant_contents.get(segment.source_grant_digest)
@@ -1584,7 +1609,9 @@ class LLMEgressFirewall:
                 referenced_grants.add(segment.source_grant_digest)
                 source_segment_count += 1
                 scan_values.append(segment.text)
-                base64_scan_values.append(segment.text)
+                base64_scan_values.append(
+                    _source_text_for_base64_scan(segment.text)
+                )
                 return segment.text
             if isinstance(segment, UntrustedProvenanceSegment):
                 reasons.append("untrusted_provenance")

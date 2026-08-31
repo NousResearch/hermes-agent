@@ -27,6 +27,7 @@ from agent.llm_egress_firewall import (
     SanitizedSegment,
     SourceGrant,
     SourceBoundSegment,
+    SourcePresentationSegment,
     TypedOutboundRequest,
     ValidatedToolSyntaxSegment,
     classify_destination,
@@ -607,6 +608,79 @@ def test_base64_payload_split_by_whitespace_is_still_rejected(tmp_path):
     split = " ".join(encoded[index : index + 2] for index in range(0, len(encoded), 2))
     with pytest.raises(EgressBlocked) as exc_info:
         firewall(tmp_path).preflight(_sanitized_request(split), _route())
+    assert "base64_payload" in exc_info.value.decision.reason_codes
+
+
+def _source_presentation_request(grant: SourceGrant, text: str) -> TypedOutboundRequest:
+    return TypedOutboundRequest(
+        payload={
+            "messages": [
+                {
+                    "role": LiteralSegment("user"),
+                    "content": OutboundText(
+                        (
+                            SourcePresentationSegment(
+                                source_grant_digest(grant),
+                                text,
+                                "read_file_json_v1",
+                            ),
+                        )
+                    ),
+                }
+            ]
+        },
+        session_id=grant.session_id,
+        turn_id=grant.turn_id,
+        request_id=grant.request_id,
+        policy_digest=grant.policy_digest,
+    )
+
+
+def test_source_presentation_allows_bounded_code_and_config_atoms(tmp_path):
+    path = tmp_path / "pyproject.toml"
+    source = (
+        "[tool.mypy]\n"
+        "warn_unused_ignores = true\n"
+        "# ADVISORY: retain F401 and multi-value-repeated-key-literal\n"
+    )
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=3)
+    presentation = json.dumps(
+        {
+            "content": "\n".join(
+                f"{number}|{line}"
+                for number, line in enumerate(source.split("\n"), start=1)
+            )
+        }
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_still_rejects_actual_base64_payload(tmp_path):
+    encoded = base64.b64encode(b"private source that must not leave the host").decode(
+        "ascii"
+    )
+    path = tmp_path / "encoded.txt"
+    source = encoded + "\n"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path)
+    presentation = json.dumps({"content": f"1|{encoded}\n2|"})
+
+    with pytest.raises(EgressBlocked) as exc_info:
+        firewall(tmp_path).preflight(
+            _source_presentation_request(grant, presentation),
+            _route(),
+            grants=(grant,),
+        )
+
     assert "base64_payload" in exc_info.value.decision.reason_codes
 
 

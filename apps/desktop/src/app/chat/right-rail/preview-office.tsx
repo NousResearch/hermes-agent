@@ -92,14 +92,18 @@ function SpreadsheetGrid({ formulaBarLabel, sheets }: { formulaBarLabel: string;
           ))}
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-auto">
-        <table className="min-w-full border-collapse font-mono text-[0.7rem] leading-5" role="grid">
+      <div
+        className="min-h-0 flex-1 overflow-auto"
+        data-testid="office-sheet-scroll"
+        style={{ backgroundColor: '#ffffff' }}
+      >
+        <table className="w-max min-w-full border-collapse font-mono text-[0.7rem] leading-5" role="grid">
           <thead className="sticky top-0 z-10 bg-muted/80">
             <tr>
               <th className="sticky left-0 z-20 w-10 border-b border-r border-border/60 bg-muted/80 px-1 py-1 text-right font-medium text-muted-foreground" />
               {Array.from({ length: colCount }, (_, col) => (
                 <th
-                  className="border-b border-r border-border/60 px-2 py-1 text-center font-medium text-muted-foreground"
+                  className="min-w-24 border-b border-r border-border/60 px-2 py-1 text-center font-medium text-muted-foreground"
                   key={col}
                 >
                   {columnLabel(col)}
@@ -121,15 +125,15 @@ function SpreadsheetGrid({ formulaBarLabel, sheets }: { formulaBarLabel: string;
                     <td
                       aria-selected={isSelected}
                       className={cn(
-                        'max-w-64 cursor-default truncate border-b border-r border-border/50 px-2 py-1',
+                        'min-w-24 max-w-64 cursor-default truncate border-b border-r border-border/50 px-2 py-1',
                         isSelected ? 'outline outline-2 outline-offset-[-2px] outline-ring' : undefined
                       )}
                       key={col}
                       onClick={() => setSelected({ col, row: rowIndex })}
                       role="gridcell"
                       style={{
-                        backgroundColor: cell?.fill,
-                        color: cell?.color,
+                        backgroundColor: cell?.fill || '#ffffff',
+                        color: cell?.color || '#000000',
                         fontStyle: cell?.italic ? 'italic' : undefined,
                         fontWeight: cell?.bold ? 700 : undefined,
                         textAlign: cell?.align

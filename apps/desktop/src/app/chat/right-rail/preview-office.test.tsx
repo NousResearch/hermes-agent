@@ -113,6 +113,42 @@ describe('OfficePreviewView', () => {
     expect(cell.style.fontWeight).toBe('700')
   })
 
+  it('paints unstyled cells on a white sheet so dark Excel fonts stay readable', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'spreadsheet',
+          sheets: [{ name: 'Revenue', rows: cells([['Ada']])}]
+        }}
+        {...labels}
+      />
+    )
+
+    const cell = screen.getByRole('gridcell', { name: 'Ada' })
+
+    expect(cell.style.backgroundColor).toBe('rgb(255, 255, 255)')
+    expect(cell.style.color).toBe('rgb(0, 0, 0)')
+    expect(screen.getByTestId('office-sheet-scroll').className).toMatch(/overflow-auto/)
+    expect(screen.getByTestId('office-sheet-scroll').style.backgroundColor).toBe('rgb(255, 255, 255)')
+  })
+
+  it('keeps the sheet wide enough to scroll past the pane', () => {
+    render(
+      <OfficePreviewView
+        preview={{
+          kind: 'spreadsheet',
+          sheets: [{ name: 'Revenue', rows: cells([['Ada', 'Bob', 'Cara']])}]
+        }}
+        {...labels}
+      />
+    )
+
+    const table = screen.getByRole('grid')
+
+    expect(table.className).toMatch(/w-max/)
+    expect(screen.getByRole('gridcell', { name: 'Ada' }).className).toMatch(/min-w-/)
+  })
+
   it('renders document runs as React text, not HTML', () => {
     const { container } = render(
       <OfficePreviewView

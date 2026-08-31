@@ -43,6 +43,22 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from utils import base_url_host_matches, is_truthy_value
 
+
+def _resolve_kanban_worker_guidance(valid_tool_names: set[str]) -> str:
+    """Return worker protocol only for an actual dispatcher-owned task."""
+    if "kanban_show" not in valid_tool_names or not os.environ.get(
+        "HERMES_KANBAN_TASK"
+    ):
+        return ""
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
+    if not is_dispatcher_owned_worker_context():
+        return ""
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    return KANBAN_GUIDANCE
+
+
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
 logger = logging.getLogger("run_agent")
 
@@ -1063,10 +1079,13 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
-    # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
-    from agent.prompt_builder import KANBAN_GUIDANCE
-    agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+    # Kanban worker lifecycle guidance is session-static. Orchestrator profiles
+    # may expose kanban_show without owning a task, so tool presence alone is
+    # not proof that the startup protocol applies. Resolving the ~835-token
+    # block once here avoids re-running the checks on every system-prompt
+    # rebuild (init + each context compression).
+    agent._kanban_worker_guidance = _resolve_kanban_worker_guidance(
+        agent.valid_tool_names
     )
     if agent.quiet_mode:
         return

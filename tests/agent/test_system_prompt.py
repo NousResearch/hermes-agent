@@ -135,6 +135,38 @@ class TestContextFileCwd:
         assert "chosen workspace instructions" in context
 
 
+class TestKanbanWorkerGuidance:
+    def test_orchestrator_tool_presence_does_not_trigger_worker_startup(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        agent = _make_agent(
+            valid_tool_names=["kanban_show"],
+            _kanban_worker_guidance=None,
+        )
+
+        assert "Call `kanban_show()` first" not in _stable_prompt(agent)
+
+    def test_dispatcher_task_triggers_worker_startup(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+        agent = _make_agent(
+            valid_tool_names=["kanban_show"],
+            _kanban_worker_guidance=None,
+        )
+
+        assert "Call `kanban_show()` first" in _stable_prompt(agent)
+
+    def test_agent_init_gate_rejects_in_process_non_worker(self, monkeypatch):
+        from agent.agent_init import _resolve_kanban_worker_guidance
+        from agent.delegation_context import non_dispatcher_owned_context
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+        with non_dispatcher_owned_context():
+            guidance = _resolve_kanban_worker_guidance({"kanban_show"})
+
+        assert guidance == ""
+
+
 def _stable_prompt(agent):
     with (
         patch("agent.prompt_builder.load_soul_md", return_value=""),

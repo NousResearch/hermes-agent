@@ -496,3 +496,244 @@ class TestEngineOverride:
         assert len(captured_cmds) == 1
         assert "--engine" in captured_cmds[0]
         assert captured_cmds[0][captured_cmds[0].index("--engine") + 1] == "lightpanda"
+
+
+# ---------------------------------------------------------------------------
+# lightpanda_engine_status — is the engine in effect, or shadowed?
+# ---------------------------------------------------------------------------
+
+class TestLightpandaEngineStatus:
+    def _gates(self, monkeypatch, **overrides):
+        import tools.browser_tool as bt
+
+        gates = dict(
+            _using_lightpanda_engine=lambda: True,
+            _get_cdp_override_raw=lambda: "",
+            _is_camofox_mode=lambda: False,
+            _get_cloud_provider=lambda: None,
+            _is_browser_use_cli_mode=lambda: True,
+            _use_real_profile=lambda: False,
+        )
+        gates.update(overrides)
+        for name, fn in gates.items():
+            monkeypatch.setattr(bt, name, fn)
+        monkeypatch.setattr(
+            "tools.browser_use_cli.is_legacy_browser_use_cloud_config", lambda cfg: False
+        )
+        return bt
+
+    def test_not_lightpanda(self, monkeypatch):
+        bt = self._gates(monkeypatch, _using_lightpanda_engine=lambda: False)
+        assert bt.lightpanda_engine_status() == (False, "")
+
+    def test_used_in_browser_use_mode(self, monkeypatch):
+        bt = self._gates(monkeypatch)
+        used, reason = bt.lightpanda_engine_status()
+        assert used is True
+        assert "lightpanda serve" in reason
+
+    def test_used_with_builtin_tools(self, monkeypatch):
+        bt = self._gates(monkeypatch, _is_browser_use_cli_mode=lambda: False)
+        used, reason = bt.lightpanda_engine_status()
+        assert used is True
+        assert "--engine lightpanda" in reason
+
+    def test_shadowed_by_cdp_override(self, monkeypatch):
+        bt = self._gates(monkeypatch, _get_cdp_override_raw=lambda: "ws://x")
+        used, reason = bt.lightpanda_engine_status()
+        assert used is False and "CDP override" in reason
+
+    def test_shadowed_by_camofox(self, monkeypatch):
+        bt = self._gates(monkeypatch, _is_camofox_mode=lambda: True)
+        used, reason = bt.lightpanda_engine_status()
+        assert used is False and "Camofox" in reason
+
+    def test_shadowed_by_cloud_provider(self, monkeypatch):
+        provider = MagicMock()
+        provider.provider_name.return_value = "Browserbase"
+        bt = self._gates(monkeypatch, _get_cloud_provider=lambda: provider)
+        used, reason = bt.lightpanda_engine_status()
+        assert used is False and "Browserbase" in reason
+
+    def test_shadowed_by_legacy_browser_use_cloud(self, monkeypatch):
+        bt = self._gates(monkeypatch)
+        monkeypatch.setattr(
+            "tools.browser_use_cli.is_legacy_browser_use_cloud_config", lambda cfg: True
+        )
+        used, reason = bt.lightpanda_engine_status()
+        assert used is False and "Browser Use cloud" in reason
+
+    def test_shadowed_by_real_profile(self, monkeypatch):
+        bt = self._gates(monkeypatch, _use_real_profile=lambda: True)
+        used, reason = bt.lightpanda_engine_status()
+        assert used is False and "use_real_profile" in reason
+
+
+# ---------------------------------------------------------------------------
+# Browser Use mode session lifecycle
+# ---------------------------------------------------------------------------
+
+class _FakeServer:
+    def __init__(self, port=4321, alive=True):
+        self.port = port
+        self.cdp_url = f"http://127.0.0.1:{port}"
+        self._alive = alive
+
+    def is_alive(self):
+        return self._alive
+
+
+class TestLightpandaSessionCreation:
+    def _common(self, monkeypatch, *, bu_mode=True, local_backend=True, launch=None):
+        import tools.browser_tool as bt
+
+        calls = []
+
+        def fake_launch(session_name, *, block_private_networks=False):
+            calls.append((session_name, block_private_networks))
+            if launch is not None:
+                return launch
+            return _FakeServer(), None
+
+        monkeypatch.setattr(bt, "_real_profile_cdp", lambda: (None, None))
+        monkeypatch.setattr(bt, "_is_browser_use_cli_mode", lambda: bu_mode)
+        monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+        monkeypatch.setattr(bt, "_is_local_backend", lambda: local_backend)
+        monkeypatch.setattr("tools.browser_lightpanda.launch_lightpanda", fake_launch)
+        return bt, calls
+
+    def test_spawns_lightpanda_in_browser_use_mode(self, monkeypatch):
+        bt, calls = self._common(monkeypatch)
+        info = bt._create_local_session("task-1")
+        assert info["session_name"].startswith("lp_")
+        assert info["cdp_url"] == "http://127.0.0.1:4321"
+        assert info["features"] == {"local": True, "lightpanda": True}
+        assert info["bb_session_id"] is None
+        assert calls == [(info["session_name"], False)]
+
+    def test_blocks_private_networks_for_containerised_terminal(self, monkeypatch):
+        bt, calls = self._common(monkeypatch, local_backend=False)
+        bt._create_local_session("task-1")
+        assert calls[0][1] is True
+
+    def test_ignores_engine_outside_browser_use_mode(self, monkeypatch):
+        bt, calls = self._common(monkeypatch, bu_mode=False)
+        info = bt._create_local_session("task-1")
+        assert info["features"] == {"local": True}
+        assert info["cdp_url"] is None
+        assert calls == []
+
+    def test_launch_failure_raises(self, monkeypatch):
+        bt, _ = self._common(monkeypatch, launch=(None, "no lightpanda binary was found"))
+        with pytest.raises(RuntimeError, match="no lightpanda binary"):
+            bt._create_local_session("task-1")
+
+
+class TestLightpandaSessionLifecycle:
+    def setup_method(self):
+        import tools.browser_tool as bt
+
+        self.bt = bt
+        self.orig_sessions = bt._active_sessions.copy()
+        self.orig_activity = bt._session_last_activity.copy()
+        self.orig_cleanup_done = bt._cleanup_done
+        bt._active_sessions.clear()
+        bt._session_last_activity.clear()
+
+    def teardown_method(self):
+        bt = self.bt
+        bt._active_sessions.clear()
+        bt._active_sessions.update(self.orig_sessions)
+        bt._session_last_activity.clear()
+        bt._session_last_activity.update(self.orig_activity)
+        bt._cleanup_done = self.orig_cleanup_done
+
+    def _seed(self, key="task-1", name="lp_dead"):
+        info = {
+            "session_name": name,
+            "bb_session_id": None,
+            "cdp_url": "http://127.0.0.1:1",
+            "features": {"local": True, "lightpanda": True},
+        }
+        self.bt._active_sessions[key] = info
+        self.bt._session_last_activity[key] = 1.0
+        return info
+
+    def test_dead_process_is_detected(self, monkeypatch):
+        info = self._seed()
+        monkeypatch.setattr("tools.browser_lightpanda.get_server", lambda name: None)
+        assert self.bt._local_backend_process_dead(info) is True
+        monkeypatch.setattr(
+            "tools.browser_lightpanda.get_server", lambda name: _FakeServer(alive=False)
+        )
+        assert self.bt._local_backend_process_dead(info) is True
+        monkeypatch.setattr("tools.browser_lightpanda.get_server", lambda name: _FakeServer())
+        assert self.bt._local_backend_process_dead(info) is False
+        assert self.bt._local_backend_process_dead({"features": {"local": True}}) is False
+
+    def test_get_session_info_respawns_dead_lightpanda(self, monkeypatch):
+        bt = self.bt
+        stale = self._seed()
+        fresh = {
+            "session_name": "lp_fresh",
+            "bb_session_id": None,
+            "cdp_url": "http://127.0.0.1:2",
+            "features": {"local": True, "lightpanda": True},
+        }
+        cleaned = []
+
+        def fake_cleanup(key):
+            cleaned.append(key)
+            bt._active_sessions.pop(key, None)
+
+        monkeypatch.setattr(bt, "_start_browser_cleanup_thread", lambda: None)
+        monkeypatch.setattr(
+            bt, "_browser_session_backend",
+            lambda key: MagicMock(ensure_healthy=lambda: True),
+        )
+        monkeypatch.setattr("tools.browser_lightpanda.get_server", lambda name: None)
+        monkeypatch.setattr(bt, "_cleanup_single_browser_session", fake_cleanup)
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+        monkeypatch.setattr(bt, "_create_local_session", lambda *a, **k: fresh)
+        supervised = []
+        monkeypatch.setattr(bt, "_ensure_cdp_supervisor", supervised.append)
+
+        info = bt._get_session_info("task-1")
+        assert cleaned == ["task-1"]
+        assert info["session_name"] == "lp_fresh"
+        assert bt._active_sessions["task-1"]["session_name"] == "lp_fresh"
+        assert info["session_name"] != stale["session_name"]
+        # Browser Use mode hides the browser_* tools that read supervisor
+        # state; a Lightpanda session never attaches one.
+        assert supervised == []
+
+    def test_cleanup_stops_lightpanda_without_agent_browser_close(self, monkeypatch):
+        bt = self.bt
+        self._seed()
+        stopped = []
+        monkeypatch.setattr("tools.browser_lightpanda.stop_lightpanda", stopped.append)
+        with patch("tools.browser_tool._maybe_stop_recording"), \
+             patch("tools.browser_tool._run_browser_command") as run, \
+             patch("tools.browser_tool.os.path.exists", return_value=False):
+            bt.cleanup_browser("task-1")
+        run.assert_not_called()
+        assert stopped == ["lp_dead"]
+        assert "task-1" not in bt._active_sessions
+        assert "task-1" not in bt._session_last_activity
+
+    def test_emergency_cleanup_stops_all_lightpanda(self, monkeypatch):
+        bt = self.bt
+        bt._cleanup_done = False
+        with patch("tools.browser_lightpanda.stop_all_lightpanda") as stop_all, \
+             patch("tools.browser_tool._terminate_real_profile_chrome"), \
+             patch("tools.browser_tool.cleanup_all_browsers"), \
+             patch("tools.browser_tool._reap_orphaned_browser_sessions"):
+            bt._emergency_cleanup_all_sessions()
+        stop_all.assert_called_once()
+
+    def test_orphan_reaper_sweeps_lightpanda_records(self, tmp_path):
+        with patch("tools.browser_lightpanda.reap_orphaned_lightpanda") as reap, \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)):
+            self.bt._reap_orphaned_browser_sessions()
+        reap.assert_called_once()

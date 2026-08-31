@@ -615,6 +615,10 @@ TOOL_CATEGORIES = {
         # fresh install — pressing Enter must land on the free, no-key local
         # backend, never on the paid Nous Subscription gateway row:
         #   - "Local Browser" — non-cloud option, no CloudBrowserProvider.
+        #   - "Lightpanda" — local too (cloud_provider: local) but with
+        #     browser.engine: lightpanda; Browser Use mode spawns
+        #     ``lightpanda serve`` itself, the built-in tools use
+        #     ``agent-browser --engine lightpanda``. No Chromium needed.
         #   - "Nous Subscription (Browser Use cloud)" — managed Browser Use
         #     billed via Nous subscription (requires_nous_auth +
         #     override_env_vars). Uses the browser-use plugin as the
@@ -629,7 +633,17 @@ TOOL_CATEGORIES = {
                 "tag": "Headless Chromium, no API key needed",
                 "env_vars": [],
                 "browser_provider": "local",
+                "browser_engine": "auto",
                 "post_setup": "agent_browser",
+            },
+            {
+                "name": "Lightpanda",
+                "badge": "free · local · no Chromium",
+                "tag": "Zig headless browser spawned by Hermes, text-only (no screenshots)",
+                "env_vars": [],
+                "browser_provider": "local",
+                "browser_engine": "lightpanda",
+                "post_setup": "lightpanda",
             },
             {
                 "name": "Nous Subscription (Browser Use cloud)",
@@ -2028,6 +2042,28 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     from hermes_constants import find_node_executable
+
+    if post_setup_key == "lightpanda":
+        # Browser Use mode drives Lightpanda directly (Hermes spawns
+        # ``lightpanda serve``); the built-in tools go through agent-browser.
+        # Neither needs a Chromium build.
+        _ensure_browser_use_cli()
+        from tools.browser_lightpanda import (
+            LIGHTPANDA_INSTALL_HINT,
+            find_lightpanda_binary,
+        )
+
+        lightpanda_bin = find_lightpanda_binary()
+        if lightpanda_bin:
+            _print_success(f"    Lightpanda found: {lightpanda_bin}")
+        else:
+            _print_warning(
+                "    lightpanda binary not found on PATH, ~/.lightpanda or ~/.local/bin"
+            )
+            _print_info(f"    {LIGHTPANDA_INSTALL_HINT}")
+            if os.name == "nt":
+                _print_info("    Lightpanda has no native Windows build; run Hermes under WSL2.")
+        return
 
     if post_setup_key in {"agent_browser", "browserbase"}:
         # Every non-Camofox browser backend drives through the Browser Use
@@ -3747,8 +3783,19 @@ _POST_SETUP_READY: dict = {
     "agent_browser": lambda: _agent_browser_installed(),
     "browserbase": lambda: _cloud_agent_browser_installed(),
     "camofox": lambda: _camofox_installed(),
+    "lightpanda": lambda: _lightpanda_installed(),
     "cua_driver": lambda: _cua_driver_install_ready(),
 }
+
+
+def _lightpanda_installed() -> bool:
+    """True when a lightpanda binary is on PATH or in a known install dir."""
+    try:
+        from tools.browser_lightpanda import find_lightpanda_binary
+
+        return find_lightpanda_binary() is not None
+    except Exception:
+        return False
 
 
 def _cloud_agent_browser_installed() -> bool:
@@ -4159,7 +4206,15 @@ def _is_provider_active(
         # Browser Use mode composes with the provider (driver over the
         # provider's CDP endpoint) — don't deactivate the provider row.
         current = cfg_get(config, "browser", "cloud_provider")
-        return provider["browser_provider"] == current
+        if provider["browser_provider"] != current:
+            return False
+        # Two local rows differ only by engine ("Local Browser" vs
+        # "Lightpanda"): config.yaml is the picker's source of truth here,
+        # the AGENT_BROWSER_ENGINE env var is not consulted.
+        if provider.get("browser_engine"):
+            engine = str(cfg_get(config, "browser", "engine") or "auto").strip().lower()
+            return engine == provider["browser_engine"]
+        return True
     if provider.get("browser_backend"):
         backend = cfg_get(config, "browser", "backend")
         if backend is False:
@@ -4680,6 +4735,12 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         browser_cfg = config.setdefault("browser", {})
         browser_cfg["backend"] = provider["browser_backend"]
 
+    # Local engine rows ("Local Browser" resets to auto, "Lightpanda" sets
+    # lightpanda). Composes with browser.backend like the provider does.
+    if provider.get("browser_engine"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["engine"] = provider["browser_engine"]
+
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         _set_selection("web", "backend", provider["web_backend"])
@@ -4874,6 +4935,9 @@ def _configure_provider(
 
     if provider.get("browser_backend"):
         _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
+
+    if provider.get("browser_engine") and provider["browser_engine"] != "auto":
+        _print_success(f"  Browser engine set to: {provider['browser_engine']}")
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -5411,6 +5475,12 @@ def _reconfigure_provider(
         browser_cfg = config.setdefault("browser", {})
         browser_cfg["backend"] = provider["browser_backend"]
         _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
+
+    if provider.get("browser_engine"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["engine"] = provider["browser_engine"]
+        if provider["browser_engine"] != "auto":
+            _print_success(f"  Browser engine set to: {provider['browser_engine']}")
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):

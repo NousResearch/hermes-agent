@@ -1664,3 +1664,40 @@ class TestMacOSTCCGrants:
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
+
+
+def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(
+        bt, "lightpanda_engine_status",
+        lambda: (False, "cloud provider Browserbase is selected"),
+    )
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "browser.engine=lightpanda is shadowed" in out
+    assert "Browserbase" in out
+
+
+def test_run_doctor_reports_lightpanda_ok(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(bt, "lightpanda_engine_status", lambda: (True, "Browser Use mode"))
+    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: "/opt/lightpanda")
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "Lightpanda" in out
+    assert "shadowed" not in out
+
+
+def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(bt, "lightpanda_engine_status", lambda: (True, "Browser Use mode"))
+    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "Lightpanda selected but binary not found" in out

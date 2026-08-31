@@ -1140,6 +1140,55 @@ def _using_lightpanda_engine() -> bool:
     return _get_browser_engine() == "lightpanda"
 
 
+def lightpanda_engine_status() -> Tuple[bool, str]:
+    """Whether ``browser.engine: lightpanda`` is actually in effect, and why.
+
+    Returns ``(False, "")`` when the engine is not lightpanda. Otherwise the
+    reason names the setting that shadows it (a cloud provider, Camofox, a
+    CDP override, Browser Use cloud, the real-profile toggle) or, when it is
+    in use, which driver runs it. Mirrors the precedence of
+    ``_should_inject_engine`` (built-in tools) and
+    ``browser_use_cli._resolve_backend_cdp`` (Browser Use mode) using only
+    no-I/O gates, so ``/browser status`` and ``hermes doctor`` can call it.
+    """
+    if not _using_lightpanda_engine():
+        return False, ""
+    if _get_cdp_override_raw():
+        return False, "a CDP override is active (/browser connect or browser.cdp_url)"
+    if _is_camofox_mode():
+        return False, "Camofox is the selected browser (CAMOFOX_URL)"
+    try:
+        provider = _get_cloud_provider()
+    except Exception:
+        provider = None
+    if provider is not None:
+        try:
+            name = provider.provider_name()
+        except Exception:
+            name = type(provider).__name__
+        return False, (
+            f"cloud provider {name} is selected (browser.cloud_provider, or "
+            "auto-detected from credentials)"
+        )
+    bu_mode = _is_browser_use_cli_mode()
+    if bu_mode:
+        try:
+            from tools.browser_use_cli import (
+                _read_browser_cfg,
+                is_legacy_browser_use_cloud_config,
+            )
+
+            if is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+                return False, "Browser Use cloud (BROWSER_USE_API_KEY) is selected"
+        except Exception as e:
+            logger.debug("legacy Browser Use cloud check failed: %s", e)
+    if _use_real_profile():
+        return False, "browser.use_real_profile is on (Lightpanda cannot load a Chromium profile)"
+    if bu_mode:
+        return True, "Browser Use mode: Hermes spawns `lightpanda serve` per session"
+    return True, "built-in browser tools: agent-browser --engine lightpanda"
+
+
 def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any]) -> Optional[str]:
     """Return the user-visible reason a Lightpanda result needs Chrome fallback.
 
@@ -2279,6 +2328,16 @@ def _emergency_cleanup_all_sessions():
                 _session_last_activity.clear()
                 _recording_sessions.clear()
 
+    # Lightpanda servers (Browser Use mode) are processes we spawned; the
+    # session cleanup above stops the tracked ones, this catches any that
+    # fell out of ``_active_sessions``.
+    try:
+        from tools.browser_lightpanda import stop_all_lightpanda
+
+        stop_all_lightpanda()
+    except Exception as e:
+        logger.debug("Lightpanda cleanup on exit failed: %s", e)
+
     # Sweep orphans from other crashed hermes processes.  Safe even if we
     # never used the browser — uses owner_pid liveness to avoid reaping
     # daemons owned by other live hermes processes.
@@ -2491,6 +2550,16 @@ def _reap_orphaned_browser_sessions():
     Safe to call from any context — atexit, cleanup thread, or on demand.
     """
     import glob
+
+    # Lightpanda servers spawned for Browser Use mode keep their own records
+    # (no agent-browser socket dir); sweep them with the same owner-liveness
+    # rule before the daemon scan, which may return early.
+    try:
+        from tools.browser_lightpanda import reap_orphaned_lightpanda
+
+        reap_orphaned_lightpanda()
+    except Exception as e:
+        logger.debug("Lightpanda orphan reap failed: %s", e)
 
     tmpdir = _socket_safe_tmpdir()
     pattern = os.path.join(tmpdir, "agent-browser-h_*")
@@ -2879,6 +2948,14 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
                 "features": {"local": True, "real_profile": True},
             }
 
+    # Browser Use mode drives whatever CDP endpoint it is handed; with
+    # ``browser.engine: lightpanda`` that endpoint is a Hermes-spawned
+    # ``lightpanda serve``. The built-in tools never reach this branch —
+    # they are hidden in Browser Use mode — and keep driving Lightpanda via
+    # ``agent-browser --engine lightpanda`` on the plain local session below.
+    if _is_browser_use_cli_mode() and _using_lightpanda_engine():
+        return _create_lightpanda_session(task_id)
+
     session_name = f"h_{uuid.uuid4().hex[:10]}"
     logger.info("Created local browser session %s for task %s",
                 session_name, task_id)
@@ -2888,6 +2965,39 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
         "cdp_url": None,
         "features": {"local": True},
     }
+
+
+def _create_lightpanda_session(task_id: str) -> Dict[str, Any]:
+    """Spawn ``lightpanda serve`` for this session key (Browser Use mode)."""
+    import uuid
+    from tools.browser_lightpanda import launch_lightpanda
+
+    session_name = f"lp_{uuid.uuid4().hex[:10]}"
+    server, err = launch_lightpanda(
+        session_name, block_private_networks=not _is_local_backend()
+    )
+    if err:
+        raise RuntimeError(err)
+    logger.info(
+        "Created Lightpanda session %s (port %s) for task %s",
+        session_name, server.port, task_id,
+    )
+    return {
+        "session_name": session_name,
+        "bb_session_id": None,
+        "cdp_url": server.cdp_url,
+        "features": {"local": True, "lightpanda": True},
+    }
+
+
+def _local_backend_process_dead(session_info: Dict[str, Any]) -> bool:
+    """True for a Lightpanda session whose ``lightpanda serve`` is gone."""
+    if not (session_info.get("features") or {}).get("lightpanda"):
+        return False
+    from tools.browser_lightpanda import get_server
+
+    server = get_server(session_info.get("session_name", ""))
+    return server is None or not server.is_alive()
 
 
 def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
@@ -2952,11 +3062,14 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
         existing_session = None
 
     if existing_session is not None:
-        if not _session_has_expired(existing_session):
+        if (
+            not _session_has_expired(existing_session)
+            and not _local_backend_process_dead(existing_session)
+        ):
             return existing_session
 
         logger.info(
-            "Replacing expired cloud browser session for task %s",
+            "Replacing expired or dead browser session for task %s",
             task_id,
         )
         _cleanup_single_browser_session(task_id)
@@ -3042,8 +3155,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     # Lazy-start the CDP supervisor now that the session exists (if the
     # backend surfaces a CDP URL via override or session_info["cdp_url"]).
     # Idempotent; swallows errors. See _ensure_cdp_supervisor for details.
-    # Skip for local sidecars — they have no CDP URL.
-    if not force_local:
+    # Skip for local sidecars — they have no CDP URL — and for Lightpanda
+    # sessions: those only exist in Browser Use mode, where the browser_*
+    # tools that consume supervisor state are hidden, so the supervisor
+    # would just hold an idle second CDP connection to the process.
+    if not force_local and not (session_info.get("features") or {}).get("lightpanda"):
         _ensure_cdp_supervisor(task_id)
 
     return session_info
@@ -5735,10 +5851,19 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         # Stop auto-recording before closing (saves the file)
         _maybe_stop_recording(task_id)
 
+        # A Lightpanda session is a process Hermes spawned itself (Browser
+        # Use mode); there is no agent-browser daemon to send ``close`` to.
         # An expired cloud CDP URL cannot accept an agent-browser close command.
         # Avoid feeding it back through _get_session_info(), which would try to
         # renew the session recursively while cleanup is still in progress.
-        if _session_has_expired(session_info):
+        if (session_info.get("features") or {}).get("lightpanda"):
+            try:
+                from tools.browser_lightpanda import stop_lightpanda
+
+                stop_lightpanda(session_info.get("session_name", ""))
+            except Exception as e:
+                logger.warning("lightpanda stop failed for task %s: %s", task_id, e)
+        elif _session_has_expired(session_info):
             logger.debug(
                 "Skipping agent-browser close for expired session %s",
                 task_id,

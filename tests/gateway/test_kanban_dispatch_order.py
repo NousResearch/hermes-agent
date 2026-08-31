@@ -61,6 +61,15 @@ def test_ready_dispatch_precedes_auto_decompose(monkeypatch, tmp_path):
 
     assert calls[:2] == ["dispatch", "decompose"]
 
+
+def test_external_drain_stops_new_kanban_dispatch():
+    """A Desktop/gateway drain must let workers finish without spawning more."""
+    from gateway.kanban_watchers import _kanban_dispatch_allowed
+
+    runner = SimpleNamespace(_draining=False, _external_drain_active=True)
+
+    assert _kanban_dispatch_allowed(runner) is False
+
 @pytest.fixture
 def decomposition_tick(monkeypatch, tmp_path):
     """Real board and decomposer; only process dispatch and the LLM are fake."""

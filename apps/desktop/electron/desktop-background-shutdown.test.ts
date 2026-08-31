@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { stopDesktopBackgroundServices } from './desktop-background-shutdown'
 
 describe('Desktop background-service shutdown', () => {
-  it('runs the resolved Hermes gateway stop --all command and waits for exit', async () => {
+  it('runs the resolved Hermes gateway drain-stop command and waits for exit', async () => {
     const kill = vi.fn<(signal?: NodeJS.Signals | number) => boolean>(() => true)
     const child = Object.assign(new EventEmitter(), { kill })
     const spawnFn = vi.fn(() => child)
@@ -27,10 +27,10 @@ describe('Desktop background-service shutdown', () => {
     child.emit('exit', 0, null)
 
     await expect(stopped).resolves.toBe(true)
-    expect(resolveBackend).toHaveBeenCalledWith(['gateway', 'stop', '--all'])
+    expect(resolveBackend).toHaveBeenCalledWith(['gateway', 'stop', '--all', '--drain'])
     expect(spawnFn).toHaveBeenCalledWith(
       '/runtime/bin/hermes',
-      ['gateway', 'stop', '--all'],
+      ['gateway', 'stop', '--all', '--drain'],
       expect.objectContaining({
         cwd: '/runtime',
         env: expect.objectContaining({ HERMES_HOME: '/profiles', RUNTIME_MARKER: '1' }),
@@ -40,7 +40,7 @@ describe('Desktop background-service shutdown', () => {
     expect(kill).not.toHaveBeenCalled()
   })
 
-  it('bounds a hung stop command and reports failure', async () => {
+  it('does not terminate a drain helper while active work is still finishing', async () => {
     vi.useFakeTimers()
     const kill = vi.fn<(signal?: NodeJS.Signals | number) => boolean>(() => true)
     const child = Object.assign(new EventEmitter(), { kill })
@@ -52,10 +52,10 @@ describe('Desktop background-service shutdown', () => {
       platform: 'linux',
       timeoutMs: 25
     })
-    await vi.advanceTimersByTimeAsync(25)
-
-    await expect(stopped).resolves.toBe(false)
-    expect(kill).toHaveBeenCalledWith('SIGTERM')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(kill).not.toHaveBeenCalled()
+    child.emit('exit', 0, null)
+    await expect(stopped).resolves.toBe(true)
     vi.useRealTimers()
   })
 
@@ -77,7 +77,9 @@ describe('Desktop background-service shutdown', () => {
       uid: 501,
       timeoutMs: 1_000
     })
+    expect(spawnFn).toHaveBeenCalledTimes(1)
     children[0].emit('exit', 0, null)
+    await vi.waitFor(() => expect(spawnFn).toHaveBeenCalledTimes(2))
     children[1].emit('exit', 0, null)
 
     await expect(stopped).resolves.toBe(true)

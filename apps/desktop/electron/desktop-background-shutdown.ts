@@ -58,15 +58,17 @@ function runStopCommand(
       return
     }
 
-    timer = setTimeout(() => {
-      onError(`${command.label} exceeded ${timeoutMs}ms; terminating the stop helper`)
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        // The helper may have exited between the timeout and kill.
-      }
-      finish(false)
-    }, timeoutMs)
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        onError(`${command.label} exceeded ${timeoutMs}ms; terminating the stop helper`)
+        try {
+          child.kill('SIGTERM')
+        } catch {
+          // The helper may have exited between the timeout and kill.
+        }
+        finish(false)
+      }, timeoutMs)
+    }
 
     child.once('error', error => {
       onError(`${command.label} failed: ${String(error)}`)
@@ -77,9 +79,10 @@ function runStopCommand(
 }
 
 /**
- * Stop every local supervised gateway before Desktop exits. The gateway owns
- * cron and Kanban dispatch, so stopping only Desktop's `serve` child is not
- * sufficient when launchd/systemd is also supervising a gateway profile.
+ * Drain and stop every local supervised gateway before Desktop exits. The
+ * drain refuses new chat/cron/Kanban work, waits for in-flight gateway turns
+ * and live Kanban workers, then stops supervision. The companion launchd job
+ * is unloaded only after that drain helper exits.
  */
 export function stopDesktopBackgroundServices({
   resolveBackend,
@@ -90,18 +93,18 @@ export function stopDesktopBackgroundServices({
   uid = typeof process.getuid === 'function' ? process.getuid() : -1,
   onError = () => undefined
 }: StopDesktopBackgroundServicesOptions): Promise<boolean> {
-  const backend = resolveBackend(['gateway', 'stop', '--all'])
+  const backend = resolveBackend(['gateway', 'stop', '--all', '--drain'])
 
   if (!backend?.command || backend.kind === 'bootstrap-needed') {
-    onError('No runnable local Hermes command was available for gateway stop --all')
+    onError('No runnable local Hermes command was available for gateway stop --all --drain')
     return Promise.resolve(false)
   }
 
   const commands: StopCommand[] = [
     {
       command: backend.command,
-      args: backend.args || ['gateway', 'stop', '--all'],
-      label: 'gateway stop --all',
+      args: backend.args || ['gateway', 'stop', '--all', '--drain'],
+      label: 'gateway stop --all --drain',
       options: {
         cwd: backend.root || undefined,
         env: { ...env, ...(backend.env || {}) },
@@ -127,7 +130,12 @@ export function stopDesktopBackgroundServices({
     })
   }
 
-  return Promise.all(
-    commands.map(command => runStopCommand(spawnFn, command, timeoutMs, onError))
-  ).then(results => results.every(Boolean))
+  const [gateway, ...afterDrain] = commands
+  return runStopCommand(spawnFn, gateway, 0, onError).then(async gatewayStopped => {
+    if (!gatewayStopped) return false
+    const results = await Promise.all(
+      afterDrain.map(command => runStopCommand(spawnFn, command, timeoutMs, onError))
+    )
+    return results.every(Boolean)
+  })
 }

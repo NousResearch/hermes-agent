@@ -92,7 +92,7 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
 
 def test_decompose_rejects_inherited_pathless_dir_atomically(kanban_home):
     """Legacy pathless directory roots cannot create unspawnable children."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = _create_triage(conn)
         conn.execute(
             "UPDATE tasks SET workspace_kind = 'dir', workspace_path = NULL "
@@ -105,7 +105,7 @@ def test_decompose_rejects_inherited_pathless_dir_atomically(kanban_home):
         with pytest.raises(
             ValueError, match="workspace_path is required for dir workspaces"
         ):
-            kb.decompose_triage_task(
+            decompose_triage_task(
                 conn,
                 tid,
                 root_assignee="orchestrator",

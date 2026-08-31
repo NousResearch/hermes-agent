@@ -81,3 +81,17 @@ def test_dir_workspace_requires_path(kanban_conn, workspace_path):
         )
 
     assert kanban_conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before
+
+
+def test_dir_workspace_preserves_nonblank_path(kanban_conn):
+    """Validation must not rewrite valid path characters."""
+    workspace_path = " /tmp/project "
+
+    tid = kb.create_task(
+        kanban_conn,
+        title="space-padded directory",
+        workspace_kind="dir",
+        workspace_path=workspace_path,
+    )
+
+    assert kb.get_task(kanban_conn, tid).workspace_path == workspace_path

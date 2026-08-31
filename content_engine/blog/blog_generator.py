@@ -543,7 +543,14 @@ def _framework_prompt_builder(stream: str, plan: dict, context_blob: str,
     return {"system": system, "user": user}
 
 
-WIKI_HOME = Path(os.path.expanduser("~/wiki"))
+def _wiki_home() -> Path:
+    """Resolve the canonical wiki root while preserving explicit overrides."""
+    return Path(
+        os.environ.get("WIKI_PATH", str(Path.home() / "docs" / "wiki"))
+    ).expanduser()
+
+
+WIKI_HOME = _wiki_home()
 
 
 def _wiki_context_for(topic: str, max_results: int = 2) -> list[dict]:

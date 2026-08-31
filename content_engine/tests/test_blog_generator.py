@@ -9,6 +9,20 @@ import blog.blog_generator as bg
 from blog.blog_streams import STREAMS
 
 
+def test_wiki_home_defaults_to_canonical_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("WIKI_PATH", raising=False)
+
+    assert bg._wiki_home() == tmp_path / "docs" / "wiki"
+
+
+def test_wiki_home_override_wins(monkeypatch, tmp_path):
+    override = tmp_path / "override-wiki"
+    monkeypatch.setenv("WIKI_PATH", str(override))
+
+    assert bg._wiki_home() == override
+
+
 _FAKE_BODY = """# Token-Maxing at the Edge
 
 A counterintuitive claim grounded in concrete figures.

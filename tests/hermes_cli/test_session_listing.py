@@ -90,6 +90,25 @@ class TestFormatGatewaySessionListing:
 
         assert "**AN-94 Prestige Barrel Build #2** (current)" in listing
 
+    def test_notice_appears_above_footer(self):
+        listing = format_gateway_session_listing(
+            [{"id": "sess_an94", "title": "AN-94"}],
+            notice="_Note: `all` requires admin._",
+        )
+        lines = listing.splitlines()
+        notice_idx = lines.index("_Note: `all` requires admin._")
+        footer_idx = next(i for i, l in enumerate(lines) if l.startswith("Resume:"))
+        assert notice_idx < footer_idx
+
+    def test_notice_on_empty_listing(self):
+        listing = format_gateway_session_listing([], notice="_scoped_")
+        assert "No sessions found." in listing
+        assert "_scoped_" in listing
+
+    def test_no_notice_by_default(self):
+        listing = format_gateway_session_listing([{"id": "x", "title": "T"}])
+        assert "Note:" not in listing
+
 
 class TestQuerySessionListingLaneScope:
     @pytest.fixture

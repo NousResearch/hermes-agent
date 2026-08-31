@@ -99,14 +99,23 @@ def format_gateway_session_listing(
     *,
     include_source: bool = False,
     title: str = "Sessions",
+    notice: str | None = None,
 ) -> str:
-    """Render a compact Markdown-ish session list for gateway messengers."""
+    """Render a compact Markdown-ish session list for gateway messengers.
+
+    ``notice`` appends an explanatory line above the footer — used e.g. when
+    a requested scope widening (``all``) was declined so the caller isn't
+    left guessing why sessions are missing.
+    """
     if not rows:
-        return (
+        parts = [
             "No sessions found.\n"
             "Use `/title My Session` to name this chat, or `/sessions full` "
             "to include unnamed sessions."
-        )
+        ]
+        if notice:
+            parts.append(notice)
+        return "\n".join(parts)
 
     lines = [f"📋 **{title}**", ""]
     for idx, row in enumerate(rows, start=1):
@@ -119,6 +128,8 @@ def format_gateway_session_listing(
         preview_part = f" — _{preview}_" if preview else ""
         lines.append(f"{idx}. **{title_text}**{current_part}{source_part} — `{session_id}`{preview_part}")
     lines.append("")
+    if notice:
+        lines.append(notice)
     lines.append("Resume: `/resume <session id>` or `/resume <number>` from `/resume`.")
     lines.append("More: `/sessions all`, `/sessions full`, `/sessions search <query>`.")
     return "\n".join(lines)

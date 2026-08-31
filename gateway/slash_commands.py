@@ -5199,10 +5199,19 @@ class GatewaySlashCommandsMixin:
                     s for s in titled
                     if await self._resume_row_visible(source, s, allow_all)
                 ]
+                # A non-admin `--all` silently falls back to same-origin
+                # scoping; say so instead of rendering an unexplained
+                # narrower list (sibling of the /sessions `all` notice).
+                scope_note = (
+                    t("gateway.resume.all_requires_admin")
+                    if allow_all and not self._resume_caller_is_admin(source)
+                    else None
+                )
                 if not titled:
                     if source.platform == Platform.MATRIX and not allow_all:
                         return t("gateway.resume.matrix_no_named_sessions")
-                    return t("gateway.resume.no_named_sessions")
+                    base = t("gateway.resume.no_named_sessions")
+                    return f"{base}\n{scope_note}" if scope_note else base
                 lines = [t("gateway.resume.list_header")]
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]
@@ -5213,6 +5222,8 @@ class GatewaySlashCommandsMixin:
                     preview = s.get("preview", "")[:40]
                     preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
                     lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
+                if scope_note:
+                    lines.append(scope_note)
                 lines.append(t("gateway.resume.list_footer_numbered"))
                 return "\n".join(lines)
             except Exception as e:
@@ -5358,6 +5369,15 @@ class GatewaySlashCommandsMixin:
         # `/sessions all` and enumerate other origins' session ids / titles /
         # previews / sources — the enumeration half of the /resume IDOR.
         cross_origin = include_all and self._resume_caller_is_admin(source)
+        # Don't silently no-op a requested widening: a non-admin `/sessions all`
+        # used to render the same scoped list with zero feedback, which reads
+        # as "my session vanished" (community report, Aug 2026).
+        scope_notice = None
+        if include_all and not cross_origin:
+            scope_notice = (
+                "_Note: `all` (cross-chat listing) requires a configured admin; "
+                "showing this chat's sessions only._"
+            )
         current_entry = await self.async_session_store.get_or_create_session(source)
         rows = await asyncio.to_thread(
             query_session_listing,
@@ -5390,6 +5410,7 @@ class GatewaySlashCommandsMixin:
             rows,
             include_source=cross_origin,
             title=title,
+            notice=scope_notice,
         )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:

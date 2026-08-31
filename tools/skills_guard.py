@@ -1169,8 +1169,11 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                 description="file has executable permission but is not a recognized script type",
             ))
 
-    # File count limit
-    if file_count > MAX_FILE_COUNT:
+    # File count limit. Skipped for agent-plugin roots: a portable plugin
+    # package legitimately bundles many skills, so the per-skill file-count
+    # rule does not apply to the package as a whole.
+    is_plugin_root = (skill_dir / "plugin.json").is_file()
+    if file_count > MAX_FILE_COUNT and not is_plugin_root:
         findings.append(Finding(
             pattern_id="too_many_files",
             severity="medium",

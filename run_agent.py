@@ -1039,9 +1039,10 @@ class AIAgent(
                         self.session_id or "none",
                     )
                     return None
-                # Durable carriers gain their monotonic baseline in the next
-                # compatibility commit; zero cannot roll back a live store.
-                return todos, 0
+                # Durable carriers predate revision-bearing Todo responses.
+                # Admit one into a cold store without rolling back a newer
+                # live revision already present on an in-place agent.
+                return todos, 1
             content = msg.get("content", "")
             if msg.get("role") != "tool" or not isinstance(content, str) or not self._tool_response_matches_todo_call(history, idx):
                 continue

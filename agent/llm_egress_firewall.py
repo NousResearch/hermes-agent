@@ -232,6 +232,10 @@ _LOCAL_PROCESS_MODES = frozenset({"local_process", "in_process"})
 _BASE64_CANDIDATE = re.compile(
     r"(?<![A-Za-z0-9_+/\-])([A-Za-z0-9_+/\-]{4,}={0,2})(?![A-Za-z0-9_+/=\-])"
 )
+_CHUNKED_BASE64_CANDIDATE = re.compile(
+    r"(?<![A-Za-z0-9_+/=-])(?:[A-Za-z0-9_+/=-]{2,4}\s+){2,}"
+    r"[A-Za-z0-9_+/=-]{2,4}(?![A-Za-z0-9_+/=-])"
+)
 _HERMES_TASK_ID = re.compile(r"^t_[0-9a-f]{8}$")
 _PROMPT_CACHE_KEY = re.compile(r"^pck_[0-9a-f]{24}$")
 _CODEX_ENCRYPTED_REASONING_REPLAY = re.compile(r"^gAAAA[A-Za-z0-9_=-]{20,}$")
@@ -249,6 +253,7 @@ _SAFE_DIAGNOSTIC_STATUS_WORDS = frozenset({
 })
 _BOUNDED_SOURCE_CODE_ATOM = re.compile(
     r"(?:[a-z][a-z0-9]{0,63}(?:_[a-z0-9]{1,64}){1,7}"
+    r"|[A-Z][A-Z0-9]{0,63}(?:_[A-Z0-9]{1,64}){1,7}"
     r"|[a-z][a-z0-9]{0,63}(?:-[a-z][a-z0-9]{0,63}){1,7}"
     r"|[A-Z][0-9]{3,4})"
 )
@@ -624,6 +629,27 @@ def _canonical_base64_candidate(candidate: str) -> bool:
     return False
 
 
+def _canonical_chunked_base64_candidate(candidate: str) -> bool:
+    """Recognize fixed-width wrapped encodings without joining ordinary prose."""
+
+    chunks = re.findall(r"[A-Za-z0-9_+/=-]{2,4}", candidate)
+    if len(chunks) < 3:
+        return False
+    width = len(chunks[0])
+    if not all(len(chunk) == width for chunk in chunks[:-1]):
+        return False
+    if len(chunks[-1]) > width:
+        return False
+    joined = "".join(chunks)
+    has_encoding_signal = any(
+        character.isupper() or character.isdigit() or character in "+/_="
+        for character in joined
+    )
+    if len(chunks) < 8 and not has_encoding_signal:
+        return False
+    return _canonical_base64_candidate(joined)
+
+
 # GitHub's legacy GraphQL global node id: base64 of a fixed
 # ``<digits>:<TypeName><digits>`` grammar (e.g. "05:Issue160502814" ->
 # "MDU6SXNzdWUxNjA1MDI4MTQ0"). `gh api` / `gh issue|pr list` return these in
@@ -706,13 +732,8 @@ def _contains_canonical_base64(value: Any, *, seen: set[int] | None = None) -> b
         # Providers and source-control tools sometimes wrap an otherwise
         # canonical encoding at a fixed column. Normalize only bounded chunks
         # so ordinary prose words are not concatenated into a false candidate.
-        chunked = re.compile(
-            r"(?<![A-Za-z0-9_+/=-])(?:[A-Za-z0-9_+/=-]{2,4}\s+){2,}"
-            r"[A-Za-z0-9_+/=-]{2,4}(?![A-Za-z0-9_+/=-])"
-        )
-        for match in chunked.finditer(value):
-            candidate = re.sub(r"\s+", "", match.group(0))
-            if _canonical_base64_candidate(candidate):
+        for match in _CHUNKED_BASE64_CANDIDATE.finditer(value):
+            if _canonical_chunked_base64_candidate(match.group(0)):
                 return True
         return False
     if isinstance(value, (bytes, bytearray, memoryview)):
@@ -898,13 +919,9 @@ def redact_remote_unsafe_text(text: str) -> str:
         return match.group(0)
 
     redacted = _BASE64_CANDIDATE.sub(replace_base64, redacted)
-    chunked = re.compile(
-        r"(?<![A-Za-z0-9_+/=-])(?:[A-Za-z0-9_+/=-]{2,4}\s+){2,}"
-        r"[A-Za-z0-9_+/=-]{2,4}(?![A-Za-z0-9_+/=-])"
-    )
-    return chunked.sub(
+    return _CHUNKED_BASE64_CANDIDATE.sub(
         lambda match: "<redacted-base64>"
-        if _canonical_base64_candidate(re.sub(r"\s+", "", match.group(0)))
+        if _canonical_chunked_base64_candidate(match.group(0))
         else match.group(0),
         redacted,
     )
@@ -953,8 +970,9 @@ def _contains_grant_substring(grant_content: bytes, candidate: bytes) -> bool:
     """Reject source-derived proper substrings in sanitized text.
 
     Newline-trimmed line grants commonly appear in JSON without their source
-    line ending. A fixed eight-byte window detects meaningful excerpts in
-    linear time and avoids quadratic work on large source slices.
+    line ending. Exact containment catches short excerpts; otherwise require
+    a 32-byte shared window so ordinary words such as ``checkout`` do not make
+    unrelated generated context look source-derived.
     """
 
     if not grant_content or not candidate:
@@ -967,8 +985,8 @@ def _contains_grant_substring(grant_content: bytes, candidate: bytes) -> bool:
             return True
         if len(candidate) < len(variant) and candidate in variant and len(candidate) >= 4:
             return True
-        window = min(8, len(candidate), len(variant))
-        if window >= 4:
+        window = min(32, len(candidate), len(variant))
+        if window >= 32:
             source_windows = {
                 variant[offset : offset + window]
                 for offset in range(0, len(variant) - window + 1)
@@ -1610,7 +1628,7 @@ class LLMEgressFirewall:
                 source_segment_count += 1
                 scan_values.append(segment.text)
                 base64_scan_values.append(
-                    _source_text_for_base64_scan(segment.text)
+                    _source_text_for_base64_scan(raw_text)
                 )
                 return segment.text
             if isinstance(segment, UntrustedProvenanceSegment):

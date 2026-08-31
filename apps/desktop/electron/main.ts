@@ -12680,8 +12680,10 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
         TERMINAL_CWD: hermesCwd,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
         // Marks this dashboard backend as desktop-spawned so it runs the cron
-        // scheduler tick loop (the gateway isn't running under the app).
+        // lifecycle. Pool helpers must not also become machine-wide cron
+        // authorities: the primary backend alone multiplexes every profile.
         HERMES_DESKTOP: '1',
+        HERMES_DESKTOP_POOL: '1',
         // Exact parent identity lets the backend self-exit after an unclean
         // Desktop death without mistaking a reused PID for its owner. If the
         // optional marker probe fails, retain legacy PID-only tracking.

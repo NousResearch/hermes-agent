@@ -664,6 +664,48 @@ def test_source_presentation_allows_bounded_code_and_config_atoms(tmp_path):
     assert "base64_payload" not in decision.reason_codes
 
 
+def test_source_presentation_scans_raw_source_not_json_line_number_artifacts(tmp_path):
+    source_lines = ["PR_CI_RECEIPT_V1 = True", *[f"value_{number} = {number}" for number in range(1, 121)]]
+    source = "\n".join(source_lines) + "\n"
+    path = tmp_path / "receipt.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path, end=len(source_lines))
+    presentation = json.dumps(
+        {
+            "content": "\n".join(
+                f"{number}|{line}"
+                for number, line in enumerate(source.split("\n"), start=1)
+            )
+        }
+    )
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_does_not_join_ordinary_short_prose_as_base64(tmp_path):
+    source = 'message = "add the next step --"\n'
+    path = tmp_path / "instructions.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path)
+    presentation = json.dumps({"content": '1|message = "add the next step --"\n2|'})
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
 def test_source_presentation_still_rejects_actual_base64_payload(tmp_path):
     encoded = base64.b64encode(b"private source that must not leave the host").decode(
         "ascii"
@@ -811,6 +853,29 @@ def test_sanitized_proper_substring_of_grant_text_is_rejected(tmp_path):
     with pytest.raises(EgressBlocked) as exc_info:
         firewall(tmp_path).preflight(request, _route(), grants=(grant,))
     assert "source_bytes_in_sanitized_segment" in exc_info.value.decision.reason_codes
+
+
+def test_common_eight_byte_overlap_is_not_treated_as_a_source_excerpt(tmp_path):
+    path = tmp_path / "source.txt"
+    path.write_text("private checkout_path implementation\n", encoding="utf-8")
+    grant = _source_grant(path)
+    request = TypedOutboundRequest(
+        payload={
+            "messages": [
+                SourceBoundSegment(source_grant_digest(grant)),
+                SanitizedSegment("checkout completed with clean status"),
+            ]
+        },
+        session_id=grant.session_id,
+        turn_id=grant.turn_id,
+        request_id=grant.request_id,
+        policy_digest=grant.policy_digest,
+    )
+
+    decision = firewall(tmp_path).preflight(request, _route(), grants=(grant,))
+
+    assert decision.allowed is True
+    assert "source_bytes_in_sanitized_segment" not in decision.reason_codes
 
 
 def test_symlink_state_directory_is_rejected(tmp_path):

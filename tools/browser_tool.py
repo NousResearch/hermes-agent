@@ -1148,8 +1148,9 @@ def lightpanda_engine_status() -> Tuple[bool, str]:
     CDP override, Browser Use cloud, the real-profile toggle) or, when it is
     in use, which driver runs it. Mirrors the precedence of
     ``_should_inject_engine`` (built-in tools) and
-    ``browser_use_cli._resolve_backend_cdp`` (Browser Use mode) using only
-    no-I/O gates, so ``/browser status`` and ``hermes doctor`` can call it.
+    ``browser_use_cli._resolve_backend_cdp`` (Browser Use mode) using gates
+    that do no network I/O (config reads only), so ``/browser status`` and
+    ``hermes doctor`` can call it.
     """
     if not _using_lightpanda_engine():
         return False, ""
@@ -1157,6 +1158,11 @@ def lightpanda_engine_status() -> Tuple[bool, str]:
         return False, "a CDP override is active (/browser connect or browser.cdp_url)"
     if _is_camofox_mode():
         return False, "Camofox is the selected browser (CAMOFOX_URL)"
+    # Real-profile is checked before the cloud provider: in browser_exec the
+    # real-profile resolution runs before backend resolution, so with both
+    # set it is the real-profile toggle that actually claims the session.
+    if _use_real_profile():
+        return False, "browser.use_real_profile is on (Lightpanda cannot load a Chromium profile)"
     try:
         provider = _get_cloud_provider()
     except Exception:
@@ -1182,8 +1188,6 @@ def lightpanda_engine_status() -> Tuple[bool, str]:
                 return False, "Browser Use cloud (BROWSER_USE_API_KEY) is selected"
         except Exception as e:
             logger.debug("legacy Browser Use cloud check failed: %s", e)
-    if _use_real_profile():
-        return False, "browser.use_real_profile is on (Lightpanda cannot load a Chromium profile)"
     if bu_mode:
         return True, "Browser Use mode: Hermes spawns `lightpanda serve` per session"
     return True, "built-in browser tools: agent-browser --engine lightpanda"

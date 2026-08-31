@@ -568,6 +568,19 @@ class TestLightpandaEngineStatus:
         used, reason = bt.lightpanda_engine_status()
         assert used is False and "use_real_profile" in reason
 
+    def test_real_profile_wins_over_cloud_provider(self, monkeypatch):
+        """browser_exec resolves real-profile before the backend, so with
+        both set the real-profile toggle is the actual shadow."""
+        provider = MagicMock()
+        provider.provider_name.return_value = "Browserbase"
+        bt = self._gates(
+            monkeypatch,
+            _use_real_profile=lambda: True,
+            _get_cloud_provider=lambda: provider,
+        )
+        used, reason = bt.lightpanda_engine_status()
+        assert used is False and "use_real_profile" in reason
+
 
 # ---------------------------------------------------------------------------
 # Browser Use mode session lifecycle

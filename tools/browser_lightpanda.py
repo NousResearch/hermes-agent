@@ -221,12 +221,9 @@ def launch_lightpanda(
         argv.append("--block-private-networks")
     log_path = str(_state_dir() / f"{session_name}.log")
 
-    if os.name == "nt":  # pragma: no cover - no Windows build today
-        from hermes_cli._subprocess_compat import windows_hide_flags
-
-        popen_kwargs: dict = {"creationflags": windows_hide_flags(), "close_fds": True}
-    else:
-        popen_kwargs = {"start_new_session": True}
+    # No Windows branch here: find_lightpanda_binary() returns None on nt,
+    # so launch always errors out above before reaching the spawn.
+    popen_kwargs = {"start_new_session": True}
 
     try:
         with open(log_path, "wb") as log_file:

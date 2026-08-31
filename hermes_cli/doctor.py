@@ -2600,11 +2600,9 @@ def run_doctor(args):
     except Exception:
         pass
     else:
-        try:
-            _lp_selected = _using_lightpanda_engine()
-        except Exception:
-            _lp_selected = False
-        if _lp_selected:
+        # _using_lightpanda_engine() is a cached config read — a failure
+        # there would be exceptional, not something to silently hide.
+        if _using_lightpanda_engine():
             try:
                 _lp_used, _lp_reason = lightpanda_engine_status()
             except Exception as e:

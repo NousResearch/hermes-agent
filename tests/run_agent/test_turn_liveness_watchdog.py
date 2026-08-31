@@ -85,6 +85,15 @@ class _BlockingCommitFence:
         self.release = threading.Event()
         self.calls = 0
 
+    @property
+    def commit_in_flight(self) -> bool:
+        # Mirrors the production fence's lock-free phase marker; this
+        # double models an IN-FLIGHT commit, so the interrupt's pre-claim
+        # wait parks inside cancel_before_commit exactly as against a real
+        # started commit (the production started-commit branch blocks until
+        # finish_commit WITHOUT cancelling).
+        return True
+
     def cancel_before_commit(self, cancel_event=None):
         # `cancel_event` is accepted (and ignored) to mirror the production
         # fence signature; publication happens at the final claim edge, so
@@ -829,3 +838,148 @@ def test_interrupt_consumes_claim_and_publishes_first_state_atomically():
         "interrupt state published after competing activity landed: "
         f"before={published_before_activity}, after={published_after}"
     )
+
+
+def test_declined_abort_does_not_cancel_pending_compression_commit():
+    """#99758 P1 review: a stale liveness claim must not cancel a legitimate
+    pending compression commit when the abort ultimately declines.
+
+    Schedule under test: the watchdog reserves generation G and parks at
+    the claim-reservation release; real progress lands (G+1, claim
+    invalidated) while the interrupt is parked; the interrupt then runs
+    its (no-op for a pending commit) in-flight wait, declines at the final
+    mutation edge, and the REAL CompressionCommitFence must still admit
+    begin_commit() — the fence must NOT be left cancelled by the stale
+    abort authority. The pre-fix tree cancelled the pending fence BEFORE
+    validating the claim, so begin_commit() refused forever.
+    """
+    from agent.conversation_compression import CompressionCommitFence
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._turn_liveness_activity_generation = 5
+    agent._turn_liveness_abort_claim = None
+    agent._interrupt_requested = False
+    agent._interrupt_message = None
+    agent._tool_interrupt_reason = None
+    agent._hard_interrupt_requested = threading.Event()
+    agent._execution_thread_id = None
+    agent._active_children_lock = threading.Lock()
+    agent._active_children = set()
+    agent.quiet_mode = True
+
+    # A REAL production fence with a PENDING (not started) commit.
+    fence = CompressionCommitFence()
+    agent._active_compression_commit_fence = fence
+
+    # Park the interrupt right after the claim reservation (release #1 of
+    # the activity lock) so real progress can land in the exact window.
+    parking_lock = _ParkingReleaseLock(threading.Lock())
+    parking_lock.park_on_release = 1
+    agent._turn_liveness_activity_lock = parking_lock
+
+    result = {}
+
+    def interrupt_fn():
+        result["ret"] = AIAgent.interrupt(
+            agent,
+            "watchdog: no progress",
+            hard_cancel=True,
+            require_generation=5,
+        )
+
+    interrupt_thread = threading.Thread(target=interrupt_fn)
+    interrupt_thread.start()
+    assert parking_lock.parked.wait(10.0), (
+        "interrupt never reached the claim-reservation boundary"
+    )
+
+    # Real progress lands while the interrupt is parked between the claim
+    # reservation and the final mutation edge.
+    touched = threading.Event()
+
+    def turn_fn():
+        agent._touch_activity("turn resumed")
+        touched.set()
+
+    turn_thread = threading.Thread(target=turn_fn)
+    turn_thread.start()
+    assert touched.wait(10.0), "competing activity never landed"
+    assert agent._turn_liveness_activity_generation == 6
+
+    parking_lock.release_park.set()
+    interrupt_thread.join(10.0)
+    turn_thread.join(10.0)
+
+    # The abort declined: the claim went stale against generation 6.
+    assert result["ret"] is False, "interrupt should have declined"
+    assert not agent._interrupt_requested
+    assert not agent._hard_interrupt_requested.is_set()
+    # THE P1 INVARIANT: the pending compression commit was NOT cancelled
+    # by the declined abort — begin_commit() still admits.
+    assert fence.begin_commit() is True, (
+        "declined liveness abort left the pending compression fence "
+        "cancelled: begin_commit() refused"
+    )
+    fence.finish_commit()
+
+
+def test_declined_abort_parks_and_leaves_fence_operational():
+    """#99758 P1, deterministic window variant: park the interrupt inside the
+    wait phase boundary with a REAL fence whose commit is in flight, resume
+    the turn while parked, and prove both that the interrupt declines AND
+    that the fence can serve a fresh begin_commit afterwards."""
+    from agent.conversation_compression import CompressionCommitFence
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._turn_liveness_activity_generation = 5
+    agent._turn_liveness_abort_claim = None
+    agent._interrupt_requested = False
+    agent._interrupt_message = None
+    agent._tool_interrupt_reason = None
+    agent._hard_interrupt_requested = threading.Event()
+    agent._execution_thread_id = None
+    agent._active_children_lock = threading.Lock()
+    agent._active_children = set()
+    agent.quiet_mode = True
+
+    fence = CompressionCommitFence()
+    agent._active_compression_commit_fence = fence
+
+    # Put the fence in the in-flight state so the wait phase blocks in
+    # cancel_before_commit (the started-commit branch waits for
+    # finish_commit without cancelling).
+    assert fence.begin_commit() is True
+    entered = threading.Event()
+    resumed = threading.Event()
+
+    result = {}
+
+    def interrupt_fn():
+        result["ret"] = AIAgent.interrupt(
+            agent,
+            "watchdog: no progress",
+            hard_cancel=True,
+            require_generation=5,
+        )
+
+    interrupt_thread = threading.Thread(target=interrupt_fn)
+    interrupt_thread.start()
+    # Let the interrupt reach the fence wait (blocking on the held lock).
+    time.sleep(0.2)
+    # Real progress lands while the interrupt waits on the in-flight commit.
+    agent._touch_activity("turn resumed mid-wait")
+    resumed.set()
+    # Release the in-flight commit; the interrupt's wait completes, then
+    # the claim check runs and declines.
+    fence.finish_commit()
+    interrupt_thread.join(10.0)
+
+    assert result["ret"] is False, "interrupt should decline after G+1"
+    assert not agent._interrupt_requested
+    assert not agent._hard_interrupt_requested.is_set()
+    # The declined abort must not have cancelled the fence for FUTURE
+    # commits: a fresh begin_commit still admits.
+    assert fence.begin_commit() is True, (
+        "declined liveness abort left the compression fence cancelled"
+    )
+    fence.finish_commit()

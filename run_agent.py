@@ -3419,7 +3419,12 @@ class AIAgent:
                      If provided, the agent will include this in its response context.
             hard_cancel: Mark this as an explicit stop rather than a redirect or
                          incoming-message interrupt. Compression may honor this
-                         atomic signal even while ordinary interrupts are masked.
+                         atomic signal even while ordinary interrupts are
+                         masked. With a generation claim in play, the
+                         destructive compression-fence cancellation is
+                         deferred until after the claim survives, so a
+                         declined abort never cancels a legitimate pending
+                         compression.
             tool_reason: Trusted fixed category safe to expose in tool output.
                          Arbitrary diagnostic or caller text belongs in message.
             require_generation: Optional activity-generation claim (#95663).
@@ -3471,21 +3476,69 @@ class AIAgent:
 
         # A hard stop and redirect share one lock so /stop cannot race with an
         # accepted correction and accidentally turn itself into a retry.
-        def _admit_hard_cancel() -> None:
-            # Cancel any pending compression commit, or wait for an
-            # in-flight commit to finish. This call deliberately publishes
-            # NOTHING observable: the generation claim and the first
-            # interrupt state (including the hard-stop event) commit
-            # together at the final mutation edge below.
+        def _wait_for_compression_commit() -> None:
+            # Pre-claim half of hard-cancel admission (#99758 P1): wait out
+            # a commit that ALREADY crossed its boundary, so the interrupt
+            # is published only after the in-flight SessionDB mutation has
+            # finished — but mutate NOTHING. Cancelling a pending commit is
+            # a destructive, irreversible fence mutation (``begin_commit``
+            # refuses a cancelled fence forever), so it must not run while
+            # a generation claim can still be vetoed: an abort that declines
+            # after the fence was cancelled would have killed the recovered
+            # turn's legitimate pending compression. The destructive half
+            # runs in _cancel_pending_compression_commit(), only after the
+            # claim survived the final mutation edge.
             fence = vars(self).get("_active_compression_commit_fence")
+            if fence is None:
+                return
+            if not getattr(fence, "commit_in_flight", False):
+                # No commit crossed its boundary — nothing to wait out,
+                # and calling cancel_before_commit here WOULD cancel the
+                # pending commit (the production fence's
+                # cancel_before_commit sets _cancelled whenever no commit
+                # has started). Skip it; the destructive half handles it.
+                return
             cancel_before_commit = getattr(
                 type(fence), "cancel_before_commit", None
             )
             if callable(cancel_before_commit):
                 try:
-                    # Marks the fence cancelled (or waits out an already
-                    # started commit) without setting the hard-stop Event,
-                    # which is published only at the final claim edge.
+                    # A commit is in flight (it holds the fence lock
+                    # through finish_commit), so this call blocks until
+                    # the commit finishes and returns False WITHOUT
+                    # setting _cancelled — the started-commit branch of
+                    # the production fence never cancels.
+                    cancel_before_commit(fence)
+                except Exception:
+                    logger.debug(
+                        "Compression hard-cancel fence wait failed",
+                        exc_info=True,
+                    )
+
+        def _cancel_pending_compression_commit() -> None:
+            # Destructive half of hard-cancel admission (#99758 P1): runs
+            # only AFTER the generation claim survived the final mutation
+            # edge, so an abort that declines can never leave the active
+            # compression fence cancelled. Waiting for an in-flight commit
+            # already happened in _wait_for_compression_commit(); if a
+            # commit crossed its boundary in between, it can no longer be
+            # fence-cancelled (it owns the fence until finish_commit and
+            # completes on its own), so only a still-pending commit is
+            # cancelled here.
+            fence = vars(self).get("_active_compression_commit_fence")
+            if fence is None:
+                return
+            if getattr(fence, "commit_in_flight", False):
+                return
+            cancel_before_commit = getattr(
+                type(fence), "cancel_before_commit", None
+            )
+            if callable(cancel_before_commit):
+                try:
+                    # Marks the fence cancelled (or waits out a commit
+                    # that started between the wait above and now) without
+                    # setting the hard-stop Event, which was already
+                    # published at the final claim edge.
                     cancel_before_commit(fence)
                 except Exception:
                     logger.debug(
@@ -3548,20 +3601,27 @@ class AIAgent:
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is not None:
             with _redirect_lock:
-                # The (potentially blocking) compression fence runs BEFORE
-                # the atomic claim/publication edge; the redirect lock is
-                # still held across the fence, exactly as before, so /stop
-                # cannot race with an accepted correction.
+                # The (potentially blocking) in-flight-commit wait runs
+                # BEFORE the atomic claim/publication edge; the redirect
+                # lock is still held across it, exactly as before, so /stop
+                # cannot race with an accepted correction. The destructive
+                # pending-commit cancellation runs AFTER the claim survives
+                # (#99758 P1) so a declined abort can never cancel the
+                # recovered turn's legitimate compression.
                 if hard_cancel:
-                    _admit_hard_cancel()
+                    _wait_for_compression_commit()
                 if not _consume_claim_and_publish_first_state():
                     return False
+                if hard_cancel:
+                    _cancel_pending_compression_commit()
                 self._pending_redirect = None
         else:
             if hard_cancel:
-                _admit_hard_cancel()
+                _wait_for_compression_commit()
             if not _consume_claim_and_publish_first_state():
                 return False
+            if hard_cancel:
+                _cancel_pending_compression_commit()
             self._pending_redirect = None
 
         # Codex app-server owns its model/tool loop and watches a private

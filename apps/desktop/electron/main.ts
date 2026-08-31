@@ -392,6 +392,7 @@ import {
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  resolveUpdateTarget,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
@@ -4473,13 +4474,26 @@ async function applyUpdatesPosixHandoff(opts: any) {
   const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
   const updateStartedAt = Math.floor(Date.now() / 1000)
 
-  // Relaunch target: the running .app bundle on mac (script swaps the
-  // rebuilt bundle over it), the running binary elsewhere. The script's gate
-  // (an exact port of update-relaunch.ts's decideRelaunchOutcome) relaunches
-  // only a binary the rebuild replaced with a launchable sandbox helper —
-  // replaying the original launch context (filtered args, cwd, sandbox
-  // opt-out) so a deep-link or --no-sandbox launch survives the update.
-  const targetApp = IS_MAC ? runningAppBundle() : process.execPath
+  // Relaunch target: resolve the canonical managed bundle from updateRoot.
+  // A packaged self-update may promote only to the normalized bundle under
+  // the update root.  A running worktree, artifact, symlink escape, or
+  // outside-install path must stop before updater spawn, marker write,
+  // rm, ditto, or mv — surface a clear manual outcome instead.
+  const targetResult = resolveUpdateTarget(updateRoot, IS_MAC ? runningAppBundle() : null)
+
+  if (IS_MAC && targetResult.canonical && !targetResult.ok) {
+    rememberLog(`[updates] refusing noncanonical relaunch target (expected ${targetResult.canonical})`)
+    emitUpdateProgress({
+      stage: 'manual',
+      message: 'This copy of Hermes cannot self-update — it is running from outside the managed install location. Reinstall Hermes to enable automatic updates.',
+      percent: null
+    })
+    // Same contract as the no-handoff-script path: ok=true means the check
+    // succeeded, manual=true means the update needs user action.
+    return { ok: true, manual: true, message: 'noncanonical-install', hermesRoot: updateRoot }
+  }
+
+  const targetApp = targetResult.canonical || (IS_MAC ? null : process.execPath)
 
   if (targetApp) {
     args.push('--relaunch-target', targetApp)

@@ -11,6 +11,7 @@ import {
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  resolveUpdateTarget,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
@@ -459,4 +460,69 @@ test('observeUpdaterHandoff settles ok for children without an event interface',
   const outcome = await outcomePromise
 
   assert.equal(outcome.ok, true)
+})
+
+// ── resolveUpdateTarget ───────────────────────────────────────────────
+
+const MANAGED_ROOT = '/home/hermes/.hermes/hermes-agent'
+const CANONICAL_ARM = path.join(MANAGED_ROOT, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app')
+const CANONICAL_INTEL = path.join(MANAGED_ROOT, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
+const WORKTREE_BUNDLE = '/Users/rohitsabu/.claude/orchestrate/hermes-reliability-p0/worktrees/desktop-activation/apps/desktop/release/mac-arm64/Hermes.app'
+
+test('resolveUpdateTarget accepts canonical mac-arm64 bundle', () => {
+  const result = resolveUpdateTarget(MANAGED_ROOT, CANONICAL_ARM, {
+    isMac: true,
+    realpathSync: (p: string) => p
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.canonical, CANONICAL_ARM)
+})
+
+test('resolveUpdateTarget accepts canonical mac fallback bundle', () => {
+  const result = resolveUpdateTarget(MANAGED_ROOT, CANONICAL_INTEL, {
+    isMac: true,
+    realpathSync: (p: string) => p
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.canonical, CANONICAL_ARM)
+})
+
+test('resolveUpdateTarget rejects worktree path', () => {
+  // The exact bug: runningAppBundle() returns the worktree path when
+  // Hermes is launched from a dev worktree.  The updater must refuse.
+  const result = resolveUpdateTarget(MANAGED_ROOT, WORKTREE_BUNDLE, {
+    isMac: true,
+    realpathSync: (p: string) => p
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'noncanonical-install')
+})
+
+test('resolveUpdateTarget rejects artifact path', () => {
+  const result = resolveUpdateTarget(MANAGED_ROOT, '/tmp/hermes-build/Hermes.app', {
+    isMac: true,
+    realpathSync: (p: string) => p
+  })
+  assert.equal(result.ok, false)
+})
+
+test('resolveUpdateTarget rejects symlink escape', () => {
+  // realpathSync resolves the symlink to a path outside the update root.
+  const realpaths: Record<string, string> = {
+    [MANAGED_ROOT]: '/real/hermes/hermes-agent',
+    '/fake/symlink/Hermes.app': '/outside/worktree/Hermes.app'
+  }
+  const result = resolveUpdateTarget(MANAGED_ROOT, '/fake/symlink/Hermes.app', {
+    isMac: true,
+    realpathSync: (p: string) => realpaths[p] ?? p
+  })
+  assert.equal(result.ok, false)
+})
+
+test('resolveUpdateTarget returns null canonical on non-mac', () => {
+  const result = resolveUpdateTarget(MANAGED_ROOT, CANONICAL_ARM, {
+    isMac: false
+  })
+  assert.equal(result.canonical, null)
+  assert.equal(result.ok, true)
 })

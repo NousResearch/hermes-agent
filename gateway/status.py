@@ -334,7 +334,16 @@ def terminate_pid(
 
     POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
     because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
+
+    Identity guard: on Windows, ``force=True`` REQUIRES a matching
+    ``expected_start_time`` (fail closed — taskkill /T /F on a recycled PID
+    has killed svchost.exe and blue-screened the host, #89614). On POSIX an
+    expectation is optional, but when the caller provides one and it no
+    longer matches the live process, the kill is refused on every platform —
+    a mismatched fingerprint always means the PID was recycled.
     """
+    if force and expected_start_time is not None and not _IS_WINDOWS:
+        _assert_process_start_time_matches(pid, expected_start_time)
     if force and _IS_WINDOWS:
         _assert_process_start_time_matches(pid, expected_start_time)
         # CREATE_NO_WINDOW: terminate_pid runs from the windowless pythonw.exe

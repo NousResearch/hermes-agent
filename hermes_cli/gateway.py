@@ -2153,6 +2153,14 @@ def kill_gateway_processes(
         try:
             expected_start_time = None
             if force:
+                # Re-verify at kill time, not just scan time: the cmdline
+                # match inside find_gateway_pids() is stale by the time we
+                # get here, and a recycled PID could otherwise be tree-killed
+                # (#89614 class). _capture_gateway_argv re-reads the LIVE
+                # cmdline and returns None for anything that no longer looks
+                # like a gateway — refuse those.
+                if _capture_gateway_argv(pid) is None:
+                    continue
                 from gateway.status import get_process_start_time
 
                 expected_start_time = get_process_start_time(pid)
@@ -2355,6 +2363,20 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     if not orphans:
         return False
 
+    # Pin each orphan's identity NOW: the cmdline scan above matched at
+    # scan-time only, and the SIGKILL escalation below fires seconds later.
+    # A PID recycled inside that window must never be force-killed (#89614
+    # class). Fingerprint capture is best-effort — SIGTERM below proceeds
+    # regardless (it targets the process verified by the scan an instant
+    # ago), but the delayed SIGKILL requires a still-matching fingerprint.
+    from gateway.status import get_process_start_time
+
+    orphan_identity: dict[int, int] = {}
+    for pid in orphans:
+        start = get_process_start_time(pid)
+        if start is not None:
+            orphan_identity[pid] = start
+
     reaped = False
     for pid in orphans:
         try:
@@ -2374,7 +2396,16 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     # running until a follow-up SIGKILL — wait, then force-kill any survivor
     # so the replacement can bind the port cleanly.
     survivors = _await_gateway_exit(orphans, pid_exists=_pid_exists)
-    _force_kill_survivors(survivors)
+    # Re-verify identity at kill time: the delayed SIGKILL only fires when
+    # the PID still names the process fingerprinted at scan time (fail-closed
+    # taskkill class fix — a recycled PID must never be force-killed).
+    verified_survivors = []
+    for pid in survivors:
+        recorded = orphan_identity.get(pid)
+        if recorded is None or get_process_start_time(pid) != recorded:
+            continue
+        verified_survivors.append(pid)
+    _force_kill_survivors(verified_survivors)
 
     return reaped
 

@@ -35,6 +35,27 @@ class TestPidIsHermes:
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", False):
             assert _subprocess_compat.pid_is_hermes(1234) is True
 
+    def test_non_windows_still_rejects_recycled_identity(self):
+        # An explicit fingerprint mismatch is a recycled PID on any platform.
+        with mock.patch.object(_subprocess_compat, "IS_WINDOWS", False), mock.patch.object(
+            _subprocess_compat, "_process_start_time", return_value=456
+        ):
+            assert _subprocess_compat.pid_is_hermes(
+                1234, expected_start_time=123
+            ) is False
+
+    def test_hermes_match_requires_token_boundary(self):
+        # "hermes" buried inside an unrelated path segment must not match.
+        assert _subprocess_compat._text_names_hermes(
+            r"c:\users\shermesa\app.exe"
+        ) is False
+        assert _subprocess_compat._text_names_hermes(
+            r"C:\Users\x\.hermes-runtime\python.exe -m hermes_cli.main"
+        ) is True
+        assert _subprocess_compat._text_names_hermes(
+            "/opt/hermes-agent/venv/bin/python"
+        ) is True
+
     def test_invalid_pid_inputs_do_not_crash(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True):
             assert _subprocess_compat.pid_is_hermes(-1) is False
@@ -93,35 +114,24 @@ class TestPidIsHermes:
 
 
 class TestKillProcessTree:
-    """kill_process_tree must never taskkill a PID the probe rejects."""
+    """kill_process_tree operates on our own retained Popen handle.
+
+    A retained handle pins the PID (the child cannot be reaped while the
+    handle is open), so PID recycling is impossible there and the identity
+    guard deliberately does NOT apply — it could only false-refuse a
+    legitimate cleanup. These tests pin that contract for the legacy
+    Windows fallback path.
+    """
 
     def _proc(self, pid=4321):
         return mock.Mock(pid=pid)
 
-    def test_foreign_pid_never_taskkilled(self):
+    def test_retained_handle_is_taskkilled_without_probe(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
-            _subprocess_compat, "pid_is_hermes", return_value=False
-        ) as guard, mock.patch.object(
-            _subprocess_compat, "_process_start_time", return_value=123
-        ), mock.patch.object(_subprocess_compat.subprocess, "run") as run:
-            _subprocess_compat.kill_process_tree(self._proc())
-            guard.assert_called_once_with(4321, expected_start_time=123)
-            run.assert_not_called()
-
-    def test_probe_error_never_taskkilled(self):
-        with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
-            _subprocess_compat, "pid_is_hermes", return_value=False
-        ), mock.patch.object(_subprocess_compat.subprocess, "run") as run:
-            _subprocess_compat.kill_process_tree(self._proc())
-            run.assert_not_called()
-
-    def test_hermes_pid_still_taskkilled(self):
-        with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
-            _subprocess_compat, "pid_is_hermes", return_value=True
-        ), mock.patch.object(
-            _subprocess_compat, "_process_start_time", return_value=123
-        ), mock.patch.object(_subprocess_compat.subprocess, "run") as run:
-            _subprocess_compat.kill_process_tree(self._proc())
+            _subprocess_compat, "pid_is_hermes"
+        ) as guard, mock.patch.object(_subprocess_compat.subprocess, "run") as run:
+            _subprocess_compat._legacy_kill_process_tree(self._proc())
+            guard.assert_not_called()
             run.assert_called_once()
             argv = run.call_args.args[0]
             assert argv[0] == "taskkill"

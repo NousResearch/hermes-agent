@@ -493,6 +493,11 @@ class TestWaitForGatewayExit:
         calls = []
 
         monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [11, 22])
+        # Kill-time re-verification: force-kills only proceed when the LIVE
+        # cmdline still looks like a gateway.
+        monkeypatch.setattr(
+            gateway, "_capture_gateway_argv", lambda pid: ["python", "-m", "hermes_cli.main", "gateway", "run"]
+        )
         monkeypatch.setattr(
             gateway,
             "terminate_pid",
@@ -503,6 +508,27 @@ class TestWaitForGatewayExit:
 
         assert killed == 2
         assert calls == [(11, True), (22, True)]
+
+    def test_kill_gateway_processes_force_refuses_recycled_pid(self, monkeypatch):
+        """A scanned PID whose live argv no longer looks like a gateway is skipped."""
+        calls = []
+
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [11, 22])
+        monkeypatch.setattr(
+            gateway,
+            "_capture_gateway_argv",
+            lambda pid: None if pid == 11 else ["python", "-m", "hermes_cli.main", "gateway", "run"],
+        )
+        monkeypatch.setattr(
+            gateway,
+            "terminate_pid",
+            lambda pid, force=False, **kwargs: calls.append((pid, force)),
+        )
+
+        killed = gateway.kill_gateway_processes(force=True)
+
+        assert killed == 1
+        assert calls == [(22, True)]
 
 
 class TestStopProfileGateway:

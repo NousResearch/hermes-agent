@@ -368,12 +368,30 @@ class TestKillPortProcess:
         kills = []
         with patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
                    return_value=[55555]) as mock_listeners, \
+             patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
+                   return_value=True), \
              patch("plugins.platforms.whatsapp.adapter.os.kill",
                    side_effect=lambda pid, sig: kills.append((pid, sig))):
             wa._kill_port_process(3000)
 
         mock_listeners.assert_called_once_with(3000)
         assert kills == [(55555, signal.SIGTERM)]
+
+    @pytest.mark.linux_only
+    def test_non_bridge_listener_is_never_killed(self):
+        """#89614 class: a listener that is not a node bridge is refused."""
+        from plugins.platforms.whatsapp import adapter as wa
+
+        kills = []
+        with patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
+                   return_value=[55555]), \
+             patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
+                   return_value=False), \
+             patch("plugins.platforms.whatsapp.adapter.os.kill",
+                   side_effect=lambda pid, sig: kills.append((pid, sig))):
+            wa._kill_port_process(3000)
+
+        assert kills == []
 
 
 # ---------------------------------------------------------------------------

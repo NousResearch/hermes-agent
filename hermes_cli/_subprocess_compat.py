@@ -29,6 +29,7 @@ guarantee.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -399,6 +400,23 @@ def _process_start_time(pid: int) -> int | None:
         return None
 
 
+def _text_names_hermes(text: str) -> bool:
+    """True when *text* names Hermes at a path-segment / token boundary.
+
+    A bare ``"hermes" in text`` substring test would also match unrelated
+    processes whose paths merely contain the letters (``...\\shermesa\\...``),
+    which is exactly the false-positive class this guard exists to prevent.
+    Instead, split on path separators and whitespace and require a segment
+    that *starts with* ``hermes`` (``hermes``, ``hermes.exe``, ``hermes_cli``,
+    ``hermes-agent``, ``hermes-runtime``) or the hidden-dir form
+    ``.hermes``/``.hermes-runtime``.
+    """
+    for token in re.split(r"[\\/\s=,;\"']+", text.lower()):
+        if token.startswith("hermes") or token.startswith(".hermes"):
+            return True
+    return False
+
+
 def _process_command_is_hermes(pid: int) -> bool:
     """Best-effort check that *pid* currently runs Hermes code."""
     try:
@@ -407,7 +425,7 @@ def _process_command_is_hermes(pid: int) -> bool:
         process = psutil.Process(pid)
         command = " ".join(process.cmdline() or [])
         executable = process.exe() or ""
-        return "hermes" in f"{command} {executable}".lower()
+        return _text_names_hermes(f"{command} {executable}")
     except Exception:
         return False
 
@@ -423,12 +441,19 @@ def pid_is_hermes(
     the caller captured a start-time fingerprint before the destructive action,
     the live process must still have the same ``(pid, start_time)`` identity.
     Any ambiguity fails closed. Non-Windows callers have no ``taskkill`` path,
-    so a valid PID is accepted there.
+    so a valid PID with no (or a matching) explicit expectation is accepted
+    there — but a caller-provided fingerprint that no longer matches is a
+    recycled PID on every platform and is always refused.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     if not IS_WINDOWS:
-        return True
+        if expected_start_time is None:
+            return True
+        try:
+            return _process_start_time(pid) == expected_start_time
+        except Exception:
+            return False
 
     try:
         current_start_time = _process_start_time(pid)
@@ -447,11 +472,7 @@ def pid_is_hermes(
         return False
 
 
-def kill_process_tree(
-    proc: "subprocess.Popen",
-    *,
-    expected_start_time: int | None = None,
-) -> None:
+def kill_process_tree(proc: "subprocess.Popen") -> None:
     """Best-effort terminate *proc* and its descendants on both platforms.
 
     ``proc.kill()`` alone only terminates the direct child. On Windows a
@@ -523,20 +544,15 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
     except OSError:
         pass
     if IS_WINDOWS:
+        # No identity guard here on purpose: *proc* is our own retained
+        # ``Popen`` handle. The child cannot be reaped (and its PID cannot be
+        # recycled) while we still hold the handle, so an identity check could
+        # only ever false-refuse a legitimate cleanup. The fail-closed
+        # ``pid_is_hermes`` guard is for BARE pids from state files or process
+        # scans, where recycling is real.
         try:
-            live_start_time = expected_start_time
-            if live_start_time is None:
-                live_start_time = _process_start_time(proc.pid)
-            if live_start_time is None:
-                allowed = False
-            else:
-                allowed = pid_is_hermes(
-                    proc.pid,
-                    expected_start_time=live_start_time,
-                )
-            if allowed:
-                subprocess.run(
-                    ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
@@ -600,10 +616,7 @@ def bounded_probe_run(
         # Timeout OR any other communicate() failure (torn-down pipe, decode
         # error): terminate the child + descendants and drain bounded. Leaving
         # it running would leak the same suspended-descendant class this guards.
-        kill_process_tree(
-            proc,
-            expected_start_time=_process_start_time(proc.pid),
-        )
+        kill_process_tree(proc)
         try:
             proc.communicate(timeout=1)
         except Exception:

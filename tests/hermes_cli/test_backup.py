@@ -1852,5 +1852,133 @@ class TestMemoryProviderExternalPaths:
         assert not (hermes_home / "_external").exists()
 
 
+# ---------------------------------------------------------------------------
+# run_import: HERMES_HOME override handling (issue #99839)
+# ---------------------------------------------------------------------------
 
 
+class TestImportHonorsHermesHomeOverride:
+    """`hermes import` must restore into the home the command runs under.
+
+    Resolving the target through get_default_hermes_root() maps a profile
+    home (<root>/profiles/<name>) back to <root>: the import then overwrites
+    the live root's config.yaml while the profile directory stays empty —
+    exactly what "Target:" printed it would NOT do.
+    """
+
+    def _make_backup_zip(self, tmp_path):
+        import zipfile
+
+        src_root = tmp_path / "src-home"
+        src_root.mkdir()
+        (src_root / "config.yaml").write_text("model:\n  provider: anthropic\n")
+        (src_root / ".env").write_text("ANTHROPIC_API_KEY=sk-test\n")
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(src_root / "config.yaml", "config.yaml")
+            zf.write(src_root / ".env", ".env")
+        return zip_path
+
+    def test_import_targets_named_profile_home(self, tmp_path, monkeypatch):
+        """HERMES_HOME=<root>/profiles/<name> must restore INTO the profile,
+        not into <root> (which would clobber the live root config)."""
+        root = tmp_path / "hermes-root"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        # Live root config that must survive untouched.
+        (root / "config.yaml").write_text("model:\n  provider: openai\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        from hermes_constants import get_hermes_home
+
+        assert get_hermes_home() == profile
+
+        zip_path = self._make_backup_zip(tmp_path)
+
+        import argparse
+
+        from hermes_cli.backup import run_import
+
+        args = argparse.Namespace(zipfile=str(zip_path), force=True)
+        run_import(args)
+
+        assert (profile / "config.yaml").read_text() == (
+            "model:\n  provider: anthropic\n"
+        )
+        assert (root / "config.yaml").read_text() == "model:\n  provider: openai\n"
+
+    def test_import_skips_gateway_install_for_non_default_home(
+        self, tmp_path, monkeypatch
+    ):
+        """A restore into a sandbox must not silently start a second gateway
+        pointed at it — the profile/sandbox gateway would shadow the default
+        service installed by the primary install."""
+        native_default = tmp_path / "native-default"
+        sandbox = tmp_path / "sandbox-home"
+        sandbox.mkdir(parents=True)
+        # Live default install markers.
+        native_default.mkdir()
+        (native_default / "config.yaml").write_text("model:\n  provider: openai\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(sandbox))
+
+        import argparse
+
+        import hermes_constants
+        from hermes_cli import backup as backup_mod
+
+        monkeypatch.setattr(
+            backup_mod,
+            "_get_platform_default_hermes_home",
+            lambda: native_default,
+        )
+
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway.ensure_gateway_service",
+            lambda *a, **kw: calls.append(kw),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway._is_service_running",
+            lambda: False,
+        )
+
+        zip_path = self._make_backup_zip(tmp_path)
+        args = argparse.Namespace(zipfile=str(zip_path), force=True)
+        backup_mod.run_import(args)
+
+        assert calls == [], "gateway must not be auto-installed for a sandbox restore"
+
+    def test_import_installs_gateway_when_default_home_is_target(
+        self, tmp_path, monkeypatch
+    ):
+        """Restoring into the default home keeps the auto-install behavior."""
+        native_default = tmp_path / "native-default"
+        native_default.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(native_default))
+
+        import argparse
+
+        from hermes_cli import backup as backup_mod
+
+        monkeypatch.setattr(
+            backup_mod,
+            "_get_platform_default_hermes_home",
+            lambda: native_default,
+        )
+
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway.ensure_gateway_service",
+            lambda *a, **kw: calls.append(kw),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway._is_service_running",
+            lambda: False,
+        )
+
+        zip_path = self._make_backup_zip(tmp_path)
+        args = argparse.Namespace(zipfile=str(zip_path), force=True)
+        backup_mod.run_import(args)
+
+        assert calls and calls[0].get("context") == "import"

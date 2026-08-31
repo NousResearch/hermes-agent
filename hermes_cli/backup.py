@@ -24,7 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from hermes_constants import (
+    _get_platform_default_hermes_home,
+    get_default_hermes_root,
+    get_hermes_home,
+    display_hermes_home,
+)
 from utils import (
     _preserve_file_mode,
     _preserve_file_owner,
@@ -1230,7 +1235,12 @@ def run_import(args) -> None:
         print(f"Error: Not a valid zip file: {zip_path}")
         sys.exit(1)
 
-    hermes_root = get_default_hermes_root()
+    # The restore target must be the home the command operates under — the
+    # same path printed as "Target:" via display_hermes_home(). Resolving
+    # through get_default_hermes_root() instead maps a profile home
+    # (<root>/profiles/<name>) back to <root>, silently retargeting the
+    # restore at the live root while the profile directory stays empty.
+    hermes_root = get_hermes_home()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         # Validate
@@ -1442,15 +1452,33 @@ def run_import(args) -> None:
         # platform-less gateway is a supported mode, so this is safe even
         # for backups with no messaging config). Best-effort and prompt-free;
         # failures print a manual fallback and never fail the import.
-        try:
-            from hermes_cli.gateway import ensure_gateway_service, _is_service_running
+        native_default = _get_platform_default_hermes_home()
+        default_has_install = any(
+            (native_default / marker).exists()
+            for marker in ("config.yaml", ".env", "state.db")
+        )
+        # A restore into a sandbox or profile home must not silently install
+        # a second gateway pointed at it — on the default service name that
+        # would shadow or hijack the machine's primary install. Only revive
+        # the service automatically when the restore landed in the default
+        # home, or when no other install exists on this machine.
+        if hermes_root != native_default and default_has_install:
+            print(
+                "\nRestored into a non-default home; leaving the gateway service "
+                "alone to avoid clashing with the install at "
+                f"{native_default}."
+            )
+            print("To start a gateway for this home, run:  hermes gateway install")
+        else:
+            try:
+                from hermes_cli.gateway import ensure_gateway_service, _is_service_running
 
-            if not _is_service_running():
-                print()
-                ensure_gateway_service(context="import")
-        except Exception:
-            print("\nStart the gateway to activate cron jobs and messaging:")
-            print("  hermes gateway install")
+                if not _is_service_running():
+                    print()
+                    ensure_gateway_service(context="import")
+            except Exception:
+                print("\nStart the gateway to activate cron jobs and messaging:")
+                print("  hermes gateway install")
 
         print("Done. Your Hermes configuration has been restored.")
 

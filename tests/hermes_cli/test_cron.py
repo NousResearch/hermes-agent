@@ -160,6 +160,38 @@ class TestCronDoctor:
         assert rc == 0
         assert "✓ Cron doctor found no issues" in out
 
+    def test_doctor_flags_overdue_next_run(self, tmp_cron_dir, capsys):
+        from datetime import datetime, timedelta, timezone
+
+        create_job(prompt="Hourly ping", schedule="every 1h")
+        jobs = load_jobs()
+        stale = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        jobs[0]["next_run_at"] = stale
+        save_jobs(jobs)
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "overdue" in out
+        assert "not firing" in out
+
+    def test_doctor_tolerates_slightly_late_next_run(self, tmp_cron_dir, capsys):
+        from datetime import datetime, timedelta, timezone
+
+        create_job(prompt="Hourly ping", schedule="every 1h")
+        jobs = load_jobs()
+        # 5 minutes late is within the ticker grace window — healthy.
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        jobs[0]["next_run_at"] = recent
+        save_jobs(jobs)
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "✓ Cron doctor found no issues" in out
+
 
 class TestGatewayNotRunningWarning:
     """`cron create` / `cron list` must warn when the gateway (and thus the

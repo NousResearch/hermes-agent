@@ -582,6 +582,32 @@ def _script_health_issue(script: str) -> Optional[str]:
     return None
 
 
+# Grace period before an overdue ``next_run_at`` is reported. The ticker runs
+# once a minute and a busy tick can push dispatch a few minutes late; only a
+# next_run_at parked well in the past means the job is silently not firing
+# (ticker dead, gateway down, or a wedged fire-claim).
+_OVERDUE_GRACE_SECONDS = 15 * 60
+
+
+def _next_run_overdue_issue(next_run: str) -> Optional[str]:
+    """Return an issue string when ``next_run_at`` is parked in the past."""
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(next_run.replace("Z", "+00:00"))
+    except ValueError:
+        return f"next_run_at is not a valid timestamp: {next_run!r}"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    overdue_s = (datetime.now(timezone.utc) - dt).total_seconds()
+    if overdue_s > _OVERDUE_GRACE_SECONDS:
+        hours = overdue_s / 3600
+        if hours >= 1:
+            return f"next_run_at is {hours:.1f}h overdue — job is not firing (is the scheduler running?)"
+        return f"next_run_at is {overdue_s / 60:.0f}m overdue — job is not firing (is the scheduler running?)"
+    return None
+
+
 def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
 
@@ -595,8 +621,13 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
         issues.append(f"last delivery failed: {delivery_err}")
 
     if job.get("enabled", True) and job.get("state") not in {"paused", "completed"}:
-        if not job.get("next_run_at"):
+        next_run = str(job.get("next_run_at") or "").strip()
+        if not next_run:
             issues.append("active job has no next_run_at")
+        else:
+            overdue = _next_run_overdue_issue(next_run)
+            if overdue:
+                issues.append(overdue)
 
     script = str(job.get("script") or "").strip()
     if job.get("no_agent") and not script:

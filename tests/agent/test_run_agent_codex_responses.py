@@ -1953,6 +1953,57 @@ def test_normalize_codex_response_promotes_commentary_to_content_on_tool_turn(mo
     assert report in assistant_message.codex_message_items[0]["content"][0]["text"]
 
 
+def test_normalize_codex_response_blank_line_separates_commentary_from_content(monkeypatch):
+    """Promoted narration does not absorb the content item that follows it.
+
+    Commentary and a plain message item are distinct output items. Joining
+    them with a single newline is only a soft break in Markdown, so a report
+    ending in a list would swallow the next block into that list.
+    """
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    report = "### Alerts\n\n- **Virgin Media:** August bill available."
+    trailing = "Checking the next account now."
+    response = _codex_commentary_tool_response(report)
+    response.output.insert(
+        1,
+        SimpleNamespace(
+            type="message",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text=trailing)],
+        ),
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.content == f"{report}\n\n{trailing}"
+
+
+def test_normalize_codex_response_blank_line_separates_two_commentary_items(monkeypatch):
+    """Two commentary items are separate messages, not one run-on block."""
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    first = "- **Virgin Media:** August bill available."
+    second = "### Next steps"
+    response = _codex_commentary_tool_response(first)
+    response.output.insert(
+        1,
+        SimpleNamespace(
+            type="message",
+            phase="commentary",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text=second)],
+        ),
+    )
+
+    assistant_message, _ = _normalize_codex_response(response)
+
+    assert assistant_message.content == f"{first}\n\n{second}"
+
+
 def test_normalize_codex_response_keeps_analysis_phase_out_of_content(monkeypatch):
     """``analysis`` is provider scratchpad and stays on the reasoning channel."""
     _build_agent(monkeypatch)

@@ -19,6 +19,7 @@ import re
 import shutil
 import stat as stat_mod
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -676,7 +677,12 @@ class CheckpointManager:
         if not self._git_available:
             return False
         abs_dir = str(_normalize_path(working_dir))
-        if abs_dir in {"/", str(Path.home())}:  # never snapshot root/home
+        # Skip root, home, and the shared system temp directory.
+        if abs_dir in {
+            "/",
+            str(Path.home()),
+            str(Path(tempfile.gettempdir()).resolve()),
+        }:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
         if abs_dir in self._checkpointed_dirs:

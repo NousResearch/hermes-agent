@@ -4590,6 +4590,36 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # Failed subagent → one clean user-facing notice. Handled FIRST,
+        # before every progress-queue gate: platforms that keep
+        # tool_progress off (Telegram, Slack, ...) must still hear about a
+        # delegation that died — a silently-vanishing subagent looks like
+        # the agent just dropped the task (community report, Aug 2026).
+        # Success/interrupt completions stay quiet; only terminal failure
+        # statuses render, via the same notice rail as credit warnings.
+        if event_type == "subagent.complete":
+            _sub_status = kwargs.get("status")
+            try:
+                from tools.delegate_tool import (
+                    SUBAGENT_FAILURE_STATUSES,
+                    format_subagent_failure_line,
+                )
+                if _sub_status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():
+                    _line = format_subagent_failure_line(
+                        kwargs.get("goal"),
+                        _sub_status,
+                        error=kwargs.get("summary") or preview,
+                        duration_seconds=kwargs.get("duration_seconds"),
+                    )
+                    safe_schedule_threadsafe(
+                        self._runner._deliver_platform_notice(ctx.source, _line),
+                        ctx._loop_for_step,
+                        logger=logger,
+                        log_message="subagent failure notice scheduling error",
+                    )
+            except Exception:
+                logger.debug("subagent failure notice failed", exc_info=True)
+            return
         # Live status line (Slack's assistant status): stash the current
         # tool phrase on the adapter; the _keep_typing refresh renders it
         # within a couple of seconds. Handled before every other gate
@@ -6108,15 +6138,12 @@ class TurnRunner:
         # who set thinking_progress:true but kept tool_progress:off got a
         # None callback — so _thinking scratch bubbles never relayed even
         # though the progress queue was created for them.
-        agent.tool_progress_callback = (
-            ctx.progress_callback
-            if (
-                ctx.needs_progress_queue
-                or ctx.log_mode_enabled
-                or ctx._live_status_adapter is not None
-            )
-            else None
-        )
+        # Always attached (previously gated to None when no progress surface
+        # was active): the callback body gates each event class itself, and
+        # subagent-failure notices must fire even on platforms with
+        # tool_progress/thinking off — the None gate was exactly why a dead
+        # subagent vanished silently there.
+        agent.tool_progress_callback = ctx.progress_callback
         # Compose ID-bearing lifecycle consumers: Discord's one-time voice
         # ack and Slack's native task cards both ride the authoritative
         # start callback, so neither has to infer identity from tool names.

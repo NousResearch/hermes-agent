@@ -162,6 +162,63 @@ _RECENT_SUBAGENTS_CAP = 200
 _recent_subagents: Dict[str, Dict[str, Any]] = {}
 
 
+# Terminal child statuses that mean "the subagent did NOT deliver a usable
+# result". Shared by the CLI spinner echo, the gateway failure notice, and
+# the parent-facing failure summary so every surface agrees on what counts
+# as a failure.
+SUBAGENT_FAILURE_STATUSES = frozenset({"failed", "error", "timeout"})
+
+
+def _clean_error_text(error: Any, max_chars: int = 200) -> str:
+    """Reduce an arbitrary error payload to one clean human-readable line.
+
+    Provider/SDK errors routinely arrive as multi-line tracebacks or JSON
+    walls. For a chat-facing notice we want the single most informative
+    line: the exception message (last line of a traceback) or the first
+    non-empty line otherwise, hard-capped in length.
+    """
+    text = str(error or "").strip()
+    if not text:
+        return ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # A traceback's last line is the actual exception message.
+    line = lines[-1] if lines[0].startswith("Traceback") else lines[0]
+    if len(line) > max_chars:
+        line = line[: max_chars - 3] + "..."
+    return line
+
+
+def format_subagent_failure_line(
+    goal: Optional[str],
+    status: Optional[str],
+    error: Any = None,
+    duration_seconds: Any = None,
+) -> str:
+    """One clean, human-readable line describing a failed subagent.
+
+    Rendered directly to the user (CLI spinner echo, gateway platform
+    notice) — no JSON, no traceback, no internal field names. Example:
+
+        ⚠️ Subagent failed — "research competitor pricing": Error code: 404 —
+        model not found (after 12s)
+    """
+    goal_label = (goal or "").strip().replace("\n", " ")
+    if len(goal_label) > 60:
+        goal_label = goal_label[:57] + "..."
+    verb = "timed out" if status == "timeout" else "failed"
+    line = f"⚠️ Subagent {verb}"
+    if goal_label:
+        line += f' — "{goal_label}"'
+    err = _clean_error_text(error)
+    if err:
+        line += f": {err}"
+    if isinstance(duration_seconds, (int, float)) and duration_seconds > 0:
+        line += f" (after {round(duration_seconds)}s)"
+    return line
+
+
 def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Resolve a process task_id to its originating delegation, if any.
 
@@ -1460,6 +1517,21 @@ def _build_child_progress_callback(
             return
 
         if event_type == "subagent.complete":
+            # Failed child: echo one clean reason line into the CLI tree so
+            # the human sees WHY, not just a vanished branch. Gateway-side
+            # rendering happens in TurnRunner.progress_callback off the
+            # relayed event below.
+            if spinner and kwargs.get("status") in SUBAGENT_FAILURE_STATUSES:
+                _fail_line = format_subagent_failure_line(
+                    goal_label,
+                    kwargs.get("status"),
+                    error=kwargs.get("summary") or preview,
+                    duration_seconds=kwargs.get("duration_seconds"),
+                )
+                try:
+                    spinner.print_above(f" {prefix}├─ {_fail_line}")
+                except Exception as e:
+                    logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.complete", preview=preview, **kwargs)
             return
 
@@ -3092,6 +3164,14 @@ def _run_single_child(
 
         if interrupted:
             status = "interrupted"
+        elif result.get("failed"):
+            # The child's conversation loop aborted (non-retryable HTTP
+            # error, retries exhausted, billing wall). final_response holds
+            # the error summary in this shape, NOT usable output — without
+            # this branch a provider 404/400 was classified "completed" with
+            # the error text as its summary, so no surface ever saw a
+            # failure (community report, Aug 2026).
+            status = "failed"
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -4106,6 +4186,15 @@ def delegate_task(
                         icon = "✓" if status == "completed" else "✗"
                         remaining = n_tasks - completed_count
                         completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                        # Failed/errored/timed-out children: say WHY on the
+                        # same line, cleaned to one short human-readable
+                        # fragment — a bare ✗ reads as "silently dropped".
+                        if status in SUBAGENT_FAILURE_STATUSES:
+                            _err_line = _clean_error_text(
+                                entry.get("error"), max_chars=120
+                            )
+                            if _err_line:
+                                completion_line += f" — {_err_line}"
                         if spinner_ref:
                             try:
                                 spinner_ref.print_above(completion_line)

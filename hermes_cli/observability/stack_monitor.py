@@ -218,6 +218,17 @@ class _Producer:
         )
         self._thread.start()
 
+    def next_sequence(self) -> int:
+        """Allocate the next producer sequence atomically.
+
+        Hooks fire from multiple threads (gateway workers, tool executors);
+        a bare ``+= 1`` across threads can assign the same sequence twice,
+        which the collector then records as colliding producer identities.
+        """
+        with self._lock:
+            self.sequence += 1
+            return self.sequence
+
     def emit(self, event: dict[str, Any]) -> None:
         try:
             self.queue.put_nowait(event)
@@ -351,17 +362,21 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
             # close it as an explicitly unmatched terminal observation.
             pending_items = list(_OPEN_EVENTS.items())
         for key, pending in pending_items:
-            producer.sequence += 1
             producer.emit(
                 build_envelope(
                     "terminal_observation_gap",
                     pending,
-                    sequence=producer.sequence,
+                    sequence=producer.next_sequence(),
                 )
             )
             _OPEN_EVENTS.pop(key, None)
-    producer.sequence += 1
-    producer.emit(build_envelope(hook_name, kwargs, sequence=producer.sequence))
+    producer.emit(
+        build_envelope(
+            hook_name,
+            kwargs,
+            sequence=producer.next_sequence(),
+        )
+    )
     if hook_name == "on_session_end":
         producer.flush()
 
@@ -379,12 +394,11 @@ def shutdown() -> None:
     with _PRODUCER_LOCK:
         if _PRODUCER is not None:
             for key, pending in list(_OPEN_EVENTS.items()):
-                _PRODUCER.sequence += 1
                 _PRODUCER.emit(
                     build_envelope(
                         "terminal_observation_gap",
                         pending,
-                        sequence=_PRODUCER.sequence,
+                        sequence=_PRODUCER.next_sequence(),
                     )
                 )
                 _OPEN_EVENTS.pop(key, None)

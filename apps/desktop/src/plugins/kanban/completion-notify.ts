@@ -38,6 +38,7 @@ export interface CompletionEvent {
   task_id?: string
   kind?: string
   payload?: Record<string, unknown> | null
+  created_at?: unknown
 }
 
 type ToastKind = 'error' | 'success' | 'warning'

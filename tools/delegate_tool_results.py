@@ -293,6 +293,35 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
             spill_path or "none",
         )
 
+
+def _deliver_summaries_by_path(results: List[Dict[str, Any]], task_list: List[Dict[str, Any]]) -> None:
+    """Replace requested inline summaries with a durable path to exact bytes.
+
+    Opt-in per task via ``result_delivery: "path"``. Runs after the summary budget so a
+    spill that already happened is reused rather than rewritten. A spill failure marks the
+    entry "inline-fallback" and leaves the inline summary intact, so a cache-write failure
+    never loses the result."""
+    for entry in results:
+        task_index = entry.get("task_index")
+        if (
+            not isinstance(task_index, int)
+            or not 0 <= task_index < len(task_list)
+            or task_list[task_index].get("result_delivery") != "path"
+        ):
+            continue
+        summary = entry.get("summary")
+        if not isinstance(summary, str) or not summary:
+            continue
+        path = entry.get("summary_full_path")
+        if not isinstance(path, str) or not path:
+            path = _spill_summary_to_file(task_index, summary)
+        if not path:
+            entry["summary_delivery"] = "inline-fallback"
+            continue
+        entry["summary"] = f"Full subagent output saved to: {path}"
+        entry["summary_full_path"] = path
+        entry["summary_delivery"] = "path"
+
 _PARENT_FINALIZATION_LOCK_GUARD = threading.Lock()
 _PARENT_FINALIZATION_FALLBACK_LOCK = threading.RLock()
 _CHILD_CONSTRUCTION_LOCK = threading.RLock()
@@ -399,6 +428,7 @@ def _finalize_child_results(
         child_by_index = {index: child for index, _task, child in children}
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
+        _deliver_summaries_by_path(results, task_list)
 
 def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> Dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""

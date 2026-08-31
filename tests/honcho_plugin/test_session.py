@@ -1,6 +1,8 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
 import json
+import sys
+import threading
 import time
 
 from datetime import datetime
@@ -1164,6 +1166,7 @@ class TestSetPeerCardNoneGuard:
         mgr._cache = {}
         mgr._sessions_cache = {}
         mgr._config = cfg
+        mgr._session_observation = {}
         return mgr
 
     def test_returns_none_when_peer_resolves_to_none(self):
@@ -1206,6 +1209,7 @@ class TestGetSessionContextFallback:
         mgr._dialectic_reasoning_level = "low"
         mgr._dialectic_max_input_chars = 10000
         mgr._ai_observe_others = True
+        mgr._session_observation = {}
 
         session = HonchoSession(
             key="test",
@@ -1439,4 +1443,155 @@ class TestInjectionAuditLog:
         assert provider.prefetch("hello") == ""
         record = json.loads((tmp_path / "injection.log").read_text().splitlines()[0])
         assert record["reason"] == "cron-or-tools-mode" and record["payload"] == ""
+# Observation flags are scoped per session, not manager-wide (#98936)
+# ---------------------------------------------------------------------------
+
+
+class _FakeServerPeerConfig:
+    """SessionPeerConfig stand-in for both the local build and the server read.
+
+    None means "leave unchanged", mirroring the SDK's optional fields. Doubles
+    as the injected ``honcho.session`` module's SessionPeerConfig so the test
+    runs even without the optional honcho-ai extra installed.
+    """
+
+    def __init__(self, observe_me=None, observe_others=None):
+        self.observe_me = observe_me
+        self.observe_others = observe_others
+
+
+class _FakeSdkSession:
+    """Records add_peers calls and serves per-peer server configs."""
+
+    def __init__(self, server_user_cfg, server_ai_cfg):
+        self.add_peers_calls = []
+        self._server_user_cfg = server_user_cfg
+        self._server_ai_cfg = server_ai_cfg
+
+    def add_peers(self, entries):
+        self.add_peers_calls.append(entries)
+
+    def get_peer_configuration(self, peer):
+        return self._server_user_cfg if peer == "user-peer" else self._server_ai_cfg
+
+    def context(self, summary=True, tokens=None):
+        class _Ctx:
+            messages = []
+
+        return _Ctx()
+
+
+class TestObservationPerSessionScoping:
+    """One session's server sync must not retune another session's routing."""
+
+    def _make_manager(self):
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        mgr = HonchoSessionManager.__new__(HonchoSessionManager)
+        mgr._cache = {}
+        mgr._sessions_cache = {}
+        mgr._session_observation = {}
+        mgr._cache_lock = threading.RLock()
+        mgr._context_tokens = 1000
+        # Config snapshot defaults — manager fields must stay at these values.
+        mgr._user_observe_me = True
+        mgr._user_observe_others = True
+        mgr._ai_observe_me = True
+        mgr._ai_observe_others = True
+        mgr._authed_call = lambda label, op: op()
+        return mgr
+
+    def _session(self, mgr, key):
+        session = HonchoSession(
+            key=key,
+            honcho_session_id=f"sid-{key}",
+            user_peer_id="user-peer",
+            assistant_peer_id="ai-peer",
+        )
+        mgr._cache[key] = session
+        return session
+
+    def _setup_session(self, mgr, session_id, fake_sdk):
+        fake_module = SimpleNamespace(SessionPeerConfig=_FakeServerPeerConfig)
+        mgr._sdk_session = lambda sid: fake_sdk
+        with patch.dict(sys.modules, {"honcho.session": fake_module}):
+            return mgr._get_or_create_honcho_session(
+                session_id, "user-peer", "ai-peer"
+            )
+
+    def test_sync_back_scopes_flags_per_session(self):
+        """Server flags land under each session's own id; manager snapshot untouched."""
+        mgr = self._make_manager()
+
+        # Session A's server config disables user observe_others...
+        self._setup_session(
+            mgr, "sid-a",
+            _FakeSdkSession(_FakeServerPeerConfig(observe_others=False), _FakeServerPeerConfig()),
+        )
+        # ...session B's server leaves everything at the synced-in defaults.
+        self._setup_session(
+            mgr, "sid-b",
+            _FakeSdkSession(_FakeServerPeerConfig(), _FakeServerPeerConfig()),
+        )
+
+        assert mgr._session_observation["sid-a"]["user_observe_others"] is False
+        assert mgr._session_observation["sid-b"]["user_observe_others"] is True
+        # The config snapshot on the manager must survive both syncs — this is
+        # the regression: last-session-wins used to overwrite it (#98936).
+        assert mgr._user_observe_others is True
+
+    def test_add_peers_reuses_synced_flags_for_existing_session(self):
+        """A re-initialized session re-applies its own synced values, not the defaults."""
+        mgr = self._make_manager()
+
+        fake = _FakeSdkSession(
+            _FakeServerPeerConfig(observe_others=False), _FakeServerPeerConfig()
+        )
+        self._setup_session(mgr, "sid-a", fake)
+
+        # Force the full setup path again (cache cleared, e.g. after re-auth).
+        mgr._sessions_cache = {}
+        fake2 = _FakeSdkSession(
+            _FakeServerPeerConfig(observe_others=False), _FakeServerPeerConfig()
+        )
+        self._setup_session(mgr, "sid-a", fake2)
+
+        user_cfg = fake2.add_peers_calls[0][0][1]
+        assert user_cfg.observe_others is False
+
+    def test_resolve_observer_target_uses_own_session_flags(self):
+        """Recall routing reads each session's flags, so diverging sessions diverge."""
+        mgr = self._make_manager()
+        session_a = self._session(mgr, "a")
+        session_b = self._session(mgr, "b")
+        mgr._session_observation["sid-a"] = {
+            "user_observe_me": True,
+            "user_observe_others": True,
+            "ai_observe_me": True,
+            "ai_observe_others": False,
+        }
+        mgr._session_observation["sid-b"] = {
+            "user_observe_me": True,
+            "user_observe_others": True,
+            "ai_observe_me": True,
+            "ai_observe_others": True,
+        }
+
+        # Without AI cross-observation the target peer queries its own context.
+        assert mgr._resolve_observer_target(session_a, "user") == ("user-peer", None)
+        # With it, the assistant peer observes the user peer.
+        assert mgr._resolve_observer_target(session_b, "user") == ("ai-peer", "user-peer")
+
+    def test_unsynced_session_falls_back_to_config_snapshot(self):
+        """A session that never completed setup routes with the config defaults."""
+        mgr = self._make_manager()
+        session_c = self._session(mgr, "c")
+        mgr._session_observation["sid-other"] = {
+            "user_observe_me": True,
+            "user_observe_others": True,
+            "ai_observe_me": True,
+            "ai_observe_others": False,
+        }
+
+        assert mgr._ai_observes_others(session_c) is True
 

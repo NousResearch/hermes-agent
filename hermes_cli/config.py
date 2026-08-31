@@ -790,6 +790,50 @@ def _split_key_path(key: str) -> list[str]:
     return parts
 
 
+def _greedy_literal_match(container: dict, parts: list) -> Optional[Tuple[str, int]]:
+    """Return ``(literal_key, n_consumed)`` for the longest dotted literal match.
+
+    Dots in config key names are the norm, not the exception — model IDs
+    (``grok-4.6``, ``glm-5.3``), Matrix room IDs (``!room:chat.example.cc``),
+    and versioned provider names all embed dots. Users typing
+    ``providers.myprov.models.grok-4.6.context_length`` do not know the
+    escape syntax exists, so when navigating an EXISTING mapping we prefer an
+    existing literal key equal to the dot-join of the next N path segments
+    (longest match wins) over blindly splitting. See #84064 / #80006 /
+    #91095 / #91607 / #99124.
+
+    Backward compatible: when no multi-segment literal key exists, the single
+    segment ``parts[0]`` is the only candidate, which is exactly the historic
+    plain-split behavior. Returns ``None`` when nothing matches.
+    """
+    if not isinstance(container, dict) or not parts:
+        return None
+    for n in range(len(parts), 0, -1):
+        candidate = ".".join(parts[:n])
+        if candidate in container:
+            return candidate, n
+    return None
+
+
+def _phantom_sibling(container: dict, part: str) -> Optional[str]:
+    """Return an existing sibling key that ``part`` would shadow, if any.
+
+    Called when a write is about to CREATE a new intermediate mapping named
+    ``part``. If the mapping already holds a literal dotted key that starts
+    with ``part + "."`` (e.g. creating ``grok-4`` beside an existing
+    ``grok-4.5``), the split almost certainly chopped a dotted leaf name and
+    the write would produce a phantom sibling the runtime never reads.
+    Fail loudly instead of silently corrupting (#84064 discussion).
+    """
+    if not isinstance(container, dict):
+        return None
+    prefix = part + "."
+    for k in container:
+        if isinstance(k, str) and k.startswith(prefix):
+            return k
+    return None
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at a dotted key path, creating intermediate dicts on demand.
     Numeric segments index lists; the index must already exist (lists are never grown).

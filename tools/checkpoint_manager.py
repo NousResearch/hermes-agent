@@ -677,12 +677,18 @@ class CheckpointManager:
         if not self._git_available:
             return False
         abs_dir = str(_normalize_path(working_dir))
-        # Skip root, home, and the shared system temp directory.
-        if abs_dir in {
-            "/",
-            str(Path.home()),
-            str(Path(tempfile.gettempdir()).resolve()),
-        }:
+
+        # Skip root, home, and the shared system temp roots.
+        temp_roots = {
+            Path(tempfile.gettempdir()),
+            Path("/tmp"),
+            Path("/var/tmp"),
+            Path("/private/tmp"),
+            Path("/private/var/tmp"),
+        }
+        skip_dirs = {"/", str(Path.home().resolve())}
+        skip_dirs.update(str(root.resolve()) for root in temp_roots)
+        if abs_dir in skip_dirs:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
         if abs_dir in self._checkpointed_dirs:

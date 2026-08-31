@@ -166,6 +166,8 @@ class TestTakeCheckpoint:
         manager = CheckpointManager(enabled=True, max_snapshots=5)
 
         assert manager.ensure_checkpoint(str(tmp_path), "temp root") is False
+        assert manager.ensure_checkpoint("/tmp", "shared tmp") is False
+        assert manager.ensure_checkpoint("/var/tmp", "shared var tmp") is False
 
         project = tmp_path / "project"
         project.mkdir()

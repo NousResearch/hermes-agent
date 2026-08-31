@@ -2226,6 +2226,17 @@ def _typed_payload(
                 typed[key] = GeneratedContextSegment(_terminal_replay_result(""))
                 continue
             if (
+                is_read_file_projection_tool_result
+                and source_metadata is None
+                and key in {"content", "output"}
+                and isinstance(item, str)
+            ):
+                # An exact call-id proves this is the local read tool's result,
+                # but an error/denial has no source grant.  Replay only the
+                # bounded outcome instead of treating the error text as source.
+                typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
+                continue
+            if (
                 (
                     is_read_file_result
                     or (
@@ -2250,14 +2261,6 @@ def _typed_payload(
                     request_id=request_identity[2],
                     policy_digest=request_identity[3],
                 )
-                continue
-            if (
-                is_read_file_projection_tool_result
-                and source_metadata is None
-                and key in {"content", "output"}
-                and isinstance(item, str)
-            ):
-                typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
                 continue
             if (
                 is_search_projection_tool_result

@@ -2920,6 +2920,41 @@ def test_real_read_file_wire_result_keeps_exact_source_provenance(
     assert receipt.decision.source_segment_count == 1
 
 
+def test_bound_read_file_error_without_provenance_is_elided(tmp_path, monkeypatch):
+    from agent.tool_dispatch_helpers import make_tool_result_message
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _agent(tmp_path / "egress")
+    agent.provider = "nous"
+    agent.base_url = "https://inference-api.nousresearch.com/v1"
+    call_id = "call_read_error_1"
+    error_result = '{"error":"File is outside the permitted read root"}'
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"path":"outside.txt"}',
+                },
+            }],
+        },
+        make_tool_result_message("read_file", error_result, call_id),
+    ]
+
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {"model": "test-model", "messages": messages},
+    )
+
+    assert receipt.allowed
+    assert authorized["messages"][1]["content"] != error_result
+    assert receipt.decision.source_grant_count == 0
+    assert receipt.decision.source_segment_count == 0
+
+
 def test_real_read_file_codex_responses_result_keeps_exact_source_provenance(
     tmp_path, monkeypatch
 ):

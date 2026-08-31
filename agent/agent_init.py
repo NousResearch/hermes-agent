@@ -2777,6 +2777,34 @@ def init_agent(
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
+        # Native Gemini output reservation (#57275 claim 4): when
+        # model.max_tokens is unset, the native generateContent adapter does
+        # NOT run uncapped — it sends maxOutputTokens=65,535
+        # (GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, see
+        # _effective_gemini_max_output_tokens). The compressor's threshold is
+        # pct×(window − max_tokens); passing None here meant it reserved 0
+        # while the wire reserved 65,535, so on a 128K window the trigger
+        # landed at ~96K against a real safe input budget of ~65K and the
+        # provider 400'd before compaction fired. Mirror the adapter's
+        # default so the reservation matches what is actually sent. The
+        # generic provider-default gap is #63839; this wires only the native
+        # Gemini path, where the default is a documented constant.
+        _compressor_max_tokens = agent.max_tokens
+        if _compressor_max_tokens is None:
+            try:
+                from agent.gemini_native_adapter import (
+                    GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+                    is_native_gemini_base_url,
+                )
+                _gemini_provider = str(
+                    getattr(agent, "provider", "") or ""
+                ).strip().lower() in {
+                    "gemini", "google", "google-gemini", "google-ai-studio",
+                }
+                if _gemini_provider or is_native_gemini_base_url(agent.base_url):
+                    _compressor_max_tokens = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+            except Exception:
+                pass
         agent.context_compressor = ContextCompressor(
             model=agent.model,
             threshold_percent=compression_threshold,
@@ -2791,7 +2819,7 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
-            max_tokens=agent.max_tokens,
+            max_tokens=_compressor_max_tokens,
             model_thresholds=compression_model_thresholds,
             threshold_tokens_cap=compression_threshold_tokens,
             proactive_prune_tokens=compression_proactive_prune_tokens,

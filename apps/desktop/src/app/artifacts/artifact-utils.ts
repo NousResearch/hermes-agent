@@ -399,6 +399,11 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
 
   for (const parsed of payloads) {
     collectStringValues(parsed, 'tool_result', (value, keyPath) => {
+      // Drop bare numeric array indices from the key path *intentionally*:
+      // array-of-results payloads (e.g. `outputs.0.output`) must match via
+      // their non-index segments, and with no index the shell-output/explicit
+      // key tests match the last real segment. Do NOT switch this to
+      // exact-key matching — it would silently stop indexing those shapes.
       const segments = keyPath
         .split('.')
         .filter(segment => segment && !/^\d+$/.test(segment))
@@ -412,6 +417,16 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
         // A shell result is free text: scan it for MEDIA tags, markdown
         // references, URLs and absolute paths rather than treating the
         // whole value as one path.
+        //
+        // False-positive budget: noisy stdout (`curl -v`, build logs) is
+        // kept from flooding the panel because every candidate is filtered
+        // through `looksLikeArtifact`, which requires a file/image extension
+        // (IMAGE_EXT_RE / FILE_EXT_RE) or an explicit http(s)/data: scheme —
+        // a bare error URL or un-extensioned path fails. Local file display
+        // then resolves existence through the media ladder
+        // (`artifactImageSrc` → `resolveMediaDisplaySrc`), so a candidate
+        // whose file no longer exists is resolved to its fallback rather
+        // than surfaced as a broken artifact.
         if (value) {
           collectArtifactsFromText(value, pushValue)
         }

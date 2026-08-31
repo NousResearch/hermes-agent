@@ -26,6 +26,7 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 // backend connection. This page only reads the "applies to" scope override
 // and the repo-discovery signature, neither of which this test touches.
 vi.mock('@/store/settings-scope', () => ({
+  $settingsRequestProfile: atom<string | undefined>(undefined),
   $settingsScopeOverride: atom<null | string>(null)
 }))
 

@@ -4682,13 +4682,27 @@ def compress_context(
                     # before. Deliberately NOT extended to the compression lease:
                     # a lease is re-acquirable, so a transient miss here would
                     # abort a rotation that would otherwise have committed.
+                    #
+                    # AUTOMATIC stamps (tui_shutdown, ws_disconnect, orphan
+                    # reap, idle/LRU evict — is_automatic_end_reason) do NOT
+                    # trip this guard: publish_compression_child treats them
+                    # as stale-by-construction and clears them in its own
+                    # transaction (#88197 Bug 1), so aborting here would keep
+                    # rotation wedged on exactly the stamp the publish can
+                    # heal. Only deliberate boundaries (compression,
+                    # session_reset, explicit close) abort before the flush.
                     _parent_row_reader = getattr(agent._session_db, "get_session", None)
                     _parent_already_ended = False
                     if callable(_parent_row_reader):
                         try:
+                            from hermes_state_common import is_automatic_end_reason
+
                             _parent_row = _parent_row_reader(old_session_id) or {}
                             _parent_already_ended = (
                                 _parent_row.get("ended_at") is not None
+                                and not is_automatic_end_reason(
+                                    _parent_row.get("end_reason")
+                                )
                             )
                         except Exception:
                             # Fail OPEN: an unreadable row must not turn a cheap

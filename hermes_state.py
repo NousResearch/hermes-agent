@@ -67,6 +67,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _PREVIEW_RAW_SELECT,
     _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL,
+    is_automatic_end_reason,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
     _ephemeral_child_sql,
@@ -7211,7 +7212,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     f"Compression lease lost before publication: {parent_session_id}"
                 )
             parent = conn.execute(
-                """SELECT ended_at, cwd, git_branch, git_repo_root,
+                """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
                           thread_id, display_name, origin_json, profile_name
                    FROM sessions WHERE id = ?""",
@@ -7220,7 +7221,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if parent is None:
                 raise RuntimeError(f"Compression parent not found: {parent_session_id}")
             if parent["ended_at"] is not None:
-                raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
+                # A parent stamped ended by AUTOMATIC cleanup (tui_shutdown,
+                # ws_disconnect, orphan reap, idle/LRU evict) while a live
+                # agent is publishing its rotation is stale by construction —
+                # this writer holds the compression lease and is actively
+                # continuing the conversation the stamp claims is over.
+                # Left in place it wedges rotation forever: every attempt
+                # aborts here, nothing clears the stamp, and each attempt's
+                # pre-publish flush re-grows the parent until the provider
+                # rejects the request (#88197: 303 unique messages → 2,611
+                # rows → HTTP 400). Clear it in this same transaction and
+                # proceed; the closure UPDATE below re-stamps the parent with
+                # its true boundary (end_reason='compression'). Deliberate
+                # boundaries (compression, session_reset, explicit close)
+                # still fail closed — those mean another path owns lineage.
+                if is_automatic_end_reason(parent["end_reason"]):
+                    conn.execute(
+                        "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
+                        "WHERE id = ?",
+                        (parent_session_id,),
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Compression parent already ended: {parent_session_id}"
+                    )
             if not messages:
                 raise RuntimeError("Compression child handoff must not be empty")
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)

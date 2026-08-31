@@ -69,23 +69,29 @@ def _messages():
 
 class TestWorkerTeardownOnCeiling:
     def test_cooperative_worker_joined_within_grace(self):
-        """A worker that exits promptly after cancel is joined; the lease is
-        released normally (no retention) — the sabotage check for this test
-        is removing the `_join_cancelled_worker` call, which makes
-        `worker_done_when_host_returned` False."""
+        """A worker that exits promptly after cancel is joined on the
+        total-ceiling path; the lease is released normally (no retention) —
+        the sabotage check for this test is removing the
+        `_join_cancelled_worker` call, which makes
+        `worker_done.is_set()` False when the host returns."""
         original = [{"role": "user", "content": "keep"}]
         worker_done = threading.Event()
 
         def cooperative_worker(fence: CompressionCommitFence):
-            # Poll the poison fence like the production worker does between
-            # provider phases; exit as soon as cancellation is visible.
+            # Continuous progress (the #97488 'last progress 0.0s ago'
+            # shape) so only the TOTAL ceiling expires; poll the poison
+            # fence like the production worker does between provider phases.
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 if fence.is_cancelled:
                     break
-                fence_idle = fence.seconds_since_progress()
-                assert fence_idle >= 0  # precondition: fence clock live
+                fence.touch_progress()
                 time.sleep(0.01)
+            # Cooperative-but-not-instant exit: the unwind after seeing the
+            # poison takes real time (rollback, telemetry). Long enough that
+            # a host WITHOUT the bounded-grace join returns first; far
+            # inside the 5s grace for a host WITH it.
+            time.sleep(0.08)
             worker_done.set()
             return (original, "late")
 
@@ -94,8 +100,8 @@ class TestWorkerTeardownOnCeiling:
             worker=cooperative_worker,
             messages=original,
             system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.05,
-            total_ceiling_seconds=0.15,
+            idle_timeout_seconds=0.1,
+            total_ceiling_seconds=0.2,
             fence=fence,
             stall_fallback=False,
         )
@@ -105,7 +111,11 @@ class TestWorkerTeardownOnCeiling:
             "host returned before tearing down a cooperative cancelled "
             "worker — bounded-grace join missing (#97488)"
         )
-        assert prompt == "fallback"
+        # Whichever return path won the race (fallback via join, or the
+        # worker's own return adopted inside the final wait slice), the
+        # transcript must be unchanged.
+        assert msgs == [{"role": "user", "content": "keep"}]
+        assert prompt in ("fallback", "late")
         # Teardown proved quiescence, so the lease must NOT stay retained.
         assert fence._retain_cancelled_lock_until_worker_done is False
 

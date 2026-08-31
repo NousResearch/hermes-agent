@@ -1645,34 +1645,36 @@ def run_compress_context_with_progress_timeout(
         # so a NEW compressor can acquire the lock immediately (no ABA: the
         # DB release is holder-scoped).
         handled_exit = True
-        # #97488 teardown: give the cancelled worker a bounded grace to
-        # actually exit before this host moves on. The worker checks the
-        # poison fence between provider phases, so a cooperative worker
-        # exits quickly; an uninterruptible provider call is orphaned behind
-        # the fence after the grace elapses (its late result is discarded and
-        # cannot touch session state).
-        worker_exited = _join_cancelled_worker(
-            future,
-            min(_CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS, ceiling),
-        )
-        if worker_exited:
-            # The worker provably exited: no in-flight provider call can
-            # outlive this attempt, so the total-ceiling lease retention is
-            # no longer needed and a retry cannot overlap anything.
-            fence.allow_cancelled_lock_release()
-        else:
-            logger.warning(
-                "Cancelled compression worker did not exit within %.1fs "
-                "grace — orphaning it behind the poison fence (late result "
-                "will be discarded)%s",
+        # #97488 teardown (total-ceiling path only): give the cancelled
+        # worker a bounded grace to actually exit before this host moves on.
+        # The worker checks the poison fence between provider phases, so a
+        # cooperative worker exits quickly; an uninterruptible provider call
+        # is orphaned behind the fence after the grace elapses (its late
+        # result is discarded and cannot touch session state). The
+        # idle-stall path intentionally skips the join: its worker is by
+        # definition silent/hung, the stall-fallback retry below needs a
+        # prompt host return (pinned by the #76354 S3 latency contract), and
+        # the fence poison + attempt-generation supersession already protect
+        # state against its late unwind.
+        if total_exhausted:
+            worker_exited = _join_cancelled_worker(
+                future,
                 min(_CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS, ceiling),
-                (
-                    "; retaining the session compression lease until it "
-                    "exits so no new attempt overlaps it"
-                    if total_exhausted
-                    else ""
-                ),
             )
+            if worker_exited:
+                # The worker provably exited: no in-flight provider call can
+                # outlive this attempt, so the total-ceiling lease retention
+                # is no longer needed and a retry cannot overlap anything.
+                fence.allow_cancelled_lock_release()
+            else:
+                logger.warning(
+                    "Cancelled compression worker did not exit within %.1fs "
+                    "grace — orphaning it behind the poison fence (late "
+                    "result will be discarded); retaining the session "
+                    "compression lease until it exits so no new attempt "
+                    "overlaps it",
+                    min(_CANCELLED_WORKER_TEARDOWN_GRACE_SECONDS, ceiling),
+                )
         fence.release_cancelled_compression_lock()
         waited = time.monotonic() - wait_started
         since_progress = fence.seconds_since_progress()

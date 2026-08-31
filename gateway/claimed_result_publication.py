@@ -8,6 +8,7 @@ into the part ledger.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable, Optional
 
@@ -34,17 +35,48 @@ class ClaimedResponsePartsSnapshot:
     force_document_attachments: bool
 
 
+def _accepts_keyword(function: Any, keyword: str) -> bool:
+    """Return whether a callable explicitly accepts a snapshot keyword."""
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == keyword
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
 def snapshot_claimed_response_parts(
     response: str,
     adapter: Any,
 ) -> ClaimedResponsePartsSnapshot:
     """Derive visible text and attachment intents from one parse snapshot."""
-    from gateway.platforms.base import _strip_media_directives
+    from gateway.platforms.base import BasePlatformAdapter, _strip_media_directives
 
-    media_files, cleaned = adapter.extract_media(response)
-    images, text_content = adapter.extract_images(cleaned)
+    media_extractor = getattr(adapter, "extract_media", None)
+    if not callable(media_extractor) or not _accepts_keyword(
+        media_extractor,
+        "include_unavailable",
+    ):
+        media_extractor = BasePlatformAdapter.extract_media
+    media_files, cleaned = media_extractor(
+        response,
+        include_unavailable=True,
+    )
+    image_extractor = getattr(adapter, "extract_images", None)
+    if not callable(image_extractor):
+        image_extractor = BasePlatformAdapter.extract_images
+    images, text_content = image_extractor(cleaned)
     text_content = _strip_media_directives(text_content).strip()
-    local_files, text_content = adapter.extract_local_files(
+    local_file_extractor = getattr(adapter, "extract_local_files", None)
+    if not callable(local_file_extractor) or not _accepts_keyword(
+        local_file_extractor,
+        "include_unavailable",
+    ):
+        local_file_extractor = BasePlatformAdapter.extract_local_files
+    local_files, text_content = local_file_extractor(
         text_content,
         include_unavailable=True,
     )

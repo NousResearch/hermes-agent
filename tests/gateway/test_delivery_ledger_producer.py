@@ -8,7 +8,9 @@ block the send.
 """
 
 import asyncio
+import json
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,7 +27,7 @@ def _fresh_db(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
-    yield
+    yield home
 
 
 class _Adapter(BasePlatformAdapter):  # type: ignore[misc]
@@ -34,6 +36,7 @@ class _Adapter(BasePlatformAdapter):  # type: ignore[misc]
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True), Platform.SLACK)
         self.sent = []
+        self.sent_metadata = []
 
     async def connect(self, *, is_reconnect: bool = False):  # pragma: no cover
         return True
@@ -46,6 +49,7 @@ class _Adapter(BasePlatformAdapter):  # type: ignore[misc]
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent.append(content)
+        self.sent_metadata.append(dict(metadata or {}))
         return SendResult(success=True, message_id="m1")
 
 
@@ -274,8 +278,6 @@ class TestProducerHook:
     async def test_restart_redelivery_keeps_unavailable_raw_attachment_incomplete_without_agent(
         self,
     ):
-        import json
-
         from gateway.run import GatewayRunner
 
         source = _event(text="").source
@@ -336,3 +338,140 @@ class TestProducerHook:
             (row["kind"], row["state"])
             for row in dl.get_claimed_result_parts(obligation_id)
         ] == [("text", "delivered"), ("image", "failed")]
+
+    @pytest.mark.asyncio
+    async def test_completed_result_staging_sanitizes_missing_bare_path_before_crash(
+        self,
+        _fresh_db,
+        tmp_path,
+    ):
+        """The first durable visible projection must not depend on availability."""
+        from gateway.goal_continuation_claims import (
+            event_claim_identity,
+            load_claims,
+            publish_claim,
+        )
+        from gateway.run import GatewayRunner
+
+        missing = (tmp_path / "PRIVATE_STAGING_PATH.pdf").resolve()
+        explicit = (tmp_path / "PRIVATE_EXPLICIT_EXTENSIONLESS").resolve()
+        assert not missing.exists()
+        assert not explicit.exists()
+        response = f"recovered answer\n{missing}\nMEDIA:{explicit}"
+        event = _event(
+            text="[Continuing toward your standing goal]\nGoal: stage safely"
+        )
+        event.goal_continuation = True
+        event.allow_gateway_control = False
+        session_key = "agent:main:slack:channel:C1"
+        publish_claim(
+            session_key,
+            "sid-staging-privacy",
+            [event],
+            home=_fresh_db,
+        )
+        _claim_id, event_id = event_claim_identity(event)
+
+        adapter = _Adapter()
+        runner = object.__new__(GatewayRunner)
+        runner._goal_continuation_claim_home = _fresh_db
+        runner._adapter_for_source = lambda _source: adapter
+
+        def _crash_before_claim_ack(*_args, **_kwargs):
+            raise SystemExit(73)
+
+        runner._complete_goal_continuation_claim_event = _crash_before_claim_ack
+        result = {"final_response": response}
+
+        with pytest.raises(SystemExit, match="73"):
+            await runner._commit_goal_continuation_result(
+                session_key=session_key,
+                source=event.source,
+                event=event,
+                result=result,
+            )
+
+        claims = load_claims(home=_fresh_db)
+        assert len(claims) == 1
+        attachment_snapshot = getattr(
+            event,
+            "_hermes_claimed_response_parts_snapshot",
+        )
+        assert attachment_snapshot.visible_text == "recovered answer"
+        assert attachment_snapshot.media_files == ((str(explicit), False),)
+        assert attachment_snapshot.local_files == (str(missing),)
+        assert claims[0].completed_delivery_texts[event_id] == "recovered answer"
+        assert str(missing) not in claims[0].completed_delivery_texts[event_id]
+        assert str(explicit) not in claims[0].completed_delivery_texts[event_id]
+        assert claims[0].completed_results[event_id] == response
+
+        obligation_id = result["_delivery_obligation_id"]
+        with dl._connect() as conn:
+            staged = conn.execute(
+                "SELECT content, raw_content, last_error, source_json, message_ref "
+                "FROM delivery_obligations WHERE obligation_id=?",
+                (obligation_id,),
+            ).fetchone()
+        assert staged[0] == "recovered answer"
+        assert staged[1] == response
+        assert str(missing) not in repr((staged[0], staged[2], staged[3], staged[4]))
+        assert str(explicit) not in repr((staged[0], staged[2], staged[3], staged[4]))
+
+        restart = object.__new__(GatewayRunner)
+        restart._goal_continuation_claim_home = _fresh_db
+        assert restart._reconcile_completed_goal_continuation_claims() == 1
+        assert load_claims(home=_fresh_db) == []
+
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET owner_pid=999999999, "
+                "owner_started_at=1 WHERE obligation_id=?",
+                (obligation_id,),
+            )
+        claimed = dl.sweep_recoverable(deliverable_platforms={"slack"})
+        assert len(claimed) == 1
+
+        recovery_adapter = _Adapter()
+        recovery_adapter._message_handler = AsyncMock(
+            side_effect=AssertionError("restart must not invoke the agent")
+        )
+        restart.adapters = {Platform.SLACK: recovery_adapter}
+        restart._profile_adapters = {}
+        restart._authorization_adapter = (
+            lambda _platform, _profile=None: recovery_adapter
+        )
+
+        delivered = await restart._redeliver_claimed_obligations(claimed)
+
+        assert delivered == 0
+        recovery_adapter._message_handler.assert_not_awaited()
+        assert recovery_adapter.sent == ["recovered answer"]
+        with dl._connect() as conn:
+            visible_row = conn.execute(
+                "SELECT content, last_error, source_json, message_ref "
+                "FROM delivery_obligations WHERE obligation_id=?",
+                (obligation_id,),
+            ).fetchone()
+            part_rows = conn.execute(
+                "SELECT part_id, part_ordinal, kind, state, last_error, "
+                "remote_receipt FROM delivery_obligation_parts "
+                "WHERE obligation_id=? ORDER BY part_ordinal",
+                (obligation_id,),
+            ).fetchall()
+        provider_projection = repr(
+            (
+                recovery_adapter.sent,
+                recovery_adapter.sent_metadata,
+                visible_row,
+                part_rows,
+            )
+        )
+        assert str(missing) not in provider_projection
+        assert str(explicit) not in provider_projection
+        assert "PRIVATE_STAGING_PATH" not in provider_projection
+        assert "PRIVATE_EXPLICIT_EXTENSIONLESS" not in provider_projection
+        assert [(row[2], row[3]) for row in part_rows] == [
+            ("text", "delivered"),
+            ("document", "failed"),
+            ("document", "pending"),
+        ]

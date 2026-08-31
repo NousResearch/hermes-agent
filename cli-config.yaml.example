@@ -332,6 +332,12 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Default per-card dollar cap on cumulative worker spend, applied when
+  # `hermes kanban create` is run without --max-cost. When a card's cumulative
+  # session costs in state.db exceed this, the dispatcher SIGTERMs the worker
+  # and BLOCKs the card with kind=cost_cap (never retried — routes to the jobsy
+  # triage lane). Absent/None leaves cards UNCAPPED (backward compatible).
+  default_max_cost: 2.50
 
 # =============================================================================
 # Terminal Tool Configuration

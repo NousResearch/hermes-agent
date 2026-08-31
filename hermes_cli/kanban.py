@@ -392,6 +392,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
                                "the dispatcher SIGTERMs (then SIGKILLs) the worker "
                                "and re-queues the task.")
+    p_create.add_argument("--max-cost", type=float, default=None,
+                          metavar="USD",
+                          help="Per-card dollar cap on cumulative worker spend. "
+                               "When the card's session costs in state.db "
+                               "exceed this, the dispatcher SIGTERMs the worker "
+                               "and BLOCKs the card with kind=cost_cap (never "
+                               "retried — routes to the jobsy triage lane). "
+                               "Omit to use kanban.default_max_cost in config "
+                               "(None/absent = uncapped).")
     p_create.add_argument("--created-by", default="user",
                           help="Author name recorded on the task (default: user)")
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
@@ -1661,6 +1670,28 @@ def _cmd_create(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"kanban: --max-runtime: {exc}", file=sys.stderr)
         return 2
+    # Explicit --max-cost wins; otherwise fall back to the kanban config
+    # default (kanban.default_max_cost). Absent/None in both = uncapped
+    # (backward compat). A stored task.max_cost of None is never enforced.
+    max_cost = getattr(args, "max_cost", None)
+    if max_cost is None:
+        try:
+            from hermes_cli.config import load_config
+            max_cost = load_config().get("kanban", {}).get("default_max_cost", None)
+        except Exception:
+            max_cost = None
+    if max_cost is not None:
+        try:
+            max_cost = float(max_cost)
+        except (TypeError, ValueError):
+            print(
+                f"kanban: invalid --max-cost/kanban.default_max_cost {max_cost!r}",
+                file=sys.stderr,
+            )
+            return 2
+        if max_cost < 0:
+            print("kanban: max cost must be >= 0", file=sys.stderr)
+            return 2
     max_retries = getattr(args, "max_retries", None)
     if max_retries is not None and max_retries < 1:
         print(
@@ -1687,6 +1718,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
+            max_cost=max_cost,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
             model_override=getattr(args, "model_override", None),
@@ -1708,6 +1740,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        if task.max_cost is not None:
+            print(f"  max_cost=${task.max_cost:.2f}")
 
         # Warn when the task would sit in `ready` because no dispatcher is
         # present. Only warn on ready+assigned tasks — triage/todo are

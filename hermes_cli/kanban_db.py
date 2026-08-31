@@ -122,7 +122,7 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "cost_cap"}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -1132,6 +1132,11 @@ class Task:
     last_failure_error: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
+    # Per-card dollar cap on cumulative worker spend (state.db session costs).
+    # ``None`` = uncapped (backward compat); when set and exceeded the
+    # dispatcher SIGTERMs the worker and BLOCKs the card with kind
+    # ``cost_cap`` (never retried — routes to the jobsy triage lane).
+    max_cost: Optional[float] = None
     current_run_id: Optional[int] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
@@ -1236,6 +1241,9 @@ class Task:
             ),
             max_runtime_seconds=(
                 row["max_runtime_seconds"] if "max_runtime_seconds" in keys else None
+            ),
+            max_cost=(
+                row["max_cost"] if "max_cost" in keys else None
             ),
             last_heartbeat_at=(
                 row["last_heartbeat_at"] if "last_heartbeat_at" in keys else None
@@ -1408,6 +1416,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
+    -- Per-card dollar cap on cumulative worker spend. REAL, nullable; when
+    -- set, the dispatcher compares the card's cumulative session cost
+    -- (state.db session_model_usage) against this each heartbeat tick and,
+    -- if exceeded, SIGTERMs the worker and BLOCKs the card with kind
+    -- ``cost_cap`` (never retried — it routes to the jobsy triage lane).
+    -- NULL = uncapped (backward compat).
+    max_cost             REAL,
     last_heartbeat_at    INTEGER,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
@@ -2667,6 +2682,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "max_runtime_seconds", "max_runtime_seconds INTEGER"
         )
+    if "max_cost" not in cols:
+        # Per-card dollar cap on cumulative worker spend. NULL = uncapped
+        # (backward compat: existing cards that never had a cap keep it).
+        _add_column_if_missing(conn, "tasks", "max_cost", "max_cost REAL")
     if "last_heartbeat_at" not in cols:
         _add_column_if_missing(
             conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
@@ -3260,6 +3279,7 @@ def create_task(
     triage: bool = False,
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
+    max_cost: Optional[float] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
     model_override: Optional[str] = None,
@@ -3290,6 +3310,11 @@ def create_task(
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
     re-queues the task. ``None`` means no cap (default).
+
+    ``max_cost`` caps cumulative worker spend in USD: when the card's
+    session costs in state.db exceed it the dispatcher SIGTERMs the worker
+    and BLOCKs the card with kind ``cost_cap`` (never retried — routes to
+    the jobsy triage lane). ``None`` means uncapped (default).
 
     ``skills`` is an optional list of skill names to force-load into
     the worker when dispatched. Stored as JSON; the dispatcher passes
@@ -3334,6 +3359,13 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    if max_cost is not None:
+        try:
+            max_cost = float(max_cost)
+        except (TypeError, ValueError):
+            raise ValueError(f"max_cost must be a number, got {max_cost!r}")
+        if max_cost < 0:
+            raise ValueError("max_cost must be >= 0")
 
     # Inherit the board's scoped project when the caller didn't name one, so a
     # project-scoped board anchors every new task to that project's repo
@@ -3606,11 +3638,11 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
-                        max_runtime_seconds,
+                        max_runtime_seconds, max_cost,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3628,6 +3660,7 @@ def create_task(
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
+                        max_cost,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         model_override,
@@ -8344,6 +8377,11 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    cost_capped: list[str] = field(default_factory=list)
+    """Task ids whose cumulative worker spend exceeded ``max_cost``.
+    These were SIGTERMed (shared teardown with the runtime-cap path) and
+    blocked with kind ``cost_cap`` — never retried; they flow to the jobsy
+    triage lane like other dead letters."""
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed because no progress (heartbeat) was seen
     within ``dispatch_stale_timeout_seconds``."""
@@ -9040,7 +9078,6 @@ def enforce_max_runtime(
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
     test hook; defaults to ``os.kill`` on POSIX.
     """
-    import signal
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -9068,31 +9105,15 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
+        # SIGTERM then SIGKILL, shared with every other kill path to keep a
+        # single teardown (the runtime cap, the cost cap, and stale reclaim
+        # all route through `_terminate_reclaimed_worker`). Workers that
         # want a cleaner shutdown can install their own SIGTERM handler
         # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
+        termination = _terminate_reclaimed_worker(
+            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn
         )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+        killed = bool(termination.get("sigkill"))
 
         with write_txn(conn):
             retry_status = _retry_status_for_run(conn, tid)
@@ -9141,6 +9162,194 @@ def enforce_max_runtime(
                 },
             )
     return timed_out
+
+
+# ---------------------------------------------------------------------------
+# Cost-cap enforcement (per-card dollar runaway guard)
+# ---------------------------------------------------------------------------
+# Mirrors ``enforce_max_runtime`` but triggers on DOLLARS, not time. The
+# 64-run dispatch storm and the 7-round review card were dollar runaways that
+# runtime caps alone did not stop: a worker can turn over millions of tokens
+# in a single short-lived attempt. Estimated cost tracks the billed invoice
+# (~a tenth of a cent, per the 2026-08-28 reconciliation), so it is a safe
+# trigger. The ledger read is pure SQL — zero new tokens spent in
+# enforcement.
+
+
+def _escape_like(text: str) -> str:
+    """Escape a literal for SQLite ``LIKE ... ESCAPE '\\'`` matching."""
+    return (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+def _state_db_path_for_assignee(assignee: Optional[str]) -> Optional[Path]:
+    """Resolve the worker's state.db for ``assignee``.
+
+    A kanban worker runs ``hermes -p <assignee>`` with HERMES_HOME pinned to
+    ``resolve_profile_env(assignee)`` (see ``_default_spawn``), so the worker's
+    session cost ledger lives in **that** profile home, not the dispatching
+    profile's. Newer workers also self-tag their sessions with
+    ``HERMES_SESSION_SOURCE=kanban``. Falls back to the dispatching profile's
+    home when the assignee profile cannot be resolved (safe — a worker still
+    reads a home either way). Returns None only when no home can be found at
+    all, which the cost check treats as "no ledger available → $0".
+    """
+    try:
+        from hermes_cli.profiles import resolve_profile_env
+
+        home = resolve_profile_env(assignee) if assignee else None
+    except Exception:
+        home = None
+    if not home:
+        try:
+            from hermes_constants import get_hermes_home
+
+            home = str(get_hermes_home())
+        except Exception:
+            return None
+    return Path(home) / "state.db"
+
+
+def _cumulative_session_cost(state_db_path, workspace) -> float:
+    """Sum ``estimated_cost_usd`` across a card's kanban worker sessions.
+
+    The mapping is by workspace, not by an explicit run->session join: a card
+    is spawned with ``cwd=workspace`` (and ``TERMINAL_CWD=workspace``), so
+    every session its worker ever produced sits under that one path. Scoping
+    the ledger read to ``cwd`` under the task's workspace captures cumulative
+    spend **across retries** (a worktree/scratch task keeps the same workspace
+    path for every run) while excluding every unrelated session. The workspace
+    directory lives under the dispatcher's workspaces root and is never a
+    real user's cwd, so the path match is safe on its own.
+
+    Pure read — opens state.db read-only. Any failure (missing file, busy
+    lock, malformed ledger) yields 0.0 so a ledger problem can never block
+    the tick or fake a false positive.
+    """
+    if not state_db_path or not workspace:
+        return 0.0
+    if not os.path.isfile(str(state_db_path)):
+        return 0.0
+    prefix = str(workspace).rstrip("/\\")
+    if not prefix:
+        return 0.0
+    try:
+        sconn = sqlite3.connect(
+            f"file:{state_db_path}?mode=ro", uri=True, timeout=10
+        )
+        sconn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return 0.0
+    try:
+        row = sconn.execute(
+            "SELECT COALESCE(SUM(u.estimated_cost_usd), 0) AS total "
+            "FROM session_model_usage u "
+            "JOIN sessions s ON s.id = u.session_id "
+            "WHERE (s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\')",
+            (prefix, _escape_like(prefix) + "/%"),
+        ).fetchone()
+        return float(row["total"]) if row and row["total"] is not None else 0.0
+    except sqlite3.Error:
+        return 0.0
+    finally:
+        sconn.close()
+
+
+def enforce_max_cost(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+    state_db_path=None,
+) -> list[str]:
+    """Block workers whose cumulative session spend exceeded ``max_cost``.
+
+    Each heartbeat tick: for every host-local ``running`` task with a
+    ``max_cost`` set, compare the card's cumulative estimated cost (sum of
+    ``estimated_cost_usd`` across all its kanban worker sessions — see
+    :func:`_cumulative_session_cost`) against the cap. When spend exceeds the
+    cap:
+
+      1. the host-local worker is SIGTERMed (then SIGKILLed after the grace
+         window) via the SAME shared teardown the runtime-cap path and stale
+         reclaim use — no second teardown implementation;
+      2. the card is BLOCKED with ``kind='cost_cap'``.
+
+    A ``cost_cap`` block is never re-queued: ``block_task`` parks the card in
+    ``blocked`` (the dispatcher never re-promotes a blocked card) and the
+    dependency-gate watchdog carries it to the jobsy triage lane like every
+    other dead letter. Because enforcement only considers ``status='running'``
+    cards, a blocked card cannot re-fire, so there is no double-SIGTERM and no
+    retry loop.
+
+    ``signal_fn`` and ``state_db_path`` are test hooks (defaults: ``os.kill``
+    and the assignee's profile state.db). Returns the list of blocked task
+    ids. Never raises for a ledger problem; a card with no workspace, no
+    ledger, or an unreadable state.db is treated as $0 spend and left running.
+    """
+    cost_capped: list[str] = []
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+
+    rows = conn.execute(
+        "SELECT t.id, t.worker_pid, t.assignee, t.workspace_path, "
+        "       t.max_cost, t.claim_lock "
+        "FROM tasks t "
+        "WHERE t.status = 'running' AND t.max_cost IS NOT NULL "
+        "  AND t.claim_lock IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        lock = row["claim_lock"] or ""
+        if not lock.startswith(host_prefix):
+            continue
+        workspace = row["workspace_path"]
+        if not workspace:
+            continue
+        cap = float(row["max_cost"])
+        spend = _cumulative_session_cost(
+            state_db_path or _state_db_path_for_assignee(row["assignee"]),
+            workspace,
+        )
+        if spend <= cap:
+            continue
+
+        tid = row["id"]
+        pid = row["worker_pid"]
+        # SIGTERM -> grace -> SIGKILL, the single shared teardown.
+        termination = _terminate_reclaimed_worker(
+            pid, row["claim_lock"], signal_fn=signal_fn,
+        )
+        sigkill_used = bool(termination.get("sigkill"))
+        worker_survived = bool(
+            termination.get("termination_attempted")
+            and not termination.get("terminated")
+        )
+        reason = f"cumulative spend ${spend:.2f} exceeded max_cost ${cap:.2f}"
+
+        # BLOCK, never requeue. block_task parks the card in ``blocked`` with
+        # kind ``cost_cap``; the dispatcher does not re-promote blocked cards,
+        # so this run is terminal and the card flows to the jobsy triage lane.
+        blocked = block_task(conn, tid, reason=reason, kind="cost_cap")
+        if not blocked:
+            # Task left 'running' concurrently (worker completed or was
+            # reclaimed) — nothing to block. Log and move on.
+            _log.debug("kanban cost-cap: %s left running before block", tid)
+        try:
+            add_comment(
+                conn, tid, author="dispatcher",
+                body=(
+                    f"cost cap tripped ({reason}). "
+                    f"Worker PID {pid or '(none)'} "
+                    f"{'SIGKILLed' if sigkill_used else 'SIGTERMed'};"
+                    f"{' worker survived termination' if worker_survived else ''}"
+                ),
+            )
+        except Exception as exc:  # pragma: no cover - never fail the tick
+            _log.warning("kanban cost-cap: comment write failed for %s: %s", tid, exc)
+        cost_capped.append(tid)
+    return cost_capped
 
 
 # Heartbeat staleness heartbeat gap — if a running task hasn't sent a
@@ -10642,6 +10851,7 @@ def _dispatch_once_locked(
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
+    result.cost_capped = enforce_max_cost(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather

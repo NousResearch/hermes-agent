@@ -2800,6 +2800,15 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Default per-card dollar cap on cumulative worker spend, applied when
+        # `hermes kanban create` is run WITHOUT an explicit --max-cost. When a
+        # card's cumulative session costs in state.db exceed this, the
+        # dispatcher SIGTERMs the worker and BLOCKs the card with kind=cost_cap
+        # (never retried — routes to the jobsy triage lane). A None/absent
+        # value leaves cards UNCAPPED — backward compatible with existing
+        # installs that never opt in. The reference sample config
+        # (cli-config.yaml.example / README) ships this set to 2.50.
+        "default_max_cost": None,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

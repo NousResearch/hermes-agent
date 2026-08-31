@@ -36,6 +36,7 @@ class SwarmWorkerSpec:
     skills: list[str] = field(default_factory=list)
     priority: int = 0
     max_runtime_seconds: Optional[int] = None
+    max_cost: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -281,6 +282,7 @@ def _create_swarm_uncommitted(
             workspace_path=workspace_path,
             skills=spec.skills or None,
             max_runtime_seconds=spec.max_runtime_seconds,
+            max_cost=spec.max_cost,
         )
         worker_ids.append(worker_id)
 

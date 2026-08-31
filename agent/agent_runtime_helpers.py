@@ -3858,10 +3858,22 @@ _INTERRUPTED_PLACEHOLDER = "[response interrupted]"
 
 # Repeated heals of the same poisoned transcript used to WARNING on every
 # send (#96870). Escalate once per session window, then stay quiet.
-_EMPTY_HEAL_ESCALATE_AFTER = 5
+# ``_EMPTY_HEAL_ESCALATE_AFTER`` is the built-in default; deployments tune it
+# via ``agent.sanitizer_heal_escalation_threshold`` in config.yaml (<= 0
+# disables escalation entirely — WARNINGs still fire per window).
+_EMPTY_HEAL_ESCALATE_AFTER = 3
 _EMPTY_HEAL_WINDOW_S = 600.0
 _empty_heal_log_state: Dict[str, Dict[str, Any]] = {}
 _empty_heal_log_lock = threading.Lock()
+# Session keys that already received the one-time user notice. Separate from
+# the windowed log state so a new 10-minute window never re-notifies: the
+# user is told ONCE per session, ever (#96870 — out-of-band, delivery
+# channel only, never injected into conversation context).
+_empty_heal_user_notified: set = set()
+# One-shot pending notices keyed by session, drained by the conversation
+# loop through ``consume_pending_sanitizer_heal_notice`` and delivered via
+# the status/warning callback (the normal delivery channel).
+_empty_heal_pending_notice: Dict[str, str] = {}
 
 
 def _msg_has_payload(msg: Dict[str, Any]) -> bool:
@@ -3941,25 +3953,106 @@ def _session_id_for_heal_log() -> str:
         return ""
 
 
+def _heal_escalation_threshold() -> int:
+    """Resolve the escalation threshold: config override, else the default.
+
+    ``agent.sanitizer_heal_escalation_threshold`` in config.yaml. Fail-safe:
+    any read error falls back to the module default so the sanitiser can
+    never be broken by a bad config file.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = (load_config_readonly().get("agent", {}) or {}).get(
+            "sanitizer_heal_escalation_threshold"
+        )
+        if raw is not None:
+            return int(raw)
+    except Exception:
+        pass
+    return _EMPTY_HEAL_ESCALATE_AFTER
+
+
+def consume_pending_sanitizer_heal_notice() -> Optional[str]:
+    """Drain the one-time user notice for the current session, if any.
+
+    Called by the conversation loop right after the pre-send sanitizer pass;
+    the returned text is delivered through the status/warning callback (the
+    normal out-of-band delivery channel: gateway status message, CLI stderr
+    print). It is NEVER appended to the conversation context, so prompt
+    caching and role alternation are untouched. Returns at most one notice
+    per session for its whole lifetime.
+    """
+    key = _session_id_for_heal_log() or "-"
+    with _empty_heal_log_lock:
+        return _empty_heal_pending_notice.pop(key, None)
+
+
+def get_sanitizer_heal_stats() -> Dict[str, Dict[str, Any]]:
+    """Read-only snapshot of per-session sanitiser heal counters.
+
+    Surfaced by diagnostics (``hermes doctor`` / debug share callers) so
+    repeated silent repairs are visible outside errors.log. Keys are session
+    ids; values carry ``heal_events`` (sanitizer invocations that healed at
+    least one message), ``messages_healed`` (total substituted turns) and
+    ``escalated`` (whether the ERROR + user notice fired).
+    """
+    with _empty_heal_log_lock:
+        return {
+            k: {
+                "heal_events": v.get("total_events", v.get("count", 0)),
+                "messages_healed": v.get("total_healed", 0),
+                "escalated": k in _empty_heal_user_notified,
+            }
+            for k, v in _empty_heal_log_state.items()
+        }
+
+
 def _log_empty_non_final_heal(healed: int) -> None:
     """WARNING on the first heals in a window; one ERROR at the threshold.
 
     Further heals in the same session window stay silent so a poisoned
     transcript cannot flood ``errors.log`` (dozens of identical WARNINGs
-    per hour with no user-visible signal — #96870).
+    per hour with no user-visible signal — #96870). At the threshold the
+    escalation also queues a ONE-TIME out-of-band user notice (drained by
+    ``consume_pending_sanitizer_heal_notice``) pointing at ``/debug share``
+    / ``hermes doctor`` — once per session, never re-armed by a new window.
     """
     key = _session_id_for_heal_log() or "-"
+    threshold = _heal_escalation_threshold()
     now = time.monotonic()
     with _empty_heal_log_lock:
         state = _empty_heal_log_state.get(key)
         if state is None or (now - state["window_start"]) > _EMPTY_HEAL_WINDOW_S:
-            state = {"count": 0, "window_start": now, "escalated": False}
+            prior_events = state.get("total_events", 0) if state else 0
+            prior_healed = state.get("total_healed", 0) if state else 0
+            state = {
+                "count": 0,
+                "window_start": now,
+                "escalated": False,
+                "total_events": prior_events,
+                "total_healed": prior_healed,
+            }
             _empty_heal_log_state[key] = state
         state["count"] += 1
+        state["total_events"] = state.get("total_events", 0) + 1
+        state["total_healed"] = state.get("total_healed", 0) + healed
         count = state["count"]
-        if count >= _EMPTY_HEAL_ESCALATE_AFTER and not state["escalated"]:
+        total_events = state["total_events"]
+        total_healed = state["total_healed"]
+        if threshold > 0 and count >= threshold and not state["escalated"]:
             state["escalated"] = True
             level = "error"
+            if key not in _empty_heal_user_notified:
+                _empty_heal_user_notified.add(key)
+                _empty_heal_pending_notice[key] = (
+                    "⚠️ Your session transcript required repeated repair "
+                    f"({total_events} heal passes so far). Replies keep "
+                    "working, but a corrupted turn is stuck in this "
+                    "session's history — run /debug share or `hermes "
+                    "doctor` to capture diagnostics, or /new to start a "
+                    "clean session."
+                )
         elif state["escalated"]:
             level = "silent"
         else:
@@ -3969,11 +4062,17 @@ def _log_empty_non_final_heal(healed: int) -> None:
         return
     if level == "error":
         _ra().logger.error(
-            "Pre-call sanitizer: healed %d empty non-final message(s) "
-            "(%d heals in this session window). The transcript is being "
-            "repaired on every send; /new drops the poisoned turns.",
+            "Pre-call sanitizer: repeated-heal escalation for session %s — "
+            "healed %d empty non-final message(s) this send; heal pattern: "
+            "%d heal events / %d messages healed this session "
+            "(%d in the current session window, threshold %d). The transcript "
+            "is being repaired on every send; /new drops the poisoned turns.",
+            key,
             healed,
+            total_events,
+            total_healed,
             count,
+            threshold,
         )
         return
     _ra().logger.warning(

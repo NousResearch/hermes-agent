@@ -237,6 +237,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("agent", "max_turns"),
         ("agent", "gateway_timeout"),
         ("agent", "session_stall_timeout"),
+        ("agent", "sanitizer_heal_escalation_threshold"),
         ("agent", "tool_use_enforcement"),
         ("agent", "execution_guidance"),
         ("terminal", "backend"),

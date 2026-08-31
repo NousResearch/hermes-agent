@@ -2570,6 +2570,24 @@ def run_conversation(
         # manual message manipulation are always caught.
         api_messages = agent._sanitize_api_messages(api_messages)
 
+        # One-time repeated-heal escalation notice (#96870): if the sanitizer
+        # above just crossed the per-session heal threshold, deliver the
+        # queued notice through the status/warning callback — the normal
+        # out-of-band delivery channel (gateway status message / CLI print).
+        # NEVER appended to messages/api_messages: conversation context and
+        # the cached prompt prefix stay byte-identical.
+        try:
+            from agent.agent_runtime_helpers import (
+                consume_pending_sanitizer_heal_notice,
+            )
+
+            _heal_notice = consume_pending_sanitizer_heal_notice()
+            if _heal_notice:
+                agent._emit_warning(_heal_notice)
+        except Exception:
+            # A notice hiccup must never break the send path.
+            logger.debug("sanitizer heal notice delivery failed", exc_info=True)
+
         # Drop thinking-only assistant turns (reasoning but no visible
         # output and no tool_calls) and merge any adjacent user messages
         # left behind. Prevents Anthropic 400s ("The final block in an

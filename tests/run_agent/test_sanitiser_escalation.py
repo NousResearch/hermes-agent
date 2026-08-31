@@ -16,7 +16,11 @@ import pytest
 from agent.agent_runtime_helpers import (
     _INTERRUPTED_PLACEHOLDER,
     _empty_heal_log_state,
+    _empty_heal_pending_notice,
+    _empty_heal_user_notified,
+    consume_pending_sanitizer_heal_notice,
     fill_empty_non_final_wire_payload,
+    get_sanitizer_heal_stats,
     repair_empty_non_final_messages,
 )
 from hermes_logging import clear_session_context, set_session_context
@@ -25,9 +29,13 @@ from hermes_logging import clear_session_context, set_session_context
 @pytest.fixture(autouse=True)
 def _reset_heal_log():
     _empty_heal_log_state.clear()
+    _empty_heal_pending_notice.clear()
+    _empty_heal_user_notified.clear()
     clear_session_context()
     yield
     _empty_heal_log_state.clear()
+    _empty_heal_pending_notice.clear()
+    _empty_heal_user_notified.clear()
     clear_session_context()
 
 
@@ -83,7 +91,7 @@ class TestHealLogEscalation:
     def test_warning_then_one_error_then_silence(self, monkeypatch, caplog):
         import agent.agent_runtime_helpers as arh
 
-        monkeypatch.setattr(arh, "_EMPTY_HEAL_ESCALATE_AFTER", 3)
+        monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 3)
         set_session_context("sess-heal")
         durable = _poisoned_rows()
 
@@ -106,7 +114,7 @@ class TestHealLogEscalation:
     def test_sessions_do_not_share_heal_counters(self, monkeypatch, caplog):
         import agent.agent_runtime_helpers as arh
 
-        monkeypatch.setattr(arh, "_EMPTY_HEAL_ESCALATE_AFTER", 3)
+        monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 3)
         with caplog.at_level(logging.WARNING, logger="run_agent"):
             set_session_context("sess-a")
             repair_empty_non_final_messages([dict(m) for m in _poisoned_rows()])
@@ -124,6 +132,132 @@ class TestHealLogEscalation:
         assert out[1]["content"] == _INTERRUPTED_PLACEHOLDER
         assert durable[1]["content"] == ""
         assert out is not durable
+
+
+class TestOneTimeUserNotice:
+    def _heal_n(self, n):
+        for _ in range(n):
+            repair_empty_non_final_messages(
+                [dict(m) for m in _poisoned_rows()]
+            )
+
+    def test_notice_queued_once_at_threshold(self, monkeypatch):
+        import agent.agent_runtime_helpers as arh
+
+        monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 3)
+        set_session_context("sess-notice")
+
+        self._heal_n(2)
+        assert consume_pending_sanitizer_heal_notice() is None
+
+        self._heal_n(1)  # crosses threshold
+        notice = consume_pending_sanitizer_heal_notice()
+        assert notice is not None
+        assert "repeated repair" in notice
+        assert "/debug share" in notice
+        assert "hermes doctor" in notice
+
+        # drained: never delivered twice
+        assert consume_pending_sanitizer_heal_notice() is None
+
+    def test_notice_never_rearms_in_new_window(self, monkeypatch):
+        import agent.agent_runtime_helpers as arh
+
+        monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 2)
+        set_session_context("sess-rearm")
+
+        self._heal_n(2)
+        assert consume_pending_sanitizer_heal_notice() is not None
+
+        # Simulate window expiry: force a fresh window, cross threshold again.
+        arh._empty_heal_log_state["sess-rearm"]["window_start"] -= (
+            arh._EMPTY_HEAL_WINDOW_S + 1
+        )
+        self._heal_n(2)
+        assert consume_pending_sanitizer_heal_notice() is None
+
+    def test_notice_scoped_to_session(self, monkeypatch):
+        import agent.agent_runtime_helpers as arh
+
+        monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 2)
+        set_session_context("sess-x")
+        self._heal_n(2)
+        set_session_context("sess-y")
+        # sess-y never escalated; its consume must not steal sess-x's notice
+        assert consume_pending_sanitizer_heal_notice() is None
+        set_session_context("sess-x")
+        assert consume_pending_sanitizer_heal_notice() is not None
+
+    def test_threshold_zero_disables_escalation(self, monkeypatch, caplog):
+        import agent.agent_runtime_helpers as arh
+
+        monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 0)
+        set_session_context("sess-off")
+        with caplog.at_level(logging.WARNING, logger="run_agent"):
+            self._heal_n(6)
+        assert consume_pending_sanitizer_heal_notice() is None
+        assert not [r for r in caplog.records if r.levelno == logging.ERROR]
+
+    def test_threshold_read_from_config(self, monkeypatch):
+        import agent.agent_runtime_helpers as arh
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"agent": {"sanitizer_heal_escalation_threshold": 7}},
+        )
+        assert arh._heal_escalation_threshold() == 7
+
+    def test_threshold_defaults_when_config_unreadable(self, monkeypatch):
+        import agent.agent_runtime_helpers as arh
+
+        def _boom():
+            raise RuntimeError("no config")
+
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", _boom)
+        assert (
+            arh._heal_escalation_threshold() == arh._EMPTY_HEAL_ESCALATE_AFTER
+        )
+
+
+class TestHealStatsSurface:
+    def test_counters_visible_and_escalation_flagged(self, monkeypatch):
+        import agent.agent_runtime_helpers as arh
+
+        monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 3)
+        set_session_context("sess-stats")
+        for _ in range(4):
+            repair_empty_non_final_messages(
+                [dict(m) for m in _poisoned_rows()]
+            )
+
+        stats = get_sanitizer_heal_stats()
+        assert stats["sess-stats"]["heal_events"] == 4
+        assert stats["sess-stats"]["messages_healed"] == 4
+        assert stats["sess-stats"]["escalated"] is True
+
+    def test_debug_report_includes_heal_counters(self, monkeypatch):
+        import agent.agent_runtime_helpers as arh
+        from hermes_cli.debug import collect_debug_report, LogSnapshot
+
+        monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 2)
+        set_session_context("sess-report")
+        for _ in range(2):
+            repair_empty_non_final_messages(
+                [dict(m) for m in _poisoned_rows()]
+            )
+
+        empty = LogSnapshot(path=None, tail_text="", full_text="")
+        report = collect_debug_report(
+            log_lines=5,
+            dump_text="dump",
+            log_snapshots={
+                k: empty
+                for k in ("agent", "errors", "gateway", "gui", "desktop")
+            },
+        )
+        assert "transcript sanitiser heal counters" in report
+        assert "sess-report: 2 heal events" in report
+        assert "escalated=True" in report
 
 
 class TestProjectionStopsReheal:
@@ -209,3 +343,53 @@ class TestProjectionStopsReheal:
         assert wire_assistants[0]["content"] == _INTERRUPTED_PLACEHOLDER
         assert history[1]["content"] == ""
         assert "api_content" not in history[1]
+
+    def test_pending_notice_delivered_out_of_band_not_in_context(self):
+        """A queued escalation notice is emitted through _emit_warning (the
+        status/delivery channel) and NEVER appears in the wire messages or
+        the durable history — message-flow / caching invariants (#96870)."""
+        from unittest.mock import patch
+
+        import agent.agent_runtime_helpers as _arh
+        from tests.run_agent.test_run_agent import _mock_response
+
+        agent = self._loop_agent()
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="ok", finish_reason="stop"),
+        ]
+
+        set_session_context("sess-loop-notice")
+        # The turn re-binds the log session context to the agent's own
+        # session id at turn start, so queue the notice under that key —
+        # exactly where the escalation path would have put it mid-session.
+        _live_key = str(getattr(agent, "session_id", None) or "-")
+        with _arh._empty_heal_log_lock:
+            _arh._empty_heal_user_notified.add(_live_key)
+            _arh._empty_heal_pending_notice[_live_key] = (
+                "⚠️ Your session transcript required repeated repair — "
+                "run /debug share or `hermes doctor`."
+            )
+
+        warned = []
+        history = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "earlier", "finish_reason": "stop"},
+        ]
+        with (
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_warning", side_effect=warned.append),
+        ):
+            agent.run_conversation("next", conversation_history=history)
+
+        assert warned and "repeated repair" in warned[0]
+        # one-time: drained after delivery
+        assert _arh._empty_heal_pending_notice == {}
+        # never injected into the wire copy or durable history
+        wire = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert all("repeated repair" not in str(m.get("content")) for m in wire)
+        assert all(
+            "repeated repair" not in str(m.get("content")) for m in history
+        )

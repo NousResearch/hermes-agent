@@ -2779,6 +2779,20 @@ DEFAULT_CONFIG = {
         # the assigned profile with the bundled sdlc-review skill. Disable for
         # boards where every review is performed manually from the dashboard.
         "review_dispatch": True,
+        # Zero-token pre-review build gate for worktree-backed cards (see
+        # tools/kanban_tools.py).  When a worker calls kanban_request_review
+        # on a card whose workspace_kind is 'worktree', the gate compiles the
+        # changed python files and runs the focused tests BEFORE the review
+        # transition is accepted; a failure refuses the review and leaves the
+        # card in the builder lane with an auto-comment.  `command` is an
+        # optional per-project override (str or list of argv fragments with
+        # {python} and {tests} placeholders); default resolves to the Sane
+        # default `<python> -m pytest <focused tests> -q`. Set
+        # enabled=false to disable the gate entirely.
+        "review_gate": {
+            "enabled": True,
+            "command": None,
+        },
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

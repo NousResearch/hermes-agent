@@ -430,7 +430,14 @@ def _build_gemini_contents(
         if parts:
             contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
-    return _merge_alternating(contents), ({"role": "system", "parts": [{"text": joined_system}]} if joined_system else None)
+    # Gemini's ``systemInstruction`` is a Content object, but the ``role``
+    # field must be omitted here. Public Google (generativelanguage / Vertex)
+    # tolerates a stray ``role: system`` and ignores it, but strict OpenAI-/
+    # Gemini-compatible proxy validators reject any systemInstruction carrying
+    # ``role`` with an opaque HTTP 422 ``INVALID_ARGUMENT`` — which, because
+    # Hermes always sends a system prompt, breaks every Gemini request routed
+    # through such a gateway. Emit just ``parts`` so the payload is valid on both.
+    return _merge_alternating(contents), ({"parts": [{"text": joined_system}]} if joined_system else None)
 
 
 def _function_declaration(tool: Any, *, json_schema: bool = False) -> Optional[Dict[str, Any]]:

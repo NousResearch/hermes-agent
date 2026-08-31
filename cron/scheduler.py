@@ -36,7 +36,7 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, List, Optional, Protocol
 
 # Add parent directory to path for imports BEFORE repo-level imports.
@@ -722,6 +722,7 @@ from cron.jobs import (
     heartbeat_fire_claim,
     heartbeat_run_claim,
     mark_job_run,
+    runtime_independence_decision,
     save_job_output,
     use_cron_store,
 )
@@ -4264,6 +4265,305 @@ def _windows_cron_bootstrap_argv(
     return [python_exe, "-c", bootstrap, script_path]
 
 
+_DOCKER_IMAGE_DIGEST_RE = re.compile(r"@sha256:[0-9a-fA-F]{64}$")
+_DOCKER_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DOCKER_NETWORK_MODES = {"none", "bridge", "host"}
+
+
+def _cron_script_backend(config: Optional[dict] = None) -> str:
+    """Return the configured cron script backend without masking typos.
+
+    ``local`` remains the default.  Invalid explicit values are returned to
+    the caller so execution can fail closed instead of silently falling back
+    to a host subprocess.
+    """
+    try:
+        cfg = config if isinstance(config, dict) else (load_config() or {})
+    except Exception:
+        cfg = {}
+    cron_cfg = cfg.get("cron") if isinstance(cfg, dict) else None
+    if not isinstance(cron_cfg, dict):
+        return "local"
+    return str(cron_cfg.get("script_backend") or "local").strip().lower()
+
+
+def _parse_docker_script_mount(raw: object) -> tuple[Path, str, str] | str:
+    """Validate one ``host:container:ro|rw`` cron script mount."""
+    if not isinstance(raw, str):
+        return "script_mounts entries must be strings"
+    parts = raw.rsplit(":", 2)
+    if len(parts) != 3:
+        return "script_mounts entries must use host:container:ro|rw"
+    source_raw, destination, mode = parts
+    if mode not in {"ro", "rw"}:
+        return "script_mounts mode must be exactly ro or rw"
+    source_candidate = Path(source_raw).expanduser()
+    if not source_candidate.is_absolute() or not destination.startswith("/"):
+        return "script_mounts require an absolute host and container path"
+    if any(character in source_raw or character in destination for character in {",", "\x00"}):
+        return "script_mounts paths contain an unsupported character"
+    try:
+        source = source_candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"script_mounts source is missing or unreadable: {source_raw!r} ({exc})"
+    if source == Path("/"):
+        return "script_mounts may not bind the host filesystem root"
+    if source.name in {"docker.sock", "podman.sock"}:
+        return "script_mounts may not expose a container-engine socket"
+    return source, destination.rstrip("/") or "/", mode
+
+
+def _docker_container_workdir(
+    workdir: Optional[str],
+    mounts: list[tuple[Path, str, str]],
+) -> str | tuple[None, str]:
+    """Map a host workdir through an explicit mount, never an implicit bind."""
+    if not workdir:
+        return "/hermes-scripts"
+    try:
+        host_workdir = Path(workdir).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return None, f"Docker script workdir missing or unreadable: {workdir!r} ({exc})"
+    if not host_workdir.is_dir():
+        return None, f"Docker script workdir is not a directory: {host_workdir}"
+
+    candidates: list[tuple[int, str]] = []
+    for source, destination, _mode in mounts:
+        if not source.is_dir():
+            continue
+        try:
+            relative = host_workdir.relative_to(source)
+        except ValueError:
+            continue
+        container_path = PurePosixPath(destination).joinpath(*relative.parts)
+        candidates.append((len(source.parts), str(container_path)))
+    if not candidates:
+        return None, (
+            "Docker script workdir must be covered by explicit script_mounts; "
+            f"refusing an implicit host bind: {host_workdir}"
+        )
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _stop_docker_cron_container(
+    docker: str,
+    container_name: str,
+    env: dict[str, str],
+) -> None:
+    """Best-effort removal of a named one-shot cron container."""
+    try:
+        subprocess.run(
+            [docker, "rm", "-f", container_name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            timeout=10,
+            check=False,
+            **({"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.warning("Failed to remove cron script container %s", container_name)
+
+
+def _run_job_script_via_docker(
+    path: Path,
+    workdir: Optional[str] = None,
+    config: Optional[dict] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
+) -> tuple[bool, str]:
+    """Run a validated cron script in a fail-closed one-shot container."""
+    try:
+        from tools.environments.docker import find_docker
+        from tools.environments.local import build_subprocess_env
+    except Exception as exc:
+        return False, f"Docker script backend unavailable (import): {exc}"
+
+    try:
+        cfg = config if isinstance(config, dict) else (load_config() or {})
+    except Exception:
+        cfg = {}
+    cron_cfg = cfg.get("cron") if isinstance(cfg, dict) else None
+    if not isinstance(cron_cfg, dict):
+        return False, "Docker script backend misconfigured: cron mapping is required"
+
+    image = cron_cfg.get("script_image")
+    if not isinstance(image, str) or not image.strip():
+        return False, "Docker script backend misconfigured: explicit script_image is required"
+    image = image.strip()
+    if not _DOCKER_IMAGE_DIGEST_RE.search(image):
+        return False, "Docker script backend misconfigured: script_image must be pinned by sha256 digest"
+
+    network_mode = cron_cfg.get("script_network_mode")
+    if not isinstance(network_mode, str) or not network_mode.strip():
+        return False, "Docker script backend misconfigured: explicit script_network_mode is required"
+    network_mode = network_mode.strip().lower()
+    if network_mode not in _DOCKER_NETWORK_MODES:
+        return False, (
+            "Docker script backend misconfigured: script_network_mode must be "
+            f"one of {sorted(_DOCKER_NETWORK_MODES)}, got {network_mode!r}"
+        )
+
+    mounts_raw = cron_cfg.get("script_mounts", [])
+    if not isinstance(mounts_raw, list):
+        return False, "Docker script backend misconfigured: script_mounts must be a list"
+    mounts: list[tuple[Path, str, str]] = [(path.parent.resolve(), "/hermes-scripts", "ro")]
+    for raw_mount in mounts_raw:
+        parsed = _parse_docker_script_mount(raw_mount)
+        if isinstance(parsed, str):
+            return False, f"Docker script backend misconfigured: {parsed}"
+        _source, destination, _mode = parsed
+        if destination == "/hermes-scripts" or destination.startswith("/hermes-scripts/"):
+            return False, (
+                "Docker script backend misconfigured: script_mounts may not shadow "
+                "the reserved script path"
+            )
+        mounts.append(parsed)
+
+    container_workdir = _docker_container_workdir(workdir, mounts)
+    if isinstance(container_workdir, tuple):
+        return False, container_workdir[1]
+
+    run_as_host_user = cron_cfg.get("script_run_as_host_user", True)
+    if not isinstance(run_as_host_user, bool):
+        return False, "Docker script backend misconfigured: script_run_as_host_user must be boolean"
+    if sys.platform != "win32" and not run_as_host_user:
+        return False, "Docker script backend refuses root container execution on this host"
+
+    forward = cron_cfg.get("script_forward_env", [])
+    script_env = cron_cfg.get("script_env", {})
+    if not isinstance(forward, list) or not isinstance(script_env, dict):
+        return False, "Docker script backend misconfigured: script_forward_env/list and script_env/mapping required"
+
+    docker_env = build_subprocess_env()
+    forwarded_keys: list[str] = []
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    for key in forward:
+        if not isinstance(key, str) or not _DOCKER_ENV_KEY_RE.fullmatch(key):
+            return False, f"Docker script backend misconfigured: invalid forwarded env key {key!r}"
+        try:
+            value = get_secret(key)
+        except UnscopedSecretError:
+            return False, (
+                "Docker script backend blocked an unscoped forwarded environment read"
+            )
+        if value is not None:
+            docker_env[key] = value
+            forwarded_keys.append(key)
+    for key, value in script_env.items():
+        if not isinstance(key, str) or not _DOCKER_ENV_KEY_RE.fullmatch(key):
+            return False, f"Docker script backend misconfigured: invalid script_env key {key!r}"
+        if not isinstance(value, str) or "\x00" in value:
+            return False, f"Docker script backend misconfigured: invalid value for script_env key {key!r}"
+        docker_env[key] = value
+        forwarded_keys.append(key)
+    docker_env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+    forwarded_keys.append("PYTHONDONTWRITEBYTECODE")
+
+    docker = find_docker()
+    if not docker:
+        return False, "Docker script backend unavailable: docker executable not found"
+
+    container_name = f"hermes-cron-{uuid.uuid4().hex[:12]}"
+    argv = [
+        docker,
+        "run",
+        "--rm",
+        "--name",
+        container_name,
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=64m",
+        "--pids-limit",
+        "256",
+        "--network",
+        network_mode,
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--label",
+        "hermes-agent=1",
+        "--label",
+        "hermes-cron-script=1",
+    ]
+    if sys.platform != "win32":
+        argv.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+    for source, destination, mode in mounts:
+        mount_spec = f"type=bind,src={source},dst={destination}"
+        if mode == "ro":
+            mount_spec += ",readonly"
+        argv.extend(["--mount", mount_spec])
+    for key in dict.fromkeys(forwarded_keys):
+        argv.extend(["--env", key])
+    argv.extend(["-w", container_workdir, image])
+    if path.suffix.lower() in {".sh", ".bash"}:
+        argv.extend(["bash", f"/hermes-scripts/{path.name}"])
+    else:
+        argv.extend(["python3", f"/hermes-scripts/{path.name}"])
+
+    popen_kwargs: dict[str, Any] = {"start_new_session": True}
+    if sys.platform == "win32":
+        popen_kwargs = {
+            "creationflags": windows_hide_flags()
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=docker_env,
+            **popen_kwargs,
+        )
+    except Exception as exc:
+        return False, f"Docker script execution failed: {exc}"
+
+    script_timeout = _get_script_timeout()
+    deadline = time.monotonic() + script_timeout
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            _stop_docker_cron_container(docker, container_name, docker_env)
+            _terminate_cron_script_tree(proc)
+            _drain_script_pipes(proc)
+            return False, "Docker script cancelled because cron fire ownership was lost"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _stop_docker_cron_container(docker, container_name, docker_env)
+            _terminate_cron_script_tree(proc)
+            _drain_script_pipes(proc)
+            return False, f"Docker script timed out after {script_timeout}s: {path}"
+        try:
+            stdout_raw, stderr_raw = proc.communicate(timeout=min(0.1, remaining))
+            break
+        except subprocess.TimeoutExpired:
+            continue
+
+    stdout = (stdout_raw or "").strip()
+    stderr = (stderr_raw or "").strip()
+    try:
+        from agent.redact import redact_sensitive_text
+        stdout = redact_sensitive_text(stdout)
+        stderr = redact_sensitive_text(stderr)
+    except Exception as exc:
+        logger.warning("Failed to redact sensitive text from docker script output: %s", exc)
+        stdout = "[REDACTED - redaction failed]"
+        stderr = "[REDACTED - redaction failed]"
+    if proc.returncode != 0:
+        parts = [f"Docker script exited with code {proc.returncode}"]
+        if stderr:
+            parts.append(f"stderr:\n{stderr}")
+        if stdout:
+            parts.append(f"stdout:\n{stdout}")
+        return False, "\n".join(parts)
+    return True, stdout
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
@@ -4350,6 +4650,26 @@ def _run_job_script(
         return False, f"Script not found: {path}"
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
+
+    try:
+        script_config = load_config() or {}
+    except Exception as exc:
+        return False, f"Unable to load cron script configuration: {type(exc).__name__}"
+    if not isinstance(script_config, dict):
+        return False, "Unable to load cron script configuration: expected a mapping"
+    backend = _cron_script_backend(script_config)
+    if backend == "docker":
+        return _run_job_script_via_docker(
+            path,
+            workdir=workdir,
+            config=script_config,
+            cancel_event=cancel_event,
+        )
+    if backend != "local":
+        return False, (
+            "Docker script backend misconfigured: cron.script_backend must be "
+            f"'local' or 'docker', got {backend!r}"
+        )
 
     script_timeout = _get_script_timeout()
 
@@ -5509,6 +5829,13 @@ def run_job(
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+
+    runtime_allowed, runtime_reason = runtime_independence_decision(
+        job,
+        action="direct scheduler execution",
+    )
+    if not runtime_allowed:
+        return False, "", "", runtime_reason
 
     # Fail closed on a corrupt config.yaml before any agent-driven work
     # (issue #81952): a cron fire is fully non-interactive, and continuing

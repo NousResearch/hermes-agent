@@ -2766,6 +2766,16 @@ DEFAULT_CONFIG = {
         # jobs from silently inheriting a paid default. Set to false only when
         # jobs should deliberately track changing global inference defaults.
         "model_drift_guard": True,
+        # Pre-run script execution boundary. Local preserves the historical
+        # behavior. Docker is an explicit, fail-closed opt-in that additionally
+        # requires a digest-pinned image and network mode.
+        "script_backend": "local",
+        "script_image": "",
+        "script_network_mode": "none",
+        "script_forward_env": [],
+        "script_env": {},
+        "script_mounts": [],
+        "script_run_as_host_user": True,
         # Default inference model for cron jobs (Axis A — WHAT model an
         # agent job runs on). Resolution at fire time: per-job user pin >
         # cron.model > global model.default. When set, unpinned jobs follow

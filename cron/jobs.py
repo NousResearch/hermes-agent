@@ -192,6 +192,24 @@ def get_cron_output_dir() -> Path:
     return _current_cron_store().output_dir
 
 
+def runtime_independence_decision(
+    job: Dict[str, Any],
+    *,
+    action: str,
+) -> Tuple[bool, str]:
+    """Apply the profile store's shared runtime-independence guard."""
+    from cron.runtime_independence import verify_job_runtime_independence
+
+    profile_home = _current_cron_store().cron_dir.parent
+    return verify_job_runtime_independence(job, profile_home, action=action)
+
+
+def _require_runtime_independence(job: Dict[str, Any], *, action: str) -> None:
+    allowed, reason = runtime_independence_decision(job, action=action)
+    if not allowed:
+        raise ValueError(reason)
+
+
 # Fallback stale-recovery window for a one-shot's running-claim (#59229) when
 # the cron inactivity timeout is disabled (HERMES_CRON_TIMEOUT=0 → unlimited),
 # in which case no finite run bound exists to derive from. Also acts as the
@@ -2718,6 +2736,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     "through update_job; use cron resume --run-now or --at."
                 )
 
+            if updated.get("enabled", True) and updated.get("state") != "paused":
+                _require_runtime_independence(updated, action="update or activation")
+
             jobs[i] = updated
             save_jobs(jobs)
             return _normalize_job_record(jobs[i])
@@ -2865,6 +2886,7 @@ def rearm_oneshot(job_id: str, run_at: Any) -> Optional[Dict[str, Any]]:
             job["paused_at"] = None
             job["paused_reason"] = None
             job["next_run_at"] = next_run_at
+            _require_runtime_independence(job, action="one-shot rearm")
             jobs[index] = job
             save_jobs(jobs)
             return _normalize_job_record(job)
@@ -3520,6 +3542,11 @@ def _claim_job_for_fire_locked(
             # explicit ``force`` (Trigger-now on a paused job) bypasses the
             # gate and atomically resumes the job below.
             if not force and not is_job_runnable(job):
+                return False
+            allowed, _reason = runtime_independence_decision(
+                job, action="fire claim"
+            )
+            if not allowed:
                 return False
             now = _hermes_now()
             existing = job.get("fire_claim")
@@ -4182,6 +4209,13 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             # diagnostic instead of vanishing silently (#73973).
                             _write_wedged_oneshot_diagnostic(job)
                             continue
+
+                allowed, reason = runtime_independence_decision(
+                    job, action="scheduled dispatch"
+                )
+                if not allowed:
+                    logger.warning("Job '%s' held: %s", job.get("name", job["id"]), reason)
+                    continue
 
                 # Durably claim a one-shot for the DURATION of its run before
                 # returning it as due, so a second scheduler process (gateway +

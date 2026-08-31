@@ -1216,8 +1216,9 @@ class _ConcurrentBatch:
                     "preview": repr(result)[:200],
                 })
         except Exception as _val_err:
-            # Validation is best-effort — never block the tool result
-            logger.debug("tool result validator raised for %s: %s", ref.name, _val_err)
+            # Validation is best-effort — never block the tool result.
+            # Log at WARNING so a bug in the validator itself is visible.
+            logger.warning("tool result validator raised for %s: %s", ref.name, _val_err)
         is_error, _ = _detect_tool_failure(ref.name, result)
         if is_error:
             logger.info("tool %s failed (%.2fs): %s", ref.name, duration, result[:200])
@@ -1439,6 +1440,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     batch = _ConcurrentBatch(agent, messages, effective_task_id, parsed_calls, timeout_s)
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+
 
 
     spinner = _start_quiet_tool_spinner(agent, "", {}, label=f"⚡ running {num_tools} tools concurrently")

@@ -146,3 +146,70 @@ class TestEdgeCases:
             "web_search",
             [{"title": "A", "url": "https://a.com", "nested": {"k": "v"}}],
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression: error-keyed dicts must NOT be flagged as invalid
+# ---------------------------------------------------------------------------
+
+
+class TestErrorKeyedDictsAreData:
+    """An {'error': ...} response from web_search/web_extract is valid data
+    that the model should reason about — not a malformed result."""
+
+    def test_web_search_error_dict_is_valid(self):
+        assert_valid("web_search", {"error": "rate limited"})
+
+    def test_web_extract_error_dict_is_valid(self):
+        assert_valid("web_extract", {"error": "page not found", "url": "https://x.com"})
+
+    def test_web_search_error_with_extra_keys_is_valid(self):
+        assert_valid("web_search", {"error": "timeout", "query": "foo", "results": []})
+
+
+# ---------------------------------------------------------------------------
+# Wiring contract: validate_tool_result return values drive middleware_trace
+# ---------------------------------------------------------------------------
+
+
+class TestWiringContract:
+    """The executor wiring appends to middleware_trace on invalid results.
+    Simulate that logic here to confirm the contract without needing a full
+    agent fixture.
+    """
+
+    def _simulate_executor_wiring(self, tool_name: str, result: object) -> list:
+        """Mirrors the post-exec block in tool_executor.py."""
+        from agent.tool_result_validator import validate_tool_result
+
+        trace: list = []
+        is_valid, validation_error = validate_tool_result(tool_name, result)
+        if not is_valid:
+            trace.append({
+                "type": "tool_result_validation_error",
+                "error": validation_error,
+                "preview": repr(result)[:200],
+            })
+        return trace
+
+    def test_none_result_appends_trace_entry(self):
+        trace = self._simulate_executor_wiring("read_file", None)
+        assert len(trace) == 1
+        assert trace[0]["type"] == "tool_result_validation_error"
+        assert "None" in trace[0]["error"]
+
+    def test_valid_result_leaves_trace_empty(self):
+        trace = self._simulate_executor_wiring("read_file", "file contents")
+        assert trace == []
+
+    def test_unknown_tool_none_leaves_trace_empty(self):
+        # Unknown tools always pass — trace must stay empty
+        trace = self._simulate_executor_wiring("future_tool", None)
+        assert trace == []
+
+    def test_trace_entry_includes_preview(self):
+        trace = self._simulate_executor_wiring("terminal", {"exit_code": 0})
+        assert len(trace) == 1
+        assert "preview" in trace[0]
+        assert trace[0]["preview"]  # non-empty
+

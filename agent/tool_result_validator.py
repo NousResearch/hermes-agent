@@ -1,13 +1,15 @@
 """Tool result validation middleware.
 
-Validates tool output shape and content before feeding to LLM.
-Catches malformed results early, prevents downstream hallucinations.
+Observes tool output shape and content before it reaches the LLM.
+Logs a WARNING and records to middleware_trace when a result does not match
+the expected shape for that tool; the original result is always passed through
+unchanged so execution is never blocked.
 
 Validators by tool type:
 - file_tools: string content, non-empty
-- api_tools: dict with expected keys
-- terminal: string output, check for error patterns
-- web_search: list of results with title/url
+- api_tools: dict or list (error-keyed dicts are data, not failures)
+- terminal: string output (error text is data, not a validation failure)
+- web_search / web_extract: string, list, or dict
 """
 
 from __future__ import annotations
@@ -43,34 +45,32 @@ def _validate_file_tool_result(
 
     # Empty results for read_file might be valid (empty file), but warn
     if tool_name == "read_file" and not result:
-        logger.warning(f"{tool_name}: returned empty string")
+        logger.warning("%s: returned empty string", tool_name)
 
     return True, None
 
 
 def _validate_api_tool_result(tool_name: str, result: Any) -> Tuple[bool, Optional[str]]:
-    """Validate API tool results (web_search, etc)."""
+    """Validate API tool results (web_search, web_extract, etc).
+
+    Error-keyed dicts are treated as data: a tool that returns
+    {"error": "rate limited"} is giving the model actionable information,
+    not producing a malformed result.  Only None and completely unexpected
+    types are considered invalid.
+    """
     if isinstance(result, str):
-        # Many tools return strings, that's fine
         return True, None
 
     if isinstance(result, dict):
-        # Check for common API response patterns
-        if "error" in result:
-            error_msg = result.get("error", "Unknown error")
-            return False, f"API returned error: {error_msg}"
-        if "results" in result or "data" in result or "items" in result:
-            return True, None
-        # Dict with other keys is probably ok
+        # Any dict is valid — error-keyed responses are data the model should see.
         return True, None
 
     if isinstance(result, list):
-        # List of results
         if not result:
-            logger.warning(f"{tool_name}: returned empty list")
+            logger.warning("%s: returned empty list", tool_name)
         return True, None
 
-    return False, f"Unexpected result type: {type(result).__name__}"
+    return False, "Unexpected result type: %s" % type(result).__name__
 
 
 def _validate_terminal_result(result: Any) -> Tuple[bool, Optional[str]]:

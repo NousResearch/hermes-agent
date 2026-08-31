@@ -23,11 +23,27 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 
+def _extract_function(src: str, name: str) -> str:
+    match = re.search(rf"^{name}\(\) \{{\n(.*?)^\}}", src, re.S | re.M)
+    assert match is not None, f"{name}() not found in scripts/install.sh"
+    return match.group(1)
+
+
 def _extract_install_node() -> str:
     src = INSTALL_SH.read_text(encoding="utf-8")
-    match = re.search(r"^install_node\(\) \{\n(.*?)^\}", src, re.S | re.M)
-    assert match is not None, "install_node() not found in scripts/install.sh"
-    return match.group(1)
+    return _extract_function(src, "install_node")
+
+
+def _extract_install_node_line() -> str:
+    """The line-walking refactor split the download/probe body into
+    install_node_line(); the sandboxed driver needs both functions."""
+    src = INSTALL_SH.read_text(encoding="utf-8")
+    return _extract_function(src, "install_node_line")
+
+
+def _extract_node_satisfies_build() -> str:
+    src = INSTALL_SH.read_text(encoding="utf-8")
+    return _extract_function(src, "node_satisfies_build")
 
 
 def _make_node_tarball(path: Path, node_body: str) -> None:
@@ -110,6 +126,12 @@ def _run_install_node(tmp_path: Path, node_body: str) -> tuple[int, str, str, li
         "log_error()   { printf 'ERROR %s\\n' \"$*\" >&2; }\n"
         f"get_command_link_dir() {{ echo {link_dir}; }}\n"
         "configure_managed_node_npm_prefix() { return 0; }\n"
+        "node_satisfies_build() {\n"
+        f"{_extract_node_satisfies_build()}"
+        "}\n"
+        "install_node_line() {\n"
+        f"{_extract_install_node_line()}"
+        "}\n"
         "install_node() {\n"
         f"{_extract_install_node()}"
         "}\n"
@@ -147,14 +169,18 @@ def test_broken_node_degrades_with_clear_error(tmp_path: Path) -> None:
     code, stdout, stderr, _ = _run_install_node(tmp_path, BROKEN_NODE)
 
     # Old behavior: silent abort at exit 127 with no output (#87460).
+    # With the pre-release line-walk (#96601 salvage), a binary that cannot
+    # start now fails the pre-adoption probe (node_satisfies_build on the
+    # extracted tree), so it is rejected BEFORE replacing anything and the
+    # walker reports no usable line — strictly stronger than the old
+    # post-adoption cleanup, which this test previously pinned.
     assert code == 0, stderr
-    assert "Downloaded Node.js failed to start:" in stderr
-    assert "libatomic.so.1" in stderr
-    assert "apt-get install -y libatomic1" in stdout + stderr
+    combined = stdout + stderr
+    assert "cannot build native modules" in combined
+    assert "No usable Node.js release line found" in combined
     assert "HAS_NODE=false" in stdout
     assert "HAS_NODE=true" not in stdout
-    # AI-review follow-up: the broken tree and bin links must not linger
-    # — retries and later installer steps resolve `node` cleanly.
+    # The broken candidate must never be adopted: no managed tree, no links.
     home = tmp_path / "home"
     link_dir = tmp_path / "links"
     assert not (home / "node").exists(), "broken managed Node tree left behind"

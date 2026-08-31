@@ -9392,6 +9392,9 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 # purchases are reflected immediately.
                 free_tier = check_nous_free_tier(force_fresh=True)
                 _portal_for_recs = auth_state.get("portal_base_url", "")
+                # Narrow before the tier split, so a rescued id still has to
+                # pass the free/paid predicate.
+                _policy_allowed = nous_policy_allowed_ids()
                 if free_tier:
                     try:
                         from hermes_cli.nous_account import (
@@ -9417,6 +9420,9 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing = union_with_portal_free_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
+                    model_ids = restrict_to_nous_policy(
+                        model_ids, _policy_allowed, rescue_empty=True,
+                    )
                     model_ids, unavailable_models = partition_nous_models_by_tier(
                         model_ids, pricing, free_tier=True,
                     )
@@ -9428,15 +9434,9 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing = union_with_portal_paid_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
-                # Neither the curated list nor the Portal's recommendations
-                # know what the org may reach.
-                _policy_allowed = nous_policy_allowed_ids()
-                model_ids = restrict_to_nous_policy(
-                    model_ids, _policy_allowed, rescue_empty=True,
-                )
-                unavailable_models = restrict_to_nous_policy(
-                    unavailable_models, _policy_allowed,
-                )
+                    model_ids = restrict_to_nous_policy(
+                        model_ids, _policy_allowed, rescue_empty=True,
+                    )
             _portal = auth_state.get("portal_base_url", "")
             if model_ids:
                 from hermes_cli.nous_account import nous_policy_notice

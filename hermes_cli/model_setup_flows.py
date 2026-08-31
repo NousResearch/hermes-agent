@@ -531,6 +531,14 @@ def _model_flow_nous(config, current_model="", args=None):
     # of CLI release cadence.
     unavailable_models: list[str] = []
     unavailable_message = ""
+
+    # Neither the curated list nor the Portal's recommendations know what the
+    # org may reach. Narrow before the tier split, so an id the policy rescues
+    # still has to pass the free/paid predicate instead of going around it.
+    from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
+
+    _policy_allowed = nous_policy_allowed_ids()
+
     if free_tier:
         try:
             from hermes_cli.nous_account import (
@@ -551,6 +559,9 @@ def _model_flow_nous(config, current_model="", args=None):
         model_ids, pricing = union_with_portal_free_recommendations(
             model_ids, pricing, _nous_portal_url,
         )
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
         model_ids, unavailable_models = partition_nous_models_by_tier(
             model_ids, pricing, free_tier=True
         )
@@ -558,16 +569,9 @@ def _model_flow_nous(config, current_model="", args=None):
         model_ids, pricing = union_with_portal_paid_recommendations(
             model_ids, pricing, _nous_portal_url,
         )
-
-    # Neither the curated list nor the Portal's recommendations know what the
-    # org may reach.
-    from hermes_cli.models import nous_policy_allowed_ids, restrict_to_nous_policy
-
-    _policy_allowed = nous_policy_allowed_ids()
-    model_ids = restrict_to_nous_policy(
-        model_ids, _policy_allowed, rescue_empty=True,
-    )
-    unavailable_models = restrict_to_nous_policy(unavailable_models, _policy_allowed)
+        model_ids = restrict_to_nous_policy(
+            model_ids, _policy_allowed, rescue_empty=True,
+        )
 
     if not model_ids and not unavailable_models:
         print("No models available for Nous Portal after filtering.")

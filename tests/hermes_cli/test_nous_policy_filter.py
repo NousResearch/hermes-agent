@@ -213,3 +213,28 @@ class TestRescueIsOptIn:
         empty — not a filter result to rescue."""
         reachable = {f"cn/model-{i}" for i in range(42)}
         assert restrict_to_nous_policy([], reachable) == []
+
+
+class TestPolicyRunsBeforeTierSplit:
+    """A rescued id must still pass the free/paid predicate.
+
+    Rescuing after the tier split put paid models back into a free-tier user's
+    selectable list, and the same id into both lists at once.
+    """
+
+    def test_a_rescued_paid_model_stays_unavailable_for_a_free_tier_user(self):
+        from hermes_cli.models import partition_nous_models_by_tier
+
+        pricing = {
+            "vendor/free": {"prompt": "0", "completion": "0"},
+            "vendor/paid": {"prompt": "0.000002", "completion": "0.00001"},
+        }
+        narrowed = restrict_to_nous_policy(
+            list(pricing), {"vendor/paid"}, rescue_empty=True
+        )
+        selectable, unavailable = partition_nous_models_by_tier(
+            narrowed, pricing, free_tier=True
+        )
+
+        assert selectable == []
+        assert unavailable == ["vendor/paid"]

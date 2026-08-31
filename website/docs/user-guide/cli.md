@@ -84,6 +84,12 @@ Safety guarantees (all modes, any age):
   rebase/squash-merged upstream are detected via `git cherry`
   patch-equivalence and count as merged, which is what lets the dominant
   "merged PR, tree preserved forever" leak finally reclaim.
+- **Pushed open-PR lanes free their disk without losing anything**: when a
+  clean tree's branch head exactly matches what `origin` holds (checked with
+  one `git ls-remote` per sweep), the checkout is redundant — the tree is
+  removed but its **branch ref is kept**, so the lane is one
+  `git worktree add .worktrees/<name> <branch>` away from restored. If the
+  remote can't be reached, the tree is preserved.
 - Trees **in use by a running hermes session** are never touched.
 - **Untracked-only scratch** (PR body drafts, notes) is archived to
   `~/.hermes/archive/worktree-prune/` before its tree is removed — never
@@ -91,6 +97,11 @@ Safety guarantees (all modes, any age):
 - Branch deletion is content-gated, not name-gated: any local branch whose
   commits are all on upstream is safe to delete; branches with unique work,
   checked-out branches, and `main`/`master`/`develop` are always kept.
+
+The same conservative pruner also runs from the cron scheduler (at most once
+every 6 hours, in the background), so gateway-only machines — where nobody
+launches `hermes -w` for days — no longer accumulate merged scratch trees
+between CLI sessions.
 
 When `.worktrees/` grows past 10 trees or 5 GB, startup prints a one-line
 notice pointing at these commands.

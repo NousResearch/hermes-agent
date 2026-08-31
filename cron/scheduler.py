@@ -7808,6 +7808,102 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
 _DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
 _last_dead_owner_reap_at: Optional[float] = None
 
+# Worktree maintenance throttle: the startup pruner historically ran only on
+# `hermes -w` launches, so on gateway-driven boxes (where sessions arrive via
+# Telegram/Discord and nobody launches the CLI for days) merged scratch trees
+# accumulated into tens of GB. The cron tick is the one reliably periodic
+# process on every install, so it owns a low-frequency sweep too. Tests may
+# reset _last_worktree_maintenance_at to None to force a sweep next tick.
+_WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
+_last_worktree_maintenance_at: Optional[float] = None
+_worktree_maintenance_lock = threading.Lock()
+
+
+def _worktree_maintenance_repos() -> List[str]:
+    """Repos whose ``.worktrees/`` this scheduler should keep pruned.
+
+    Candidates: the hermes install checkout itself (where ``hermes -w``
+    sessions on dev boxes create trees) and every configured job workdir's
+    repo root. Only repos that actually have a ``.worktrees/`` dir survive —
+    everything else costs nothing.
+    """
+    repos: set = set()
+
+    # The hermes source checkout (editable/git installs). Wheel installs have
+    # no .git here and are skipped.
+    try:
+        install_root = Path(__file__).resolve().parent.parent
+        if (install_root / ".git").exists():
+            repos.add(str(install_root))
+    except Exception:
+        pass
+
+    # Job workdirs may point inside other repos the agent works on.
+    try:
+        from cron.jobs import load_jobs
+
+        for job in load_jobs():
+            workdir = str(job.get("workdir") or "").strip()
+            if not workdir or not Path(workdir).is_dir():
+                continue
+            try:
+                probe = subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=5, cwd=workdir,
+                )
+                if probe.returncode == 0 and probe.stdout.strip():
+                    repos.add(probe.stdout.strip())
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return [r for r in sorted(repos) if (Path(r) / ".worktrees").is_dir()]
+
+
+def _maybe_run_worktree_maintenance() -> None:
+    """Throttled, threaded worktree prune from the cron tick.
+
+    Runs ``cli._prune_stale_worktrees`` (the same conservative pruner the
+    ``hermes -w`` startup path uses — dirty/unpushed/live-locked trees are
+    never touched) against every candidate repo, on a daemon thread so the
+    tick itself never waits on git. Errors never propagate: worktree GC is
+    hygiene, not scheduling.
+    """
+    global _last_worktree_maintenance_at
+    now = time.monotonic()
+    with _worktree_maintenance_lock:
+        if (
+            _last_worktree_maintenance_at is not None
+            and now - _last_worktree_maintenance_at
+            < _WORKTREE_MAINTENANCE_INTERVAL_SECONDS
+        ):
+            return
+        _last_worktree_maintenance_at = now
+
+    def _run() -> None:
+        try:
+            repos = _worktree_maintenance_repos()
+            if not repos:
+                return
+            from cli import _prune_stale_worktrees
+
+            for repo in repos:
+                try:
+                    _prune_stale_worktrees(repo)
+                except Exception:
+                    logger.debug(
+                        "Cron worktree maintenance failed for %s", repo,
+                        exc_info=True,
+                    )
+        except Exception:
+            logger.debug("Cron worktree maintenance skipped", exc_info=True)
+
+    threading.Thread(
+        target=_run, name="cron-worktree-prune", daemon=True
+    ).start()
+
 
 def tick(
     verbose: bool = True,
@@ -7925,6 +8021,14 @@ def tick(
                     )
             except Exception as _reap_exc:
                 logger.debug("Dead-owner execution reclaim failed: %s", _reap_exc)
+
+        # Periodic worktree GC (throttled to every 6h, threaded): gateway-only
+        # boxes never hit the `hermes -w` startup pruner, so this is the only
+        # sweep they get. Same conservative pruner, same guards.
+        try:
+            _maybe_run_worktree_maintenance()
+        except Exception as _wt_exc:
+            logger.debug("Worktree maintenance dispatch failed: %s", _wt_exc)
 
         due_jobs = get_due_jobs()
 

@@ -1773,6 +1773,13 @@ display:
 # Aliases are checked BEFORE the models.dev catalog, so they can route
 # to endpoints not in the catalog (e.g. Ollama Cloud, local servers).
 #
+# An alias pointing at its own endpoint can carry that endpoint's
+# credential with `api_key` (a literal, or a "${VAR}" reference) or
+# `key_env` (an env var name). `api_key` wins if both are set. When
+# neither is set the key is resolved from the alias HOST — never from
+# whatever provider was active before the switch, which would send that
+# provider's secret to an unrelated third party.
+#
 # model_aliases:
 #   opus:
 #     model: claude-opus-4-6
@@ -1785,6 +1792,11 @@ display:
 #     model: glm-4.7
 #     provider: custom
 #     base_url: "https://ollama.com/v1"
+#   theta:
+#     model: theta-1
+#     provider: custom
+#     base_url: "https://theta.example.com/v1"
+#     key_env: THETA_API_KEY               # or: api_key: "${THETA_API_KEY}"
 
 # =============================================================================
 # Privacy

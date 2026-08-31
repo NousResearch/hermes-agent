@@ -903,6 +903,36 @@ def model_forces_max_completion_tokens(model: str) -> bool:
     )
 
 
+def base_url_origin(base_url: str) -> tuple[str, str, int]:
+    """Return ``(scheme, hostname, effective_port)`` for a base URL.
+
+    Origin, not just host. ``https://h/v1`` and ``http://h/v1`` are different
+    trust boundaries, and so are two ports on the same host, so any decision
+    about handing a bearer secret to a new URL has to compare all three —
+    hostname equality alone would authorise an HTTPS→HTTP downgrade.
+
+    The port is normalised to the scheme default (443/80) when absent, so
+    ``https://h`` and ``https://h:443`` compare equal. Returns
+    ``("", "", 0)`` when the URL yields no usable hostname or a bad port.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return ("", "", 0)
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    scheme = (parsed.scheme or "").lower()
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if not hostname:
+        return ("", "", 0)
+    try:
+        port = parsed.port
+    except ValueError:
+        # Out-of-range or non-numeric port — not a usable origin.
+        return ("", "", 0)
+    if port is None:
+        port = {"https": 443, "http": 80}.get(scheme, 0)
+    return (scheme, hostname, port)
+
+
 def base_url_host_matches(base_url: str, domain: str) -> bool:
     """Return True when the base URL's hostname is ``domain`` or a subdomain.
 

@@ -488,6 +488,69 @@ def test_buffer_level_shift_space_no_raw_csi():
         )
 
 
+def test_buffer_level_shift_letter_no_raw_csi():
+    """End-to-end: Shift+letter through a real Application must type the
+    capital letter, not literal ``^[[27;2;<code>~`` text (#92343).
+
+    Same KeyPress.data defect as Shift+Space (#88071), surfaced live on
+    Ghostty after 1a8fea3ce2 dropped it onto the modifyOtherKeys-only path:
+    ANSI_SEQUENCES maps the sequence to 'M', but self-insert pastes
+    event.data — the raw escape bytes.
+    """
+    import asyncio
+
+    from prompt_toolkit import Application
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.layout import HSplit, Layout, Window, BufferControl
+
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+
+    async def _probe(payload: str) -> str:
+        buf = Buffer()
+        with create_pipe_input() as inp:
+            app = Application(
+                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp
+            )
+            run_task = asyncio.ensure_future(app.run_async())
+            await asyncio.sleep(0.05)
+            inp.send_text("ab")
+            inp.send_text(payload)
+            inp.send_text("cd")
+            await asyncio.sleep(0.15)
+            result = buf.text
+            app.exit()
+            try:
+                await asyncio.wait_for(run_task, 2)
+            except Exception:
+                pass
+        return result
+
+    for label, payload, expected in (
+        ("Shift+M xterm modifyOtherKeys", "\x1b[27;2;77~", "abMcd"),
+        ("Shift+M kitty CSI-u (shifted cp)", "\x1b[77;2u", "abMcd"),
+        ("Shift+L kitty CSI-u (unshifted cp)", "\x1b[108;2u", "abLcd"),
+        ("plain letter", "M", "abMcd"),
+    ):
+        buffer = asyncio.run(_probe(payload))
+        assert buffer == expected, (
+            f"{label}: buffer={buffer!r} — expected {expected!r}; raw CSI "
+            f"bytes must never land in the buffer"
+        )
+
+
+def test_plain_letter_keypress_data_unchanged():
+    """The normalization predicate only fires on ESC-prefixed payloads —
+    ordinary ASCII typing must pass through untouched."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+
+    install_keypress_data_normalization()
+    presses = _parse_presses("M")
+    assert [(kp.key, kp.data) for kp in presses] == [("M", "M")]
+
+
 # ---------------------------------------------------------------------------
 # Multi-modifier combos (Ctrl+Shift / Ctrl+Alt / Shift+Alt / Ctrl+Alt+Shift)
 # ---------------------------------------------------------------------------

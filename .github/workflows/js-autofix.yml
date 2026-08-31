@@ -35,16 +35,6 @@ name: auto-fix lint issues & formatting
 #      on the current state.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '**/*.js'
-      - '**/*.cjs'
-      - '**/*.mjs'
-      - '**/*.ts'
-      - '**/*.tsx'
-      - 'package.json'
-      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:

@@ -1043,4 +1043,95 @@ class TestStandaloneSend:
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
+    @pytest.mark.asyncio
+    async def test_standalone_send_injects_owner_auth_tag_from_credentials_file(
+        self, monkeypatch, tmp_path
+    ):
+        """Cron/standalone path must load NIP-OA auth_tag from credentials JSON.
+
+        Main-line regression: when only BUZZ_PRIVATE_KEY is ambient and the
+        credentials file holds auth_tag, omitting injection causes relay 403
+        membership failures on owner-gated relays.
+        """
+        from gateway.config import PlatformConfig
+
+        tag = ["auth", "b" * 64, "", "c" * 128]
+        creds = tmp_path / "agent_credentials.json"
+        creds.write_text(
+            json.dumps({"nsec": "nsec1fromfile", "auth_tag": tag}),
+            encoding="utf-8",
+        )
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
+        monkeypatch.delenv("BUZZ_PRIVATE_KEY", raising=False)
+        monkeypatch.delenv("BUZZ_AUTH_TAG", raising=False)
+
+        captured = {}
+
+        async def fake_exec(
+            cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=30.0
+        ):
+            captured.update(
+                private_key=private_key,
+                auth_tag=auth_tag,
+                args=args,
+                input_text=input_text,
+            )
+            return 0, json.dumps({"accepted": True, "event_id": "evt-auth", "message": ""}), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}), CHANNEL, "cron needs owner auth"
+        )
+        assert result == {"success": True, "message_id": "evt-auth"}
+        assert captured["private_key"] == "nsec1fromfile"
+        assert json.loads(captured["auth_tag"]) == tag
+        # Secrets stay out of argv (auth_tag is env-injected by _exec_buzz).
+        joined_args = " ".join(str(a) for a in captured["args"])
+        assert "nsec1fromfile" not in joined_args
+        assert tag[1] not in joined_args
+        assert tag[3] not in joined_args
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_key_only_does_not_invent_auth_tag(
+        self, monkeypatch, tmp_path
+    ):
+        """Direct private key without credentials_file must not invent an auth tag."""
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        monkeypatch.delenv("BUZZ_AUTH_TAG", raising=False)
+        monkeypatch.delenv("BUZZ_CREDENTIALS_FILE", raising=False)
+        # Ambient credentials dir must not be borrowed when a direct key is set.
+        ambient = tmp_path / "ambient_credentials.json"
+        ambient.write_text(
+            json.dumps({"nsec": "nsec1ambient", "auth_tag": ["auth", "a" * 64, "", "d" * 128]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path)
+
+        captured = {}
+
+        async def fake_exec(
+            cli_path, args, *, relay_url, private_key, auth_tag="", input_text=None, timeout=30.0
+        ):
+            captured.update(private_key=private_key, auth_tag=auth_tag)
+            return 0, json.dumps({"accepted": True, "event_id": "evt-key", "message": ""}), ""
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}), CHANNEL, "key only"
+        )
+        assert result == {"success": True, "message_id": "evt-key"}
+        assert captured["private_key"] == "nsec1x"
+        assert captured["auth_tag"] == ""
+
 

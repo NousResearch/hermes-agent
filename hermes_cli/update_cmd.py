@@ -1358,6 +1358,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
+        # Surface autostash entries left behind by earlier updates (#63717
+        # problem 6) — parked --keep-stash runs and failed restores preserve
+        # the stash but nothing ever mentioned it again.
+        _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
+
         print("→ Fetching updates...")
         fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
         if fetch_result.returncode != 0:

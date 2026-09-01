@@ -27134,8 +27134,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     raw_sid = _sk
             if raw_sid:
                 adapter = self.adapters.get(Platform.API_SERVER)
-                from gateway.wake import adapter_supports_push, deliver_wake
+                from gateway.wake import (
+                    adapter_supports_push,
+                    deliver_wake,
+                    persist_delegation_delivery,
+                )
                 if adapter is not None and not adapter_supports_push(adapter):
+                    if evt.get("type") == "async_delegation":
+                        # #85957: after the parent turn's event.complete the
+                        # CLIENT owns the next turn on this stateless surface.
+                        # Persist the completion as a durable delivery row —
+                        # never self-post it as a new role=user prompt.
+                        try:
+                            logger.info(
+                                "Async delegation completion — persisting "
+                                "delivery row for api_server session %s "
+                                "(no wake turn)",
+                                raw_sid,
+                            )
+                            await persist_delegation_delivery(
+                                adapter, text=synth_text,
+                                session_id=raw_sid, evt=evt,
+                            )
+                            return True
+                        except Exception as e:
+                            logger.warning(
+                                "Async delegation delivery persist failed "
+                                "for session %s: %s",
+                                raw_sid, e,
+                            )
+                            return False
                     try:
                         logger.info(
                             "Watch pattern notification — waking api_server "
@@ -27201,8 +27229,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # which binds chat_id = session_id). handle_message would run the
             # wake under a build_session_key()-derived key that never matches
             # the raw X-Hermes-Session-Id session — self-post instead.
-            from gateway.wake import deliver_wake
+            from gateway.wake import deliver_wake, persist_delegation_delivery
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
+            if evt.get("type") == "async_delegation":
+                # #85957: same client-owns-the-turn rule as the raw-key branch
+                # above — persist the completion as a delivery row, never
+                # self-post it as a new role=user prompt.
+                try:
+                    logger.info(
+                        "Async delegation completion — persisting delivery "
+                        "row for api_server session %s (no wake turn)",
+                        raw_sid,
+                    )
+                    await persist_delegation_delivery(
+                        adapter, text=synth_text, session_id=raw_sid, evt=evt,
+                    )
+                    return True
+                except Exception as e:
+                    logger.warning(
+                        "Async delegation delivery persist failed for "
+                        "session %s: %s",
+                        raw_sid, e,
+                    )
+                    return False
             try:
                 logger.info(
                     "Watch pattern notification — waking api_server session "

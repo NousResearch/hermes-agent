@@ -3211,6 +3211,42 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
 # ID generation
 # ---------------------------------------------------------------------------
 
+def _worktree_holds_unmerged(worktree_path: str) -> bool:
+    """Return True when a task worktree has unmerged work: a dirty tree OR
+    commits not reachable from any remote-tracking ref.
+
+    Guard 2 of the auto-decomposer fix (t_c52b9bc3): when a decomposition
+    happens, the implementation child MUST inherit the parent's worktree if it
+    holds dirty/unpushed work — never mint a fresh worktree while the parent's
+    holds the only copy of a half-done diff. Reuses the same fail-safe cli
+    predicates the teardown path uses (``_cleanup_worktree_workspace``), so the
+    verdict here matches the verdict there. Any error resolves to ``True``
+    (preserve the worktree / inherit it) — fail-safe, never silently discard.
+    """
+    try:
+        from cli import _worktree_has_unpushed_commits, _worktree_is_dirty
+    except Exception:
+        _log.warning(
+            "decompose: cannot import cli worktree predicates for %s — "
+            "assuming unmerged work (fail-safe inherit)",
+            worktree_path,
+        )
+        return True
+    try:
+        if _worktree_is_dirty(worktree_path):
+            return True
+        if _worktree_has_unpushed_commits(worktree_path):
+            return True
+    except Exception:
+        _log.warning(
+            "decompose: worktree predicate failed for %s — assuming unmerged "
+            "work (fail-safe inherit)",
+            worktree_path,
+        )
+        return True
+    return False
+
+
 def _new_task_id() -> str:
     """Generate a short, URL-safe task id.
 
@@ -7780,12 +7816,32 @@ def decompose_triage_task(
             # them.
             return None
         tenant = root_row["tenant"]
+        root_was_triage = root_row["status"] == "triage"
+
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
         # rather than throwaway scratch tmp dirs. A child dict can still
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+
+        # Guard 2 (auto-decomposer fix, t_c52b9bc3): WORKTREE INHERITANCE. When
+        # the root is a worktree that holds unmerged work (dirty tree OR
+        # unpushed commits), the IMPLEMENTATION child — the first dispatchable
+        # (non-decision, non-triage) child that will actually rebuild — MUST
+        # reuse that worktree/branch instead of minting a fresh one. A fresh
+        # worktree would strand the parent's half-done diff (the t_f712e819
+        # post-mortem: the partial round-2 diff stayed behind and was re-done).
+        # We detect the worktree once; the FIRST non-parked child that will run
+        # inherits it. Other children still get fresh worktrees (the per-sibling
+        # isolation rule stays intact — only the implementation child touches the
+        # parent's checkout).
+        root_worktree_has_unmerged = bool(
+            root_ws_kind == "worktree"
+            and root_ws_path
+            and _worktree_holds_unmerged(root_ws_path)
+        )
+        impl_child_worktree_claimed = False
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -7819,14 +7875,28 @@ def decompose_triage_task(
             if child.get("workspace_path"):
                 child_ws_path = child.get("workspace_path")
             elif child_ws_kind == "worktree":
-                # Never share one worktree checkout between siblings: the
-                # root's literal path would put every child in the same
-                # directory on the first-dispatched sibling's branch, with
-                # no lock — siblings can be promoted and dispatched
-                # concurrently. Leave the path unset so dispatch
-                # materializes a fresh <repo>/.worktrees/<child-id> per
-                # child from the board anchor.
-                child_ws_path = None
+                # Guard 2: if the root's own worktree holds unmerged work and
+                # this is the FIRST dispatchable (non-decision, non-triage)
+                # child, inherit the parent's worktree/branch so the half-done
+                # diff is not stranded behind a fresh mint. The parent becomes
+                # non-dispatchable in the same txn, so only this implementation
+                # child will touch that checkout — no sibling-lock violation.
+                if (
+                    root_worktree_has_unmerged
+                    and child_status == "todo"
+                    and not impl_child_worktree_claimed
+                ):
+                    child_ws_path = root_ws_path
+                    impl_child_worktree_claimed = True
+                else:
+                    # Never share one worktree checkout between siblings: the
+                    # root's literal path would put every child in the same
+                    # directory on the first-dispatched sibling's branch, with
+                    # no lock — siblings can be promoted and dispatched
+                    # concurrently. Leave the path unset so dispatch
+                    # materializes a fresh <repo>/.worktrees/<child-id> per
+                    # child from the board anchor.
+                    child_ws_path = None
             elif child_ws_kind == root_ws_kind:
                 child_ws_path = root_ws_path
             else:
@@ -7897,10 +7967,18 @@ def decompose_triage_task(
                 (cid, task_id),
             )
 
-        # Flip the root: triage -> todo, set assignee to the orchestrator.
+        # Flip the root: triage -> todo, set assignee to the orchestrator ONLY
+        # for a fresh triage fan-out. Guard 3 (auto-decomposer fix, t_c52b9bc3):
+        # for a BLOCKED-resume fan-out the parent's assignee is left UNCHANGED —
+        # no reassignment to switch or any router profile. The incident demoted
+        # parent was reassigned to the router profile while still dispatchable;
+        # the parent must park as-is (its only role after splitting is to wake
+        # when children complete, and its original assignee is who the card
+        # belongs to). Fresh fan-outs keep the historical orchestrator-wake
+        # behavior (an orchestrator profile awaits children completion).
         sets = ["status = 'todo'"]
         params: list[Any] = []
-        if root_assignee is not None:
+        if root_assignee is not None and root_was_triage:
             sets.append("assignee = ?")
             params.append(root_assignee)
         params.append(task_id)

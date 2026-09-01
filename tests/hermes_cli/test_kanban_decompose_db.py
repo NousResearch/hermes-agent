@@ -271,3 +271,121 @@ def test_decompose_unknown_assignee_child_parked_in_triage(kanban_home):
     assert child.status == "triage"
     assert child.assignee == "engineer"
     assert any("unknown assignee" in (c.body or "") for c in comments)
+
+
+# ---------------------------------------------------------------------------
+# Guards 2 & 3 (t_c52b9bc3): worktree inheritance + park parent unchanged
+# ---------------------------------------------------------------------------
+
+def _make_worktree(repo, task_id, branch=None):
+    target = repo / ".worktrees" / task_id
+    kb._ensure_git_worktree(repo, target, branch or f"wt/{task_id}")
+    return target
+
+
+def test_decompose_impl_child_inherits_dirty_parent_worktree(kanban_home, tmp_path):
+    """Guard 2: a decomposition of a parent whose worktree holds a dirty diff
+    must NOT mint a fresh worktree for the implementation child — the child
+    reuses the parent's worktree/branch so the half-done diff is not stranded.
+    """
+    import subprocess
+
+    def _git(*a, cwd=None):
+        r = subprocess.run(["git", *a], cwd=cwd, capture_output=True,
+                           text=True, encoding="utf-8", timeout=60)
+        assert r.returncode == 0, (a, r.stderr)
+        return r.stdout
+
+    origin = tmp_path / "origin.git"
+    _git("init", "--bare", str(origin))
+    project = tmp_path / "project"
+    _git("clone", str(origin), str(project))
+    _git("-C", str(project), "config", "user.email", "t@ex.com")
+    _git("-C", str(project), "config", "user.name", "t")
+    (project / "README.md").write_text("hello\n", encoding="utf-8")
+    _git("-C", str(project), "add", "README.md")
+    _git("-C", str(project), "commit", "-m", "init")
+    _git("-C", str(project), "push", "origin", "HEAD")
+
+    # Parent owns a worktree with an uncommitted (dirty) diff.
+    wt = _make_worktree(project, "t_parent1111")
+    (wt / "wip.txt").write_text("half-done\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="code task", assignee="orchestrator",
+            workspace_kind="worktree", workspace_path=str(wt),
+        )
+        # force to triage so decompose_triage_task will fan it out
+        conn.execute("UPDATE tasks SET status='triage' WHERE id=?", (tid,))
+        conn.commit()
+
+    children = [
+        {"title": "change scoped", "assignee": "default", "parents": [], "body": "wip"},
+        {"title": "decision", "assignee": "researcher", "parents": [], "triage": True},
+    ]
+    with kb.connect() as conn:
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator", children=children,
+            author="decomposer", auto_promote=False,
+        )
+    assert child_ids is not None and len(child_ids) == 2
+    with kb.connect() as conn:
+        # The implementation child (first dispatchable/todo) inherits wt.
+        impl = kb.get_task(conn, child_ids[0])
+        other = kb.get_task(conn, child_ids[1])
+    assert impl is not None and other is not None
+    assert impl.workspace_kind == "worktree"
+    assert impl.workspace_path == str(wt), (
+        "implementation child must inherit the parent's dirty worktree, not "
+        "mint a fresh one"
+    )
+    # The decision-shaped (triage-parked) sibling still gets a fresh worktree.
+    assert other.workspace_path is None
+
+
+def test_decompose_blocked_resume_preserves_root_assignee(kanban_home):
+    """Guard 3: a BLOCKED-resume fan-out leaves the parent's assignee unchanged
+    (no reassignment to switch / any router profile) and parks it as todo.
+    Fresh triage fan-outs keep the historical orchestrator-wake behavior.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="stuck impl", assignee="bob", initial_status="blocked",
+        )
+    children = [
+        {"title": "child A", "assignee": "researcher", "parents": []},
+        {"title": "child B", "assignee": "engineer", "parents": []},
+    ]
+    with kb.connect() as conn:
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="switch", children=children,
+            author="decomposer",
+        )
+    assert child_ids is not None and len(child_ids) == 2
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root is not None
+    assert root.status == "todo"
+    # assignee preserved — NOT reassigned to the router profile "switch"
+    assert root.assignee == "bob"
+
+
+def test_decompose_fresh_triage_still_sets_root_assignee(kanban_home):
+    """Guard 3 regression: a FRESH triage fan-out keeps the historical
+    orchestrator-wake assignment (root.assignee == root_assignee). Only the
+    blocked-resume path is exempt.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="fresh idea", triage=True)
+    children = [{"title": "research", "assignee": "researcher", "parents": []}]
+    with kb.connect() as conn:
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator", children=children,
+            author="decomposer",
+        )
+    assert child_ids is not None and len(child_ids) == 1
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root is not None
+    assert root.assignee == "orchestrator"

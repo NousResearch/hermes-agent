@@ -803,6 +803,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                   data-message-id={message.id}
                   data-message-role={message.role}
                   data-message-streaming={message.streaming ? "true" : "false"}
+                  aria-label={message.role === "user" ? "Your message" : "Hermes message"}
                   className={cn(
                     "w-fit max-w-[85%] whitespace-pre-wrap rounded-md px-3 py-2 text-sm",
                     message.role === "user"
@@ -810,9 +811,6 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
                       : "bg-muted text-foreground",
                   )}
                 >
-                  <div className="mb-1 text-[0.7rem] font-medium opacity-70">
-                    {message.role === "user" ? "You" : "Hermes"}
-                  </div>
                   {message.role === "assistant"
                     ? <MarkdownMessage content={message.text || (message.streaming ? "…" : "")} />
                     : message.text}

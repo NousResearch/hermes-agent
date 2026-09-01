@@ -122,6 +122,31 @@ describe("NativeChatPage", () => {
     }
   });
 
+  it("hides sender names from message bubbles while preserving accessible labels", async () => {
+    await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    await act(async () => {
+      setter?.call(textarea, "user message");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }));
+      gateway.instance?.emit("message.start");
+      gateway.instance?.emit("message.delta", { text: "assistant message" });
+      gateway.instance?.emit("message.complete");
+    });
+
+    const userMessage = host.querySelector<HTMLElement>("[data-message-role='user']");
+    const assistantMessage = host.querySelector<HTMLElement>("[data-message-role='assistant']");
+    expect(userMessage?.textContent).not.toContain("You");
+    expect(assistantMessage?.textContent).not.toContain("Hermes");
+    expect(userMessage?.querySelector(".mb-1")).toBeNull();
+    expect(assistantMessage?.querySelector(".mb-1")).toBeNull();
+    expect(userMessage?.getAttribute("aria-label")).toBe("Your message");
+    expect(assistantMessage?.getAttribute("aria-label")).toBe("Hermes message");
+  });
+
   it("keeps Enter inside Thai IME composition and submits only after composition ends", () => {
     expect(shouldSubmitComposerKey("Enter", false, true)).toBe(false);
     expect(shouldSubmitComposerKey("Enter", true, false)).toBe(false);
@@ -457,7 +482,7 @@ describe("NativeChatPage", () => {
       textarea.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await act(async () => host.querySelector<HTMLButtonElement>("button[type='submit']")?.click());
-    const userArticle = Array.from(host.querySelectorAll("article")).find((article) => article.textContent?.includes("You"));
+    const userArticle = host.querySelector<HTMLElement>("[data-message-role='user']");
     expect(userArticle?.querySelector("strong")).toBeNull();
     expect(userArticle?.textContent).toContain(text);
     expect(userArticle?.className).toContain("whitespace-pre-wrap");

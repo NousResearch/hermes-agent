@@ -147,8 +147,7 @@ def emit_media_deliverable(
 
         from tui_gateway import server as tui_server
 
-        session = (tui_server._sessions or {}).get(session_id)
-        transport = (session or {}).get("transport")
+        transport = tui_server.session_transport(session_id)
         if transport is None:
             # No desktop client listening on this session. No stdio fallback:
             # see module docstring for the routing-safety rationale.

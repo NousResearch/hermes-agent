@@ -2537,6 +2537,17 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     write_json(_event_frame(event, sid, payload))
 
 
+def session_transport(sid: str):
+    """The live client transport for a session, or None.
+
+    Public accessor for out-of-module emitters (gateway/media_events.py) so
+    they don't reach into the _sessions dict directly — keeps the session
+    record shape and its lock discipline owned by this module.
+    """
+    with _sessions_lock:
+        return ((_sessions or {}).get(sid) or {}).get("transport")
+
+
 # Live client transports, one per connected WS peer (maintained by tui_gateway.ws).
 # A session-less event from a background thread has neither a session transport
 # nor a contextvar binding, so write_json would drop it on stdio — this registry

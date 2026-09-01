@@ -301,6 +301,15 @@ class TestResumePendingSystemNote:
         )
 
 
+    def test_empty_message_interactive_note_continues_task(self):
+        """Interactive Telegram resume must continue instead of asking what next."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "automatic resume turn" in note
+        assert "Continue the interrupted task" in note
+        assert "ask what" not in note
+        assert "already run" in note
+        assert "Do NOT re-execute dangling/interrupted tool calls" in note
+
     def test_empty_message_noninteractive_note_continues_task(self):
         """Non-interactive platforms (webhook, API server): nobody can answer
         'what next?', so the resumed turn must complete the interrupted work

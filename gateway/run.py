@@ -1567,12 +1567,14 @@ def build_resume_recovery_note(
         )
     elif interactive:
         resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next."
+            "This is an automatic resume turn with no new user message. "
+            "Continue the interrupted task from the last useful completed "
+            "tool results/context. Do not stop just to announce recovery "
+            "unless the task is genuinely blocked."
         )
         tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
+            "Do NOT re-execute dangling/interrupted tool calls; use completed "
+            "tool results as context and proceed with the next logical step."
         )
     else:
         resume_guidance = (

@@ -42,8 +42,19 @@ def kanban_home(tmp_path, monkeypatch) -> Iterator[Path]:
 @pytest.fixture
 def conn(kanban_home) -> Iterator[sqlite3.Connection]:
     from hermes_cli import kanban_db as kb
+    # Decompose child materialisation requires spawnable owners; tests use a
+    # stubbed canonical runtime (same pattern as test_pipeline_execution_integrity).
+    monkeypatch_spawnable()
     with kb.connect() as c:
         yield c
+
+
+def monkeypatch_spawnable():
+    from hermes_cli import kanban_db as kb
+    if not getattr(kb, "_spawnable_stub_active", False):
+        kb._is_profile_spawnable_orig = kb._is_profile_spawnable
+        kb._is_profile_spawnable = lambda _name: True
+        kb._spawnable_stub_active = True
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +265,54 @@ class TestDecomposeAndDocumentGates:
         result = validate_decompose_artifact(str(tmp_path))
         assert result is not None
 
+    @staticmethod
+    def _write_valid_decompose_manifest(
+        tmp_path, parent_id="t", key="WS-1", title="ws1", owner="octacon",
+    ):
+        """Write the executable decompose-tasks.json sidecar alongside the
+        human-readable decompose-output.md.  The manifest is the machine
+        contract; the markdown is never parsed into task rows."""
+        manifest = {
+            "schema_version": 1,
+            "parent_task_id": parent_id,
+            "tasks": [
+                {
+                    "key": key,
+                    "title": "ws1 implementation",
+                    "owner": owner,
+                    "role": "implementation",
+                    "workspace_kind": "scratch",
+                    "body": "do the thing",
+                    "dependencies": [],
+                    "dependencies_qa": [],
+                },
+                {
+                    "key": "QA-1",
+                    "title": "ws1 qa",
+                    "owner": "quan",
+                    "role": "qa",
+                    "workspace_kind": "scratch",
+                    "body": "check the thing",
+                    "dependencies": [key],
+                    "dependencies_qa": [],
+                },
+                {
+                    "key": "AU-1",
+                    "title": "ws1 audit",
+                    "owner": "kensei-review",
+                    "role": "audit",
+                    "workspace_kind": "scratch",
+                    "body": "audit the thing",
+                    "dependencies": ["QA-1"],
+                    "dependencies_qa": [],
+                },
+            ],
+        }
+        (tmp_path / "decompose-tasks.json").write_text(
+            json.dumps(manifest)
+        )
+        return manifest
+
     def test_decompose_gate_passes_with_ws1_sections(self, tmp_path):
         from hermes_cli.feature_pipeline import validate_decompose_artifact
         (tmp_path / "decompose-output.md").write_text(
@@ -263,6 +322,7 @@ class TestDecomposeAndDocumentGates:
             "## Test Plan\n- Unit: WS-1 tests\n- Integration: end-to-end\n\n"
             "## Order\nWS-1 first, then WS-2.\n"
         )
+        self._write_valid_decompose_manifest(tmp_path, parent_id="t")
         assert validate_decompose_artifact(str(tmp_path)) is None
 
     def test_document_gate_fails_without_docs_section(self, tmp_path):
@@ -287,13 +347,20 @@ class TestDecomposeAndDocumentGates:
 
 
 class TestPassThroughStages:
-    """execute, pr+qa, document have no gate (or document has the gate but is included)."""
+    """execute and pr+qa are execution-bearing stages and MUST be gated.
+
+    Current locked contract (feature_pipeline): "Every execution-bearing
+    stage has an evidence gate; no implementation or QA stage is allowed
+    to pass through on elapsed time alone."  Prose-only pass-through was
+    removed when the evidence gates landed.
+    """
 
     def test_execute_and_pr_qa_in_gate_functions(self):
         from hermes_cli.feature_pipeline import GATE_FUNCTIONS
-        # execute, pr+qa are pass-through
-        assert "execute" not in GATE_FUNCTIONS
-        assert "pr+qa" not in GATE_FUNCTIONS
+        # execute, pr+qa have evidence gates (execution-evidence.json,
+        # pr-qa-evidence.json) — they are no longer prose pass-through.
+        assert "execute" in GATE_FUNCTIONS
+        assert "pr+qa" in GATE_FUNCTIONS
 
 
 # ---------------------------------------------------------------------------
@@ -390,30 +457,74 @@ class TestAuditFollowupTask:
 
 
 class TestDecomposeChildTasks:
-    """decompose stage creates real child kanban rows, not just a text marker."""
+    """decompose stage creates real child kanban rows from the executable
+    decompose-tasks.json manifest — markdown is never parsed into task rows."""
 
-    @pytest.mark.parametrize("heading", [
-        "## Child Tasks", "# Child Tasks", "Child Tasks:", "**Child Tasks**",
-    ])
-    def test_parser_accepts_all_gate_heading_variants(self, tmp_path, heading):
-        from hermes_cli import kanban_db as kb
-        artifact_dir = tmp_path / "artifact"
-        artifact_dir.mkdir()
-        (artifact_dir / "decompose-output.md").write_text(
-            f"{heading}\n- WS-1: build the thing\n- WS-2: test the thing\n\n"
-            "## Acceptance Criteria\n- not a child\n"
-        )
-        titles = kb._parse_decompose_children(str(artifact_dir))
-        assert titles == ["WS-1: build the thing", "WS-2: test the thing"]
+    def test_manifest_missing_task_fails_cleanly(self, tmp_path):
+        from hermes_cli.feature_pipeline import load_decompose_manifest
+        import pytest as _pytest
+        with _pytest.raises((OSError, ValueError)):
+            load_decompose_manifest(str(tmp_path / "nope"))
 
-    def test_parser_returns_empty_on_missing_artifact(self, tmp_path):
+    def test_create_children_returns_error_on_missing_parent(
+        self, conn, tmp_path, kanban_home,
+    ):
+        """Current contract raises a defensive ValueError for an unknown
+        parent task rather than silently returning empty."""
         from hermes_cli import kanban_db as kb
-        assert kb._parse_decompose_children(str(tmp_path / "nope")) == []
+        import pytest as _pytest
+        manifest = {
+            "schema_version": 1,
+            "parent_task_id": "nonexistent",
+            "tasks": [
+                {
+                    "key": "WS-1", "title": "x", "owner": "octacon",
+                    "role": "implementation", "workspace_kind": "scratch",
+                    "body": "b", "dependencies": [], "dependencies_qa": [],
+                },
+                {
+                    "key": "QA-1", "title": "q", "owner": "quan",
+                    "role": "qa", "workspace_kind": "scratch",
+                    "body": "b", "dependencies": ["WS-1"],
+                    "dependencies_qa": [],
+                },
+                {
+                    "key": "AU-1", "title": "a", "owner": "kensei-review",
+                    "role": "audit", "workspace_kind": "scratch",
+                    "body": "b", "dependencies": ["QA-1"],
+                    "dependencies_qa": [],
+                },
+            ],
+        }
+        (tmp_path / "decompose-tasks.json").write_text(json.dumps(manifest))
+        with _pytest.raises(ValueError):
+            kb._create_decompose_child_tasks(conn, "nonexistent", str(tmp_path))
 
-    def test_create_children_returns_empty_on_missing_parent(self, conn, tmp_path):
-        from hermes_cli import kanban_db as kb
-        result = kb._create_decompose_child_tasks(conn, "nonexistent", str(tmp_path))
-        assert result == []
+    def _manifest(self, parent_id, owner="octacon"):
+        return {
+            "schema_version": 1,
+            "parent_task_id": parent_id,
+            "tasks": [
+                {
+                    "key": "WS-1", "title": "ws1 implementation",
+                    "owner": owner, "role": "implementation",
+                    "workspace_kind": "scratch", "body": "do it",
+                    "dependencies": [], "dependencies_qa": [],
+                },
+                {
+                    "key": "QA-1", "title": "ws1 qa", "owner": "quan",
+                    "role": "qa", "workspace_kind": "scratch",
+                    "body": "check it", "dependencies": ["WS-1"],
+                    "dependencies_qa": [],
+                },
+                {
+                    "key": "AU-1", "title": "ws1 audit",
+                    "owner": "kensei-review", "role": "audit",
+                    "workspace_kind": "scratch", "body": "audit it",
+                    "dependencies": ["QA-1"], "dependencies_qa": [],
+                },
+            ],
+        }
 
     def test_create_children_links_to_parent(self, conn, kanban_home):
         from hermes_cli import kanban_db as kb
@@ -423,15 +534,20 @@ class TestDecomposeChildTasks:
         )
         artifact_dir = kanban_home / "feature-artifacts" / parent_id
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        (artifact_dir / "decompose-output.md").write_text(
-            "## Child Tasks\n- WS-1: a\n- WS-2: b\n\n## Acceptance Criteria\n- x\n"
+        (artifact_dir / "decompose-tasks.json").write_text(
+            json.dumps(self._manifest(parent_id))
         )
         new_ids = kb._create_decompose_child_tasks(conn, parent_id, str(artifact_dir))
-        assert len(new_ids) == 2
-        assert set(new_ids) == set(kb.child_ids(conn, parent_id))
-        for cid in new_ids:
-            child = kb.get_task(conn, cid)
-            assert child.tier == "full"  # inherited from parent
+        assert len(new_ids) == 3
+        # Current contract: child dependency edges live in task_links
+        # (child_ids = dependency children); decompose membership is the
+        # decompose_children_created event, and every child inherits tier.
+        assert "decompose_children_created" in [
+            e.kind for e in kb.list_events(conn, parent_id)
+        ]
+        for child in new_ids:
+            child_task = kb.get_task(conn, child["task_id"])
+            assert child_task.tier == "full"  # inherited from parent
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +557,24 @@ class TestDecomposeChildTasks:
 
 class TestDispatcherNewStages:
     """dispatch_once walks new stages and records correct events."""
+
+    @staticmethod
+    def _materialise_children(conn, kb, tid, kanban_home):
+        """Create a valid decomposed child graph with all children done so
+        the audit stage's runtime validation passes."""
+        artifact_dir = kanban_home / "feature-artifacts" / tid
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "decompose-tasks.json").write_text(
+            json.dumps(TestDecomposeChildTasks()._manifest(tid))
+        )
+        kb._create_decompose_child_tasks(conn, tid, str(artifact_dir))
+        children = kb._decompose_children_event(conn, tid)
+        for c in children:
+            conn.execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?",
+                (c["task_id"],),
+            )
+        return artifact_dir, children
 
     def test_decompose_artifact_missing_records_gate_failed(self, conn, kanban_home):
         from hermes_cli import kanban_db as kb
@@ -479,6 +613,8 @@ class TestDispatcherNewStages:
             "## Test Plan\n- Unit: WS-1 tests\n- Integration: end-to-end\n\n"
             "## Order\nWS-1 first.\n"
         )
+        manifest = TestDecomposeChildTasks()._manifest(tid)
+        (artifact_dir / "decompose-tasks.json").write_text(json.dumps(manifest))
         kb.dispatch_once(conn, dry_run=False)
         events = kb.list_events(conn, tid)
         advances = [e for e in events if e.kind == "pipeline_advanced"]
@@ -492,12 +628,18 @@ class TestDispatcherNewStages:
         # Task should now be in execute
         task = kb.get_task(conn, tid)
         assert task.pipeline_stage == "execute"
-        # Real child task rows must exist, linked to the parent — the gate
-        # only checks for a '## Child Tasks' marker in the artifact text,
-        # it doesn't create rows itself; dispatch_once does that separately.
-        children = [kb.get_task(conn, cid) for cid in kb.child_ids(conn, tid)]
-        assert [c.title for c in children] == ["WS-1: x"]
-        assert children[0].tier == task.tier  # inherited from parent
+        # Real child task rows must exist, created from the executable
+        # decompose-tasks.json manifest (markdown is never parsed).
+        # Decompose membership is the decompose_children_created event;
+        # child_ids() returns dependency children.
+        children = [
+            kb.get_task(conn, c["task_id"])
+            for c in kb._decompose_children_event(conn, tid)
+        ]
+        assert [c.title for c in children] == [
+            "ws1 implementation", "ws1 qa", "ws1 audit",
+        ]
+        assert all(c.tier == task.tier for c in children)  # inherited from parent
 
     def test_decompose_children_not_duplicated_on_redispatch(self, conn, kanban_home):
         """A second dispatch_once tick before the stage moves on must not
@@ -521,10 +663,12 @@ class TestDispatcherNewStages:
             "## Acceptance Criteria\n- WS-1: AC1\n\n"
             "## Test Plan\n- Unit: WS-1 tests\n"
         )
+        manifest = TestDecomposeChildTasks()._manifest(tid)
+        (artifact_dir / "decompose-tasks.json").write_text(json.dumps(manifest))
         new_ids_1 = kb._create_decompose_child_tasks(conn, tid, str(artifact_dir))
         new_ids_2 = kb._create_decompose_child_tasks(conn, tid, str(artifact_dir))
         assert new_ids_1 == new_ids_2
-        assert len(kb.child_ids(conn, tid)) == 2
+        assert len(kb._decompose_children_event(conn, tid)) == 3
 
     def test_passthrough_stage_execute_auto_advances(self, conn, kanban_home):
         from hermes_cli import kanban_db as kb
@@ -537,10 +681,45 @@ class TestDispatcherNewStages:
             "UPDATE tasks SET status = ?, pipeline_stage = ?, pipeline_mode = ? WHERE id = ?",
             ("execute", "execute", "full", tid),
         )
+        # Materialise the child graph + execution evidence required by the
+        # execute stage's evidence gate (execution-bearing stages are gated).
+        artifact_dir = kanban_home / "feature-artifacts" / tid
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "decompose-tasks.json").write_text(
+            json.dumps(TestDecomposeChildTasks()._manifest(tid))
+        )
+        kb._create_decompose_child_tasks(conn, tid, str(artifact_dir))
+        children = kb._decompose_children_event(conn, tid)
+        impl_child = next(
+            c for c in children if c.get("role") == "implementation"
+        )
+        evidence = {
+            "schema_version": 1,
+            "parent_task_id": tid,
+            "children": [
+                {
+                    "key": c["key"],
+                    "task_id": c["task_id"],
+                    "status": "done",
+                    "result_digest": "a" * 64,
+                }
+                for c in children
+                if c.get("role") == "implementation"
+            ],
+        }
+        (artifact_dir / "execution-evidence.json").write_text(
+            json.dumps(evidence)
+        )
+        # Mark all implementation children done so runtime validation passes
+        for c in children:
+            conn.execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?",
+                (c["task_id"],),
+            )
         kb.dispatch_once(conn, dry_run=False)
         events = kb.list_events(conn, tid)
         advances = [e for e in events if e.kind == "pipeline_advanced"]
-        # Pass-through: advances to pr+qa
+        # execute advances to pr+qa once the evidence gate passes
         assert any(
             a.payload.get("from_stage") == "execute"
             and a.payload.get("to_stage") == "pr+qa"
@@ -597,8 +776,7 @@ class TestDispatcherNewStages:
             "UPDATE tasks SET status = ?, pipeline_stage = ?, pipeline_mode = ? WHERE id = ?",
             ("audit", "audit", "full", tid),
         )
-        artifact_dir = kanban_home / "feature-artifacts" / tid
-        artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_dir, children = self._materialise_children(conn, kb, tid, kanban_home)
         (artifact_dir / "audit-report.md").write_text(
             "# Audit Report\n\n"
             "## Quan-Fleet\n\n"
@@ -641,8 +819,7 @@ class TestDispatcherNewStages:
             "UPDATE tasks SET status = ?, pipeline_stage = ?, pipeline_mode = ? WHERE id = ?",
             ("audit", "audit", "full", tid),
         )
-        artifact_dir = kanban_home / "feature-artifacts" / tid
-        artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_dir, children = self._materialise_children(conn, kb, tid, kanban_home)
         (artifact_dir / "audit-report.md").write_text(
             "# Audit Report\n\n"
             "## Quan-Fleet\n\n"

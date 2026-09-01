@@ -55,6 +55,7 @@ export interface DesktopThemeCommandOption {
 export type DesktopActionId =
   | 'branch'
   | 'browser'
+  | 'btw'
   | 'compress'
   | 'handoff'
   | 'hatch'
@@ -238,6 +239,15 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Compress this conversation context',
     aliases: ['/compact'],
     surface: action('compress'),
+    argumentMode: 'text'
+  },
+  // /btw must be an action (prompt.btw RPC), not exec: the slash worker
+  // prints the answer after process_command returns, so Desktop only ever
+  // saw the acknowledgement (#99065). The answer arrives as btw.complete.
+  {
+    name: '/btw',
+    description: 'Ask a side question about this conversation without interrupting it',
+    surface: action('btw'),
     argumentMode: 'text'
   },
   {

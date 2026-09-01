@@ -41,6 +41,35 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  if (event.type === 'btw.complete') {
+    // prompt.btw answers a side question and emits this on the originating
+    // session. Persistent transcript line, matching the TUI's `[btw "q"]`
+    // — without it Desktop only ever showed the acknowledgement (#99065).
+    const text = coerceGatewayText(payload?.text).trim()
+
+    if (text && sessionId) {
+      const taskId = String(payload?.task_id ?? '').trim()
+      const question = coerceGatewayText(payload?.question).trim()
+      const header = `[btw${question ? ` "${question}"` : ''}${taskId ? ` (${taskId})` : ''}]`
+
+      flushQueuedDeltas(sessionId)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: `btw-complete-${taskId || Date.now()}`,
+            role: 'system',
+            parts: [textPart(`${header}\n${text}`, occurredAt)],
+            timestamp: occurredAt
+          }
+        ]
+      }))
+    }
+
+    return true
+  }
+
   if (event.type === 'review.summary') {
     // Self-improvement background review saved something to memory/skills
     // and emitted a persistent summary (Python formats it as

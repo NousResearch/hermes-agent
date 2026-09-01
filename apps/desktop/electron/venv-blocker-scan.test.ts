@@ -106,6 +106,45 @@ describe('parseVenvBlockerScanOutput', () => {
     assert.equal(o.kind, 'blocked')
   })
 
+  // Contract fixture (#98336/#98350): the scanner reports exemption
+  // diagnostics (counts + sanitized evidence) alongside the authoritative
+  // blocked/processes fields. The consumer must tolerate those fields today
+  // and must keep enforcing blocked/processes consistency — a future parser
+  // change that either chokes on the diagnostics or silently reinterprets
+  // an exemption as a blocker breaks this fixture.
+  it('tolerates exemption diagnostics while enforcing blocked/processes consistency', () => {
+    const clear = parseVenvBlockerScanOutput(
+      ok({
+        pausable_gateways: 2,
+        deferred_backends: 1,
+        deferred_backend_evidence: [{ pid: 78, purpose: 'serve', port: 9119 }]
+      })
+    )
+
+    assert.equal(clear.kind, 'clear')
+
+    const blocked = parseVenvBlockerScanOutput(
+      ok({
+        blocked: true,
+        processes: [{ pid: 79, name: 'python.exe', cmdline: 'c' }],
+        pausable_gateways: 1,
+        deferred_backends: 1,
+        deferred_backend_evidence: [{ pid: 78, purpose: 'serve', port: 9119 }]
+      })
+    )
+
+    assert.equal(blocked.kind, 'blocked')
+
+    if (blocked.kind !== 'blocked') {
+      return
+    }
+
+    assert.deepEqual(
+      blocked.result.processes.map((p) => p.pid),
+      [79]
+    )
+  })
+
   it('classifies Python http.server blockers as safe local previews with a human label', () => {
     const o = parseVenvBlockerScanOutput(
       ok({

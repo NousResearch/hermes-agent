@@ -8,6 +8,11 @@ import { atom, type WritableAtom } from 'nanostores'
 // `$threadScrolledUp` dims the composer / status stack; `$threadJumpButtonVisible`
 // shows the floating jump control. Both track `!isAtBottom` today, but stay
 // separate so their thresholds can diverge again without touching consumers.
+//
+// Keep-alive tabs stay mounted with a real layout box, so only the on-screen
+// pane may publish or reset this composer-facing mirror. Jump-to-bottom
+// requests are keyed by session so a click (or an input-request snap) cannot
+// scroll every mounted transcript.
 export const $threadScrolledUp = atom(false)
 export const $threadJumpButtonVisible = atom(false)
 
@@ -28,18 +33,45 @@ export const setThreadAtBottom = (isAtBottom: boolean) => {
 
 export const resetThreadScroll = () => setThreadAtBottom(true)
 
+export const publishThreadAtBottom = (isAtBottom: boolean, publisher: { paneVisible: boolean }): void => {
+  if (!publisher.paneVisible) {
+    return
+  }
+
+  setThreadAtBottom(isAtBottom)
+}
+
+export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean }): void => {
+  if (!publisher.paneVisible) {
+    return
+  }
+
+  resetThreadScroll()
+}
+
 // Cross-component bridge: the jump button lives by the composer, the viewport's
 // `scrollToBottom` lives inside the thread. The bridge registers a handler; the
 // button fires it. Mirrors the composer focus/insert emitter pattern.
-const handlers = new Set<() => void>()
+const handlers = new Map<string | null, Set<() => void>>()
 
-export const onScrollToBottomRequest = (handler: () => void) => {
-  handlers.add(handler)
+export const onScrollToBottomRequest = (handler: () => void, sessionId: string | null = null) => {
+  const scoped = handlers.get(sessionId) ?? new Set<() => void>()
 
-  return () => void handlers.delete(handler)
+  scoped.add(handler)
+  handlers.set(sessionId, scoped)
+
+  return () => {
+    scoped.delete(handler)
+
+    if (scoped.size === 0) {
+      handlers.delete(sessionId)
+    }
+  }
 }
 
-export const requestScrollToBottom = () => handlers.forEach(handler => handler())
+export const requestScrollToBottom = (sessionId: string | null = null) => {
+  handlers.get(sessionId)?.forEach(handler => handler())
+}
 
 // Inline edit grows a sticky human bubble. Fire on pointerdown so the viewport
 // escapes stick-to-bottom before focus/layout; close clears the edit flag when

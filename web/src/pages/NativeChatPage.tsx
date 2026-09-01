@@ -417,7 +417,7 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
     }
     if (!accepted.length) return;
     updateAttachments((current) => [...current, ...accepted]);
-  }, [stageAttachment, updateAttachments]);
+  }, [updateAttachments]);
 
   useEffect(() => {
     if (!sessionId) return;

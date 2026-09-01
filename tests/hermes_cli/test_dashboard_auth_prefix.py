@@ -451,7 +451,7 @@ class TestCookiePathRespectsPrefix:
         @app.get("/set")
         def _set():
             r = Response("ok")
-            set_pkce_cookie(r, payload="x", use_https=False)
+            set_pkce_cookie(r, payload={"provider": "x"}, use_https=False)
             return r
 
         client = TestClient(app)

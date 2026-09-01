@@ -133,7 +133,12 @@ describe('ConnectionsRegistrySection', () => {
     fireEvent.change(url, { target: { value: 'https://a.example' } })
     fireEvent.click(screen.getByRole('button', { name: /^(OAuth|Sign in)$/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Sign in with/ }))
-    await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://a.example'))
+    await waitFor(() =>
+      expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://a.example', {
+        connectionId: null,
+        label: 'New gateway'
+      })
+    )
     fireEvent.change(url, { target: { value: 'https://b.example' } })
     await act(async (): Promise<void> => pendingLogin.resolve({ connected: true }))
     expect(screen.queryByText('Signed in')).toBeNull()

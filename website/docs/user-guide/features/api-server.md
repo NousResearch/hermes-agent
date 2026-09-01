@@ -520,7 +520,8 @@ prompt. Choice prompts use server-issued IDs:
     "choices": [
       {"id": "choice-1", "label": "Staging"},
       {"id": "choice-2", "label": "Production"}
-    ]
+    ],
+    "multi_select": false
   }
 }
 ```
@@ -534,10 +535,28 @@ Answer that exact request with a choice ID:
 }
 ```
 
+When `prompt.multi_select` is `true`, answer with one or more server-issued IDs:
+
+```json
+{
+  "request_id": "clarify_0123456789abcdef0123456789abcdef",
+  "response": {
+    "type": "choices",
+    "choice_ids": ["choice-1", "choice-2"]
+  }
+}
+```
+
 For an open question, send
 `{"type": "text", "text": "your answer"}`. Unknown, stale, already answered,
-or cross-run request IDs fail closed. Check `run_clarification_response` and
-`run_clarification_request_binding` in `/v1/capabilities` before showing this UI.
+or cross-run request IDs fail closed. A `clarify` tool call with a `questions`
+array is decomposed into sequential `clarify.request` events on the same run;
+answer each `request_id` before the next prompt is emitted. While a
+clarification is pending, `GET /v1/runs/{run_id}` reports
+`status: waiting_for_clarification` and `awaiting_user: true` (cleared on
+answer, timeout, or `/stop`). Check `run_clarification_response` and
+`run_clarification_request_binding` in `/v1/capabilities` before showing this
+UI.
 
 ## Jobs API (background scheduled work)
 

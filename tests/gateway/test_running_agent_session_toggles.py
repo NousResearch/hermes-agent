@@ -136,6 +136,21 @@ async def test_verbose_dispatches_mid_run(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_memory_approval_dispatches_mid_run(monkeypatch):
+    """Exact pending-write decisions must work without interrupting the active turn."""
+    runner = _make_runner()
+    runner._handle_memory_command = AsyncMock(
+        return_value="Approved 1 memory write(s)."
+    )
+
+    result = await runner._handle_message(_make_event("/memory approve abc12345"))
+
+    runner._handle_memory_command.assert_awaited_once()
+    assert result == "Approved 1 memory write(s)."
+    assert "can't run mid-turn" not in (result or "")
+
+
+@pytest.mark.asyncio
 async def test_fresh_ancient_turn_remains_controllable(monkeypatch):
     """Total turn age must not evict an agent with fresh activity.
 

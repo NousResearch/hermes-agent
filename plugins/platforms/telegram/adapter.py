@@ -1230,8 +1230,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return {}
         return {"disable_notification": True}
 
-    @staticmethod
     def _callback_source(
+        self,
         user_id: str,
         *,
         chat_id: Optional[str] = None,
@@ -1246,14 +1246,14 @@ class TelegramAdapter(BasePlatformAdapter):
             normalized_chat_type = "dm"
         elif normalized_chat_type == "supergroup":
             normalized_chat_type = "forum" if thread_id is not None else "group"
-        return SessionSource(
-            platform=Platform.TELEGRAM,
+        source = self.build_source(
             chat_id=str(chat_id or user_id),
             chat_type=normalized_chat_type,
             user_id=str(user_id),
             user_name=str(user_name).strip() if user_name else None,
             thread_id=str(thread_id) if thread_id is not None else None,
         )
+        return source
 
     def _write_approval_keyboard(
         self, metadata: Optional[Dict[str, Any]]

@@ -488,6 +488,57 @@ class TestR210FindingRecurrence:
         # finding's current state is resolved → not open
         assert dim["evidence"]["governance_findings_open"] == 0
 
+    def test_resolved_then_reopened_is_recurring(self, fake_home_r2):
+        mod = self._load()
+        from hermes_cli.profile_activity_ledger import append_event
+        import time
+        now = int(time.time())
+        append_event(source="t", event_type="governance.finding.opened",
+                     event_id=f"r210c-o1-{time.time_ns()}",
+                     actor_profile="octacon", target_profile="octacon",
+                     object_id="finding-1", occurred_at=now - 300)
+        append_event(source="t", event_type="governance.finding.resolved",
+                     event_id=f"r210c-r1-{time.time_ns()}",
+                     actor_profile="octacon", target_profile="octacon",
+                     object_id="finding-1", occurred_at=now - 200)
+        append_event(source="t", event_type="governance.finding.opened",
+                     event_id=f"r210c-o2-{time.time_ns()}",
+                     actor_profile="octacon", target_profile="octacon",
+                     object_id="finding-1", occurred_at=now - 100)
+        dim = mod._quality_dimension("octacon", now - 86400)
+        # one identity currently open, but resolved+reopened → recurrence
+        assert dim["evidence"]["governance_findings_open"] == 1
+        assert dim["evidence"]["recurring_findings"] is True
+        assert dim["verdict"] == "ATTENTION"
+
+    def test_two_distinct_open_findings(self, fake_home_r2):
+        mod = self._load()
+        from hermes_cli.profile_activity_ledger import append_event
+        import time
+        now = int(time.time())
+        for fid in ("finding-1", "finding-2"):
+            append_event(source="t", event_type="governance.finding.opened",
+                         event_id=f"r210d-{fid}-{time.time_ns()}",
+                         actor_profile="octacon", target_profile="octacon",
+                         object_id=fid, occurred_at=now - 100)
+        dim = mod._quality_dimension("octacon", now - 86400)
+        assert dim["evidence"]["governance_findings_open"] == 2
+        assert sorted(dim["evidence"]["governance_findings_open_ids"]) == ["finding-1", "finding-2"]
+
+    def test_duplicate_replay_idempotent(self, fake_home_r2):
+        mod = self._load()
+        from hermes_cli.profile_activity_ledger import append_event
+        import time
+        now = int(time.time())
+        # same event_id replayed (idempotent ledger) — must not inflate counts
+        for _ in range(2):
+            append_event(source="t", event_type="governance.finding.opened",
+                         event_id="r210e-dup", actor_profile="octacon",
+                         target_profile="octacon", object_id="finding-1",
+                         occurred_at=now - 100)
+        dim = mod._quality_dimension("octacon", now - 86400)
+        assert dim["evidence"]["governance_findings_open"] == 1
+
     @staticmethod
     def _load():
         import importlib.util

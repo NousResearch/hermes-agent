@@ -327,6 +327,61 @@ def _delegation_counts(profile: str, since: int) -> dict:
 
 # ── Dimension 3: quality ─────────────────────────────────────────────────────
 
+def _open_finding_ids(profile: str, since: int) -> tuple[list[str], dict[str, int]]:
+    """R2-10: compute currently-open findings by IDENTITY and LATEST state.
+
+    Reads (object_id, event_type, occurred_at) for governance.finding.*
+    events of the profile and reduces each finding identity to its latest
+    state: open when the latest event is opened/updated, closed when
+    resolved/dismissed.  ``since`` bounds which findings are examined
+    (findings last touched before the window are not reported), but state
+    history extends before the window so opened-before/resolved-inside is
+    handled correctly.
+
+    Returns (open_ids, counts) — safe IDs/counts only, never payloads.
+    """
+    db = LEDGER_DB
+    open_ids: list[str] = []
+    counts = {"opened": 0, "resolved": 0, "open": 0}
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        # Latest state per finding identity, over the full history of
+        # findings touched inside the window.
+        rows = con.execute(
+            "SELECT object_id, event_type, occurred_at FROM activity_events "
+            "WHERE event_type IN ('governance.finding.opened', "
+            "'governance.finding.updated', 'governance.finding.resolved', "
+            "'governance.finding.dismissed') "
+            "AND (actor_profile = ? OR target_profile = ?) "
+            "AND object_id IS NOT NULL AND object_id != '' "
+            "ORDER BY object_id, occurred_at ASC, id ASC",
+            (profile, profile),
+        ).fetchall()
+        con.close()
+    except Exception:
+        return open_ids, counts
+    latest: dict[str, tuple[str, int]] = {}
+    for object_id, event_type, occurred_at in rows:
+        if occurred_at is None:
+            continue
+        prev = latest.get(object_id)
+        if prev is None or int(occurred_at) >= prev[1]:
+            latest[object_id] = (event_type, int(occurred_at))
+    for object_id, (event_type, occurred_at) in latest.items():
+        if occurred_at < since:
+            continue  # last activity predates the window
+        state = "open" if event_type in (
+            "governance.finding.opened", "governance.finding.updated") else "closed"
+        if state == "open":
+            open_ids.append(object_id)
+        if event_type in ("governance.finding.opened", "governance.finding.updated"):
+            counts["opened"] += 1
+        else:
+            counts["resolved"] += 1
+    counts["open"] = len(open_ids)
+    return open_ids, counts
+
+
 def _quality_dimension(profile: str, since: int) -> dict:
     counts = _ledger_counts(profile, since)
     failures = sum(
@@ -340,30 +395,31 @@ def _quality_dimension(profile: str, since: int) -> dict:
     review_outcomes = sum(
         v for k, v in counts.items() if k.startswith("kanban.operator_")
     )
-    # C8: consume the exact Phase 2 governance-finding taxonomy with
-    # recurrence semantics — OPEN findings (opened/updated minus resolved/
-    # dismissed in window) are the defect signal.
-    opened = counts.get("governance.finding.opened", 0) + counts.get("governance.finding.updated", 0)
-    closed = counts.get("governance.finding.resolved", 0) + counts.get("governance.finding.dismissed", 0)
-    open_findings = max(0, opened - closed)
-    recurring = counts.get("governance.finding.opened", 0) >= 2 and open_findings > 0
+    # R2-10: identity/state-based open findings (not raw event arithmetic).
+    open_ids, fcounts = _open_finding_ids(profile, since)
+    open_findings = len(open_ids)
+    # Recurrence is per finding identity: a finding that closed and reopened
+    # (or recurring opens of the same identity) signals repeat failure.
+    reopened = fcounts["resolved"] > 0 and open_findings > 0
+    recurring = fcounts["opened"] >= 2 and open_findings > 0
     evidence = {
         "window_days": (int(time.time()) - since) // 86400,
         "failures": failures,
         "rework": rework,
         "review_outcomes": review_outcomes,
         "governance_findings_open": open_findings,
-        "governance_findings_opened": opened,
-        "governance_findings_resolved": closed,
+        "governance_findings_open_ids": open_ids,
+        "governance_findings_opened_events": fcounts["opened"],
+        "governance_findings_resolved_events": fcounts["resolved"],
         "recurring_findings": recurring,
         "source_refs": [
             "profile-activity-ledger:kanban.crashed|gave_up",
             "profile-activity-ledger:kanban.council_revise|audit_revise",
-            "profile-activity-ledger:governance.finding.opened|updated|resolved|dismissed",
+            "profile-activity-ledger:governance.finding.opened|updated|resolved|dismissed (identity+latest-state)",
         ],
         "method_version": REVIEW_VERSION,
     }
-    if failures >= 3 or open_findings >= 3 or recurring:
+    if failures >= 3 or open_findings >= 3 or recurring or reopened:
         verdict = "ATTENTION"
     elif failures + rework > 0 or open_findings > 0:
         verdict = "WATCH"

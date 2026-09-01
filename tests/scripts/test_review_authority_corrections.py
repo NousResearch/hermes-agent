@@ -95,9 +95,11 @@ class TestC8FindingTaxonomy:
                 source="t", event_type="governance.finding.opened",
                 event_id=f"c8-{i}-{time.time_ns()}",
                 actor_profile="octacon", target_profile="octacon",
+                object_id=f"finding-{i}",
                 occurred_at=now - 100 - i,
             )
         dim = mod._quality_dimension("octacon", now - 86400)
+        # R2-10: three DISTINCT open finding identities
         assert dim["evidence"]["governance_findings_open"] >= 3
         assert dim["verdict"] in ("WATCH", "ATTENTION")
 
@@ -108,17 +110,19 @@ class TestC8FindingTaxonomy:
         now = int(time.time())
         # one open + three resolved: recurrence semantics = OPEN findings count
         append_event(source="t", event_type="governance.finding.opened",
-                     event_id=f"c8o-{time.time_ns()}", actor_profile="octacon",
-                     target_profile="octacon", occurred_at=now - 100)
+                 event_id=f"c8o-{time.time_ns()}", actor_profile="octacon",
+                 target_profile="octacon", object_id="finding-1",
+                 occurred_at=now - 100)
         for i in range(3):
             append_event(source="t", event_type="governance.finding.resolved",
-                         event_id=f"c8r-{i}-{time.time_ns()}",
-                         actor_profile="octacon", target_profile="octacon",
-                         occurred_at=now - 90 + i)
+                     event_id=f"c8r-{i}-{time.time_ns()}",
+                     actor_profile="octacon", target_profile="octacon",
+                     object_id="finding-1",
+                     occurred_at=now - 90 + i)
         dim = mod._quality_dimension("octacon", now - 86400)
-        # opened(1) and resolved(3) in-window: nothing remains open
+        # R2-10: one finding, latest state resolved -> not open
         assert dim["evidence"]["governance_findings_open"] == 0
-        assert dim["evidence"]["governance_findings_resolved"] == 3
+        assert dim["evidence"]["governance_findings_resolved_events"] == 1
         assert dim["verdict"] in ("CLEAN", "WATCH")  # never ATTENTION from resolved work
 
 

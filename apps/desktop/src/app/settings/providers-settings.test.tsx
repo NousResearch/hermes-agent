@@ -9,6 +9,8 @@ import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
 const getEnvVars = vi.fn()
+const revealEnvVar = vi.fn()
+const setEnvVar = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
@@ -16,7 +18,9 @@ const onboarding = atom({ manual: false })
 vi.mock('@/hermes', () => ({
   disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
   getEnvVars: () => getEnvVars(),
-  listOAuthProviders: () => listOAuthProviders()
+  listOAuthProviders: () => listOAuthProviders(),
+  revealEnvVar: (key: string) => revealEnvVar(key),
+  setEnvVar: (key: string, value: string) => setEnvVar(key, value)
 }))
 
 vi.mock('@/store/onboarding', () => ({
@@ -63,6 +67,8 @@ beforeEach(() => {
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
+  revealEnvVar.mockResolvedValue({ value: 'old-secret' })
+  setEnvVar.mockResolvedValue({ ok: true })
   listOAuthProviders.mockResolvedValue({
     providers: [provider('nous', true), provider('minimax-oauth', false)]
   })
@@ -218,6 +224,44 @@ describe('ProvidersSettings', () => {
 
     expect(screen.getAllByDisplayValue('shared-secret')).toHaveLength(1)
     expect((inputs[1] as HTMLInputElement).value).toBe('')
+  })
+
+  it('clears the shared reveal when a namespaced provider-card draft is saved', async () => {
+    const varKey = 'DASHSCOPE_API_KEY'
+    const editKey = `Qwen Cloud:${varKey}`
+    getEnvVars.mockResolvedValue({
+      [varKey]: keyVar({ is_set: true, redacted_value: '••••••••' })
+    })
+
+    const { useEnvCredentials } = await import('./env-credentials')
+    const state = { current: null as null | ReturnType<typeof useEnvCredentials> }
+
+    function Harness() {
+      state.current = useEnvCredentials()
+
+      return null
+    }
+
+    render(<Harness />)
+    await waitFor(() => expect(state.current?.vars).not.toBeNull())
+
+    await act(async () => {
+      await Promise.resolve(state.current!.rowProps.onReveal(varKey))
+    })
+    expect(state.current!.rowProps.revealed[varKey]).toBe('old-secret')
+
+    act(() => {
+      state.current!.rowProps.setEdits(current => ({ ...current, [editKey]: 'new-secret' }))
+    })
+    await waitFor(() => expect(state.current!.rowProps.edits[editKey]).toBe('new-secret'))
+
+    await act(async () => {
+      await Promise.resolve(state.current!.rowProps.onSave(varKey, editKey))
+    })
+
+    expect(setEnvVar).toHaveBeenCalledWith(varKey, 'new-secret')
+    expect(state.current!.rowProps.edits[editKey]).toBeUndefined()
+    expect(state.current!.rowProps.revealed[varKey]).toBeUndefined()
   })
 
   it('orders API-key providers by priority then name, and filters them via search', async () => {

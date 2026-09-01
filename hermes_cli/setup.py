@@ -2467,9 +2467,11 @@ def setup_telemetry(config: dict):
     print_info("service. Packages carry your profile-scoped install ID, a")
     print_info("stable random UUID that identifies this profile across days")
     print_info("(it contains no personal information and is reset by deleting")
-    print_info("the shared-metrics directory). Only packages from the day you")
-    print_info("opt in onwards are ever sent, and sending can be turned off")
-    print_info("again at any time.")
+    print_info("the shared-metrics directory). Only packages whose entire")
+    print_info("collection period falls inside a recorded consent window are")
+    print_info("ever sent — data from before you opt in, or from any gap")
+    print_info("while sending was off, stays on this machine. Sending can be")
+    print_info("turned off again at any time.")
     shared_metrics["send"] = prompt_yes_no(
         "Send shared metrics to Nous?",
         default=shared_metrics.get("send") is True,

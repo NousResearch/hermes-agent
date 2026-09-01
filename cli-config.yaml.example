@@ -1792,8 +1792,11 @@ display:
 # Nothing is uploaded unless you also set `send: true`. That is a separate
 # opt-in and requires `enabled`; it never turns collection on by itself.
 # When sending is on:
-#   * only packages whose period starts on or after the day you opted in are
-#     ever transmitted, so data collected beforehand stays on this machine;
+#   * only packages whose entire collection period falls within one
+#     continuous recorded consent window are ever sent. Consent windows open
+#     when you enable sending and close when you disable it, so data
+#     collected before you opted in — or during any gap between opt-ins —
+#     stays on this machine;
 #   * each package carries the profile-scoped ID as-is. It is a random UUID
 #     with no hardware, account, or host-derived content, and deleting the
 #     shared-metrics directory resets it.

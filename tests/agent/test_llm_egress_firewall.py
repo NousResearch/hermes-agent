@@ -1004,6 +1004,15 @@ def test_python_dunder_names_and_failure_status_are_not_base64_false_positives(
     assert "base64_payload" not in decision.reason_codes
 
 
+def test_bounded_relative_ci_path_is_not_a_base64_false_positive(tmp_path):
+    request = _sanitized_request("venv/lib/python3")
+
+    decision = firewall(tmp_path).preflight(request, _route())
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
 @pytest.mark.parametrize(
     "schema_atom",
     [

@@ -267,9 +267,9 @@ _BOUNDED_SOURCE_CODE_ATOM = re.compile(
 # repo/org segment containing one, like "hermes-agent", is handled by
 # _BOUNDED_KEBAB_WORD below and by the two combining at the call site).
 _BOUNDED_SLASH_WORDS = re.compile(
-    r"^(?://[A-Za-z]{2,}"
-    r"|(?:/{1,2})?[A-Za-z]{2,}(?:/[A-Za-z]{2,})+/?"
-    r"|[A-Za-z]{2,}/)$"
+    r"^(?://[A-Za-z0-9]{2,}"
+    r"|(?:/{1,2})?[A-Za-z0-9]{2,}(?:/[A-Za-z0-9]{2,})+/?"
+    r"|[A-Za-z0-9]{2,}/)$"
 )
 _MAX_BASE64_CANDIDATE_CHARS = 262_144
 _VALIDATED_TOOL_SYNTAX = {
@@ -595,6 +595,11 @@ def _canonical_base64_candidate(candidate: str) -> bool:
     if _PYTHON_DUNDER_IDENTIFIER.fullmatch(candidate):
         # Python's bounded dunder names are source-language structure, not
         # encoded content (for example __file__ and __main__ in CI scripts).
+        return False
+    if _BOUNDED_SLASH_WORDS.fullmatch(candidate):
+        # Bounded relative paths such as venv/lib/python3 are ordinary local
+        # CI metadata, not encoded content. Keep the grammar narrow so an
+        # unrecognized underscore atom remains fail-closed below.
         return False
     if _BOUNDED_DURATION.fullmatch(candidate):
         return False

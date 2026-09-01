@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { isSessionGone, markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
+import { isSessionGone, latchSessionGone, resetBackgroundPollingGuard } from './session-gone-latch'
 
 // Regression coverage for the #89206 wake-failure class: session-scoped RPCs
 // routed to a backend that does not own the session's profile. Three layers:
@@ -186,13 +186,13 @@ describe('requestForSessionProfile', () => {
   it('clears a dead-runtime latch only after a successful resume or activate', async () => {
     const ambient = vi.fn(async () => ({ session_id: 'rt-rebound' }))
 
-    markSessionGone('rt-rebound')
+    latchSessionGone('rt-rebound')
     expect(isSessionGone('rt-rebound')).toBe(true)
 
     await requestForSessionProfile(null, ambient as never, 'session.activate', { session_id: 'rt-rebound' })
     expect(isSessionGone('rt-rebound')).toBe(false)
 
-    markSessionGone('rt-rebound')
+    latchSessionGone('rt-rebound')
     await expect(
       requestForSessionProfile(
         null,
@@ -212,7 +212,7 @@ describe('requestForSessionProfile', () => {
     installDesktop()
     const ambient = vi.fn(async () => ({ ambient: true }))
 
-    markSessionGone('profile-rebound')
+    latchSessionGone('profile-rebound')
 
     await requestForSessionProfile('loki', ambient as never, 'session.resume', {
       session_id: 'profile-rebound'
@@ -227,7 +227,7 @@ describe('requestForSessionProfile', () => {
     installDesktop()
     const ambient = vi.fn(async () => ({ ambient: true }))
 
-    markSessionGone('connection-rebound')
+    latchSessionGone('connection-rebound')
 
     await requestForSessionProfile(
       { connectionId: 'source-a', profile: 'default' },

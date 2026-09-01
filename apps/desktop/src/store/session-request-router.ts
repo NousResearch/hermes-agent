@@ -1,6 +1,6 @@
 import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForSessionTurn } from '@/store/gateway'
 
-import { resetBackgroundPollingGuardAfterRebind } from './runtime-gone'
+import { resetBackgroundPollingGuardAfterRebind } from './session-gone-latch'
 
 /**
  * The ONE authoritative exact owner of a session: the registry connection whose

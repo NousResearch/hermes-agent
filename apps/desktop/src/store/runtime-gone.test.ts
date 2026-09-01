@@ -182,4 +182,24 @@ describe('gone-latch classifier and rebind seam', () => {
     resetBackgroundPollingGuardAfterRebind('session.activate', { session_id: 'rt-other' }, undefined)
     expect(isSessionGone('rt-other')).toBe(false)
   })
+
+  it('refunds the stored session heal budget on a successful rebind', () => {
+    // Three reaps exhaust MAX_CONSECUTIVE_HEALS for STORED...
+    for (const rt of ['rt-1', 'rt-2', 'rt-3']) {
+      $sessionStates.set({ [rt]: cachedState(STORED) })
+      $sessionTiles.set([tile(STORED, rt)])
+      expect(markRuntimeGone(rt)).toBe(true)
+    }
+
+    $sessionStates.set({ 'rt-4': cachedState(STORED) })
+    $sessionTiles.set([tile(STORED, 'rt-4')])
+    expect(markRuntimeGone('rt-4')).toBe(false)
+
+    // ...but a rebind of STORED proves it alive, so the next reap heals again.
+    resetBackgroundPollingGuardAfterRebind('session.resume', { session_id: STORED }, { session_id: 'rt-5' })
+
+    $sessionStates.set({ 'rt-5': cachedState(STORED) })
+    $sessionTiles.set([tile(STORED, 'rt-5')])
+    expect(markRuntimeGone('rt-5')).toBe(true)
+  })
 })

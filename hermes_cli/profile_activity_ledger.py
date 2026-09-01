@@ -61,16 +61,25 @@ END;
 """
 
 
-def _governance_root() -> Path:
+def _governance_root(explicit_home=None) -> Path:
+    """R2-6: resolve the governance root, honouring an explicit home.
+
+    An explicit ``explicit_home`` (HERMES_HOME path) routes ledger reads
+    and writes to THAT home; the default resolves the process root.  No
+    environment mutation is involved.
+    """
+    if explicit_home is not None:
+        from pathlib import Path as _P
+        return _P(explicit_home) / "governance"
     return get_default_hermes_root() / "governance"
 
 
-def ledger_db_path() -> Path:
-    return _governance_root() / "profile-activity-ledger.sqlite"
+def ledger_db_path(explicit_home=None) -> Path:
+    return _governance_root(explicit_home) / "profile-activity-ledger.sqlite"
 
 
-def ledger_jsonl_dir() -> Path:
-    return _governance_root() / "logboard" / "profile-activity-ledger"
+def ledger_jsonl_dir(explicit_home=None) -> Path:
+    return _governance_root(explicit_home) / "logboard" / "profile-activity-ledger"
 
 
 def is_enabled(cfg: Optional[dict[str, Any]] = None) -> bool:
@@ -83,8 +92,8 @@ def is_enabled(cfg: Optional[dict[str, Any]] = None) -> bool:
     return bool(value)
 
 
-def _connect() -> sqlite3.Connection:
-    path = ledger_db_path()
+def _connect(explicit_home=None) -> sqlite3.Connection:
+    path = ledger_db_path(explicit_home)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -164,11 +173,16 @@ def append_event(
     summary: Optional[str] = None,
     payload: Optional[dict[str, Any]] = None,
     occurred_at: Optional[int] = None,
+    explicit_home=None,
 ) -> str:
     """Append an activity event and mirror it to JSONL.
 
     ``event_id`` is the idempotency key. If it already exists, the existing row
     is left untouched and the JSONL mirror is not duplicated.
+
+    R2-6: ``explicit_home`` routes this append (and its read-back paths) to
+    the given HERMES_HOME instead of the process root — no environment
+    mutation involved.  Default callers are unchanged.
     """
 
     occurred = int(occurred_at or time.time())
@@ -200,7 +214,7 @@ def append_event(
         "created_at": created_at,
     }
 
-    with _connect() as conn:
+    with _connect(explicit_home) as conn:
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO activity_events (
@@ -243,6 +257,7 @@ def query_events(
     since: Optional[int] = None,
     until: Optional[int] = None,
     limit: Optional[int] = None,
+    explicit_home=None,
 ) -> list[dict[str, Any]]:
     """Read events from the ledger with optional filters.
 
@@ -250,8 +265,11 @@ def query_events(
     promotion audit, and the dashboard Skills page. Returns rows newest-first
     as plain dicts with ``payload`` decoded from ``payload_json``. Never raises
     on a missing/empty ledger — returns an empty list.
+
+    R2-6: ``explicit_home`` routes this read to the given HERMES_HOME
+    instead of the process root (no environment mutation).
     """
-    if not ledger_db_path().exists():
+    if not ledger_db_path(explicit_home).exists():
         return []
     clauses: list[str] = []
     params: list[Any] = []

@@ -210,6 +210,9 @@ def emit_trigger(
     event_id = f"selfeval-trigger-{profile}-{digest}"
     try:
         from hermes_cli.profile_activity_ledger import append_event, query_events
+        # R2-6: BOTH the append and the read-back verification target the
+        # supplied home explicitly — no environment mutation, no implicit
+        # process-root routing.
         append_event(
             source="denji-self-eval-trigger",
             event_type="profile.self_eval.trigger",
@@ -227,10 +230,14 @@ def emit_trigger(
                 "evidence": decision["evidence"],
             },
             occurred_at=int(window_end),
+            explicit_home=hermes_home,
         )
-        # C6: confirm the event is actually readable from the ledger before
-        # reporting success (guards wrong-HERMES_HOME and silent drops).
-        stored = query_events(event_types=["profile.self_eval.trigger"])
+        # C6/R2-6: confirm the event is readable from the SAME supplied home
+        # before reporting success.
+        stored = query_events(
+            event_types=["profile.self_eval.trigger"],
+            explicit_home=hermes_home,
+        )
         if any(e.get("event_id") == event_id for e in stored):
             return event_id
         return None

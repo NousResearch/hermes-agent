@@ -273,7 +273,7 @@ class TestR26ExplicitHome:
         (home_a / "profiles" / "octacon" / "config.yaml").write_text("model:\n  default: t\n")
         monkeypatch.setenv("HERMES_HOME", str(home_a))
         home_b = tmp_path / "home-b"
-        (home_b / "governance").mkdir()
+        (home_b / "governance").mkdir(parents=True)
 
         REPO = "/home/kensei/worktrees/governance-evidence-spine-p34-corrections-r2-agent"
         spec = importlib.util.spec_from_file_location(

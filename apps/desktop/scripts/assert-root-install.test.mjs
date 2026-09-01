@@ -4,9 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'vitest'
 
-import { checkRootInstall } from '../scripts/assert-root-install.mjs'
-
-const BUILD_CRITICAL = ['vite', 'katex', 'electron', 'electron-builder']
+import { BUILD_CRITICAL_PACKAGES as BUILD_CRITICAL, checkRootInstall } from '../scripts/assert-root-install.mjs'
 
 // Build a throwaway repo shaped like this one: an app workspace whose
 // dependencies are hoisted to the repo root, which is what the guard walks.

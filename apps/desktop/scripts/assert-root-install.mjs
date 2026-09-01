@@ -32,6 +32,7 @@ import { isMain } from "./utils.mjs"
 // an unresolved `katex/dist/katex.min.css` with no hint that the install — not
 // the source — was at fault (#86443).
 const BUILD_CRITICAL_PACKAGES = ["vite", "katex", "electron", "electron-builder"]
+export { BUILD_CRITICAL_PACKAGES }
 
 // Resolve the way Node's own lookup does — walk `node_modules` upward — rather
 // than through `require.resolve`. A package whose `exports` map does not expose
@@ -114,5 +115,3 @@ function main() {
 if (isMain(import.meta.url)) {
   main()
 }
-
-export default { checkRootInstall }

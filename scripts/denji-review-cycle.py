@@ -41,6 +41,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -170,26 +171,70 @@ def _ledger_counts(profile: str, since: int | None = None,
 
 # ── Dimension 1: runtime ─────────────────────────────────────────────────────
 
+# C8: explicit default/root identity mapping — the default profile IS the
+# base gateway, not a "default" named unit.
+_DEFAULT_PROFILE_GATEWAY_UNIT = "hermes-gateway.service"
+
+
+def _registry_gateway_unit(profile: str, registry_index: Optional[dict] = None) -> Optional[str]:
+    """Resolve the registry-declared gateway unit for a profile.
+
+    C8: consumes the registry ``gateway_unit`` mapping (the authority),
+    with the explicit default/root identity mapping applied first.  The
+    legacy ``hermes-gateway-{profile}.service`` convention is only a
+    fallback when the registry does not declare a unit.
+    """
+    if profile == "default":
+        return _DEFAULT_PROFILE_GATEWAY_UNIT
+    if registry_index is None:
+        registry_index = _registry_lifecycle_index()
+    entry = (registry_index or {}).get(profile)
+    if isinstance(entry, dict) and entry.get("gateway_unit"):
+        unit = str(entry["gateway_unit"])
+        return unit if unit.endswith(".service") else f"{unit}.service"
+    return f"hermes-gateway-{profile}.service"
+
+
+def _registry_lifecycle_index() -> dict[str, dict]:
+    """Profile name -> registry entry (full mapping incl. gateway_unit)."""
+    try:
+        import yaml as _pyyaml
+        raw = _pyyaml.safe_load(REGISTRY_YAML.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    if raw.get("schema_version") != 1 or not isinstance(raw.get("profiles"), list):
+        return {}
+    return {
+        e["name"]: e
+        for e in raw["profiles"]
+        if isinstance(e, dict) and isinstance(e.get("name"), str)
+    }
+
+
 def _runtime_dimension(profile: str, since: int) -> dict:
-    """Effective gateway/heartbeat/service state."""
+    """Effective gateway/heartbeat/service state.
+
+    C8: unit identity comes from the registry (or the default/root
+    mapping); systemd-uncheckable evidence is UNKNOWN, never inactive.
+    """
     window_days = (int(time.time()) - since) // 86400
+    registry_index = _registry_lifecycle_index()
+    unit = _registry_gateway_unit(profile, registry_index)
     evidence = {
         "window_days": window_days,
-        "gateway_unit": f"hermes-gateway-{profile}.service",
+        "gateway_unit": unit,
         "unit_active": None,
         "source_refs": ["systemctl is-active"],
     }
-    unit_active = False
-    unit_checkable = False
+    unit_active = None
     try:
         r = subprocess.run(
-            ["systemctl", "is-active", f"hermes-gateway-{profile}.service"],
+            ["systemctl", "is-active", unit],
             capture_output=True, text=True, timeout=5,
         )
-        unit_checkable = True
         unit_active = (r.returncode == 0 and r.stdout.strip() == "active")
     except Exception:
-        unit_active = None
+        unit_active = None  # UNKNOWN — cannot verify
     evidence["unit_active"] = unit_active
     # Ledger heartbeat evidence (kanban.heartbeat events are runtime proxies)
     counts = _ledger_counts(profile, since, actor_only=True)
@@ -197,8 +242,10 @@ def _runtime_dimension(profile: str, since: int) -> dict:
     evidence["heartbeat_events"] = heartbeats
     evidence["source_refs"].append("profile-activity-ledger:kanban.heartbeat")
 
-    if unit_active:
+    if unit_active is True:
         verdict = "ACTIVE"
+    elif unit_active is None:
+        verdict = "UNKNOWN"
     elif unit_active is False and heartbeats > 0:
         verdict = "ACTIVE"  # runtime proof without a unit (on-demand profile)
     else:
@@ -293,23 +340,32 @@ def _quality_dimension(profile: str, since: int) -> dict:
     review_outcomes = sum(
         v for k, v in counts.items() if k.startswith("kanban.operator_")
     )
-    findings = counts.get("governance.finding.raised", 0) + counts.get("governance.finding.recurring", 0)
+    # C8: consume the exact Phase 2 governance-finding taxonomy with
+    # recurrence semantics — OPEN findings (opened/updated minus resolved/
+    # dismissed in window) are the defect signal.
+    opened = counts.get("governance.finding.opened", 0) + counts.get("governance.finding.updated", 0)
+    closed = counts.get("governance.finding.resolved", 0) + counts.get("governance.finding.dismissed", 0)
+    open_findings = max(0, opened - closed)
+    recurring = counts.get("governance.finding.opened", 0) >= 2 and open_findings > 0
     evidence = {
         "window_days": (int(time.time()) - since) // 86400,
         "failures": failures,
         "rework": rework,
         "review_outcomes": review_outcomes,
-        "governance_findings": findings,
+        "governance_findings_open": open_findings,
+        "governance_findings_opened": opened,
+        "governance_findings_resolved": closed,
+        "recurring_findings": recurring,
         "source_refs": [
             "profile-activity-ledger:kanban.crashed|gave_up",
             "profile-activity-ledger:kanban.council_revise|audit_revise",
-            "profile-activity-ledger:governance.finding.*",
+            "profile-activity-ledger:governance.finding.opened|updated|resolved|dismissed",
         ],
         "method_version": REVIEW_VERSION,
     }
-    if failures >= 3 or findings >= 3:
+    if failures >= 3 or open_findings >= 3 or recurring:
         verdict = "ATTENTION"
-    elif failures + rework > 0:
+    elif failures + rework > 0 or open_findings > 0:
         verdict = "WATCH"
     else:
         verdict = "CLEAN"
@@ -436,6 +492,43 @@ def _quarter_review(profile: str, since: int) -> dict:
 
 # ── Four-dimension verdict assembly ─────────────────────────────────────────
 
+def _profile_changed_since(profile: str, since: int) -> bool:
+    """True when the profile's identity/config files changed in the window."""
+    base = HERMES_HOME if profile == "default" else PROFILES_DIR / profile
+    for fn in ("config.yaml", "SOUL.md", "USER.md"):
+        path = base / fn if fn != "config.yaml" or profile != "default" else HERMES_HOME / fn
+        try:
+            if path.exists() and path.stat().st_mtime >= since:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _monthly_scope(
+    profiles: list[str],
+    since: int,
+    *,
+    lifecycle_map: Optional[dict[str, str]] = None,
+) -> list[str]:
+    """C8: monthly scope = active profiles PLUS changed profiles.
+
+    A frozen/retired profile with in-window identity/config changes IS in
+    scope (material change triggers review).  Unchanged frozen/retired
+    profiles are excluded.  Profiles with unknown lifecycle default to
+    active scope.
+    """
+    lifecycle_map = lifecycle_map if lifecycle_map is not None else _registry_lifecycle()
+    scope: list[str] = []
+    for profile in profiles:
+        lifecycle = lifecycle_map.get(profile, "active")
+        if lifecycle in ("active", "standby"):
+            scope.append(profile)
+        elif _profile_changed_since(profile, since):
+            scope.append(profile)  # changed frozen/retired → reviewed
+    return scope
+
+
 def _four_dimension_verdict(dimensions: dict[str, dict],
                             registry_lifecycle: str | None) -> tuple[str, list[str]]:
     """Map dimension evidence to one of the four allowed verdicts.
@@ -535,15 +628,11 @@ def _run_cycle(cycle: str) -> str:
     profiles = _all_profiles()
     lifecycle_map = _registry_lifecycle()
 
-    # Organisational scope: monthly reviews active + changed profiles;
-    # quarterly reviews the full roster.  Profiles with registry lifecycle
-    # 'retired'/'frozen' are excluded from monthly scope (still in quarterly).
+    # C8: monthly scope = active + changed (changed frozen/retired included);
+    # quarterly = full roster/architecture.
     if cycle == "monthly" and lifecycle_map:
-        in_scope = [
-            p for p in profiles
-            if lifecycle_map.get(p, "active") in ("active", "standby")
-        ]
-        scope_note = "registry-scoped (active+standby)"
+        in_scope = _monthly_scope(profiles, since, lifecycle_map=lifecycle_map)
+        scope_note = "active+changed (registry lifecycle + change detection)"
     else:
         in_scope = profiles
         scope_note = "full roster/architecture"

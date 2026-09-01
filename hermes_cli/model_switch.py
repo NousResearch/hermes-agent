@@ -768,12 +768,14 @@ class StartupModelRoute(NamedTuple):
     model: str
     provider: str = ""
     base_url: str = ""
+    api_key: str = ""
 
 
 def resolve_startup_model_route(
     raw_model: str,
     *,
     explicit_provider: str = "",
+    current_provider: str = "",
     user_providers: Optional[dict] = None,
     custom_providers: Optional[list] = None,
 ) -> Optional[StartupModelRoute]:
@@ -785,6 +787,13 @@ def resolve_startup_model_route(
     provider to an explicitly requested model. Provider/model strings are
     consumed only for providers present in user configuration; aggregator
     namespaces remain untouched.
+
+    ``current_provider`` is the provider the session would otherwise use
+    (config ``model.provider`` / ``--provider``). When it is a routing
+    aggregator and the raw string is an aggregator-native slug
+    (``anthropic/claude-opus-4.6`` on OpenRouter), the input stays on the
+    aggregator — bare vendor slugs resolve WITHIN the aggregator first and a
+    ``providers:`` block for the same vendor must not steal the route.
     """
     raw = str(raw_model or "").strip()
     if not raw:
@@ -793,10 +802,26 @@ def resolve_startup_model_route(
     _ensure_direct_aliases()
     direct = DIRECT_ALIASES.get(raw.lower())
     if direct is not None:
+        if explicit_provider:
+            # An explicit --provider wins over the alias's own label; the
+            # alias contributes model/base_url only.
+            return StartupModelRoute(
+                model=direct.model,
+                provider=explicit_provider,
+                base_url=direct.base_url,
+            )
+        # Resolve through the SAME owner the interactive /model and oneshot
+        # paths use: a URL-bearing alias must resolve its credential for the
+        # alias HOST, never for its provider label — a label like
+        # ``anthropic`` on a foreign URL would otherwise reach that
+        # provider's explicit-runtime branch and put the live vendor token
+        # on the foreign wire (#28660).
+        alias_provider, alias_key = direct_alias_runtime_request(direct)
         return StartupModelRoute(
             model=direct.model,
-            provider=(explicit_provider or direct.provider),
+            provider=alias_provider,
             base_url=direct.base_url,
+            api_key=alias_key or "",
         )
 
     if explicit_provider or "/" not in raw:
@@ -804,6 +829,24 @@ def resolve_startup_model_route(
     prefix, model = (part.strip() for part in raw.split("/", 1))
     if not prefix or not model:
         return None
+
+    # Aggregator-native slugs stay on the aggregator. A user on OpenRouter
+    # whose config also has a ``providers.anthropic`` block must NOT have
+    # ``anthropic/claude-opus-4.6`` silently rerouted to native Anthropic.
+    if current_provider:
+        try:
+            from hermes_cli.providers import (
+                is_routing_aggregator as _is_routing_agg,
+                normalize_provider as _norm_prov,
+            )
+
+            if _is_routing_agg(_norm_prov(current_provider)):
+                from hermes_cli.models import _find_openrouter_slug
+
+                if _find_openrouter_slug(raw):
+                    return None
+        except Exception:
+            pass
 
     configured = {
         str(name).strip().lower()

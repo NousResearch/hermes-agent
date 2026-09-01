@@ -5366,12 +5366,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
         _startup_provider_override = ""
         _startup_base_url_override = ""
+        _startup_api_key_override = ""
         if self.model:
             from hermes_cli.model_switch import resolve_startup_model_route
 
             _startup_route = resolve_startup_model_route(
                 self.model,
                 explicit_provider=provider or "",
+                current_provider=(
+                    provider
+                    or _nested_provider
+                    or CLI_CONFIG["model"].get("provider")
+                    or os.getenv("HERMES_INFERENCE_PROVIDER")
+                    or ""
+                ),
                 user_providers=CLI_CONFIG.get("providers"),
                 custom_providers=CLI_CONFIG.get("custom_providers"),
             )
@@ -5379,6 +5387,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self.model = _startup_route.model
                 _startup_provider_override = _startup_route.provider
                 _startup_base_url_override = _startup_route.base_url
+                _startup_api_key_override = _startup_route.api_key
         # A ``moa:<preset>`` model string selects the MoA virtual provider in
         # one shot (parity with interactive ``/moa`` and the model picker). Do
         # this before provider resolution so ``-Q -m moa:<preset>`` routes
@@ -5415,7 +5424,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             not _config_model or _config_model == _DEFAULT_CONFIG_MODEL
         )
 
-        self._explicit_api_key = api_key
+        # An explicit --api-key wins; otherwise a URL-bearing startup alias
+        # carries its own credential for the alias host (#28660).
+        self._explicit_api_key = api_key or _startup_api_key_override or None
         self._explicit_base_url = base_url
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().

@@ -77,11 +77,20 @@ def _(rid, params: dict) -> dict:
     """Deliver a relayed DM into a profile's Bot Chat ON THIS GATEWAY.
 
     Params: ``profile`` (target on this install), ``message`` (already
-    attribution-prefixed by the sender gateway). Runs the same one-turn
-    ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use and
-    returns ``{reply}`` — the target agent's response text. Blocking by
-    design (the Desktop calls it from its relay worker, off any UI path;
-    the RPC pool keeps it off the WS reader thread).
+    attribution-prefixed by the sender gateway), optional ``media`` —
+    validated media rows for deliverables attached to this message
+    (``path`` on the owner gateway; ``data_url`` when the Desktop inlined
+    bytes it fetched from the owner connection, under the image.generate
+    8MB data-URL cap). Inline rows are staged into a durable per-envelope
+    dir under ``bot_relay/media/`` so a ``MEDIA:`` ref from the SENDER's
+    disk becomes a locally-fetchable path on THIS gateway before the turn
+    runs; metadata-only rows are surfaced to the turn as a note (the
+    Desktop renders fallback cards for them — nothing silently drops).
+    Runs the same one-turn ``hermes -p <profile> chat -c "Bot Chat"``
+    transport local DMs use and returns ``{reply}`` — the target agent's
+    response text. Blocking by design (the Desktop calls it from its relay
+    worker, off any UI path; the RPC pool keeps it off the WS reader
+    thread).
     """
     import os
     import subprocess
@@ -94,7 +103,12 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4090, "profile and message required")
     try:
         from tools.bot_mode_dm import MESSAGE_MAX_CHARS
-        from tools.bot_relay import acquire_turn_lock, local_delivery_command
+        from tools.bot_relay import (
+            acquire_turn_lock,
+            local_delivery_command,
+            normalize_media_rows,
+            stage_media,
+        )
 
         if len(message) > MESSAGE_MAX_CHARS + 200:  # + attribution headroom
             return _err(rid, 4091, "message too long")
@@ -109,10 +123,46 @@ def _(rid, params: dict) -> dict:
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
 
+        media_rows = normalize_media_rows(params.get("media"))
+        turn_message = message
+        if media_rows:
+            staged = stage_media(root, media_rows, envelope_id="")
+            # Envelope id is unknown at deliver time on this side (the
+            # Desktop owns correlation); stage under a fresh id derived from
+            # the envelope it is delivering when one is provided.
+            envelope_id = str(params.get("id") or staged["envelope_id"])
+            if envelope_id != staged["envelope_id"]:
+                import shutil as _shutil
+
+                from tools.bot_relay import MEDIA_DIR, relay_root
+
+                new_dir = relay_root(root) / MEDIA_DIR / envelope_id
+                old_dir = relay_root(root) / MEDIA_DIR / staged["envelope_id"]
+                try:
+                    _shutil.move(str(old_dir), str(new_dir))
+                    for row in staged["rows"]:
+                        lp = row.get("local_path")
+                        if lp:
+                            row["local_path"] = str((new_dir / Path(lp).name).resolve())
+                except OSError:
+                    pass
+            for row in staged["rows"]:
+                lp = row.get("local_path")
+                if lp:
+                    # The ref the target turn sees must resolve on THIS
+                    # gateway — never the sender's original path.
+                    turn_message += f"\nMEDIA:{lp}"
+                elif row.get("path") or row.get("name"):
+                    turn_message += (
+                        f"\n[media not transferable inline: "
+                        f"{row.get('name') or Path(str(row.get('path') or 'file')).name} — "
+                        "will appear as a fallback card]"
+                    )
+
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(message)
+                f.write(turn_message)
             # Per-profile turn lock (#93091): serialize with any other
             # delivery turn into this profile (relay or local message_agent).
             # The lock covers only the turn execution window. Worst-case
@@ -183,7 +233,13 @@ def _(rid, params: dict) -> dict:
     """Write a relayed reply (or delivery error) for a sender-side waiter.
 
     Params: ``id`` (envelope id), ``reply`` and/or ``error``, optional
-    ``reason`` (typed failure code, see ``tools.bot_failure_reasons``).
+    ``reason`` (typed failure code, see ``tools.bot_failure_reasons``),
+    optional ``media`` — media rows for deliverables the target turn
+    produced: ``path`` on THIS gateway; ``data_url`` when the Desktop
+    inlined bytes fetched from this connection (it re-stages them on the
+    sender before calling, so only path rows land here). Inline payloads
+    are stripped before the reply file is written — replies persist paths
+    only, never base64 blobs.
     """
     envelope_id = str(params.get("id") or "").strip()
     if not envelope_id:
@@ -192,7 +248,7 @@ def _(rid, params: dict) -> dict:
         import os
         from pathlib import Path
 
-        from tools.bot_relay import write_reply
+        from tools.bot_relay import normalize_media_rows, write_reply
 
         home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
         root = home.parent.parent if home.parent.name == "profiles" else home
@@ -202,6 +258,7 @@ def _(rid, params: dict) -> dict:
             reply=str(params.get("reply") or ""),
             error=str(params.get("error") or ""),
             reason=str(params.get("reason") or ""),
+            media=normalize_media_rows(params.get("media")),
         )
         return _ok(rid, {"ok": True})
     except ValueError as e:

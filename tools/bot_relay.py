@@ -54,6 +54,7 @@ OUTBOX_DIR = "outbox"
 CLAIMED_DIR = "claimed"
 REPLIES_DIR = "replies"
 LOCKS_DIR = "locks"
+MEDIA_DIR = "media"
 
 # Fallback wait budget for a queued delivery turn when config is unreadable.
 # The real knob is ``bot_mode.turn_wait_seconds`` in config.yaml.
@@ -77,6 +78,33 @@ DEFAULT_ENVELOPE_TTL_SECONDS = 900
 # pushes roster.sync on connection-state changes, so only a recently-written
 # roster is treated as an authoritative view for the fail-fast check.
 ROSTER_FRESH_SECONDS = 600
+
+# ── media envelopes (D2) ─────────────────────────────────────────────────────
+#
+# The relay was text-only (H1): a cross-connection DM carrying generated
+# media left the recipient with a path that did not exist on their machine.
+# Envelopes and replies therefore carry an optional ``media[]`` of rows with
+# the same shape the D1 gateway media events use: ``path`` (on the OWNING
+# gateway), ``kind`` (image|video|audio|file), ``mime``, ``size``, plus an
+# optional inline ``data_url``. The Desktop — which holds every socket —
+# fetches bytes from the owner connection (existing authed ``/api/fs/*``)
+# and inlines them under the cap; ``stage_media`` materializes those bytes
+# into a durable per-envelope dir on the receiving gateway so a ``MEDIA:``
+# ref in the delivered turn actually resolves there. Rows above the cap
+# travel metadata-only and render as fallback cards client-side (D4) — the
+# same posture as the ``image.generate`` 8MB data-URL precedent.
+
+# Inline payload cap for a media row (mirror ``image.generate``'s default
+# data-URL cap; tui_gateway/methods_images.py).
+MEDIA_INLINE_CAP_BYTES = 8_000_000
+
+# Hard row-count ceiling — a hostile or buggy sender cannot balloon an
+# envelope into thousands of files on the receiving gateway.
+MEDIA_MAX_ROWS = 8
+
+_MEDIA_KINDS = frozenset({"image", "video", "audio", "file"})
+_MEDIA_MIME_RE = re.compile(r"^[\w.+-]+/[\w.+-]+$")
+_MEDIA_PATH_MAX_LEN = 1024
 
 
 class EnvelopeRefusedError(RuntimeError):
@@ -103,6 +131,156 @@ def _ensure_dirs(root: Path | str) -> Path:
     for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
         (base / sub).mkdir(parents=True, exist_ok=True)
     return base
+
+
+# ── media rows (D2) ──────────────────────────────────────────────────────────
+
+
+def normalize_media_rows(rows: Any) -> list[dict]:
+    """Validated, minimal ``media[]`` rows; drops invalid rows silently.
+
+    Rows come over RPC from the Desktop (or from a sending agent's tool
+    result) — treat as untrusted input. A row names a media deliverable:
+
+    - ``path`` (required): absolute path (or ``~/`` home-relative) on the
+      gateway that OWNS the file. Length-capped; control characters and
+      relative paths are rejected.
+    - ``kind`` (optional): image|video|audio|file.
+    - ``mime`` (optional): ``type/subtype`` token, whitespace rejected.
+    - ``size`` (optional): non-negative int, bytes.
+    - ``name`` (optional): friendly display name, whitespace-collapsed.
+    - ``data_url`` (optional): ``data:<mime>;base64,<b64>`` inline payload —
+      the Desktop inlines bytes it fetched from the owner connection under
+      ``MEDIA_INLINE_CAP_BYTES``; anything else (http refs, non-base64
+      payloads) is rejected here so no row can smuggle a fetch.
+    """
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    for row in rows[:MEDIA_MAX_ROWS]:
+        if not isinstance(row, dict):
+            continue
+        path = str(row.get("path") or "").strip()
+        if (
+            not path
+            or len(path) > _MEDIA_PATH_MAX_LEN
+            or not path.startswith(("/", "~/"))
+            or any(ord(c) < 32 for c in path)
+        ):
+            continue
+        clean: dict = {"path": path}
+        kind = str(row.get("kind") or "").strip().lower()
+        if kind in _MEDIA_KINDS:
+            clean["kind"] = kind
+        mime = str(row.get("mime") or "").strip().lower()
+        if _MEDIA_MIME_RE.match(mime):
+            clean["mime"] = mime
+        size = row.get("size")
+        if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+            clean["size"] = size
+        name = str(row.get("name") or "").strip()
+        if name:
+            clean["name"] = " ".join(name.split())[:120]
+        data_url = str(row.get("data_url") or "").strip()
+        if data_url.startswith("data:") and ";base64," in data_url:
+            payload = data_url.split(";base64,", 1)[1]
+            if payload and re.fullmatch(r"[A-Za-z0-9+/=\s]+", payload[:256] or ""):
+                clean["data_url"] = data_url
+        # Producer-set fields (stage_media output re-passing through this
+        # normalizer, e.g. write_reply persisting staged rows). Strictly
+        # shaped so they cannot be smuggled in by senders: local_path must
+        # be a control-char-free absolute path; error only the two typed
+        # codes stage_media emits.
+        local_path = str(row.get("local_path") or "")
+        if local_path.startswith("/") and len(local_path) <= _MEDIA_PATH_MAX_LEN and not any(
+            ord(c) < 32 for c in local_path
+        ):
+            clean["local_path"] = local_path
+        err_code = str(row.get("error") or "")
+        if err_code in ("too_large", "decode_failed"):
+            clean["error"] = err_code
+        out.append(clean)
+    return out
+
+
+def stage_media(root: Path | str, rows: Any, *, envelope_id: str) -> dict:
+    """Materialize inline media rows into ``bot_relay/media/<envelope>/``.
+
+    The Desktop delivers bytes it fetched from the owner connection as
+    ``data_url`` payloads; each is written to a sanitized filename inside a
+    durable per-envelope directory so the receiving gateway's media
+    fetchers (``/api/fs/*``) can serve it later — this is what turns a
+    cross-connection ``MEDIA:`` path that points at the SENDER's disk into
+    a locally-fetchable ref. Rows without a ``data_url`` pass through
+    untouched (metadata-only: the Desktop renders them as fallback cards,
+    and local connections can still resolve ``path`` directly).
+
+    Never raises for row-level problems: a row whose payload exceeds
+    ``MEDIA_INLINE_CAP_BYTES`` or fails to decode gets ``error`` set and
+    keeps its metadata for the fallback card. Returns
+    ``{envelope_id, rows, note}``.
+    """
+    import base64 as _base64
+    import binascii as _binascii
+
+    safe = str(envelope_id or "").strip()
+    if not re.match(r"^[0-9a-f]{32}$", safe):
+        safe = uuid.uuid4().hex
+    valid = rows if isinstance(rows, list) else []
+    valid = normalize_media_rows(valid)
+    target_dir: Optional[Path] = None
+    if valid:
+        target_dir = relay_root(root) / MEDIA_DIR / safe
+        target_dir.mkdir(parents=True, exist_ok=True)
+    out_rows: list[dict] = []
+    staged = 0
+    for i, row in enumerate(valid):
+        clean = dict(row)
+        data_url = clean.pop("data_url", None)
+        if data_url and target_dir is not None:
+            try:
+                head, payload = data_url.split(";base64,", 1)
+                raw = _base64.b64decode(re.sub(r"\s+", "", payload), validate=True)
+                if len(raw) > MEDIA_INLINE_CAP_BYTES:
+                    raise ValueError("too_large")
+                mime = head[5:].lower() or str(clean.get("mime") or "")
+                if not _MEDIA_MIME_RE.match(mime):
+                    mime = str(clean.get("mime") or "")
+                if not _MEDIA_MIME_RE.match(mime):
+                    mime = "application/octet-stream"
+                clean["mime"] = mime
+                stem = _unsafe_media_filename.sub("_", str(clean.get("name") or ""))[:60]
+                stem = stem.strip("._") or "media"
+                ext = Path(str(clean.get("path") or "")).suffix[:16]
+                ext = _unsafe_media_filename.sub("_", ext)
+                name = f"{i}-{stem or 'media'}{ext}"
+                (target_dir / name).write_bytes(raw)
+                clean["local_path"] = str((target_dir / name).resolve())
+                clean["size"] = len(raw)
+                staged += 1
+            except (_binascii.Error, ValueError, OSError) as exc:
+                clean["error"] = (
+                    "too_large" if str(exc) == "too_large" else "decode_failed"
+                )
+        out_rows.append(clean)
+    note = f"{staged} of {len(out_rows)} media row(s) staged inline" if out_rows else ""
+    return {"envelope_id": safe, "rows": out_rows, "note": note}
+
+
+_unsafe_media_filename = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _media_note_text(rows: Any) -> str:
+    """Human/agent-facing one-liner about an envelope's media payload."""
+    valid = normalize_media_rows(rows)
+    if not valid:
+        return ""
+    parts = []
+    for r in valid:
+        name = r.get("name") or Path(r["path"]).name
+        size = r.get("size")
+        parts.append(f"{name} ({r.get('kind') or 'file'}{f', {size} bytes' if size else ''})")
+    return "Media: " + "; ".join(parts)
 
 
 # ── remote roster ────────────────────────────────────────────────────────────
@@ -312,8 +490,15 @@ def enqueue_envelope(
     message: str,
     sender_profile: str,
     sender_handle: str,
+    media: Any = None,
 ) -> dict:
     """Queue a cross-connection DM for the Desktop relay. Returns envelope.
+
+    ``media`` is an optional list of media rows (see ``normalize_media_rows``)
+    describing deliverables that belong to this message: ``path`` on the
+    SENDER's gateway, and — once the Desktop has fetched bytes from that
+    connection — an inline ``data_url``. Invalid rows are dropped, never
+    fatal.
 
     Raises ``EnvelopeRefusedError`` (reason ``'runtime_offline'``) instead of
     writing the outbox file when the target is definitively offline per
@@ -341,6 +526,9 @@ def enqueue_envelope(
         "target_handle": target["handle"],
         "message": message,
     }
+    media_rows = normalize_media_rows(media)
+    if media_rows:
+        envelope["media"] = media_rows
     path = base / OUTBOX_DIR / f"{envelope['id']}.json"
     fd, tmp = tempfile.mkstemp(dir=str(base / OUTBOX_DIR), prefix=".env-", suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -405,7 +593,13 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
 
 
 def write_reply(
-    root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = ""
+    root: Path | str,
+    envelope_id: str,
+    *,
+    reply: str = "",
+    error: str = "",
+    reason: str = "",
+    media: Any = None,
 ) -> Path:
     """Persist the relayed reply (or delivery error) for the waiter.
 
@@ -413,6 +607,12 @@ def write_reply(
     ``tools.bot_failure_reasons``, e.g. 'queued_expired'); when omitted and
     ``error`` is non-empty it is classified from the error text. The waiter
     only surfaces the human ``error``.
+
+    ``media`` is an optional list of media rows produced by the TARGET turn
+    (deliverables the target agent generated or referenced). The Desktop
+    fetches their bytes from the target connection and hands back staged
+    paths via the ``media`` param of ``bot_relay.reply``; only path rows are
+    persisted here — inline payloads are never written to the reply file.
     """
     base = _ensure_dirs(root)
     safe = str(envelope_id or "").strip()
@@ -424,6 +624,11 @@ def write_reply(
         from tools.bot_failure_reasons import classify_agent_error
 
         code = classify_agent_error(err)
+    # Persist paths only: strip any inline payload the caller passed so the
+    # plaintext reply file never carries base64 blobs.
+    media_rows = normalize_media_rows(media)
+    for row in media_rows:
+        row.pop("data_url", None)
     path = base / REPLIES_DIR / f"{safe}.json"
     payload = {
         "id": safe,
@@ -432,6 +637,8 @@ def write_reply(
         "error": err,
         "reason": code,
     }
+    if media_rows:
+        payload["media"] = media_rows
     fd, tmp = tempfile.mkstemp(dir=str(base / REPLIES_DIR), prefix=".rep-", suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
@@ -453,6 +660,27 @@ def _sweep_stale(base: Path, *, now: float | None = None) -> int:
                     continue
         except OSError:
             continue
+    # Staged media dirs live only as long as their envelope/reply artifacts:
+    # a per-envelope dir whose reply (or claim, for undelivered mail) is
+    # gone has no reader left, and its payload may hold DM media bytes.
+    media_root = base / MEDIA_DIR
+    try:
+        for env_dir in media_root.iterdir():
+            try:
+                if not env_dir.is_dir():
+                    continue
+                refs = 0
+                for sub in (CLAIMED_DIR, REPLIES_DIR):
+                    marker = base / sub / f"{env_dir.name}.json"
+                    if marker.exists() and marker.stat().st_mtime >= cutoff:
+                        refs += 1
+                if not refs and env_dir.stat().st_mtime < cutoff:
+                    shutil.rmtree(env_dir, ignore_errors=True)
+                    removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
     return removed
 
 
@@ -523,6 +751,17 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         "            sys.exit(1)\n"
         "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"
+        # Media deliverables: rows with a staged local_path print as MEDIA:
+        # tags (the explicit attachment contract — the adapter's media
+        # pipeline delivers them); metadata-only rows (oversize/cross-host,
+        # no inline payload) print as a descriptive note instead so the
+        # sender never emits a MEDIA: ref that cannot resolve anywhere.
+        "        for m in (d.get('media') or []):\n"
+        "            lp = str(m.get('local_path') or '')\n"
+        "            if lp:\n"
+        "                print('MEDIA:' + lp)\n"
+        "            elif m.get('path') or m.get('name'):\n"
+        "                print('Media (not staged for local fetch): ' + str(m.get('name') or m.get('path')))\n"
         "        sys.exit(0)\n"
         "    time.sleep(2)\n"
         f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "

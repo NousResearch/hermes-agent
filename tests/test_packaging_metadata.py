@@ -152,6 +152,49 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
 
 
 # ---------------------------------------------------------------------------
+# Sealed-install module coverage
+#
+# ``[tool.setuptools].py-modules`` is the ONLY list that decides which
+# top-level single-file modules ship in the sealed Nix/uv2nix venv. A module
+# missing from it fails at runtime with ModuleNotFoundError even when
+# ``uv sync`` succeeds on the source tree (the editable checkout sees the
+# file; the sealed venv does not). #100561: hermes_state.py gained a
+# re-export from hermes_state_registry (db339f0) but the list was not
+# updated, so Nix-built gateways/dashboards crashed on import while
+# everything else stayed green.
+# ---------------------------------------------------------------------------
+
+
+def test_py_modules_ships_hermes_state_runtime_dependencies():
+    """hermes_state's top-level runtime imports must be listed in py-modules.
+
+    hermes_state.py imports hermes_state_registry at module scope
+    (get_shared_session_db / release_or_close re-exports). A sealed install
+    only ships what py-modules declares, so a missing entry bricks every
+    gateway / dashboard / cron process that imports hermes_state
+    (ModuleNotFoundError: No module named 'hermes_state_registry').
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    shipped = set(data["tool"]["setuptools"]["py-modules"])
+    assert "hermes_state" in shipped
+
+    for module in (
+        # Imported (and re-exported) at module scope in hermes_state.py.
+        "hermes_state_registry",
+    ):
+        assert module in shipped, (
+            f"{module}.py is imported by hermes_state.py but missing from "
+            "[tool.setuptools].py-modules — sealed (Nix) installs fail with "
+            "ModuleNotFoundError at startup (#100561)"
+        )
+        assert (REPO_ROOT / f"{module}.py").is_file(), (
+            f"py-modules lists {module} but the source file no longer exists — "
+            "the entry is stale and should be removed"
+        )
+
+
+
+# ---------------------------------------------------------------------------
 # Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
 #
 # The same package is exact-pinned in two hand-maintained places: the

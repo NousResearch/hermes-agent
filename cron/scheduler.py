@@ -743,6 +743,36 @@ SILENT_MARKER = "[SILENT]"
 # autonomous lanes cannot drift apart.
 
 
+def _zero_inference_failure_reason(result: dict) -> str:
+    """Return a failure reason when a cron run never reached the model.
+
+    A run that made ZERO inference calls did none of its advertised work:
+    the transcript stops before the first tool result (or before any tool
+    call at all) and yet lands on the success path. Recording that as
+    ``ok`` is a false positive that defeats monitoring — an operator
+    watching ``last_status`` sees green while scheduled maintenance
+    silently never ran (#100180). This is the inverse of #70427, where
+    empty *successful* runs were mis-recorded as failures.
+
+    Returns ``""`` when the run is fine. ``api_calls`` is authoritative
+    and cheap: the conversation loop sets it to the provider round-trip
+    count on every return path, so an explicit 0 means the model was never
+    reached. A missing key (older result shapes, test doubles) is NOT
+    treated as zero — the guard only fires on an explicit 0, so it can
+    never fail a run whose call count simply wasn't reported.
+    """
+    api_calls = result.get("api_calls")
+    if isinstance(api_calls, bool) or not isinstance(api_calls, int):
+        return ""
+    if api_calls > 0:
+        return ""
+    return (
+        "cron run made zero inference calls (api_calls=0) — the run was "
+        "interrupted before reaching the model, so none of the job's work "
+        "was performed; refusing to record it as a successful run"
+    )
+
+
 def _is_cron_silence_response(text: str) -> bool:
     """Return True when a cron final response should suppress delivery.
 
@@ -6714,6 +6744,26 @@ def run_job(
                 )
                 final_response = ""
         # Use a separate variable for log display; keep final_response clean
+        # A run that made ZERO inference calls did none of the advertised
+        # work: the transcript stops before the first tool result (or before
+        # any tool call at all) and yet reached this success path. Recording
+        # it as `ok` is a false-positive that defeats monitoring — an
+        # operator watching `last_status` sees green while scheduled
+        # maintenance silently never ran (#100180). This is the inverse of
+        # #70427 (empty SUCCESSFUL runs mis-recorded as failures): here an
+        # UNFINISHED run is mis-recorded as success. Fail it so the except
+        # handler below builds the proper failure tuple.
+        #
+        # `api_calls` is authoritative and cheap: the conversation loop
+        # sets it to the provider round-trip count on every return path
+        # (agent/conversation_loop.py), so 0 means the model was never
+        # reached. A genuinely-silent job that DID run inference has
+        # api_calls >= 1 and stays on the success path (the cron silence
+        # handling above already covers its empty response).
+        _zero_inference = _zero_inference_failure_reason(result)
+        if _zero_inference:
+            raise RuntimeError(_zero_inference)
+
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         

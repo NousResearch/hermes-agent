@@ -7,6 +7,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
+import { isPluginSource, pluginIdFromSource } from '@/contrib/plugin-source'
 import { setPluginEnabled } from '@/contrib/plugins-store'
 import { registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
@@ -769,7 +770,9 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
 
   return tabStripVisibleForZone({
     active: group.active,
-    hasCloser: id => Boolean(paneClosers[id]),
+    // Same source as TreeGroup's reactive snapshot; `.get()` serves this
+    // imperative command path without creating a second closability concept.
+    hasCloser: id => $panesWithCloser.get().has(id),
     isCollapsePane,
     mode: group.tabStrip,
     paneFor: (id: string) => registered.find(c => c.id === id),
@@ -937,7 +940,7 @@ export function closeTreePane(paneId: string) {
   const panes = registry.getArea('panes')
   const source = panes.find(c => c.id === paneId)?.source
 
-  if (source?.startsWith('plugin:')) {
+  if (isPluginSource(source)) {
     // A plugin may own several independent panes. Closing one of them must not
     // unload every contribution from that plugin (for example, closing Bot
     // Mode's Cronjobs pane must leave its Bots roster and composer middleware
@@ -952,7 +955,7 @@ export function closeTreePane(paneId: string) {
     // A single-pane plugin keeps the existing symmetric behavior: Close uses
     // the same switch as Capabilities → Plugins. Its contribution unregisters but
     // the pane id stays in the tree, so re-enabling restores its exact place.
-    const pluginId = source.slice('plugin:'.length)
+    const pluginId = pluginIdFromSource(source)
     void setPluginEnabled(pluginId, false)
     notify({
       kind: 'info',

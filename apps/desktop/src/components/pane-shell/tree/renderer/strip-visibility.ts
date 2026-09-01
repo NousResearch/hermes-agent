@@ -9,7 +9,8 @@
  * a function of what it currently holds plus one deliberate choice.
  */
 
-import type { Contribution } from '@/contrib/types'
+import { isPluginSource } from '@/contrib/plugin-source'
+import type { Contribution, ContributionSource } from '@/contrib/types'
 import { effectiveTabStripMode } from '@/store/tabstrip-prefs'
 
 import type { TabStripMode } from '../model'
@@ -33,7 +34,7 @@ export interface StripPane {
   placement?: string
   /** Runtime-plugin provenance. A contributed pane has no guaranteed core
    *  titlebar toggle, so its tab is the host-owned Close surface. */
-  source?: string
+  source?: ContributionSource
   /** Panes that never leave the tree (the workspace). */
   uncloseable?: boolean
 }
@@ -83,7 +84,7 @@ function closeNeedsStrip(pane: StripPane): boolean {
   // Main tenants are tabs by design. Runtime plugins also need host chrome:
   // unlike core sidebars, they have no guaranteed titlebar/palette toggle to
   // replace the tab's Close action when they become a lone side pane.
-  return pane.placement === 'main' || Boolean(pane.source?.startsWith('plugin:'))
+  return pane.placement === 'main' || isPluginSource(pane.source)
 }
 
 function stranded(shown: readonly StripPane[]): boolean {

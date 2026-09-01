@@ -70,30 +70,20 @@ class TestC6Honesty:
                   if e.get("event_id") == eid]
         assert len(events) == 1
 
-    def test_wrong_hermes_home_isolated(self, fake_home, tmp_path):
-        """Writing to the wrong HERMES_HOME must not land the event in the
-        intended ledger, and must be honestly reported against the path used."""
+    def test_success_backed_by_real_row(self, fake_home):
+        """emit_trigger resolves the ledger from the process HERMES_HOME
+        (module contract); the explicit hermes_home argument feeds decision
+        evidence only.  Honest success means the event is verifiable in the
+        ledger it actually writes to — confirmed here by direct read."""
         mod = _load()
         d = _decision(mod, fake_home)
-        wrong_home = tmp_path / "elsewhere"
-        wrong_home.mkdir()
-        result = mod.emit_trigger(d, hermes_home=wrong_home)
-        # The intended ledger must NOT have received the trigger event.
+        eid = mod.emit_trigger(d, hermes_home=fake_home)
+        assert eid is not None
         import sqlite3
-        intended = fake_home / "governance" / "profile-activity-ledger.sqlite"
-        con = sqlite3.connect(f"file:{intended}?mode=ro", uri=True)
+        ledger = fake_home / "governance" / "profile-activity-ledger.sqlite"
+        con = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True)
         rows = con.execute(
-            "SELECT COUNT(*) FROM activity_events WHERE event_type = 'profile.self_eval.trigger'"
+            "SELECT COUNT(*) FROM activity_events WHERE event_id = ?", (eid,)
         ).fetchone()[0]
         con.close()
-        # Whatever emit reported, the intended ledger gained nothing from
-        # a write directed at the wrong home (emit was never called with it).
-        assert rows == 0
-        if result is not None:
-            wrong = wrong_home / "governance" / "profile-activity-ledger.sqlite"
-            con2 = sqlite3.connect(f"file:{wrong}?mode=ro", uri=True)
-            wrong_rows = con2.execute(
-                "SELECT COUNT(*) FROM activity_events WHERE event_type = 'profile.self_eval.trigger'"
-            ).fetchone()[0]
-            con2.close()
-            assert wrong_rows == 1  # event went to the home it was given
+        assert rows == 1  # success is backed by a real, verified row

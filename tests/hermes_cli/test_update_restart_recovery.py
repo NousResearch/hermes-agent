@@ -190,11 +190,21 @@ def test_abort_recovery_rejects_malformed_json_success(monkeypatch):
 
 
 def test_abort_recovery_does_not_restart_manual_only_fleet(monkeypatch):
+    """No gateway authority and no serve authority means no child at all.
+
+    On a Linux host with systemctl the child is spawned anyway for the
+    serve-unit pass (test_serve_only_fleet_still_spawns_the_recovery_child);
+    this test pins the OTHER side of that contract, so the serve authority
+    probe is explicitly disabled here.
+    """
     calls = []
     monkeypatch.setattr(
         update_cmd.subprocess,
         "run",
         lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        abort_recovery, "_serve_unit_recovery_available", lambda: False
     )
     plan = SimpleNamespace(runtimes=[_runtime("manual-box", "manual")])
 

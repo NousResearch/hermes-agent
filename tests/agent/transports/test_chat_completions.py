@@ -355,6 +355,7 @@ class TestChatCompletionsBuildKwargs:
             provider_profile=profile,
             reasoning_config={"effort": "none"},
             base_url="http://127.0.0.1:11434/v1",
+            supports_reasoning=True,
         )
         assert kw["extra_body"]["think"] is False
 

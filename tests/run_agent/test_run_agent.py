@@ -7311,6 +7311,17 @@ class TestSupportsReasoningExtraBody:
             agent.model = model
             assert agent._supports_reasoning_extra_body() is True, model
 
+    def test_local_ollama_uses_native_thinking_capability(self):
+        agent = self._make_agent()
+        agent.provider = "custom"
+        agent.base_url = "http://127.0.0.1:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "devstral-small-2:24b"
+        agent._ollama_supports_thinking_cached = MagicMock(return_value=False)
+
+        assert agent._supports_reasoning_extra_body() is False
+        agent._ollama_supports_thinking_cached.assert_called_once_with()
+
 
 class TestMemoryContextSanitization:
     """sanitize_context() helper correctness — used at provider boundaries."""

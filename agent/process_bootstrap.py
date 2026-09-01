@@ -269,6 +269,49 @@ def _enable_happy_eyeballs(transport) -> None:
         pool._network_backend = _HappyEyeballsSyncBackend()
 
 
+def enable_happy_eyeballs_on_client(client) -> None:
+    """Install the sync racing backend on every direct transport of a client.
+
+    Covers a ready-built ``httpx.Client`` (its default transport plus any
+    mounts), for callers that construct clients inline instead of going
+    through :func:`build_keepalive_http_client` — e.g. the Codex OAuth token
+    refresh / device-login / usage-probe clients in ``hermes_cli.auth``.
+
+    Proxy-backed transports (``httpcore.HTTPProxy`` / SOCKS pools) are left
+    untouched: with a proxy in play the TCP connect goes to the proxy host,
+    which is out of scope for the direct-transport racing added in #94388.
+    Async clients are also left untouched — httpcore's async backend already
+    performs RFC 8305 racing natively via
+    ``anyio.connect_tcp(happy_eyeballs_delay=0.25)``.
+
+    Best-effort and hasattr-guarded like ``_enable_happy_eyeballs``; on an
+    incompatible httpx/httpcore this silently keeps the default backend.
+    """
+    try:
+        import httpcore
+
+        proxy_pool_types = tuple(
+            t
+            for t in (
+                getattr(httpcore, "HTTPProxy", None),
+                getattr(httpcore, "SOCKSProxy", None),
+            )
+            if t is not None
+        )
+    except Exception:
+        return
+
+    transports = [getattr(client, "_transport", None)]
+    transports.extend((getattr(client, "_mounts", None) or {}).values())
+    for transport in transports:
+        pool = getattr(transport, "_pool", None)
+        if pool is None or not hasattr(pool, "_network_backend"):
+            continue
+        if proxy_pool_types and isinstance(pool, proxy_pool_types):
+            continue
+        pool._network_backend = _HappyEyeballsSyncBackend()
+
+
 def _load_openai_cls() -> type:
     """Import and cache ``openai.OpenAI``."""
     global _OPENAI_CLS_CACHE
@@ -421,6 +464,10 @@ def build_keepalive_http_client(
         if proxy is None:
             http_transport = transport_cls(verify=verify)
             https_transport = transport_cls(verify=verify)
+            # Async transports need no explicit racing: httpcore's anyio
+            # backend already implements RFC 8305 natively
+            # (``anyio.connect_tcp(happy_eyeballs_delay=0.25)``), covered by
+            # tests/agent/test_codex_happy_eyeballs.py.
             if not async_mode and _uses_codex_cloud_transport(base_url):
                 _enable_happy_eyeballs(http_transport)
                 _enable_happy_eyeballs(https_transport)
@@ -459,4 +506,5 @@ __all__ = [
     "_get_proxy_from_env",
     "_get_proxy_for_base_url",
     "build_keepalive_http_client",
+    "enable_happy_eyeballs_on_client",
 ]

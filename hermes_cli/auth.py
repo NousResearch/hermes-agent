@@ -4051,6 +4051,32 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
     return dict(imported)
 
 
+def _codex_http_client(**kwargs: Any) -> "httpx.Client":
+    """Build an ``httpx.Client`` for Codex OAuth/probe endpoints with racing.
+
+    Same broken-IPv6 failure mode as the chat transport (#13834): a host that
+    advertises AAAA records but blackholes IPv6 makes each serial connect
+    attempt eat the full connect timeout before IPv4 is tried, so token
+    refresh / device login / usage probes time out where the official Codex
+    CLI (which races families per RFC 8305) works. Install the same
+    Happy-Eyeballs sync backend #94388 added for the chat transport.
+
+    Best-effort: if the racing backend can't be installed (unexpected
+    httpx/httpcore internals, mocked client in tests), the client still works
+    with the default serial connect behavior. Proxy-backed transports are
+    intentionally left on the default backend (the TCP connect goes to the
+    proxy, not to auth.openai.com/chatgpt.com).
+    """
+    client = httpx.Client(**kwargs)
+    try:
+        from agent.process_bootstrap import enable_happy_eyeballs_on_client
+
+        enable_happy_eyeballs_on_client(client)
+    except Exception:
+        pass
+    return client
+
+
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -4068,7 +4094,7 @@ def refresh_codex_oauth_pure(
         )
 
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(
+    with _codex_http_client(
         timeout=timeout,
         headers={
             "Accept": "application/json",
@@ -4517,7 +4543,7 @@ def _probe_codex_quota_restored(
         )
         if isinstance(account_id, str) and account_id.strip():
             headers["ChatGPT-Account-Id"] = account_id.strip()
-        with httpx.Client(timeout=10.0) as client:
+        with _codex_http_client(timeout=10.0) as client:
             response = client.get(_codex_usage_probe_url(base_url), headers=headers)
         if response.status_code == 200:
             payload = response.json() or {}
@@ -8424,7 +8450,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
         try:
-            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
                 resp = client.post(
                     f"{issuer}/api/accounts/deviceauth/usercode",
                     json={"client_id": client_id},
@@ -8499,7 +8525,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     code_resp = None
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             while _time.monotonic() - start < max_wait:
                 _time.sleep(poll_interval)
                 poll_resp = client.post(
@@ -8540,7 +8566,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
         )
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             token_resp = client.post(
                 CODEX_OAUTH_TOKEN_URL,
                 data={

@@ -74,6 +74,7 @@ def _make_consumer(adapter=None, **overrides):
     consumer._stream_ledger = ""
     consumer._initial_reply_to_id = None
     consumer.metadata = None
+    consumer._already_sent = True
     for key, value in overrides.items():
         setattr(consumer, key, value)
     return consumer

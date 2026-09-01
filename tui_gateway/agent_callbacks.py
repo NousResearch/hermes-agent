@@ -202,23 +202,29 @@ def _apply_personality_to_session(
     marker so the model stops pattern-matching its earlier tone. Returns (False, info)."""
     if not session:
         return False, None
-    session["personality"] = personality
-    if not (agent := session.get("agent")):
-        return False, None
-    agent.ephemeral_system_prompt = new_prompt or None
-    marker = (
-        "[System: The user has changed the assistant's personality. "
-        "From this point forward, adopt the following persona and respond "
-        f"accordingly: {new_prompt}]"
-        if new_prompt else
-        "[System: The user has cleared the personality overlay. "
-        "From this point forward, respond in your normal default style.]")
-    # Like the model-switch marker: role=user so strict providers accept it mid-conversation,
-    # but `display_kind` keeps it out of the `truncate_before_user_ordinal` addressing space
-    # (untagged, every rewind would land one turn early and hard-delete the difference).
-    # Untagged, it counts as a real user turn on the gateway side while no client counts it, so every later
-    # rewind resolves one turn too early and `replace_messages` hard-deletes the difference (#82756).
     with session["history_lock"]:
+        # Prompt ownership is session-scoped: a one-turn extra-system overlay can be
+        # normalized in place by provider retry paths, so string equality cannot tell
+        # it apart from a user-initiated personality mutation. Serialize both
+        # mutations and stamp only real personality changes with this revision.
+        session["personality"] = personality
+        session["_ephemeral_system_prompt_revision"] = (
+            int(session.get("_ephemeral_system_prompt_revision", 0)) + 1)
+        if not (agent := session.get("agent")):
+            return False, None
+        agent.ephemeral_system_prompt = new_prompt or None
+        marker = (
+            "[System: The user has changed the assistant's personality. "
+            "From this point forward, adopt the following persona and respond "
+            f"accordingly: {new_prompt}]"
+            if new_prompt else
+            "[System: The user has cleared the personality overlay. "
+            "From this point forward, respond in your normal default style.]")
+        # Like the model-switch marker: role=user so strict providers accept it mid-conversation,
+        # but `display_kind` keeps it out of the `truncate_before_user_ordinal` addressing space
+        # (untagged, every rewind would land one turn early and hard-delete the difference).
+        # Untagged, it counts as a real user turn on the gateway side while no client counts it, so every later
+        # rewind resolves one turn too early and `replace_messages` hard-deletes the difference (#82756).
         session["history"].append({"role": "user", "content": marker, "display_kind": "personality_switch"})
         session["history_version"] = int(session.get("history_version", 0)) + 1
     info = _session_info(agent)

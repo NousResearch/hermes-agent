@@ -285,9 +285,12 @@ def _mirror_personality(sid, session, agent, arg) -> None:
 
 def _mirror_prompt(sid, session, agent, arg) -> None:
     if agent:
-        cfg = _load_cfg()
-        agent.ephemeral_system_prompt = _prompt_text((cfg.get("agent") or {}).get("system_prompt", "")) or None
-        agent._cached_system_prompt = None
+        with session["history_lock"]:
+            session["_ephemeral_system_prompt_revision"] = (
+                int(session.get("_ephemeral_system_prompt_revision", 0)) + 1)
+            cfg = _load_cfg()
+            agent.ephemeral_system_prompt = _prompt_text((cfg.get("agent") or {}).get("system_prompt", "")) or None
+            agent._cached_system_prompt = None
 
 
 _FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold"}

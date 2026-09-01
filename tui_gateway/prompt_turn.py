@@ -433,9 +433,14 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    prior_ephemeral_system_prompt: str | None = None
+    ephemeral_system_prompt_revision: int | None = None
+    ephemeral_system_prompt_overridden: bool = False
 
 
-def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
+def _prepare_turn_input(
+    sid: str, session: dict, st: _TurnRun, text: Any, images: list[str],
+    extra_system: str | None = None):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
     Scopes fill field by field so a failure midway still leaves every bound token for the
@@ -467,6 +472,22 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         _sync_agent_compression_with_config(sid, session)
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
     st.agent = agent = session["agent"]
+    if extra_system:
+        # The temporary overlay is API-call-only. Capture its owning session
+        # revision under the same lock personality changes use; cleanup restores
+        # after internal normalization, but never over a newer user-selected
+        # personality. The overlay deliberately changes the system prefix for this
+        # turn's API calls, breaking the provider cached prefix for the turn (and
+        # one re-warm after restore) — a knowing one-turn cache cost, not an
+        # accidental mid-conversation mutation.
+        with session["history_lock"]:
+            st.prior_ephemeral_system_prompt = getattr(agent, "ephemeral_system_prompt", None)
+            st.ephemeral_system_prompt_revision = int(
+                session.get("_ephemeral_system_prompt_revision", 0))
+            agent.ephemeral_system_prompt = (
+                f"{st.prior_ephemeral_system_prompt}\n\n{extra_system}"
+                if st.prior_ephemeral_system_prompt else extra_system)
+            st.ephemeral_system_prompt_overridden = True
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
         st.history = list(session["history"])
@@ -735,6 +756,11 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
             _persist_live_session_system_prompt(session)
         except Exception:
             logger.debug("TUI one-turn model restore failed", exc_info=True)
+    if st.ephemeral_system_prompt_overridden:
+        with session["history_lock"]:
+            if (int(session.get("_ephemeral_system_prompt_revision", 0))
+                    == st.ephemeral_system_prompt_revision):
+                st.agent.ephemeral_system_prompt = st.prior_ephemeral_system_prompt
     scopes = st.scopes
     with contextlib.suppress(Exception):
         if scopes.approval is not None:
@@ -754,7 +780,8 @@ def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-    terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
+    terminal_callback: Callable[[dict[str, Any]], None] | None = None,
+    extra_system: str | None = None) -> bool:
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
@@ -786,7 +813,7 @@ def _run_prompt_submit(
         st.marker_key = _record_turn_marker(session, text)
         goal_followup = None
         try:
-            prepared = _prepare_turn_input(sid, session, st, text, images)
+            prepared = _prepare_turn_input(sid, session, st, text, images, extra_system)
             if prepared is None:
                 return
             prompt, run_message, cols, streamer = prepared

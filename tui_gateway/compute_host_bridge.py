@@ -49,7 +49,8 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
 
 def _compute_host_turn_frame(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    extra_system: str | None = None) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -57,7 +58,8 @@ def _compute_host_turn_frame(
     return {
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
-        **({"display_kind": display_kind} if display_kind else {}), "history": history,
+        **({"display_kind": display_kind} if display_kind else {}),
+        **({"extra_system": extra_system} if extra_system else {}), "history": history,
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
@@ -203,11 +205,12 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    extra_system: str | None = None) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
-                                     display_kind=display_kind)
+                                     display_kind=display_kind, extra_system=extra_system)
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure via the callback before re-raising;

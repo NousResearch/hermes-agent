@@ -17,6 +17,25 @@ _STALE_TARGET_MSG = "target user message is no longer in session history"
 _GROUP_PROBE_FAILED_MSG = "Could not verify this group. Try again after the gateway recovers."
 
 
+def _prompt_extra_system(params: dict) -> tuple[str | None, str | None]:
+    """Return `prompt.submit`'s optional one-turn system context.
+
+    `system_message` takes precedence over `instructions`; a present key must
+    be a non-blank string. During a busy turn the overlay queues as a distinct
+    model request instead of steering or redirecting the live turn.
+    """
+    for key in ("system_message", "instructions"):
+        if key not in params:
+            continue
+        raw = params[key]
+        if not isinstance(raw, str):
+            return None, f"{key} must be a string"
+        if not raw.strip():
+            return None, f"{key} must not be blank"
+        return raw, None
+    return None, None
+
+
 def _history_user_indices(history: list) -> list:
     """Indices of canonical live-user turns, including composite carriers."""
     from agent.context_compressor import user_originated_turn_view
@@ -465,7 +484,8 @@ def _persist_session_row_for_submit(rid, session):
     return None
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback):
+def _run_after_agent_ready(
+    rid, sid, session, text, display_kind, hosted_terminal_callback, extra_system=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -495,12 +515,11 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback)
+        terminal_callback=hosted_terminal_callback, extra_system=extra_system)
 
 
 _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
-
 
 def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task):
@@ -540,6 +559,9 @@ def _(rid, params: dict) -> dict:
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
+    extra_system, extra_system_error = _prompt_extra_system(params)
+    if extra_system_error:
+        return _err(rid, 4004, extra_system_error)
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.get("interrupted"):
@@ -589,7 +611,8 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")),
+            extra_system=extra_system)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -602,7 +625,7 @@ def _(rid, params: dict) -> dict:
         return err
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
+            rid, sid, session, text, display_kind=display_kind, extra_system=extra_system)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -625,7 +648,7 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
+            rid, sid, session, text, display_kind, hosted_terminal_callback, extra_system),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

@@ -232,7 +232,8 @@ class ComputeHost:
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
             server._run_prompt_submit(
-                request_id, sid, session, text, display_kind=frame.get("display_kind") or None)
+                request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
+                extra_system=frame.get("extra_system") or None)
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 run_thread.join()

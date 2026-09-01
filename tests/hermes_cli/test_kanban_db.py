@@ -372,6 +372,39 @@ def test_provider_egress_error_parser_requires_known_signature(
     assert _kb._provider_egress_error_text("task") is None
 
 
+def test_provider_egress_crash_is_terminal_needs_attention(
+    kanban_home, monkeypatch,
+):
+    """A blocked payload parks the task instead of entering the crash loop."""
+    import hermes_cli.kanban_db as _kb
+
+    log_path = kanban_home / "egress-worker.log"
+    monkeypatch.setattr(_kb, "worker_log_path", lambda _task_id: log_path)
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        task_id = kb.create_task(conn, title="egress", assignee="a")
+        kb.claim_task(conn, task_id, claimer=f"{host}:egress")
+        conn.execute(
+            "UPDATE tasks SET worker_pid=? WHERE id=?",
+            (70001, task_id),
+        )
+        conn.commit()
+        log_path.write_text("LLM egress blocked: base64_payload\n", encoding="utf-8")
+
+        crashed = kb.detect_crashed_workers(conn)
+        task = kb.get_task(conn, task_id)
+
+    assert task_id in crashed
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.last_failure_error == (
+        "provider egress blocked: LLM egress blocked: base64_payload"
+    )
+
+
 def test_respawn_guard_defers_rate_limited_within_cooldown(
     kanban_home, monkeypatch,
 ):

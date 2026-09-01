@@ -81,9 +81,12 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
 
-def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
+def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]:
     """Translate Codex app-server token usage into Hermes accounting. Prompt bucket = uncached + cached
-    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call."""
+    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call.
+    ``messages`` (the transcript mirror) lets real usage anchor the next preflight: this runtime bypasses
+    the main loop's capture, and the mirror is never compacted natively, so without an anchor the rough
+    estimate grows monotonically and hermes-mode fires thread compaction on tiny threads (#100381)."""
     agent.session_api_calls += 1
     usage = getattr(turn, "token_usage_last", None)
     compressor = getattr(agent, "context_compressor", None)
@@ -117,6 +120,12 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 compressor.context_length = context_window
         except Exception:
             logger.debug("codex app-server usage update failed", exc_info=True)
+    if isinstance(messages, list):
+        from agent.model_metadata import capture_usage_anchor
+
+        anchor = capture_usage_anchor(prompt_tokens, canonical_usage.output_tokens, messages)
+        if anchor is not None:
+            agent._usage_anchor = anchor
     for key, value in usage_dict.items():
         setattr(agent, f"session_{key}", getattr(agent, f"session_{key}") + value)
     cost_result = estimate_usage_cost(
@@ -429,7 +438,7 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
-    usage_result = _record_codex_app_server_usage(agent, turn)
+    usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
     # Skill nudge check AFTER iters were incremented (same as chat_completions).
     should_review_skills = (0 < agent._skill_nudge_interval <= agent._iters_since_skill
                             and "skill_manage" in agent.valid_tool_names)

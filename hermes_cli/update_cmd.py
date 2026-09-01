@@ -2100,6 +2100,11 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
             return
         ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
         if ok.get("valid"):
+            logger.debug(
+                "Post-update state.db integrity OK (%s): %s",
+                label,
+                ok.get("message"),
+            )
             return
         print()
         print(
@@ -2151,11 +2156,12 @@ def _verify_and_restore_state_dbs_post_update() -> None:
     the update was never detected and never auto-restored, leaving that
     profile's sessions silently gone while the root DB passed.
     """
-    _verify_and_restore_one_state_db(get_hermes_home(), label="default home")
+    home = get_hermes_home()
+    _verify_and_restore_one_state_db(home, label="default home")
     try:
         from hermes_cli.backup import _sibling_profile_homes
 
-        for name, profile_home in _sibling_profile_homes(get_hermes_home()):
+        for name, profile_home in _sibling_profile_homes(home):
             _verify_and_restore_one_state_db(profile_home, label=f"profile {name}")
     except Exception as exc:
         logger.debug("Sibling-profile state.db guard sweep failed: %s", exc)

@@ -216,23 +216,21 @@ def test_restore_helper_propagates_copy_errors(tmp_path):
 # ── Multi-profile coverage (#97994) ─────────────────────────────────────
 
 
-def _make_valid_db(path: Path, rows: int, tag: str) -> None:
+def _make_valid_db(path: Path, rows: int) -> None:
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY, name TEXT)")
     conn.executemany(
         "INSERT INTO sessions (name) VALUES (?)",
-        [(f"{tag}{i}",) for i in range(rows)],
+        [(str(i),) for i in range(rows)],
     )
     conn.commit()
     conn.close()
 
 
-def _make_valid_snapshot(home: Path, snap_id: str, rows: int, tag: str) -> Path:
+def _make_valid_snapshot(home: Path, snap_id: str, rows: int) -> None:
     snap_dir = home / "state-snapshots" / snap_id
     snap_dir.mkdir(parents=True)
-    snap_db = snap_dir / "state.db"
-    _make_valid_db(snap_db, rows, tag)
-    return snap_dir
+    _make_valid_db(snap_dir / "state.db", rows)
 
 
 def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys):
@@ -248,12 +246,12 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
     sibling_home.mkdir(parents=True)
 
     # Root DB: valid, with its own snapshot — must be left untouched.
-    _make_valid_db(root_home / "state.db", 10, "root")
+    _make_valid_db(root_home / "state.db", 10)
     root_before = (root_home / "state.db").read_bytes()
 
     # Sibling: live DB corrupted post-update (the #68474 zeroed signature),
     # with its own VALID pre-update snapshot under its own snapshots dir.
-    _make_valid_snapshot(sibling_home, "20260901-pre-update", 25, "snap")
+    _make_valid_snapshot(sibling_home, "20260901-pre-update", 25)
     (sibling_home / "state.db").write_bytes(b"\x00" * 4096)
 
     monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: root_home)
@@ -283,8 +281,8 @@ def test_post_update_guard_leaves_valid_sibling_dbs_alone(tmp_path, monkeypatch,
     sibling_home = tmp_path / "profiles" / "work"
     sibling_home.mkdir(parents=True)
 
-    _make_valid_db(root_home / "state.db", 10, "root")
-    _make_valid_db(sibling_home / "state.db", 7, "sib")
+    _make_valid_db(root_home / "state.db", 10)
+    _make_valid_db(sibling_home / "state.db", 7)
     sibling_before = (sibling_home / "state.db").read_bytes()
 
     monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: root_home)
@@ -310,7 +308,7 @@ def test_post_update_guard_survives_missing_sibling_snapshot(tmp_path, monkeypat
     sibling_home = tmp_path / "profiles" / "work"
     sibling_home.mkdir(parents=True)
 
-    _make_valid_db(root_home / "state.db", 10, "root")
+    _make_valid_db(root_home / "state.db", 10)
     (sibling_home / "state.db").write_bytes(b"\x00" * 4096)
 
     monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: root_home)

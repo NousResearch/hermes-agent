@@ -368,12 +368,20 @@ class TestR28DashboardValidation:
         (home / "governance").mkdir()
         import sys
         sys.path.insert(0, "/home/kensei/worktrees/governance-evidence-spine-p34-corrections-r2-dashboard")
+        # R2-8 isolation: 'backend' may already be cached from another
+        # selector file (module-name collision) — force a fresh import of
+        # the r2 dashboard's backend for this fixture.
+        import importlib
+        saved_backend = sys.modules.pop("backend", None)
         from backend import profile_docs
         monkeypatch.setattr(profile_docs, "HERMES_HOME", home)
         monkeypatch.setattr(profile_docs, "PROFILES_DIR", home / "profiles")
         monkeypatch.setattr(profile_docs, "GATEWAY_PROFILES", ["octacon"])
         yield home, profile_docs
-        sys.path.pop(0)
+        sys.modules.pop("backend", None)
+        if saved_backend is not None:
+            sys.modules["backend"] = saved_backend
+        sys.path.remove("/home/kensei/worktrees/governance-evidence-spine-p34-corrections-r2-dashboard")
 
     def test_duplicate_entries_rejected(self, dash):
         home, profile_docs = dash

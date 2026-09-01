@@ -1733,6 +1733,15 @@ DEFAULT_CONFIG = {
         # override for backward compatibility. 0 disables the reap
         # (park forever).
         "ws_orphan_reap_grace_s": 20.0,
+        # Activity-staleness threshold (seconds) gating the WS-orphan
+        # interrupt of a detached RUNNING turn (#98028/#100325). A
+        # client-absent turn is only interrupted once its agent activity
+        # clock (the same one the agent.turn_liveness watchdog samples —
+        # stamped by API waits, stream tokens, tool heartbeats) has been
+        # idle at least this long; an actively-working detached turn runs
+        # to completion. Default matches agent.turn_liveness.timeout_s.
+        # 0 restores the old interrupt-at-grace-regardless behavior.
+        "ws_orphan_activity_stale_s": 600.0,
         # Startup sweep of session rows orphaned by a dead gateway process
         # (#65194).  The ws-orphan grace timer above is in-process, so a
         # gateway restart (update, crash, systemd) leaves disconnected

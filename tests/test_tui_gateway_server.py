@@ -5765,6 +5765,147 @@ def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     assert fired["timer"] is False
 
 
+def test_ws_orphan_reap_defers_running_turn_with_fresh_activity(monkeypatch):
+    """#98028/#100325: a client-absent turn whose activity clock is fresh is
+    NOT interrupted — it keeps running detached and the reaper re-polls at the
+    grace interval. Once the clock goes stale the wedged-turn interrupt fires,
+    and after the turn settles the session is reaped as before."""
+    callbacks = []
+    delays = []
+    interrupted = []
+    torn_down = []
+
+    class _Timer:
+        def __init__(self, delay, callback):
+            delays.append(delay)
+            callbacks.append(callback)
+            self.daemon = False
+
+        def start(self):
+            return None
+
+    activity = {"seconds_since_activity": 1.0}
+    agent = types.SimpleNamespace(
+        get_activity_summary=lambda: dict(activity),
+        interrupt=lambda message=None: interrupted.append("interrupted"),
+    )
+
+    class _DeadThread:
+        def is_alive(self):
+            return False
+
+    session = _session(
+        agent=agent,
+        transport=server._detached_ws_transport,
+        running=True,
+        _run_thread=_DeadThread(),
+    )
+    server._sessions["fresh-sid"] = session
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 300.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        server,
+        "_teardown_popped_session",
+        lambda claimed, *, end_reason: torn_down.append((claimed, end_reason)) or True,
+    )
+
+    try:
+        server._schedule_ws_orphan_reap("fresh-sid")
+
+        # Two grace cycles with fresh activity: no interrupt, reschedule at
+        # the GRACE interval (not the 1s interrupt-settle poll).
+        for _ in range(2):
+            callbacks.pop(0)()
+            assert interrupted == []
+            assert not session.get("_client_gone_interrupt_requested")
+            assert delays[-1] == server._WS_ORPHAN_REAP_GRACE_S
+            assert "fresh-sid" in server._sessions
+
+        # Activity goes stale (turn wedged) -> interrupt fires on next poll.
+        activity["seconds_since_activity"] = 301.0
+        callbacks.pop(0)()
+        assert interrupted == ["interrupted"]
+        assert session["_client_gone_interrupt_requested"] is True
+
+        # Turn settles -> reap proceeds exactly as today.
+        session["running"] = False
+        callbacks.pop(0)()
+        assert "fresh-sid" not in server._sessions
+        assert torn_down == [(session, "ws_orphan_reap")]
+    finally:
+        server._sessions.pop("fresh-sid", None)
+
+
+def test_ws_orphan_activity_gate_zero_restores_interrupt_at_grace(monkeypatch):
+    """ws_orphan_activity_stale_s=0 opts out: fresh activity no longer defers
+    the client-gone interrupt (pre-#98028 behaviour)."""
+    callbacks = []
+    interrupted = []
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            callbacks.append(callback)
+            self.daemon = False
+
+        def start(self):
+            return None
+
+    class _LiveThread:
+        def is_alive(self):
+            return True
+
+    agent = types.SimpleNamespace(
+        get_activity_summary=lambda: {"seconds_since_activity": 0.5},
+        interrupt=lambda message=None: interrupted.append("interrupted"),
+    )
+    session = _session(
+        agent=agent,
+        transport=server._detached_ws_transport,
+        running=True,
+        _run_thread=_LiveThread(),
+    )
+    server._sessions["optout-sid"] = session
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 0.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    try:
+        server._schedule_ws_orphan_reap("optout-sid")
+        callbacks.pop(0)()
+        assert interrupted == ["interrupted"]
+        assert session["_client_gone_interrupt_requested"] is True
+    finally:
+        server._sessions.pop("optout-sid", None)
+
+
+def test_ws_orphan_activity_gate_unreadable_summary_stays_eligible(monkeypatch):
+    """A broken/opaque activity summary must fail CLOSED (not fresh): the
+    wedged-turn interrupt-at-grace safety net is preserved."""
+
+    def _boom():
+        raise RuntimeError("summary unavailable")
+
+    agent = types.SimpleNamespace(get_activity_summary=_boom)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 300.0)
+    assert server._ws_orphan_turn_activity_is_fresh({"agent": agent}) is False
+    # No agent / no summary method: same conservative answer.
+    assert server._ws_orphan_turn_activity_is_fresh({"agent": None}) is False
+    assert (
+        server._ws_orphan_turn_activity_is_fresh(
+            {"agent": types.SimpleNamespace()}
+        )
+        is False
+    )
+    # Never-stamped clock (None) is not fresh either.
+    agent2 = types.SimpleNamespace(
+        get_activity_summary=lambda: {"seconds_since_activity": None}
+    )
+    assert server._ws_orphan_turn_activity_is_fresh({"agent": agent2}) is False
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 

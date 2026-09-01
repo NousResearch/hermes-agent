@@ -164,20 +164,91 @@ def build_simulated_pilot_record(
     *,
     pipeline_contract_version: str,
 ) -> Optional[dict[str, Any]]:
-    """A SIMULATED pilot record — labelled, never satisfies the real gate."""
+    """A SIMULATED pilot record — labelled, never satisfies the real gate.
+
+    C7: stamps ``ever_simulated`` so post-hoc relabelling cannot flip the
+    real-pilot gate.
+    """
     record = build_pilot_record(conn, task_id, pipeline_contract_version=pipeline_contract_version)
     if record is None:
         return None
     record["label"] = SIMULATED_LABEL
+    record["ever_simulated"] = True
     return record
 
 
-def real_pilot_gate_satisfied(record: dict[str, Any]) -> bool:
-    """The real-pilot gate is NEVER satisfiable by a simulated record."""
-    if record.get("label") == SIMULATED_LABEL:
+def mint_live_pilot_provenance(
+    task_id: str,
+    *,
+    review_event_id: Optional[int],
+    evidence_event_id: Optional[int],
+    pipeline_contract_version: str,
+    authorised_by: str,
+) -> dict[str, Any]:
+    """Mint trusted live-pilot provenance — operator-side only.
+
+    Fixture/simulated builders deliberately CANNOT call this path with
+    valid inputs: it requires an explicit ``authorised_by`` operator
+    identity and real task/review/evidence identities.  The minted
+    provenance is digest-bound so it cannot be transplanted to another
+    task or contract version.
+    """
+    if not authorised_by or not str(authorised_by).strip():
+        raise ValueError("live pilot provenance requires an explicit authorised_by operator identity")
+    identity = f"{task_id}|{review_event_id}|{evidence_event_id}|{pipeline_contract_version}|{authorised_by}"
+    return {
+        "kind": "live-pilot-authorisation",
+        "task_id": task_id,
+        "review_event_id": review_event_id,
+        "evidence_event_id": evidence_event_id,
+        "pipeline_contract_version": pipeline_contract_version,
+        "authorised_by": str(authorised_by),
+        "provenance_sha256": hashlib.sha256(identity.encode()).hexdigest(),
+    }
+
+
+def real_pilot_gate_satisfied(
+    record: dict[str, Any],
+    *,
+    expected_task_id: Optional[str] = None,
+    expected_contract_version: Optional[str] = None,
+) -> bool:
+    """The real-pilot gate requires POSITIVE trusted live provenance.
+
+    C7: a provenance block must exist, carry kind ``live-pilot-
+    authorisation`` with a digest that verifies against the record's own
+    task/contract identities, and match the expected identities when the
+    caller supplies them.  SIMULATED/relabeled/hand-built records can
+    never satisfy it: fixture builders cannot mint a verifying digest for
+    identities they do not control, and any record that previously carried
+    the SIMULATED label stays permanently ineligible via the recorded
+    ``simulated`` flag the builder stamps (label removal is insufficient).
+    """
+    if record.get("label") == SIMULATED_LABEL or record.get("ever_simulated"):
         return False
-    # Real pilots additionally require live observation outside this build;
-    # the instrumentation only records and never self-approves.
+    provenance = record.get("live_provenance")
+    if not isinstance(provenance, dict):
+        return False
+    if provenance.get("kind") != "live-pilot-authorisation":
+        return False
+    task_id = record.get("task_id")
+    contract = record.get("pipeline_contract_version")
+    identity = (
+        f"{provenance.get('task_id')}|{provenance.get('review_event_id')}|"
+        f"{provenance.get('evidence_event_id')}|{provenance.get('pipeline_contract_version')}|"
+        f"{provenance.get('authorised_by')}"
+    )
+    digest = hashlib.sha256(identity.encode()).hexdigest()
+    if provenance.get("provenance_sha256") != digest:
+        return False
+    if provenance.get("task_id") != task_id:
+        return False
+    if provenance.get("pipeline_contract_version") != contract:
+        return False
+    if expected_task_id is not None and task_id != expected_task_id:
+        return False
+    if expected_contract_version is not None and contract != expected_contract_version:
+        return False
     return record.get("final_status") == "done" and record.get("reviewer_verdict") is not None
 
 

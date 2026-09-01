@@ -22,7 +22,7 @@ wrap per call site (grep `_interim_metadata(` in gateway/run.py).
 
 import pytest
 
-from gateway.run import _interim_metadata
+from gateway.run import _interim_metadata, _send_or_update_status_coro
 from tests.gateway.relay.test_relay_live_cards import _connected_adapter
 
 
@@ -42,6 +42,45 @@ class TestInterimMetadataHelper:
         src = {"thread_id": "t1"}
         _interim_metadata(src)
         assert "_interim_send" not in src
+
+
+class RecordingStatusAdapter:
+    def __init__(self):
+        self.metadata = None
+
+    async def send(self, chat_id, content, metadata=None):
+        self.metadata = metadata
+        return {"success": True}
+
+
+@pytest.mark.asyncio
+async def test_status_delivery_adds_a_provenance_surface():
+    adapter = RecordingStatusAdapter()
+
+    await _send_or_update_status_coro(
+        adapter,
+        "chat-1",
+        "lifecycle",
+        "working",
+        {"thread_id": "thread-1"},
+    )
+
+    assert adapter.metadata == {
+        "thread_id": "thread-1",
+        "_gateway_delivery_surface": "status",
+    }
+
+
+@pytest.mark.asyncio
+async def test_status_delivery_provenance_does_not_mutate_caller_metadata():
+    adapter = RecordingStatusAdapter()
+    metadata = {"thread_id": "thread-1"}
+
+    await _send_or_update_status_coro(
+        adapter, "chat-1", "lifecycle", "working", metadata
+    )
+
+    assert metadata == {"thread_id": "thread-1"}
 
 
 class TestHeartbeatShapedSendDoesNotSeal:

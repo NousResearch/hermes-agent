@@ -761,9 +761,11 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     See #30045.
     """
     sender = getattr(adapter, "send_or_update_status", None)
+    delivery_metadata = dict(metadata or {})
+    delivery_metadata.setdefault("_gateway_delivery_surface", "status")
     if callable(sender):
-        return await sender(chat_id, status_key, content, metadata=metadata)
-    return await adapter.send(chat_id, content, metadata=metadata)
+        return await sender(chat_id, status_key, content, metadata=delivery_metadata)
+    return await adapter.send(chat_id, content, metadata=delivery_metadata)
 
 
 def _approval_send_outcome(future, timeout: float) -> str:

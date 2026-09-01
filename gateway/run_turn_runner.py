@@ -853,9 +853,12 @@ class TurnRunner:
         """Status adapter present and this run is still the current generation."""
         return bool(self._ctx._status_adapter) and self._ctx._run_still_current()
 
-    def _send_status_text(self, text: str, metadata, log_message: str) -> None:
+    def _send_status_text(self, text: str, metadata, log_message: str, *, surface: Optional[str] = None) -> None:
         ctx = self._ctx
-        self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata), log_message)
+        delivery_metadata = dict(metadata or {})
+        if surface:
+            delivery_metadata.setdefault("_gateway_delivery_surface", surface)
+        self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=delivery_metadata), log_message)
 
     def _attach_session_title_callback(self, agent, ctx) -> None:
         """Wire the platform thread-rename lane onto the agent as `_on_session_title`.
@@ -989,7 +992,12 @@ class TurnRunner:
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
-                self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
+                self._send_status_text(
+                    text,
+                    ctx._status_thread_metadata,
+                    "interim_assistant_callback scheduling error",
+                    surface="interim_assistant",
+                )
 
         return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages
 

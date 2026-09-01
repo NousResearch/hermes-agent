@@ -83,6 +83,53 @@ async def test_send_rejects_whitespace_and_records_failed_final_reply(
     assert "Dropped empty message to chat=555" in caplog.text
 
 
+def _text_adapter(channel):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=channel),
+        fetch_channel=AsyncMock(),
+    )
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_send_records_explicit_nonfinal_provenance_without_content(
+    caplog, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = _text_adapter(
+        SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=777)))
+    )
+
+    with caplog.at_level("INFO"):
+        result = await adapter.send(
+            "555",
+            "private status payload",
+            metadata={"_gateway_delivery_surface": "status"},
+        )
+
+    assert result.success is True
+    assert "surface=status" in caplog.text
+    assert "message_ids=['777']" in caplog.text
+    assert "private status payload" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_misclassify_unmarked_final_as_nonfinal(
+    caplog, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = _text_adapter(
+        SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=778)))
+    )
+
+    with caplog.at_level("INFO"):
+        result = await adapter.send("555", "ordinary final reply")
+
+    assert result.success is True
+    assert "Sent non-final Discord message" not in caplog.text
+
+
 def _voice_adapter(reference_obj, *, native_result=None, native_error=None):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     ref_msg = SimpleNamespace(id=99, to_reference=MagicMock(return_value=reference_obj))

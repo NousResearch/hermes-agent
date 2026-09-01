@@ -481,6 +481,46 @@ def _probe_loop_tick_socket(
                 pass
 
 
+def _probe_loop_tick_tcp(
+    port: int,
+    timeout: float = 1.0,
+) -> bool | None:
+    """Ping the loop-scheduling witness via TCP loopback (Windows).
+
+    Same protocol and semantics as the Unix socket variant: connect to
+    127.0.0.1:<port> and expect one byte "1" as proof the loop is
+    dispatching. Used on Windows / non-POSIX systems where AF_UNIX is not
+    available in asyncio.
+
+    Returns:
+      True  — the loop answered.
+      False — the port was reachable but did not answer, or refused.
+      None  — invalid port / could not connect for unrelated reasons.
+    """
+    try:
+        port_num = int(port)
+        if port_num <= 0 or port_num > 65535:
+            return None
+    except (TypeError, ValueError):
+        return None
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(max(float(timeout), 0.0))
+        sock.connect(("127.0.0.1", port_num))
+        return sock.recv(1) == b"1"
+    except Exception:
+        # Connection refused, timeout, transient errors: witness exists
+        # but is silent (or the process is dead and the port is closed).
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
 def _probe_loop_tick_socket_sustained(
     pid: int,
     home: Path | None,
@@ -488,6 +528,7 @@ def _probe_loop_tick_socket_sustained(
     timeout: float = 1.0,
     strikes: int = 3,
     gap_s: float = 0.2,
+    tcp_port: int | None = None,
 ) -> bool | None:
     """Probe the tick socket until a reply or the sustained-miss budget.
 
@@ -509,7 +550,10 @@ def _probe_loop_tick_socket_sustained(
     """
     total = max(int(strikes), 0)
     for attempt in range(total):
-        result = _probe_loop_tick_socket(pid, home, timeout=timeout)
+        if tcp_port is not None:
+            result = _probe_loop_tick_tcp(tcp_port, timeout=timeout)
+        else:
+            result = _probe_loop_tick_socket(pid, home, timeout=timeout)
         if result is True:
             return True
         if result is None:
@@ -579,14 +623,26 @@ def probe_gateway_loop_liveness(
         # up, or a stale file from a previous PID.  Not evidence of a wedge.
         return GATEWAY_LOOP_UNKNOWN
 
-    witness = _probe_loop_tick_socket(pid, home, timeout=tick_timeout)
+    # Pick the right witness probe: TCP loopback (Windows / non-POSIX)
+    # takes priority if the producer published a port, otherwise fall back
+    # to the AF_UNIX socket (POSIX / legacy).
+    tcp_port = payload.get("loop_tick_tcp_port")
+    try:
+        tcp_port_int = int(tcp_port) if tcp_port is not None else None
+    except (TypeError, ValueError):
+        tcp_port_int = None
+
+    if tcp_port_int is not None and tcp_port_int > 0:
+        witness = _probe_loop_tick_tcp(tcp_port_int, timeout=tick_timeout)
+        tick_armed = True
+    else:
+        witness = _probe_loop_tick_socket(pid, home, timeout=tick_timeout)
+        tick_armed = payload.get("loop_tick_socket", _LOOP_TICK_ABSENT)
     if witness is True:
         # The loop answered a ping — it is dispatching right now. A stale
         # heartbeat file is a stalled write or a saturated executor, not a
         # wedge (#90502).
         return GATEWAY_LOOP_ALIVE
-
-    tick_armed = payload.get("loop_tick_socket", _LOOP_TICK_ABSENT)
     age = time.time() - mtime
     if age <= stale_budget:
         if witness is False:
@@ -620,6 +676,7 @@ def probe_gateway_loop_liveness(
             timeout=tick_timeout,
             strikes=tick_strikes - 1,
             gap_s=tick_gap_s,
+            tcp_port=tcp_port_int,
         )
         if sustained is False:
             # Both witnesses agree, sustained: the loop did not schedule for

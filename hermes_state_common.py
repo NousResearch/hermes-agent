@@ -1132,10 +1132,11 @@ def fts_rebuild_admission(db_path):
     """Serialize full structural FTS rebuilds on *db_path* across processes.
 
     Yields True when this process holds the rebuild authority, False when the
-    bounded acquire timed out. A caller that gets False must NOT perform a
-    full rebuild — proceeding is exactly the concurrent-rebuild interleaving
-    this lock exists to prevent (fail closed). The deferred/stale breadcrumb
-    machinery already guarantees a skipped rebuild is retried later.
+    bounded acquire timed out or the lock file could not be opened at all. A
+    caller that gets False must NOT perform a full rebuild — proceeding is
+    exactly the concurrent-rebuild interleaving this lock exists to prevent
+    (fail closed). The deferred/stale breadcrumb machinery already guarantees
+    a skipped rebuild is retried later.
 
     ``db_path`` may be a str or Path; None (in-memory DB / tests without a
     file path) yields True — a private in-memory DB has no cross-process
@@ -1148,13 +1149,22 @@ def fts_rebuild_admission(db_path):
     try:
         handle = open(lock_path, "a+b")
     except OSError as exc:
-        # Read-only dir, exhausted fds, exotic filesystem: fall back to the
-        # pre-lock behaviour rather than refusing a rebuild we could run.
+        # Fail closed, exactly as a timed-out acquire does. A lock file we
+        # cannot even open means the filesystem is out of space, inodes or
+        # descriptors — and a sibling process that opened ITS handle before
+        # the disk filled is still holding the authority and rebuilding.
+        # Yielding True here handed every process on a full disk a concurrent
+        # structural rebuild of the same live state.db with no cross-process
+        # authority at all: the disk-full trigger and the re-corruption on
+        # every multi-writer boot in #100368. Deferring costs nothing that
+        # was reachable anyway — the breadcrumb retries, and on a read-only
+        # directory the rebuild's own writes could not have committed either.
         logger.warning(
-            "Could not open FTS rebuild lock %s (%s) — proceeding with "
-            "in-process serialisation only.", lock_path, exc,
+            "Could not open FTS rebuild lock %s (%s) — deferring this rebuild "
+            "rather than running it without cross-process authority.",
+            lock_path, exc,
         )
-        yield True
+        yield False
         return
 
     acquired = False

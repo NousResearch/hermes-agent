@@ -9765,6 +9765,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             depth += 1
         return depth
 
+    def _rescue_orphaned_overflow(self, session_key: str, adapter: Any) -> int:
+        """Stage any orphaned FIFO overflow into the pending slot (#99882).
+
+        The FIFO overflow (``queued_events``) drains only at the post-turn
+        promotion site (``_promote_queued_event`` inside the ``_run_agent``
+        drain).  When a busy window ends without that drain running — the
+        #99882 shape: a follow-up queued during compression-in-flight lands
+        in overflow, compression finishes, the slot event's turn runs, but
+        the drain recursion exits before promoting (or the busy window ends
+        through an exception / interrupt / generation-bump exit that never
+        reaches the promotion site) — the overflow entries are silently
+        orphaned: never dispatched, never persisted, never logged.
+
+        This rescue runs at the point where a NEW event arrives for a
+        session that is NOT busy (the idle entry in
+        ``_process_message_priority``).  If the session went idle with a
+        populated overflow, the orphaned events are re-staged in FIFO
+        order ahead of the incoming event's own enqueue, so arrival order
+        (#28503) is preserved: the orphaned follow-ups run first, then the
+        new message.  The slot must be empty at this point (the session is
+        idle), so staging is a plain slot assignment.
+
+        Returns the number of orphaned events re-staged (0 when none).
+        """
+        try:
+            _q_state = self._peek_session_state(session_key)
+            overflow = _q_state.conversation.queued_events if _q_state else None
+            if not overflow:
+                return 0
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if not isinstance(pending_slot, dict) or pending_slot.get(session_key):
+                # Slot occupied (busy) or no slot storage — promotion owns
+                # this; do not fight it from the idle path.
+                return 0
+            # Only stage ONE orphan into the slot — the remaining overflow
+            # stays queued and will drain via the normal
+            # _promote_queued_event post-turn promotion.  Staging more than
+            # one would clobber the slot (single-slot design).
+            pending_slot[session_key] = overflow.pop(0)
+            rescued = 1
+            if rescued:
+                logger.warning(
+                    "Rescued %d orphaned FIFO overflow event(s) for idle session "
+                    "%s — they were queued during a busy window but the post-turn "
+                    "drain never promoted them (#99882)",
+                    rescued,
+                    session_key,
+                )
+                if overflow:
+                    logger.warning(
+                        "%d overflow event(s) still queued for session %s after "
+                        "rescue staging (will drain via normal promotion)",
+                        len(overflow),
+                        session_key,
+                    )
+            return rescued
+        except Exception:
+            logger.debug("FIFO overflow rescue failed for %s", session_key, exc_info=True)
+            return 0
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
@@ -19712,6 +19772,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _quick_key,
             )
             return _limit_message
+
+        # ── FIFO orphan rescue (#99882) ────────────────────────────────
+        # If this session went idle with a populated overflow (queued
+        # during a busy window whose post-turn drain never promoted —
+        # e.g. a compression-demoted follow-up after the compression
+        # window ended through an exit that skipped the promotion site),
+        # those events were silently orphaned.  We are starting the next
+        # turn for this session NOW: re-stage the orphans in FIFO order
+        # and enqueue the incoming event behind them, so arrival order
+        # (#28503) holds: oldest orphan runs as this turn, the rest drain
+        # in order, the new message last.  Skipped for control commands
+        # (/stop etc. own their own semantics) and internal events.
+        try:
+            _orphan_adapter = self._adapter_for_source(source)
+            if (
+                _orphan_adapter is not None
+                and not bool(getattr(event, "internal", False))
+                and not event.get_command()
+                and self._queue_depth(
+                    _quick_key, adapter=_orphan_adapter
+                ) >= 1
+                and not _orphan_adapter._pending_messages.get(_quick_key)
+            ):
+                _rescued = self._rescue_orphaned_overflow(
+                    _quick_key, _orphan_adapter
+                )
+                if _rescued:
+                    # Orphans staged in the slot; park the incoming event
+                    # behind them in the overflow so it runs AFTER the
+                    # rescued chain (FIFO).
+                    _head = _orphan_adapter._pending_messages.get(_quick_key)
+                    if _head is not None:
+                        # The slot head runs as this turn via the loop
+                        # below; enqueue the incoming event into overflow.
+                        self._session_state(_quick_key).conversation.queued_events.append(
+                            event
+                        )
+                        # Swap: this turn now processes the oldest orphan.
+                        event = _head
+        except Exception:
+            logger.debug(
+                "FIFO orphan rescue pre-claim failed for %s",
+                _quick_key,
+                exc_info=True,
+            )
+
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease

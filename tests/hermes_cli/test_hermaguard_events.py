@@ -268,3 +268,104 @@ class TestDryRunSafety:
         assert "subprocess" not in src
         assert "Popen" not in src
         assert "check_output" not in src
+
+
+class TestR33RealConfigEnablement:
+    """R3-3: a REAL config.yaml with kanban.hermaguard_event_mode: true must
+    enable the emit / hook / reconcile / gate paths through the canonical
+    config loader — no monkeypatched event_mode_enabled, no nonexistent
+    get_kanban_config import.
+
+    The previous implementation imported ``get_kanban_config`` (absent from
+    this repo) inside a try/except, so the ImportError was swallowed and the
+    mode was hard-locked OFF: no real config could ever enable emission.
+    """
+
+    @staticmethod
+    def _review(conn, tid):
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+        conn.commit()
+        kb.request_review(conn, tid, force=True)
+        conn.commit()
+        row = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'review_requested' "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert row is not None, "review transition did not record review_requested"
+        return int(row["id"])
+
+    @staticmethod
+    def _task(conn, tier="full"):
+        return kb.create_task(
+            conn, title="t", assignee="octacon",
+            body="## Problem\nx\n## Success Criteria\ny", triage=True,
+            tier=tier, task_kind="task",
+        )
+
+    @pytest.fixture
+    def real_home(self, tmp_path, monkeypatch):
+        """Disposable HERMES_HOME with a REAL config.yaml enabling the mode.
+        No monkeypatching of he.event_mode_enabled anywhere in this class."""
+        home = tmp_path / "hermes-real"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "kanban:\n  hermaguard_event_mode: true\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        conn = kb.connect()
+        yield conn, home
+        conn.close()
+
+    def test_mode_off_without_config(self, tmp_path, monkeypatch):
+        """Control: a real config WITHOUT the key keeps the mode OFF."""
+        home = tmp_path / "hermes-off"
+        home.mkdir()
+        (home / "config.yaml").write_text("model: local\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert he.event_mode_enabled() is False
+
+    def test_real_config_enables_mode(self, real_home):
+        conn, _ = real_home
+        # The canonical loader path — no monkeypatch, no explicit cfg arg.
+        assert he.event_mode_enabled() is True
+
+    def test_real_config_enables_emit_and_hook(self, real_home):
+        conn, _ = real_home
+        tid = self._task(conn, tier="full")
+        rid = self._review(conn, tid)
+        # emit via real config resolution (force_mode=None → config decides)
+        e1 = he.emit_requirement_on_review(conn, tid, rid)
+        assert e1 is not None
+        # hook via real config resolution
+        tid2 = self._task(conn, tier="full")
+        rid2 = self._review(conn, tid2)
+        he.hook_request_review(conn, tid2, rid2)
+        events = [e for e in kb.list_events(conn, tid2) if e.kind == he.KIND_REQUIRED]
+        assert len(events) == 1
+        assert events[0].payload["review_event_id"] == rid2
+
+    def test_real_config_enables_reconcile(self, real_home):
+        conn, _ = real_home
+        tid = self._task(conn, tier="full")
+        self._review(conn, tid)  # review with no requirement → a "miss"
+        conn.commit()
+        db = conn.execute("PRAGMA database_list").fetchone()[2]
+        result = he.reconcile_missed_requirements(db)  # force_mode=None → config
+        assert result["repaired"] == 1
+
+    def test_real_config_enables_gate(self, real_home):
+        conn, home = real_home
+        tid = self._task(conn, tier="full")
+        rid = self._review(conn, tid)
+        he.emit_requirement_on_review(conn, tid, rid)
+        conn.commit()
+        db = conn.execute("PRAGMA database_list").fetchone()[2]
+        # no evidence yet → the gate must BLOCK (proves it is active, i.e.
+        # the real config enabled the strict path)
+        ok, reason = he.gate_review_transition(
+            db, conn, tid, review_event_id=rid,
+            artifact_dir=home / "feature-artifacts" / tid,
+        )
+        assert ok is False
+        assert reason and "evidence" in reason

@@ -121,6 +121,121 @@ class TestR22CallerTransaction:
         assert title != "canary-title"  # rollback must undo the canary
 
 
+# ── R3-7 ─────────────────────────────────────────────────────────────────────
+
+class TestR37TransactionLifecycle:
+    """R3-7: pin the transaction/index rollback lifecycle so a future
+    "fix" cannot reintroduce an implicit commit.
+
+    Contract pinned here:
+      1. a caller rollback removes caller writes, Hermaguard writes and
+         any index first installed inside that rolled-back transaction;
+      2. the next committed ensure/append installs and persists exactly
+         ONE index;
+      3. concurrent installers converge to exactly one index;
+      4. duplicate residue remains fail-closed and untouched.
+    """
+
+    @staticmethod
+    def _index_count(conn):
+        return conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' "
+            "AND name='ux_hermaguard_task_kind_review'").fetchone()[0]
+
+    def test_rollback_removes_caller_writes_and_installed_index(self, env):
+        conn, home = env
+        tid = _task(conn)
+        rid = _review(conn, tid)
+        assert self._index_count(conn) == 0
+        # Caller opens a transaction, does its own writes, then installs
+        # the Hermaguard invariant (which uses execute(), never
+        # executescript — so it stays inside the caller's transaction).
+        conn.execute("BEGIN")
+        conn.execute("UPDATE tasks SET title = 'r37-canary' WHERE id = ?", (tid,))
+        he.ensure_uniqueness_invariants(conn)
+        # Inside the transaction the index is visible to the caller...
+        assert self._index_count(conn) == 1
+        # ...but a caller rollback removes EVERYTHING: caller writes,
+        # Hermaguard writes, AND the index installed in that transaction.
+        conn.rollback()
+        title = conn.execute("SELECT title FROM tasks WHERE id = ?", (tid,)).fetchone()[0]
+        assert title != "r37-canary"  # caller write rolled back
+        assert self._index_count(conn) == 0  # index rolled back with it
+
+    def test_next_committed_ensure_persists_exactly_one_index(self, env):
+        conn, home = env
+        tid = _task(conn)
+        rid = _review(conn, tid)
+        # First attempt: installed inside a rolled-back transaction (gone).
+        conn.execute("BEGIN")
+        he.ensure_uniqueness_invariants(conn)
+        conn.rollback()
+        assert self._index_count(conn) == 0
+        # Next committed ensure persists EXACTLY ONE index, and it
+        # survives a fresh connection (genuinely persisted).
+        he.ensure_uniqueness_invariants(conn)
+        conn.commit()
+        assert self._index_count(conn) == 1
+        fresh = sqlite3.connect(str(conn.execute("PRAGMA database_list").fetchone()[2]))
+        assert self._index_count(fresh) == 1
+        fresh.close()
+        # A second ensure on the persisted index is a no-op (no duplicate).
+        he.ensure_uniqueness_invariants(conn)
+        assert self._index_count(conn) == 1
+
+    def test_concurrent_installers_converge_to_one_index(self, env):
+        conn, home = env
+        _task(conn)
+        db_path = str(conn.execute("PRAGMA database_list").fetchone()[2])
+        barrier = threading.Barrier(4)
+
+        def installer():
+            con = sqlite3.connect(db_path, timeout=15)
+            try:
+                barrier.wait()
+                con.execute("BEGIN IMMEDIATE")
+                he.ensure_uniqueness_invariants(con)
+                con.commit()
+            except sqlite3.IntegrityError:
+                con.rollback()  # raced installers converge via replay
+            finally:
+                con.close()
+
+        threads = [threading.Thread(target=installer) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        # All concurrent installers converge to exactly one index.
+        assert self._index_count(conn) == 1
+
+    def test_duplicate_residue_fail_closed_and_untouched(self, env):
+        conn, home = env
+        tid = _task(conn)
+        rid = _review(conn, tid)
+        # Legacy duplicate residue (two requirement rows, same cycle).
+        payload = json.dumps({"review_event_id": rid, "policy_version": "old"})
+        for _ in range(2):
+            conn.execute(
+                "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                "VALUES (?, NULL, ?, ?, strftime('%s','now'))",
+                (tid, he.KIND_REQUIRED, payload))
+        conn.commit()
+        # Fail closed: no index is created over duplicate residue...
+        result = he.ensure_uniqueness_invariants_safe(conn)
+        assert result["installed"] is False
+        assert result["duplicate_groups"] >= 1
+        assert self._index_count(conn) == 0
+        # ...and the residue is never deleted or rewritten (append-only).
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = ?",
+            (tid, he.KIND_REQUIRED)).fetchone()[0] == 2
+        # And it stays fail-closed on every subsequent call.
+        result2 = he.ensure_uniqueness_invariants_safe(conn)
+        assert result2["installed"] is False
+        assert self._index_count(conn) == 0
+
+
 # ── R2-3 ─────────────────────────────────────────────────────────────────────
 
 class TestR23LegacyDuplicates:

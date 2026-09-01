@@ -186,15 +186,27 @@ def _resolve_mode(force_mode: Any) -> bool:
 def event_mode_enabled(kanban_cfg: Optional[dict] = None) -> bool:
     """Dedicated default-OFF gate protecting the new behaviour.
 
+    R3-3: when no explicit ``kanban_cfg`` is supplied the mode is resolved
+    through the CANONICAL config loader (``hermes_cli.config.load_config``).
+    The previous implementation imported ``get_kanban_config`` — a symbol
+    that does not exist in this repo — inside a try/except, so the ImportError
+    was swallowed and the mode was hard-locked to OFF: a real
+    ``kanban.hermaguard_event_mode: true`` in ``config.yaml`` could never
+    enable emission.
+
     Absent, empty, malformed or falsy config → False.  Only an explicit
     truthy ``kanban.hermaguard_event_mode`` enables mutations.
     """
     if kanban_cfg is None:
         try:
-            from hermes_cli.config import get_kanban_config
-            kanban_cfg = get_kanban_config()
+            from hermes_cli.config import load_config
+
+            loaded = load_config()
         except Exception:
             return False
+        if not isinstance(loaded, dict):
+            return False
+        kanban_cfg = loaded.get("kanban")
     if not isinstance(kanban_cfg, dict):
         return False
     return kanban_cfg.get("hermaguard_event_mode") is True

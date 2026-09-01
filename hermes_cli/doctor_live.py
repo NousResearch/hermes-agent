@@ -309,11 +309,172 @@ def run_live_checks(issues: List[str]) -> List[ProbeResult]:
         results.append(ProbeResult("MCP", "skip", "(no servers configured)"))
         _report(results[-1], issues)
 
+    for probe_result in _probe_configured_models(config, timeout):
+        results.append(probe_result)
+        _report(probe_result, issues)
+
     results.append(_run_one(
         "TTS", lambda: _probe_tts(config, timeout), issues))
     results.append(_run_one(
         "STT", lambda: _probe_stt(config, timeout), issues))
 
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Configured-model existence (primary + fallback chain)
+# ---------------------------------------------------------------------------
+# doctor's static block validates that ``model.provider`` NAMES a real provider
+# and that slug style suits it, plus a hardcoded retired-model list. It never
+# asks the provider whether the configured model is actually served, and it
+# never looks at ``fallback_providers`` at all.
+#
+# That combination hides a specific, silent failure: a fallback entry whose
+# provider is valid and whose model simply is not there any more. The primary
+# path masks it until the moment the fallback is needed, and then every call
+# returns a hard 400 (observed in the wild: ``lmstudio / hermes-4-14b`` against
+# an LM Studio that had been re-provisioned with different models). A dead
+# fallback is worse than a dead primary, because it is invisible right up to
+# the moment it is load-bearing.
+
+
+def _served_model_ids(base_url: str, api_key: Optional[str],
+                      timeout: float) -> Optional[set]:
+    """Model ids an OpenAI-compatible endpoint reports, or None if unverifiable.
+
+    None means "could not establish the truth" (unreachable, auth-gated, not an
+    OpenAI-compatible surface, unparseable body). It never means "empty", so a
+    caller can never mistake a failed probe for proof of absence.
+    """
+    root = (base_url or "").strip().rstrip("/")
+    if not root:
+        return None
+    if not root.endswith("/v1"):
+        root = f"{root}/v1"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        resp = _http_get(f"{root}/models", headers=headers, timeout=timeout)
+    except Exception:
+        return None
+    if getattr(resp, "status_code", 0) != 200:
+        return None
+    try:
+        payload = resp.json()
+    except Exception:
+        return None
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return None
+    ids = {
+        str(e.get("id")).strip()
+        for e in entries
+        if isinstance(e, dict) and e.get("id")
+    }
+    return ids or None
+
+
+def _configured_model_routes(config: dict) -> list:
+    """(label, provider, model, base_url) for the primary and every fallback.
+
+    The fallback chain comes from ``get_fallback_chain`` rather than reading
+    ``fallback_providers`` directly, so legacy ``fallback_model`` entries and
+    de-duplication behave exactly as they do at call time.
+    """
+    routes = []
+    model_section = config.get("model")
+    if isinstance(model_section, dict):
+        primary = str(model_section.get("default") or "").strip()
+        if primary:
+            routes.append((
+                "primary",
+                str(model_section.get("provider") or "").strip(),
+                primary,
+                str(model_section.get("base_url") or "").strip() or None,
+            ))
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        chain = get_fallback_chain(config)
+    except Exception:
+        chain = []
+    for i, entry in enumerate(chain):
+        if not isinstance(entry, dict):
+            continue
+        model = str(entry.get("model") or "").strip()
+        provider = str(entry.get("provider") or "").strip()
+        if not model or not provider:
+            continue
+        routes.append((
+            f"fallback[{i}]",
+            provider,
+            model,
+            str(entry.get("base_url") or "").strip() or None,
+        ))
+    return routes
+
+
+def _pool_base_url(provider: str) -> Optional[str]:
+    """Endpoint the credential pool would use for ``provider``, if any.
+
+    A fallback entry usually carries only ``provider`` and ``model``; the
+    endpoint lives with the credential. Without this, the entries most likely
+    to rot (local providers whose model set changes) could not be checked.
+    """
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool()
+    except Exception:
+        return None
+    try:
+        creds = pool.get(provider) if isinstance(pool, dict) else None
+        if creds is None and hasattr(pool, "for_provider"):
+            creds = pool.for_provider(provider)
+        for cred in creds or []:
+            url = getattr(cred, "runtime_base_url", None)
+            url = url() if callable(url) else url
+            if url:
+                return str(url)
+            if isinstance(cred, dict) and cred.get("base_url"):
+                return str(cred["base_url"])
+    except Exception:
+        return None
+    return None
+
+
+def _probe_configured_models(config: dict, timeout: float) -> list:
+    """One ProbeResult per configured route. Absence is only ever a `fail`."""
+    routes = _configured_model_routes(config)
+    if not routes:
+        return [ProbeResult("Models", "skip", "(no model configured)")]
+
+    results = []
+    for label, provider, model, base_url in routes:
+        name = f"Model {label}: {provider or '?'}/{model}"
+        endpoint = base_url or _pool_base_url(provider)
+        if not endpoint:
+            results.append(ProbeResult(
+                name, "skip", "(no endpoint resolvable for this provider)"))
+            continue
+        served = _served_model_ids(endpoint, None, timeout)
+        if served is None:
+            results.append(ProbeResult(
+                name, "warn",
+                "(could not read /v1/models — unreachable, auth-gated, or "
+                "not an OpenAI-compatible surface)"))
+            continue
+        # A provider-prefixed slug is configured as "provider/model" but served
+        # under the bare id, so compare both spellings before calling it absent.
+        wanted = {model, model.split("/", 1)[-1]}
+        lowered = {m.lower() for m in served}
+        if any(w in served or w.lower() in lowered for w in wanted):
+            results.append(ProbeResult(name, "pass", f"({len(served)} served)"))
+        else:
+            sample = ", ".join(sorted(served)[:3])
+            results.append(ProbeResult(
+                name, "fail",
+                f"not served by {provider} — available: {sample}"
+                + (" …" if len(served) > 3 else "")))
     return results
 
 

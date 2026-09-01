@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from hermes_constants import OPENROUTER_VARIANT_SUFFIXES
+
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable, as
 # ``(model_id, description shown in menus)``. ``:free`` SKUs are described "free".
@@ -506,12 +508,10 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 _AGGREGATOR_PROVIDERS = frozenset({"nous", "openrouter", "ai-gateway", "copilot", "kilocode"})
 
 
-# OpenRouter request-time routing variants (docs: guides/routing/model-variants): per-request
-# modifiers valid on ANY model id (":nitro" throughput sort + priority tier, ":floor" price sort +
-# flex tier, ":exacto" quality-first provider sort, ":online" web plugin). Never separate catalog
-# entries — /models lists only the base id. NOT here: ":free", ":batch", ":thinking", ":extended"
-# — those ARE distinct SKUs that appear in /models when they exist, so absence is authoritative.
-_OPENROUTER_VARIANT_SUFFIXES = frozenset({"nitro", "floor", "exacto", "online"})
+# Canonical suffix set lives in ``hermes_constants`` so the metadata layer can
+# share it without importing the CLI. Re-exported here under the historical
+# private name used by ``hermes_cli.models``.
+_OPENROUTER_VARIANT_SUFFIXES = OPENROUTER_VARIANT_SUFFIXES
 
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last

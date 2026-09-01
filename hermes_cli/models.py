@@ -60,6 +60,7 @@ from hermes_cli.models_local import (
     _ollama_probe_cache_key,
     _root_for_ollama_native_api,
     fetch_ollama_cloud_models)
+from hermes_constants import OPENROUTER_VARIANT_SUFFIXES, openrouter_variant_base
 
 logger = logging.getLogger(__name__)
 
@@ -838,11 +839,11 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
         for model in _provider_catalog_names(provider))
 
 
-def _openrouter_variant_base(model_id: str) -> Optional[str]:
-    """Base model id when ``model_id`` carries a recognized OpenRouter routing-variant suffix
-    (``x-ai/grok-4:nitro`` → ``x-ai/grok-4``), else ``None``."""
-    base, sep, suffix = (model_id or "").rpartition(":")
-    return base if sep and base and suffix.lower() in _OPENROUTER_VARIANT_SUFFIXES else None
+# Canonical suffix set lives in ``hermes_constants`` so the metadata layer can
+# share it without importing the CLI. Re-exported here under the historical
+# private names used by ``validate_requested_model``.
+_OPENROUTER_VARIANT_SUFFIXES = OPENROUTER_VARIANT_SUFFIXES
+_openrouter_variant_base = openrouter_variant_base
 
 
 def _resolve_static_model_alias(

@@ -30,7 +30,7 @@ export interface MigrationDeps {
 }
 
 export interface MigrationDecision {
-  profile: string
+  profile: string | null
   /** True when chosen from the state.db heuristic (auto-detected), undefined when explicit. */
   _migrated?: boolean
 }
@@ -234,13 +234,47 @@ export function withDefaultCandidate(named: string[]): string[] {
 }
 
 /**
- * Orchestrator. Idempotent: writes at most once when the preference file is
- * missing. Thin on top of the decision helpers above; the testable surface is
- * `decideMigration` + the individual rung helpers, this function just glues them
- * to the deps bag.
+ * Read an existing active-profile.json. Returns null when missing/malformed.
+ * `_migrated: true` means the first-boot heuristic wrote it (safe to re-score).
+ * Absence of that flag is a user/CLI choice and must not be overwritten.
+ */
+export function readExistingPreference(
+  desktopProfileConfigPath: string,
+  readFile: MigrationDeps['readFileSync']
+): { profile: string | null; migrated: boolean } | null {
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(readFile(desktopProfileConfigPath, 'utf8'))
+  } catch {
+    return null
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return null
+  }
+
+  const rec = parsed as { profile?: unknown; _migrated?: unknown }
+  const raw = typeof rec.profile === 'string' ? rec.profile.trim() : ''
+
+  return {
+    profile: raw || null,
+    migrated: rec._migrated === true
+  }
+}
+
+/**
+ * First-boot seed, plus repair of heuristic-owned files (`_migrated: true`).
+ * User-selected files (no `_migrated`) are never overwritten. When a repaired
+ * heuristic would now pick default, write `{ profile: null }` so Desktop drops
+ * `--profile` instead of pinning `default`.
  */
 export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, deps: MigrationDeps): boolean {
-  if (deps.existsSync(desktopProfileConfigPath)) {
+  const existing = deps.existsSync(desktopProfileConfigPath)
+    ? readExistingPreference(desktopProfileConfigPath, deps.readFileSync)
+    : null
+
+  if (existing && !existing.migrated) {
     return false
   }
 
@@ -258,6 +292,15 @@ export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, 
   // launches `hermes --profile default` and is worse than writing nothing
   // (legacy sticky / implicit default). Covers a lone default gateway.pid.
   if (!decision || decision.profile === 'default') {
+    if (existing?.migrated) {
+      deps.writeJson(desktopProfileConfigPath, { profile: null })
+      return true
+    }
+
+    return false
+  }
+
+  if (existing?.migrated && existing.profile === decision.profile) {
     return false
   }
 

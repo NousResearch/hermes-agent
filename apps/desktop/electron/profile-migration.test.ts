@@ -27,6 +27,7 @@ import {
   PROFILE_SCORE_MIN_SIZE_BYTES,
   profileGatewayPidPath,
   profileStateDbPath,
+  readExistingPreference,
   readLegacyActiveProfile,
   scoreStateDb,
   withDefaultCandidate
@@ -402,11 +403,20 @@ test('decideMigration still flags _migrated when legacy is invalid (undefined) b
 // migrateActiveProfileIfMissing (orchestrator)
 // ---------------------------------------------------------------------------
 
-test('migrateActiveProfileIfMissing is a no-op when the preference file exists', () => {
+test('migrateActiveProfileIfMissing is a no-op when a user-selected preference file exists', () => {
+  // No `_migrated` flag = explicit user/CLI choice. Even a huge other profile
+  // must not steal the pin.
   let written: unknown = null
 
+  const fs = makeFs({
+    '/cfg/active-profile.json': { content: '{"profile":"coder"}' },
+    '/home/u/.hermes/profiles/coder': { dir: true },
+    '/home/u/.hermes/profiles/writer': { dir: true },
+    '/home/u/.hermes/profiles/writer/state.db': { size: 400 * 1024 * 1024, mtime: NOW - 86_400_000 }
+  })
+
   const deps = baseDeps({
-    existsSync: (p: string) => p === '/cfg/active-profile.json',
+    ...fs,
     writeJson: (_p: string, payload: unknown) => {
       written = payload
     }
@@ -612,6 +622,61 @@ test('migrateActiveProfileIfMissing does not pin default when only default gatew
   const deps = baseDeps({
     ...fs,
     isHermesProcess: (pid: number) => pid === 7,
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
+  })
+
+  assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), false)
+  assert.equal(written, null)
+})
+
+test('readExistingPreference treats _migrated as heuristic-owned', () => {
+  const fs = makeFs({
+    '/cfg/active-profile.json': { content: '{"profile":"conduit","_migrated":true}' }
+  })
+
+  assert.deepEqual(readExistingPreference('/cfg/active-profile.json', fs.readFileSync), {
+    profile: 'conduit',
+    migrated: true
+  })
+})
+
+test('migrateActiveProfileIfMissing repairs a pre-existing heuristic pin when default now wins', () => {
+  // Sol P1 / #100576: file already exists with _migrated:true so first-boot
+  // skip left affected installs stuck. Re-score and clear.
+  let written: unknown = null
+
+  const fs = makeFs({
+    '/cfg/active-profile.json': { content: '{"profile":"conduit","_migrated":true}' },
+    '/home/u/.hermes/profiles/conduit': { dir: true },
+    '/home/u/.hermes/state.db': { size: 409 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.hermes/profiles/conduit/state.db': { size: 2 * 1024 * 1024, mtime: NOW - 60_000 }
+  })
+
+  const deps = baseDeps({
+    ...fs,
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
+  })
+
+  assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), true)
+  assert.deepEqual(written, { profile: null })
+})
+
+test('migrateActiveProfileIfMissing leaves a still-correct heuristic pin alone', () => {
+  let written: unknown = null
+
+  const fs = makeFs({
+    '/cfg/active-profile.json': { content: '{"profile":"work","_migrated":true}' },
+    '/home/u/.hermes/profiles/work': { dir: true },
+    '/home/u/.hermes/state.db': { size: 5 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.hermes/profiles/work/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
+  })
+
+  const deps = baseDeps({
+    ...fs,
     writeJson: (_p: string, payload: unknown) => {
       written = payload
     }

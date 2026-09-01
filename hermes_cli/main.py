@@ -5219,6 +5219,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_sync_with_upstream_if_needed",
         "_update_node_dependencies",
         "_update_via_zip",
+        "_warn_orphaned_update_autostashes",
         "_upgrade_pip_before_lazy_refresh",
         "_validate_critical_files_syntax",
         "_validate_critical_modules_import",

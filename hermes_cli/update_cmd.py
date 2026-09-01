@@ -2541,7 +2541,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     from datetime import datetime, timezone
 
     stash_name = datetime.now(timezone.utc).strftime(
-        "hermes-update-autostash-%Y%m%d-%H%M%S"
+        f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S"
     )
     print("→ Local changes detected — stashing before update...")
     prev_stash = subprocess.run(
@@ -2627,6 +2627,83 @@ def _resolve_stash_selector(
         if commit.strip() == stash_ref:
             return selector.strip()
     return None
+
+#: Producer/consumer contract for update autostash names: the stash subject is
+#: this prefix + a UTC YYYYMMDD-HHMMSS stamp (see _stash_local_changes_if_needed
+#: and _warn_orphaned_update_autostashes).
+_AUTOSTASH_NAME_PREFIX = "hermes-update-autostash-"
+
+#: Age past which a leftover ``hermes-update-autostash-*`` entry is called out
+#: at update time. Entries younger than this are normal (a parked stash from
+#: the desktop updater's --keep-stash run minutes ago); older ones are almost
+#: always forgotten (#63717 problem 6: an orphan persisted 9+ days unnoticed).
+_AUTOSTASH_WARN_AGE_DAYS = 7
+
+
+def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
+    """Surface leftover update autostashes older than the warn threshold.
+
+    Autostash entries legitimately outlive an update run (``--keep-stash``
+    parks them; a conflicted or failed restore preserves them for safety), but
+    nothing ever re-surfaces them afterwards — they sit in ``git stash``
+    invisibly for weeks (#63717 problem 6). This prints a short notice naming
+    the stale entries with recovery/cleanup guidance. Deliberately NOT a GC:
+    a stash entry can be the only copy of the user's uncommitted work, so
+    Hermes never drops one automatically.
+
+    Best-effort — any git failure returns 0 and must not block the update.
+    Returns the number of stale entries warned about.
+    """
+    from datetime import timedelta, timezone
+
+    try:
+        stash_list = subprocess.run(
+            git_cmd + ["stash", "list", "--format=%gd %s"],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if stash_list.returncode != 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            days=_AUTOSTASH_WARN_AGE_DAYS
+        )
+        marker = _AUTOSTASH_NAME_PREFIX
+        stale: list[tuple[str, str]] = []
+        for line in stash_list.stdout.splitlines():
+            selector, _, subject = line.strip().partition(" ")
+            pos = subject.find(marker)
+            if pos < 0:
+                continue
+            stamp = subject[pos + len(marker):][:15]  # "YYYYMMDD-HHMMSS"
+            try:
+                stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                # Unparseable name — age unknown; leave it alone rather than
+                # guess (same posture as _prune_orphan_rescue_refs).
+                continue
+            if stash_time < cutoff:
+                stale.append((selector, stamp))
+        if not stale:
+            return 0
+        print()
+        print(
+            f"⚠ {len(stale)} leftover update autostash entr"
+            f"{'y is' if len(stale) == 1 else 'ies are'} more than "
+            f"{_AUTOSTASH_WARN_AGE_DAYS} days old:"
+        )
+        for selector, stamp in stale:
+            print(f"    {selector}  ({_AUTOSTASH_NAME_PREFIX}{stamp})")
+        print("  These hold local changes stashed by earlier updates and never")
+        print("  restored. Review with: git stash show -p <entry>")
+        print("  Restore with: git stash apply <entry>   Discard with: git stash drop <entry>")
+        return len(stale)
+    except Exception as exc:
+        logger.debug("Autostash age check failed: %s", exc)
+        return 0
+
 
 def _print_stash_cleanup_guidance(
     stash_ref: str, stash_selector: Optional[str] = None
@@ -8461,6 +8538,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+
+        # Surface autostash entries left behind by earlier updates (#63717
+        # problem 6) — parked --keep-stash runs and failed restores preserve
+        # the stash but nothing ever mentioned it again.
+        _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import github_pr_feedback.ledger as ledger_module
 from github_pr_feedback.ledger import ClaimLease, FeedbackLedger
 from github_pr_feedback.policy import (
     FeedbackReceipt,
@@ -1174,6 +1175,39 @@ def test_ledger_enables_bounded_busy_waits_and_wal_autocheckpoint(
     assert ledger._connection.execute("PRAGMA busy_timeout").fetchone()[0] == 5_000
     assert ledger._connection.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1_000
     ledger.close()
+
+
+def test_ledger_startup_sets_busy_timeout_before_wal_and_retries_transient_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    connect_attempts = 0
+
+    class FakeConnection:
+        def execute(self, statement: str):
+            calls.append(statement)
+
+        def close(self):
+            calls.append("close")
+
+    connection = FakeConnection()
+
+    def flaky_connect(*args, **kwargs):
+        nonlocal connect_attempts
+        connect_attempts += 1
+        assert kwargs["timeout"] == 5.0
+        if connect_attempts == 1:
+            raise sqlite3.OperationalError("unable to open database file")
+        return connection
+
+    monkeypatch.setattr(ledger_module.sqlite3, "connect", flaky_connect)
+    monkeypatch.setattr(ledger_module.time, "sleep", lambda _delay: None)
+
+    result = ledger_module._connect_ledger(tmp_path / "ledger.sqlite3")
+
+    assert result is connection
+    assert connect_attempts == 2
+    assert calls[:2] == ["PRAGMA busy_timeout=5000", "PRAGMA journal_mode=WAL"]
 
 
 def test_worktree_policy_allows_ten_seconds_for_local_git_probe(

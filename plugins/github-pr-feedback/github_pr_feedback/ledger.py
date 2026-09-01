@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -72,16 +73,66 @@ class LedgerStateError(RuntimeError):
     """The caller tried to finalize or fail a receipt it does not hold."""
 
 
+_LEDGER_BUSY_TIMEOUT_MS = 5_000
+_LEDGER_STARTUP_RETRY_DELAYS = (0.05, 0.1, 0.25, 0.5, 1.0)
+
+
+def _is_transient_startup_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "database is locked",
+            "database is busy",
+            "unable to open database file",
+        )
+    )
+
+
+def _connect_ledger(path: Path) -> sqlite3.Connection:
+    """Open a ledger with busy waiting installed before WAL negotiation.
+
+    Multiple Hermes profiles can initialize the same feedback ledger after a
+    restart. SQLite negotiates WAL by taking a write lock, so the busy timeout
+    must be installed before the WAL pragma rather than after it. A short,
+    bounded retry also covers the narrow window where another process is
+    creating the database or its WAL sidecars. Persistent permission/path
+    errors still surface unchanged; this is not an infinite retry loop.
+    """
+    for attempt in range(len(_LEDGER_STARTUP_RETRY_DELAYS) + 1):
+        connection = None
+        try:
+            connection = sqlite3.connect(
+                path,
+                isolation_level=None,
+                timeout=_LEDGER_BUSY_TIMEOUT_MS / 1000,
+            )
+            # Set this before journal_mode=WAL. sqlite3.connect(timeout=...) is
+            # not enough as an observable contract and future wrappers may
+            # replace the default connection timeout.
+            connection.execute(f"PRAGMA busy_timeout={_LEDGER_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA journal_mode=WAL")
+            return connection
+        except sqlite3.OperationalError as exc:
+            if connection is not None:
+                connection.close()
+            if (
+                not _is_transient_startup_error(exc)
+                or attempt >= len(_LEDGER_STARTUP_RETRY_DELAYS)
+            ):
+                raise
+            time.sleep(_LEDGER_STARTUP_RETRY_DELAYS[attempt])
+    raise AssertionError("unreachable ledger startup retry state")
+
+
 class FeedbackLedger:
     """SQLite-backed state for one profile; all receipt transitions are atomic."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path, isolation_level=None, timeout=5.0)
-        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection = _connect_ledger(self.path)
         self._connection.execute("PRAGMA foreign_keys=ON")
-        self._connection.execute("PRAGMA busy_timeout=5000")
         self._connection.execute("PRAGMA wal_autocheckpoint=1000")
         self._connection.execute("""
             CREATE TABLE IF NOT EXISTS feedback_receipts (

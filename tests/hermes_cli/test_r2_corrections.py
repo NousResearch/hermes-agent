@@ -200,8 +200,8 @@ class TestR24GateChain:
 
 class TestR25ProvenanceForgery:
     def test_public_mint_does_not_confer_authority(self, env):
-        """RED: the public mint helper with attacker-controlled fields must
-        NOT produce gate-passing provenance."""
+        """RED: the public mint helper must not confer authority — keyless
+        minting raises, and attacker-keyed provenance fails the gate."""
         conn, home = env
         tid = _task(conn)
         record = {
@@ -212,12 +212,35 @@ class TestR25ProvenanceForgery:
             "label": None,
             "ever_simulated": False,
         }
+        # Keyless mint is refused outright
+        with pytest.raises(ValueError):
+            pe.mint_live_pilot_provenance(
+                tid, review_event_id=1, evidence_event_id=2,
+                pipeline_contract_version="c1", authorised_by="attacker",
+            )
+        # Attacker minting with their OWN key still fails the gate (the gate
+        # verifies with the TRUSTED key, not the attacker's)
         provenance = pe.mint_live_pilot_provenance(
             tid, review_event_id=1, evidence_event_id=2,
             pipeline_contract_version="c1", authorised_by="attacker",
+            signing_key=b"attacker-key",
         )
         record["live_provenance"] = provenance
-        assert pe.real_pilot_gate_satisfied(record) is False
+        assert pe.real_pilot_gate_satisfied(record, signing_key=b"trusted-key") is False
+
+    def test_valid_trusted_provenance_passes(self):
+        record = {
+            "task_id": "t1", "pipeline_contract_version": "c1",
+            "final_status": "done", "reviewer_verdict": "pass",
+            "label": None, "ever_simulated": False,
+        }
+        prov = pe.mint_live_pilot_provenance(
+            "t1", review_event_id=1, evidence_event_id=2,
+            pipeline_contract_version="c1", authorised_by="sahil",
+            signing_key=b"trusted-key",
+        )
+        record["live_provenance"] = prov
+        assert pe.real_pilot_gate_satisfied(record, signing_key=b"trusted-key") is True
 
     def test_wrong_key_rejected(self, env):
         record = {

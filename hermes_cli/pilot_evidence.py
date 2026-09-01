@@ -190,18 +190,28 @@ def mint_live_pilot_provenance(
     evidence_event_id: Optional[int],
     pipeline_contract_version: str,
     authorised_by: str,
+    signing_key: Optional[bytes] = None,
 ) -> dict[str, Any]:
-    """Mint trusted live-pilot provenance — operator-side only.
+    """Mint trusted live-pilot provenance — HMAC-bound, NOT self-authorising.
 
-    Fixture/simulated builders deliberately CANNOT call this path with
-    valid inputs: it requires an explicit ``authorised_by`` operator
-    identity and real task/review/evidence identities.  The minted
-    provenance is digest-bound so it cannot be transplanted to another
-    task or contract version.
+    R2-5: the previous unkeyed SHA-256 let any caller self-mint authority.
+    Provenance is now signed with HMAC over the bound identity using a
+    caller-supplied secret key; the real-pilot gate verifies the signature
+    with the SAME trusted key.  Calling the mint function without holding
+    the trusted key confers nothing — a forgery with the wrong key fails
+    verification at gate time.  No key may be committed, logged or read
+    from live config in this build (tests supply fixture keys).
     """
     if not authorised_by or not str(authorised_by).strip():
         raise ValueError("live pilot provenance requires an explicit authorised_by operator identity")
+    if not signing_key:
+        raise ValueError(
+            "live pilot provenance requires a trusted signing key; "
+            "self-minted provenance confers no authority"
+        )
     identity = f"{task_id}|{review_event_id}|{evidence_event_id}|{pipeline_contract_version}|{authorised_by}"
+    import hmac as _hmac
+    signature = _hmac.new(signing_key, identity.encode(), hashlib.sha256).hexdigest()
     return {
         "kind": "live-pilot-authorisation",
         "task_id": task_id,
@@ -209,6 +219,8 @@ def mint_live_pilot_provenance(
         "evidence_event_id": evidence_event_id,
         "pipeline_contract_version": pipeline_contract_version,
         "authorised_by": str(authorised_by),
+        "provenance_signature": signature,
+        # No key material stored; the key id is informational only.
         "provenance_sha256": hashlib.sha256(identity.encode()).hexdigest(),
     }
 
@@ -218,17 +230,16 @@ def real_pilot_gate_satisfied(
     *,
     expected_task_id: Optional[str] = None,
     expected_contract_version: Optional[str] = None,
+    signing_key: Optional[bytes] = None,
 ) -> bool:
     """The real-pilot gate requires POSITIVE trusted live provenance.
 
-    C7: a provenance block must exist, carry kind ``live-pilot-
-    authorisation`` with a digest that verifies against the record's own
-    task/contract identities, and match the expected identities when the
-    caller supplies them.  SIMULATED/relabeled/hand-built records can
-    never satisfy it: fixture builders cannot mint a verifying digest for
-    identities they do not control, and any record that previously carried
-    the SIMULATED label stays permanently ineligible via the recorded
-    ``simulated`` flag the builder stamps (label removal is insufficient).
+    R2-5: the provenance block must carry an HMAC signature computed over
+    the record's own task/review/evidence/contract/operator identities
+    with the SAME trusted signing key the gate verifies with.  Calling the
+    public mint helper without the trusted key cannot forge a passing
+    record; transplanted provenance fails identity binding; SIMULATED /
+    relabelled records stay permanently ineligible via ``ever_simulated``.
     """
     if record.get("label") == SIMULATED_LABEL or record.get("ever_simulated"):
         return False
@@ -237,16 +248,22 @@ def real_pilot_gate_satisfied(
         return False
     if provenance.get("kind") != "live-pilot-authorisation":
         return False
-    task_id = record.get("task_id")
-    contract = record.get("pipeline_contract_version")
+    if not signing_key:
+        return False  # no trusted verifier → no authority (fail closed)
+    import hmac as _hmac
     identity = (
         f"{provenance.get('task_id')}|{provenance.get('review_event_id')}|"
         f"{provenance.get('evidence_event_id')}|{provenance.get('pipeline_contract_version')}|"
         f"{provenance.get('authorised_by')}"
     )
-    digest = hashlib.sha256(identity.encode()).hexdigest()
-    if provenance.get("provenance_sha256") != digest:
+    expected_sig = _hmac.new(
+        signing_key, identity.encode(), hashlib.sha256
+    ).hexdigest()
+    supplied = provenance.get("provenance_signature")
+    if not isinstance(supplied, str) or not _hmac.compare_digest(supplied, expected_sig):
         return False
+    task_id = record.get("task_id")
+    contract = record.get("pipeline_contract_version")
     if provenance.get("task_id") != task_id:
         return False
     if provenance.get("pipeline_contract_version") != contract:

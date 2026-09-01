@@ -347,6 +347,18 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         max_reference_images=3,
     ),
+    "meta/muse-image/text-to-image": _model(
+        "Meta Muse Image", "~5s", "Meta. Realism + typography at commodity price", "$0.01/image",
+        style="aspect_ratio",
+        # Muse accepts 21:9…9:21; aspect_ratio is always sent on text-to-image for deterministic
+        # framing and omitted on edits so Muse follows the input image. No seed in the vendor
+        # schema (like Grok Imagine 2.0) — the supports whitelist filters it.
+        defaults={"num_images": 1, "output_format": "png"},
+        supports={"prompt", "aspect_ratio", "num_images", "output_format", "sync_mode"},
+        edit_endpoint="meta/muse-image/edit",
+        edit_supports={"prompt", "image_urls", "num_images", "output_format", "sync_mode"},
+        max_reference_images=10,
+    ),
 }
 
 

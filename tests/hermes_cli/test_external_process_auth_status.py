@@ -236,3 +236,57 @@ def test_cli_command_default_when_no_override(monkeypatch, _clean_copilot_env):
     from hermes_cli.web_server import _external_process_cli_command
 
     assert _external_process_cli_command("copilot-acp", "copilot login") == "copilot login"
+
+
+# --- live catalog key from the Copilot CLI store -----------------------------
+
+
+def test_catalog_key_resolves_from_copilot_cli_store(tmp_path, monkeypatch, _clean_copilot_env):
+    # A user whose ONLY credential is `copilot login` must still get the live
+    # model catalog — otherwise the picker silently falls back to the stale
+    # curated list (visibly wrong vs. what their subscription serves).
+    from unittest.mock import patch as mock_patch
+
+    from hermes_cli import models as models_mod
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_dir = tmp_path / ".copilot"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text(
+        "// managed\n"
+        '{"copilotTokens": {"https://github.com:u": "gho_' + "x" * 36 + '"}}\n',
+        encoding="utf-8",
+    )
+
+    with mock_patch.object(
+        models_mod, "_resolve_copilot_catalog_api_key", wraps=models_mod._resolve_copilot_catalog_api_key
+    ), mock_patch(
+        "hermes_cli.copilot_auth.exchange_copilot_token",
+        return_value=("exchanged-api-token", 0.0, None),
+    ), mock_patch(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        side_effect=Exception("no env creds"),
+    ), mock_patch(
+        "hermes_cli.auth.read_credential_pool", return_value=[]
+    ):
+        key = models_mod._resolve_copilot_catalog_api_key()
+
+    assert key == "exchanged-api-token"
+
+
+def test_catalog_key_empty_when_cli_store_absent(tmp_path, monkeypatch, _clean_copilot_env):
+    from unittest.mock import patch as mock_patch
+
+    from hermes_cli import models as models_mod
+
+    monkeypatch.setenv("HOME", str(tmp_path))  # no ~/.copilot at all
+
+    with mock_patch(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        side_effect=Exception("no env creds"),
+    ), mock_patch(
+        "hermes_cli.auth.read_credential_pool", return_value=[]
+    ):
+        key = models_mod._resolve_copilot_catalog_api_key()
+
+    assert key == ""

@@ -971,8 +971,10 @@ class TestEnsureClientReloadsEnv:
             {"content": "stable fact"},
         ))
 
-        assert out["status"] == "stored"
+        assert out["status"] == "submitted"
         assert out["session_id"].startswith("hermes-remember-")
+        assert out["session_uri"] == f"viking://user/default/sessions/{out['session_id']}"
+        assert out["message_status"] == "accepted"
         assert out["extraction_status"] == "accepted"
         assert out["task_id"] == "task-remember"
         assert out["trace_id"] == "trace-remember"
@@ -992,21 +994,7 @@ class TestEnsureClientReloadsEnv:
             ),
         ]
 
-    @pytest.mark.parametrize(
-        "category",
-        [
-            "preference",
-            "entity",
-            "event",
-            "case",
-            "pattern",
-        ],
-    )
-    def test_remember_uses_category_as_user_memory_hint(
-        self,
-        monkeypatch,
-        category,
-    ):
+    def test_remember_accepts_legacy_category_but_submits_raw_user_text(self, monkeypatch):
         posts = []
 
         class _StubClient:
@@ -1023,17 +1011,16 @@ class TestEnsureClientReloadsEnv:
 
         out = json.loads(provider._tool_remember({
             "content": "stable fact",
-            "category": category,
+            "category": "preference",
         }))
 
         session_id = out["session_id"]
         message_path, message = posts[0]
         assert message_path == f"/api/v1/sessions/{session_id}/messages"
         assert message["role"] == "user"
-        assert message["parts"] == [
-            {"type": "text", "text": f"[Remember — {category}] stable fact"}
-        ]
+        assert message["parts"] == [{"type": "text", "text": "stable fact"}]
         assert "peer_id" not in message
+        assert "category" not in openviking_plugin.REMEMBER_SCHEMA["parameters"]["properties"]
         assert posts[1] == (
             f"/api/v1/sessions/{session_id}/commit",
             {"keep_recent_count": 0},
@@ -1061,7 +1048,31 @@ class TestEnsureClientReloadsEnv:
         assert second["session_id"].startswith("hermes-remember-")
         assert all("/api/v1/content/write" not in path for path, _ in posts)
 
-    def test_remember_reports_commit_failure_with_recoverable_session_id(self, monkeypatch):
+    def test_remember_reports_unknown_message_submission_failure(self, monkeypatch):
+        posts = []
+
+        class _StubClient:
+            def post(self, path, payload=None, **kwargs):
+                posts.append((path, payload or {}))
+                raise TimeoutError("message timeout")
+
+        provider = OpenVikingMemoryProvider()
+        provider._client = _StubClient()
+        monkeypatch.setattr(provider, "_ensure_client", lambda: provider._client)
+
+        out = json.loads(provider._tool_remember({"content": "stable fact"}))
+
+        assert out["error"].startswith("Memory message submission failed for session ")
+        assert out["error"].endswith(": message timeout")
+        assert out["failure_stage"] == "message"
+        assert out["message_status"] == "unknown"
+        assert out["session_uri"].endswith(f"/sessions/{out['session_id']}")
+        assert out["recovery_command"] == f"ov session commit {out['session_id']}"
+        assert "do not resubmit automatically" in out["recovery_note"]
+        assert len(posts) == 1
+        assert posts[0][0].endswith("/messages")
+
+    def test_remember_reports_commit_failure_with_recovery_command(self, monkeypatch):
         posts = []
 
         class _StubClient:
@@ -1078,9 +1089,14 @@ class TestEnsureClientReloadsEnv:
         out = json.loads(provider._tool_remember({"content": "stable fact"}))
 
         assert out["error"].startswith(
-            "Failed to store memory in session hermes-remember-"
+            "Memory message was accepted, but commit failed for session hermes-remember-"
         )
         assert out["error"].endswith(": commit rejected")
+        assert out["failure_stage"] == "commit"
+        assert out["message_status"] == "accepted"
+        assert out["session_uri"].endswith(f"/sessions/{out['session_id']}")
+        assert out["recovery_command"] == f"ov session commit {out['session_id']}"
+        assert "same OpenViking profile and credentials as Hermes" in out["recovery_note"]
         assert len(posts) == 2
         assert posts[0][0].endswith("/messages")
         assert posts[1][0].endswith("/commit")

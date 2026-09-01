@@ -290,7 +290,7 @@ def test_wire_requests_keep_writes_and_session_messages_in_the_selected_scope(
         result = json.loads(
             provider.handle_tool_call("viking_remember", {"content": "I like tea"})
         )
-        assert result["status"] == "stored"
+        assert result["status"] == "submitted"
         provider.on_memory_write("add", "user", "I like coffee")
         provider.sync_turn("hello", "hi", session_id="peer-test")
         assert provider._drain_writers("peer-test", timeout=5.0)

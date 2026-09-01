@@ -77,7 +77,7 @@ import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unre
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
-import { sessionRoute } from '../../routes'
+import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
@@ -146,22 +146,26 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 function Harness({
   activeSessionId = null,
+  activeSessionIdRef: activeSessionIdRefOverride,
   navigate = vi.fn(),
   onReady,
   requestGateway,
-  selectedStoredSessionId = null
+  selectedStoredSessionId = null,
+  selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride
 }: {
   activeSessionId?: null | string
+  activeSessionIdRef?: MutableRefObject<null | string>
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selectedStoredSessionId?: null | string
+  selectedStoredSessionIdRef?: MutableRefObject<null | string>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
   const actions = useSessionActions({
     activeSessionId,
-    activeSessionIdRef: ref(activeSessionId),
+    activeSessionIdRef: activeSessionIdRefOverride ?? ref(activeSessionId),
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
@@ -172,7 +176,7 @@ function Harness({
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId,
-    selectedStoredSessionIdRef: ref(selectedStoredSessionId),
+    selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride ?? ref(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: () => ({}) as ClientSessionState
@@ -230,6 +234,44 @@ describe('connection-qualified session deletion', () => {
       session_id: 'runtime-shared'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+  })
+
+  it('tears down the selected session from synchronous refs when render state is stale', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn().mockResolvedValue({})
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-shared' }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'shared-session' }
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ connection_id: 'source-a', id: 'shared-session', profile: 'worker' })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({} as never)
+
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        navigate={navigate}
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={requestGateway}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions?.removeSession('shared-session')
+    })
+
+    expect(navigate).toHaveBeenCalledWith(NEW_CHAT_ROUTE, { replace: true })
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'worker', 'session.close', {
+      session_id: 'runtime-shared'
+    })
+    expect(selectedStoredSessionIdRef.current).toBeNull()
+    expect(activeSessionIdRef.current).toBeNull()
   })
 })
 

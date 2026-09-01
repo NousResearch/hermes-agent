@@ -1013,6 +1013,40 @@ def test_bounded_relative_ci_path_is_not_a_base64_false_positive(tmp_path):
     assert "base64_payload" not in decision.reason_codes
 
 
+def test_source_presentation_allows_python_private_names(tmp_path):
+    source = "_adapter _class_stack _format_findings _MutationVisitor\n"
+    path = tmp_path / "owners.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path)
+    presentation = json.dumps({"content": f"1|{source}2|"})
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
+def test_source_presentation_allows_mixed_case_python_names(tmp_path):
+    source = "visit_ImportFrom\n"
+    path = tmp_path / "imports.py"
+    path.write_text(source, encoding="utf-8")
+    grant = _source_grant(path)
+    presentation = json.dumps({"content": f"1|{source}2|"})
+
+    decision = firewall(tmp_path).preflight(
+        _source_presentation_request(grant, presentation),
+        _route(),
+        grants=(grant,),
+    )
+
+    assert decision.allowed is True
+    assert "base64_payload" not in decision.reason_codes
+
+
 @pytest.mark.parametrize(
     "schema_atom",
     [

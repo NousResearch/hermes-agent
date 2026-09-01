@@ -254,6 +254,10 @@ _SAFE_DIAGNOSTIC_STATUS_WORDS = frozenset({
 })
 _LINTER_DIAGNOSTIC_CODE = re.compile(r"^[A-Z][0-9]{3,4}$")
 _PYTHON_DUNDER_IDENTIFIER = re.compile(r"^__[a-z][a-z0-9_]{0,62}__$")
+_PYTHON_PRIVATE_IDENTIFIER = re.compile(r"^_[A-Za-z][A-Za-z0-9_]{1,63}$")
+_PYTHON_MIXED_CASE_IDENTIFIER = re.compile(
+    r"^[a-z][A-Za-z0-9]*_[A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*$"
+)
 _BOUNDED_SOURCE_CODE_ATOM = re.compile(
     r"(?:[a-z][a-z0-9]{0,63}(?:_[a-z0-9]{1,64}){1,7}"
     r"|[A-Z][A-Z0-9]{0,63}(?:_[A-Z0-9]{1,64}){1,7}"
@@ -791,10 +795,18 @@ def _source_text_for_base64_scan(text: str) -> str:
     unchanged and are still rejected by the canonical scanner.
     """
 
+    def is_source_code_atom(candidate: str) -> bool:
+        return (
+            _BOUNDED_SOURCE_CODE_ATOM.fullmatch(candidate) is not None
+            or _PYTHON_DUNDER_IDENTIFIER.fullmatch(candidate) is not None
+            or _PYTHON_PRIVATE_IDENTIFIER.fullmatch(candidate) is not None
+            or _PYTHON_MIXED_CASE_IDENTIFIER.fullmatch(candidate) is not None
+        )
+
     return _BASE64_CANDIDATE.sub(
         lambda match: (
             "<code>"
-            if _BOUNDED_SOURCE_CODE_ATOM.fullmatch(match.group(1))
+            if is_source_code_atom(match.group(1))
             else match.group(0)
         ),
         text,

@@ -183,6 +183,153 @@ def _stamp_worker_session_metadata(
     return stamped
 
 
+def _count_non_kanban_tool_calls(db, session_id: str) -> int:
+    """Count tool invocations in a session transcript that are NOT ``kanban_*``.
+
+    A run whose only tool calls are kanban lifecycle calls has made no real
+    work — the fabricated-completion signature the tool-evidence gate refuses.
+    Assistant ``tool_calls`` and ``tool`` result rows both count; the kanban
+    toolset is excluded so a bare ``kanban_complete`` / ``kanban_heartbeat``
+    run never counts as evidence.
+    """
+    try:
+        rows = db.get_messages(session_id)
+    except Exception:
+        return 0
+    count = 0
+    seen: set = set()
+    for m in rows or []:
+        role = m.get("role")
+        if role == "assistant":
+            tcs = m.get("tool_calls")
+            if isinstance(tcs, str):
+                try:
+                    tcs = json.loads(tcs)
+                except (ValueError, TypeError):
+                    tcs = None
+            for tc in tcs or []:
+                fn = ((tc or {}).get("function") or {}).get("name") or ""
+                key = ("tc", fn)
+                if fn and not fn.startswith("kanban_") and key not in seen:
+                    seen.add(key)
+                    count += 1
+        elif role == "tool":
+            name = (m.get("tool_name") or "").strip()
+            key = ("tool", name)
+            if name and not name.startswith("kanban_") and key not in seen:
+                seen.add(key)
+                count += 1
+    return count
+
+
+def _run_tool_evidence(session_id: str) -> Optional[int]:
+    """Return the run's non-kanban tool-call count, or ``None`` when the
+    session transcript cannot be located (fail open — never refuse on missing
+    evidence infrastructure, only on a positive finding of zero non-kanban
+    tool calls)."""
+    if not session_id:
+        return None
+    try:
+        from tools.session_search_tool import _locate_session_db
+        db, _prof = _locate_session_db(session_id)
+    except Exception:
+        return None
+    if db is None:
+        return None
+    try:
+        return _count_non_kanban_tool_calls(db, session_id)
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _consecutive_no_evidence_blocks(conn, task_id: str) -> int:
+    """Count trailing ``completion_blocked_no_evidence`` events for ``task_id``.
+
+    A fresh run (last non-this event is a ``completed`` or different kind)
+    starts the count at 0; a worker that keeps calling ``kanban_complete``
+    without doing work bumps it. Drives correction-first vs
+    failed-complete-on-repeat.
+    """
+    rows = conn.execute(
+        "SELECT kind FROM task_events WHERE task_id = ? "
+        "ORDER BY id DESC LIMIT 25",
+        (task_id,),
+    ).fetchall()
+    count = 0
+    for r in rows:
+        if (r["kind"] or "") == "completion_blocked_no_evidence":
+            count += 1
+        else:
+            break
+    return count
+
+
+def _complete_tool_evidence_rejection(task_id: str) -> Optional[str]:
+    """Tool-evidence gate for ``kanban_complete``.
+
+    Refuses a completion from a worker run that made ZERO non-kanban tool
+    calls: no evidence the model did any work, so accepting it would fabricate
+    a pass (a stalled card is visible; a fabricated completion is not). The
+    first refusal returns a correction naming what is missing (the task stays
+    in-flight); a repeat is counted as a failed completion so the failure
+    budget sees it instead of the board silently rubber-stamping empty runs.
+
+    Returns ``None`` to allow the completion. Orchestrator / CLI completions
+    (no worker task scope) and runs whose transcript cannot be read fail open.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return None  # orchestrator / CLI path — not a worker completion.
+    evidence = _run_tool_evidence(os.environ.get("HERMES_SESSION_ID") or "")
+    if evidence is None or evidence > 0:
+        return None  # fail open, or the run did real work — allow.
+
+    kb, conn = _connect()
+    try:
+        run_id = _worker_run_id(task_id)
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn, task_id, "completion_blocked_no_evidence",
+                {"violation_class": "no_evidence_complete"},
+                run_id=run_id,
+            )
+        consecutive = _consecutive_no_evidence_blocks(conn, task_id)
+        if consecutive == 1:
+            return tool_error(
+                "kanban_complete rejected: this run made ZERO non-kanban tool "
+                "calls, so there is no evidence the task's work was actually "
+                "done (a stalled card is visible, a fabricated completion is "
+                "not). Do the reported work with real tool calls (file "
+                "reads/edits, tests, searches, terminal) and then call "
+                "kanban_complete again with the same handoff. Your task is "
+                "still in-flight; nothing was changed."
+            )
+        # Repeat: count it as a failed completion so the failure budget sees
+        # it. The run is closed as a crash and the card returns to its source
+        # phase for re-dispatch.
+        kb._record_task_failure(
+            conn, task_id,
+            error=("fabricated completion: kanban_complete called again with "
+                   "zero non-kanban tool calls in the run (no evidence of "
+                   "work); counted as a failed complete on repeat"),
+            outcome="crashed",
+            release_claim=True,
+            end_run=True,
+            event_payload_extra={"violation_class": "no_evidence_complete"},
+        )
+        return tool_error(
+            "kanban_complete rejected for a second time with no non-kanban "
+            "tool evidence in this run. This repeat is counted as a failed "
+            "completion: the run has been closed as a crash and the card "
+            "returned to its source phase for re-dispatch. Redo the work with "
+            "real tool calls before calling kanban_complete again."
+        )
+    finally:
+        conn.close()
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -1052,6 +1199,12 @@ def _handle_complete(args: dict, **kw) -> str:
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
     metadata = _stamp_worker_session_metadata(tid, metadata)
+    # Tool-evidence gate: refuse a completion from a run that made ZERO
+    # non-kanban tool calls (no evidence the work was done). Fails open for
+    # orchestrator/CLI paths and unreadable transcripts (t_8fc16a73).
+    evidence_rejection = _complete_tool_evidence_rejection(tid)
+    if evidence_rejection is not None:
+        return evidence_rejection
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)

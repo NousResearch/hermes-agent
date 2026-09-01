@@ -2984,7 +2984,7 @@ def _send_media_via_adapter(
     return errors
 
 
-def _confirm_adapter_delivery(send_result) -> bool:
+def _confirm_adapter_delivery(send_result, job_id: str = "?") -> bool:
     """Return True only if ``send_result`` unambiguously confirms delivery.
 
     A live adapter that returns ``None`` (e.g. a swallowed exception, a busy
@@ -2993,16 +2993,52 @@ def _confirm_adapter_delivery(send_result) -> bool:
     scheduler to log ``"delivered to <chat> via live adapter"`` while the
     gateway never actually sees the message (#47056).
 
-    Likewise, an object missing a ``success`` attribute (e.g. a bare ``dict``
-    or a partial mock) is a contract violation: it does not actually tell us
-    whether the send succeeded.  Require an explicit, truthy ``success``
-    attribute to count as confirmed.
+    Likewise, a result carrying no ``success`` at all (a partial mock, or a
+    ``dict`` from a code path that never reached the adapter) is a contract
+    violation: it does not actually tell us whether the send succeeded.
+    Require an explicit, truthy ``success`` to count as confirmed.
+
+    Both shapes are inspected the same way, because ``_deliver_to_platform``
+    returns either a ``SendResult`` object or a plain ``dict``:
+
+    * ``delivered is False`` is a REJECTION even when ``success`` is truthy.
+      The silence-narration filter returns
+      ``{"success": True, "delivered": False}`` — a successfully *dropped*
+      message, not a delivered one.  Reading only ``success`` there is how a
+      cron brief was logged as delivered while the user got nothing (#77763).
+    * No ``message_id`` and no ``raw_response`` means we have no positive
+      evidence of a send.  That is not proof of failure either (some adapters
+      legitimately return a bare success), so it is still accepted — but
+      logged at WARNING so an UNVERIFIED delivery is visible in the log
+      instead of masquerading as a confirmed one.  Telegram ``SendResult``
+      objects carry ``message_id``; the dict-filter shape does not.
     """
     if send_result is None:
         return False
-    if not hasattr(send_result, "success"):
+    if isinstance(send_result, dict):
+        if "success" not in send_result:
+            return False
+        success = bool(send_result.get("success"))
+        delivered = send_result.get("delivered")
+        message_id = send_result.get("message_id")
+        raw_response = send_result.get("raw_response")
+    else:
+        if not hasattr(send_result, "success"):
+            return False
+        success = bool(getattr(send_result, "success"))
+        delivered = getattr(send_result, "delivered", None)
+        message_id = getattr(send_result, "message_id", None)
+        raw_response = getattr(send_result, "raw_response", None)
+    if not success or delivered is False:
         return False
-    return bool(getattr(send_result, "success"))
+    if message_id is None and not raw_response:
+        logger.warning(
+            "Job '%s': live adapter reported success with no delivery evidence "
+            "(no message_id, no raw_response) — treating as delivered but "
+            "UNVERIFIED",
+            job_id,
+        )
+    return True
 
 
 def _is_channel_dm_topic(
@@ -3530,7 +3566,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 adapter_ok = True
                 timed_out = False
                 delivered_message_id = None
-                if text_to_send:
+                if not text_to_send and not media_files:
+                    # Nothing to hand the adapter at all.  This used to fall
+                    # straight through to the `if adapter_ok:` branch below and
+                    # log "delivered to <chat> via live adapter" for a send that
+                    # never happened (#77763).  Fail closed so the run reports
+                    # the empty payload instead.
+                    msg = (
+                        f"live adapter send skipped (empty text and no media) "
+                        f"for {platform_name}:{chat_id}"
+                    )
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    target_errors.append(msg)
+                    adapter_ok = False
+                elif text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
                     router = DeliveryRouter(config, adapters)
@@ -3623,19 +3672,27 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             # {"success": True, "delivered": False, ...}.
                             # Normalize both shapes so a getattr default doesn't
                             # misread a dict, and so a None / success-less object
-                            # is NOT counted as delivered (#47056).
+                            # is NOT counted as delivered (#47056).  The
+                            # confirmation itself handles both shapes: a truthy
+                            # `success` with `delivered: False` is a drop, not a
+                            # delivery (#77763).
                             if isinstance(send_result, dict):
-                                send_success = bool(send_result.get("success", False))
                                 send_raw_response = send_result.get("raw_response")
                                 delivered_message_id = send_result.get("message_id")
                             else:
-                                send_success = _confirm_adapter_delivery(send_result)
                                 send_raw_response = getattr(send_result, "raw_response", None)
                                 delivered_message_id = getattr(send_result, "message_id", None)
+                            send_success = _confirm_adapter_delivery(send_result, job["id"])
 
                             if not send_success:
                                 if isinstance(send_result, dict):
-                                    err = send_result.get("error", "unknown")
+                                    # A filtered drop carries no "error" — name
+                                    # the filter instead of reporting "unknown".
+                                    err = (
+                                        send_result.get("error")
+                                        or send_result.get("filtered")
+                                        or "unknown"
+                                    )
                                     shape = "dict"
                                 elif send_result is not None:
                                     err = getattr(send_result, "error", None)
@@ -3712,7 +3769,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     delivery_errors.append(msg)
 
                 if adapter_ok:
-                    logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    # Log WHERE it went, not just that it went: a ghost delivery
+                    # that landed in the wrong lane (General topic instead of the
+                    # routed thread) is indistinguishable from a real one without
+                    # the routing identity (#77763).
+                    logger.info(
+                        "Job '%s': delivered to %s:%s via live adapter thread=%s message_id=%s",
+                        job["id"], platform_name, chat_id,
+                        route_thread_id if route_thread_id is not None else "-",
+                        delivered_message_id if delivered_message_id is not None else "-",
+                    )
                     delivered = True
                     # Seed the thread session only now that delivery into it
                     # succeeded (deferred from thread-open above).
@@ -3822,6 +3888,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # (#58720, #55924).
             if _interpreter_shutting_down():
                 msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                logger.warning("Job '%s': %s", job["id"], msg)
+                target_errors.append(msg)
+                delivery_errors.extend(target_errors)
+                continue
+            # The live lane already failed closed on an empty payload; the
+            # standalone senders do not. The Telegram adapter returns
+            # SendResult(success=True) for empty content WITHOUT an API call,
+            # so falling through here turns a phantom live delivery into a
+            # phantom standalone one and logs it as delivered (#77763). Both
+            # _send_to_platform call sites below are reached through this
+            # point, so one guard closes the lane.
+            if not cleaned_delivery_content.strip() and not media_files:
+                msg = (
+                    f"standalone send skipped (empty text and no media) "
+                    f"for {platform_name}:{chat_id}"
+                )
                 logger.warning("Job '%s': %s", job["id"], msg)
                 target_errors.append(msg)
                 delivery_errors.extend(target_errors)

@@ -1313,6 +1313,10 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
         def __init__(self, *a, **kw):
             pass
 
+        def get(self, path, **kwargs):
+            assert path == "/api/v1/system/status"
+            return {"status": "ok", "result": {"user": "usr"}}
+
         def post(self, path, payload=None, **kwargs):
             assert path == "/api/v1/content/write"
             worker_started.set()

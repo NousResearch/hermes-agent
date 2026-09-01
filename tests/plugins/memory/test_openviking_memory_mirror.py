@@ -115,6 +115,12 @@ def test_replace_updates_the_same_openviking_uri_and_registry(tmp_path):
     assert replace[2]["mode"] == "replace"
     assert replace[2]["wait"] is True
 
+    _wait_for(
+        lambda: json.loads(_registry_path(tmp_path).read_text(encoding="utf-8"))[
+            "entries"
+        ][0]["content"]
+        == "Preferred provider is OpenRouter"
+    )
     registry = json.loads(_registry_path(tmp_path).read_text(encoding="utf-8"))
     connection = registry["entries"][0]["connection"]
     assert len(connection) == 64
@@ -129,6 +135,47 @@ def test_replace_updates_the_same_openviking_uri_and_registry(tmp_path):
             }
         ],
     }
+    provider.shutdown()
+
+
+def test_add_requires_server_confirmed_user_without_fallback(tmp_path, caplog):
+    client = _FakeVikingClient(user="configured-fallback")
+
+    def fail_identity_probe(path, params=None, **kwargs):
+        assert path == "/api/v1/system/status"
+        raise TimeoutError("identity probe timed out")
+
+    client.get = fail_identity_probe
+    provider = _provider(tmp_path, client)
+
+    with caplog.at_level("WARNING", logger="plugins.memory.openviking"):
+        provider.on_memory_write("add", "user", "Do not misroute this memory")
+        provider.shutdown()
+
+    assert client.snapshot() == []
+    assert not _registry_path(tmp_path).exists()
+    assert any(
+        "did not confirm the current user identity" in record.message
+        for record in caplog.records
+    )
+
+
+def test_add_identity_probe_uses_normal_request_timeout(tmp_path):
+    client = _FakeVikingClient()
+    identity_probe_kwargs = []
+
+    def record_identity_probe(path, params=None, **kwargs):
+        assert path == "/api/v1/system/status"
+        identity_probe_kwargs.append(dict(kwargs))
+        return {"status": "ok", "result": {"user": "default"}}
+
+    client.get = record_identity_probe
+    provider = _provider(tmp_path, client)
+
+    provider.on_memory_write("add", "user", "Use the normal identity timeout")
+    _wait_for(lambda: len(client.snapshot()) == 1)
+
+    assert identity_probe_kwargs == [{"timeout": 3.0}]
     provider.shutdown()
 
 
@@ -152,6 +199,12 @@ def test_remove_deletes_exact_mapped_uri_and_registry_entry(tmp_path):
     assert delete[0:2] == ("delete", "/api/v1/fs")
     assert delete[3]["params"] == {"uri": uri, "recursive": False, "wait": True}
 
+    _wait_for(
+        lambda: json.loads(_registry_path(tmp_path).read_text(encoding="utf-8"))[
+            "entries"
+        ]
+        == []
+    )
     registry = json.loads(_registry_path(tmp_path).read_text(encoding="utf-8"))
     assert registry == {"version": 2, "entries": []}
     provider.shutdown()

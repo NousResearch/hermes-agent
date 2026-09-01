@@ -259,7 +259,9 @@ class NativeMemoryMirror:
                 return
 
             requested_uri = self._provider._build_memory_uri(
-                event["subdir"], client=client, timeout=0.05
+                event["subdir"],
+                client=client,
+                require_confirmed_user=True,
             )
             response = client.post(
                 "/api/v1/content/write",

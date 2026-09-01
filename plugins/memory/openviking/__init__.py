@@ -1743,7 +1743,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         tail = cls._take_tokens("\n".join(lines[8:]), remaining - cls._token_units(head), from_end=True).lstrip()
         return f"{head}{marker}{tail}" if tail else _head_only()
 
-    def _user_space(self, client=None, *, timeout: Optional[float] = None) -> str:
+    def _user_space(
+        self,
+        client=None,
+        *,
+        timeout: Optional[float] = None,
+        require_confirmed: bool = False,
+    ) -> str:
         """Resolve the user space, caching only a confirmed connection identity.
 
         Cache is keyed on the connection snapshot, not the client object:
@@ -1759,6 +1765,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if snapshot is not None and snapshot is getattr(self, "_conn_snapshot", None):  # unchanged under us
                 self._user_space_cache = (snapshot, resolved)
             return resolved
+        if require_confirmed:
+            raise RuntimeError(
+                "OpenViking server did not confirm the current user identity; "
+                "leaving OpenViking unchanged"
+            )
         return str(getattr(active, "_user", "") or getattr(self, "_user", "") or "default").strip() or "default"
 
     @staticmethod
@@ -2421,7 +2432,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     # -- memory mirroring -----------------------------------------------------
 
-    def _build_memory_uri(self, subdir: str, *, client=None, timeout: Optional[float] = None) -> str:
+    def _build_memory_uri(
+        self,
+        subdir: str,
+        *,
+        client=None,
+        timeout: Optional[float] = None,
+        require_confirmed_user: bool = False,
+    ) -> str:
         """Explicit-uid user memory URI, under the configured peer when one is set.
 
         The peer is read from the captured client (not the provider) so a config
@@ -2434,7 +2452,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
         active_client = client if client is not None else getattr(self, "_client", None)
         agent = str(getattr(active_client, "_agent", getattr(self, "_agent", "")) or "").strip()
         peer_prefix = f"peers/{agent}/" if agent else ""
-        return f"viking://user/{self._user_space(active_client, timeout=timeout)}/{peer_prefix}memories/{subdir}/mem_{uuid.uuid4().hex[:12]}.md"
+        identity_timeout = timeout
+        if require_confirmed_user and identity_timeout is None:
+            identity_timeout = _DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS
+        user_space = self._user_space(
+            active_client,
+            timeout=identity_timeout,
+            require_confirmed=require_confirmed_user,
+        )
+        return f"viking://user/{user_space}/{peer_prefix}memories/{subdir}/mem_{uuid.uuid4().hex[:12]}.md"
 
     def on_memory_write(
         self,

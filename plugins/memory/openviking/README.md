@@ -169,8 +169,10 @@ need to guess a target by semantic similarity:
 URI construction uses the same server-asserted explicit user identity and
 connection snapshot as the current OpenViking provider. The registry stores a
 fingerprint of that connection with each mapping, without storing the raw API
-key. This prevents a later connection from reusing mappings that belong to
-another OpenViking endpoint, identity, or peer.
+key. It also stores the full current text of each mirrored native memory so it
+can resolve the native tool's later `old_text` reference. This prevents a later
+connection from reusing mappings that belong to another OpenViking endpoint,
+identity, or peer.
 
 Changing the endpoint, credentials, identity, or peer starts a new registry
 scope. Mappings from the earlier connection then fail closed instead of being

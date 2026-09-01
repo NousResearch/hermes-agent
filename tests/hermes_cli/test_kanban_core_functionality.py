@@ -172,10 +172,12 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
             platform="telegram",
             chat_id="123",
             kinds=["completed", "blocked"],
+            claim_owner="watcher-1",
         )
         assert old_cursor == initial_cursor
         assert claimed_cursor > old_cursor
         assert [ev.kind for ev in events] == ["completed"]
+        assert int(kb.list_notify_subs(conn1, tid)[0]["last_event_id"]) == initial_cursor
 
         # A concurrent notifier instance sees the advanced cursor and cannot
         # claim/send the same event range.
@@ -185,6 +187,7 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
             platform="telegram",
             chat_id="123",
             kinds=["completed", "blocked"],
+            claim_owner="watcher-2",
         )
         assert duplicate_events == []
 
@@ -195,6 +198,7 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
             chat_id="123",
             claimed_cursor=claimed_cursor,
             old_cursor=old_cursor,
+            claim_owner="watcher-1",
         ) is True
         _, retried_events = kbn.unseen_events_for_sub(
             conn2,
@@ -204,6 +208,71 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
             kinds=["completed", "blocked"],
         )
         assert [ev.kind for ev in retried_events] == ["completed"]
+    finally:
+        conn1.close()
+        conn2.close()
+
+
+def test_notify_claim_lease_reclaims_events_after_watcher_crash(kanban_home, monkeypatch):
+    """A dead watcher cannot permanently consume a terminal notification."""
+    conn1 = kb.connect()
+    conn2 = kb.connect()
+    try:
+        tid = kb.create_task(conn1, title="x", assignee="w")
+        kb.add_notify_sub(conn1, task_id=tid, platform="telegram", chat_id="123")
+        initial_cursor = int(kb.list_notify_subs(conn1, tid)[0]["last_event_id"])
+        kb.complete_task(conn1, tid, result="ok")
+
+        now = [10_000]
+        monkeypatch.setattr(kb.time, "time", lambda: now[0])
+        old, claimed, events = kb.claim_unseen_events_for_sub(
+            conn1,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed"],
+            claim_owner="dead-watcher",
+            claim_lease_seconds=10,
+        )
+        assert old == initial_cursor
+        assert claimed > old
+        assert [event.kind for event in events] == ["completed"]
+        assert kb.claim_unseen_events_for_sub(
+            conn2,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed"],
+            claim_owner="replacement-watcher",
+            claim_lease_seconds=10,
+        )[2] == []
+
+        now[0] += 11
+        _, reclaimed, retry_events = kb.claim_unseen_events_for_sub(
+            conn2,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed"],
+            claim_owner="replacement-watcher",
+            claim_lease_seconds=10,
+        )
+        assert reclaimed == claimed
+        assert [event.kind for event in retry_events] == ["completed"]
+        kb.advance_notify_cursor(
+            conn2,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            new_cursor=reclaimed,
+        )
+        assert kb.unseen_events_for_sub(
+            conn1,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["completed"],
+        )[1] == []
     finally:
         conn1.close()
         conn2.close()

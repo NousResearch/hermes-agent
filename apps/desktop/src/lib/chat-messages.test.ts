@@ -707,6 +707,123 @@ describe('preserveLocalAssistantErrors', () => {
     expect(assistant?.error).toBe('OpenRouter 403')
     expect(assistant?.pending).toBe(false)
   })
+
+  it('merges a failed tail turn into its rehydrated assistant when renderer ids change', () => {
+    const hydrated = toChatMessages([
+      { role: 'user', content: 'read it', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 2,
+        tool_calls: [{ id: 'call-1', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }]
+      },
+      { role: 'tool', tool_call_id: 'call-1', tool_name: 'read_file', content: 'contents', timestamp: 3 },
+      { role: 'assistant', content: 'Done.', timestamp: 4 }
+    ])
+
+    const hydratedAssistant = hydrated.find(message => message.role === 'assistant')!
+
+    const current: ChatMessage[] = [
+      {
+        id: 'optimistic-user',
+        parts: [{ text: 'read it', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'connection lost after completion',
+        id: 'assistant-live-before-hydration',
+        parts: hydratedAssistant.parts,
+        role: 'assistant',
+        timestamp: 2
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(hydrated, current)
+    const assistants = merged.filter(message => message.role === 'assistant')
+
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0]).toMatchObject({
+      error: 'connection lost after completion',
+      id: hydratedAssistant.id,
+      pending: false
+    })
+    expect(merged.filter(message => message.role === 'user')).toHaveLength(1)
+  })
+
+  it('does not match a later failed turn to identical assistant text from an older turn', () => {
+    const nextMessages: ChatMessage[] = [
+      { id: 'older-user', parts: [{ text: 'first', type: 'text' }], role: 'user' },
+      { id: 'older-assistant', parts: [{ text: 'Done.', type: 'text' }], role: 'assistant' },
+      { id: 'new-user', parts: [{ text: 'second', type: 'text' }], role: 'user' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      ...nextMessages,
+      {
+        error: 'connection lost',
+        id: 'new-assistant-error',
+        parts: [{ text: 'Done.', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.filter(message => message.role === 'assistant').map(message => message.id)).toEqual([
+      'older-assistant',
+      'new-assistant-error'
+    ])
+  })
+
+  it('does not match a later failed turn to a reused tool-call id from an older turn', () => {
+    const nextMessages: ChatMessage[] = [
+      { id: 'older-user', parts: [{ text: 'first', type: 'text' }], role: 'user' },
+      { id: 'older-assistant', parts: [toolCallPart('call-reused')], role: 'assistant' },
+      { id: 'new-user', parts: [{ text: 'second', type: 'text' }], role: 'user' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      ...nextMessages,
+      {
+        error: 'connection lost',
+        id: 'new-assistant-error',
+        parts: [toolCallPart('call-reused')],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.filter(message => message.role === 'assistant').map(message => message.id)).toEqual([
+      'older-assistant',
+      'new-assistant-error'
+    ])
+  })
+
+  it('does not match an unpersisted repeated prompt to an older identical turn', () => {
+    const nextMessages: ChatMessage[] = [
+      { id: 'stored-user', parts: [{ text: 'retry', type: 'text' }], role: 'user' },
+      { id: 'stored-assistant', parts: [{ text: 'Done.', type: 'text' }], role: 'assistant' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      ...nextMessages,
+      { id: 'optimistic-user', parts: [{ text: 'retry', type: 'text' }], role: 'user' },
+      {
+        error: 'connection lost',
+        id: 'new-assistant-error',
+        parts: [{ text: 'Done.', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.filter(message => message.role === 'assistant').map(message => message.id)).toEqual([
+      'stored-assistant',
+      'new-assistant-error'
+    ])
+  })
 })
 
 describe('upsertToolPart', () => {

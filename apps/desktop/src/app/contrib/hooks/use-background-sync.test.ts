@@ -591,6 +591,32 @@ describe('active transcript refresh', () => {
 })
 
 describe('reconcileActiveTranscript', () => {
+  it('keeps one failed assistant bubble when refresh rebuilds the same tail turn under a new id', async () => {
+    const fixture = makeRefresh()
+    fixture.state.messages = [
+      {
+        id: 'optimistic-user',
+        parts: [{ text: 'question', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'connection lost after completion',
+        id: 'assistant-live-before-refresh',
+        parts: [{ text: 'answer', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('answer') as never)
+
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+    const assistants = messages.filter(message => message.role === 'assistant')
+
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0]).toMatchObject({ error: 'connection lost after completion', pending: false })
+  })
+
   it('resolves and hydrates a messaging session from the messaging sessions store', async () => {
     setSessionOwnerHint(ACTIVE_STORED_ID, {
       connectionId: 'stale-messaging-owner',

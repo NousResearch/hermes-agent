@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -1036,45 +1037,51 @@ class TestFTS5Search:
         ]
         assert all("context" in row and row["context"] for row in default)
 
-    def test_search_projection_skips_context_enrichment_queries(self, db):
+    def test_search_projection_skips_context_enrichment_queries(self, db, monkeypatch):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="before")
         db.append_message("s1", role="assistant", content="projectionneedle")
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
-            conn.set_trace_callback(statements.append)
+        original_read_ctx = db._read_ctx
+
+        @contextmanager
+        def traced_read_ctx():
+            # Trace the connection actually checked out for each query. Calling
+            # _get_read_conn() directly opens an unpooled connection, so tracing
+            # that object misses later pool checkouts after the bounded read-pool
+            # refactor (and strands one pool permit for the fixture lifetime).
+            with original_read_ctx() as conn:
+                conn.set_trace_callback(statements.append)
+                try:
+                    yield conn
+                finally:
+                    conn.set_trace_callback(None)
+
+        monkeypatch.setattr(db, "_read_ctx", traced_read_ctx)
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)
             return sum("WITH TARGET AS (" in sql for sql in normalized)
 
-        try:
-            projected = db.search_messages(
-                "projectionneedle", fields=("session_id", "snippet")
-            )
-            assert len(projected) == 1
-            assert context_query_count() == 0
+        projected = db.search_messages(
+            "projectionneedle", fields=("session_id", "snippet")
+        )
+        assert len(projected) == 1
+        assert context_query_count() == 0
 
-            full = db.search_messages(
-                "projectionneedle", fields=("session_id", "context")
-            )
-            assert len(full) == 1
-            assert full[0]["context"]
-            assert context_query_count() == 1
+        full = db.search_messages(
+            "projectionneedle", fields=("session_id", "context")
+        )
+        assert len(full) == 1
+        assert full[0]["context"]
+        assert context_query_count() == 1
 
-            default = db.search_messages("projectionneedle")
-            assert len(default) == 1
-            assert default[0]["context"]
-            assert context_query_count() == 2
-        finally:
-            for conn in traced_connections:
-                conn.set_trace_callback(None)
+        default = db.search_messages("projectionneedle")
+        assert len(default) == 1
+        assert default[0]["context"]
+        assert context_query_count() == 2
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""

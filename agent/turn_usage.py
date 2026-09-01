@@ -16,7 +16,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 from agent.model_metadata import capture_usage_anchor
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import (
+    estimate_usage_cost,
+    normalize_usage,
+    usage_reports_cache_metrics,
+    usage_reports_full_prompt_metrics,
+)
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -163,6 +168,26 @@ def record_response_usage(
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+    latest_prompt_tokens = aggregator_usage.prompt_tokens
+    if latest_prompt_tokens > 0:
+        agent.session_usage_report_calls += 1
+        agent.session_last_prompt_tokens = latest_prompt_tokens
+        if usage_reports_full_prompt_metrics(
+            response.usage,
+            provider=agent.provider,
+            api_mode=agent.api_mode,
+            model=agent.model,
+            base_url=agent.base_url,
+        ):
+            agent.session_context_usage_report_calls += 1
+        if usage_reports_cache_metrics(
+            response.usage,
+            provider=agent.provider,
+            api_mode=agent.api_mode,
+            model=agent.model,
+            base_url=agent.base_url,
+        ):
+            agent.session_cache_usage_report_calls += 1
     # Rolling history for status-bar averages (last 10).
     with suppress(Exception):
         hist = getattr(agent, "_api_latency_history", None)

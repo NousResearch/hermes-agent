@@ -388,12 +388,14 @@ class AIAgent(
         for counter in (
             "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
             "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
-            "session_reasoning_tokens", "session_api_calls",
+            "session_reasoning_tokens", "session_api_calls", "session_usage_report_calls",
+            "session_cache_usage_report_calls", "session_context_usage_report_calls",
         ):
             setattr(self, counter, 0)
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+        self.session_last_prompt_tokens = 0
 
         # Session boundary: the usage anchor describes the OLD transcript; fall back to full estimation.
         self._usage_anchor = None

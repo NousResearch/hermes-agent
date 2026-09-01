@@ -188,6 +188,17 @@ class ProviderProfile:
         """
         return False
 
+    def sanitize_request_kwargs(self, api_kwargs: dict[str, Any], **context: Any) -> dict[str, Any]:
+        """Apply provider-owned safety cleanup after request overrides merge.
+
+        ``request_overrides`` are intentionally applied late so users can
+        customize provider requests.  A provider may nevertheless have a
+        capability boundary that those overrides must not cross.  Profiles
+        can override this hook to remove only fields that are invalid for the
+        verified route/model.  The default preserves the request unchanged.
+        """
+        return api_kwargs
+
     def default_vision_model(self) -> str | None:
         """Return a default vision model id for this provider, or None.
 

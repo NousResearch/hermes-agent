@@ -1332,6 +1332,40 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
+    def test_non_thinking_ollama_cannot_inherit_thinking_overrides(
+        self, agent, monkeypatch
+    ):
+        """Capability detection must win over stale provider overrides.
+
+        A profile can correctly omit reasoning for a non-thinking Ollama
+        model, but request_overrides are merged later and used to reintroduce
+        ``think``/``reasoning`` fields.  Ollama then rejects the request with
+        ``does not support thinking``.  The model capability boundary must
+        sanitize those inherited fields before the request reaches OpenAI.
+        """
+        agent.provider = "custom"
+        agent.base_url = "http://127.0.0.1:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "devstral-small-2:24b"
+        agent.reasoning_config = {"enabled": False}
+        agent.request_overrides = {
+            "reasoning_effort": "high",
+            "extra_body": {
+                "think": True,
+                "thinking": {"type": "enabled"},
+                "reasoning": {"enabled": True, "effort": "high"},
+                "safe_override": "preserve",
+            },
+        }
+        monkeypatch.setattr(agent, "_supports_reasoning_extra_body", lambda: False)
+
+        kwargs = agent._build_api_kwargs(
+            [{"role": "user", "content": "inspect the task"}]
+        )
+
+        assert kwargs.get("reasoning_effort") is None
+        assert kwargs["extra_body"] == {"safe_override": "preserve"}
+
     def test_source_provenance_survives_build_and_rebinds_next_tool_loop(
         self, agent, tmp_path, monkeypatch
     ):

@@ -29,6 +29,34 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
+    def sanitize_request_kwargs(
+        self,
+        api_kwargs: dict[str, Any],
+        *,
+        supports_reasoning: bool = False,
+        base_url: str | None = None,
+        **context: Any,
+    ) -> dict[str, Any]:
+        """Prevent stale overrides from enabling thinking on non-thinking Ollama.
+
+        The profile hook runs before request overrides, so a persisted
+        ``extra_body`` override can otherwise reintroduce ``think`` or
+        ``reasoning`` after capability detection correctly omitted them.  A
+        non-thinking Ollama model rejects those fields with HTTP 400; remove
+        only the reasoning controls while preserving unrelated overrides.
+        """
+        if not (_looks_like_ollama_endpoint(base_url) and not supports_reasoning):
+            return api_kwargs
+
+        api_kwargs.pop("reasoning_effort", None)
+        extra_body = api_kwargs.get("extra_body")
+        if isinstance(extra_body, dict):
+            for key in ("think", "thinking", "reasoning", "enable_thinking"):
+                extra_body.pop(key, None)
+            if not extra_body:
+                api_kwargs.pop("extra_body", None)
+        return api_kwargs
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, ollama_num_ctx: int | None = None, **ctx: Any
     ) -> tuple[dict[str, Any], dict[str, Any]]:

@@ -572,23 +572,27 @@ export function desktopSubcommandUnavailableMessage(command: string, arg: string
 
 /**
  * Drop backend `complete.slash` items whose subcommand token the exec gate
- * above would refuse, so the popover never suggests a dead end. Only applies
- * once the query is past the command token (`/skills …`); command-stage
- * completions pass through untouched.
+ * above would refuse, so the popover never suggests a dead end. Command-stage
+ * completions pass through. When `stage.isArgCompletion` is provided, that
+ * backend `replace_from` flag wins over re-parsing whitespace in `text`.
  */
-export function filterDesktopSubcommandCompletions<T extends { text: string }>(
+export function filterDesktopSubcommandCompletions<T extends { text?: string }>(
   text: string,
-  items: readonly T[]
+  items: readonly T[],
+  stage?: { isArgCompletion: boolean }
 ): T[] {
   const command = normalizeCommand(text)
   const allowed = desktopSubcommandAllowlist(command)
   const trimmedText = text.trimStart()
   const normalizedText = trimmedText.startsWith('/') ? trimmedText : `/${trimmedText}`
   const rest = normalizedText.slice(command.length)
+  // Prefer the backend's replace_from stage when the caller has it. Re-parsing
+  // the query from whitespace disagrees with that flag in both directions.
+  const inArgStage = stage?.isArgCompletion ?? /^\s/.test(rest)
 
   // Only the argument stage (`/skills …`, including a bare trailing space)
   // carries subcommand items; command-token completions pass through.
-  if (!allowed || !/^\s/.test(rest)) {
+  if (!allowed || !inArgStage) {
     return [...items]
   }
 
@@ -605,6 +609,10 @@ export function filterDesktopSubcommandCompletions<T extends { text: string }>(
   }
 
   return items.filter(item => {
+    if (typeof item.text !== 'string') {
+      return false
+    }
+
     const sub = item.text.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
 
     return sub !== '' && allowed.some(entry => entry.toLowerCase() === sub)

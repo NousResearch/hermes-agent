@@ -226,7 +226,7 @@ export function useSlashCompletions(options: {
         // only its review slice here) must not suggest the subcommands the
         // exec gate would refuse — filter before the arg-stub rewrite so the
         // token under test is the bare subcommand word.
-        const scopedItems = filterDesktopSubcommandCompletions(text, result.items ?? [])
+        const scopedItems = filterDesktopSubcommandCompletions(text, result.items ?? [], { isArgCompletion })
 
         const decorated = scopedItems
           .map(item => {

@@ -61,8 +61,54 @@ _PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
 _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
 
 
+def _real_hermes_roots_for_gate() -> list[Path]:
+    """Candidate real Hermes roots, for the production-HOME gate below.
+
+    Inlined rather than imported from ``hermes_state``: this runs at
+    conftest import time, and importing that module here would freeze its
+    ``DEFAULT_DB_PATH`` against the unsandboxed ``HERMES_HOME``, which is
+    the escape this gate closes.
+
+    ``Path.home()`` alone is wrong because a dispatched worker has ``HOME``
+    remapped to ``<root>/profiles/<name>/home``.  See PR #101995.
+    """
+    roots: list[Path] = []
+
+    def _add(candidate: Path) -> None:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            return
+        if resolved not in roots:
+            roots.append(resolved)
+
+    def _root_for(home: Path) -> Path:
+        if sys.platform == "win32":
+            base = os.environ.get("LOCALAPPDATA", "").strip()
+            if base:
+                return Path(base) / "hermes"
+            return home / "AppData" / "Local" / "hermes"
+        return home / ".hermes"
+
+    real_home = os.environ.get("HERMES_REAL_HOME", "").strip()
+    if real_home:
+        _add(_root_for(Path(real_home)))
+
+    try:
+        home = Path.home()
+    except Exception:
+        home = None
+    if home is not None:
+        parts = home.parts
+        if len(parts) >= 4 and parts[-1] == "home" and parts[-3] == "profiles":
+            _add(Path(*parts[:-3]))
+        _add(_root_for(home))
+
+    return roots
+
+
 def _hermes_home_points_at_production(value: str) -> bool:
-    """True when a pre-set HERMES_HOME resolves to the real production root.
+    """True when a pre-set HERMES_HOME resolves to a real production root.
 
     Gateway-launched shells (and developer shells that ``export
     HERMES_HOME=~/.hermes``) hand pytest the PRODUCTION home. Historically
@@ -73,18 +119,26 @@ def _hermes_home_points_at_production(value: str) -> bool:
     scopes) in the live state.db and flipped its journal mode under the
     WAL-mode gateway writer. Only a genuinely custom (non-production)
     HERMES_HOME is honored now.
+
+    Fails safe: anything unparseable is treated as production, so the
+    sandbox is applied rather than skipped.
     """
     if not value:
         return True
     try:
         resolved = Path(value).expanduser().resolve()
-        real_root = (Path.home() / ".hermes").resolve()
     except Exception:
         return True
-    if resolved == real_root:
-        return True
-    # Profile home directly under the production root: <root>/profiles/<name>
-    return resolved.parent.name == "profiles" and resolved.parent.parent == real_root
+    for real_root in _real_hermes_roots_for_gate():
+        if resolved == real_root:
+            return True
+        # Profile home directly under a production root: <root>/profiles/<name>
+        if (
+            resolved.parent.name == "profiles"
+            and resolved.parent.parent == real_root
+        ):
+            return True
+    return False
 
 
 if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):

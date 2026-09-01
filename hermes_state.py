@@ -751,30 +751,77 @@ _STATE_DB_GUARD_BYPASS_ENV = "HERMES_STATE_DB_GUARD_BYPASS"
 _STATE_DB_GUARD_EXTRA_DENY_ROOTS: Tuple[Path, ...] = ()
 
 
-def _real_platform_state_root() -> Optional[Path]:
-    """Resolve the REAL platform-default Hermes root for the guard.
+def _hermes_root_for_home(home: Path) -> Path:
+    """Platform-correct Hermes root for an OS-user home directory *home*.
 
-    Deliberately avoids ``Path.home()`` / ``hermes_constants``: tests
-    routinely monkeypatch ``Path.home`` to a tempdir, and ``hermes_state``
-    is often imported lazily *while* such a patch is active — resolving
-    through the patched callable would misidentify the test's own hermetic
-    home as "production" (false positive) or, worse, miss the real one
-    (false negative).  ``os.path.expanduser`` reads the HOME environment
-    variable / passwd entry, which the hermetic conftest never rewrites.
+    Not a fixed suffix under *home* on Windows, where the root is
+    ``%LOCALAPPDATA%\\hermes``.  Hardcoding ``~/.hermes`` disarmed this
+    guard on Windows once already (#82770).
     """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        if base:
+            return Path(base) / "hermes"
+        return home / "AppData" / "Local" / "hermes"
+    return home / ".hermes"
+
+
+def _real_platform_state_roots() -> List[Path]:
+    """Every real Hermes root a test must never open a ``state.db`` under.
+
+    Must not resolve through ``Path.home()`` or ``hermes_constants``: tests
+    monkeypatch ``Path.home`` to a tempdir, so the guard would deny the
+    sandbox and allow production.  ``HERMES_REAL_HOME`` and the passwd entry
+    survive that; the hermetic conftest scrubs the former, so it is absent
+    exactly where it would mislead.
+
+    Returns a list because a remapped ``HOME`` makes any single signal
+    wrong.  Candidates, in trust order: ``HERMES_REAL_HOME``, then the
+    profile-mode ``<root>/profiles/<name>/home`` layout, then
+    ``expanduser("~")``.  See PR #101995.
+
+    The order is trust order, not existence order.  Callers deny on any
+    match, so a stale or missing candidate costs nothing.
+    """
+    roots: List[Path] = []
+
+    def _add(candidate: Path) -> None:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            return
+        if resolved not in roots:
+            roots.append(resolved)
+
     try:
-        if sys.platform == "win32":
-            base = os.environ.get("LOCALAPPDATA", "").strip()
-            root = (
-                Path(base) / "hermes"
-                if base
-                else Path(os.path.expanduser("~")) / "AppData" / "Local" / "hermes"
-            )
-        else:
-            root = Path(os.path.expanduser("~")) / ".hermes"
-        return root.resolve()
+        real_home = os.environ.get("HERMES_REAL_HOME", "").strip()
     except Exception:
-        return None
+        real_home = ""
+    if real_home:
+        _add(_hermes_root_for_home(Path(real_home)))
+
+    try:
+        home = Path(os.path.expanduser("~"))
+    except Exception:
+        home = None
+    if home is not None:
+        # Profile-mode HOME: <root>/profiles/<name>/home -> <root>.
+        parts = home.parts
+        if len(parts) >= 4 and parts[-1] == "home" and parts[-3] == "profiles":
+            _add(Path(*parts[:-3]))
+        _add(_hermes_root_for_home(home))
+
+    return roots
+
+
+def _real_platform_state_root() -> Optional[Path]:
+    """The single most-trusted real Hermes root, or ``None``.
+
+    Shim over :func:`_real_platform_state_roots` kept because several tests
+    use it as "the root the guard denies".
+    """
+    roots = _real_platform_state_roots()
+    return roots[0] if roots else None
 
 
 #: Env marker exported by the hermetic test conftest at the same moment it
@@ -880,14 +927,16 @@ def _in_test_context() -> bool:
 
 def _production_state_roots() -> List[Path]:
     roots: List[Path] = []
-    real_root = _real_platform_state_root()
-    if real_root is not None:
-        roots.append(real_root)
+    for real_root in _real_platform_state_roots():
+        if real_root not in roots:
+            roots.append(real_root)
     for extra in _STATE_DB_GUARD_EXTRA_DENY_ROOTS:
         try:
-            roots.append(Path(extra).expanduser().resolve())
+            resolved = Path(extra).expanduser().resolve()
         except Exception:
             continue
+        if resolved not in roots:
+            roots.append(resolved)
     return roots
 
 

@@ -382,6 +382,7 @@ class TestDeliveredFinalMatches:
     def test_no_record_but_visible_final_returns_true(self):
         """Ambiguous-dedup control: visible text equals the final answer."""
         consumer = _consumer()
+        consumer._already_sent = True
         consumer._last_sent_text = FULL_RESPONSE
         assert consumer.delivered_final_matches(FULL_RESPONSE) is True
 

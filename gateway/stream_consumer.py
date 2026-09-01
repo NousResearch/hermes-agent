@@ -668,7 +668,11 @@ class GatewayStreamConsumer:
             # does not contain the completed response has demonstrably NOT
             # delivered it (first-edit prefix, mid-stream truncation) — the
             # flag alone must not suppress the corrective send.
-            if self.has_delivered_text(final_text):
+            # ``_already_sent`` gates the visible-text match: draft frames
+            # set ``_last_sent_text`` for dedupe but are ephemeral (they
+            # deliberately do not set ``_already_sent``), so draft-only
+            # visibility must not count as durable delivery.
+            if self._already_sent and self.has_delivered_text(final_text):
                 return True
             # The one legitimately ambiguous case keeps legacy trust: a
             # timed-out full-final send may have reached the platform

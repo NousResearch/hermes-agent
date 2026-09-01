@@ -348,8 +348,33 @@ def check_fn_cache_scope() -> Optional[str]:
 
 def _run_check_fn_uncached(fn: Callable, *, unresolved_scope: bool = False) -> bool:
     """Run an availability check without cache/grace handling."""
+    from agent.secret_scope import UnscopedSecretError
+
     try:
         return bool(fn())
+    except UnscopedSecretError:
+        if unresolved_scope:
+            # Expected fail-closed probe: with multiplexing on, boot-time
+            # check_fns run before any profile secret scope exists, so
+            # get_secret raises by design. The tool re-probes on the first
+            # scoped turn — log without a traceback so this cannot be
+            # mistaken for a crashed check_fn (#100697).
+            logger.debug(
+                "check_fn %s hit the multiplex fail-closed path with no "
+                "profile secret scope active; dependent tools re-probe on "
+                "the first scoped turn",
+                getattr(fn, "__qualname__", fn),
+            )
+            return False
+        # The scope resolved but the read still failed closed: a genuinely
+        # lost scope. Keep the loud crash-style report.
+        logger.warning(
+            "check_fn %s raised UnscopedSecretError while the profile cache "
+            "scope was resolved; dependent tools will be unavailable this turn",
+            getattr(fn, "__qualname__", fn),
+            exc_info=True,
+        )
+        return False
     except Exception:
         detail = " while profile cache scope was unresolved" if unresolved_scope else ""
         logger.warning(

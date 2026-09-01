@@ -133,13 +133,13 @@ def _make_event_id(
     return "pal_" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
 
 
-def _mirror_path(occurred_at: int) -> Path:
+def _mirror_path(occurred_at: int, explicit_home=None) -> Path:
     day = time.strftime("%Y-%m-%d", time.gmtime(occurred_at))
-    return ledger_jsonl_dir() / f"{day}.jsonl"
+    return ledger_jsonl_dir(explicit_home) / f"{day}.jsonl"
 
 
-def _append_jsonl_once(row: dict[str, Any]) -> None:
-    mirror_path = _mirror_path(int(row["occurred_at"]))
+def _append_jsonl_once(row: dict[str, Any], explicit_home=None) -> None:
+    mirror_path = _mirror_path(int(row["occurred_at"]), explicit_home)
     mirror_path.parent.mkdir(parents=True, exist_ok=True)
     event_id = str(row["event_id"])
     if mirror_path.exists():
@@ -242,7 +242,7 @@ def append_event(
         )
         inserted = cur.rowcount == 1
     if inserted:
-        _append_jsonl_once(row)
+        _append_jsonl_once(row, explicit_home)
     return resolved_event_id
 
 
@@ -298,7 +298,7 @@ def query_events(
         sql += " LIMIT ?"
         params.append(int(limit))
     try:
-        with _connect() as conn:
+        with _connect(explicit_home) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(sql, params).fetchall()
     except sqlite3.Error as exc:  # never break a read path on a ledger hiccup

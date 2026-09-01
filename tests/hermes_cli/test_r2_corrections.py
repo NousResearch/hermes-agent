@@ -15,8 +15,11 @@ R2-10 identity/state finding recurrence
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -298,6 +301,140 @@ class TestR26ExplicitHome:
             "SELECT COUNT(*) FROM activity_events WHERE event_type='profile.self_eval.trigger'").fetchone()[0]
         con_b.close()
         assert rows_b == 1
+
+
+# ── R3-1 ─────────────────────────────────────────────────────────────────────
+
+def _jsonl_event_count(home, event_id):
+    """Count JSONL mirror lines for event_id under home (B or A)."""
+    mirror_dir = Path(home) / "governance" / "logboard" / "profile-activity-ledger"
+    if not mirror_dir.exists():
+        return 0
+    count = 0
+    for f in mirror_dir.glob("*.jsonl"):
+        with f.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    if json.loads(line).get("event_id") == event_id:
+                        count += 1
+                except json.JSONDecodeError:
+                    continue
+    return count
+
+
+def _db_event_count(home, event_id):
+    db = Path(home) / "governance" / "profile-activity-ledger.sqlite"
+    if not db.exists():
+        return 0
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    n = con.execute("SELECT COUNT(*) FROM activity_events WHERE event_id = ?",
+                    (event_id,)).fetchone()[0]
+    con.close()
+    return n
+
+
+class TestR31ExplicitHomeIsolation:
+    """R3-1: explicit_home=B must keep SQLite AND JSONL in B, leave process
+    home A byte/row/path unchanged, and emit_trigger must return the exact
+    event id after a confirmed B read-back."""
+
+    @staticmethod
+    def _load_trigger():
+        import importlib.util
+        REPO = str(Path(__file__).resolve().parents[2])
+        spec = importlib.util.spec_from_file_location(
+            "set_eval_r31", f"{REPO}/scripts/denji-self-eval-trigger.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_full_ab_isolation_and_exact_return(self, tmp_path, monkeypatch):
+        import importlib.util
+        from hermes_cli.profile_activity_ledger import append_event, query_events
+        import time
+
+        home_a = tmp_path / "home-a"
+        (home_a / "profiles" / "octacon").mkdir(parents=True)
+        (home_a / "governance").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        home_b = tmp_path / "home-b"
+        (home_b / "governance").mkdir(parents=True)
+
+        now = int(time.time())
+        # Process home A already holds one event (the pre-existing baseline)
+        append_event(source="t", event_type="kanban.crashed",
+                     event_id="r31-a-baseline", actor_profile="octacon",
+                     target_profile="octacon", occurred_at=now - 500)
+        a_db_before = _db_event_count(home_a, "r31-a-baseline")
+        assert a_db_before == 1
+        # Snapshot A's JSONL state
+        a_jsonl_before = _jsonl_event_count(home_a, "r31-a-baseline")
+        a_db_all_before = sqlite3.connect(
+            f"file:{home_a}/governance/profile-activity-ledger.sqlite?mode=ro", uri=True)
+        a_total_before = a_db_all_before.execute("SELECT COUNT(*) FROM activity_events").fetchone()[0]
+        a_db_all_before.close()
+
+        # ── append with explicit_home=B ──
+        eid = "r31-b-event"
+        append_event(source="t", event_type="profile.self_eval.trigger",
+                     event_id=eid, actor_profile="denji", target_profile="octacon",
+                     object_type="profile.self_eval", occurred_at=now,
+                     explicit_home=home_b)
+
+        # 1) B SQLite contains the event exactly once
+        assert _db_event_count(home_b, eid) == 1
+        # 2) B JSONL contains the event exactly once
+        assert _jsonl_event_count(home_b, eid) == 1
+        # 3) query_events(explicit_home=B) returns B's event, never A's
+        b_rows = query_events(event_types=["profile.self_eval.trigger"], explicit_home=home_b)
+        assert any(r["event_id"] == eid for r in b_rows)
+        assert all(r["event_id"] != "r31-a-baseline" for r in b_rows)
+        # 4) query_events(explicit_home=A) never returns B's event
+        a_rows = query_events(explicit_home=home_a)
+        assert all(r["event_id"] != eid for r in a_rows)
+        # 5) A DB unchanged (same row count as before the B append)
+        a_db_after = sqlite3.connect(
+            f"file:{home_a}/governance/profile-activity-ledger.sqlite?mode=ro", uri=True)
+        a_total_after = a_db_after.execute("SELECT COUNT(*) FROM activity_events").fetchone()[0]
+        a_db_after.close()
+        assert a_total_after == a_total_before
+        # 6) A JSONL unchanged
+        assert _jsonl_event_count(home_a, "r31-a-baseline") == a_jsonl_before
+        # 7) A DB baseline row still present and unchanged
+        assert _db_event_count(home_a, "r31-a-baseline") == 1
+
+        # 8) emit_trigger returns the EXACT event id after confirmed B read-back
+        mod = self._load_trigger()
+        for i in range(4):
+            append_event(source="t", event_type="kanban.crashed",
+                         event_id=f"r31-fail-{i}-{time.time_ns()}",
+                         actor_profile="octacon", target_profile="x",
+                         occurred_at=now - 100 - i, explicit_home=home_b)
+        d = mod.decide_trigger("octacon", since=now - 86400, hermes_home=home_b, now=now)
+        assert d["trigger"] is True
+        returned = mod.emit_trigger(d, hermes_home=home_b)
+        assert returned is not None, "emit_trigger must return the event id"
+        assert returned.startswith("selfeval-trigger-octacon-")
+        # 9) the returned id is actually present in B (DB + JSONL)
+        assert _db_event_count(home_b, returned) == 1
+        assert _jsonl_event_count(home_b, returned) == 1
+
+    def test_idempotent_replay_one_row_one_mirror(self, tmp_path, monkeypatch):
+        from hermes_cli.profile_activity_ledger import append_event
+        import time
+        home_a = tmp_path / "home-a"
+        (home_a / "governance").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        home_b = tmp_path / "home-b"
+        (home_b / "governance").mkdir(parents=True)
+        now = int(time.time())
+        eid = "r31-replay"
+        for _ in range(3):
+            append_event(source="t", event_type="profile.self_eval.trigger",
+                         event_id=eid, actor_profile="denji", target_profile="octacon",
+                         occurred_at=now, explicit_home=home_b)
+        assert _db_event_count(home_b, eid) == 1
+        assert _jsonl_event_count(home_b, eid) == 1
 
 
 # ── R2-7 ─────────────────────────────────────────────────────────────────────

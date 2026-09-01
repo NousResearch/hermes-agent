@@ -3958,6 +3958,8 @@ def capture_usage_anchor(
 def anchored_context_tokens(
     messages: List[Dict[str, Any]],
     anchor: Optional[Dict[str, Any]],
+    *,
+    charge_stale_thinking: bool = True,
 ) -> Optional[int]:
     """Context size anchored on the last provider-reported usage.
 
@@ -3967,6 +3969,13 @@ def anchored_context_tokens(
     estimation). The assistant reply produced by the anchored response
     (first appended message after the base) is skipped: its cost is already
     counted exactly by ``completion_tokens``.
+
+    ``charge_stale_thinking`` is forwarded to the delta estimate — pass
+    ``False`` to exclude transient ``reasoning``/``reasoning_content`` text
+    on all but the newest assistant message in the delta (the durable-
+    transcript view used by display surfaces; see the turn-base anchor in
+    ``agent/conversation_loop.py``). Default ``True`` preserves the
+    conservative full charge for request-size callers.
     """
     if not isinstance(anchor, dict) or not isinstance(messages, list):
         return None
@@ -3988,7 +3997,9 @@ def anchored_context_tokens(
             # completion_tokens above.
             delta = delta[1:]
     if delta:
-        total += estimate_messages_tokens_rough(delta)
+        total += estimate_messages_tokens_rough(
+            delta, charge_stale_thinking=charge_stale_thinking
+        )
     return total
 
 

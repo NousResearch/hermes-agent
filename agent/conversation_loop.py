@@ -4486,6 +4486,20 @@ def run_conversation(
                     )
                     if _new_anchor is not None:
                         agent._usage_anchor = _new_anchor
+                        # Turn-base anchor for display surfaces: the FIRST
+                        # response of a turn carries minimal current-turn
+                        # reasoning replay, so its prompt_tokens approximate
+                        # the durable transcript cost (what the next turn
+                        # inherits). Later same-turn responses inflate
+                        # prompt_tokens with replayed thinking + tool
+                        # scaffolding that evaporates at the turn boundary —
+                        # anchoring the context meter here instead of on the
+                        # last response removes the end-of-turn sawtooth
+                        # (850K mid-loop -> 600K next turn) that users read
+                        # as a broken compaction. Display-only: compression
+                        # trigger math keeps using real last-request usage.
+                        if api_call_count == 1:
+                            agent._turn_base_usage_anchor = _new_anchor
                     _compression_threshold = int(
                         getattr(agent.context_compressor, "threshold_tokens", 0)
                         or 0

@@ -6,7 +6,7 @@ depend on:
 
 - load_picker_context() reproduces the inline 17-LOC config-slice exactly.
 - with_overrides() is truthy-only (empty agent attrs must not clobber).
-- build_models_payload() returns a stable {providers, model, provider}
+- build_models_payload() returns {providers, model, provider, preferred_models}
   shape and delegates curation to list_authenticated_providers (does not
   call provider_model_ids per row).
 - canonical_order keys on slug membership, not is_user_defined — section
@@ -67,6 +67,37 @@ def test_load_picker_context_records_primary_then_fallback_model_order():
         ("kimi-coding", "k3-256k"),
         ("alibaba", "qwen3.8-max"),
     )
+
+
+def test_models_payload_aliases_keep_api_and_oauth_providers_distinct():
+    rows = [
+        {"slug": "openai", "name": "OpenAI", "models": ["api-model"]},
+        {"slug": "xai-oauth", "name": "Grok OAuth", "models": ["oauth-model"]},
+        {"slug": "openai-codex", "name": "OpenAI Codex", "models": ["codex-model"]},
+    ]
+    config = _cfg(model={"provider": " ChatGPT-Codex ", "default": "codex-model"})
+    config["fallback_providers"] = [
+        {"provider": "grok-oauth", "model": "oauth-model"},
+        {"provider": "openai", "model": "api-model"},
+        {"provider": "openai-codex", "model": "codex-model"},
+    ]
+    with (
+        patch("hermes_cli.config.load_config", return_value=config),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        _list_auth_returning(rows),
+    ):
+        payload = build_models_payload(load_picker_context())
+
+    # This is the canonical wire consumed by Desktop, not a second alias table.
+    assert payload["preferred_models"] == [
+        {"provider": "openai-codex", "model": "codex-model"},
+        {"provider": "xai-oauth", "model": "oauth-model"},
+        {"provider": "openai", "model": "api-model"},
+    ]
+    assert [row["slug"] for row in payload["providers"]] == [
+        "openai-codex", "xai-oauth", "openai",
+    ]
 
 
 def test_configured_model_order_does_not_infer_a_missing_primary_provider():

@@ -253,6 +253,19 @@ def _print_numbered_rows(rows: _ModelPickerRows, menu_title: str, ordered: list[
     return num_width
 
 
+def _configured_picker_model_ids(model_ids: list[str], provider: str) -> list[str]:
+    from hermes_cli.config import load_config
+    from hermes_cli.inventory import configured_model_order, order_models_for_provider
+
+    try:
+        return order_models_for_provider(
+            model_ids, provider, configured_model_order(load_config()),
+        )
+    except (OSError, ValueError, TypeError):
+        logger.debug("Could not apply configured model order for %s", provider, exc_info=True)
+        return model_ids
+
+
 def _prompt_model_selection(
     model_ids: list[str], current_model: str = "",
     pricing: Optional[dict[str, dict[str, str]]] = None,
@@ -294,15 +307,7 @@ def _prompt_model_selection(
     # Reorder the catalog from the configured primary/fallback chain first.
     # The upstream plan sections and current-model cursor remain authoritative.
     if confirm_provider:
-        try:
-            from hermes_cli.config import load_config
-            from hermes_cli.inventory import configured_model_order, order_models_for_provider
-
-            model_ids = order_models_for_provider(
-                list(model_ids), confirm_provider, configured_model_order(load_config()),
-            )
-        except Exception as exc:
-            logger.debug("Could not apply configured model order for %s: %s", confirm_provider, exc)
+        model_ids = _configured_picker_model_ids(list(model_ids), confirm_provider)
 
     # All models for column-width computation (selectable + unavailable). Plan usage is Nous-only chrome.
     window_usage = usage if sale_chrome else None

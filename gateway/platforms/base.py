@@ -2495,6 +2495,12 @@ class MessageEvent:
     # from ``text`` so the sender-prefix logic in run.py can operate on the
     # trigger message alone, then prepend this context afterward.
     channel_context: Optional[str] = None
+
+    # Telegram Bot API guest invocation. Guest events may carry a stable
+    # routing key independent of the opaque answerGuestQuery delivery target.
+    guest_mode_invocation: bool = False
+    session_key_override: Optional[str] = None
+
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.

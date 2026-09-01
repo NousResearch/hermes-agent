@@ -184,6 +184,9 @@ class SessionSource:
     guild_id: Optional[str] = None  # @deprecated legacy alias for scope_id (D-Q2.5)
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    # Adapter-owned stable route for opaque transports such as Telegram Guest
+    # Bot queries. Must already include its platform-specific namespace.
+    session_key_override: Optional[str] = field(default=None, repr=False, compare=False)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
     # Profile this inbound message is routed to in a multiplexing gateway
     # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
@@ -1133,6 +1136,13 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    if source.session_key_override:
+        override = str(source.session_key_override).strip()
+        if not override or _is_session_key_unsafe(override):
+            raise ValueError("Unsafe session_key_override")
+        namespace = _session_key_namespace(profile or source.profile)
+        return override if override.startswith(f"{namespace}:") else f"{namespace}:{override}"
+
     ns = _session_key_namespace(profile)
     platform = source.platform.value
     slack_scope_id = (

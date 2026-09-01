@@ -94,6 +94,8 @@ class TurnContext:
     # topics. Used to stamp platform_message_id on the persisted user turn.
     inbound_message_id: Optional[str] = None
     moa_config: Optional[dict] = None
+    guest_mode_invocation: bool = False
+    guest_private_context: bool = False
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None
     # display_kind stamped on the persisted user row at turn start when this

@@ -211,3 +211,118 @@ def test_restore_helper_propagates_copy_errors(tmp_path):
 
     with pytest.raises(OSError):
         _restore_state_db_from_snapshot(state_path, tmp_path / "does-not-exist.db")
+
+
+# ── Multi-profile coverage (#97994) ─────────────────────────────────────
+
+
+def _make_valid_db(path: Path, rows: int, tag: str) -> None:
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.executemany(
+        "INSERT INTO sessions (name) VALUES (?)",
+        [(f"{tag}{i}",) for i in range(rows)],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _make_valid_snapshot(home: Path, snap_id: str, rows: int, tag: str) -> Path:
+    snap_dir = home / "state-snapshots" / snap_id
+    snap_dir.mkdir(parents=True)
+    snap_db = snap_dir / "state.db"
+    _make_valid_db(snap_db, rows, tag)
+    return snap_dir
+
+
+def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys):
+    """#97994: the guard must verify + auto-restore EVERY profile's state.db,
+    not just the root home's. Pre-update snapshots already cover siblings
+    (#66140); the guard was the missing half."""
+    from hermes_cli import update_cmd
+    from hermes_cli.backup import _sibling_profile_homes
+
+    root_home = tmp_path / "default-home"
+    root_home.mkdir()
+    sibling_home = tmp_path / "profiles" / "work"
+    sibling_home.mkdir(parents=True)
+
+    # Root DB: valid, with its own snapshot — must be left untouched.
+    _make_valid_db(root_home / "state.db", 10, "root")
+    root_before = (root_home / "state.db").read_bytes()
+
+    # Sibling: live DB corrupted post-update (the #68474 zeroed signature),
+    # with its own VALID pre-update snapshot under its own snapshots dir.
+    _make_valid_snapshot(sibling_home, "20260901-pre-update", 25, "snap")
+    (sibling_home / "state.db").write_bytes(b"\x00" * 4096)
+
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: root_home)
+    monkeypatch.setattr(
+        "hermes_cli.backup._sibling_profile_homes",
+        lambda invoking_home: [("work", sibling_home)],
+    )
+
+    update_cmd._verify_and_restore_state_dbs_post_update()
+
+    # Sibling restored from ITS snapshot (snap rows, not zeroed bytes).
+    assert _row_count(sibling_home / "state.db") == 25
+    # Root DB byte-identical — untouched.
+    assert (root_home / "state.db").read_bytes() == root_before
+    # Operator-visible restore message mentions the profile.
+    out = capsys.readouterr().out
+    assert "profile work" in out
+
+
+def test_post_update_guard_leaves_valid_sibling_dbs_alone(tmp_path, monkeypatch, capsys):
+    """A healthy sibling profile must not be touched — the guard only acts
+    on corruption."""
+    from hermes_cli import update_cmd
+
+    root_home = tmp_path / "default-home"
+    root_home.mkdir()
+    sibling_home = tmp_path / "profiles" / "work"
+    sibling_home.mkdir(parents=True)
+
+    _make_valid_db(root_home / "state.db", 10, "root")
+    _make_valid_db(sibling_home / "state.db", 7, "sib")
+    sibling_before = (sibling_home / "state.db").read_bytes()
+
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: root_home)
+    monkeypatch.setattr(
+        "hermes_cli.backup._sibling_profile_homes",
+        lambda invoking_home: [("work", sibling_home)],
+    )
+
+    update_cmd._verify_and_restore_state_dbs_post_update()
+
+    assert (sibling_home / "state.db").read_bytes() == sibling_before
+    out = capsys.readouterr().out
+    assert "corrupted" not in out
+
+
+def test_post_update_guard_survives_missing_sibling_snapshot(tmp_path, monkeypatch, capsys):
+    """Corrupt sibling with NO snapshot: guard must report and continue,
+    never raise into the update tail."""
+    from hermes_cli import update_cmd
+
+    root_home = tmp_path / "default-home"
+    root_home.mkdir()
+    sibling_home = tmp_path / "profiles" / "work"
+    sibling_home.mkdir(parents=True)
+
+    _make_valid_db(root_home / "state.db", 10, "root")
+    (sibling_home / "state.db").write_bytes(b"\x00" * 4096)
+
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: root_home)
+    monkeypatch.setattr(
+        "hermes_cli.backup._sibling_profile_homes",
+        lambda invoking_home: [("work", sibling_home)],
+    )
+
+    # Must not raise even though no snapshot exists to restore from.
+    update_cmd._verify_and_restore_state_dbs_post_update()
+
+    out = capsys.readouterr().out
+    assert "corrupted" in out
+    # Still corrupt (no snapshot) — but the guard completed cleanly.
+    assert (sibling_home / "state.db").read_bytes() == b"\x00" * 4096

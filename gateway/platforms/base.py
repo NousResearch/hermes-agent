@@ -2465,6 +2465,10 @@ class MessageEvent:
     # Per-attachment text-inlining contract. None/absent preserves the legacy
     # assumption that text/* adapters already injected content into ``text``.
     media_text_inlined: List[Optional[bool]] = field(default_factory=list)
+
+    # Normalized Telegram forwarded-message attribution. Kept structured until
+    # batching so each forwarded item can retain its own origin.
+    forward_origin: Optional[Dict[str, str]] = None
     
     # Reply context
     reply_to_message_id: Optional[str] = None

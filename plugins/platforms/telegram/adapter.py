@@ -771,6 +771,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
         self._pending_photo_batches: Dict[str, MessageEvent] = {}
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Telegram sends a multi-select forward as independent updates without
+        # a media_group_id. Coalesce adjacent voice notes per session so the
+        # gateway sees one turn and transcribes every clip in order.
+        self._pending_voice_batches: Dict[str, List[MessageEvent]] = {}
+        self._pending_voice_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}
         self._media_group_tasks: Dict[str, asyncio.Task] = {}
         self._guest_inline_message_ids: Dict[str, str] = {}
@@ -5390,7 +5395,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _cancel_pending_delivery_tasks(self) -> None:
         """Cancel every delayed-delivery task family before disconnect completes.
 
-        Covers media-group, photo-batch and text-batch flush tasks plus the
+        Covers media-group, voice-batch, photo-batch and text-batch flush tasks plus the
         polling-error recovery task. Each sits behind an ``asyncio.sleep()``;
         if teardown leaves them running they dispatch ``handle_message`` into a
         torn-down session. Skips the current task so the coroutine driving
@@ -5414,6 +5419,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         for task in list(self._media_group_tasks.values()):
             collect(task)
+        for task in list(getattr(self, "_pending_voice_batch_tasks", {}).values()):
+            collect(task)
         for task in list(self._pending_photo_batch_tasks.values()):
             collect(task)
         for task in list(self._pending_text_batch_tasks.values()):
@@ -5436,6 +5443,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._is_permanent_fatal():
             n_pending = (
                 len(self._pending_text_batches)
+                + len(getattr(self, "_pending_voice_batches", {}))
                 + len(self._pending_photo_batches)
                 + len(self._media_group_events)
             )
@@ -5445,6 +5453,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     n_pending,
                 )
         else:
+            for events in list(getattr(self, "_pending_voice_batches", {}).values()):
+                for event in events:
+                    self._hold_inbound_event(event, where="voice-batch-teardown")
             for event in list(self._pending_text_batches.values()):
                 self._hold_inbound_event(event, where="text-batch-teardown")
             for event in list(self._pending_photo_batches.values()):
@@ -5454,6 +5465,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._media_group_tasks.clear()
         self._media_group_events.clear()
+        getattr(self, "_pending_voice_batch_tasks", {}).clear()
+        getattr(self, "_pending_voice_batches", {}).clear()
         self._pending_photo_batch_tasks.clear()
         self._pending_photo_batches.clear()
         self._pending_text_batch_tasks.clear()
@@ -10925,6 +10938,71 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
 
+    @staticmethod
+    def _merge_voice_batch(events: List[MessageEvent]) -> Optional[MessageEvent]:
+        """Merge forwarded voice events in Telegram message-id order."""
+        if not events:
+            return None
+
+        def order_key(item: MessageEvent) -> tuple[int, str]:
+            raw = item.message_id or ""
+            try:
+                return (int(raw), raw)
+            except (TypeError, ValueError):
+                return (0, raw)
+
+        ordered = sorted(events, key=order_key)
+        merged = ordered[0]
+        for item in ordered[1:]:
+            merged.media_urls.extend(item.media_urls)
+            merged.media_types.extend(item.media_types)
+            if item.text:
+                merged.text = TelegramAdapter._merge_caption(merged.text, item.text)
+        return merged
+
+    async def _flush_voice_batch(self, batch_key: str) -> None:
+        """Dispatch a burst of forwarded voice notes as one logical event."""
+        current_task = asyncio.current_task()
+        event = None
+        try:
+            await asyncio.sleep(self._media_batch_delay_seconds)
+            events = self._pending_voice_batches.pop(batch_key, [])
+            event = self._merge_voice_batch(events)
+            if event is None:
+                return
+            if self._should_drop_delayed_delivery():
+                self._hold_inbound_event(event, where="voice-batch-flush")
+                event = None
+                return
+            await self.handle_message(event)
+            event = None
+        except asyncio.CancelledError:
+            if event is not None:
+                self._hold_inbound_event(event, where="voice-batch-flush-cancelled")
+            raise
+        finally:
+            if self._pending_voice_batch_tasks.get(batch_key) is current_task:
+                self._pending_voice_batch_tasks.pop(batch_key, None)
+
+    def _pause_voice_batch_flush(self, event: MessageEvent) -> None:
+        """Fence an existing batch before downloading the next forwarded voice."""
+        batch_key = self._text_batch_key(event)
+        prior_task = self._pending_voice_batch_tasks.pop(batch_key, None)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+
+    def _enqueue_voice_event(self, event: MessageEvent) -> None:
+        """Coalesce adjacent voice updates for one session, preserving source order."""
+        batch_key = self._text_batch_key(event)
+        self._pending_voice_batches.setdefault(batch_key, []).append(event)
+
+        prior_task = self._pending_voice_batch_tasks.get(batch_key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_voice_batch_tasks[batch_key] = asyncio.create_task(
+            self._flush_voice_batch(batch_key)
+        )
+
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
@@ -11005,6 +11083,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
+            self._pause_voice_batch_flush(event)
             try:
                 allowed, note = self._telegram_media_size_allowed(msg.voice, "voice message")
                 if not allowed:
@@ -11221,6 +11300,10 @@ class TelegramAdapter(BasePlatformAdapter):
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
             await self._queue_media_group_event(str(media_group_id), event)
+            return
+
+        if msg.voice and getattr(msg, "forward_origin", None) is not None:
+            self._enqueue_voice_event(event)
             return
 
         await self.handle_message(event)
@@ -11679,11 +11762,80 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            forward_origin=self._extract_forward_origin(message),
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             metadata=event_metadata,
             timestamp=message.date,
         )
+
+    @staticmethod
+    def _telegram_forward_origin_type(origin: Any) -> str:
+        origin_type = getattr(origin, "type", None)
+        if origin_type is None:
+            return "unknown"
+        return str(getattr(origin_type, "name", origin_type) or "unknown").lower()
+
+    @staticmethod
+    def _telegram_forward_origin_date(origin: Any) -> Optional[str]:
+        date = getattr(origin, "date", None)
+        if date is None:
+            return None
+        if hasattr(date, "isoformat"):
+            return date.isoformat()
+        return str(date)
+
+    def _extract_forward_origin(self, message: Message) -> Optional[Dict[str, str]]:
+        """Normalize Telegram forwarded-message metadata for agent context."""
+        origin = getattr(message, "forward_origin", None)
+        if origin is None:
+            return None
+        origin_type = getattr(origin, "type", None)
+        if not isinstance(origin_type, str):
+            return None
+
+        result: Dict[str, str] = {"type": self._telegram_forward_origin_type(origin)}
+        if getattr(message, "is_automatic_forward", False):
+            result["automatic"] = "true"
+        date = self._telegram_forward_origin_date(origin)
+        if date:
+            result["date"] = date
+
+        sender_user = getattr(origin, "sender_user", None)
+        if sender_user is not None:
+            sender_name = getattr(sender_user, "full_name", None) or getattr(sender_user, "username", None)
+            if sender_name:
+                result["sender_name"] = str(sender_name)
+            sender_id = getattr(sender_user, "id", None)
+            if sender_id is not None:
+                result["sender_id"] = str(sender_id)
+            username = getattr(sender_user, "username", None)
+            if username:
+                result["sender_username"] = str(username)
+
+        hidden_name = getattr(origin, "sender_user_name", None)
+        if hidden_name:
+            result["sender_name"] = str(hidden_name)
+
+        chat = getattr(origin, "chat", None)
+        if chat is not None:
+            chat_name = getattr(chat, "title", None) or getattr(chat, "full_name", None) or getattr(chat, "username", None)
+            if chat_name:
+                result["chat_name"] = str(chat_name)
+            chat_id = getattr(chat, "id", None)
+            if chat_id is not None:
+                result["chat_id"] = str(chat_id)
+            username = getattr(chat, "username", None)
+            if username:
+                result["chat_username"] = str(username)
+
+        author_signature = getattr(origin, "author_signature", None)
+        if author_signature:
+            result["author_signature"] = str(author_signature)
+        message_id = getattr(origin, "message_id", None)
+        if message_id is not None:
+            result["message_id"] = str(message_id)
+        return result
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

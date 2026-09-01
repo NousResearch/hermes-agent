@@ -981,6 +981,14 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at INTEGER NOT NULL
 );
 
+-- Atomic claim for reviewer correction submissions.  The primary key is the
+-- reviewed-task + result digest, so concurrent deliveries share one child.
+CREATE TABLE IF NOT EXISTS reviewer_correction_claims (
+    idempotency_key TEXT PRIMARY KEY,
+    reviewed_task_id TEXT NOT NULL,
+    correction_task_id TEXT NOT NULL
+);
+
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
 -- and structured summary all live on the run, not the task. Multiple
@@ -3179,15 +3187,23 @@ def edit_completed_task_result(
 
 
 def block_task(
-    conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    kind: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+    allow_nested: bool = False,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``transient`` still counts toward the loop breaker
     so a forever-flaky task escalates. True on any transition."""
     if kind is not None and kind not in VALID_BLOCK_KINDS:
-        raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
-    with write_txn(conn):
+        raise ValueError(
+            f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
+        )
+    recurrences = 0
+    with write_txn(conn, allow_nested=allow_nested):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()

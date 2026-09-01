@@ -1,4 +1,5 @@
 from pathlib import Path
+import concurrent.futures
 
 import pytest
 
@@ -96,3 +97,42 @@ def test_injected_audit_failure_recovers_idempotently(conn, monkeypatch):
     child = kb.get_task(conn, retry["correction_task_id"])
     assert child is not None and child.status == "ready"
     assert not kb.parent_ids(conn, child.id)
+    distinct = [
+        submit_reviewer_result(conn, tid, {**valid(), "summary": f"distinct {i}"})
+        for i in range(2)
+    ]
+    fourth = submit_reviewer_result(conn, tid, {**valid(), "summary": "distinct 3"})
+    assert all(item["correction_task_id"] for item in distinct)
+    assert fourth["escalated"] and fourth["correction_task_id"] is None
+    correction_rows = conn.execute(
+        "SELECT COUNT(*) AS n FROM tasks WHERE idempotency_key LIKE ? AND status != 'archived'",
+        (f"reviewer-correction:{tid}:%",),
+    ).fetchone()
+    assert correction_rows["n"] == 3
+
+
+def test_concurrent_identical_correction_submission_creates_one_child(tmp_path):
+    db_path = tmp_path / "concurrent.db"
+    setup = kb.connect(db_path)
+    tid = kb.create_task(setup, title="concurrent", assignee="builder")
+    setup.close()
+
+    def submit():
+        connection = kb.connect(db_path)
+        try:
+            return submit_reviewer_result(connection, tid, valid())["correction_task_id"]
+        finally:
+            connection.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        ids = list(pool.map(lambda _: submit(), range(2)))
+    check = kb.connect(db_path)
+    try:
+        assert ids[0] == ids[1]
+        rows = check.execute(
+            "SELECT id FROM tasks WHERE idempotency_key LIKE ? AND status != 'archived'",
+            (f"reviewer-correction:{tid}:%",),
+        ).fetchall()
+        assert len(rows) == 1
+    finally:
+        check.close()

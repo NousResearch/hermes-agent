@@ -83,7 +83,7 @@ def _canonical(result: ReviewerResult) -> str:
 
 
 def _audit(conn, task_id: str, kind: str, payload: Mapping[str, Any]) -> None:
-    with kb.write_txn(conn):
+    with kb.write_txn(conn, allow_nested=True):
         kb._append_event(conn, task_id, kind, dict(payload))
 
 
@@ -124,32 +124,57 @@ def submit_reviewer_result(conn, task_id: str, payload: Mapping[str, Any], *, re
         _audit(conn, task_id, "reviewer_result_blocked", base)
         return {"accepted": True, "verdict": result.verdict, "task_id": task_id, "correction_task_id": None}
     key = f"reviewer-correction:{task_id}:{digest}"
-    existing = conn.execute(
-        "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
-        (key,),
-    ).fetchone()
-    if existing:
-        _audit(conn, task_id, "reviewer_correction_reused", {**base, "correction_task_id": existing["id"]})
-        return {
-            "accepted": True,
-            "verdict": result.verdict,
-            "task_id": task_id,
-            "correction_task_id": existing["id"],
-            "cycle": None,
-            "reused": True,
-        }
-    prior = conn.execute("SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = 'reviewer_correction_created'", (task_id,)).fetchone()["n"]
-    if prior >= MAX_CORRECTION_CYCLES:
-        kb.block_task(conn, task_id, reason="maximum reviewer correction cycles reached", kind="needs_input")
-        _audit(conn, task_id, "reviewer_result_escalated", {**base, "cycle": prior})
-        return {"accepted": True, "verdict": result.verdict, "task_id": task_id, "correction_task_id": None, "escalated": True}
-    # This is an independently runnable correction.  The reviewed task is
-    # deliberately not a gating parent: CHANGES_REQUESTED is submitted while
-    # that task is still open.  The reviewed-task -> correction reference is
-    # retained in the audit event below.
-    correction = kb.create_task(conn, title=f"Correction for {task.title}", body=result.summary, assignee=task.assignee or "builder", idempotency_key=key)
-    _audit(conn, task_id, "reviewer_correction_created", {**base, "cycle": prior + 1, "correction_task_id": correction})
-    return {"accepted": True, "verdict": result.verdict, "task_id": task_id, "correction_task_id": correction, "cycle": prior + 1}
+    # Claim, child creation, cycle accounting, and provenance are one write
+    # transaction.  In particular, an audit failure rolls back the child and
+    # its claim instead of leaving an uncounted correction behind.  The claim
+    # table serializes identical submissions before either can create a child.
+    with kb.write_txn(conn):
+        claim = conn.execute(
+            "SELECT correction_task_id FROM reviewer_correction_claims "
+            "WHERE idempotency_key = ?",
+            (key,),
+        ).fetchone()
+        if claim:
+            correction = claim["correction_task_id"]
+            _audit(conn, task_id, "reviewer_correction_reused", {**base, "correction_task_id": correction})
+            return {"accepted": True, "verdict": result.verdict, "task_id": task_id,
+                    "correction_task_id": correction, "cycle": None, "reused": True}
+        # Backfill the claim for children created before this table existed.
+        existing = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+            "ORDER BY created_at DESC LIMIT 1", (key,),
+        ).fetchone()
+        if existing:
+            correction = existing["id"]
+            conn.execute(
+                "INSERT INTO reviewer_correction_claims "
+                "(idempotency_key, reviewed_task_id, correction_task_id) VALUES (?, ?, ?)",
+                (key, task_id, correction),
+            )
+            _audit(conn, task_id, "reviewer_correction_reused", {**base, "correction_task_id": correction})
+            return {"accepted": True, "verdict": result.verdict, "task_id": task_id,
+                    "correction_task_id": correction, "cycle": None, "reused": True}
+        prior = conn.execute(
+            "SELECT COUNT(*) AS n FROM reviewer_correction_claims "
+            "WHERE reviewed_task_id = ?", (task_id,)
+        ).fetchone()["n"]
+        if prior >= MAX_CORRECTION_CYCLES:
+            kb.block_task(conn, task_id, reason="maximum reviewer correction cycles reached", kind="needs_input",
+                          allow_nested=True)
+            _audit(conn, task_id, "reviewer_result_escalated", {**base, "cycle": prior})
+            return {"accepted": True, "verdict": result.verdict, "task_id": task_id,
+                    "correction_task_id": None, "escalated": True}
+        correction = kb.create_task(conn, title=f"Correction for {task.title}", body=result.summary,
+                                    assignee=task.assignee or "builder", idempotency_key=key)
+        conn.execute(
+            "INSERT INTO reviewer_correction_claims "
+            "(idempotency_key, reviewed_task_id, correction_task_id) VALUES (?, ?, ?)",
+            (key, task_id, correction),
+        )
+        _audit(conn, task_id, "reviewer_correction_created",
+                {**base, "cycle": prior + 1, "correction_task_id": correction})
+        return {"accepted": True, "verdict": result.verdict, "task_id": task_id,
+                "correction_task_id": correction, "cycle": prior + 1}
 
 
 apply_reviewer_result = submit_reviewer_result

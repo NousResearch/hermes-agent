@@ -390,6 +390,45 @@ def test_aux_unset_falls_back_to_main_model_with_note(tmp_path: Path) -> None:
     )
 
 
+def test_aux_unset_fallback_strips_query_from_main_base_url(tmp_path: Path) -> None:
+    """The aux-unset fallback reads compressor.base_url (the MAIN model's
+    URL) raw — no producer strips it on this path. When the main endpoint
+    carries a proxy credential as ?key=..., the sink must sanitize it before
+    the user-facing warning: route_callback never fired (pre-dispatch abort)
+    and auxiliary.compression is unset, so nothing else stands between the
+    raw URL and Telegram/Discord/Slack (#72636 review, defect 2)."""
+    _SECRET = "sk-super-secret-token-12345"
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "PARENT_72636_SINK_SANITIZE"
+    db.create_session(sid, source="cli")
+
+    agent, compressor = _build_agent_with_compressor(
+        db, sid, failure_class="auth", aux_provider="", aux_model="", aux_base_url=""
+    )
+    # The main endpoint carries a credential in the query string — as real
+    # proxy deployments do.
+    compressor.base_url = f"https://proxy.example.com/v1?key={_SECRET}"
+
+    emitted = _run_compression(agent)
+    rendered = "\n".join(emitted)
+
+    # Prove we exercised the third fallback (not another branch)...
+    assert "not configured" in rendered, (
+        f"expected the aux-unset fallback note, got: {emitted}"
+    )
+    # ...the sanitized endpoint is still reported...
+    assert "https://proxy.example.com/v1" in rendered, (
+        f"sanitized main endpoint missing from diagnostic: {emitted}"
+    )
+    # ...but the query-string credential MUST NOT leak.
+    assert _SECRET not in rendered, (
+        f"query-string credential leaked into diagnostic: {emitted}"
+    )
+    assert "key=" not in rendered, (
+        f"query string leaked into diagnostic: {emitted}"
+    )
+
+
 # ── Robustness ─────────────────────────────────────────────────────────
 
 
@@ -793,6 +832,75 @@ def test_real_call_llm_quarantined_fallback_auth_propagates_last_attempt_error()
         f"propagated error is not the quarantined fallback 401: {excinfo.value!r}"
     )
     assert excinfo.value.__cause__ is primary_err
+
+
+def test_real_call_llm_quarantined_fallback_keeps_primary_error_for_other_tasks() -> None:
+    """Same wire scenario as the compression test above, but for an auxiliary
+    task that did NOT opt into route attribution (no route_callback, task is
+    not compression — e.g. web_extract or title generation): call_llm's
+    exception contract must be unchanged from before this PR. The swallowed
+    fallback 401 stays swallowed and the caller observes the PRIMARY error
+    (429), which upper layers key retry/backoff decisions on (#72636
+    review, defect 1 scoping)."""
+    from agent.auxiliary_client import call_llm
+
+    primary_err = type("Rate429", (Exception,), {"status_code": 429})(
+        "429 Too Many Requests: rate limit exceeded"
+    )
+    fallback_err = type("Auth401", (Exception,), {"status_code": 401})(
+        "expired fallback key"
+    )
+    primary = MagicMock()
+    primary.base_url = "https://api.minimax.chat/v1"
+    primary.chat.completions.create.side_effect = primary_err
+
+    fallback = MagicMock()
+    fallback.base_url = "https://openrouter.ai/api/v1"
+    fallback.chat.completions.create.side_effect = fallback_err
+
+    payment_walks = [
+        (fallback, "fallback-model", "openrouter"),
+        (None, None, ""),
+    ]
+
+    def _payment_fallback(*_args, **_kwargs):
+        return payment_walks.pop(0) if payment_walks else (None, None, "")
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "minimax/minimax-m2.7", None, None, None),
+        ),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary, "minimax/minimax-m2.7"),
+        ),
+        patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ),
+        patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(None, None, ""),
+        ),
+        patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            side_effect=_payment_fallback,
+        ),
+    ):
+        with pytest.raises(Exception) as excinfo:
+            call_llm(
+                task="web_extract",
+                messages=[{"role": "user", "content": "describe"}],
+            )
+
+    # Pre-PR contract: the caller sees the primary 429, not the fallback's
+    # quarantined 401 — retry/backoff classification must not flip to
+    # "credential broken" for tasks outside the attribution path.
+    assert excinfo.value is primary_err, (
+        f"non-compression task received the quarantined fallback error "
+        f"instead of the primary: {excinfo.value!r}"
+    )
 
 
 def test_real_compressor_explicit_provider_missing_key_reports_pre_dispatch(

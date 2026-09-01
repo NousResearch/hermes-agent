@@ -175,11 +175,38 @@ def _stamp_worker_session_metadata(
     """Add trusted worker session id metadata for this worker's own task."""
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return metadata
+    # Only build a new dict when there is actually something to stamp — a plain
+    # worker run (no session id, no finalize turn) must return the input
+    # unchanged so callers that treat a `None` metadata as absent keep working.
+    to_stamp: dict = {}
     session_id = os.environ.get("HERMES_SESSION_ID")
-    if not session_id:
+    if session_id:
+        to_stamp["worker_session_id"] = session_id
+    # Finalize-in-process instrumentation: if a forced finalize turn fired this
+    # run, stamp whether it ultimately produced a terminal tool. Reading the
+    # module flags here (a terminal-tool handler) is correct: reaching
+    # kanban_complete / kanban_block WITH a prior finalize turn proves the
+    # finalize succeeded. If the worker instead exited cleanly without ever
+    # calling a terminal tool, the run is closed by the dispatcher as a
+    # protocol violation and the metrics snapshot was already recorded at the
+    # moment the finalize turn fired (see the loop hook) — this stamp just
+    # ties the successful path to the run row.
+    try:
+        from agent.kanban_checkpoint import finalize_metrics, mark_finalize_succeeded
+
+        m = finalize_metrics()
+        if m.get("finalize_turn_fired"):
+            mark_finalize_succeeded()
+            m = finalize_metrics()
+            for key, val in m.items():
+                if val is not None:
+                    to_stamp[key] = val
+    except Exception:
+        logger.debug("finalize-metrics stamp failed", exc_info=True)
+    if not to_stamp:
         return metadata
     stamped = dict(metadata or {})
-    stamped["worker_session_id"] = session_id
+    stamped.update(to_stamp)
     return stamped
 
 

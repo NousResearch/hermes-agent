@@ -7838,11 +7838,12 @@ class TelegramAdapter(BasePlatformAdapter):
         command_parts = command_text.split()
         pending_id = command_parts[-1].lower() if command_parts else ""
         subsystem = "memory" if command_text.startswith("/memory ") else "skills"
+        action_code = data.split(":", 3)[2].lower()
         scope = normalized_surface.get("scope") or {}
         scoped_ids = normalized_surface["items"].get(subsystem, [])
         chat_matches = not scope.get("chat_id") or str(scope["chat_id"]) == str(query_chat_id or "")
         thread_matches = not scope.get("thread_id") or str(scope["thread_id"]) == str(query_thread_id or "")
-        pending_matches = pending_id in scoped_ids
+        pending_matches = action_code == "p" or pending_id in scoped_ids
         if not (chat_matches and thread_matches and pending_matches):
             await query.answer(text="⚠️ This approval card expired or belongs to another topic.")
             return
@@ -7894,7 +7895,6 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_message_id=source.message_id,
         )
 
-        await query.answer(text="Processing write-approval action…")
         try:
             response = await self._message_handler(event)
         except Exception as exc:
@@ -7904,32 +7904,88 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc,
                 exc_info=True,
             )
+            await query.answer(text="⚠️ Write-approval action failed.")
             return
         if not response or query_chat_id is None:
+            await query.answer(text="⚠️ Write-approval action returned no response.")
             return
 
         response_text = str(response)
-        action_code = data.split(":", 3)[2].lower()
         resolved = (
             (action_code == "a" and response_text.startswith("Approved "))
             or (action_code == "r" and response_text.startswith("Rejected "))
         )
         if resolved:
-            status = "✅ Approved" if action_code == "a" else "❌ Rejected"
-            original_text = str(getattr(query.message, "text", "") or "").strip()
-            edited_text = f"{original_text}\n\n{status}" if original_text else status
+            status = (
+                f"✅ Approved {pending_id}"
+                if action_code == "a"
+                else f"❌ Rejected {pending_id}"
+            )
             try:
-                await query.edit_message_text(text=edited_text, reply_markup=None)
+                refresh_event = MessageEvent(
+                    text=f"/{subsystem} pending",
+                    message_type=MessageType.COMMAND,
+                    source=source,
+                    raw_message=query.message,
+                    message_id=source.message_id,
+                    reply_to_message_id=source.message_id,
+                )
+                refreshed = await self._message_handler(refresh_event)
+                refreshed_text = str(refreshed or f"No pending {subsystem} writes.")
+                refreshed_metadata = merge_response_delivery_metadata(None, refreshed)
+                refreshed_surface, refreshed_markup = self._write_approval_keyboard(
+                    refreshed_metadata
+                )
+                await query.edit_message_text(
+                    text=refreshed_text,
+                    reply_markup=refreshed_markup,
+                )
                 store = getattr(self, "_write_approval_surfaces", None)
-                if isinstance(store, OrderedDict):
-                    store.pop((str(query_chat_id), str(prompt_message_id)), None)
+                surface_key = (str(query_chat_id), str(prompt_message_id))
+                if refreshed_surface is not None:
+                    self._remember_write_approval_surface(
+                        str(query_chat_id), str(prompt_message_id), refreshed_surface
+                    )
+                elif isinstance(store, OrderedDict):
+                    store.pop(surface_key, None)
+                await query.answer(text=status)
                 return
             except Exception:
                 logger.debug(
-                    "[%s] failed to edit resolved write-approval card",
+                    "[%s] failed to refresh resolved write-approval card",
                     self.name,
                     exc_info=True,
                 )
+
+        if action_code == "p":
+            refreshed_metadata = merge_response_delivery_metadata(None, response)
+            refreshed_surface, refreshed_markup = self._write_approval_keyboard(
+                refreshed_metadata
+            )
+            try:
+                await query.edit_message_text(
+                    text=response_text,
+                    reply_markup=refreshed_markup,
+                )
+                if refreshed_surface is not None:
+                    self._remember_write_approval_surface(
+                        str(query_chat_id), str(prompt_message_id), refreshed_surface
+                    )
+                await query.answer(text="Refreshed")
+                return
+            except Exception:
+                logger.debug(
+                    "[%s] failed to refresh write-approval card",
+                    self.name,
+                    exc_info=True,
+                )
+
+        if action_code in {"a", "r"}:
+            compact_error = " ".join(response_text.split())
+            if len(compact_error) > 180:
+                compact_error = compact_error[:177] + "…"
+            await query.answer(text=f"⚠️ {compact_error}")
+            return
 
         metadata = _thread_metadata_for_source(source, source.message_id)
         metadata = merge_response_delivery_metadata(metadata, response)

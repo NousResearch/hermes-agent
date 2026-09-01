@@ -177,6 +177,29 @@ def test_handle_approve_all(hermes_home):
     assert len(store.user_entries) == 2
 
 
+def test_handle_failed_approve_does_not_claim_approved(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+
+    store = MemoryStore(memory_char_limit=1)
+    store.load_from_disk()
+    pending_id = wa.stage_write(
+        "memory",
+        {"action": "add", "target": "memory", "content": "too large"},
+        summary="too large",
+        origin="foreground",
+    )["id"]
+
+    out = handle_pending_subcommand(
+        wa.MEMORY, ["approve", pending_id], memory_store=store
+    )
+
+    assert out.startswith("Approval failed for 1 memory write(s).")
+    assert "Approved 0" not in out
+    assert wa.get_pending(wa.MEMORY, pending_id) is not None
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

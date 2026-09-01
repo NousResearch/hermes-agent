@@ -252,6 +252,8 @@ class _CallbackRunner:
 
     async def _handle_message(self, event):
         self.events.append(event)
+        if event.text == "/memory pending":
+            return WriteApprovalReply("No pending memory writes.")
         return WriteApprovalReply("Approved 1 memory write(s).", MEMORY_SURFACE)
 
 
@@ -287,6 +289,7 @@ async def test_callback_routes_through_runner_command_path(monkeypatch):
             message_id=77,
         ),
         answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
         edit_message_reply_markup=AsyncMock(),
     )
 
@@ -298,9 +301,122 @@ async def test_callback_routes_through_runner_command_path(monkeypatch):
     assert runner.events[0].message_type == MessageType.COMMAND
     assert runner.events[0].source.profile == "routed-profile"
     assert runner.events[0].source._transport_adapter_ref() is adapter
-    adapter.send.assert_awaited_once()
-    assert adapter.send.call_args.args[1] == "Approved 1 memory write(s)."
-    assert adapter.send.call_args.kwargs["metadata"]["write_approval"] == MEMORY_SURFACE
+    adapter.send.assert_not_awaited()
+    query.edit_message_text.assert_awaited_once()
+    assert "No pending memory writes." in query.edit_message_text.call_args.kwargs["text"]
+    assert query.edit_message_text.call_args.kwargs["reply_markup"] is None
+    assert query.answer.call_args.kwargs["text"] == "✅ Approved abc12345"
+
+
+@pytest.mark.asyncio
+async def test_successful_callback_refreshes_same_card_and_keeps_remaining_buttons(
+    monkeypatch,
+):
+    adapter = _make_adapter(monkeypatch)
+    initial_surface = {
+        "subsystems": ["memory"],
+        "items": {"memory": ["abc12345", "feed6789"]},
+    }
+    remaining_surface = {
+        "subsystems": ["memory"],
+        "items": {"memory": ["feed6789"]},
+    }
+
+    class RefreshRunner(_CallbackRunner):
+        async def _handle_message(self, event):
+            self.events.append(event)
+            if event.text == "/memory pending":
+                return WriteApprovalReply(
+                    "Pending memory writes (1): feed6789", remaining_surface
+                )
+            return WriteApprovalReply(
+                "Approved 1 memory write(s).", remaining_surface
+            )
+
+    runner = RefreshRunner()
+    adapter.gateway_runner = runner
+    adapter.set_message_handler(runner._handle_message)
+    adapter._remember_write_approval_surface("12345", "77", initial_surface)
+    adapter.send = AsyncMock()
+    query = SimpleNamespace(
+        data="wa:m:a:abc12345",
+        from_user=SimpleNamespace(id=42, first_name="Joe"),
+        message=SimpleNamespace(
+            chat_id=12345,
+            chat=SimpleNamespace(type="private"),
+            message_thread_id=None,
+            message_id=77,
+            text="old pending card",
+        ),
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+    )
+
+    await adapter._handle_callback_query(
+        SimpleNamespace(callback_query=query), SimpleNamespace()
+    )
+
+    assert [event.text for event in runner.events] == [
+        "/memory approve abc12345",
+        "/memory pending",
+    ]
+    query.edit_message_text.assert_awaited_once()
+    edit_kwargs = query.edit_message_text.call_args.kwargs
+    assert edit_kwargs["text"] == "Pending memory writes (1): feed6789"
+    callbacks = [
+        button.callback_data
+        for row in edit_kwargs["reply_markup"].inline_keyboard
+        for button in row
+    ]
+    assert "wa:m:a:abc12345" not in callbacks
+    assert "wa:m:a:feed6789" in callbacks
+    assert adapter._lookup_write_approval_surface("12345", "77") == remaining_surface
+    assert query.answer.call_args.kwargs["text"] == "✅ Approved abc12345"
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_callback_keeps_card_and_reports_failure_in_snackbar(monkeypatch):
+    adapter = _make_adapter(monkeypatch)
+
+    class FailedRunner(_CallbackRunner):
+        async def _handle_message(self, event):
+            self.events.append(event)
+            return WriteApprovalReply(
+                "Approval failed for 1 memory write(s).\nFailed:\n"
+                "  abc12345: memory would be at 2,405/2,200 chars -- over the limit.",
+                MEMORY_SURFACE,
+            )
+
+    runner = FailedRunner()
+    adapter.gateway_runner = runner
+    adapter.set_message_handler(runner._handle_message)
+    adapter._remember_write_approval_surface("12345", "77", MEMORY_SURFACE)
+    adapter.send = AsyncMock()
+    query = SimpleNamespace(
+        data="wa:m:a:abc12345",
+        from_user=SimpleNamespace(id=42, first_name="Joe"),
+        message=SimpleNamespace(
+            chat_id=12345,
+            chat=SimpleNamespace(type="private"),
+            message_thread_id=None,
+            message_id=77,
+            text="pending card",
+        ),
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+    )
+
+    await adapter._handle_callback_query(
+        SimpleNamespace(callback_query=query), SimpleNamespace()
+    )
+
+    query.edit_message_text.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+    assert "over the limit" in query.answer.call_args.kwargs["text"]
+    assert adapter._lookup_write_approval_surface("12345", "77") == MEMORY_SURFACE
 
 
 @pytest.mark.asyncio

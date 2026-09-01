@@ -131,7 +131,10 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
         else:
             failed.append(f"{rec['id']}: {msg}")
 
-    out = [f"Approved {applied} {subsystem} write(s)."]
+    if applied:
+        out = [f"Approved {applied} {subsystem} write(s)."]
+    else:
+        out = [f"Approval failed for {len(failed)} {subsystem} write(s)."]
     if failed:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)

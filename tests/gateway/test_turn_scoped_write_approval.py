@@ -394,11 +394,14 @@ async def test_callback_requires_the_original_chat_topic_profile_and_pending_id(
 
 
 @pytest.mark.asyncio
-async def test_resolved_callback_edits_original_card_and_removes_buttons(monkeypatch):
+async def test_resolved_callback_refreshes_original_card_and_uses_snackbar(monkeypatch):
     adapter = _make_adapter(monkeypatch)
     adapter._authorization_check = lambda *_args: True
     adapter.set_message_handler(
-        AsyncMock(return_value="Approved 1 memory write(s).")
+        AsyncMock(side_effect=[
+            "Approved 1 memory write(s).",
+            "No pending memory writes.",
+        ])
     )
     adapter.send = AsyncMock()
     adapter._remember_write_approval_surface(
@@ -435,9 +438,13 @@ async def test_resolved_callback_edits_original_card_and_removes_buttons(monkeyp
         SimpleNamespace(callback_query=query), SimpleNamespace()
     )
 
-    adapter._message_handler.assert_awaited_once()
+    assert adapter._message_handler.await_count == 2
+    assert [
+        call.args[0].text for call in adapter._message_handler.await_args_list
+    ] == ["/memory approve abc12345", "/memory pending"]
     adapter.send.assert_not_awaited()
     query.edit_message_text.assert_awaited_once()
     edit_kwargs = query.edit_message_text.call_args.kwargs
-    assert "✅ Approved" in edit_kwargs["text"]
+    assert edit_kwargs["text"] == "No pending memory writes."
     assert edit_kwargs["reply_markup"] is None
+    assert query.answer.call_args.kwargs["text"] == "✅ Approved abc12345"

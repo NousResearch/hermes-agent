@@ -1573,16 +1573,14 @@ class SessionSessionsMixin:
             ).fetchall()}
             if not session_ids:
                 return 0
-            conn.execute(
-                "UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({_session_ids_placeholders(session_ids)})", list(session_ids),
-            )
-            for sid in session_ids:
+            for chunk in _id_chunks(session_ids):
+                ph = _session_ids_placeholders(chunk)
+                conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
                 # DELETE FROM messages: a row inserted between the SELECT and here
                 # would otherwise dangle (clean FK state).
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)

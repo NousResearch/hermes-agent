@@ -57,17 +57,81 @@ _nb_get_link_dir() {
     fi
 }
 
-# Redirect a Hermes-managed Node's `npm install -g` to the command link dir
-# (already on PATH) instead of the default $HERMES_HOME/node/bin, which is off
-# PATH and wiped on every Node upgrade. Scoped to the managed Node via its
-# prefix-local global npmrc; the user's other Node installs / ~/.npmrc are
+# Point the Hermes-managed Node's `npm install -g` at a directory that is on
+# PATH — UNLESS a user-managed Node runtime is detected, in which case the
+# managed Node must never claim the user's prefix.
+#
+# Managed-only path (no user runtime): redirect to the command link dir's
+# parent (already on PATH) so global bins are usable and survive Node upgrades.
+#
+# User-managed path (mise/nvm/asdf/fnm/brew/system node on PATH outside the
+# managed tree): scope to $HERMES_HOME/node instead of claiming ~/.local, the
+# user's runtime prefix. Hermes-owned subprocesses find managed-tree tools via
+# with_hermes_node_path(); tools re-install lazily after a Node upgrade.
+#
+# Scoped via the managed Node's prefix-local npmrc; the user's ~/.npmrc is
 # untouched. Idempotent no-op when there's no managed npm.
+
+# Returns 0 when a user-managed Node/npm is reachable on PATH OUTSIDE the
+# Hermes-managed tree. Detection scans PATH entries, skipping the managed
+# tree, and resolves symlinks — the installer links npm into the command link
+# dir, which points back at $HERMES_HOME/node and must not count as a user
+# runtime.
+_nb_is_user_managed_node() {
+    local _dir _entry _target _guard
+    local IFS=':'
+    for _dir in $PATH; do
+        [ -n "$_dir" ] || continue
+        case "$_dir" in
+            "$HERMES_HOME/node"|"$HERMES_HOME/node"/*) continue ;;
+        esac
+        for _entry in "$_dir/node" "$_dir/npm"; do
+            [ -x "$_entry" ] || continue
+            _target="$_entry"
+            _guard=0
+            while [ -L "$_target" ]; do
+                # Resolve one hop. Relative link targets resolve against the
+                # CURRENT link's directory (not the original PATH entry), and
+                # `cd -P`/`pwd -P` canonicalizes `..`/`.` segments plus any
+                # intermediate directory symlinks, so chains of relative
+                # links still land on their true physical target.
+                _link_dir="$(dirname "$_target")"
+                _canonical_dir="$(cd -P "$_link_dir" 2>/dev/null && pwd -P)" || break
+                _link_target="$(readlink "$_target")" || break
+                case "$_link_target" in
+                    /*) _target="$_link_target" ;;
+                    *) _target="$_canonical_dir/$_link_target" ;;
+                esac
+                _guard=$((_guard + 1))
+                [ "$_guard" -le 40 ] || break
+            done
+            # Fully canonicalize the final target so a trailing relative hop
+            # (or an absolute target carrying `..`) cannot dodge the
+            # managed-tree comparison below.
+            _final_dir="$(dirname "$_target")"
+            if _canonical_final="$(cd -P "$_final_dir" 2>/dev/null && pwd -P)"; then
+                _target="$_canonical_final/$(basename "$_target")"
+            fi
+            case "$_target" in
+                "$HERMES_HOME/node"|"$HERMES_HOME/node"/*) continue ;;
+            esac
+            return 0
+        done
+    done
+    return 1
+}
+
 _nb_configure_npm_prefix() {
     [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
-    local _link_dir
-    _link_dir="$(_nb_get_link_dir)"
     mkdir -p "$HERMES_HOME/node/etc"
-    printf 'prefix=%s\n' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+    if _nb_is_user_managed_node; then
+        # Must never claim the user's prefix: stay inside the managed tree.
+        printf 'prefix=%s\n' "$HERMES_HOME/node" > "$HERMES_HOME/node/etc/npmrc"
+    else
+        local _link_dir
+        _link_dir="$(_nb_get_link_dir)"
+        printf 'prefix=%s\n' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+    fi
 }
 
 _nb_node_major() {

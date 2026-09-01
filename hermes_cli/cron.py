@@ -133,6 +133,53 @@ def _warn_if_gateway_not_running() -> None:
     print(color("     Check status:  hermes cron status", Colors.DIM))
 
 
+def _format_lateness(seconds: float) -> str:
+    """Render a lateness duration compactly: '31m', '2h 30m', '45s'."""
+    try:
+        seconds = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return "?"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, _ = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes and not days:
+        parts.append(f"{minutes}m")
+    return " ".join(parts) or "0m"
+
+
+def _dispatch_display(dispatch: dict) -> Optional[str]:
+    """One-line scheduled-vs-actual dispatch summary for a job (#99879).
+
+    Returns None when the stamp is malformed. On-time dispatches render a
+    dim confirmation; late/catch-up dispatches render loudly so a run that
+    fired 30–150 min after gateway downtime no longer looks like an
+    ordinary on-time success.
+    """
+    if not isinstance(dispatch, dict):
+        return None
+    scheduled = dispatch.get("scheduled_at")
+    actual = dispatch.get("dispatched_at")
+    kind = dispatch.get("kind")
+    if not scheduled or not actual or not kind:
+        return None
+    lateness = _format_lateness(dispatch.get("lateness_seconds", 0))
+    if kind == "on_time":
+        return color(f"on time (scheduled {scheduled})", Colors.DIM)
+    label = "catch-up after missed fire" if kind == "catch_up" else "late"
+    return (
+        color(f"⚠ {label}: ", Colors.YELLOW)
+        + f"scheduled {scheduled}, ran {actual} "
+        + color(f"({lateness} late)", Colors.YELLOW)
+    )
+
+
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import list_jobs
@@ -223,6 +270,10 @@ def cron_list(show_all: bool = False):
                 if streak >= 2:
                     status_display += color(f"  ({streak} failures in a row)", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")
+
+        dispatch_line = _dispatch_display(job.get("last_dispatch"))
+        if dispatch_line:
+            print(f"    Dispatch:  {dispatch_line}")
 
         latest_execution = job.get("latest_execution")
         if latest_execution:
@@ -548,6 +599,31 @@ def _print_active_jobs_summary(jobs) -> None:
         print(f"  {len(jobs)} active job(s)")
         if next_runs:
             print(f"  Next run: {min(next_runs)}")
+        # Missed-run visibility (#99879): call out jobs whose LAST dispatch
+        # was late or a catch-up so post-downtime late fires are visible at
+        # status level, not just buried per-job in `hermes cron list`.
+        late = [
+            j for j in jobs
+            if isinstance(j.get("last_dispatch"), dict)
+            and j["last_dispatch"].get("kind") in ("late", "catch_up")
+        ]
+        if late:
+            print()
+            print(color(
+                f"  ⚠ {len(late)} job(s) last fired late (missed-fire catch-up):",
+                Colors.YELLOW,
+            ))
+            for j in late:
+                d = j["last_dispatch"]
+                print(
+                    f"    {j.get('id', '?')}  {j.get('name', '(unnamed)')}: "
+                    f"scheduled {d.get('scheduled_at', '?')}, "
+                    f"ran {d.get('dispatched_at', '?')} "
+                    + color(
+                        f"({_format_lateness(d.get('lateness_seconds', 0))} late)",
+                        Colors.YELLOW,
+                    )
+                )
     else:
         print("  No active jobs")
 

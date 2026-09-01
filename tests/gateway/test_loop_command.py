@@ -21,6 +21,9 @@ class _FakeSessionStore:
     def __init__(self):
         self.entry = _FakeSessionEntry()
 
+    async def async_get_or_create_session(self, source):
+        return self.entry
+
     def get_or_create_session(self, source, *, touch_activity=True):
         return self.entry
 

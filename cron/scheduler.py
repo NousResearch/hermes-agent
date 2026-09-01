@@ -5509,6 +5509,24 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
+    # Fail closed on a corrupt config.yaml before any agent-driven work
+    # (issue #81952): a cron fire is fully non-interactive, and continuing
+    # on built-in defaults lets provider auto-detection adopt .env
+    # credentials the config never named, billing a provider the user did
+    # not choose. no_agent script jobs are exempt — they never construct an
+    # AIAgent or spend tokens. Escape hatch: HERMES_IGNORE_USER_CONFIG=1.
+    if not job.get("no_agent"):
+        from hermes_cli.config import (
+            InvalidUserConfigError,
+            require_parseable_user_config,
+        )
+
+        try:
+            require_parseable_user_config()
+        except InvalidUserConfigError as exc:
+            logger.error("Job '%s': refusing to run — %s", job_id, exc)
+            return (False, f"# Cron Job: {job_name}\n\nError: {exc}\n", "", str(exc))
+
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
     # ---------------------------------------------------------------

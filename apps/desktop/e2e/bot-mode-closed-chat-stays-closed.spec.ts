@@ -20,8 +20,13 @@ import { expect, test } from './test'
 // on every bot switch, because nothing records a close (the plugin keeps no
 // closed set; core's tile bucket only forgets). Now a bot whose workspace
 // already holds tabs comes back to the one the user left; the forever-chat is
-// re-opened only by the explicit asks (row menu "Open Bot Chat", Bots home
-// "Open chat").
+// re-opened only by the explicit asks (row menu "Open Bot Chat").
+//
+// UI note (post design-system rework): the canonical Bot Chat opens INTO the
+// main workspace pane (`data-tree-tab="workspace"`), and a lone uncloseable
+// workspace pane renders chromeless — its "Bot Chat" tab only exists once a
+// second pane (e.g. a ⌘/Ctrl+T thread tile) shares the main zone. Assertions
+// about the lone open therefore read the transcript, not a tab.
 
 type Page = MockBackendFixture['page']
 
@@ -76,7 +81,9 @@ async function snap(page: Page, name: string): Promise<void> {
   }
 }
 
-/** The session tabs on the main strip (the Bots home tab may sit beside them). */
+/** The session tabs on the main strip (the Bot Chat workspace tab may sit
+ *  beside them). The strip itself auto-hides when the workspace pane is the
+ *  only pane in the zone, so an empty result also covers "no strip at all". */
 const mainTabs = (page: Page) =>
   page.evaluate(() =>
     [...document.querySelectorAll<HTMLElement>('[data-zone-tabstrip="grp-main"] [data-tree-tab]')]
@@ -89,7 +96,7 @@ const mainTabs = (page: Page) =>
  *  row (the plugin's canonical forever-chat, found by exact title) — keeps
  *  in-app creation and the intro turn it fires out of a scenario that is
  *  about the row click. With the row present, the click takes the open-as-
- *  tab path; without it, it would mint the chat into the workspace pane. */
+ *  workspace path; without it, it would mint the chat into the pane. */
 async function seedBot(hermesHome: string, mockUrl: string, name: string): Promise<void> {
   const dir = path.join(hermesHome, 'profiles', name)
   fs.mkdirSync(dir, { recursive: true })
@@ -146,36 +153,46 @@ test('a bot row click returns to the open thread and does not re-open a closed B
   await expect(alphaRow).toBeVisible({ timeout: 30_000 })
   await expect(betaRow).toBeVisible({ timeout: 30_000 })
   const botChatTab = page.getByRole('tab', { name: /Bot Chat/ }).filter({ visible: true })
+  // The seeded forever-chat's first turn — visible only while the Bot Chat
+  // transcript is on screen. This is how a chromeless lone open is observed.
+  const seededTurn = page.getByText('Hello alpha', { exact: true }).filter({ visible: true })
 
   // The first click on a bot with nothing open lands on its canonical chat.
+  // It fills the lone main workspace pane, which renders without a tab strip.
   await openUntil(
     () => alphaRow.click(),
-    () => expect(botChatTab.first()).toBeVisible({ timeout: 45_000 })
+    () => expect(seededTurn.first()).toBeVisible({ timeout: 45_000 })
   )
   await settle(page, 15_000)
   await snap(page, '01-first-click-opens-bot-chat')
 
-  // Close it, then start a fresh thread for Alpha (⌘/Ctrl+T — the strip's
-  // "+" leaves with the zone's last tab).
-  await botChatTab.first().hover()
-  await botChatTab.first().getByRole('button', { name: 'Close' }).click({ force: true })
-  await expect(botChatTab).toHaveCount(0)
-
+  // Start a fresh thread for Alpha (⌘/Ctrl+T). The thread tile joins the main
+  // zone beside the Bot Chat workspace pane, which mounts the tab strip — the
+  // "Bot Chat" tab exists now, and the close affordance with it.
   await page.keyboard.press('Control+t')
+  await expect(botChatTab.first()).toBeVisible({ timeout: 15_000 })
+  await expect.poll(() => mainTabs(page), { timeout: 15_000 }).toHaveLength(1)
+
   const composer = page.locator('[data-slot="composer-root"] [contenteditable="true"]').filter({ visible: true }).first()
   await expect(composer).toBeVisible({ timeout: 15_000 })
   await composer.click()
   await composer.fill('hello alpha thread')
   await page.keyboard.press('Enter')
   await expect(page.getByText('hello alpha thread').filter({ visible: true }).first()).toBeVisible({ timeout: 15_000 })
-  // The reply also becomes the tab's (clipped) title — match the visible copy.
   await expect(page.getByText(MOCK_REPLY).filter({ visible: true }).first()).toBeVisible({ timeout: 60_000 })
-  await snap(page, '02-closed-bot-chat-new-thread')
+  await snap(page, '02-new-thread-beside-bot-chat')
 
   const threadTabs = await mainTabs(page)
   expect(threadTabs).toHaveLength(1)
   const [threadTab] = threadTabs
   expect(threadTab).toMatch(/^session-tile:/)
+
+  // Close the Bot Chat. Its transcript leaves the screen; the thread stays.
+  await botChatTab.first().hover()
+  await botChatTab.first().getByRole('button', { name: 'Close' }).click({ force: true })
+  await expect(botChatTab).toHaveCount(0)
+  await expect(seededTurn).toHaveCount(0)
+  await snap(page, '03-bot-chat-closed-thread-stays')
 
   // Switch to Beta: Alpha's thread leaves the strip (scoped away, not closed).
   await betaRow.click()
@@ -184,25 +201,27 @@ test('a bot row click returns to the open thread and does not re-open a closed B
   })
   await settle(page)
 
-  // Back to Alpha: the thread is fronted, and the closed Bot Chat STAYS closed.
+  // Back to Alpha: the workspace comes back to what the user left, and the
+  // closed Bot Chat STAYS closed. The regression this pins re-opened the
+  // canonical chat beside the thread on every switch — two panes in the main
+  // zone, which mounts the tab strip and puts the "Bot Chat" tab back on
+  // screen. Its absence (with the transcript present, so the click landed) is
+  // the observable "stays closed".
   await alphaRow.click()
-  const threadTabLocator = page.locator(`[data-zone-tabstrip="grp-main"] [data-tree-tab="${threadTab}"]`)
-  await expect(threadTabLocator).toBeVisible({ timeout: 30_000 })
-  await expect(threadTabLocator).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByText(MOCK_REPLY).filter({ visible: true }).first()).toBeVisible({ timeout: 30_000 })
   await page.waitForTimeout(3000)
   await expect(botChatTab).toHaveCount(0)
-  expect(await mainTabs(page)).toEqual([threadTab])
-  await snap(page, '03-back-to-alpha-bot-chat-stays-closed')
+  await snap(page, '04-back-to-alpha-bot-chat-stays-closed')
 
-  // The explicit ask still opens the forever-chat, beside the thread.
+  // The explicit ask still opens the forever-chat: its seeded first turn is
+  // back on screen. (As the surviving main-workspace pane it may render
+  // chromeless, so the transcript — not a tab — is the assertion.)
   await openUntil(
     async () => {
       await alphaRow.click({ button: 'right' })
       await page.getByRole('menuitem', { name: 'Open Bot Chat' }).click()
     },
-    () => expect(botChatTab.first()).toBeVisible({ timeout: 45_000 })
+    () => expect(seededTurn.first()).toBeVisible({ timeout: 45_000 })
   )
-  expect(await mainTabs(page)).toHaveLength(2)
-  expect(await mainTabs(page)).toContain(threadTab)
-  await snap(page, '04-explicit-open-bot-chat')
+  await snap(page, '05-explicit-open-bot-chat')
 })

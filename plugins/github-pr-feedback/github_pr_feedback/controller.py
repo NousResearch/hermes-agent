@@ -1196,7 +1196,10 @@ class ScanController:
                 return "agent_label_head_changed"
             if desired_label not in readback.labels:
                 return "agent_label_readback_failed"
-        except GitHubClientError:  # canonical GitHub failures remain retryable evidence.
+        except GitHubClientError as error:
+            code = getattr(error, "code", "github_error")
+            if code in {"permission_denied", "authentication", "rate_limited"}:
+                return f"agent_label_{code}"
             return "agent_label_github_error"
         except Exception:  # noqa: BLE001 - a label write must fail closed.
             return "agent_label_error"

@@ -173,6 +173,29 @@ def test_subprocess_runner_retries_timeout_without_rate_limit_backoff(
     assert sleeps == [1.0]
 
 
+@pytest.mark.parametrize(
+    ("stderr", "code"),
+    [
+        ("HTTP 403: Resource not accessible by integration", "permission_denied"),
+        ("HTTP 401: Bad credentials", "authentication"),
+        ("HTTP 429: Too Many Requests", "rate_limited"),
+    ],
+)
+def test_subprocess_runner_exposes_safe_failure_code_without_output(
+    monkeypatch: pytest.MonkeyPatch, stderr: str, code: str
+) -> None:
+    monkeypatch.setattr(
+        "github_pr_feedback.github_client.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["gh", "api", "labels"], 1, "", stderr
+        ),
+    )
+    with pytest.raises(GitHubClientError) as raised:
+        SubprocessCommandRunner(sleeper=lambda _delay: None).run(["gh", "api", "labels"])
+    assert raised.value.code == code
+    assert stderr not in str(raised.value)
+
+
 def test_subprocess_runner_does_not_retry_an_ordinary_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

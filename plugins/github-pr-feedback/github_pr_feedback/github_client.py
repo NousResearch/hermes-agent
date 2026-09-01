@@ -33,6 +33,10 @@ from .policy import PullRequest, Reviewer
 class GitHubClientError(RuntimeError):
     """Canonical GitHub data was unavailable or did not have the required shape."""
 
+    def __init__(self, message: str = "GitHub command failed", *, code: str = "github_error") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class MergeStateStillComputingError(GitHubClientError):
     """GitHub has not finished computing this PR's mergeability yet.
@@ -210,8 +214,9 @@ class SubprocessCommandRunner:
                 return completed.stdout
             if attempt == 0 and _is_rate_limit_failure(completed.stderr):
                 continue
-            raise GitHubClientError("GitHub command failed")
-        raise GitHubClientError("GitHub command failed")
+            code = _github_failure_code(completed.stderr)
+            raise GitHubClientError(f"GitHub command failed ({code})", code=code)
+        raise GitHubClientError("GitHub command failed", code="github_error")
 
 
 def _is_rate_limit_failure(stderr: str) -> bool:
@@ -231,6 +236,22 @@ def _is_rate_limit_failure(stderr: str) -> bool:
     # Preserve ordinary permission/authentication failures as ordinary
     # failures; only a 403 carrying a rate-limit marker is retryable.
     return "403" in normalized and "limit" in normalized
+
+
+def _github_failure_code(stderr: str) -> str:
+    """Classify command failures without retaining provider output."""
+
+    normalized = str(stderr or "").casefold()
+    if _is_rate_limit_failure(normalized):
+        return "rate_limited"
+    if any(marker in normalized for marker in ("401", "bad credentials", "authentication")):
+        return "authentication"
+    if any(
+        marker in normalized
+        for marker in ("403", "permission denied", "resource not accessible", "forbidden")
+    ):
+        return "permission_denied"
+    return "github_error"
 
 
 def _rate_limit_delay(stderr: str, *, default: float) -> float:

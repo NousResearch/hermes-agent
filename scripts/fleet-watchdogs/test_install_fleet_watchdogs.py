@@ -150,16 +150,73 @@ def test_copy_not_symlink():
 
 
 def test_no_watchdog_changes_installs_nothing():
-    """A diff with no watchdog files selects nothing, so a deploy with no
-    watchdog change installs zero files (and the step is a no-op)."""
+    """A deploy with no watchdog changes must cleanly install nothing: the
+    CLI entry point main([]) (empty change list) returns 0 and leaves the
+    dest dir untouched, so a no-watchdog-change merge is a clean no-op."""
     print("test_no_watchdog_changes_installs_nothing")
-    diff = [
-        "hermes_cli/kanban_db.py",
-        "tools/kanban_tools.py",
-        "scripts/other/setup.sh",
-    ]
-    selected = ifw.select_watchdog_files(diff)
-    check("no watchdog files selected", selected, [])
+    with tempfile.TemporaryDirectory() as d:
+        dest_dir = os.path.join(d, "live")
+        os.makedirs(dest_dir)
+        with open(os.path.join(dest_dir, "existing.sh"), "w", encoding="utf-8") as f:
+            f.write("keep\n")
+
+        rc = ifw.main(["--dest", dest_dir])
+        check("no-watchdog main() returns 0", rc, 0)
+        listing = sorted(os.listdir(dest_dir))
+        check("no files installed on empty change list", listing, ["existing.sh"])
+        check("existing script untouched", open(os.path.join(dest_dir, "existing.sh"), "r", encoding="utf-8").read(), "keep\n")
+
+
+def test_main_installs_listed_watchdog():
+    """main() wires select_watchdog_files into the real path: a changed file
+    under scripts/fleet-watchdogs/ is installed, and a non-watchdog path in the
+    same argument list is ignored (never copied)."""
+    print("test_main_installs_listed_watchdog")
+    with tempfile.TemporaryDirectory() as d:
+        src_dir = os.path.join(d, "src", "scripts", "fleet-watchdogs")
+        os.makedirs(src_dir)
+        dest_dir = os.path.join(d, "live")
+        os.makedirs(dest_dir)
+
+        watch_src = os.path.join(src_dir, "watch.py")
+        unrelated_src = os.path.join(d, "src", "tools", "unrelated.py")
+        os.makedirs(os.path.dirname(unrelated_src), exist_ok=True)
+        with open(watch_src, "w", encoding="utf-8") as f:
+            f.write("print('watch')\n")
+        with open(unrelated_src, "w", encoding="utf-8") as f:
+            f.write("never copied\n")
+
+        rc = ifw.main(["--dest", dest_dir, watch_src, unrelated_src])
+        check("main() installs watchdog returns 0", rc, 0)
+        listing = sorted(os.listdir(dest_dir))
+        check("only watchdog file copied to live", listing, ["watch.py"])
+        check("watchdog content installed", open(os.path.join(dest_dir, "watch.py"), "r", encoding="utf-8").read(), "print('watch')\n")
+
+
+def test_skip_path_reconciles_exec_bit():
+    """Idempotent skip still reconciles the exec bit: a byte-identical dest
+    that lost +x is chmod'd to match the source so cron keeps running it."""
+    print("test_skip_path_reconciles_exec_bit")
+    with tempfile.TemporaryDirectory() as d:
+        src_dir = os.path.join(d, "src")
+        dest_dir = os.path.join(d, "live")
+        os.makedirs(src_dir)
+        os.makedirs(dest_dir)
+
+        src = os.path.join(src_dir, "watch.sh")
+        dest = os.path.join(dest_dir, "watch.sh")
+        content = "#!/bin/sh\necho hi\n"
+        with open(src, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(src, 0o755)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(dest, 0o644)
+
+        status, _dst, backup = ifw.install_file(src, dest_dir)
+        check("status skipped (bytes identical)", status, "skipped")
+        check("no backup on skip", backup, None)
+        check("exec bit reconciled to source", os.stat(dest).st_mode & 0o777, 0o755)
 
 
 def test_select_only_watchdog_subtree():
@@ -204,6 +261,8 @@ def main():
         test_unrelated_scripts_untouched,
         test_copy_not_symlink,
         test_no_watchdog_changes_installs_nothing,
+        test_main_installs_listed_watchdog,
+        test_skip_path_reconciles_exec_bit,
         test_select_only_watchdog_subtree,
         test_missing_source_raises,
     ):

@@ -29,6 +29,7 @@ Exit code 0 on success; nonzero on any error.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import time
@@ -51,8 +52,12 @@ def select_watchdog_files(diff_names):
     """
     out = []
     for name in diff_names:
-        name = (name or "").strip()
-        if name.startswith(WATCHDOG_DIR):
+        name = (name or "").strip().replace("\\", "/")
+        # Match both repo-relative ("scripts/fleet-watchdogs/...") and absolute
+        # (".../repo/scripts/fleet-watchdogs/...") paths that sit under the
+        # watchdog dir. The trailing slash in WATCHDOG_DIR keeps a same-named
+        # sibling file (e.g. ".../fleet-watchdogs.txt") from matching.
+        if WATCHDOG_DIR in name:
             out.append(name)
     return sorted(set(out))
 
@@ -82,7 +87,12 @@ def install_file(src: Path, dest_dir: Path):
 
     if dest_p.is_file():
         if dest_p.read_bytes() == src_p.read_bytes():
-            # Idempotent: already at the target revision, leave it alone.
+            # Idempotent: already at the target revision. Reconcile the exec
+            # bit anyway — cron needs it, and a hand-edited live copy may have
+            # lost +x while staying byte-identical.
+            src_mode = src_p.stat().st_mode
+            if os.stat(dest_p).st_mode & 0o777 != src_mode & 0o777:
+                os.chmod(dest_p, src_mode & 0o777)
             return ("skipped", dest_p, None)
         ts = int(time.time())
         backup = dest_dir_p / f"{dest_p.name}.bak-predeploy-{ts}"
@@ -102,13 +112,30 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Install changed fleet watchdog scripts into the live scripts dir."
     )
-    ap.add_argument("files", nargs="+", help="absolute or repo paths of changed watchdog files")
-    ap.add_argument("--dest", default=str(DEFAULT_DEST), help="live scripts dir (default ~/.hermes/scripts)")
+    ap.add_argument(
+        "files",
+        nargs="*",
+        help="absolute or repo paths of changed files (watchdog files only are installed)",
+    )
+    ap.add_argument(
+        "--dest",
+        default=str(DEFAULT_DEST),
+        help="live scripts dir (default ~/.hermes/scripts)",
+    )
     args = ap.parse_args(argv)
 
     dest_dir = Path(args.dest).expanduser().resolve()
+
+    # Scope the input to watchdog files only (self-enforced, not left to the
+    # caller's git pathspec) and treat an empty change-list as a clean no-op:
+    # a no-watchdog-change merge must not exit nonzero.
+    to_install = select_watchdog_files(args.files)
+    if not to_install:
+        print("no watchdog changes to install")
+        return 0
+
     installed: list[tuple[str, str | None]] = []
-    for f in args.files:
+    for f in to_install:
         status, dst, backup = install_file(Path(f), dest_dir)
         if status == "installed":
             bak_name = backup.name if backup is not None else None

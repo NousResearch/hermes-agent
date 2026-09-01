@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Evidence Spine P3–P4 — committed controller selector manifest (R4).
+# Evidence Spine P3–P4 — committed controller selector manifest (R5).
 #
-# R4-3: the selector's cleanliness and portability gates now cover BOTH
+# R5: the selector's cleanliness and portability gates cover BOTH
 # repositories:
 #   * exact core import provenance (this worktree);
 #   * exact dashboard path/SHA bound via EVIDENCE_SPINE_DASHBOARD(+_SHA);
 #   * core path/SHA exported for dashboard cross-repository tests
 #     (EVIDENCE_SPINE_CORE / EVIDENCE_SPINE_CORE_SHA, dashboard tests
-#     verify the profile_registry.py file SHA themselves);
+#     require the exact core commit SHA);
 #   * pre/post status captured SEPARATELY for core and dashboard and both
 #     must be unchanged or the selector fails;
 #   * zero hardcoded governance-evidence-spine worktree prefixes enforced
@@ -30,15 +30,15 @@ REPO_ROOT="$(cd "$SELECTOR_DIR/.." && pwd)"
 cd "$REPO_ROOT" || { echo "SEL_FAIL: cannot cd REPO_ROOT" >&2; exit 2; }
 
 PYTHON="${PYTHON:-/home/kensei/repos/KenseiAgent/.venv/bin/python3}"
-EVIDENCE_DIR="${EVIDENCE_DIR:-/tmp/r4-evidence}"
+EVIDENCE_DIR="${EVIDENCE_DIR:-/tmp/r5-evidence}"
 mkdir -p "$EVIDENCE_DIR"
 STAMP="$(date +%Y%m%dT%H%M%SZ)-$$"
 EVIDENCE_FILE="$EVIDENCE_DIR/selector-collect-$STAMP.txt"
 RUN_LOG="$EVIDENCE_DIR/selector-run-$STAMP.txt"
 
 # ── disposable homes / basetemps (per invocation) ─────────────────────────
-DISP_HOME="$(mktemp -d /tmp/r4-sel-home.XXXXXX)"
-BASETEMP="$(mktemp -d /tmp/r4-sel-basetemp.XXXXXX)"
+DISP_HOME="$(mktemp -d /tmp/r5-sel-home.XXXXXX)"
+BASETEMP="$(mktemp -d /tmp/r5-sel-basetemp.XXXXXX)"
 trap 'rm -rf "$DISP_HOME" "$BASETEMP"' EXIT
 export HERMES_HOME="$DISP_HOME"
 
@@ -70,7 +70,7 @@ if [ -z "${EVIDENCE_SPINE_DASHBOARD:-}" ]; then
   exit 2
 fi
 DASH_ROOT="$EVIDENCE_SPINE_DASHBOARD"
-DASH_SHA_EXPECTED="${EVIDENCE_SPINE_DASHBOARD_SHA:-a22552d3542be78fa85f13e1b44cc15a4125650d}"
+DASH_SHA_EXPECTED="${EVIDENCE_SPINE_DASHBOARD_SHA:-dbc95aa49f24a24fc0ce39792f73c1683f65dca1}"
 if [ ! -d "$DASH_ROOT" ]; then
   echo "SEL_FAIL: dashboard checkout missing: $DASH_ROOT" >&2
   exit 2
@@ -89,11 +89,13 @@ export EVIDENCE_SPINE_CORE_SHA="$CORE_SHA"
 echo "EVIDENCE_SPINE_CORE=$EVIDENCE_SPINE_CORE"
 echo "EVIDENCE_SPINE_CORE_SHA=$EVIDENCE_SPINE_CORE_SHA"
 
-# ── R4-3.7: zero hardcoded worktree prefixes in BOTH repositories ──────────
-SCAN_PAT="worktrees/governance-evidence-""spine-p34"
-PREFIX_HITS="$(grep -rn --include='*.py' --include='*.sh' -e "$SCAN_PAT" \
-  "$REPO_ROOT/tests" "$REPO_ROOT/scripts" "$DASH_ROOT/backend" 2>/dev/null \
-  | grep -v "__pycache__" || true)"
+# ── R5-3: broad hardcoded worktree prefix across ALL tracked content ────────
+# Assemble at runtime so this selector does not contain the prohibited token.
+SCAN_PAT="worktrees/governance-evidence-""spine-"
+PREFIX_HITS="$({
+  git -C "$REPO_ROOT" grep -n -I -e "$SCAN_PAT" -- . || true
+  git -C "$DASH_ROOT" grep -n -I -e "$SCAN_PAT" -- . || true
+})"
 if [ -n "$PREFIX_HITS" ]; then
   echo "SEL_FAIL: hardcoded governance-evidence-spine worktree prefix found:" >&2
   echo "$PREFIX_HITS" >&2
@@ -171,7 +173,7 @@ DASH_COLLECT_LOG="$EVIDENCE_DIR/dashboard-collect-$STAMP.txt"
 (cd "$DASH_ROOT" && "$PYTHON" -m pytest --collect-only -q backend/tests/test_profile_registry_hierarchy.py) > "$DASH_COLLECT_LOG" 2>&1
 DASH_COLLECT_EXIT=$?
 DASH_COLLECTED="$(grep -E '^[0-9]+ tests? collected' "$DASH_COLLECT_LOG" | tail -1 | awk '{print $1}')"
-DASH_EXPECTED_NODES=26
+DASH_EXPECTED_NODES=34
 echo "DASH_COLLECTED: $DASH_COLLECTED (expected $DASH_EXPECTED_NODES, log: $DASH_COLLECT_LOG)"
 if [ "$DASH_COLLECT_EXIT" -ne 0 ] || [ "$DASH_COLLECTED" != "$DASH_EXPECTED_NODES" ]; then
   echo "SEL_FAIL: dashboard collection exited $DASH_COLLECT_EXIT / collected $DASH_COLLECTED != expected $DASH_EXPECTED_NODES" >&2

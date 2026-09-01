@@ -22942,11 +22942,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                _footer_reasoning_cfg = self._resolve_session_reasoning_config(
+                    source=source,
+                    session_key=session_key,
+                    model=agent_result.get("model") or "",
+                    user_config=_load_gateway_config(),
+                    guest_mode_invocation=event.guest_mode_invocation,
+                )
+                if _footer_reasoning_cfg is None:
+                    _footer_reasoning_effort = "medium"
+                elif _footer_reasoning_cfg.get("enabled") is False:
+                    _footer_reasoning_effort = "none"
+                else:
+                    _footer_reasoning_effort = str(
+                        _footer_reasoning_cfg.get("effort") or "medium"
+                    )
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
-                    reasoning_effort=(reasoning_config or {}).get("effort"),
+                    reasoning_effort=_footer_reasoning_effort,
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),

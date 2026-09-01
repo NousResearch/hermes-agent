@@ -72,6 +72,27 @@ def test_format_footer_reasoning_field():
     assert out == "gpt-5.4 · high · 42%"
 
 
+def test_live_footer_shape_model_effort_context_only():
+    """The configured Telegram shape stays compact and excludes cwd."""
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "reasoning", "context_pct"],
+                }
+            }
+        },
+        platform_key="telegram",
+        model="cliproxyapi/gpt-5.6-sol",
+        reasoning_effort="high",
+        context_tokens=18000,
+        context_length=100000,
+        cwd="/root",
+    )
+    assert out == "gpt-5.6-sol · high · 18%"
+
+
 def test_format_footer_skips_missing_context_length():
     out = format_runtime_footer(
         model="openai/gpt-5.4",

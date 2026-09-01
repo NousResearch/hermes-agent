@@ -2267,9 +2267,17 @@ DEFAULT_CONFIG = {
 
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
-    # always goes to ~/.hermes/skills/.
+    # goes to ~/.hermes/skills/ unless create_dir (below) redirects it.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Where agent-created skills (skill_manage action=create) are written.
+        # Empty = the profile-local skills dir (~/.hermes/skills/). When set,
+        # new skills land here AND every agent-facing instruction that names
+        # the creation path (tool schema text, prompts) renders this directory
+        # instead of the default. Expanded (~, ${VAR}); relative paths resolve
+        # against HERMES_HOME. The directory is scanned for skills alongside
+        # the local dir. e.g. "/opt/brain/skills"
+        "create_dir": "",
         # Project-local skill discovery: when a session starts inside a git
         # checkout, ``<root>/.hermes/skills/`` and ``<root>/.agents/skills/``
         # are sourced as the highest-precedence skill tier — but ONLY when the

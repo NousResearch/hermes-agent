@@ -1778,7 +1778,8 @@ def build_skills_system_prompt(
     External skill directories (``skills.external_dirs`` in config.yaml) are
     scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
-    in the local dir.  Local skills take precedence when names collide.
+    in the local dir (or ``skills.create_dir`` when configured).  Local skills
+    take precedence when names collide.
 
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in

@@ -1319,6 +1319,7 @@ class ScanController:
             audit.actions_state.actions_enabled
             and not audit.actions_state.billing_blocked
             and audit.actions_state.check_count > 0
+            and audit.actions_state.all_green
         ):
             return "github_ci_enabled"
         assignee = _ci_failure_assignee(audit)

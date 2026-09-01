@@ -735,8 +735,17 @@ def test_retry_admission_precedes_stale_ci_comment_base_lookup(tmp_path: Path) -
     ledger.close()
 
 
+@pytest.mark.parametrize(
+    "actions_state",
+    [
+        pytest.param(CheckState(True, False, 0), id="zero-checks"),
+        pytest.param(CheckState(True, False, 1, billing_blocked=True), id="billing-blocked"),
+        pytest.param(CheckState(True, False, 1), id="non-green-check"),
+    ],
+)
 def test_failed_exact_head_static_receipt_immediately_dispatches_one_typed_fixer(
     tmp_path: Path,
+    actions_state: CheckState,
 ) -> None:
     local_path, head_sha = initialized_repository(tmp_path)
     base_sha = "b" * 40
@@ -798,7 +807,7 @@ def test_failed_exact_head_static_receipt_immediately_dispatches_one_typed_fixer
         status="failed",
         started_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
         completed_at=datetime(2026, 8, 25, 12, 1, tzinfo=UTC),
-        actions_state=CheckState(False, True, 0),
+        actions_state=actions_state,
         commands=(
             CommandEvidence(
                 argv=(".venv/bin/python", "scripts/run_static_lane.py"),

@@ -83,6 +83,43 @@ class TestPluginSkillRegistry:
         # Removing non-existent key is a no-op
         pm.remove_plugin_skill("p:x")
 
+class TestInteractivePluginSkill:
+    def test_real_discovery_catalog_completion_dispatch_and_native_separation(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        from hermes_cli import plugins
+        from agent import skill_commands as sc
+        from tools.skills_tool import skill_view
+
+        home = tmp_path / ".hermes"
+        plugin = home / "plugins" / "slash-probe"
+        skill = plugin / "skills" / "guide" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: slash-probe\nversion: 0.1.0\n")
+        (plugin / "__init__.py").write_text(
+            "from pathlib import Path\ndef register(ctx):\n"
+            "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md')\n"
+        )
+        skill.write_text("---\nname: guide\ndescription: Plugin guide.\n---\n\nFollow the plugin guide.\n")
+        (home / "config.yaml").write_text("plugins:\n  enabled: [slash-probe]\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins._reset_plugin_managers_for_tests()
+        try:
+            assert json.loads(skill_view("slash-probe:guide"))["success"]
+            assert "/slash-probe:guide" not in sc.scan_skill_commands()
+            assert "/slash-probe:guide" in sc.get_interactive_skill_commands()
+            invoked = sc.build_skill_invocation_message("/slash-probe:guide", "apply it")
+            assert "Follow the plugin guide." in invoked
+            assert "apply it" in invoked
+            preload, loaded, missing = sc.build_preloaded_skills_prompt(["slash-probe:guide"])
+            assert loaded == ["slash-probe:guide"] and missing == []
+            assert "Follow the plugin guide." in preload
+            (home / "config.yaml").write_text("plugins:\n  enabled: [slash-probe]\nskills:\n  disabled: [guide]\n")
+            assert "/slash-probe:guide" not in sc.get_interactive_skill_commands()
+            assert sc.build_preloaded_skills_prompt(["slash-probe:guide"])[2] == ["slash-probe:guide"]
+        finally:
+            plugins._reset_plugin_managers_for_tests()
+
+
 class TestPluginContextRegisterSkill:
     @pytest.fixture
     def ctx(self, tmp_path, monkeypatch):

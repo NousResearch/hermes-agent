@@ -1630,6 +1630,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         return [
             {
                 "name": qualified, "description": str(entry.get("description", "")),
+                "plugin_key": str(entry.get("plugin_key", entry.get("plugin", ""))),
                 "category": "plugin", "frontmatter": dict(entry.get("frontmatter", {})),
             } for qualified, entry in sorted(self._plugin_skills.items())
         ]

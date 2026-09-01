@@ -492,8 +492,10 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
     sc = _tools_mod("agent.skill_commands")
-    for k, info in sorted(sc.get_skill_commands().items()):
-        cat.pairs.append([k, str(info.get("description", "Skill"))])
+    for k, info in sorted(sc.get_interactive_skill_commands().items()):
+        if k.lower() in cat.canon:
+            continue
+        cat.add(k, str(info.get("description", "Skill")), "Skills")
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
     names = sorted(s["name"] for s in _tools_mod("tools.skills_tool")._find_all_skills())
@@ -645,7 +647,7 @@ def _profile_skill_command(session: dict, base: str) -> bool | None:
     """
     try:
         with _session_home_scope(session):
-            return f"/{base}" in _tools_mod("agent.skill_commands").get_skill_commands()
+            return f"/{base}" in _tools_mod("agent.skill_commands").get_interactive_skill_commands()
     except Exception:
         return None
 
@@ -718,7 +720,7 @@ def _dispatch_bundle(rid, params, session, name, arg):
 def _dispatch_skill(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
         sc = _tools_mod("agent.skill_commands")
-        cmds, key = sc.get_skill_commands(), f"/{name}"
+        cmds, key = sc.get_interactive_skill_commands(), f"/{name}".lower()
         if key in cmds:
             # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
             # first token matched above; consume any further leading skill tokens from `arg`,

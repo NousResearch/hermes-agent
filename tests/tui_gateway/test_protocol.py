@@ -1445,6 +1445,46 @@ def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(serv
     assert "/not-a-skill-command but /model is a registry command" in result["message"]
 
 
+def test_plugin_skill_catalog_completion_dispatch_and_profile_switch(server, tmp_path, monkeypatch):
+    """Real plugin registration reaches every interactive RPC but not native skill menus."""
+    from hermes_cli import plugins
+    from agent import skill_commands
+
+    homes = [tmp_path / "profile-a", tmp_path / "profile-b"]
+    for home, suffix in zip(homes, ("alpha", "beta")):
+        plugin = home / "plugins" / f"probe-{suffix}"
+        md = plugin / "skills" / "guide" / "SKILL.md"
+        md.parent.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text(f"name: probe-{suffix}\nversion: 0.1.0\n")
+        (plugin / "__init__.py").write_text(
+            "from pathlib import Path\ndef register(ctx):\n"
+            "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md')\n"
+        )
+        md.write_text(f"---\nname: guide\ndescription: {suffix} guide.\n---\n\n{suffix} instructions.\n")
+        (home / "config.yaml").write_text(f"plugins:\n  enabled: [probe-{suffix}]\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    plugins._reset_plugin_managers_for_tests()
+    try:
+        for home, suffix in ((homes[0], "alpha"), (homes[1], "beta"), (homes[0], "alpha")):
+            sid = f"skill-{suffix}"
+            server._sessions[sid] = {"session_key": sid, "profile_home": str(home), "agent": None}
+            key = f"/probe-{suffix}:guide"
+            catalog = server.handle_request({"id": "cat", "method": "commands.catalog", "params": {"session_id": sid}})
+            completed = server.handle_request({"id": "complete", "method": "complete.slash", "params": {"session_id": sid, "text": f"/probe-{suffix}:"}})
+            dispatched = server.handle_request({"id": "dispatch", "method": "command.dispatch", "params": {"session_id": sid, "name": key[1:], "arg": "apply"}})
+            assert key in catalog["result"]["skills"], catalog
+            assert any(item["text"] == key[1:] and item["kind"] == "skill" for item in completed["result"]["items"]), completed
+            assert dispatched["result"]["type"] == "skill", dispatched
+            assert f"{suffix} instructions." in dispatched["result"]["message"]
+            assert "apply" in dispatched["result"]["message"]
+            assert key not in skill_commands.get_skill_commands()
+            other = "beta" if suffix == "alpha" else "alpha"
+            assert f"/probe-{other}:guide" not in catalog["result"]["skills"]
+    finally:
+        plugins._reset_plugin_managers_for_tests()
+
+
 def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monkeypatch):
     """A Desktop draft has no session yet: ``commands.catalog`` / ``complete.slash`` must scan the
     named ``profile``'s home, not the launch profile's — A→B→A under multiplexing (#124651). The

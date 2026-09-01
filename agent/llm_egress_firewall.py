@@ -1034,8 +1034,6 @@ def _contains_grant_substring(grant_content: bytes, candidate: bytes) -> bool:
             continue
         if variant in candidate:
             return True
-        if len(candidate) < len(variant) and candidate in variant and len(candidate) >= 4:
-            return True
         window = min(32, len(candidate), len(variant))
         if window >= 32:
             source_windows = {

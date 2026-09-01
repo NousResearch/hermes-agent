@@ -906,6 +906,29 @@ def test_sanitized_proper_substring_of_grant_text_is_rejected(tmp_path):
     assert "source_bytes_in_sanitized_segment" in exc_info.value.decision.reason_codes
 
 
+def test_common_short_word_in_grant_is_not_treated_as_source_excerpt(tmp_path):
+    path = tmp_path / "source.py"
+    path.write_text("def run():\n    return 1\n", encoding="utf-8")
+    grant = _source_grant(path, end=2)
+    request = TypedOutboundRequest(
+        payload={
+            "messages": [
+                SourceBoundSegment(source_grant_digest(grant)),
+                SanitizedSegment("return"),
+            ]
+        },
+        session_id=grant.session_id,
+        turn_id=grant.turn_id,
+        request_id=grant.request_id,
+        policy_digest=grant.policy_digest,
+    )
+
+    decision = firewall(tmp_path).preflight(request, _route(), grants=(grant,))
+
+    assert decision.allowed is True
+    assert "source_bytes_in_sanitized_segment" not in decision.reason_codes
+
+
 def test_common_eight_byte_overlap_is_not_treated_as_a_source_excerpt(tmp_path):
     path = tmp_path / "source.txt"
     path.write_text("private checkout_path implementation\n", encoding="utf-8")

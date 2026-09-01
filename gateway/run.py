@@ -11767,7 +11767,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # deliver=local jobs — and deliver=origin jobs with no
                 # resolvable origin (#43014) — resolve to zero targets and
                 # must stay silent rather than fall back to a home channel.
-                targets = _resolve_delivery_targets(job)
+                # Interrupted notices are failure-category engine status, so
+                # they honor the job's failure_deliver override (NS-788).
+                targets = _resolve_delivery_targets(job, for_failure=True)
             except Exception as e:
                 logger.debug("Cron interrupt targets unresolved for %s: %s", job_id, e)
                 continue

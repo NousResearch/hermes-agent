@@ -2838,7 +2838,7 @@ def _expand_routing_tokens(part: str) -> List[str]:
     return expanded
 
 
-def _resolve_delivery_targets(job: dict) -> List[dict]:
+def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[dict]:
     """Resolve all concrete auto-delivery targets for a cron job.
 
     Accepts the legacy comma-separated ``deliver`` string plus the
@@ -2847,8 +2847,21 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     targets: ``origin,all`` and ``all,telegram:-100:17`` both work.
     Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
     existing dedup pass.
+
+    ``for_failure=True`` resolves failure-category engine notices
+    (failure summaries, interrupted-run notices, drift/preflight
+    alerts): when the job carries a ``failure_deliver`` value, targets
+    resolve from it INSTEAD of ``deliver`` — ``failure_deliver: local``
+    is the structural opt-out for shared channels (NS-788, Coatue).
+    Absent ``failure_deliver``, failure delivery follows ``deliver``
+    exactly as before.
     """
-    deliver = _normalize_deliver_value(job.get("deliver", "local"))
+    deliver_raw = job.get("deliver", "local")
+    if for_failure:
+        failure_deliver = job.get("failure_deliver")
+        if failure_deliver is not None and str(failure_deliver).strip():
+            deliver_raw = failure_deliver
+    deliver = _normalize_deliver_value(deliver_raw)
     if deliver == "local":
         return []
 
@@ -3141,7 +3154,9 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         )
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(
+    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -3150,11 +3165,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
 
+    ``for_failure=True`` routes failure-category engine notices through the
+    job's ``failure_deliver`` override when present (NS-788).
+
     Returns None on success, or an error string on failure.
     """
-    targets = _resolve_delivery_targets(job)
+    targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
-        deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+        deliver_raw = job.get("deliver", "local")
+        if for_failure and str(job.get("failure_deliver") or "").strip():
+            deliver_raw = job.get("failure_deliver")
+        deliver_value = _normalize_deliver_value(deliver_raw)
         if deliver_value == "local":
             return None  # local-only jobs don't deliver — not a failure
         # deliver=origin with no resolvable origin and no configured home
@@ -7689,6 +7710,10 @@ def _run_one_job_body(
                             deliver_content,
                             adapters=adapters,
                             loop=loop,
+                            # Failure summaries (and drift/blocked-config alerts
+                            # composed into deliver_content on the failure path)
+                            # honor the job's failure_deliver override (NS-788).
+                            for_failure=not success,
                         )
                 except Exception as de:
                     if isinstance(de, _FireClaimLostDuringSideEffect):
@@ -7859,6 +7884,7 @@ def _run_one_job_body(
                         + _failure_streak_nudge(job),
                         adapters=adapters,
                         loop=loop,
+                        for_failure=True,
                     )
                 except Exception as delivery_exc:
                     delivery_error = str(delivery_exc)

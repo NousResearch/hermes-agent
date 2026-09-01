@@ -2350,6 +2350,7 @@ def create_job(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    failure_deliver: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -2452,6 +2453,16 @@ def create_job(
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
+    # failure_deliver shares deliver's grammar and normalization exactly —
+    # same helper, no parallel validation path (NS-788).
+    normalized_failure_deliver = (
+        str(failure_deliver).strip() if isinstance(failure_deliver, str) else None
+    )
+    if isinstance(failure_deliver, (list, tuple)):
+        normalized_failure_deliver = ",".join(
+            str(p).strip() for p in failure_deliver if str(p).strip()
+        )
+    normalized_failure_deliver = normalized_failure_deliver or None
     normalized_monitor_script = str(monitor_script).strip() if isinstance(monitor_script, str) else None
     normalized_monitor_script = normalized_monitor_script or None
     normalized_monitor_url = str(monitor_url).strip() if isinstance(monitor_url, str) else None
@@ -2571,6 +2582,10 @@ def create_job(
     # absent key = job follows config resolution (pre-feature behavior).
     if normalized_reasoning_effort is not None:
         job["reasoning_effort"] = normalized_reasoning_effort
+    # Conditional-persist for failure_deliver too: absent key = failures
+    # follow deliver, byte-identical to pre-feature jobs (NS-788).
+    if normalized_failure_deliver is not None:
+        job["failure_deliver"] = normalized_failure_deliver
 
     with _jobs_lock():
         jobs = load_jobs()

@@ -446,12 +446,16 @@ def test_provider_terminal_parser_ignores_stale_prior_worker_session(
     log_path.write_text(
         "LLM egress blocked: base64_payload\n"
         "Initializing agent...\n"
-        "Provider has been unresponsive for 5 consecutive stale attempts\n",
+        "Provider has been unresponsive for 5 consecutive stale attempts — "
+        "aborting this call to avoid an indefinite stall\n",
         encoding="utf-8",
     )
 
     assert _kb._provider_egress_error_text("task") is None
-    assert _kb._provider_terminal_error_text("task") is None
+    assert _kb._provider_terminal_error_text("task") == (
+        "provider unresponsive: aborted after repeated stale attempts",
+        "provider_unresponsive",
+    )
 
 
 def test_provider_terminal_parser_keeps_current_session_egress_denial(

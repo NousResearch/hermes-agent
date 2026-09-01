@@ -67,7 +67,8 @@ def _write_termux_command_stubs(bin_dir: Path) -> None:
         bin_dir / "uname",
         "#!/bin/sh\n[ \"${1:-}\" = '-s' ] && echo Linux || echo Linux\n",
     )
-    _write_executable(bin_dir / "pkg", "#!/bin/sh\nexit 0\n")
+    if not (bin_dir / "pkg").exists():
+        _write_executable(bin_dir / "pkg", "#!/bin/sh\nexit 0\n")
     _write_executable(bin_dir / "git", "#!/bin/sh\necho 'git version 2.50.0'\n")
     _write_executable(bin_dir / "node", "#!/bin/sh\necho 'v22.12.0'\n")
     _write_executable(bin_dir / "npm", "#!/bin/sh\nexit 0\n")
@@ -156,9 +157,38 @@ def test_install_stage_rejects_post_install_unsupported_default(tmp_path: Path) 
     assert result.returncode == 1
     assert "Termux Python Python 3.14.6 is not supported" in result.stdout
     assert "Hermes requires Python >=3.11,<3.14" in result.stdout
-    assert (
-        "Install a compatible Termux Python (for example python3.11)" in result.stdout
+    assert "pkg install tur-repo && pkg install python3.13" in result.stdout
+
+
+def test_install_stage_provisions_supported_python_from_tur(tmp_path: Path) -> None:
+    """When the default Termux python is too new, the installer falls back to
+    the Termux User Repository (TUR) and picks up a supported interpreter that
+    `pkg install python3.13` provides."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_fake_python(bin_dir, "python", "3.14.6")
+    # Shadow any host python3.11/3.12/3.13 so the candidate scan can't find a
+    # supported interpreter before the TUR fallback runs.
+    _write_unsupported_explicit_pythons(bin_dir)
+
+    # Stateful pkg stub: `pkg install -y python3.13` drops a supported fake
+    # interpreter into PATH, mimicking a successful TUR package install.
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    _write_fake_python(staged, "python3.13", "3.13.7")
+    _write_executable(
+        bin_dir / "pkg",
+        "#!/bin/sh\n"
+        "for arg in \"$@\"; do\n"
+        f"    if [ \"$arg\" = 'python3.13' ]; then cp {staged}/python3.13 {bin_dir}/python3.13; fi\n"
+        "done\n"
+        "exit 0\n",
     )
+
+    result = _run_install_prerequisites(tmp_path)
+
+    assert result.returncode == 0, result.stdout
+    assert "Python installed from TUR: Python 3.13.7" in result.stdout
 
 
 def test_setup_script_prefers_compatible_minor_over_unsupported_default(

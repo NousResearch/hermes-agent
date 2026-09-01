@@ -3263,6 +3263,32 @@ def _assignee_is_known(assignee: Optional[str]) -> bool:
     return bool(profile_exists(assignee))
 
 
+def resolve_default_max_cost() -> Optional[float]:
+    """Resolve the ``kanban.default_max_cost`` new-card fallback.
+
+    Single shared spot for both the CLI ``kanban create`` path and the
+    worker-facing ``kanban_create`` tool: when a caller passes no explicit
+    ``max_cost``, the card inherits the configured default. Absent/unreadable
+    config or an absent key returns ``None`` (uncapped, backward compat). An
+    unparseable or negative config value raises ``ValueError`` so callers can
+    surface it as an error rather than silently uncap a card.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config() or {}).get("kanban", {}).get(
+            "default_max_cost", None
+        )
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    val = float(raw)  # raises ValueError on garbage -> caller decides
+    if val < 0:
+        raise ValueError("kanban.default_max_cost must be >= 0")
+    return val
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,

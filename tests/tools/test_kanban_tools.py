@@ -570,6 +570,77 @@ def test_link_happy_path(worker_env):
     assert d["ok"] is True
 
 
+# ---------------------------------------------------------------------------
+# kanban_create max_cost fallback (kanban.default_max_cost, shared helper)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_create_inherits_config_default(worker_env, monkeypatch):
+    """A tool-created card with no explicit max_cost inherits
+    kanban.default_max_cost from config, exactly like the CLI."""
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg, "load_config", lambda: {"kanban": {"default_max_cost": 0.60}}
+    )
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "child inherits default", "assignee": "peer",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.max_cost == 0.60
+    finally:
+        conn.close()
+
+
+def test_tool_create_explicit_max_cost_wins(worker_env, monkeypatch):
+    """An explicit max_cost in the tool args always beats the config default."""
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg, "load_config", lambda: {"kanban": {"default_max_cost": 0.60}}
+    )
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "explicit cap", "assignee": "peer",
+        "parents": [worker_env], "max_cost": 2.5,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.max_cost == 2.5
+    finally:
+        conn.close()
+
+
+def test_tool_create_absent_config_default_stays_uncapped(worker_env):
+    """When config has no kanban.default_max_cost, a tool-created card is
+    uncapped (backward compat) — no fabricated default."""
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "uncapped child", "assignee": "peer",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.max_cost is None
+    finally:
+        conn.close()
+
+
 def test_unblock_happy_path(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb

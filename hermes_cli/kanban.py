@@ -1671,15 +1671,16 @@ def _cmd_create(args: argparse.Namespace) -> int:
         print(f"kanban: --max-runtime: {exc}", file=sys.stderr)
         return 2
     # Explicit --max-cost wins; otherwise fall back to the kanban config
-    # default (kanban.default_max_cost). Absent/None in both = uncapped
-    # (backward compat). A stored task.max_cost of None is never enforced.
+    # default (kanban.default_max_cost), resolved by the single shared
+    # helper. Absent/None in both = uncapped (backward compat). A stored
+    # task.max_cost of None is never enforced.
     max_cost = getattr(args, "max_cost", None)
     if max_cost is None:
         try:
-            from hermes_cli.config import load_config
-            max_cost = load_config().get("kanban", {}).get("default_max_cost", None)
-        except Exception:
-            max_cost = None
+            max_cost = kb.resolve_default_max_cost()
+        except ValueError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
     if max_cost is not None:
         try:
             max_cost = float(max_cost)

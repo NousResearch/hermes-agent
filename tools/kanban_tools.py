@@ -2216,6 +2216,17 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Explicit max_cost wins; otherwise inherit
+            # kanban.default_max_cost exactly as the CLI does (single
+            # shared helper). Absent config key = None = uncapped
+            # (backward compat). Garbage/negative config is rejected, not
+            # silently uncapped.
+            max_cost = args.get("max_cost")
+            if max_cost is None:
+                try:
+                    max_cost = kb.resolve_default_max_cost()
+                except ValueError as exc:
+                    return tool_error(f"kanban_create: {exc}")
             # A project link is safe to inherit because ``create_task`` turns
             # it into a fresh per-task worktree. Never inherit the parent's
             # literal workspace kind/path; directory sharing must be explicit.
@@ -2245,6 +2256,7 @@ def _handle_create(args: dict, **kw) -> str:
                     int(max_runtime_seconds)
                     if max_runtime_seconds is not None else None
                 ),
+                max_cost=max_cost,
                 skills=skills,
                 model_override=model_override,
                 provider_override=provider_override,
@@ -3040,6 +3052,15 @@ KANBAN_CREATE_SCHEMA = {
                     "Per-task runtime cap. When exceeded, the "
                     "dispatcher SIGTERMs the worker and re-queues the "
                     "task with outcome='timed_out'."
+                ),
+            },
+            "max_cost": {
+                "type": "number",
+                "description": (
+                    "Optional per-task cumulative spend cap in USD. When "
+                    "omitted, inherits kanban.default_max_cost from config "
+                    "(0.60 default) exactly like the CLI; an absent config "
+                    "key leaves the card uncapped."
                 ),
             },
             "initial_status": {

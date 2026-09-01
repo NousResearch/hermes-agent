@@ -435,6 +435,44 @@ def test_provider_unsupported_thinking_parser_is_terminal(
     )
 
 
+def test_provider_terminal_parser_ignores_stale_prior_worker_session(
+    tmp_path, monkeypatch,
+):
+    """A prior run's egress denial cannot block a newer local timeout run."""
+    import hermes_cli.kanban_db as _kb
+
+    log_path = tmp_path / "worker.log"
+    monkeypatch.setattr(_kb, "worker_log_path", lambda _task_id: log_path)
+    log_path.write_text(
+        "LLM egress blocked: base64_payload\n"
+        "Initializing agent...\n"
+        "Provider has been unresponsive for 5 consecutive stale attempts\n",
+        encoding="utf-8",
+    )
+
+    assert _kb._provider_egress_error_text("task") is None
+    assert _kb._provider_terminal_error_text("task") is None
+
+
+def test_provider_terminal_parser_keeps_current_session_egress_denial(
+    tmp_path, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    log_path = tmp_path / "worker.log"
+    monkeypatch.setattr(_kb, "worker_log_path", lambda _task_id: log_path)
+    log_path.write_text(
+        "old run\nInitializing agent...\n"
+        "LLM egress blocked: base64_payload\n",
+        encoding="utf-8",
+    )
+
+    assert _kb._provider_terminal_error_text("task") == (
+        "provider egress blocked: LLM egress blocked: base64_payload",
+        "provider_egress_blocked",
+    )
+
+
 def test_provider_egress_crash_is_terminal_needs_attention(
     kanban_home, monkeypatch,
 ):

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from tests.fakes.mcp_oauth_peer import (
@@ -41,6 +43,27 @@ def test_repr_never_contains_fake_secret_payloads():
     assert "OLD_ACCESS_TOKEN_FOR_TEST_ONLY" not in rendered
     assert "OLD_CLIENT_SECRET_FOR_TEST_ONLY" not in rendered
     assert "old-auth.invalid" not in rendered
+
+
+def test_repr_excludes_every_seeded_legacy_payload_value(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    state = seed_old_oauth_state(tmp_path, "reports")
+    rendered = repr(state)
+
+    def payload_values(value):
+        if isinstance(value, dict):
+            for nested in value.values():
+                yield from payload_values(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from payload_values(nested)
+        else:
+            yield str(value)
+
+    for artifact in (state.token, state.client, state.metadata):
+        assert artifact is not None
+        for payload_value in payload_values(json.loads(artifact)):
+            assert payload_value not in rendered
 
 
 def test_raise_known_mutation_rejects_unknown_corruption_shape():

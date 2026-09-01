@@ -14,6 +14,8 @@ The pre-existing unrelated change to `contributors/emails/agent@Agents-Mac-mini.
 - GREEN: the same command passed with `4 tests passed, 0 failed`.
 - Review RED: after adding the repr safety test, the same command failed 1 test because the dataclass repr exposed `OLD_ACCESS_TOKEN_FOR_TEST_ONLY`.
 - Review GREEN: after adding the label-only `__repr__`, the full Task 1 test file passed with `5 tests passed, 0 failed`.
+- Review round 2 RED: temporarily restoring an unsafe bytewise repr made both repr tests fail (`4 passed, 2 failed`), including the strengthened full-fixture assertion.
+- Review round 2 GREEN: restored the safe label-only repr; the full Task 1 test file passed with `6 tests passed, 0 failed`.
 
 ## Implementation
 

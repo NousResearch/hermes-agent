@@ -1,9 +1,10 @@
-"""Global emergency stop (`hermes pause` / `hermes resume`) — agent/estop.py.
+"""Kanban dispatch pause (`hermes pause` / `hermes resume`) — agent/estop.py.
 
-The ESTOP sentinel is a resumable pause for NEW work only: cron dispatch,
-kanban dispatch, and new gateway turns are halted while it is engaged; work
-already in flight is never touched. Removing the sentinel (`hermes resume`)
-restores normal operation with no restart.
+The ESTOP sentinel is a resumable pause for NEW Kanban work only: the
+kanban dispatcher skips spawning workers while it is engaged. Chat turns
+and cron dispatch are unaffected, and work already in flight is never
+touched. Removing the sentinel (`hermes resume`) restores normal operation
+with no restart.
 
 Ported from: gastownhall/gastown estop.go (MIT); related prior art: #26778
 (/panic — kill/exit semantics, deliberately different) and #44617
@@ -72,30 +73,6 @@ def test_corrupt_sentinel_still_engages(hermes_home):
     assert state.get("reason") is None
 
 
-# ── paused notice for new gateway turns ─────────────────────────────────────
-
-
-def test_paused_reply_none_when_disengaged(hermes_home):
-    assert estop.paused_reply() is None
-
-
-def test_paused_reply_surfaces_reason_and_resume_hint(hermes_home):
-    estop.engage(reason="deploy window")
-    notice = estop.paused_reply()
-    assert notice is not None
-    assert "paused" in notice.lower()
-    assert "deploy window" in notice
-    assert "hermes resume" in notice
-
-
-def test_paused_reply_without_reason(hermes_home):
-    estop.engage()
-    notice = estop.paused_reply()
-    assert notice is not None
-    assert "paused" in notice.lower()
-    assert "hermes resume" in notice
-
-
 # ── check_paused: cheap gate + log-once ─────────────────────────────────────
 
 
@@ -121,10 +98,10 @@ def test_check_paused_logs_once_per_engagement(hermes_home, caplog):
     assert len(paused_logs) == 1
 
 
-# ── cron scheduler integration ──────────────────────────────────────────────
+# ── cron scheduler is unaffected by the Kanban pause ────────────────────────
 
 
-def test_cron_tick_skips_dispatch_when_engaged(hermes_home, monkeypatch):
+def test_cron_tick_dispatches_while_engaged(hermes_home, monkeypatch):
     from cron import scheduler
 
     calls = []
@@ -136,28 +113,8 @@ def test_cron_tick_skips_dispatch_when_engaged(hermes_home, monkeypatch):
     monkeypatch.setattr(scheduler, "get_due_jobs", _fake_get_due_jobs)
 
     estop.engage(reason="test")
-    assert scheduler.tick(verbose=False) == 0
-    assert calls == [], "engaged ESTOP must skip the due-job scan entirely"
-
-
-def test_cron_tick_resumes_after_disengage(hermes_home, monkeypatch):
-    from cron import scheduler
-
-    calls = []
-
-    def _fake_get_due_jobs():
-        calls.append(1)
-        return []
-
-    monkeypatch.setattr(scheduler, "get_due_jobs", _fake_get_due_jobs)
-
-    estop.engage()
     scheduler.tick(verbose=False)
-    assert calls == []
-
-    estop.disengage()
-    scheduler.tick(verbose=False)
-    assert calls == [1], "resume must restore normal cron dispatch"
+    assert calls == [1], "the Kanban pause must not gate cron dispatch"
 
 
 # ── kanban dispatcher integration ───────────────────────────────────────────
@@ -171,58 +128,6 @@ def test_kanban_dispatch_blocked_when_engaged(hermes_home):
     assert _kanban_dispatch_allowed() is False
     estop.disengage()
     assert _kanban_dispatch_allowed() is True
-
-
-# ── gateway turn-start integration ──────────────────────────────────────────
-
-
-class _FakeSource:
-    platform = None
-    chat_id = "c1"
-    user_id = "u1"
-    user_name = "user"
-    chat_type = "dm"
-    profile = None
-
-
-class _FakeEvent:
-    internal = False
-    text = "hello"
-
-    def __init__(self):
-        self.source = _FakeSource()
-
-
-@pytest.mark.asyncio
-async def test_gateway_new_turn_gets_paused_reply(hermes_home):
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    runner._is_user_authorized = lambda source: True  # bare-instance stub
-    estop.engage(reason="maintenance")
-    reply = await runner._handle_message(_FakeEvent())
-    assert reply is not None
-    assert "paused" in reply.lower()
-    assert "maintenance" in reply
-
-
-@pytest.mark.asyncio
-async def test_gateway_internal_events_bypass_estop(hermes_home):
-    """Internal events (in-flight work completions) must NOT be paused."""
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    estop.engage()
-    event = _FakeEvent()
-    event.internal = True
-    # An internal event proceeds past the estop gate; the bare runner then
-    # blows up further down the pipeline on missing attributes — that error
-    # (anything but a paused reply) proves the gate let it through.
-    try:
-        reply = await runner._handle_message(event)
-    except Exception:
-        return
-    assert reply is None or "paused" not in (reply or "").lower()
 
 
 # ── CLI: hermes pause / hermes resume ───────────────────────────────────────
@@ -302,34 +207,21 @@ def test_is_engaged_fails_safe_on_stat_error(hermes_home, monkeypatch):
     assert estop.is_engaged() is True
 
 
-class _FakeCmdEvent(_FakeEvent):
-    text = "/status"
+class _FakeSource:
+    platform = None
+    chat_id = "c1"
+    user_id = "u1"
+    user_name = "user"
+    chat_type = "dm"
+    profile = None
 
-    def get_command(self):
-        return "status"
 
-    def get_command_args(self):
-        return ""
+class _FakeEvent:
+    internal = False
+    text = "hello"
 
-
-@pytest.mark.asyncio
-async def test_gateway_slash_commands_bypass_estop(hermes_home):
-    """Recognized slash commands must pass the estop gate — /pause off is
-    the in-band resume path for messaging-only users, and /status, /help
-    and friends must keep working while paused."""
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    runner._is_user_authorized = lambda source: True
-    estop.engage(reason="maintenance")
-    # The command proceeds past the estop gate; the bare runner then blows
-    # up further down on missing attributes — anything but the paused
-    # notice proves the gate let it through.
-    try:
-        reply = await runner._handle_message(_FakeCmdEvent())
-    except Exception:
-        return
-    assert reply is None or "hermes is paused" not in (reply or "").lower()
+    def __init__(self):
+        self.source = _FakeSource()
 
 
 class _FakePauseEvent(_FakeEvent):
@@ -382,8 +274,8 @@ def test_profile_gateway_honors_canonical_root_estop(tmp_path, monkeypatch):
     """fleet-analyst-class: HERMES_HOME is a profile dir; pause lives at root.
 
     A process launched with HERMES_HOME=~/.hermes/profiles/fleet-analyst must
-    still treat ~/.hermes/ESTOP as engaged. Otherwise `hermes pause` is not
-    a global emergency stop (t_7b65ff88).
+    still treat ~/.hermes/ESTOP as engaged. Otherwise `hermes pause` does not
+    reach every Kanban dispatcher on the box (t_7b65ff88).
     """
     root = tmp_path / "hermes-root"
     profile = root / "profiles" / "fleet-analyst"
@@ -394,8 +286,7 @@ def test_profile_gateway_honors_canonical_root_estop(tmp_path, monkeypatch):
     assert estop.is_engaged() is False
     (root / "ESTOP").write_text("{\"reason\": \"thundering herd\"}\n", encoding="utf-8")
     assert estop.is_engaged() is True
-    assert estop.paused_reply() is not None
-    assert "paused" in estop.paused_reply().lower()
+    assert (estop.get_state() or {}).get("reason") == "thundering herd"
     # Profile-local engage still works and is independent.
     estop.engage(reason="local")
     assert (profile / "ESTOP").exists()

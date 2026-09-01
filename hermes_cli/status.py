@@ -100,7 +100,7 @@ def _estop_status_line():
     if state is None:
         return None
     reason = state.get("reason")
-    return f"⏸️  PAUSED (global emergency stop{f' — reason: {reason}' if reason else ''}; `hermes resume` to lift)"
+    return f"⏸️  KANBAN PAUSED{f' — reason: {reason}' if reason else ''}; `hermes resume` to lift"
 
 
 # --- Data tables driving the per-section renderers -------------------------

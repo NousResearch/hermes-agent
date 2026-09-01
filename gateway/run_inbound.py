@@ -241,54 +241,6 @@ class GatewayInboundMixin:
             return None
         return event, source, False
 
-    def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:
-        """Whether a turn may bypass the global emergency stop: pause blocks NEW agent turns, never
-        running work or control traffic — recognized slash commands (incl. /pause off, the in-band
-        resume) and replies owned by in-flight work (pending update prompt, running session,
-        pending slash-confirm, dangerous-command approval) all pass through."""
-        with suppress(Exception):
-            _estop_cmd = event.get_command()
-            if _estop_cmd:
-                from hermes_cli.commands import resolve_command as _resolve_estop_cmd
-                if _resolve_estop_cmd(_estop_cmd) is not None:
-                    return True
-        with suppress(Exception):
-            _estop_key = self._session_key_for_source(source)
-            _estop_state = self._peek_session_state(_estop_key)
-            if _estop_state is not None and _estop_state.persistent.update_prompt_pending:
-                return True
-            # A running session covers steering plus pending clarify / tool approvals it holds.
-            if self._is_session_running(_estop_key):
-                return True
-            from tools import slash_confirm as _estop_confirm_mod
-            if _estop_confirm_mod.get_pending(_estop_key):
-                return True
-            from tools.approval import has_blocking_approval as _estop_has_approval
-            if _estop_has_approval(_estop_key):
-                return True
-        return False
-
-    def _hm_estop_gate(
-        self, event: "MessageEvent", source: SessionSource, is_internal: bool
-    ) -> Optional[str]:
-        """Global emergency-stop (`hermes pause`) notice when this turn must be blocked, else None.
-        Placed after auth so unauthorized senders can't probe pause state."""
-        if is_internal:
-            return None
-        try:
-            from agent.estop import paused_reply as _estop_paused_reply
-        except ImportError:
-            return None
-        _paused_notice = _estop_paused_reply()
-        if _paused_notice is None or self._hm_estop_turn_allowed(event, source):
-            return None
-        logger.info(
-            "Gateway turn paused by global emergency stop (platform=%s chat=%s)",
-            getattr(getattr(source, "platform", None), "value", "unknown"),
-            getattr(source, "chat_id", None) or "unknown",
-        )
-        return _paused_notice
-
     @staticmethod
     def _hm_write_update_response(response_text: str) -> Optional[str]:
         """Atomically hand *response_text* to the detached update process; returns the OSError str."""
@@ -1265,10 +1217,6 @@ class GatewayInboundMixin:
         # — Discord interaction passthrough builds its own MessageEvent and
         # calls handle_message directly, so a teardown on the relay's inbound
         # handler left those turns muted.
-
-        _paused_notice = self._hm_estop_gate(event, source, is_internal)
-        if _paused_notice is not None:
-            return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)

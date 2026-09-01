@@ -840,8 +840,8 @@ class GatewayBusySessionMixin:
         )
 
     async def _handle_pause_command(self, event: MessageEvent):
-        """`/pause [reason]` engages the global emergency stop; `/pause off` lifts it (the estop gate
-        lets slash commands through while paused so messaging-only operators are never locked out)."""
+        """`/pause [reason]` engages the Kanban dispatch pause; `/pause off` lifts it.
+        Chat and cron are unaffected."""
         from agent import estop
         args = (event.get_command_args() or "").strip()
         if args.lower() in {"off", "resume", "stop", "disengage"}:
@@ -855,8 +855,8 @@ class GatewayBusySessionMixin:
         estop.engage(reason=args or None)
         suffix = f" (reason: {args})" if args else ""
         return (
-            f"⏸️ Paused{suffix}. New cron/kanban/gateway work is on hold; "
-            "in-flight work finishes normally. Use `/pause off` to resume."
+            f"⏸️ Paused{suffix}. New Kanban worker spawns are on hold; chat and cron keep "
+            "running and in-flight work finishes normally. Use `/pause off` to resume."
         )
 
     async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):

@@ -1,10 +1,11 @@
-"""Global emergency stop (ESTOP) — a resumable pause for NEW work only.
+"""Kanban dispatch pause (ESTOP) — a resumable pause for NEW Kanban work only.
 
 ``hermes pause`` writes a sentinel at ``$HERMES_HOME/ESTOP``; ``hermes resume``
-removes it. While it exists the cron scheduler, kanban dispatcher and new gateway
-turns skip work; in-flight work is never killed. The check is one or two uncached
-``os.stat`` calls (process home + fleet root when they differ). The body is optional
-JSON ``{"reason", "engaged_at"}``; a corrupt/empty file still counts as engaged
+removes it. While it exists the embedded kanban dispatcher skips spawning new workers
+(``gateway/kanban_watchers.py``); chat turns and cron dispatch are NOT gated by it.
+In-flight work is never killed. The check is one or two uncached ``os.stat`` calls
+(process home + fleet root when they differ). The body is optional JSON
+``{"reason", "engaged_at"}``; a corrupt/empty file still counts as engaged
 (fail safe, e.g. ``touch ~/.hermes/ESTOP``). Ported from gastownhall/gastown estop.go (MIT).
 """
 
@@ -110,15 +111,6 @@ def get_state() -> Optional[dict]:
     return state if found else None
 
 
-def paused_reply() -> Optional[str]:
-    """Short user-facing notice for new gateway turns, or None if not paused."""
-    state = get_state()
-    if state is None:
-        return None
-    tag = f" ({state['reason']})" if state.get("reason") else ""
-    return f"⏸️ Hermes is paused{tag}. New work is on hold; run `hermes resume` to pick things back up."
-
-
 def check_paused(component: str, logger: logging.Logger) -> bool:
     """Return True when engaged, logging once per engagement per component (re-armed after a resume)."""
     if not is_engaged():
@@ -132,7 +124,7 @@ def check_paused(component: str, logger: logging.Logger) -> bool:
         reason = (get_state() or {}).get("reason")
         suffix = f" (reason: {reason})" if reason else ""
         logger.info(
-            "%s dispatch paused by global emergency stop%s — remove with `hermes resume` (%s)",
+            "%s dispatch paused by the Kanban dispatch pause%s — remove with `hermes resume` (%s)",
             component, suffix, sentinel_path(),
         )
     return True

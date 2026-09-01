@@ -23,6 +23,8 @@
  */
 
 export interface PoolStopEntry {
+  lastActiveAt?: number
+  ownsRemoteServe?: boolean
   process?: unknown
 }
 
@@ -31,6 +33,12 @@ export interface PoolStopperDeps {
   pool: Map<string, PoolStopEntry>
   /** Signal the child (tree/group kill per platform). Synchronous. */
   stopChild: (child: unknown) => void
+  /**
+   * Kill a Desktop-owned remote `serve --isolated` while SSH transport is
+   * still up. Used by stopAndReclaim (idle reaper), not by plain stop
+   * (dispatch-probe retire must not inherit this).
+   */
+  stopOwnedRemote?: (key: string, entry: PoolStopEntry) => Promise<void>
   /** Bounded wait: resolves when the child exits, escalating to SIGKILL. */
   waitForExit: (child: unknown) => Promise<void>
 }
@@ -40,6 +48,12 @@ export interface PoolStopper {
   inFlight: (key: string) => Promise<void> | undefined
   /** Stop one pooled backend; concurrent calls share the same promise. */
   stop: (key: string) => Promise<void>
+  /**
+   * Stop a pooled backend and, when it owns a remote serve, kill that
+   * process before the local descriptor is gone. The idle reaper uses
+   * this so it cannot orphan a detached remote serve.
+   */
+  stopAndReclaim: (key: string) => Promise<void>
   /** Stop every pooled backend currently in the pool. */
   stopAll: () => Promise<void>
 }
@@ -47,7 +61,7 @@ export interface PoolStopper {
 export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
   const stops = new Map<string, Promise<void>>()
 
-  function stop(key: string): Promise<void> {
+  function stop(key: string, reclaimOwnedRemote = false): Promise<void> {
     const inFlight = stops.get(key)
 
     if (inFlight) {
@@ -60,11 +74,21 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
       return Promise.resolve()
     }
 
+    // Refuse to orphan a Desktop-owned remote serve when this stopper was
+    // not wired with a kill hook. Leave the entry installed.
+    if (reclaimOwnedRemote && entry.ownsRemoteServe && !deps.stopOwnedRemote) {
+      return Promise.resolve()
+    }
+
     // Evict now: routing must not hand out a dying backend. The stop promise
     // below retains the process handle until the bounded exit completes.
     deps.pool.delete(key)
 
     const stopping = (async () => {
+      if (reclaimOwnedRemote && entry.ownsRemoteServe && deps.stopOwnedRemote) {
+        await deps.stopOwnedRemote(key, entry)
+      }
+
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
     })().finally(() => {
@@ -78,9 +102,10 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
 
   return {
     inFlight: key => stops.get(key),
-    stop,
+    stop: key => stop(key, false),
+    stopAndReclaim: key => stop(key, true),
     stopAll: async () => {
-      await Promise.all([...deps.pool.keys()].map(stop))
+      await Promise.all([...deps.pool.keys()].map(key => stop(key, false)))
     }
   }
 }

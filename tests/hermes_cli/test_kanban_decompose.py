@@ -238,6 +238,62 @@ def test_decompose_blocked_resume_fanout_via_entry_path(kanban_home):
     assert root.status == "todo"
 
 
+# --- Guard 1 (t_c52b9bc3): NO SPLIT MID-REVIEW ---
+
+def _insert_run(conn, tid, outcome, *, status="done"):
+    """Insert a terminal run with the given outcome for a task."""
+    import time as _time
+    now = _time.time()
+    cur = conn.execute(
+        "INSERT INTO task_runs "
+        "(task_id, profile, status, outcome, started_at, ended_at) "
+        "VALUES (?, 'test', ?, ?, ?, ?)",
+        (tid, status, outcome, int(now), int(now)),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def test_decompose_refuses_when_review_cycle_change_requested(kanban_home):
+    """A card with a changes_requested round that ends blocked is NOT split.
+
+    Guard 1: a blocked card whose newest decisive run outcome is
+    ``changes_requested`` must be RESUMED (same card+worktree), never fanned
+    out. decompose_task must refuse the split BEFORE calling the aux LLM (no
+    fan-out choreography at all).
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="mid-review card", assignee="orchestrator",
+            initial_status="blocked",
+        )
+        # Simulate the review loop: round-1 changes_requested is the newest
+        # decisive outcome; the fix run then ended BLOCKED (a trailing
+        # non-decisive outcome that must not clear it).
+        _insert_run(conn, tid, "changes_requested")
+        _insert_run(conn, tid, "blocked")
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        # Guard fires before any LLM call — the aux client mock is intentionally
+        # NOT installed, so reaching the LLM would raise and fail the test.
+        outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "review cycle" in outcome.reason or "resuming" in outcome.reason
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        assert root.status == "blocked"  # card untouched — not fanned out
+        # No children were created.
+        child_ids = kb.child_ids(conn, tid)
+    assert child_ids == []
+
+
 # --- AC1/AC2: auto-decomposer decision-shaped children land in triage ---
 
 def _auto_decompose(llm_payload, *, tid, profiles):

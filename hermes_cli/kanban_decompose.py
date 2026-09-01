@@ -182,6 +182,55 @@ def _truncate(text: str, limit: int) -> str:
         return text
     return text[: limit - 1] + "…"
 
+# Outcomes that are "decisive" about whether a card is currently inside an
+# active review cycle. ``review_requested`` = card handed to a reviewer;
+# ``changes_requested`` = reviewer sent it back for rework. ``completed`` is
+# the state that CLOSES a review cycle (the card reached done). ``blocked`` /
+# ``crashed`` / ``timed_out`` mid-fix are NOT decisive — they say nothing about
+# which lane the card is in, so they are ignored when deciding whether a card
+# is mid-review.
+_REVIEW_CYCLE_OUTCOMES = frozenset({"review_requested", "changes_requested"})
+_REVIEW_CYCLE_TERMINAL = frozenset({"review_requested", "changes_requested", "completed"})
+
+
+def _has_active_review_cycle(task_id: str) -> bool:
+    """Return True when a task is inside a review cycle and must be resumed,
+    never decomposed.
+
+    Guard 1 of the auto-decomposer fix (t_c52b9bc3): a healthy card in the
+    review loop whose fix run ended ``blocked`` must NOT be split into
+    children. Look at the NEWEST decisive run outcome — a ``changes_requested``
+    (or ``review_requested``) that has not since been closed by a
+    ``completed`` means the card is mid-review. A trailing ``blocked`` run does
+    not clear it (the blocked fix-round is the very case we want to resume, not
+    fan out).
+
+    Also covers the obvious fast path: the card's current status is
+    ``review``/``changes_requested``.
+    """
+    try:
+        with kb.connect_closing() as conn:
+            task = kb.get_task(conn, task_id)
+            if task is None:
+                return False
+            if task.status in ("review", "changes_requested"):
+                return True
+            row = conn.execute(
+                "SELECT outcome FROM task_runs "
+                "WHERE task_id = ? AND outcome IS NOT NULL "
+                "ORDER BY id DESC LIMIT 500",
+                (task_id,),
+            ).fetchall()
+    except Exception:
+        logger.warning(
+            "decompose: could not check review cycle for %s (assuming none)", task_id,
+        )
+        return False
+    decisive = [r["outcome"] for r in row if r["outcome"] in _REVIEW_CYCLE_TERMINAL]
+    if not decisive:
+        return False
+    return decisive[0] in _REVIEW_CYCLE_OUTCOMES
+
 
 def _extract_json_blob(raw: str) -> Optional[dict]:
     if not raw:
@@ -330,6 +379,21 @@ def decompose_task(
     if task.status not in ("triage", "blocked"):
         return DecomposeOutcome(
             task_id, False, f"task is not in triage/blocked (status={task.status!r})"
+        )
+    # Guard 1 (auto-decomposer fix, t_c52b9bc3): NO SPLIT MID-REVIEW. A card in
+    # an active review cycle (status review/changes_requested, OR its newest
+    # decisive run outcome is review_requested/changes_requested with no
+    # intervening completion) must be RESUMED in the same card + worktree, not
+    # fanned out. A blocked fix-round is a resume trigger, never a fan-out
+    # trigger. Refusing here (rather than in the tick) makes the guard hold for
+    # both the auto-decompose tick and the manual `kanban decompose <id>` CLI.
+    if _has_active_review_cycle(task_id):
+        return DecomposeOutcome(
+            task_id,
+            False,
+            "task is in an active review cycle; resuming in same card + "
+            "worktree, refusing to split (blocked fix-round is a resume, not a "
+            "fan-out trigger)",
         )
 
     cfg = _load_config()

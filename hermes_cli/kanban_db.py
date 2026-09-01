@@ -10969,6 +10969,7 @@ def dispatch_once(
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
     circuit_probe_fn=None,
+    model_rules: Optional[list] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -11005,6 +11006,7 @@ def dispatch_once(
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
             circuit_probe_fn=circuit_probe_fn,
+            model_rules=model_rules,
         )
         _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
@@ -11026,6 +11028,7 @@ def dispatch_once(
                 max_in_progress_per_profile=max_in_progress_per_profile,
                 reconcile_orphans=reconcile_orphans,
                 circuit_probe_fn=circuit_probe_fn,
+                model_rules=model_rules,
             )
             # Still under the dispatch lock: run the periodic PASSIVE WAL
             # checkpoint (see _maybe_checkpoint_wal; the -wal file size is
@@ -11054,6 +11057,7 @@ def _dispatch_once_locked(
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
     circuit_probe_fn=None,
+    model_rules: Optional[list] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -11425,6 +11429,22 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # Dispatch-time model routing: if the card has no explicit override,
+        # the first matching kanban.model_rules entry sets the worker's model
+        # for this spawn only (never written back to the card). Emit an audit
+        # event so operators can see why a mechanical card ran on v4-flash.
+        fired = apply_model_rule(claimed, rules=model_rules)
+        if fired is not None:
+            with write_txn(conn):
+                _append_event(
+                    conn, claimed.id, "model_rule_applied",
+                    {
+                        "match": fired.get("match"),
+                        "model": fired.get("model"),
+                        "provider": fired.get("provider"),
+                        "source": "kanban.model_rules",
+                    },
+                )
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -11552,6 +11572,20 @@ def _dispatch_once_locked(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # Dispatch-time model routing applies to the review lane too — a
+        # review card titled like a mechanical job inherits no expensive pin.
+        fired = apply_model_rule(claimed, rules=model_rules)
+        if fired is not None:
+            with write_txn(conn):
+                _append_event(
+                    conn, claimed.id, "model_rule_applied",
+                    {
+                        "match": fired.get("match"),
+                        "model": fired.get("model"),
+                        "provider": fired.get("provider"),
+                        "source": "kanban.model_rules",
+                    },
+                )
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -11619,6 +11653,75 @@ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= minimum else default
+
+
+def _resolve_model_rule(
+    title: str,
+    rules: Optional[list] = None,
+    kanban_cfg: Optional[dict] = None,
+) -> Optional[dict]:
+    """Return the first ``model_rules`` entry whose ``match`` regex fires on
+    ``title``, or ``None``.
+
+    ``rules`` takes precedence (tests pass it explicitly); otherwise the
+    rules are loaded from ``kanban.model_rules`` in config. Matching is
+    case-insensitive and against the TITLE only. A malformed regex in a
+    rule is skipped with a logged warning — it must never crash dispatch.
+    """
+    title = title or ""
+    if rules is None:
+        if kanban_cfg is None:
+            try:
+                from hermes_cli.config import load_config
+                kanban_cfg = (load_config().get("kanban") or {})
+            except Exception:
+                kanban_cfg = {}
+        rules = (kanban_cfg or {}).get("model_rules") or []
+    for rule in rules or []:
+        if not isinstance(rule, dict):
+            continue
+        match = rule.get("match")
+        if not match:
+            continue
+        try:
+            if re.search(match, title, re.IGNORECASE):
+                return rule
+        except re.error as exc:
+            _log.warning(
+                "kanban model_rule has malformed match regex %r (skipped): %s",
+                match, exc,
+            )
+            continue
+    return None
+
+
+def apply_model_rule(
+    task: Task,
+    *,
+    rules: Optional[list] = None,
+    kanban_cfg: Optional[dict] = None,
+) -> Optional[dict]:
+    """Apply dispatch-time model routing to an in-memory ``Task``.
+
+    If the card already has an explicit ``model_override``, it always wins
+    and no rule fires. Otherwise the first matching rule sets the worker's
+    model (and provider, when the rule names one) FOR THIS SPAWN ONLY — the
+    card is never mutated, so a later dispatch or a re-run applies the rule
+    freshly. Returns the fired rule (for the caller's audit event), else
+    ``None``.
+    """
+    if task.model_override:
+        return None
+    rule = _resolve_model_rule(task.title, rules=rules, kanban_cfg=kanban_cfg)
+    if not rule:
+        return None
+    model = rule.get("model")
+    if not model:
+        return None
+    task.model_override = model
+    if rule.get("provider"):
+        task.provider_override = rule["provider"]
+    return rule
 
 
 def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:

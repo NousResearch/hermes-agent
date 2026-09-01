@@ -2808,6 +2808,21 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Dispatch-time model routing: an ordered list of {match, model,
+        # provider?} entries. `match` is a case-insensitive regex tested
+        # against the card TITLE only (not the body — keep it auditable).
+        # At DISPATCH time, if a card has NO explicit model_override, the
+        # FIRST rule whose match fires sets the worker's model for that
+        # spawn only (never written back to the card). Explicit per-card
+        # model_override always wins; no rule overrides it. A malformed
+        # regex is skipped with a logged warning, never a crash. Absent
+        # rules / absent key = today's behaviour (no override injected).
+        "model_rules": [
+            {"match": "(audit|triage|routing|inventory|classif)",
+             "model": "deepseek/deepseek-v4-flash-0731"},
+            {"match": "^Deploy:",
+             "model": "deepseek/deepseek-v4-flash-0731"},
+        ],
         # Default per-card dollar cap on cumulative worker spend, applied when
         # `hermes kanban create` is run WITHOUT an explicit --max-cost. When a
         # card's cumulative session costs in state.db exceed this, the

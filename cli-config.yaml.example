@@ -332,6 +332,18 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Dispatch-time model routing: an ordered list of {match, model, provider?}.
+  # At dispatch, a card with NO explicit model_override gets the first rule
+  # whose match regex fires against its TITLE — the worker is spawned on that
+  # model for that run only (never written back). Mechanical card classes
+  # inherit the assignee's expensive pin by accident, so route them to a cheap
+  # model instead. Explicit per-card model_override always wins; no rule
+  # overrides it. Malformed regexes are skipped with a logged warning.
+  model_rules:
+    - match: "(audit|triage|routing|inventory|classif)"
+      model: "deepseek/deepseek-v4-flash-0731"
+    - match: "^Deploy:"
+      model: "deepseek/deepseek-v4-flash-0731"
   # Default per-card dollar cap on cumulative worker spend, applied when
   # `hermes kanban create` is run without --max-cost. When a card's cumulative
   # session costs in state.db exceed this, the dispatcher SIGTERMs the worker

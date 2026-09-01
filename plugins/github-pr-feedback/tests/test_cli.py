@@ -1760,6 +1760,41 @@ def test_cron_wrapper_invokes_only_the_fixed_scan_argv_with_an_absolute_hermes_e
     assert calls == [([str(executable), "github-pr-feedback", "scan"], False)]
 
 
+def test_cron_wrapper_reports_missing_child_stdout_as_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    script_path = (
+        Path(__file__).resolve().parents[1] / "scripts" / "github-pr-feedback-scan.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "github_pr_feedback_cron_missing_output", script_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = "child exited without scan JSON\n"
+
+    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: Completed())
+    executable = tmp_path / "bin" / "hermes"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("HERMES_EXECUTABLE", str(executable))
+
+    assert module.main() == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "child_returncode": 0,
+        "status": "worker_output_missing",
+        "stderr_present": True,
+    }
+
+
 @pytest.mark.parametrize(
     ("payload", "process_returncode", "expected"),
     [

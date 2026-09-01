@@ -544,6 +544,34 @@ def _codex_event_has_content(event: Any) -> bool:
     return False
 
 
+def _completed_reasoning_text(item: Any) -> str:
+    """Extract displayable text from a completed Responses reasoning item."""
+    if _event_field(item, "type", "") != "reasoning":
+        return ""
+    summary = _event_field(item, "summary")
+    if isinstance(summary, list):
+        parts = [
+            text
+            for part in summary
+            if isinstance((text := _event_field(part, "text", "")), str) and text
+        ]
+        if parts:
+            return "\n\n".join(parts).strip()
+    text = _event_field(item, "text", "")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _missing_reasoning_tail(completed: str, streamed: str) -> str:
+    """Return completed reasoning not already delivered as deltas."""
+    if not streamed:
+        return completed
+    if completed.startswith(streamed):
+        return completed[len(streamed):]
+    if completed not in streamed:
+        return completed
+    return ""
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise ``_StreamErrorEvent`` from a ``type=error`` SSE frame. The spec puts code/message/param at the
     top level, but the SDK and several proxies nest them under ``error``; read top-level first, then the envelope."""
@@ -596,7 +624,7 @@ class _CodexResponseAssembler:
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
         # back in stream order.
         self.output_indexes, self.output_sequences = [], []
-        self.text_deltas, self.commentary_text_deltas = [], []
+        self.text_deltas, self.commentary_text_deltas, self.current_reasoning_deltas = [], [], []
         # pending_function_calls: announced-but-unconfirmed function calls keyed by item id. announced_output_order:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
         self.pending_function_calls: Dict[str, Dict[str, Any]] = {}
@@ -670,6 +698,7 @@ class _CodexResponseAssembler:
             if self.active_summary_index is not None and summary_index != self.active_summary_index:
                 reasoning_text = f"\n\n{reasoning_text}"
             self.active_summary_index = summary_index
+        self.current_reasoning_deltas.append(reasoning_text)
         self._safe(self.on_reasoning_delta, "on_reasoning_delta", reasoning_text)
 
     def _on_item_done(self, event: Any, event_type: str) -> None:
@@ -677,6 +706,14 @@ class _CodexResponseAssembler:
         if done_item is None:
             return
         self.output_items.append(done_item)
+        completed_reasoning = _completed_reasoning_text(done_item)
+        if completed_reasoning and self.on_reasoning_delta is not None:
+            missing_reasoning = _missing_reasoning_tail(
+                completed_reasoning, "".join(self.current_reasoning_deltas).strip())
+            if missing_reasoning:
+                self._safe(self.on_reasoning_delta, "completed reasoning callback", missing_reasoning)
+        if _event_field(done_item, "type", "") == "reasoning":
+            self.current_reasoning_deltas = []
         # Reuse the announced position when known (fresh tail sequence for unannounced items); the .done
         # event's own output_index wins over the announced one.
         done_id = str(_event_field(done_item, "id", ""))

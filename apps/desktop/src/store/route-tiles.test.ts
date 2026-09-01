@@ -21,6 +21,13 @@ describe('route tile lifecycle', () => {
     expect(revealTreePane).toHaveBeenLastCalledWith('route-tile:/kanban')
   })
 
+  it('canonicalizes query and hash before storing or revealing a route tile', () => {
+    openRouteTile('/kanban?view=board#today')
+
+    expect($routeTiles.get()).toEqual([{ dir: 'right', path: '/kanban' }])
+    expect(revealTreePane).toHaveBeenLastCalledWith('route-tile:/kanban')
+  })
+
   it('closes and reopens the same route without retaining a duplicate', () => {
     openRouteTile('/llm-usage')
     closeRouteTile('/llm-usage')

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { registry } from '@/contrib/registry'
 
 import {
+  contributedRoutes,
   isContributedRoute,
   NEW_CHAT_ROUTE,
   primaryRouteSelectedSessionId,
@@ -32,6 +33,23 @@ describe('isContributedRoute', () => {
     }
 
     expect(isContributedRoute('/kanban')).toBe(false)
+  })
+
+  it('canonicalizes query and hash from a contributed route declaration', () => {
+    const dispose = registry.register({
+      area: ROUTES_AREA,
+      data: { path: '/query-probe?view=board#today' },
+      id: 'query-probe-page-test',
+      render: () => null,
+      source: 'plugin:query-probe-test'
+    })
+
+    try {
+      expect(contributedRoutes()).toEqual([expect.objectContaining({ path: '/query-probe' })])
+      expect(isContributedRoute('/query-probe?view=board#today')).toBe(true)
+    } finally {
+      dispose()
+    }
   })
 })
 

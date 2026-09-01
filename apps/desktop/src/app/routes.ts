@@ -106,12 +106,16 @@ export function contributedRoutes(
   contributions: readonly Contribution[] = registry.getArea(ROUTES_AREA)
 ): Array<{ key: string; path: string; title?: string; render: () => ReactNode }> {
   return contributions
-    .map(c => ({
-      key: `${c.source ?? 'core'}:${c.id}`,
-      path: (c.data as RouteContribution | undefined)?.path ?? '',
-      title: c.title,
-      render: c.render!
-    }))
+    .map(c => {
+      const path = routePathname((c.data as RouteContribution | undefined)?.path ?? '')
+
+      return {
+        key: `${c.source ?? 'core'}:${c.id}`,
+        path,
+        title: c.title,
+        render: c.render!
+      }
+    })
     .filter(route => Boolean(route.path.startsWith('/') && route.render) && !RESERVED_PATHS.has(route.path))
 }
 

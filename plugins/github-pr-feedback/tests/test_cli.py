@@ -521,6 +521,21 @@ def test_cli_exposes_status_doctor_and_an_exact_immutable_retry_identity() -> No
         ]
     )
     assert audit.github_pr_feedback_action == "audit-pr"
+    fresh = parser.parse_args(
+        [
+            "audit-pr",
+            "--repository",
+            "acme/widgets",
+            "--pr-number",
+            "17",
+            "--head-sha",
+            "a" * 40,
+            "--worktree",
+            "/repositories/widgets",
+            "--fresh",
+        ]
+    )
+    assert fresh.fresh is True
     assert parser.parse_args(["merge-scan"]).github_pr_feedback_action == "merge-scan"
     assert (
         parser.parse_args(["merge-status"]).github_pr_feedback_action == "merge-status"
@@ -1898,6 +1913,7 @@ def test_ci_audit_handoff_classifies_missing_hermes_runtime(
 def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     from github_pr_feedback.ci_runner import (
         CIAuditIdentity,
@@ -2025,6 +2041,18 @@ def test_failed_audit_handoff_dispatches_the_typed_receipt_before_completion(
 
     assert result == 1
     assert dispatched == [receipt]
+    rendered = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rendered == [
+        {
+            "command_count": 1,
+            "head_sha": head_sha,
+            "manifest_digest": receipt.manifest_digest,
+            "pr_number": 17,
+            "receipt_id": receipt.receipt_id,
+            "repository": "acme/widgets",
+            "status": "failed",
+        }
+    ]
 
 
 def test_audit_reuses_exact_head_manifest_receipt_without_rerunning_lane(
@@ -2063,6 +2091,7 @@ def test_audit_reuses_exact_head_manifest_receipt_without_rerunning_lane(
             return receipt
 
     assert _reusable_ci_receipt(Ledger(), identity, worktree) is receipt
+    assert _reusable_ci_receipt(Ledger(), identity, worktree, allow_reuse=False) is None
 
     manifest.write_text("[lane.changed]\nargv = ['pytest']\n", encoding="utf-8")
     assert _reusable_ci_receipt(Ledger(), identity, worktree) is None

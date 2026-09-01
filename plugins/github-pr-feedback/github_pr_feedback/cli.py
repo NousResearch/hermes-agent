@@ -365,6 +365,11 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
     audit.add_argument("--pr-number", required=True, type=int)
     audit.add_argument("--head-sha", required=True)
     audit.add_argument("--worktree", required=True, type=Path)
+    audit.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Run new local CI even when an exact-head receipt is reusable",
+    )
     subcommands.add_parser(
         "merge-scan", help="Evaluate and merge strictly eligible PR heads"
     )
@@ -737,9 +742,13 @@ def _reusable_ci_receipt(
     ledger: object,
     identity: CIAuditIdentity,
     worktree: Path,
+    *,
+    allow_reuse: bool = True,
 ) -> CIAuditReceipt | None:
     """Reuse immutable exact-head evidence instead of repeating an expensive lane."""
 
+    if not allow_reuse:
+        return None
     reader = getattr(ledger, "latest_ci_receipt_for_head", None)
     if not callable(reader):
         return None
@@ -796,6 +805,10 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
         print(json.dumps({"status": "audit_unavailable"}, sort_keys=True))
         return_code = 1
     else:
+        # Receipt persistence is the audit boundary. Render it before the
+        # GitHub comment, repair dispatch, merge handoff, or task completion;
+        # those are separate integrations and may fail independently.
+        print(json.dumps(_ci_receipt_payload(receipt), sort_keys=True), flush=True)
         try:
             final_state = github.get_merge_state(args.repository, args.pr_number)
             if final_state.head_sha != receipt.identity.head_sha:
@@ -817,7 +830,16 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
             _complete_current_ci_task(receipt)
             handoff_completed = True
         except (CIValidationError, GitHubClientError, RuntimeError):
-            print(json.dumps({"status": "audit_handoff_unavailable"}, sort_keys=True))
+            print(
+                json.dumps(
+                    {
+                        "status": "audit_handoff_unavailable",
+                        "receipt_id": receipt.receipt_id,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
             return_code = 1
         else:
             return_code = 0 if receipt.status == "passed" else 1

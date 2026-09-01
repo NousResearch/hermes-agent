@@ -610,6 +610,74 @@ def test_github_client_adds_labels_with_fixed_issue_endpoint() -> None:
     assert runner.calls == [argv]
 
 
+def test_github_client_creates_missing_label_on_collection_endpoint() -> None:
+    read_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/labels/codex",
+    )
+    create_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/labels",
+        "--method",
+        "POST",
+        "--field",
+        "name=codex",
+        "--field",
+        "color=1f6feb",
+        "--field",
+        "description=PR authored by Codex",
+    )
+
+    class MissingLabelRunner:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def run(self, argv: list[str]) -> str:
+            key = tuple(argv)
+            self.calls.append(key)
+            if key == read_argv:
+                raise GitHubClientError("label does not exist", code="not_found")
+            assert key == create_argv
+            return "{}"
+
+    runner = MissingLabelRunner()
+    GitHubClient(runner).ensure_issue_label(
+        "acme/widgets", "codex", color="1F6FEB", description="PR authored by Codex"
+    )
+
+    assert runner.calls == [read_argv, create_argv]
+
+
+def test_github_client_updates_existing_label_after_exact_read() -> None:
+    read_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/labels/codex",
+    )
+    update_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/labels/codex",
+        "--method",
+        "PUT",
+        "--field",
+        "new_name=codex",
+        "--field",
+        "color=1f6feb",
+        "--field",
+        "description=PR authored by Codex",
+    )
+    runner = RecordingRunner({read_argv: {"name": "codex"}, update_argv: {}})
+
+    GitHubClient(runner).ensure_issue_label(
+        "acme/widgets", "codex", color="1f6feb", description="PR authored by Codex"
+    )
+
+    assert runner.calls == [read_argv, update_argv]
+
+
 def test_github_client_bounds_untrusted_feedback_body_at_intake() -> None:
     responses = feedback_responses("x" * (MAX_FEEDBACK_BODY_CHARS + 1_000))
     client = GitHubClient(RecordingRunner(responses))

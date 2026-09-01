@@ -251,6 +251,8 @@ def _github_failure_code(stderr: str) -> str:
         for marker in ("403", "permission denied", "resource not accessible", "forbidden")
     ):
         return "permission_denied"
+    if "404" in normalized or "not found" in normalized:
+        return "not_found"
     return "github_error"
 
 
@@ -786,7 +788,13 @@ class GitHubClient:
     def ensure_issue_label(
         self, repository: str, label: str, *, color: str, description: str
     ) -> None:
-        """Create or update one configured label using an exact name/color."""
+        """Create or update one configured label using an exact name/color.
+
+        GitHub uses different endpoints for these operations: a missing label
+        is created on the repository's labels collection, while an existing
+        label is updated on its name-specific endpoint. Read first so a
+        missing label is not sent to the update-only endpoint.
+        """
 
         repository = _validated_repository(repository)
         label = _validated_label(label)
@@ -794,11 +802,33 @@ class GitHubClient:
             raise ValueError("label color must be six hexadecimal characters")
         if not isinstance(description, str) or not description.strip() or len(description) > 100:
             raise ValueError("label description must contain 1 to 100 characters")
+        label_endpoint = f"repos/{repository}/labels/{quote(label, safe='')}"
+        try:
+            self._read_object(label_endpoint)
+        except GitHubClientError as error:
+            if error.code != "not_found":
+                raise
+            self._runner.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repository}/labels",
+                    "--method",
+                    "POST",
+                    "--field",
+                    f"name={label}",
+                    "--field",
+                    f"color={color.casefold()}",
+                    "--field",
+                    f"description={description}",
+                ]
+            )
+            return
         self._runner.run(
             [
                 "gh",
                 "api",
-                f"repos/{repository}/labels/{quote(label, safe='')}",
+                label_endpoint,
                 "--method",
                 "PUT",
                 "--field",

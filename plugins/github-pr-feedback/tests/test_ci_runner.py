@@ -9,6 +9,7 @@ import pytest
 
 from github_pr_feedback.ci_runner import (
     CIAuditIdentity,
+    CIAuditReceipt,
     CIValidationError,
     CompletedCommand,
     LocalCIRunner,
@@ -315,6 +316,12 @@ def test_local_ci_runner_bootstraps_missing_repo_venv_before_ci(tmp_path: Path) 
     receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
 
     assert receipt.status == "passed"
+    assert receipt.commands[0].argv == (
+        "python3",
+        "scripts/bootstrap_agent_workspace.py",
+        "--venv",
+        "link",
+    )
     assert commands.calls[0][0] == (
         "python3",
         "scripts/bootstrap_agent_workspace.py",
@@ -399,7 +406,11 @@ def test_local_ci_runner_records_failed_receipt_on_invalid_or_raced_state(
     receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
 
     assert receipt.status == "failed"
-    assert receipt.commands == ()
+    if failure == "actions_race":
+        assert receipt.commands
+        assert all(command.returncode == 0 for command in receipt.commands)
+    else:
+        assert receipt.commands == ()
     assert receipt.failure_reason
     assert ledger.latest_ci_receipt_for_head(
         "acme/widgets",
@@ -464,4 +475,26 @@ def test_missing_ci_executable_is_classified_environment_blocked(tmp_path: Path)
 
     assert receipt.status == "failed"
     assert receipt.commands[0].classification == "environment-blocked"
+    ledger.close()
+
+
+def test_ci_receipt_round_trip_rejects_coerced_or_dropped_evidence(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    runner, ledger, _commands = build_runner(tmp_path)
+    receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+
+    payload = receipt.to_payload()
+    assert CIAuditReceipt.from_payload(payload) == receipt
+
+    payload["actions_state"]["all_green"] = "true"  # type: ignore[index]
+    with pytest.raises(ValueError, match="actions green"):
+        CIAuditReceipt.from_payload(payload)
+
+    payload = receipt.to_payload()
+    payload["commands"].append("not-a-command")  # type: ignore[union-attr]
+    with pytest.raises(ValueError, match="invalid command"):
+        CIAuditReceipt.from_payload(payload)
     ledger.close()

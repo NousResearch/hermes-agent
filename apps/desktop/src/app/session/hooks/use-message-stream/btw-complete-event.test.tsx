@@ -63,4 +63,3 @@ describe('btw.complete event', () => {
     expect(lastMessage()).toBeUndefined()
   })
 })
-)

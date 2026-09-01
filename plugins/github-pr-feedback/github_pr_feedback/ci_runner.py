@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
 from .github_client import CheckState, GitHubClient, PullRequestMergeState
-from .ledger import FeedbackLedger
+from .ledger import CIRunLease, FeedbackLedger
 
 
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -453,7 +453,7 @@ class LocalCIRunner:
                 error,
                 commands=getattr(error, "command_evidence", ()),
             )
-            self._ledger.finalize_ci_run(
+            receipt = self._finalize_ci_run_or_recover(
                 lease,
                 receipt,
                 status="completed",
@@ -461,12 +461,54 @@ class LocalCIRunner:
                 error=type(error).__name__,
             )
             return receipt
-        self._ledger.finalize_ci_run(
+        receipt = self._finalize_ci_run_or_recover(
             lease,
             receipt,
             status="completed",
             completed_at=receipt.completed_at,
         )
+        return receipt
+
+    def _finalize_ci_run_or_recover(
+        self,
+        lease: CIRunLease,
+        receipt: CIAuditReceipt,
+        *,
+        status: str,
+        completed_at: datetime,
+        error: str | None = None,
+    ) -> CIAuditReceipt:
+        try:
+            self._ledger.finalize_ci_run(
+                lease,
+                receipt,
+                status=status,
+                completed_at=completed_at,
+                error=error,
+            )
+        except Exception:
+            try:
+                persisted = self._ledger.ci_receipt_by_id(
+                    receipt.identity.repository,
+                    receipt.identity.pr_number,
+                    receipt.receipt_id,
+                )
+                lifecycle = self._ledger.latest_ci_run(
+                    receipt.identity.repository,
+                    receipt.identity.pr_number,
+                    receipt.identity.head_sha,
+                )
+            except Exception:
+                raise
+            if (
+                isinstance(persisted, CIAuditReceipt)
+                and persisted == receipt
+                and lifecycle is not None
+                and lifecycle.get("status") == "completed"
+                and lifecycle.get("receipt_id") == receipt.receipt_id
+            ):
+                return persisted
+            raise
         return receipt
 
     def _run_claimed(self, identity: CIAuditIdentity, worktree: Path) -> CIAuditReceipt:

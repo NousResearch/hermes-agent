@@ -14,6 +14,7 @@ from github_pr_feedback.ci_runner import (
     CompletedCommand,
     LocalCIRunner,
 )
+from github_pr_feedback.ci_coordinator import CIAuditJob, GroupedCICoordinator
 from github_pr_feedback.github_client import CheckState, PullRequestMergeState
 from github_pr_feedback.ledger import FeedbackLedger
 
@@ -307,6 +308,56 @@ def test_fresh_exact_head_rerun_reconciles_identical_receipt(
     assert lifecycle["status"] == "completed"
     assert lifecycle["lease_version"] == 2
     assert lifecycle["receipt_id"] == first.receipt_id
+    ledger.close()
+
+
+def test_local_ci_runner_recovers_receipt_when_finalizer_reports_after_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    runner, ledger, _commands = build_runner(
+        tmp_path, commands=RecordingRunner(fail_at=2)
+    )
+    original_finalize = ledger.finalize_ci_run
+
+    def finalize_then_report_failure(*args: object, **kwargs: object) -> None:
+        original_finalize(*args, **kwargs)
+        raise RuntimeError("simulated finalizer acknowledgement loss")
+
+    monkeypatch.setattr(ledger, "finalize_ci_run", finalize_then_report_failure)
+
+    receipt = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+
+    assert receipt.status == "failed"
+    assert ledger.ci_receipt_by_id("acme/widgets", 17, receipt.receipt_id) == receipt
+    lifecycle = ledger.latest_ci_run("acme/widgets", 17, HEAD_SHA)
+    assert lifecycle is not None
+    assert lifecycle["status"] == "completed"
+    assert lifecycle["receipt_id"] == receipt.receipt_id
+    ledger.close()
+
+
+def test_grouped_coordinator_preserves_typed_failed_receipt(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    runner, ledger, commands = build_runner(tmp_path, commands=RecordingRunner(fail_at=2))
+    identity = CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA)
+    receipt = runner.run(identity, worktree)
+    job = CIAuditJob(identity=identity, worktree=worktree, failure_lanes=("unit",))
+
+    class ReceiptRunner:
+        def run(self, _identity: CIAuditIdentity, _worktree: Path) -> CIAuditReceipt:
+            return receipt
+
+    outcome = GroupedCICoordinator(lambda: ReceiptRunner(), max_parallel=1).run((job,))[0]
+
+    assert outcome.error is None
+    assert outcome.receipt is not None
+    assert outcome.receipt.status == "failed"
+    assert commands.calls[1][0] == ("python3", "scripts/run_static_lane.py")
     ledger.close()
 
 

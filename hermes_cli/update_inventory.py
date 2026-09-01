@@ -464,17 +464,31 @@ def match_runtime_outcomes(
             if r is None:
                 continue
             outcome = "unaccounted"
+            # The bare "hermes-gateway" unit name is gateway-specific: a
+            # serve/dashboard runtime that merely shares the default
+            # profile is a different process the gateway restart never
+            # touched, and must not borrow its outcome (#100479).
             if r.profile in relaunched or r.profile in external:
                 outcome = "restarted"
             elif r.pid is not None and r.pid in killed:
                 outcome = "stopped"
             elif any(
-                r.profile in unit or (r.profile == "default" and "hermes-gateway" in unit)
+                r.profile in unit
+                or (
+                    r.kind == "gateway"
+                    and r.profile == "default"
+                    and "hermes-gateway" in unit
+                )
                 for unit in failed_set
             ):
                 outcome = "failed"
             elif any(
-                r.profile in svc or (r.profile == "default" and "hermes-gateway" in svc)
+                r.profile in svc
+                or (
+                    r.kind == "gateway"
+                    and r.profile == "default"
+                    and "hermes-gateway" in svc
+                )
                 for svc in restarted_set
             ):
                 outcome = "restarted"

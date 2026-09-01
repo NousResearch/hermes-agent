@@ -1219,6 +1219,75 @@ def _desktop_launch_options() -> tuple[list[str], str, str, str]:
     return flags, disable_gpu, password_store, ozone_hint
 
 
+def _linux_session_is_wayland(env: dict | None = None) -> bool:
+    """True when the login session is native Wayland (HUD/ozone same rule)."""
+    environ = env if env is not None else os.environ
+    if environ.get("XDG_SESSION_TYPE") == "wayland":
+        return True
+    return bool(environ.get("WAYLAND_DISPLAY")) and not environ.get("DISPLAY")
+
+
+def _requested_ozone_platform(env: dict | None = None, argv: list[str] | None = None) -> str | None:
+    """Last explicit `--ozone-platform=` / hint, else `ELECTRON_OZONE_PLATFORM_HINT`."""
+    environ = env if env is not None else os.environ
+    explicit = None
+    hint = None
+    for arg in argv or []:
+        if arg.startswith("--ozone-platform="):
+            explicit = arg.split("=", 1)[1].strip().lower()
+        elif arg.startswith("--ozone-platform-hint="):
+            hint = arg.split("=", 1)[1].strip().lower()
+    env_hint = str(environ.get("ELECTRON_OZONE_PLATFORM_HINT") or "").strip().lower() or None
+    return explicit or hint or env_hint
+
+
+def _linux_wayland_needs_vulkan_disabled(
+    env: dict | None = None,
+    *,
+    platform: str | None = None,
+    argv: list[str] | None = None,
+) -> bool:
+    """Wayland ozone + Vulkan aborts the GPU process (~30s). Disable Vulkan only."""
+    if (platform or sys.platform) != "linux":
+        return False
+    requested = _requested_ozone_platform(env, argv)
+    if requested == "x11":
+        return False
+    if requested == "wayland":
+        return True
+    return requested in (None, "", "auto") and _linux_session_is_wayland(env)
+
+
+def _desktop_electron_argv(config_flags: list[str], env: dict | None = None) -> list[str]:
+    """User `desktop.electron_flags` plus Linux/Wayland Vulkan disable when needed."""
+    flags = list(config_flags)
+    if _linux_wayland_needs_vulkan_disabled(env, argv=flags):
+        return _merge_electron_disable_features(flags, "Vulkan")
+    return flags
+
+
+def _merge_electron_disable_features(flags: list[str], feature: str) -> list[str]:
+    """Append ``feature`` to an existing ``--disable-features=`` flag, or add one."""
+    name = (feature or "").strip()
+    if not name:
+        return list(flags)
+    prefix = "--disable-features="
+    out: list[str] = []
+    merged = False
+    for flag in flags:
+        if flag.startswith(prefix):
+            parts = [p.strip() for p in flag[len(prefix):].split(",") if p.strip()]
+            if name not in parts:
+                parts.append(name)
+            out.append(prefix + ",".join(parts))
+            merged = True
+        else:
+            out.append(flag)
+    if not merged:
+        out.append(f"{prefix}{name}")
+    return out
+
+
 def _register_linux_desktop_entry() -> None:
     """Install the XDG desktop entry for Hermes Desktop (Linux only, best-effort).
 
@@ -1425,7 +1494,9 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
         )
         if password_store:
             env["HERMES_DESKTOP_PASSWORD_STORE"] = password_store
-    return env, config_electron_flags
+    # Packaged icon / `hermes desktop` / source `electron .` all need this
+    # on argv: Chromium may pick ozone before `appendSwitch` in main.ts.
+    return env, _desktop_electron_argv(config_electron_flags, env)
 
 
 def _check_desktop_skip_build(
@@ -1539,7 +1610,7 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_command = [npm, "exec", "--", "electron", "."]
+        launch_command = [npm, "exec", "--", "electron", ".", *config_electron_flags]
     else:
         if packaged_executable is None:
             print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")

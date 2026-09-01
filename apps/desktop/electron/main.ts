@@ -77,6 +77,7 @@ import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
+  linuxWaylandVulkanDisableFeatures,
   resolveLinuxPasswordStore
 } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
@@ -507,6 +508,23 @@ if (REMOTE_DISPLAY_REASON) {
   app.commandLine.appendSwitch('disable-gpu-compositing')
   console.log(
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
+  )
+}
+
+// Linux + Wayland ozone: Chromium's Vulkan backend is unsupported
+// (`--ozone-platform=wayland is not compatible with Vulkan`). The GPU
+// process then dies ~30s later even after disableHardwareAcceleration()
+// — HERMES_DESKTOP_DISABLE_GPU is not enough. Disable Vulkan only; GL
+// acceleration stays on. Must run before app `ready`.
+const WAYLAND_VULKAN_FEATURES = linuxWaylandVulkanDisableFeatures({
+  argv: process.argv,
+  existingDisableFeatures: app.commandLine.getSwitchValue('disable-features')
+})
+
+if (WAYLAND_VULKAN_FEATURES) {
+  app.commandLine.appendSwitch('disable-features', WAYLAND_VULKAN_FEATURES)
+  console.log(
+    `[hermes] Linux Wayland ozone: appending --disable-features=${WAYLAND_VULKAN_FEATURES} (Vulkan is incompatible with --ozone-platform=wayland)`
   )
 }
 

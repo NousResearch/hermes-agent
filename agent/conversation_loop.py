@@ -5825,6 +5825,12 @@ def run_conversation(
                                 )
                             )
                             time.sleep(2)
+                            # Same class as the generic overflow handler below:
+                            # the provider proved the request does not fit the
+                            # (now-reduced) window, and row count alone is not
+                            # proof the rebuilt request does. Recheck the
+                            # complete request before the next provider call.
+                            _provider_overflow_recovery_pending = True
                             _retry.restart_with_compressed_messages = True
                             break
                     # Fall through to normal error handling if compression

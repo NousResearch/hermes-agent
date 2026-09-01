@@ -1051,6 +1051,84 @@ class TestPreflightCompression:
         assert mock_compress.call_count == 2
         assert agent.client.chat.completions.create.call_count == 1
 
+    def test_long_context_tier_recovery_rechecks_complete_request_before_retry(self, agent):
+        """The Anthropic long-context 429 handler is the same recovery class.
+
+        It compacts and restarts on row count alone, exactly like the generic
+        overflow handler. The rebuilt request must be measured against the
+        (now-reduced) window before the provider is retried, so a compaction
+        that drops rows but stays oversized fails closed instead of being
+        sent again.
+        """
+        agent.compression_enabled = True
+        agent.max_compression_attempts = 2
+        agent.context_compressor.context_length = 1_000_000
+        agent.context_compressor.threshold_tokens = 500_000
+
+        tier_error = Exception(
+            "Extra usage is required for long context requests."
+        )
+        tier_error.status_code = 429
+        agent.client.chat.completions.create.side_effect = [tier_error]
+
+        history = [
+            {"role": "user", "content": "earlier question"},
+            {"role": "assistant", "content": "earlier answer"},
+        ]
+        compress_calls = 0
+
+        def _request_pressure(*_args, **_kwargs):
+            if agent.client.chat.completions.create.call_count == 0:
+                return 30_000
+            return 250_000
+
+        def _compress(_messages, *_args, **_kwargs):
+            nonlocal compress_calls
+            compress_calls += 1
+            return (
+                [
+                    {"role": "user", "content": f"summary {compress_calls}"},
+                    {"role": "assistant", "content": "summary acknowledged"},
+                ],
+                "rebuilt prompt remains oversized",
+            )
+
+        def _update_model(*, context_length, **_kwargs):
+            agent.context_compressor.context_length = context_length
+            agent.context_compressor.threshold_tokens = context_length // 2
+
+        with (
+            patch(
+                "agent.turn_context.estimate_request_tokens_rough",
+                return_value=30_000,
+            ),
+            patch(
+                "agent.conversation_loop._midturn_request_pressure_tokens",
+                side_effect=_request_pressure,
+            ),
+            patch.object(
+                agent.context_compressor,
+                "should_defer_preflight_to_real_usage",
+                return_value=True,
+            ),
+            patch.object(
+                agent.context_compressor, "update_model", side_effect=_update_model
+            ),
+            patch.object(agent, "_compress_context", side_effect=_compress) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "continue",
+                conversation_history=history,
+            )
+
+        assert result["completed"] is False
+        assert result["compression_exhausted"] is True
+        assert mock_compress.call_count == 2
+        assert agent.client.chat.completions.create.call_count == 1
+
 
     def test_interrupt_before_first_provider_call_restores_preflight_display_seed(self, agent):
         """Interrupted turns must not keep a speculative preflight display seed.

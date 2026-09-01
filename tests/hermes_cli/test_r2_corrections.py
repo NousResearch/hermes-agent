@@ -702,3 +702,79 @@ def fake_home_r2(tmp_path, monkeypatch):
     (h / "governance").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
+
+
+# ── R3-2: recurrence + equal-timestamp ordering (RED witnesses) ──────────────
+
+class TestR32RecurrenceAndTies:
+    @staticmethod
+    def _load():
+        import importlib.util
+        root = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location(
+            "drc_r32", str(root / "scripts" / "denji-review-cycle.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_two_distinct_open_findings_are_not_recurring(self, fake_home_r2):
+        """R3-2: two UNRELATED open findings must NOT count as recurrence.
+
+        Recurrence means a single finding was resolved/dismissed and later
+        reopened — not "more than one open finding".  Two freshly-opened,
+        never-closed findings → open=2, recurring=False → WATCH (not the
+        recurrence-driven ATTENTION).
+        """
+        mod = self._load()
+        from hermes_cli.profile_activity_ledger import append_event
+        import time
+        now = int(time.time())
+        for fid in ("finding-1", "finding-2"):
+            append_event(source="t", event_type="governance.finding.opened",
+                         event_id=f"r32a-{fid}-{time.time_ns()}",
+                         actor_profile="octacon", target_profile="octacon",
+                         object_id=fid, occurred_at=now - 100)
+        dim = mod._quality_dimension("octacon", now - 86400)
+        ev = dim["evidence"]
+        assert ev["governance_findings_open"] == 2
+        assert ev["recurring_findings"] is False
+        # Recurrence is what escalates to ATTENTION; two fresh findings stay WATCH.
+        assert dim["verdict"] == "WATCH"
+
+    def test_same_second_opened_resolved_is_closed(self, fake_home_r2):
+        """R3-2: opened then resolved at the SAME second → latest (higher row id)
+        is resolved → the finding is closed (not open)."""
+        mod = self._load()
+        from hermes_cli.profile_activity_ledger import append_event
+        now = 1_000_000  # fixed same-second timestamp for both events
+        append_event(source="t", event_type="governance.finding.opened",
+                     event_id="r32b-open", actor_profile="octacon",
+                     target_profile="octacon", object_id="finding-1",
+                     occurred_at=now)
+        append_event(source="t", event_type="governance.finding.resolved",
+                     event_id="r32b-res", actor_profile="octacon",
+                     target_profile="octacon", object_id="finding-1",
+                     occurred_at=now)
+        dim = mod._quality_dimension("octacon", now - 86400)
+        assert dim["evidence"]["governance_findings_open"] == 0
+        assert dim["evidence"]["recurring_findings"] is False
+
+    def test_same_second_resolved_then_opened_is_recurring(self, fake_home_r2):
+        """R3-2: resolved then re-opened at the SAME second → the later
+        (higher row id) event is the open, and the identity has a closed
+        history → open AND recurring."""
+        mod = self._load()
+        from hermes_cli.profile_activity_ledger import append_event
+        now = 1_000_000
+        append_event(source="t", event_type="governance.finding.resolved",
+                     event_id="r32c-res", actor_profile="octacon",
+                     target_profile="octacon", object_id="finding-1",
+                     occurred_at=now)
+        append_event(source="t", event_type="governance.finding.opened",
+                     event_id="r32c-open", actor_profile="octacon",
+                     target_profile="octacon", object_id="finding-1",
+                     occurred_at=now)
+        dim = mod._quality_dimension("octacon", now - 86400)
+        assert dim["evidence"]["governance_findings_open"] == 1
+        assert dim["evidence"]["recurring_findings"] is True
+        assert dim["verdict"] == "ATTENTION"

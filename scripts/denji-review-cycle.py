@@ -339,16 +339,16 @@ def _open_finding_ids(profile: str, since: int) -> tuple[list[str], dict[str, in
     handled correctly.
 
     Returns (open_ids, counts) — safe IDs/counts only, never payloads.
-    counts includes ``resolved_transitions``: resolved/dismissed events in
-    the identity history of currently-open findings (the reopened signal).
+    ``counts["reopened"]`` counts currently-open finding identities whose
+    history contains a resolved/dismissed transition (a genuine reopen).
     """
     db = LEDGER_DB
     open_ids: list[str] = []
-    counts = {"opened": 0, "resolved": 0, "open": 0, "resolved_transitions": 0}
+    counts = {"opened": 0, "resolved": 0, "open": 0, "reopened": 0}
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         rows = con.execute(
-            "SELECT object_id, event_type, occurred_at FROM activity_events "
+            "SELECT object_id, event_type, occurred_at, id FROM activity_events "
             "WHERE event_type IN ('governance.finding.opened', "
             "'governance.finding.updated', 'governance.finding.resolved', "
             "'governance.finding.dismissed') "
@@ -360,31 +360,33 @@ def _open_finding_ids(profile: str, since: int) -> tuple[list[str], dict[str, in
         con.close()
     except Exception:
         return open_ids, counts
-    history: dict[str, list[tuple[str, int]]] = {}
-    for object_id, event_type, occurred_at in rows:
+    # R3-2: identity history carries (event_type, occurred_at, row id) so the
+    # latest state is the greatest (occurred_at, id) tuple — a same-second
+    # tie resolves by insertion order (higher row id = later).
+    history: dict[str, list[tuple[str, int, int]]] = {}
+    for object_id, event_type, occurred_at, row_id in rows:
         if occurred_at is None:
             continue
-        history.setdefault(object_id, []).append((event_type, int(occurred_at)))
-    resolved_transitions = 0
+        history.setdefault(object_id, []).append((event_type, int(occurred_at), int(row_id)))
     for object_id, events in history.items():
-        last_occurred = events[-1][1]
+        latest = max(events, key=lambda e: (e[1], e[2]))  # (occurred_at, id)
+        last_occurred = latest[1]
         if last_occurred < since:
             continue  # last activity predates the window
-        latest_type = max(events, key=lambda e: e[1])[0]
-        is_open = latest_type in (
-            "governance.finding.opened", "governance.finding.updated")
+        latest_type = latest[0]
+        is_open = latest_type in ("governance.finding.opened", "governance.finding.updated")
         if is_open:
             open_ids.append(object_id)
-            # recurrence evidence: this identity was closed at some point
-            resolved_transitions += sum(
-                1 for t, _ in events
-                if t in ("governance.finding.resolved", "governance.finding.dismissed"))
+            # R3-2: recurrence = this identity was closed (resolved/dismissed)
+            # at some point and is now open again — a genuine reopen.
+            if any(t in ("governance.finding.resolved", "governance.finding.dismissed")
+                   for t, _, _ in events):
+                counts["reopened"] += 1
         if latest_type in ("governance.finding.opened", "governance.finding.updated"):
             counts["opened"] += 1
         else:
             counts["resolved"] += 1
     counts["open"] = len(open_ids)
-    counts["resolved_transitions"] = resolved_transitions
     return open_ids, counts
 
 
@@ -402,12 +404,11 @@ def _quality_dimension(profile: str, since: int) -> dict:
         v for k, v in counts.items() if k.startswith("kanban.operator_")
     )
     # R2-10: identity/state-based open findings (not raw event arithmetic).
+    # R3-2: recurrence is a genuine reopen of an identity — NOT the count of
+    # distinct open findings (two unrelated findings are not "recurrent").
     open_ids, fcounts = _open_finding_ids(profile, since)
     open_findings = len(open_ids)
-    # Recurrence is per finding identity: a currently-open finding whose
-    # history contains a resolved/dismissed transition was reopened.
-    reopened = fcounts["resolved_transitions"] > 0 and open_findings > 0
-    recurring = reopened or fcounts["opened"] >= 2 and open_findings > 0
+    recurring = fcounts["reopened"] > 0 and open_findings > 0
     evidence = {
         "window_days": (int(time.time()) - since) // 86400,
         "failures": failures,
@@ -425,7 +426,7 @@ def _quality_dimension(profile: str, since: int) -> dict:
         ],
         "method_version": REVIEW_VERSION,
     }
-    if failures >= 3 or open_findings >= 3 or recurring or reopened:
+    if failures >= 3 or open_findings >= 3 or recurring:
         verdict = "ATTENTION"
     elif failures + rework > 0 or open_findings > 0:
         verdict = "WATCH"

@@ -170,6 +170,134 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+# ── Dispatcher ownership: lease + heartbeat takeover (t_9e151ee8) ─
+#
+# Ownership is not a process-lifetime flock. It is a per-tick lease re-claimed
+# each cycle, guarded by a heartbeat file. Rationale (forensic t_9e151ee8)
+# — a frozen loop whose process keeps its flock kills the board for hours,
+# because a live process's flock can never be stolen by another gateaway. By
+# holding the lock only for the duration of each tick and touching a heartbeat
+# file every tick, a healthy owner is never fought over (its heartbeat stays
+# fresh), while an owner whose loop dies silently releases the lock and is
+# taken over on a stale heartbeat within a bounded number of lock-retry
+# periods. No new deps; on any lock/heartbeat error behaviour degrades to
+# today's config-only control (see the watcher body).
+_DISPATCHER_HEARTBEAT_FILENAME = ".dispatcher.heartbeat"
+# A heartbeat older than this claims the previous owner is dead or frozen.
+_DISPATCHER_HEARTBEAT_STALE_SECONDS = 300  # >5 min
+# Bounded root-preference grace window. After the owner's heartbeat goes
+# stale, a NON-root claimant/owner yields to a LIVE root gateway (the one
+# deploys restart) only for this short window — long enough for the root to
+# win the initial claim race after a deploy or restart. Once the grace
+# elapses, a non-root seizes the stale owner even if the root *process* is
+# alive: process-alive / dispatcher-dead on the root is exactly the original
+# 4-hour outage, and the takeover must not re-create a freeze by deferring to
+# a live-root process whose dispatcher loop never claims.
+# (Repurposed from the deleted `_DISPATCHER_LOCK_RETRY_SECONDS`: the non-owner
+# re-probe cadence is the tick interval itself, so a separate lock-retry
+# constant was misleading dead code.)
+_DISPATCHER_ROOT_PREFERENCE_GRACE_SECONDS = 120
+
+
+def _dispatcher_heartbeat_path(lock_path) -> Path:
+    """Heartbeat file lives beside the lock:  `<kanban>/.dispatcher.heartbeat`."""
+    return Path(lock_path).with_name(_DISPATCHER_HEARTBEAT_FILENAME)
+
+
+def _touch_dispatcher_heartbeat(heartbeat_path) -> None:
+    """Record liveness: the file's mtime is the last healthy dispatcher tick."""
+    try:
+        heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+        heartbeat_path.touch()
+    except OSError:
+        logger.debug(
+            "kanban dispatcher: heartbeat touch failed at %s", heartbeat_path
+        )
+
+
+def _dispatcher_heartbeat_is_stale(heartbeat_path, *, now: Optional[float] = None) -> bool:
+    """True when the heartbeat is absent or older than the stale window.
+
+    An absent heartbeat (no owner has ever ticked under this scheme) counts
+    as stale so the first claimant wins under the same takeover rules.
+    """
+    try:
+        mtime = heartbeat_path.stat().st_mtime
+    except (OSError, ValueError):
+        return True
+    ref = time.time() if now is None else now
+    return ref - mtime > _DISPATCHER_HEARTBEAT_STALE_SECONDS
+
+
+def _root_gateway_in_grace(kanban_root: Path) -> bool:
+    """True when the ROOT gateway is alive AND freshly (re)started.
+
+    Root preference is bounded to a short post-restart grace window: only a
+    root that (re)started within ``_DISPATCHER_ROOT_PREFERENCE_GRACE_SECONDS``
+    is deferred to, so the root keeps winning the initial claim race after the
+    deploy/restart that brings its dispatcher loop online. Once the root has
+    settled (up longer than the grace), a non-root no longer defers to it even
+    if the root *process* is alive — a root process whose dispatcher loop
+    never claims (the card's process-alive / dispatcher-dead failure, now on
+    the root) must not keep the board frozen for hours.
+
+    Anchored to the root process start time (recorded in gateway.pid), not the
+    dispatch heartbeat, so a healthy non-root OWNER that refreshes its own
+    heartbeat still honours the bounded root preference. The uptime is computed
+    from a TRUE epoch creation timestamp (``psutil.create_time()``) — NOT the
+    PID-reuse fingerprint from ``get_running_pid_identity_strict``, whose units
+    are platform-dependent (centisecond-epoch on macOS, ticks-since-boot on
+    Linux) and therefore not comparable to ``time.time()``. Fail-safe: any probe
+    error returns False (do not defer).
+    """
+    try:
+        from gateway import status as _st
+    except Exception:
+        return False
+    try:
+        identity = _st.get_running_pid_identity_strict(
+            kanban_root / "gateway.pid"
+        )
+    except Exception:
+        return False
+    if identity is None:
+        return False
+    _pid, _start = identity
+    if not _pid or _pid <= 0:
+        return False
+    create_time = _st.get_process_create_time_epoch(_pid)
+    if create_time is None:
+        return False
+    try:
+        uptime = time.time() - float(create_time)
+    except (TypeError, ValueError):
+        return False
+    return 0 < uptime <= _DISPATCHER_ROOT_PREFERENCE_GRACE_SECONDS
+
+
+def _should_seize_dispatcher(
+    *, am_root: bool, owner_stale: bool, defer_to_root: bool,
+) -> bool:
+    """Pure takeover decision for a contender that just won the OS flock.
+
+    A claimant that is NOT the marked owner takes over only when the previous
+    owner's heartbeat is stale (>5 min). Root preference is a *bounded* yield:
+    a non-root claimant defers only while ``defer_to_root`` is true — the root
+    gateway (the one deploys restart) is alive AND freshly (re)started, i.e.
+    still inside the post-deploy window where it can reasonably claim. Once the
+    root settles (up longer than the grace period) or is unprobeable, the
+    non-root seizes the stale owner even if the root *process* is alive —
+    process-alive / dispatcher-dead on the root is exactly the original 4-hour
+    freeze, and deferring to a live root whose loop never claims would
+    re-create it.
+    """
+    if not owner_stale:
+        return False
+    if defer_to_root and not am_root:
+        return False
+    return True
+
+
 def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
     """Return the tenant scope (Slack workspace) a subscription's wake keys to.
 
@@ -212,14 +340,31 @@ class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
     def _owns_kanban_dispatcher_lock(self) -> bool:
-        """Return whether this gateway currently owns the singleton lock."""
+        """Return whether this gateway is the designated dispatcher owner.
+
+        Ownership is a stable marker that persists across inter-tick sleeps;
+        the underlying OS lease handle is acquired/released per tick (see
+        ``_release_kanban_dispatcher_lease``) so the notifier's judgement on
+        ``unowned`` subscriptions does not flicker while the owner sleeps.
+        """
         return getattr(self, "_kanban_dispatcher_lock_handle", None) is not None
 
-    def _release_kanban_dispatcher_lock(self) -> None:
-        """Clear notifier-visible ownership before releasing the OS lock."""
-        handle = getattr(self, "_kanban_dispatcher_lock_handle", None)
-        self._kanban_dispatcher_lock_handle = None
+    def _release_kanban_dispatcher_lease(self) -> None:
+        """Release the per-tick lease handle WITHOUT clearing ownership.
+
+        Called before each inter-tick sleep so a live-but-frozen owner loop
+        never pins the flock forever (a frozen loop cannot be forcibly
+        unlocked by another gateway). The owner marker persists so the
+        notifier still treats this gateway as owner across the sleep.
+        """
+        handle = getattr(self, "_kanban_dispatcher_lease_handle", None)
+        self._kanban_dispatcher_lease_handle = None
         _release_singleton_lock(handle)
+
+    def _release_kanban_dispatcher_lock(self) -> None:
+        """Clear notifier-visible ownership and release the OS lease (shutdown)."""
+        self._kanban_dispatcher_lock_handle = None
+        self._release_kanban_dispatcher_lease()
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -1328,23 +1473,21 @@ class GatewayKanbanWatchersMixin:
         # wal_autocheckpoint=0 — concurrent manual WAL checkpoints can corrupt
         # index pages. The lock lives at the machine-global kanban root
         # (shared across profiles by design), so it serialises ALL gateways.
-        self._kanban_dispatcher_lock_handle = None
-        _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
-        _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
-        if _lock_state == "contended":
-            logger.info(
-                "kanban dispatcher: another gateway already holds the dispatcher "
-                "lock (%s); this gateway will NOT dispatch.", _lock_path,
-            )
-            return
-        if _lock_state == "held":
-            self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
-            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
-        else:
-            logger.warning(
-                "kanban dispatcher: advisory lock unavailable at %s; proceeding "
-                "on config control alone.", _lock_path,
-            )
+        #
+        # Ownership is a LEASE (t_9e151ee8): the OS flock is acquired only for
+        # the duration of each tick and released before sleeping, so a frozen
+        # owner loop never pins the flock forever. Non-owners re-probe the lock
+        # on every tick instead of giving up once at boot; takeover is gated on
+        # a stale heartbeat so a healthy owner is never fought over. See the
+        # lease/takeover helpers above `_wake_scope_id`.
+        self._kanban_dispatcher_lock_handle = None      # stable owner marker (notifier)
+        self._kanban_dispatcher_lease_handle = None     # per-tick OS lease
+        _kanban_root = _kb.kanban_home()
+        _lock_path = _kanban_root / "kanban" / ".dispatcher.lock"
+        _heartbeat_path = _dispatcher_heartbeat_path(_lock_path)
+        # The ROOT (default-profile) gateway's HERMES_HOME == the kanban root,
+        # so root's pidfile lives at <kanban root>/gateway.pid. It wins ties.
+        _am_root_gateway = (self._active_profile_name() == "default")
 
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
@@ -1769,75 +1912,161 @@ class GatewayKanbanWatchersMixin:
         logger.info(
             "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
-        while self._running:
-            try:
-                # Reap zombie children before per-board work so a board DB
-                # failure cannot block cleanup of unrelated workers.
-                pids = await _to_thread_process_service(_kb.reap_worker_zombies)
-                if pids:
-                    logger.info(
-                        "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
-                        len(pids),
-                        pids,
-                    )
-            except Exception:
-                logger.exception("kanban dispatcher: zombie reaper failed")
 
+        def _try_claim_dispatcher_lease() -> bool:
+            """Attempt to hold the dispatcher lease for THIS tick.
+
+            Returns True when this gateway is the active dispatcher for the
+            upcoming tick. A retired owner re-claims on the next tick; a
+            contender only seizes ownership once the previous owner's heartbeat
+            has gone stale (>5 min), so a healthy owner is never fought over.
+            The ROOT (default) gateway wins genuine takeovers: when a non-root
+            claimant races a live root gateway, the non-root yields so the root
+            can claim. Lock-unavailable falls back to today's config-only
+            control (dispatch with no lock), matching the pre-t_9e151ee8
+            fail-safe.
+            """
             try:
-                # Global emergency stop (`hermes pause`): skip auto-decompose
-                # and dispatch entirely — no new workers while paused. Running
-                # workers finish naturally; zombie reaping above still runs.
-                if not _kanban_dispatch_allowed():
-                    ready_pending = False
-                    bad_ticks = 0
-                else:
-                    # Re-read the auto-decompose toggle live each tick so a user
-                    # flipping kanban.auto_decompose=false to STOP runaway fan-out
-                    # takes effect on the next tick, not on gateway restart (#49638).
-                    _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
-                    if _ad_enabled:
-                        await _to_thread_process_service(_auto_decompose_tick, _ad_per_tick)
-                    results = await _to_thread_process_service(_tick_once)
-                    any_spawned = False
-                    for slug, res in (results or []):
-                        if res is not None and getattr(res, "spawned", None):
-                            any_spawned = True
-                            # Quiet by default — only log when something actually
-                            # happened, so an idle gateway stays silent.
-                            logger.info(
-                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
-                                slug,
-                                len(res.spawned),
-                                res.reclaimed,
-                                len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
-                                len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
-                                res.promoted,
-                                len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
-                            )
-                    # Health telemetry (aggregate across boards)
-                    ready_pending = await _to_thread_process_service(_ready_nonempty)
-                    if ready_pending and not any_spawned:
-                        bad_ticks += 1
-                    else:
-                        bad_ticks = 0
-                if bad_ticks >= HEALTH_WINDOW:
-                    now = int(time.time())
-                    if now - last_warn_at >= 300:
-                        logger.warning(
-                            "kanban dispatcher stuck: ready queue non-empty for "
-                            "%d consecutive ticks but 0 workers spawned. Check "
-                            "profile health (venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`.",
-                            bad_ticks,
-                        )
-                        last_warn_at = now
-            except asyncio.CancelledError:
-                logger.debug("kanban dispatcher: cancelled")
-                self._release_kanban_dispatcher_lock()
-                raise
+                _handle, _state = _acquire_singleton_lock(_lock_path)
             except Exception:
-                logger.exception("kanban dispatcher: unexpected watcher error")
+                _handle, _state = None, "unavailable"
+            if _state == "unavailable":
+                # Locking unsupported here; proceed on config control alone,
+                # exactly as before this change.
+                self._kanban_dispatcher_lease_handle = None
+                return True
+            if _state != "held":
+                # contended: an owner holds the flock mid-tick. Do not attempt
+                # an un-gated steal; wait and re-probe next tick.
+                self._kanban_dispatcher_lease_handle = None
+                return False
+            self._kanban_dispatcher_lease_handle = _handle
+            if self._owns_kanban_dispatcher_lock():
+                # We are the standing owner re-hosting an inter-tick lease.
+                # A non-root owner yields to a LIVE, freshly-restarted ROOT
+                # gateway (the one deploys restart) only during the bounded
+                # root-preference grace, so the root wins the post-deploy
+                # claim race. Once root settles (up > grace) the non-root
+                # keeps ownership: a root process whose own loop never claims
+                # must not starve the board forever. Touch the heartbeat only
+                # when we remain the owner so contenders know we are alive.
+                if not _am_root_gateway and _root_gateway_in_grace(_kanban_root):
+                    logger.info(
+                        "kanban dispatcher: root gateway freshly restarted; "
+                        "non-root owner (%s) yields dispatcher to root at %s",
+                        self._active_profile_name(), _lock_path,
+                    )
+                    self._kanban_dispatcher_lock_handle = None
+                    self._release_kanban_dispatcher_lease()
+                    return False
+                _touch_dispatcher_heartbeat(_heartbeat_path)
+                return True
+            # Not the marked owner. Only take over a STALE owner, and yield to
+            # a freshly-restarted live ROOT gateway so the root wins the
+            # post-deploy contested tie (it is the one deploys restart).
+            _owner_stale = _dispatcher_heartbeat_is_stale(_heartbeat_path)
+            _defer_to_root = _root_gateway_in_grace(_kanban_root)
+            if _should_seize_dispatcher(
+                am_root=_am_root_gateway,
+                owner_stale=_owner_stale,
+                defer_to_root=_defer_to_root,
+            ):
+                self._kanban_dispatcher_lock_handle = _handle
+                _touch_dispatcher_heartbeat(_heartbeat_path)
+                logger.info(
+                    "kanban dispatcher: took over dispatcher lease (previous "
+                    "owner heartbeat stale) at %s", _lock_path,
+                )
+                return True
+            logger.debug(
+                "kanban dispatcher: yielding lease at %s (owner_stale=%s "
+                "defer_to_root=%s am_root=%s)",
+                _lock_path, _owner_stale, _defer_to_root, _am_root_gateway,
+            )
+            self._release_kanban_dispatcher_lease()
+            return False
+
+        while self._running:
+            # ── Lease acquisition / takeover (t_9e151ee8) ──
+            # The OS flock is held only for this tick and released during the
+            # sleep below, so a live-but-frozen owner loop (the original
+            # 00:28-04:30 outage) cannot pin the flock forever: contenders
+            # re-probe every tick and claim once the heartbeat goes stale.
+            _active_tick = _try_claim_dispatcher_lease()
+
+            if _active_tick:
+                try:
+                    # Reap zombie children before per-board work so a board DB
+                    # failure cannot block cleanup of unrelated workers.
+                    pids = await _to_thread_process_service(_kb.reap_worker_zombies)
+                    if pids:
+                        logger.info(
+                            "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
+                            len(pids),
+                            pids,
+                        )
+                except Exception:
+                    logger.exception("kanban dispatcher: zombie reaper failed")
+
+                try:
+                    # Global emergency stop (`hermes pause`): skip auto-decompose
+                    # and dispatch entirely — no new workers while paused. Running
+                    # workers finish naturally; zombie reaping above still runs.
+                    if not _kanban_dispatch_allowed():
+                        ready_pending = False
+                        bad_ticks = 0
+                    else:
+                        # Re-read the auto-decompose toggle live each tick so a user
+                        # flipping kanban.auto_decompose=false to STOP runaway fan-out
+                        # takes effect on the next tick, not on gateway restart (#49638).
+                        _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
+                        if _ad_enabled:
+                            await _to_thread_process_service(_auto_decompose_tick, _ad_per_tick)
+                        results = await _to_thread_process_service(_tick_once)
+                        any_spawned = False
+                        for slug, res in (results or []):
+                            if res is not None and getattr(res, "spawned", None):
+                                any_spawned = True
+                                # Quiet by default — only log when something actually
+                                # happened, so an idle gateway stays silent.
+                                logger.info(
+                                    "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                    "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                    slug,
+                                    len(res.spawned),
+                                    res.reclaimed,
+                                    len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
+                                    len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                    res.promoted,
+                                    len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                                )
+                        # Health telemetry (aggregate across boards)
+                        ready_pending = await _to_thread_process_service(_ready_nonempty)
+                        if ready_pending and not any_spawned:
+                            bad_ticks += 1
+                        else:
+                            bad_ticks = 0
+                    if bad_ticks >= HEALTH_WINDOW:
+                        now = int(time.time())
+                        if now - last_warn_at >= 300:
+                            logger.warning(
+                                "kanban dispatcher stuck: ready queue non-empty for "
+                                "%d consecutive ticks but 0 workers spawned. Check "
+                                "profile health (venv, PATH, credentials) and "
+                                "`hermes kanban list --status ready`.",
+                                bad_ticks,
+                            )
+                            last_warn_at = now
+                except asyncio.CancelledError:
+                    logger.debug("kanban dispatcher: cancelled")
+                    self._release_kanban_dispatcher_lease()
+                    raise
+                except Exception:
+                    logger.exception("kanban dispatcher: unexpected watcher error")
+
+            # Release the OS lease for the sleep window so a frozen owner never
+            # pins the flock; the healthy owner re-claims at the next tick.
+            self._release_kanban_dispatcher_lease()
 
             # Sleep in 1s slices so shutdown is snappy — otherwise a stop()
             # waits up to `interval` seconds for the current sleep to finish.

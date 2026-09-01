@@ -9804,23 +9804,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # _promote_queued_event post-turn promotion.  Staging more than
             # one would clobber the slot (single-slot design).
             pending_slot[session_key] = overflow.pop(0)
-            rescued = 1
-            if rescued:
+            logger.warning(
+                "Rescued orphaned FIFO overflow event for idle session "
+                "%s — it was queued during a busy window but the post-turn "
+                "drain never promoted it (#99882)",
+                session_key,
+            )
+            if overflow:
                 logger.warning(
-                    "Rescued %d orphaned FIFO overflow event(s) for idle session "
-                    "%s — they were queued during a busy window but the post-turn "
-                    "drain never promoted them (#99882)",
-                    rescued,
+                    "%d overflow event(s) still queued for session %s after "
+                    "rescue staging (will drain via normal promotion)",
+                    len(overflow),
                     session_key,
                 )
-                if overflow:
-                    logger.warning(
-                        "%d overflow event(s) still queued for session %s after "
-                        "rescue staging (will drain via normal promotion)",
-                        len(overflow),
-                        session_key,
-                    )
-            return rescued
+            return 1
         except Exception:
             logger.debug("FIFO overflow rescue failed for %s", session_key, exc_info=True)
             return 0

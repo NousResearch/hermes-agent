@@ -8685,6 +8685,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if recovered is None:
             return source
         return dataclasses.replace(source, thread_id=recovered)
+
+    @staticmethod
+    def _telegram_guest_config(user_config: Optional[dict]) -> dict:
+        """Return the top-level Telegram config used by guest invocations."""
+        telegram_cfg = (user_config or {}).get("telegram") or {}
+        return telegram_cfg if isinstance(telegram_cfg, dict) else {}
+
     def _parse_telegram_guest_mode_model_config(
         self, user_config: Optional[dict],
     ) -> Optional[dict]:

@@ -327,104 +327,83 @@ def test_probe_skipped_for_custom_args_without_acp():
 # visibly answers as the CLI's default model.
 
 
-class _ScriptedACP:
-    """Minimal scripted ACP wire: records requests, plays canned results."""
-
-    def __init__(self, session_result):
-        self.requests = []
-        self.session_result = session_result
-
-    def request(self, method, params, **_):
-        self.requests.append((method, params))
-        if method == "session/new":
-            return self.session_result
-        return {}
+# --- session model selection -------------------------------------------------
 
 
-def _run_prompt_with_scripted_wire(model, session_result):
-    """Drive _run_prompt's request sequence against a scripted wire."""
-    client = CopilotACPClient(acp_cwd="/tmp")
-    wire = _ScriptedACP(session_result)
-
-    def fake_run_prompt(prompt_text, *, timeout_seconds, model=None):
-        # Reproduce the request choreography under test without a subprocess.
-        session = wire.request("session/new", {"cwd": "/tmp", "mcpServers": []}) or {}
-        session_id = str(session.get("sessionId") or "")
-        requested_model = str(model or "").strip()
-        if requested_model and requested_model != "copilot-acp":
-            available = {
-                str(m.get("modelId") or "").strip()
-                for m in ((session.get("models") or {}).get("availableModels") or [])
-                if isinstance(m, dict)
-                and str(
-                    ((m.get("_meta") or {}).get("copilotEnablement")) or ""
-                ).strip().lower() != "disabled"
+def _session_with_config_options():
+    return {
+        "sessionId": "s1",
+        "configOptions": [
+            {
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "auto",
+                "options": [
+                    {"value": "auto", "name": "Auto"},
+                    {"value": "gpt-5.6-terra", "name": "GPT-5.6 Terra"},
+                    {
+                        "value": "claude-fable-5",
+                        "name": "Claude Fable 5",
+                        "_meta": {"copilotEnablement": "disabled"},
+                    },
+                ],
             }
-            if not available or requested_model in available:
-                wire.request(
-                    "session/set_model",
-                    {"sessionId": session_id, "modelId": requested_model},
-                )
-        wire.request("session/prompt", {"sessionId": session_id, "prompt": []})
-        return "ok", ""
-
-    with patch.object(CopilotACPClient, "_run_prompt", side_effect=fake_run_prompt):
-        client._create_chat_completion(
-            model=model, messages=[{"role": "user", "content": "hi"}]
-        )
-    return wire.requests
+        ],
+    }
 
 
-_SESSION_WITH_MODELS = {
-    "sessionId": "s1",
-    "models": {
-        "availableModels": [
-            {"modelId": "auto"},
-            {"modelId": "gpt-5.6-terra"},
-            {"modelId": "claude-sonnet-5"},
-        ]
-    },
-}
+def test_model_selection_prefers_stable_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "gpt-5.6-terra"
+    ) == (
+        "session/set_config_option",
+        {"sessionId": "s1", "configId": "model", "value": "gpt-5.6-terra"},
+    )
 
 
-def test_set_model_sent_for_advertised_model():
-    reqs = _run_prompt_with_scripted_wire("gpt-5.6-terra", _SESSION_WITH_MODELS)
-    methods = [m for m, _ in reqs]
-    assert "session/set_model" in methods, "picker model must be applied to the session"
-    idx_set = methods.index("session/set_model")
-    idx_prompt = methods.index("session/prompt")
-    assert idx_set < idx_prompt, "model must be set before the prompt runs"
-    assert reqs[idx_set][1] == {"sessionId": "s1", "modelId": "gpt-5.6-terra"}
+def test_model_selection_rejects_disabled_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "claude-fable-5"
+    ) is None
 
 
-def test_set_model_skipped_for_unadvertised_model():
-    reqs = _run_prompt_with_scripted_wire("not-served-here", _SESSION_WITH_MODELS)
-    assert all(m != "session/set_model" for m, _ in reqs), \
-        "unknown model must degrade to the session default, not error"
+def test_model_selection_rejects_unknown_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "not-served-here"
+    ) is None
 
 
-def test_set_model_skipped_for_provider_virtual_slug():
-    reqs = _run_prompt_with_scripted_wire("copilot-acp", _SESSION_WITH_MODELS)
-    assert all(m != "session/set_model" for m, _ in reqs)
+def test_model_selection_falls_back_to_legacy_extension():
+    from agent.copilot_acp_client import _model_selection_request
 
-
-def test_set_model_skipped_for_policy_disabled_model():
-    # A policy-disabled id may still be advertised; selecting it silently
-    # serves the default model, so it must not be treated as offered.
-    session = {
+    legacy_session = {
         "sessionId": "s1",
         "models": {
             "availableModels": [
-                {"modelId": "claude-sonnet-5"},
-                {
-                    "modelId": "claude-fable-5",
-                    "_meta": {"copilotEnablement": "disabled"},
-                },
+                {"modelId": "auto"},
+                {"modelId": "gpt-5.6-terra"},
             ]
         },
     }
-    reqs = _run_prompt_with_scripted_wire("claude-fable-5", session)
-    assert all(m != "session/set_model" for m, _ in reqs)
+    assert _model_selection_request(legacy_session, "gpt-5.6-terra") == (
+        "session/set_model",
+        {"sessionId": "s1", "modelId": "gpt-5.6-terra"},
+    )
+
+
+def test_model_selection_skips_provider_virtual_slug():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "copilot-acp"
+    ) is None
 
 
 def test_run_prompt_receives_picker_model():

@@ -187,6 +187,71 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
     }
 
 
+def _model_selection_request(
+    session: dict[str, Any], requested_model: str
+) -> tuple[str, dict[str, str]] | None:
+    """Return the ACP request that selects ``requested_model`` for ``session``.
+
+    Prefer stable v1 ``session/set_config_option``. Fall back to Copilot's
+    pre-stabilization ``session/set_model`` extension only when no model
+    config option is advertised. A reported model list is authoritative:
+    unknown and policy-disabled ids return None instead of being sent.
+    """
+    session_id = str(session.get("sessionId") or "").strip()
+    requested_model = str(requested_model or "").strip()
+    if not session_id or not requested_model or requested_model == "copilot-acp":
+        return None
+
+    config_options = [
+        o for o in (session.get("configOptions") or []) if isinstance(o, dict)
+    ]
+    model_option = next(
+        (
+            o for o in config_options
+            if o.get("category") == "model" or o.get("id") == "model"
+        ),
+        None,
+    )
+    if model_option is not None:
+        enabled_values = {
+            str(o.get("value") or "").strip()
+            for o in (model_option.get("options") or [])
+            if isinstance(o, dict)
+            and str(
+                ((o.get("_meta") or {}).get("copilotEnablement")) or ""
+            ).strip().lower() != "disabled"
+        }
+        if requested_model not in enabled_values:
+            return None
+        return (
+            "session/set_config_option",
+            {
+                "sessionId": session_id,
+                "configId": str(model_option.get("id") or "model"),
+                "value": requested_model,
+            },
+        )
+
+    advertised = [
+        m
+        for m in ((session.get("models") or {}).get("availableModels") or [])
+        if isinstance(m, dict)
+    ]
+    available = {
+        str(m.get("modelId") or "").strip()
+        for m in advertised
+        if str(
+            ((m.get("_meta") or {}).get("copilotEnablement")) or ""
+        ).strip().lower() != "disabled"
+    }
+    if available and requested_model not in available:
+        return None
+    return (
+        "session/set_model",
+        {"sessionId": session_id, "modelId": requested_model},
+    )
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -579,47 +644,26 @@ class CopilotACPClient:
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
 
-            # Select the model Hermes asked for. The `--model` spawn flag is
-            # validated but IGNORED by `copilot --acp` (observed: session
-            # still runs the CLI's own default); the ACP-native
-            # `session/set_model` call is what actually switches it. Only
-            # send ids the server advertises in session/new so an unknown
-            # slug degrades to the default instead of erroring the prompt,
-            # and never fail the whole turn over model selection.
+            # Select the model Hermes asked for. Prefer the stable ACP v1
+            # session-config API: session/new advertises a category="model"
+            # select option and session/set_config_option updates it. Copilot
+            # still exposes the older models/session/set_model extension too,
+            # so retain that only as compatibility fallback for older agents.
             if requested_model and requested_model != "copilot-acp":
                 try:
-                    advertised = [
-                        m
-                        for m in (
-                            (session.get("models") or {}).get("availableModels") or []
-                        )
-                        if isinstance(m, dict)
-                    ]
-                    available = {
-                        str(m.get("modelId") or "").strip()
-                        for m in advertised
-                        # Org-policy-disabled ids can still appear in the list;
-                        # selecting one silently serves the default model, so
-                        # treat them as not offered.
-                        if str(
-                            ((m.get("_meta") or {}).get("copilotEnablement")) or ""
-                        ).strip().lower() != "disabled"
-                    }
-                    if not available or requested_model in available:
-                        _request(
-                            "session/set_model",
-                            {"sessionId": session_id, "modelId": requested_model},
-                        )
+                    selection = _model_selection_request(session, requested_model)
+                    if selection is not None:
+                        method, params = selection
+                        _request(method, params)
                     else:
                         logger.warning(
                             "Copilot ACP does not offer model %r; using the "
-                            "session default. Available: %s",
+                            "session default.",
                             requested_model,
-                            ", ".join(sorted(available)) or "(none reported)",
                         )
                 except Exception as exc:
                     logger.warning(
-                        "Copilot ACP session/set_model(%r) failed; continuing "
+                        "Copilot ACP model selection for %r failed; continuing "
                         "with the session default: %s",
                         requested_model,
                         exc,
